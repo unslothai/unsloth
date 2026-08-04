@@ -635,6 +635,61 @@ def test_preview_can_swap_out_prior_preview_model(fake_slot):
     assert fake_slot["ident"] == "/outputs/run/ckpt-b"
 
 
+@pytest.mark.parametrize("owner", ["diffusion", "video"])
+def test_preview_load_refused_while_image_or_video_owns_gpu(fake_slot, monkeypatch, owner):
+    # Codex P2 (round 32): image/video generation is tracked in-flight but never admitted
+    # (it doesn't touch the llama slot), and a video clip generates in the background after
+    # its POST returns, so the admitted-count busy guard sees nothing. Without a GPU-owner
+    # check the preview reaches _load_model_impl, whose acquire_for(CHAT) evicts the resident
+    # Images/Video pipeline and kills the Studio generation.
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: owner)
+
+    async def _run():
+        with pytest.raises(HTTPException) as exc:
+            await inference.load_model_for_preview(
+                LoadRequest(model_path = "/outputs/run/ckpt"),
+                SimpleNamespace(app = None),
+                "admin",
+            )
+        return exc.value
+
+    exc = asyncio.run(_run())
+    assert exc.status_code == 503
+    assert exc.headers.get("Retry-After")
+    assert fake_slot["loads"] == []  # never reached the load, so nothing was evicted
+
+
+def test_preview_load_allowed_when_gpu_is_free_or_chat_owned(fake_slot, monkeypatch):
+    # The guard is narrow: it only refuses the owners acquire_for(CHAT) would evict. An
+    # unclaimed GPU (CPU-only image/video load releases its claim) and a chat-owned one
+    # still load, and a same-target borrow never acquires anything so it is never refused.
+    from core.inference import gpu_arbiter
+
+    monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: None)
+    asyncio.run(
+        inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run/ckpt-a"), SimpleNamespace(app = None), "admin"
+        )
+    )
+    monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.CHAT)
+    asyncio.run(
+        inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run/ckpt-b"), SimpleNamespace(app = None), "admin"
+        )
+    )
+    assert fake_slot["loads"] == ["/outputs/run/ckpt-a", "/outputs/run/ckpt-b"]
+    # Same-checkpoint borrow with an image pipeline resident: no load, so no eviction.
+    monkeypatch.setattr(gpu_arbiter, "current_owner", lambda: gpu_arbiter.DIFFUSION)
+    asyncio.run(
+        inference.load_model_for_preview(
+            LoadRequest(model_path = "/outputs/run/ckpt-b"), SimpleNamespace(app = None), "admin"
+        )
+    )
+    assert fake_slot["loads"] == ["/outputs/run/ckpt-a", "/outputs/run/ckpt-b"]
+
+
 def test_preview_swap_refused_while_studio_traffic_in_flight(fake_slot):
     asyncio.run(
         inference.load_model_for_preview(
@@ -1664,6 +1719,21 @@ def test_anthropic_passthrough_error_chunk_marks_failed():
     assert "return" in err_branch
 
 
+def test_generate_stream_backend_error_marks_response_failed():
+    # Codex P2 (round 32): the GenStreamError branch emits data:{"error"} + [DONE] and returns
+    # under the outer 200, so it never reaches the except handler's marker. A Studio
+    # /api/inference/generate/stream that hits a backend sentinel (subprocess down, no active
+    # model, model being unloaded) would otherwise look like a clean completion and claim a
+    # preview-owned model for a generation that failed.
+    import inspect
+
+    src = inspect.getsource(inference.generate_stream)
+    err_idx = src.index("if isinstance(chunk, GenStreamError):")
+    # Up to the branch's own return, so the mark must precede the in-band error frames.
+    branch = src[err_idx : src.index("return", err_idx)]
+    assert "mark_response_failed(_gs_scope)" in branch
+
+
 def test_generate_stream_cancel_marks_response_failed():
     # Codex P2 (round 20): generate_stream's `if cancel_event.is_set(): ... break` ends a 200
     # stream with no completion (client disconnect, possibly before the first token) without
@@ -1794,6 +1864,33 @@ def test_middleware_preview_response_keeps_ownership(slot_state):
 
     _run_middleware(_app, "/p/demo/v1/chat/completions")
     assert inference._is_preview_resident("/outputs/run/ckpt")  # ownership preserved
+    _reset_keepwarm_counters()
+
+
+def test_image_and_video_generation_do_not_claim_preview_slot(slot_state):
+    # Codex P2 (round 32): /images/generate, /v1/images/generations and /video/generate are
+    # tracked inference paths (they hold the GPU) but run on the diffusion/video engine, never
+    # the llama slot. A successful one never ran against the resident chat model, so claiming
+    # would mark a still-preview-owned checkpoint Studio-owned and 503 the next preview for a
+    # different checkpoint. An LLM path on the same middleware still claims.
+    _reset_keepwarm_counters()
+
+    async def _app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}", "more_body": False})
+
+    for path in (
+        "/api/inference/images/generate",
+        "/v1/images/generations",
+        "/api/inference/video/generate",
+    ):
+        inference._set_preview_resident("/outputs/run/ckpt")
+        _run_middleware(_app, path)
+        assert inference._is_preview_resident("/outputs/run/ckpt"), path
+
+    inference._set_preview_resident("/outputs/run/ckpt")
+    _run_middleware(_app, "/v1/chat/completions")
+    assert not inference._is_preview_resident("/outputs/run/ckpt")  # LLM turn still claims
     _reset_keepwarm_counters()
 
 

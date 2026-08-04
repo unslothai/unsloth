@@ -88,6 +88,17 @@ _INFERENCE_SUFFIXES = (
     "/video/generate",  # /api/inference/video/generate
 )
 
+# Tracked above (they hold the GPU, so the in-flight count must see them) but served by the
+# diffusion/video engines, never the llama slot. A successful one therefore did NOT run against
+# the resident chat model and must not adopt it for Studio: clearing the marker on an image or
+# video generation would leave a still-preview-owned checkpoint looking Studio-owned, and the
+# next preview for a different checkpoint would 503 on the slot guard.
+_NON_LLM_SLOT_SUFFIXES = (
+    "/images/generate",
+    "/images/generations",
+    "/video/generate",
+)
+
 
 def _is_preview_path(path: str) -> bool:
     # Public checkpoint preview delegates to the chat handler on the same backend,
@@ -558,6 +569,8 @@ class LlamaKeepWarmMiddleware:
                 and completed["done"]
                 # Both count endpoints (/messages/count_tokens, /chat/count_tokens).
                 and not path.endswith("count_tokens")
+                # Image/video generation runs on the diffusion/video engine, not the llama slot.
+                and not path.endswith(_NON_LLM_SLOT_SUFFIXES)
                 and not scope.get(_RESPONSE_FAILED_SCOPE_KEY)
                 and not scope.get(_UNTRACKED_SCOPE_KEY)
             ):

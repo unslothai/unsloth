@@ -5075,6 +5075,27 @@ async def load_model_for_preview(
                     # #5401). Ownership is unchanged: Studio's model stays Studio's, a
                     # preview-owned one stays preview-owned.
                     return
+                # A real load reclaims the GPU for chat (_load_model_impl's acquire_for(CHAT)),
+                # which evicts a resident Images/Video pipeline -- unloading the engine out from
+                # under an in-flight Studio generation. Those routes never reach
+                # note_admitted_inference (they don't touch the llama slot), and a video clip
+                # generates in the background after its POST returns, so the admitted-count guard
+                # above sees nothing; gate on GPU ownership instead, which is exactly what the
+                # eviction keys on (a CPU-only image/video load releases its claim and evicts
+                # nothing, so it never refuses a preview for free). Only the real-load path is
+                # gated: a same-target borrow returns above without acquiring anything.
+                from core.inference.gpu_arbiter import DIFFUSION, VIDEO, current_owner
+
+                if current_owner() in (DIFFUSION, VIDEO):
+                    untrack_current_request(scope)
+                    raise HTTPException(
+                        status_code = 503,
+                        detail = (
+                            "Studio is using the GPU for image or video generation. "
+                            "Unload that model before using this preview."
+                        ),
+                        headers = {"Retry-After": "10"},
+                    )
                 # _load_model_impl clears the preview marker mid-load (it reclaims the
                 # slot for Studio). If the load then fails while the prior model is
                 # still resident (e.g. a GPU-selection or pre-spawn error), leaving the
@@ -8103,6 +8124,11 @@ async def generate_stream(
                     completed = True
                     break
                 if isinstance(chunk, GenStreamError):
+                    # A backend sentinel (subprocess down, no active model, model being
+                    # unloaded) delivered in-band under the already-sent 200. The stream ends
+                    # cleanly, so flag it failed or the middleware reads this failed generation
+                    # as a successful Studio turn and claims a preview-owned model.
+                    mark_response_failed(_gs_scope)
                     yield f"data: {json.dumps({'error': _friendly_gen_stream_error(chunk)})}\n\n"
                     yield "data: [DONE]\n\n"
                     return
