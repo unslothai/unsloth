@@ -3337,7 +3337,9 @@ def safe_thread_num_proc(desired: Optional[int] = None) -> int:
     return max(1, desired)
 
 
-def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
+def dataset_map_num_proc(
+    desired: Optional[int] = None, *, serial_as_none: bool = True
+) -> Optional[int]:
     """
     Return a safe ``num_proc`` for ``Dataset.map()`` and ``Dataset.filter()``.
 
@@ -3356,8 +3358,23 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
     failures. Since ``detect_hardware()`` always initializes CUDA, such a guard
     would serialize every CUDA run for nothing. The worker-count bound in
     ``unsloth_zoo.dataset_num_proc`` is what addresses issue #2693.
+
+    ``serial_as_none`` says how to spell "run in-process" for the layer that
+    reads the value back, exactly as in ``unsloth_zoo.dataset_num_proc``. Leave
+    it True at a ``map()`` call site, where ``None`` is the only value that
+    builds no pool. Pass **False when the result is written into a config**
+    (``SFTConfig.dataset_num_proc``): a config ``None`` means "auto-size me" to
+    every downstream reader, so a serial request stored as ``None`` comes back
+    out as a full worker set. Only ``1`` survives that round trip, and the SFT
+    map site turns it back into ``None``.
     """
     if sys.platform in ("win32", "darwin"):
+        # ``None`` is safe at either layer here: workers are unusable on a spawn
+        # platform, so every auto-sizer that reads a config ``None`` vetoes too
+        # and nothing can inflate it. A ``1`` would be worse -- only the SFT map
+        # site is rewritten, so DPO/KTO/CPO/ORPO/Reward/PRM would hand that 1
+        # straight to Dataset.map and get a Pool(1) whose child re-imports the
+        # user's __main__ (#3211 / #3397).
         return None
 
     if get_device() == DeviceType.XPU:
@@ -3373,16 +3390,22 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
         if callable(is_initialized):
             try:
                 if is_initialized():
-                    return None
+                    # Unlike the spawn platforms above, forking is still
+                    # available here, so a config ``None`` WOULD be auto-sized
+                    # back up and fork the corrupted Level-Zero context this
+                    # guard exists to protect. Encode serial for the layer.
+                    return None if serial_as_none else 1
             except Exception as e:
                 # Treat a failing probe as "runtime not touched yet" so
                 # pre-init CPU preprocessing can still parallelize.
                 logger.debug("torch.xpu.is_initialized() probe failed: %s", e)
 
-    return _bounded_by_the_shared_policy(safe_num_proc(desired))
+    return _bounded_by_the_shared_policy(safe_num_proc(desired), serial_as_none)
 
 
-def _bounded_by_the_shared_policy(num_proc: int) -> Optional[int]:
+def _bounded_by_the_shared_policy(
+    num_proc: int, serial_as_none: bool = True
+) -> Optional[int]:
     """Apply the training-side num_proc policy to a Studio-computed count.
 
     ``format_conversion.py`` and ``chat_templates.py`` hand this straight to
@@ -3397,7 +3420,7 @@ def _bounded_by_the_shared_policy(num_proc: int) -> Optional[int]:
     except Exception:
         return num_proc
     try:
-        return get_dataset_num_proc(num_proc)
+        return get_dataset_num_proc(num_proc, serial_as_none = serial_as_none)
     except Exception as e:
         logger.debug("dataset_num_proc policy unavailable: %s", e)
         return num_proc

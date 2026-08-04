@@ -16,7 +16,10 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import re
 import sys
+import textwrap
+import types
 from pathlib import Path
 
 import pytest
@@ -491,43 +494,101 @@ def test_rl_codegen_only_sft_gets_the_config_sentinel():
     assert '_serial_as_none = "False" if trainer_file == "sft_trainer" else "True"' in source
 
 
-def test_zoo_sft_prepare_dataset_anchor_has_not_drifted():
-    """unsloth/models/rl_replacements.py rewrites unsloth_zoo's
-    sft_prepare_dataset by exact string match. A Zoo release that touches those
-    lines makes _require_replace raise at import time, so catch drift here."""
-    # find_spec resolves the package path without executing its __init__, so this
-    # canary still runs where torch/unsloth_zoo cannot import.
+# ---------- the map-site rewrite and the anchors it hangs on ----------
+
+# The tag rl_replacements.py gives the num_proc edit; both anchors share it, so a
+# rename shows up as a missing call rather than a silently unpinned anchor.
+NUM_PROC_WHERE = "sft_prepare_dataset dataset_num_proc selection"
+
+# The helpers that decide whether a source edit lands. Named here so the tests
+# below fail loudly if they are renamed rather than quietly testing nothing.
+ANCHOR_HELPERS = ("_require_replace", "_replace_or_fallback")
+
+# The module-level regex the narrow fallback anchor uses.
+NARROW_ANCHOR_NAME = "_ZOO_MAP_NUM_PROC_ASSIGNMENT"
+
+
+def _zoo_dataset_utils_source():
+    # find_spec resolves the package path without executing its __init__, so these
+    # canaries still run where torch/unsloth_zoo cannot import.
     spec = importlib.util.find_spec("unsloth_zoo")
     if spec is None or not spec.submodule_search_locations:
         pytest.skip("unsloth_zoo not installed")
     zoo_file = Path(list(spec.submodule_search_locations)[0]) / "dataset_utils.py"
     if not zoo_file.is_file():
         pytest.skip("unsloth_zoo.dataset_utils not found")
-    source = zoo_file.read_text(encoding = "utf-8")
+    return zoo_file.read_text(encoding = "utf-8")
 
-    rr_tree = ast.parse(RL_PATH.with_name("rl_replacements.py").read_text(encoding = "utf-8"))
 
-    def _anchor_and_count(where):
-        found = [
-            (
-                ast.literal_eval(node.args[1]),
-                next(
-                    (ast.literal_eval(k.value) for k in node.keywords if k.arg == "count"),
-                    1,
-                ),
-            )
-            for node in ast.walk(rr_tree)
-            if isinstance(node, ast.Call)
-            and getattr(node.func, "id", "") == "_require_replace"
-            and any(k.arg == "where" and ast.literal_eval(k.value) == where for k in node.keywords)
-        ]
-        assert len(found) == 1, f"expected exactly one _require_replace for {where!r}"
-        return found[0]
+def _rl_replacements_tree():
+    return ast.parse(RL_PATH.with_name("rl_replacements.py").read_text(encoding = "utf-8"))
+
+
+def _anchor_calls(where):
+    return [
+        node
+        for node in ast.walk(_rl_replacements_tree())
+        if isinstance(node, ast.Call)
+        and getattr(node.func, "id", "") in ANCHOR_HELPERS
+        and any(k.arg == "where" and ast.literal_eval(k.value) == where for k in node.keywords)
+    ]
+
+
+def _anchor_and_count(where):
+    """The (anchor, expected occurrences) of the source edit tagged ``where``."""
+    found = _anchor_calls(where)
+    assert len(found) == 1, f"expected exactly one anchored edit for {where!r}"
+    node = found[0]
+    count = next((ast.literal_eval(k.value) for k in node.keywords if k.arg == "count"), 1)
+    return ast.literal_eval(node.args[1]), count
+
+
+def _keyword(where, name):
+    node = _anchor_calls(where)[0]
+    value = next(k.value for k in node.keywords if k.arg == name)
+    return value
+
+
+def _narrow_num_proc_pattern():
+    """The compiled fallback regex, read out of rl_replacements.py by name.
+
+    Read from the module-level ``re.compile`` rather than re-typed here: a test
+    holding its own copy of the pattern would keep passing after the real one
+    drifted away from the Zoo.
+    """
+    name = _keyword(NUM_PROC_WHERE, "fallback_pattern")
+    assert (
+        getattr(name, "id", "") == NARROW_ANCHOR_NAME
+    ), f"the num_proc fallback no longer uses {NARROW_ANCHOR_NAME}"
+    for node in ast.walk(_rl_replacements_tree()):
+        if (
+            isinstance(node, ast.Assign)
+            and any(getattr(t, "id", None) == NARROW_ANCHOR_NAME for t in node.targets)
+            and isinstance(node.value, ast.Call)
+        ):
+            args = [ast.literal_eval(a) for a in node.value.args]
+            flags = next((k for k in node.value.keywords if k.arg == "flags"), None)
+            assert flags is not None and "MULTILINE" in ast.dump(
+                flags.value
+            ), "the narrow anchor must be MULTILINE to match a line in a block"
+            return re.compile(args[0], flags = re.MULTILINE)
+    raise AssertionError(f"{NARROW_ANCHOR_NAME} not found in rl_replacements.py")
+
+
+def _narrow_num_proc_replacement():
+    return ast.literal_eval(_keyword(NUM_PROC_WHERE, "fallback_new"))
+
+
+def test_zoo_sft_prepare_dataset_anchor_has_not_drifted():
+    """unsloth/models/rl_replacements.py rewrites unsloth_zoo's
+    sft_prepare_dataset by exact string match. A Zoo release that touches those
+    lines makes _require_replace raise at import time, so catch drift here."""
+    source = _zoo_dataset_utils_source()
 
     # _require_replace raises on a missing anchor but cannot notice a count = 2
     # anchor dropping to one occurrence, so assert the counts here.
     for where in (
-        "sft_prepare_dataset dataset_num_proc selection",
+        NUM_PROC_WHERE,
         "sft_prepare_dataset tokenizing map() calls",
     ):
         anchor, count = _anchor_and_count(where)
@@ -535,6 +596,188 @@ def test_zoo_sft_prepare_dataset_anchor_has_not_drifted():
             f"unsloth_zoo.dataset_utils has {source.count(anchor)} occurrences of "
             f"the {where!r} anchor, expected {count}; update rl_replacements.py"
         )
+
+
+def test_the_narrow_num_proc_anchor_still_matches_the_installed_zoo():
+    """The num_proc site has a second, narrower anchor; it needs its own canary.
+
+    The block anchor drifting is survivable precisely because this regex catches
+    the assignment the block ends on. If the Zoo ever renames or restructures
+    that line too, both anchors are gone and nothing rewrites the worker count --
+    so pin it here, in CI, rather than discovering it from a user's Pool(1).
+    """
+    source = _zoo_dataset_utils_source()
+    pattern = _narrow_num_proc_pattern()
+
+    matches = pattern.findall(source)
+    assert len(matches) == 1, (
+        f"unsloth_zoo.dataset_utils has {len(matches)} lines matching the narrow "
+        f"num_proc anchor {pattern.pattern!r}, expected 1; update rl_replacements.py"
+    )
+
+    # The block anchor and the narrow anchor have to describe the same site, or
+    # the fallback would rewrite something the primary edit never touched.
+    block_anchor, _ = _anchor_and_count(NUM_PROC_WHERE)
+    assert pattern.search(block_anchor) is not None
+
+    # And the fallback has to leave the file parseable at the Zoo's indentation.
+    rewritten = pattern.sub(_narrow_num_proc_replacement(), source)
+    assert rewritten != source
+    ast.parse(rewritten)
+
+
+# ---------- what the layered anchor actually does to a drifted Zoo ----------
+
+
+def _load_anchor_helpers():
+    """Exec just the anchor helpers out of rl_replacements.py.
+
+    That module imports torch and trl at its top and this file is torch-free by
+    design, so lift the definitions the anchor logic needs instead of copying
+    them: a test carrying its own copy would keep passing after the real helper
+    changed. Returns the namespace plus the list the fake logger warns into.
+    """
+    tree = _rl_replacements_tree()
+    wanted = set(ANCHOR_HELPERS) | {"_warn_once", "_WARNED_MISSING_ANCHORS", NARROW_ANCHOR_NAME}
+    kept = [
+        node
+        for node in tree.body
+        if (isinstance(node, ast.FunctionDef) and node.name in wanted)
+        or (
+            isinstance(node, ast.Assign)
+            and any(getattr(t, "id", None) in wanted for t in node.targets)
+        )
+    ]
+    assert {node.name for node in kept if isinstance(node, ast.FunctionDef)} >= set(
+        ANCHOR_HELPERS
+    ), "the anchor helpers were renamed"
+
+    warnings = []
+    namespace = {
+        "re": re,
+        "logger": types.SimpleNamespace(warning = warnings.append),
+    }
+    module = ast.fix_missing_locations(ast.Module(body = kept, type_ignores = []))
+    exec(compile(module, str(RL_PATH.with_name("rl_replacements.py")), "exec"), namespace)  # noqa: S102
+    return namespace, warnings
+
+
+def _apply_num_proc_edit(source):
+    """Run the real layered edit for NUM_PROC_WHERE over ``source``."""
+    namespace, warnings = _load_anchor_helpers()
+    node = _anchor_calls(NUM_PROC_WHERE)[0]
+    assert (
+        getattr(node.func, "id", "") == "_replace_or_fallback"
+    ), "the num_proc edit lost its fallback and is a plain replace again"
+    result = namespace["_replace_or_fallback"](
+        source,
+        ast.literal_eval(node.args[1]),
+        ast.literal_eval(node.args[2]),
+        fallback_pattern = namespace[NARROW_ANCHOR_NAME],
+        fallback_new = _narrow_num_proc_replacement(),
+        where = NUM_PROC_WHERE,
+    )
+    return result, warnings
+
+
+def test_the_block_anchor_is_used_when_the_zoo_has_not_moved():
+    source = _zoo_dataset_utils_source()
+    result, warnings = _apply_num_proc_edit(source)
+    assert "_unsloth_get_dataset_num_proc" in result
+    assert 'map_kwargs["num_proc"] = dataset_num_proc' not in result
+    # The block replacement takes the Zoo's own sizing with it; the fallback,
+    # which only rewrites the assignment, leaves it standing.
+    block_anchor, _ = _anchor_and_count(NUM_PROC_WHERE)
+    assert block_anchor not in result
+    assert warnings == [], f"a matching anchor must not warn: {warnings}"
+    ast.parse(result)
+
+
+def test_the_narrow_anchor_takes_over_when_the_block_drifts():
+    """A Zoo that rewrites the block but keeps the assignment must still be fixed.
+
+    This is the case `required = False` used to swallow: the edit no-ops, the Zoo
+    reads the config `1` the config layer writes for "serial", and datasets >= 4.1
+    turns that into a Pool(1) on the host that asked for no workers.
+    """
+    source = _zoo_dataset_utils_source()
+    # Drift the block without touching the line the fallback keys on.
+    drifted = source.replace(
+        "            import multiprocessing as _mp\n",
+        "            import multiprocessing as _mp  # zoo refactor\n",
+        1,
+    )
+    assert drifted != source
+    assert _narrow_num_proc_pattern().findall(drifted)
+
+    result, warnings = _apply_num_proc_edit(drifted)
+    assert "_unsloth_get_dataset_num_proc" in result, "the fallback anchor did not apply"
+    assert 'map_kwargs["num_proc"] = dataset_num_proc' not in result
+    # Only the assignment was rewritten, so the Zoo's own sizing is still there,
+    # computing a value nothing reads. That is the price of the narrow anchor.
+    assert "if _mp.get_start_method() != 'fork':" in result
+    assert len(warnings) == 1 and "moved in this unsloth_zoo" in warnings[0]
+    ast.parse(result)
+
+
+def test_neither_anchor_matching_only_warns():
+    """The remaining escape hatch stays a warning, not a raise.
+
+    Hard-failing here would break every SFT run on a Zoo whose text merely moved,
+    which is a far bigger blast radius than the one worker at stake.
+    """
+    source = (
+        _zoo_dataset_utils_source()
+        .replace(
+            '            map_kwargs["num_proc"] = dataset_num_proc\n',
+            '            map_kwargs.update({"num_proc": dataset_num_proc})\n',
+            1,
+        )
+        .replace(
+            "            import multiprocessing as _mp\n",
+            "            import multiprocessing as _mp  # zoo refactor\n",
+            1,
+        )
+    )
+    assert not _narrow_num_proc_pattern().findall(source)
+
+    result, warnings = _apply_num_proc_edit(source)
+    assert result == source, "nothing should be rewritten when both anchors miss"
+    assert len(warnings) == 1 and "anchor not found" in warnings[0]
+
+
+def test_the_narrow_anchor_keeps_indentation_and_yields_none(monkeypatch):
+    """The injected fallback has to run, at the Zoo's indentation, and give None.
+
+    Indentation comes from the match, so a Zoo that nests the assignment deeper
+    still gets valid source; and the value it computes for a config `1` -- what
+    the config layer writes for "serial" -- has to be None, never 1.
+    """
+    module = _load_module()
+    module.reset_warning_state()
+    monkeypatch.delenv(module.NUM_PROC_ENV_VAR, raising = False)
+    # The injected snippet imports the zoo copy first; point that name at the
+    # copy under test so this stays a torch-free, offline assertion.
+    if "unsloth_zoo" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "unsloth_zoo", types.ModuleType("unsloth_zoo"))
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.dataset_num_proc", module)
+
+    pattern = _narrow_num_proc_pattern()
+    replacement = _narrow_num_proc_replacement()
+
+    for indent in ("            ", "                    "):
+        snippet = pattern.sub(replacement, f'{indent}map_kwargs["num_proc"] = dataset_num_proc')
+        for line in snippet.split("\n"):
+            assert line.startswith(indent), f"lost the {len(indent)}-space indent: {line!r}"
+
+        namespace = {
+            "map_kwargs": {},
+            "args": types.SimpleNamespace(dataset_num_proc = 1),
+        }
+        exec(compile(textwrap.dedent(snippet), "<fallback>", "exec"), namespace)  # noqa: S102
+        assert (
+            namespace["map_kwargs"]["num_proc"] is None
+        ), "a config 1 has to become None at the map site; 1 is a Pool(1) on datasets >= 4.1"
 
 
 def test_rl_codegen_imports_the_module_that_exists():
@@ -559,18 +802,23 @@ def test_generated_source_reaches_for_the_zoo_before_unsloth():
     packing -> attention_dispatch -> models._utils (torch and the model stack)
     into a module needing none of it. Both call sites must try the zoo first.
     """
-    source = RL_PATH.with_name("rl_replacements.py").read_text(encoding = "utf-8")
-    tree = ast.parse(source)
-    injected = [
-        ast.literal_eval(node.args[2])
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and getattr(node.func, "id", "") == "_require_replace"
-        and len(node.args) >= 3
-        and isinstance(node.args[2], ast.Constant)
-    ]
+    tree = _rl_replacements_tree()
+    injected = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or getattr(node.func, "id", "") not in ANCHOR_HELPERS:
+            continue
+        if len(node.args) >= 3 and isinstance(node.args[2], ast.Constant):
+            injected.append(ast.literal_eval(node.args[2]))
+        # The narrow fallback injects source too, as an re.sub template.
+        injected += [
+            ast.literal_eval(k.value)
+            for k in node.keywords
+            if k.arg == "fallback_new" and isinstance(k.value, ast.Constant)
+        ]
     reaching = [text for text in injected if "dataset_num_proc" in text]
-    assert len(reaching) == 2, "expected the num_proc selection and the map() wrapper"
+    assert (
+        len(reaching) == 3
+    ), "expected the num_proc selection, its narrow fallback and the map() wrapper"
     for text in reaching:
         assert f"from {GENERATED_IMPORT_MODULE} import" in text
         assert text.index(GENERATED_IMPORT_MODULE) < text.index(
@@ -1061,33 +1309,149 @@ def test_a_readable_limit_with_no_readable_usage_still_binds(monkeypatch, dnp, t
     assert dnp._cgroup_free_bytes() == 2 * 1024**3
 
 
-def test_missing_cgroup_readers_fall_back_to_the_limit_alone(monkeypatch, dnp):
-    """An older unsloth_zoo has no such private helpers.
-
-    The public limit reader alone can only overstate what is free, never
-    understate it, so the ceiling still binds.
-    """
+def _old_zoo(monkeypatch, memory_limit = None):
+    """An unsloth_zoo predating the private cgroup helpers, with only the public reader."""
     import types
 
     fake = types.ModuleType("unsloth_zoo.hf_xet_tuning")
-    fake.cgroup_memory_limit = lambda: 4 * 1024**3
+    fake.cgroup_memory_limit = lambda: memory_limit
     fake.cgroup_cpu_limit = lambda: None
     monkeypatch.setitem(sys.modules, "unsloth_zoo.hf_xet_tuning", fake)
+    return fake
+
+
+def test_the_unaided_reader_subtracts_usage_too(monkeypatch, dnp, tmp_path):
+    """An older unsloth_zoo must not turn the ceiling back into the raw limit.
+
+    cgroup_memory_limit() alone reports an 8GB cgroup holding 6GB as 8GB free,
+    which is the one case the ceiling exists for: sizing workers off memory that
+    is already spent is how #2693's map() children get OOM-killed.
+    """
+    _old_zoo(monkeypatch, memory_limit = 8 * 1024**3)
+    leaf = tmp_path / "kubepods" / "podabc"
+    leaf.mkdir(parents = True)
+    (leaf / "memory.max").write_text("8589934592\n")
+    (leaf / "memory.current").write_text("6442450944\n")
+
+    monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(dnp, "_proc_self_cgroup", lambda: ["0::/kubepods/podabc"])
+    assert dnp._cgroup_free_bytes() == 2 * 1024**3
+
+
+def test_the_unaided_reader_walks_to_the_binding_ancestor(monkeypatch, dnp, tmp_path):
+    """Same pairing rule as the helper-backed path: the slice's limit binds, with the slice's usage."""
+    _old_zoo(monkeypatch)
+    slice_dir = tmp_path / "user.slice"
+    leaf = slice_dir / "session.scope"
+    leaf.mkdir(parents = True)
+    (slice_dir / "memory.max").write_text("34359738368\n")
+    (slice_dir / "memory.current").write_text("32212254720\n")
+    (leaf / "memory.max").write_text("17179869184\n")
+    (leaf / "memory.current").write_text("1073741824\n")
+
+    monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(dnp, "_proc_self_cgroup", lambda: ["0::/user.slice/session.scope"])
+    assert dnp._cgroup_free_bytes() == 2 * 1024**3
+
+
+def test_the_unaided_reader_handles_cgroup_v1(monkeypatch, dnp, tmp_path):
+    _old_zoo(monkeypatch)
+    leaf = tmp_path / "memory" / "slurm" / "job_1"
+    leaf.mkdir(parents = True)
+    (leaf / "memory.limit_in_bytes").write_text("4294967296\n")
+    (leaf / "memory.usage_in_bytes").write_text("3221225472\n")
+
+    monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        dnp, "_proc_self_cgroup", lambda: ["7:memory,blkio:/slurm/job_1"],
+    )
+    assert dnp._cgroup_free_bytes() == 1024**3
+
+
+def test_the_unaided_reader_ignores_the_unlimited_sentinels(monkeypatch, dnp, tmp_path):
+    _old_zoo(monkeypatch)
+    v2 = tmp_path / "scope"
+    v2.mkdir()
+    (v2 / "memory.max").write_text("max\n")
+    (v2 / "memory.current").write_text("1073741824\n")
+    v1 = tmp_path / "memory"
+    v1.mkdir()
+    # v1's "unlimited": a near-2^63 sentinel, not a 8-exabyte ceiling.
+    (v1 / "memory.limit_in_bytes").write_text("9223372036854771712\n")
+    (v1 / "memory.usage_in_bytes").write_text("1073741824\n")
+
+    monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(dnp, "_proc_self_cgroup", lambda: ["0::/scope", "7:memory:/"])
+    assert dnp._cgroup_free_bytes() is None
+
+
+def test_the_unaided_reader_is_never_negative(monkeypatch, dnp, tmp_path):
+    _old_zoo(monkeypatch)
+    leaf = tmp_path / "scope"
+    leaf.mkdir()
+    (leaf / "memory.max").write_text("1073741824\n")
+    (leaf / "memory.current").write_text("2147483648\n")
+    monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(dnp, "_proc_self_cgroup", lambda: ["0::/scope"])
+    assert dnp._cgroup_free_bytes() == 0
+
+
+def test_the_unaided_reader_keeps_the_public_limit_as_a_last_resort(monkeypatch, dnp, tmp_path):
+    """No readable cgroup tree here, but an older zoo may still find one its own way.
+
+    A limit with no usage beside it is still a ceiling, and is a tighter one than
+    psutil's host-wide view inside a container.
+    """
+    _old_zoo(monkeypatch, memory_limit = 4 * 1024**3)
+    monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path / "absent"))
+    monkeypatch.setattr(dnp, "_proc_self_cgroup", lambda: [])
     assert dnp._cgroup_free_bytes() == 4 * 1024**3
 
 
-def test_no_unsloth_zoo_at_all_is_not_a_ceiling(monkeypatch, dnp):
+def test_the_unaided_reader_never_raises(monkeypatch, dnp):
+    """It runs on every auto-sizing call under an older zoo, on hosts with no cgroup at all."""
+    _old_zoo(monkeypatch)
+    free = dnp._cgroup_free_bytes_unaided()
+    assert free is None or (isinstance(free, int) and free >= 0)
+
+
+def _no_hf_xet_tuning(monkeypatch):
+    """Neither the private helpers nor the public readers: no unsloth_zoo at all."""
     import builtins
 
     real_import = builtins.__import__
 
-    def _no_hf_xet(name, *args, **kwargs):
+    def _blocked(name, *args, **kwargs):
         if name == "unsloth_zoo.hf_xet_tuning":
             raise ImportError("older unsloth_zoo")
         return real_import(name, *args, **kwargs)
 
-    monkeypatch.setattr(builtins, "__import__", _no_hf_xet)
+    monkeypatch.setattr(builtins, "__import__", _blocked)
+
+
+def test_no_unsloth_zoo_and_no_cgroup_is_not_a_ceiling(monkeypatch, dnp, tmp_path):
+    # The cgroup tree is pointed away from the host's on purpose: the unaided
+    # reader needs no unsloth_zoo, so leaving it on the real /sys/fs/cgroup would
+    # make the assertion depend on whether the runner is itself in a limited
+    # container, which is how this test would fail on CI and pass on a laptop.
+    _no_hf_xet_tuning(monkeypatch)
+    monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path / "absent"))
+    monkeypatch.setattr(dnp, "_proc_self_cgroup", lambda: [])
     assert dnp._cgroup_free_bytes() is None
+    assert dnp._cgroup_cpu_quota() is None
+
+
+def test_no_unsloth_zoo_still_reads_the_cgroup(monkeypatch, dnp, tmp_path):
+    """The point of the unaided reader: the ceiling survives having no zoo to ask."""
+    _no_hf_xet_tuning(monkeypatch)
+    leaf = tmp_path / "scope"
+    leaf.mkdir()
+    (leaf / "memory.max").write_text("8589934592\n")
+    (leaf / "memory.current").write_text("6442450944\n")
+    monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(dnp, "_proc_self_cgroup", lambda: ["0::/scope"])
+    assert dnp._cgroup_free_bytes() == 2 * 1024**3
+    # The CPU quota reader has no unaided path, so it stays silent.
     assert dnp._cgroup_cpu_quota() is None
 
 

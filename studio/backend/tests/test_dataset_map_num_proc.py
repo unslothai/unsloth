@@ -306,3 +306,99 @@ def test_the_cap_no_longer_advertises_an_override_it_cannot_honour():
     assert not any(
         "UNSLOTH_DATASET_NUM_PROC" in line for line in logged
     ), "safe_num_proc tells the user to set an override it never reads"
+
+
+# ---------- the config boundary spells "in-process" as 1, not None ----------
+#
+# trainer.py writes this value into SFTConfig.dataset_num_proc rather than
+# handing it to map(). Every downstream reader treats a config None as
+# "auto-size me", so a serial request stored as None comes back out as a full
+# worker set: dataset_map_num_proc(1) -> None -> SFTConfig -> 8.
+
+
+def test_a_serial_request_survives_the_config_round_trip(monkeypatch):
+    """The audio paths ask for 1; the config layer must still see a request for 1."""
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+    assert hw.dataset_map_num_proc(1, serial_as_none = False) == 1
+    # The map-site default is what turns it back into "no pool" at the call.
+    assert hw.dataset_map_num_proc(1) is None
+
+
+def test_the_config_value_is_still_in_process_after_the_layer_reads_it(monkeypatch):
+    """End to end: what Studio stores, read back the way the SFT config layer reads it."""
+    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+
+    stored = hw.dataset_map_num_proc(1, serial_as_none = False)
+    # rl.py generates serial_as_none = False for sft_trainer, then the map-site
+    # rewrite converts the config value for the actual Dataset.map call.
+    from_config = policy.get_dataset_num_proc(stored, serial_as_none = False)
+    at_the_map_site = policy.get_dataset_num_proc(from_config)
+    assert (stored, from_config, at_the_map_site) == (1, 1, None)
+
+
+def test_xpu_initialized_stays_serial_through_a_config(monkeypatch):
+    """The one guard where a config None is actively dangerous.
+
+    Unlike the spawn platforms, forking still works here, so an auto-sizer
+    reading a config None would fork the corrupted Level-Zero context this
+    guard exists to protect.
+    """
+    _patch_device(monkeypatch, hw.DeviceType.XPU)
+    _patch_runtime(monkeypatch, "xpu", is_initialized = True)
+    assert hw.dataset_map_num_proc(4, serial_as_none = False) == 1
+    assert hw.dataset_map_num_proc(4) is None
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_spawn_platforms_keep_none_at_either_layer(monkeypatch, platform):
+    """None is safe to store here: no reader can inflate it.
+
+    Workers are unusable on a spawn platform, so every auto-sizer vetoes. A 1
+    would be worse: only the SFT map site is rewritten, so DPO/KTO/CPO/ORPO and
+    friends would hand that 1 to Dataset.map and get a Pool(1) whose child
+    re-imports the user's __main__ (#3211 / #3397).
+    """
+    monkeypatch.setattr(sys, "platform", platform)
+    assert hw.dataset_map_num_proc(4, serial_as_none = False) is None
+
+
+def test_every_other_caller_keeps_the_map_site_default(monkeypatch):
+    """Only the config boundary opts in; the seven map-site callers must not."""
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+    assert hw.dataset_map_num_proc(1) is None
+    assert hw.dataset_map_num_proc(4) == 4
+
+
+def test_the_trainer_config_asks_for_the_config_sentinel():
+    """The call that builds SFTConfig must pass serial_as_none = False.
+
+    Dropping it is silent: the run still trains, just with a worker set where
+    the audio paths asked for none.
+    """
+    import ast
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py"
+    ).read_text(encoding = "utf-8")
+    tree = ast.parse(source)
+
+    config_calls = [
+        value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values)
+        if isinstance(key, ast.Constant)
+        and key.value == "dataset_num_proc"
+        and isinstance(value, ast.Call)
+        and ast.unparse(value.func) == "dataset_map_num_proc"
+    ]
+    assert config_calls, "the SFTConfig dataset_num_proc entry moved; re-check this guard"
+    for call in config_calls:
+        keywords = {kw.arg: ast.unparse(kw.value) for kw in call.keywords}
+        assert keywords.get("serial_as_none") == "False", (
+            "a config-boundary dataset_map_num_proc call lost serial_as_none = False, "
+            "so a serial request will be read back as 'auto-size me': "
+            f"{ast.unparse(call)}"
+        )
