@@ -3009,6 +3009,21 @@ class ModelConfig:
                 # list_gguf_variants() detects vision & resolves the variant
                 variants, has_vision = list_gguf_variants(identifier, hf_token = hf_token)
                 variant = gguf_variant
+                if variant and variants:
+                    from core.inference.llama_cpp import (
+                        _cached_variant_resolution,
+                        _gguf_files_for_variant,
+                    )
+
+                    # Reject before the load path unloads the resident model.
+                    if not _gguf_files_for_variant(
+                        [v.filename for v in variants], variant
+                    ) and not _cached_variant_resolution(identifier, variant)[0]:
+                        available = ", ".join(v.quant for v in variants)
+                        raise ValueError(
+                            f"GGUF variant '{variant}' not found in {identifier}. "
+                            f"Available variants: {available}"
+                        )
                 if not variant:  # auto-select best quant
                     variant_filenames = [v.filename for v in variants]
                     best = _pick_best_gguf(variant_filenames)
