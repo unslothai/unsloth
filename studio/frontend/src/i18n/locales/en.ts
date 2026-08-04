@@ -157,6 +157,7 @@ export const en = {
         sttUnload: "Unload",
         sttUnloading: "Unloading…",
         microphoneLabel: "Microphone",
+        microphoneFallbackName: "Microphone {index}",
         microphoneDescription: "Used for dictation",
         microphoneFallbackHint:
           "Used for dictation. Falls back to the system default if the browser speech engine cannot use this device",
@@ -180,6 +181,10 @@ export const en = {
         manage: "Manage",
         backToVoice: "Back to Voice",
         addEntry: "Add entry",
+        newEntryAria: "New dictionary entry",
+        entryPlaceholder: "Jane Doe",
+        entryAria: "Dictionary entry {index}",
+        removeEntryAria: "Remove dictionary entry {index}",
       },
       recents: {
         sectionTitle: "Dictation history",
@@ -239,6 +244,7 @@ export const en = {
         volumeLabel: "Volume",
         previewLabel: "Preview voice",
         previewDescription: "Play a short sample",
+        previewFailed: "TTS preview failed",
         previewAction: "Preview",
         stopAction: "Stop",
         ttsLabel: "Text to speech",
@@ -254,6 +260,8 @@ export const en = {
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
+      clearToken: "Clear",
+      checkingToken: "Checking token...",
       tokenValidated: "Token validated",
       password: "Password",
       passwordDescription: "Change the password for this Unsloth account.",
@@ -302,6 +310,7 @@ export const en = {
         idleUnload: "Idle auto-unload",
         idleUnloadDescription:
           "Free VRAM after this many idle seconds. 0 keeps it loaded, minimum 60.",
+        idleSecondsAriaLabel: "Idle auto-unload seconds",
         idleNeedsEnable: "Turn on Switch model by request first.",
         idleActiveViaEnv: "Active via UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Failed to load model auto-switch settings.",
@@ -600,6 +609,12 @@ export const en = {
       disableOverlay: "Disable overlay",
       liveMonitor: {
         title: "Live monitor",
+        apiTitle: "API monitor",
+        summary: "Live requests, errors, and token usage",
+        status: "{active} active · {recent} recent · {model}",
+        noModelLoaded: "no model loaded",
+        autoOpen: "Show the floating monitor automatically",
+        autoOpenDescription: "Opens a small panel when API traffic arrives.",
         cpu: "CPU",
         ram: "RAM",
         disk: "Disk",
@@ -611,6 +626,8 @@ export const en = {
       },
       gpu: {
         title: "GPU devices",
+        ggufInference: "GGUF inference",
+        unavailable: "unavailable",
         noGpu: "No visible GPU detected. CPU-only resources are shown above.",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
@@ -755,6 +772,28 @@ export const en = {
     chat: {
       title: "Chat",
       description: "Customize how chat behaves on this device.",
+      modelSelection: {
+        title: "Select model settings",
+        expandQuantizations: "Expand quantizations",
+        expandQuantizationsDescription:
+          "On: On Device GGUF models show their quantizations right away. Off: click a model to view its quantizations.",
+        showAllQuantizations: "Show all quantizations",
+        showAllQuantizationsDescription:
+          "On: list every On Device quantization, including not downloaded. Off: show only downloaded quantizations.",
+      },
+      menu: {
+        title: "Chat menu",
+        description:
+          "Pin items to chat's + side menu. Others move into “More”.",
+        chatWithFiles: "Chat with Files (RAG)",
+        mcp: "MCP",
+        savedPrompts: "Saved prompts",
+        compareChat: "Compare chat",
+        exportChat: "Export chat",
+      },
+      showResponseModel: "Show response model",
+      showResponseModelDescription:
+        "Show model metadata in assistant responses.",
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
@@ -825,6 +864,8 @@ export const en = {
     },
     data: {
       title: "Data",
+      backToData: "Back to Data",
+      exportFailed: "Could not export chats",
       description:
         "Manage chat history and uploaded files stored on this device.",
       archivedChats: "Archived chats",
@@ -920,15 +961,8 @@ export const en = {
       codingAgentsDetectedHint: "Detected on this machine: {agents}.",
       relativeNever: "never",
       relativeJustNow: "just now",
-      relativeHoursAgo: "{count}h ago",
-      relativeDaysAgo: "{count}d ago",
-      relativeOneMonthAgo: "1mo ago",
-      relativeMonthsAgo: "{count}mo ago",
-      relativeOneYearAgo: "1y ago",
-      relativeYearsAgo: "{count}y ago",
       expired: "expired",
       today: "today",
-      inDays: "in {count}d",
       created: "Created {value}",
       used: "Used {value}",
       expires: "Expires {value}",
@@ -1364,9 +1398,6 @@ export const en = {
       steps: "Steps",
       lossTrendSparkline: "Loss trend sparkline",
       relativeJustNow: "just now",
-      relativeMinutesAgo: "{count}m ago",
-      relativeHoursAgo: "{count}h ago",
-      relativeDaysAgo: "{count}d ago",
       status: {
         completed: "Completed",
         stopped: "Stopped",
