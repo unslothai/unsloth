@@ -1350,7 +1350,7 @@ export function AppSidebar() {
       <SidebarGroup
         className={cn(
           "group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 shrink-0 transition-[padding]",
-          usesDesktopTitlebar ? "pt-1" : "pt-[9px]",
+          usesDesktopTitlebar ? "pt-1.5" : "pt-[9px]",
           // Scrolled: New Chat is pinned, give a little gap below it.
           scrolled ? "pb-[5px]" : "pb-px",
         )}
