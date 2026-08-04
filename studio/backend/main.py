@@ -1147,6 +1147,10 @@ app.add_middleware(
     allow_headers = ["*"],
 )
 
+from utils.public_access_settings import PublicAccessStopResponseMiddleware  # noqa: E402
+
+app.add_middleware(PublicAccessStopResponseMiddleware)
+
 
 # ============ Register API Routes ============
 

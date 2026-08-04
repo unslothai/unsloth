@@ -985,9 +985,18 @@ def stop_public_access_route(
     _ui_session: None = Depends(_require_ui_session),
 ) -> PublicAccessResponse:
     try:
-        response = PublicAccessResponse(**stop_public_access(request.app.state))
+        status = stop_public_access(request.app.state)
     except RuntimeError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
+    status.update(
+        state = "off",
+        url = None,
+        error = None,
+        managed_by = None,
+        can_start = False,
+        can_stop = False,
+    )
+    response = PublicAccessResponse(**status)
     logger.info("settings.public_access_stop_requested subject=%s", current_subject)
     return response
 

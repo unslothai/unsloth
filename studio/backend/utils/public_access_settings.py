@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 PUBLIC_ACCESS_AUTO_START_KEY = "public_access_auto_start"
 DEFAULT_PUBLIC_ACCESS_AUTO_START = False
@@ -17,6 +17,95 @@ _start_worker: threading.Thread | None = None
 _stop_worker: threading.Thread | None = None
 _start_worker_admission: tuple[int, int] | None = None
 _stop_worker_admission: tuple[int, int] | None = None
+_stop_response_condition = threading.Condition()
+_stop_responses_pending = 0
+_stop_response_admission_open = True
+
+
+class PublicAccessStopResponseMiddleware:
+    """Lease the connector for every Stop request from ASGI admission through response."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if not (
+            scope.get("type") == "http"
+            and scope.get("method") == "POST"
+            and scope.get("path") == "/api/settings/public-access/stop"
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        release = acquire_public_access_stop_response()
+        if release is None:
+            # Teardown has already linearized. Preserve downstream auth and
+            # idempotent route behavior without admitting new drain work.
+            await self.app(scope, receive, send)
+            return
+
+        async def _send(message):
+            await send(message)
+            if message.get("type") == "http.response.body" and not message.get("more_body", False):
+                release()
+
+        try:
+            await self.app(scope, receive, _send)
+        finally:
+            release()
+
+
+def acquire_public_access_stop_response() -> Callable[[], None] | None:
+    """Hold connector teardown until this HTTP response has been finalized."""
+    global _stop_responses_pending
+    with _stop_response_condition:
+        if not _stop_response_admission_open:
+            return None
+        _stop_responses_pending += 1
+        _stop_response_condition.notify_all()
+    released = False
+
+    def _release() -> None:
+        nonlocal released
+        global _stop_responses_pending
+        with _stop_response_condition:
+            if released:
+                return
+            released = True
+            _stop_responses_pending -= 1
+            _stop_response_condition.notify_all()
+
+    return _release
+
+
+def _open_public_access_stop_response_admission() -> None:
+    global _stop_response_admission_open
+    with _stop_response_condition:
+        _stop_response_admission_open = True
+        _stop_response_condition.notify_all()
+
+
+def _drain_and_close_public_access_stop_responses() -> None:
+    """Drain admitted responses, then close admission at the teardown boundary."""
+    global _stop_response_admission_open
+    deadline = time.monotonic() + 1.0
+    quiet_deadline: float | None = None
+    with _stop_response_condition:
+        while True:
+            now = time.monotonic()
+            if now >= deadline:
+                _stop_response_admission_open = False
+                return
+            if _stop_responses_pending:
+                quiet_deadline = None
+                _stop_response_condition.wait(min(0.05, deadline - now))
+                continue
+            if quiet_deadline is None:
+                quiet_deadline = now + 0.05
+            if now >= quiet_deadline:
+                _stop_response_admission_open = False
+                return
+            _stop_response_condition.wait(min(quiet_deadline - now, deadline - now))
 
 
 def _coerce_bool(value: Any) -> bool | None:
@@ -160,6 +249,7 @@ def start_public_access(app_state) -> dict:
         from cloudflare_tunnel import start_studio_tunnel
         start_studio_tunnel(port, managed_by = "settings", admission = admission)
 
+    _open_public_access_stop_response_admission()
     with _worker_lock:
         if not _worker_is_current(_start_worker, _start_worker_admission, admission):
             _start_worker = threading.Thread(target = _start, daemon = True)
@@ -208,10 +298,22 @@ def stop_public_access(app_state) -> dict:
         if current[0] != admission[0]:
             return
         if get_studio_tunnel_status()["managed_by"] == "settings":
+            # Every Stop admitted before this teardown decision must finish
+            # traversing cloudflared. Closing admission at the end of the drain
+            # prevents a later request from creating an unobserved lease.
+            _drain_and_close_public_access_stop_responses()
+            current = get_studio_tunnel_control_token()
+            if current[0] != admission[0] or get_studio_tunnel_status()["managed_by"] != "settings":
+                _open_public_access_stop_response_admission()
+                return
             with _worker_lock:
                 if _stop_worker is threading.current_thread():
                     _stop_worker_admission = current
-            stop_studio_tunnel(admission = current)
+            try:
+                stop_studio_tunnel(admission = current)
+            except Exception:
+                _open_public_access_stop_response_admission()
+                raise
 
     with _worker_lock:
         if not _worker_is_current(_stop_worker, _stop_worker_admission, admission):
