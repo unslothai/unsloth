@@ -76,6 +76,17 @@ def _force_start_method(monkeypatch, dnp, method):
     monkeypatch.setattr(dnp, "multiprocessing_start_method", lambda: method)
 
 
+def _force_cpus(monkeypatch, dnp, count):
+    """Pin the CPU count the auto path sizes from.
+
+    Patching psutil alone is not enough: the count is the smallest of the host's
+    CPUs, this process's affinity mask and any cgroup quota, so on a 4-vCPU runner
+    a "128 CPU host" would still come out as 4.
+    """
+    monkeypatch.setattr(dnp, "_usable_cpus", lambda: count)
+
+
+
 # ---------- start-method veto ----------
 
 
@@ -135,7 +146,7 @@ def test_config_layer_never_returns_none_while_forking_is_available(monkeypatch,
     explicit serial -- would re-inflate.
     """
     psutil = pytest.importorskip("psutil")
-    monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 64)
+    _force_cpus(monkeypatch, dnp, 64)
 
     # memory clamp all the way down to serial
     _force_start_method(monkeypatch, dnp, "fork")
@@ -172,7 +183,7 @@ def test_layering_config_then_map_site_is_correct(monkeypatch, dnp):
     """Composing the two layers must land on the right value for each intent."""
     _force_start_method(monkeypatch, dnp, "fork")
     psutil = pytest.importorskip("psutil")
-    monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 32)
+    _force_cpus(monkeypatch, dnp, 32)
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
@@ -194,7 +205,7 @@ def test_low_memory_auto_path_returns_none_not_one(monkeypatch, dnp):
     # The old heuristic returned 1 here, which still forked a Pool(1).
     _force_start_method(monkeypatch, dnp, "fork")
     psutil = pytest.importorskip("psutil")
-    monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 32)
+    _force_cpus(monkeypatch, dnp, 32)
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
@@ -210,7 +221,7 @@ def test_auto_value_is_capped(monkeypatch, dnp):
     # Was min(max(cpu_count + 4, 2), 64) -- up to 64 forked workers.
     _force_start_method(monkeypatch, dnp, "fork")
     psutil = pytest.importorskip("psutil")
-    monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 128)
+    _force_cpus(monkeypatch, dnp, 128)
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
@@ -223,7 +234,7 @@ def test_auto_value_is_capped(monkeypatch, dnp):
 def test_auto_value_clamped_by_available_memory(monkeypatch, dnp):
     _force_start_method(monkeypatch, dnp, "fork")
     psutil = pytest.importorskip("psutil")
-    monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 64)
+    _force_cpus(monkeypatch, dnp, 64)
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
@@ -274,7 +285,7 @@ def test_memory_clamp_is_skipped_without_psutil(monkeypatch, dnp):
 def test_bool_is_not_treated_as_an_int(monkeypatch, dnp):
     _force_start_method(monkeypatch, dnp, "fork")
     psutil = pytest.importorskip("psutil")
-    monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 8)
+    _force_cpus(monkeypatch, dnp, 8)
     monkeypatch.setattr(
         psutil,
         "virtual_memory",
@@ -804,3 +815,150 @@ def test_probe_rejects_a_start_method_the_host_does_not_offer(monkeypatch, dnp):
     monkeypatch.setattr(dnp.sys, "platform", "win32")
     assert dnp.get_dataset_num_proc(8) is None
     assert dnp.get_dataset_num_proc(8, serial_as_none = False) is None
+
+
+class _Split:
+    """Minimal sized stand-in for a datasets.Dataset."""
+
+    def __init__(self, n):
+        self.n = n
+
+    def __len__(self):
+        return self.n
+
+
+# ---------- containers: the host is not what this process may use ----------
+
+
+def test_memory_budget_follows_the_cgroup_not_the_host(monkeypatch, dnp):
+    """psutil reports the HOST inside a container.
+
+    A 2GB pod on a 512GB box read as having room for the full worker set and got
+    OOM-killed, which is the failure the memory ceiling exists to prevent.
+    """
+    psutil = pytest.importorskip("psutil")
+    _force_start_method(monkeypatch, dnp, "fork")
+    _force_cpus(monkeypatch, dnp, 64)
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: type("m", (), {"available": 512 * 1024**3})()
+    )
+    monkeypatch.setattr(dnp, "_cgroup_memory_used", lambda: 0)
+
+    monkeypatch.setattr(dnp, "_cgroup_limits", lambda: (None, None))
+    assert dnp.get_dataset_num_proc(None) == dnp.AUTO_NUM_PROC_CAP
+
+    monkeypatch.setattr(dnp, "_cgroup_limits", lambda: (2 * 1024**3, None))
+    assert dnp.get_dataset_num_proc(None) is None, "a 2GB container has no room for workers"
+
+    monkeypatch.setattr(dnp, "_cgroup_limits", lambda: (8 * 1024**3, None))
+    assert dnp.get_dataset_num_proc(None) == 4
+
+
+def test_memory_already_spent_in_the_container_is_not_counted_as_free(monkeypatch, dnp):
+    # Otherwise a container that has already spent most of its limit still reads
+    # as having the whole thing available.
+    psutil = pytest.importorskip("psutil")
+    _force_start_method(monkeypatch, dnp, "fork")
+    _force_cpus(monkeypatch, dnp, 64)
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: type("m", (), {"available": 512 * 1024**3})()
+    )
+    monkeypatch.setattr(dnp, "_cgroup_limits", lambda: (32 * 1024**3, None))
+
+    monkeypatch.setattr(dnp, "_cgroup_memory_used", lambda: 0)
+    assert dnp.get_dataset_num_proc(None) == dnp.AUTO_NUM_PROC_CAP
+
+    monkeypatch.setattr(dnp, "_cgroup_memory_used", lambda: 30 * 1024**3)
+    assert dnp.get_dataset_num_proc(None) is None
+
+
+def test_cpu_count_follows_the_affinity_mask(monkeypatch, dnp):
+    # Under taskset or Slurm pinning the host count is not what this process can
+    # run on, and workers would only contend for the cores it does have.
+    psutil = pytest.importorskip("psutil")
+    monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 128)
+    monkeypatch.setattr(dnp, "_cgroup_limits", lambda: (None, None))
+    monkeypatch.setattr(dnp.os, "sched_getaffinity", lambda pid: set(range(4)), raising = False)
+    assert dnp._usable_cpus() == 4
+
+
+def test_cpu_count_follows_a_fractional_cgroup_quota(monkeypatch, dnp):
+    # Kubernetes "cpu: 500m" is cpu.max "50000 100000" = 0.5 cores. Requiring a
+    # whole core would fall back to the host count, so a half-core pod would size
+    # workers from every core on the machine.
+    psutil = pytest.importorskip("psutil")
+    monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 128)
+    monkeypatch.setattr(dnp.os, "sched_getaffinity", lambda pid: set(range(128)), raising = False)
+    monkeypatch.setattr(dnp, "_cgroup_limits", lambda: (None, 0.5))
+    assert dnp._usable_cpus() == 1
+
+
+def test_a_single_usable_cpu_tokenizes_in_process(monkeypatch, dnp):
+    _force_start_method(monkeypatch, dnp, "fork")
+    _force_cpus(monkeypatch, dnp, 1)
+    assert dnp.get_dataset_num_proc(None) is None
+
+
+def test_the_cgroup_readers_never_raise(dnp):
+    # They run on every auto-sizing call, on hosts with no cgroup at all.
+    limit, quota = dnp._cgroup_limits()
+    assert limit is None or isinstance(limit, int)
+    assert quota is None or isinstance(quota, float)
+    used = dnp._cgroup_memory_used()
+    assert used is None or isinstance(used, int)
+
+
+# ---------- the zoo reads the other module ----------
+
+
+def _force_stdlib_start_method(monkeypatch, dnp, method):
+    real = dnp._module_start_method
+    monkeypatch.setattr(
+        dnp,
+        "_module_start_method",
+        lambda name: method if name == "multiprocessing" else real(name),
+    )
+
+
+def test_serial_is_one_when_the_two_modules_disagree(monkeypatch, dnp, capsys):
+    """A None handed to train_on_responses_only is "size it for me" to it.
+
+    Its auto path asks stdlib multiprocessing. Where that says fork while
+    multiprocess says spawn, None is not serial: it picks cpu_count + 4 workers,
+    and datasets then builds that pool on the spawn context -- the #3211 / #3397
+    re-import loop, multiplied.
+    """
+    _force_start_method(monkeypatch, dnp, "spawn")
+    _force_stdlib_start_method(monkeypatch, dnp, "fork")
+
+    trainer = type("t", (), {"train_dataset": _Split(dnp.ZOO_MIN_ROWS_FOR_MULTIPROC * 2)})()
+    assert dnp.resolve_responses_only_num_proc(trainer, None) == 1
+    assert dnp.resolve_responses_only_num_proc(trainer, 16) == 1
+    assert "disagree about the start method" in capsys.readouterr().out
+
+
+def test_serial_stays_none_when_the_zoo_would_refuse_workers_too(monkeypatch, dnp):
+    # macOS: multiprocess forks, stdlib spawns. Its own veto fires, so None is
+    # genuinely in-process there and 1 would be a pool it did not need.
+    _force_start_method(monkeypatch, dnp, "fork")
+    monkeypatch.setattr(dnp.sys, "platform", "darwin")
+    _force_stdlib_start_method(monkeypatch, dnp, "spawn")
+
+    trainer = type("t", (), {"train_dataset": _Split(dnp.ZOO_MIN_ROWS_FOR_MULTIPROC * 2)})()
+    assert dnp.resolve_responses_only_num_proc(trainer, None) is None
+    assert dnp.resolve_responses_only_num_proc(trainer, 16) is None
+
+
+def test_agreeing_modules_are_left_alone(monkeypatch, dnp):
+    _force_start_method(monkeypatch, dnp, "fork")
+    _force_stdlib_start_method(monkeypatch, dnp, "fork")
+    _force_cpus(monkeypatch, dnp, 32)
+    psutil = pytest.importorskip("psutil")
+    monkeypatch.setattr(
+        psutil, "virtual_memory", lambda: type("m", (), {"available": 256 * 1024**3})()
+    )
+    monkeypatch.setattr(dnp, "_cgroup_limits", lambda: (None, None))
+
+    trainer = type("t", (), {"train_dataset": _Split(dnp.ZOO_MIN_ROWS_FOR_MULTIPROC * 2)})()
+    assert dnp.resolve_responses_only_num_proc(trainer, None) == dnp.AUTO_NUM_PROC_CAP
+    assert dnp.resolve_responses_only_num_proc(trainer, 1) == 1
