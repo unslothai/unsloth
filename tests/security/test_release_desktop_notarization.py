@@ -71,6 +71,7 @@ def _run_notarization_step(
     fail_submission: bool = False,
     notary_status: str | None = None,
     artifact_paths: str | None = None,
+    staple_failures: int = 0,
 ):
     """Run the step's shell body against stubbed Apple tooling and report the calls it made."""
     dmg = tmp_path / "Final Desktop.dmg"
@@ -92,12 +93,23 @@ if [ "$1 $2" = "notarytool submit" ]; then
   fi
 elif [ "$1 $2" = "notarytool log" ]; then
   printf 'issue: The signature does not include a secure timestamp.\\n'
+elif [ "$1 $2" = "stapler staple" ]; then
+  count=0
+  if [ -f "$STAPLE_COUNT" ]; then
+    count="$(cat "$STAPLE_COUNT")"
+  fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$STAPLE_COUNT"
+  if [ "$count" -le "$STAPLE_FAILURES" ]; then
+    exit 68
+  fi
 fi
 exit 0
 """,
     )
     for name in ("codesign", "spctl"):
         _write_fake_command(fake_bin / name, f"""printf '{name} %s\\n' "$*" >> "$COMMAND_LOG"\n""")
+    _write_fake_command(fake_bin / "sleep", 'printf \'sleep %s\\n\' "$*" >> "$COMMAND_LOG"\n')
 
     status = notary_status or ("Invalid" if fail_submission else "Accepted")
     env = os.environ.copy()
@@ -111,6 +123,8 @@ exit 0
             ),
             "COMMAND_LOG": str(log),
             "FAIL_SUBMISSION": "true" if fail_submission else "false",
+            "STAPLE_COUNT": str(tmp_path / "staple-count"),
+            "STAPLE_FAILURES": str(staple_failures),
             "SUBMIT_OUTPUT": (
                 json.dumps({"id": "sub-1234", "status": status})
                 if submit_output is None
@@ -176,6 +190,39 @@ def test_final_dmg_is_notarized_stapled_and_gatekeeper_checked(tmp_path):
         "stapler staple",
         "stapler validate",
         "spctl",
+    ]
+
+
+def test_transient_stapler_failure_is_retried(tmp_path):
+    result, commands = _run_notarization_step(_workflow(), tmp_path, staple_failures = 2)
+
+    assert result.returncode == 0, result.stderr
+    assert _command_names(commands) == [
+        "codesign",
+        "notarytool submit",
+        "stapler staple",
+        "sleep",
+        "stapler staple",
+        "sleep",
+        "stapler staple",
+        "stapler validate",
+        "spctl",
+    ]
+    assert [line for line in commands if line.startswith("sleep ")] == ["sleep 15", "sleep 30"]
+
+
+def test_persistent_stapler_failure_stops_before_validation(tmp_path):
+    result, commands = _run_notarization_step(_workflow(), tmp_path, staple_failures = 5)
+
+    assert result.returncode == 68
+    assert _command_names(commands) == [
+        "codesign",
+        "notarytool submit",
+        "stapler staple",
+        "sleep",
+        "stapler staple",
+        "sleep",
+        "stapler staple",
     ]
 
 
