@@ -3925,7 +3925,7 @@ def test_reused_install_backfills_the_ggml_tree(tmp_path):
 
     payload = json.loads(marker.read_text(encoding = "utf-8"))
     assert payload["ggml_tree"] == TREE_A
-    assert payload["release_tag"] == "b10173-mix-2c8b9c1"   # nothing else lost
+    assert payload["release_tag"] == "b10173-mix-2c8b9c1"  # nothing else lost
     assert INSTALL_LLAMA_PREBUILT.installed_llama_ggml_tree(install_dir) == TREE_A
 
 
