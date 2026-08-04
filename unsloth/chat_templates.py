@@ -39,13 +39,52 @@ import re
 from .ollama_template_mappers import OLLAMA_TEMPLATES
 try:
     from unsloth_zoo.dataset_utils import (
-        train_on_responses_only,
+        train_on_responses_only as _zoo_train_on_responses_only,
         standardize_data_formats,
     )
 except ImportError:
     # dataset_utils pulls torch; keep chat_templates importable on torch-free
     # (MLX) hosts, which expose these via the backend-specific wrappers instead.
-    train_on_responses_only = standardize_data_formats = None
+    _zoo_train_on_responses_only = standardize_data_formats = None
+
+if _zoo_train_on_responses_only is None:
+    train_on_responses_only = None
+else:
+    import functools as _functools
+    import inspect as _inspect
+
+    _ZOO_RESPONSES_ONLY_SIGNATURE = _inspect.signature(_zoo_train_on_responses_only)
+
+    @_functools.wraps(_zoo_train_on_responses_only)
+    def train_on_responses_only(*args, **kwargs):
+        # The zoo still sizes its own dataset.map() workers with the uncapped
+        # min(max(cpu_count + 4, 2), 64) heuristic, so on a large host this call
+        # forks dozens of workers that each get a dill-pickled tokenizer copy
+        # (issue #2693). It is a separate package, so bound the count on the way
+        # in. resolve_responses_only_num_proc explains why None cannot be used
+        # to mean "in-process" here and why the row count matters.
+        from .utils.dataset_num_proc import resolve_responses_only_num_proc
+
+        try:
+            bound = _ZOO_RESPONSES_ONLY_SIGNATURE.bind_partial(*args, **kwargs)
+        except TypeError:
+            # Signature drift, or a genuinely bad call. Either way let the zoo
+            # raise its own error rather than masking it with ours.
+            return _zoo_train_on_responses_only(*args, **kwargs)
+
+        # return_function returns the masking closure before the zoo ever reads
+        # num_proc, so there is nothing to bound on that path.
+        if bound.arguments.get("return_function", False):
+            return _zoo_train_on_responses_only(*args, **kwargs)
+
+        arguments = dict(bound.arguments)
+        arguments["num_proc"] = resolve_responses_only_num_proc(
+            arguments.get("trainer"),
+            arguments.get("num_proc"),
+        )
+        trainer = arguments.pop("trainer", None)
+        return _zoo_train_on_responses_only(trainer, **arguments)
+
 standardize_sharegpt = standardize_data_formats
 CHAT_TEMPLATES = {}
 DEFAULT_SYSTEM_MESSAGE = {}

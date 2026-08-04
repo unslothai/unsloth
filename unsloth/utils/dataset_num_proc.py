@@ -43,10 +43,12 @@ __all__ = [
     "MEMORY_BUDGET_FRACTION",
     "NUM_PROC_ENV_VAR",
     "WORKER_MEMORY_BUDGET_GB",
+    "ZOO_MIN_ROWS_FOR_MULTIPROC",
     "get_dataset_num_proc",
     "map_failure_diagnostics",
     "multiprocessing_start_method",
     "reset_warning_state",
+    "resolve_responses_only_num_proc",
 ]
 
 # Environment escape hatch. Set to a positive integer to force that worker count
@@ -78,6 +80,16 @@ WORKER_MEMORY_BUDGET_GB = 1.0
 # has abruptly died during map operation" with the real cause discarded
 # (datasets/utils/py_utils.py compares pool PIDs and never reads exit status).
 MEMORY_BUDGET_FRACTION = 0.5
+
+# Mirrors _MIN_ROWS_FOR_MULTIPROC in unsloth_zoo.dataset_utils.
+# train_on_responses_only. Below this it runs a split in-process, because the
+# workers cost more than they save -- but only when it picked the worker count
+# itself; an explicit count skips that guard. resolve_responses_only_num_proc
+# has to know the threshold to avoid taking the guard away. It cannot be
+# imported: it is a local inside the Zoo function, so the duplication is
+# unavoidable and a canary in tests/utils/test_dataset_num_proc.py fails if the
+# Zoo ever moves it.
+ZOO_MIN_ROWS_FOR_MULTIPROC = 5_000
 
 # Warn at most once per process per distinct reason, so a script that builds
 # several configs does not print the same line repeatedly.
@@ -332,3 +344,81 @@ def map_failure_diagnostics(num_proc: Optional[int]) -> "Iterator[None]":
             f"count with {NUM_PROC_ENV_VAR}=<n>.\n"
             f"  Original error: {exception}"
         ) from exception
+
+
+def _largest_split_rows(trainer) -> Optional[int]:
+    """Rows in the biggest split ``train_on_responses_only`` will map over.
+
+    Returns None when any split's size is unknown, matching the Zoo, which
+    treats an unsized dataset (an ``IterableDataset``) as "do not parallelize".
+    ``eval_dataset`` may be a dict of named splits, so unpack that too.
+    """
+    if trainer is None:
+        return None
+
+    largest = 0
+    measured = False
+    for attribute in ("train_dataset", "eval_dataset"):
+        dataset = getattr(trainer, attribute, None)
+        if dataset is None:
+            continue
+        splits = list(dataset.values()) if isinstance(dataset, dict) else [dataset]
+        for split in splits:
+            if split is None:
+                continue
+            try:
+                rows = len(split)
+            except Exception:
+                # Unsized, or a length that raises. Either way the Zoo would not
+                # have parallelized it, so say so rather than guessing.
+                return None
+            measured = True
+            largest = max(largest, rows)
+    return largest if measured else None
+
+
+def resolve_responses_only_num_proc(trainer, num_proc):
+    """Bound the worker count ``train_on_responses_only`` hands to ``map()``.
+
+    ``unsloth_zoo.dataset_utils.train_on_responses_only`` still computes its own
+    count with the uncapped ``min(max(cpu_count + 4, 2), 64)`` heuristic this
+    module replaces everywhere else, so on a large host it forks dozens of
+    workers that each receive a dill-pickled tokenizer closure. That is the
+    shape behind issue #2693, and this function is what keeps it bounded. The
+    Zoo is a separate package, so the fix has to work from the outside.
+
+    Two properties of the Zoo's API constrain what can be expressed here:
+
+    * **None cannot mean "in-process".** The Zoo reads ``None`` as "size it for
+      me", so handing it the ``None`` that means serial elsewhere in this module
+      would *inflate* the count to the auto value instead of removing it. ``1``
+      is the closest expressible request. It still builds a ``Pool(1)`` on
+      ``datasets`` >= 4.0, which cannot be fixed without changing the Zoo, but
+      one worker is not the out-of-memory failure this guards against.
+    * **An explicit count disables the Zoo's small-split guard**, which it
+      applies per split. A trainer with a large train split and a small eval
+      split would see the eval map pick up workers it would not have had. That
+      is a second or two on the small split against tens of GB on the large one,
+      so it is worth it -- but only when a split is actually big enough for the
+      Zoo to have parallelized in the first place, which is what the row check
+      below establishes.
+    """
+    # Mirror the Zoo's own test exactly (bools are not ints by this rule, and it
+    # treats them as auto), so "explicit" means the same thing on both sides.
+    was_auto = num_proc is None or type(num_proc) is not int
+
+    if not was_auto:
+        # Explicit counts already bypass the Zoo's small-split guard, so
+        # bounding one takes nothing away that the caller had.
+        bounded = get_dataset_num_proc(num_proc)
+        return 1 if bounded is None else bounded
+
+    rows = _largest_split_rows(trainer)
+    if rows is None or rows < ZOO_MIN_ROWS_FOR_MULTIPROC:
+        # The Zoo would have gone in-process anyway. Leave the value untouched
+        # so its guard keeps deciding, rather than substituting a count that
+        # would switch multiprocessing back on for a small split.
+        return num_proc
+
+    bounded = get_dataset_num_proc(None)
+    return 1 if bounded is None else bounded
