@@ -102,6 +102,42 @@ def test_gate_denies_everything_else(path):
     assert pps.is_public_preview_path(path) is False
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        # Paths only main.py's SPA catch-all would answer: the gate must 404
+        # them, or the public port serves index.html (and, via dot segments,
+        # the whole frontend build) to anyone.
+        "/p/",
+        "/p/a/b/c",
+        "/p/demorun/ckpt/nope/deeper",
+        "/p/../index.html",
+        "/p/../assets/app.js",
+        "/p/../api/health",
+        "/p/./demorun",
+        "/p/demorun/..",
+    ],
+)
+def test_gate_denies_spa_catch_all_paths_before_the_app(path):
+    async def _app(scope, receive, send):
+        raise AssertionError("path must not reach the app")
+
+    sent = []
+
+    async def _send(message):
+        sent.append(message)
+
+    async def _receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    gate = pps.PreviewOnlyGate(_app)
+    scope = {"type": "http", "method": "GET", "path": path, "query_string": b"", "headers": []}
+    asyncio.run(gate(scope, _receive, _send))
+
+    assert sent[0]["status"] == 404
+    assert json.loads(sent[1]["body"]) == {"detail": "Not found"}
+
+
 def test_gate_returns_404_without_calling_the_app():
     called = {"hit": False}
 
@@ -197,6 +233,42 @@ def test_listener_serves_only_preview_paths(app):
     # The private surface is unreachable even though it exists on the app.
     assert statuses["/api/health"] == 404
     assert statuses["/"] == 404
+
+
+def test_listener_never_serves_the_spa_catch_all(app):
+    # Mirror main.py's last-resort handler: any unmatched GET serves the SPA.
+    from fastapi.responses import PlainTextResponse
+
+    @app.get("/{full_path:path}")
+    def _spa(full_path: str):
+        return PlainTextResponse(f"SPA-INDEX {full_path}")
+
+    token = preview_token.sign_preview_ref("demorun")
+    statuses = _serve_and_get(
+        app,
+        [f"/p/demorun?k={token}", "/p/", "/p/a/b/c", "/p/x/y/z/w"],
+    )
+    assert statuses[f"/p/demorun?k={token}"] == 200
+    assert statuses["/p/"] == 404
+    assert statuses["/p/a/b/c"] == 404
+    assert statuses["/p/x/y/z/w"] == 404
+
+
+def test_listener_leaves_global_logging_alone(app):
+    # uvicorn.Config would dictConfig() the process-wide loggers by default,
+    # downgrading the primary server's logging when sharing is turned on.
+    import logging
+
+    uv_error = logging.getLogger("uvicorn.error")
+    before = (uv_error.level, list(uv_error.handlers))
+
+    async def _run():
+        listener = pps.PublicPreviewListener()
+        await listener.start(app)
+        await listener.stop()
+
+    asyncio.run(_run())
+    assert (uv_error.level, list(uv_error.handlers)) == before
 
 
 def test_listener_still_requires_a_capability_token(app):

@@ -76,6 +76,34 @@ def is_public_preview_path(path: str) -> bool:
     return path.startswith(_PREVIEW_PATH_PREFIX)
 
 
+def _matches_preview_route(path: str, method: str) -> bool:
+    # The prefix test alone is not enough: the wrapped app ends in a GET
+    # catch-all that serves the SPA for any unmatched path, so /p/<anything>
+    # (or /p/../<file>, which also defeats the prefix) would leak index.html
+    # and the frontend build through the public port. Dot segments never
+    # appear in a legitimate preview URL; everything else must match a route
+    # the preview router itself can answer.
+    if any(segment in (".", "..") for segment in path.split("/")):
+        return False
+
+    from starlette.routing import Match
+
+    from routes.preview import router as preview_router  # lazy: keeps this module import-light
+
+    probe = {
+        "type": "http",
+        "method": method,
+        # The router is mounted under /p; its own routes are unprefixed.
+        "path": path[len(_PREVIEW_PATH_PREFIX) - 1 :],
+        "root_path": "",
+    }
+    for route in preview_router.routes:
+        match, _ = route.matches(probe)
+        if match is not Match.NONE:
+            return True
+    return False
+
+
 async def _send_json(send, status: int, body: bytes) -> None:
     await send(
         {
@@ -142,6 +170,7 @@ class PreviewOnlyGate:
             scope_type != "http"
             or method not in _ALLOWED_METHODS
             or not is_public_preview_path(path)
+            or not _matches_preview_route(path, method)
         ):
             await _send_json(send, 404, _NOT_FOUND_BODY)
             return
@@ -212,6 +241,9 @@ class PublicPreviewListener:
                 server_header = False,
                 # The wrapped app's lifespan belongs to the authenticated server.
                 lifespan = "off",
+                # Config() would otherwise dictConfig() the process-wide uvicorn
+                # loggers, downgrading the primary server's logging to WARNING.
+                log_config = None,
                 # uvicorn trusts loopback proxies by default, which would let a
                 # visitor's X-Forwarded-For pick its rate-limit bucket. Keep the
                 # real peer so utils.client_ip uses CF-Connecting-IP instead.
