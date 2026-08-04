@@ -281,6 +281,8 @@ function Sidebar({
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"
+      aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}
+      inert={(hasPinMode && !pinned && collapseToZero) || undefined}
     >
       {/* This is what handles the sidebar gap on desktop */}
       <div
