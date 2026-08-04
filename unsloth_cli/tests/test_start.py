@@ -5905,3 +5905,24 @@ def test_hub_gguf_files_skips_hub_when_offline(monkeypatch, var):
         lambda request, timeout: pytest.fail("offline mode must not call the hub"),
     )
     assert start._hub_gguf_files("owner/model") is None
+
+
+def test_codex_preflight_defers_bare_names_to_attached_server(monkeypatch):
+    # A bare name may be a directory relative to the attached server's cwd,
+    # invisible to this process; only the auto-start path may canonicalize it.
+    calls = _fake_hub_listing(monkeypatch, {"unsloth/Qwen3-0.6B": []})
+    monkeypatch.setattr(start, "find_studio_server", lambda: "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base: True)
+    start._preflight_codex_gguf("Qwen3-0.6B")
+    assert calls == []
+
+
+def test_codex_gguf_failure_skips_hint_probe_for_non_hub_ids(monkeypatch, capsys):
+    monkeypatch.setattr(
+        start,
+        "_hub_gguf_files",
+        lambda repo: pytest.fail("must not probe the hub for a non-hub id"),
+    )
+    with pytest.raises(typer.Exit):
+        start._fail_codex_needs_gguf("models/Llama/customer-model")
+    assert "Try:" not in capsys.readouterr().err

@@ -1691,7 +1691,7 @@ def _is_auxiliary_gguf(filename: str) -> bool:
 def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
     message = f"Codex needs a GGUF model served by llama-server, but {model_id} is not one."
     guess = f"{model_id}-GGUF"
-    if "gguf" not in model_id.lower() and _hub_gguf_files(guess):
+    if "gguf" not in model_id.lower() and _is_hub_model_id(guess) and _hub_gguf_files(guess):
         message += f" Try: unsloth start codex --model {guess}"
     _fail(message)
 
@@ -1714,7 +1714,11 @@ def _preflight_codex_gguf(model: Optional[str]) -> None:
         return
     repo, _ = _split_repo_variant(model)
     if "/" not in repo and not _is_model_path(repo):
-        # The server canonicalizes owner-less shorthands to unsloth/<name>.
+        # The server canonicalizes owner-less shorthands to unsloth/<name>, but
+        # an attached server may instead resolve a bare name as a directory
+        # relative to its own cwd, which this process cannot see; defer those.
+        if base is not None:
+            return
         try:
             if Path(os.path.expanduser(repo)).exists():
                 return
