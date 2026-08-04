@@ -135,5 +135,51 @@ def test_required_symbols_match_peft_import_list():
             assert hasattr(donor, s), f"{name} stub lacks {s}"
 
 
+# ---- saying so when the stand-in is not equivalent -----------------------
+#
+# The donors are inert by design: an empty pattern, mapping lookups that return
+# None. That is the truth on transformers 4 and on a transformers 5 that never
+# had the symbol. It is NOT the truth for a transformers 5 that has conversions
+# and renamed one, where peft would then skip work it should have done. Every
+# released 5.0.0 through 5.6.0 ships all eleven names, so this is a dev-build
+# path, but it must not be a silent one.
+
+
+def test_a_missing_mapping_function_is_announced():
+    _fake_real_module(CONV, _MODEL_TO_CONVERSION_PATTERN = {"real": 1},
+                      get_checkpoint_conversion_mapping = lambda *a: "real")
+    with pytest.warns(RuntimeWarning, match = "get_model_conversion_mapping"):
+        assert backfill(CONV) == ("get_model_conversion_mapping",)
+
+
+def test_a_missing_conversion_class_is_announced():
+    _fake_real_module(CORE, **{s: object() for s in
+                               FIXES._PEFT_REQUIRED_SYMBOLS[CORE][1:]})
+    with pytest.warns(RuntimeWarning, match = "Concatenate"):
+        backfill(CORE)
+
+
+def test_only_the_pattern_is_quiet():
+    """An empty pattern is what peft starts from anyway, and it is the only
+    name ever seen missing. Warning about it would be noise on every load."""
+    import warnings
+
+    _fake_real_module(CONV, get_checkpoint_conversion_mapping = lambda *a: None,
+                      get_model_conversion_mapping = lambda *a: None)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert backfill(CONV) == ("_MODEL_TO_CONVERSION_PATTERN",)
+
+
+def test_a_complete_module_says_nothing():
+    import warnings
+
+    _fake_real_module(CONV, **{s: object()
+                               for s in FIXES._PEFT_REQUIRED_SYMBOLS[CONV]})
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        assert backfill(CONV) == ()
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))

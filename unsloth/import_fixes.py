@@ -427,7 +427,9 @@ def _backfill_dataclass_defaults(cls):
     time.
 
     Only annotations declared on *this* class are touched, and only when the
-    name has no class attribute yet, so real defaults are never overwritten.
+    name resolves nowhere in the MRO. ``cls.__dict__`` alone is not enough: a
+    subclass that re-annotates an inherited field without assigning to it has
+    a default already, and writing ``None`` here would shadow it.
     ``ClassVar`` / ``InitVar`` are skipped because they are not dataclass
     fields. Annotations may be strings (``from __future__ import
     annotations``), so the check is textual.
@@ -441,7 +443,9 @@ def _backfill_dataclass_defaults(cls):
             (getattr(annotation, "__name__", "") or repr(annotation))
         if "ClassVar" in text or "InitVar" in text:
             continue
-        if name in cls.__dict__:
+        # hasattr, not cls.__dict__: dataclass reads the default with getattr,
+        # so anything the MRO already resolves needs no backfill.
+        if hasattr(cls, name):
             continue
         try:
             setattr(cls, name, None)
@@ -2179,6 +2183,15 @@ def _backfill_missing_peft_symbols(name):
     the whole module would replace working transformers code, so instead take
     the missing names from the stub and leave everything else untouched.
 
+    The donors are inert: the pattern is an empty dict and the mapping
+    lookups return None, which is peft's "nothing registered". That is right
+    for transformers 4, where the conversion path is gated off anyway, and for
+    a transformers 5 that never had the symbol. It would be wrong for a
+    transformers 5 that HAS conversions and merely renamed one of these, since
+    peft would then skip a conversion it should have run. Every released
+    5.0.0 through 5.6.0 ships all eleven names (checked), so this only fires on
+    a dev build, but it says so rather than repairing the import in silence.
+
     Strictly additive and idempotent. Returns the names added."""
     try:
         mod = importlib.import_module(name)
@@ -2198,7 +2211,29 @@ def _backfill_missing_peft_symbols(name):
         except Exception:
             # Frozen or slotted module object; nothing more we can do here.
             pass
+    if added:
+        _warn_peft_symbols_backfilled(name, added)
     return tuple(added)
+
+
+# Only the pattern was ever observed missing, and an empty one is what peft
+# starts from anyway. The rest carry real behaviour upstream.
+_PEFT_INERT_BACKFILL_IS_FINE = frozenset(("_MODEL_TO_CONVERSION_PATTERN",))
+
+
+def _warn_peft_symbols_backfilled(name, added):
+    """Say when an inert stand-in went into a module that is otherwise real."""
+    substantive = [s for s in added if s not in _PEFT_INERT_BACKFILL_IS_FINE]
+    if not substantive:
+        return
+    warnings.warn(
+        f"Unsloth: {name} is missing {', '.join(substantive)}, so peft could "
+        f"not be imported. Added inert stand-ins to get the import through; "
+        f"weight conversions that rely on them will be skipped. Upgrading "
+        f"transformers is the real fix.",
+        RuntimeWarning,
+        stacklevel = 2,
+    )
 
 
 def fix_peft_transformers_weight_conversion_import():

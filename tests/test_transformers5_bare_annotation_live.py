@@ -54,7 +54,14 @@ def _build(tag):
 
 @pytest.fixture
 def unpatched():
-    """Remove the patch so the failure can be observed, then restore it."""
+    """Remove the patch so the failure can be observed, then restore it.
+
+    Install it first: run on its own, this file reaches the fixture before
+    anything has imported unsloth, so there would be nothing to unwrap and the
+    control would skip itself rather than prove the failure is real.
+    """
+    import unsloth  # noqa: F401 - installs the patch we are about to remove
+
     from transformers.configuration_utils import PretrainedConfig
     saved = PretrainedConfig.__dict__.get("__init_subclass__")
     flag = getattr(PretrainedConfig, "_unsloth_patched_init_subclass", False)

@@ -100,7 +100,13 @@ def test_unrecognised_source_is_returned_unchanged():
 
 
 def _installed_trl_sft_source():
-    spec = importlib.util.find_spec("trl.trainer.sft_trainer")
+    try:
+        # find_spec imports the parents, so a missing trl raises here rather
+        # than returning None, and the marker would fail collection instead of
+        # skipping in an environment without the optional dependencies.
+        spec = importlib.util.find_spec("trl.trainer.sft_trainer")
+    except (ImportError, ValueError):
+        return None
     if spec is None or not spec.origin:
         return None
     return Path(spec.origin).read_text(encoding = "utf-8")
