@@ -3483,9 +3483,10 @@ def test_the_plan_reads_pydantic_lora_specs_as_the_load_reads_tuples(fake_runtim
     )
     _stub_hosted_prequant(monkeypatch, cached = False)
 
-    assert backend._dense_quant_prefetch_needed(
-        fam, {"loras": [LoraSpec(id = "adapter", weight = 0)]}
-    ) is False
+    assert (
+        backend._dense_quant_prefetch_needed(fam, {"loras": [LoraSpec(id = "adapter", weight = 0)]})
+        is False
+    )
     assert consulted == []  # declined on the cache verdict, never sized as a bake
 
     # A weighted spec is still a bake, so the normalisation did not disable the candidate path.
