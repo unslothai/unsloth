@@ -58,9 +58,8 @@ DRAFTER_CASES = [
     ("prompt-mtp-test.gguf", False),
     ("smtp/model.gguf", False),
     ("mtp-readme.txt", False),
-    # DSpark drafters (DeepSeek V4 Flash). Their quant tokens are BF16/Q8_0,
-    # so unfiltered they are the two smallest, most pickable entries in a repo
-    # whose real quants are all 87 GB+.
+    # DSpark drafters (DeepSeek V4 Flash). Their BF16/Q8_0 tokens make them the
+    # two smallest, most pickable entries in a repo whose real quants are 87 GB+.
     ("dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf", True),
     ("dspark/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", True),
     ("DSPARK/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", True),
