@@ -407,6 +407,10 @@ export async function fetchWithTimeout(
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1] = {},
   timeoutMs = 15_000,
+  // The Hub transport defers this: marking the origin offline here re-renders
+  // consumers, which disables their feed and aborts the very fallback about to
+  // run. It records the failure itself once that fallback has also failed.
+  options: { recordFailure?: boolean } = {},
 ): Promise<Response> {
   const parentSignal = init.signal;
   const controller = new AbortController();
@@ -438,7 +442,11 @@ export async function fetchWithTimeout(
       throw error;
     }
     const failure = classifyFetchFailure(error, origin, { timedOut, startedAt });
-    if (origin && (timedOut || isNetworkFetchError(error))) {
+    if (
+      origin &&
+      options.recordFailure !== false &&
+      (timedOut || isNetworkFetchError(error))
+    ) {
       markRemoteNetworkOffline(origin, REMOTE_OFFLINE_TTL_MS, failure);
     }
     throw new HubFetchError(failure, { cause: error });

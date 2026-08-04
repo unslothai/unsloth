@@ -426,3 +426,33 @@ test("proxy-served availability is distinguishable from a real reconnect", async
       "a fresh transport has no affinity and would re-attempt the blocked direct request",
   );
 });
+
+test("a pending fallback is not aborted by an offline re-render", async () => {
+  markRemoteNetworkOnline();
+  const backend = captureBackend();
+  const transport = createHubTransport("models", {
+    // The real fetchWithTimeout is told not to record, so nothing marks the
+    // origin offline mid-flight and no consumer disables and aborts us.
+    direct: failWith("network-opaque"),
+    backend: backend.backend,
+  });
+  await transport(HF_URL, {});
+  assert.equal(
+    isHuggingFaceOffline(),
+    false,
+    "marking offline before the fallback returns is what cancelled it",
+  );
+  assert.equal(backend.calls.length, 1);
+});
+
+test("both routes failing does mark the origin offline", async () => {
+  markRemoteNetworkOnline();
+  const transport = createHubTransport("models", {
+    direct: failWith("network-opaque"),
+    backend: async () => {
+      throw new Error("backend unreachable");
+    },
+  });
+  await assert.rejects(transport(HF_URL, {}));
+  assert.equal(isHuggingFaceOffline(), true);
+});

@@ -4,6 +4,7 @@
 import {
   fetchWithTimeout,
   isHubFetchError,
+  markRemoteNetworkOffline,
   setHubProxyServing,
 } from "./network";
 import { HUB_HF_TOKEN_HEADER } from "./hub-token-header";
@@ -182,7 +183,9 @@ export function createHubTransport(
   deps: HubTransportDeps = {},
 ): typeof fetch {
   const direct =
-    deps.direct ?? ((input, init) => fetchWithTimeout(input, init));
+    deps.direct ??
+    ((input, init) =>
+      fetchWithTimeout(input, init, undefined, { recordFailure: false }));
   const backend = deps.backend ?? defaultBackend;
   const proxyFirst = deps.proxyFirst ?? defaultProxyFirst;
   let useProxy = false;
@@ -236,7 +239,17 @@ export function createHubTransport(
       // Aborts and HTTP statuses are excluded above: the browser genuinely
       // could not make the request, but the server may still manage it.
       useProxy = true;
-      return viaBackend(raw, init);
+      try {
+        return await viaBackend(raw, init);
+      } catch (proxyError) {
+        // Both routes are gone, so now it is true. Recording it earlier would
+        // have aborted the attempt above.
+        const origin = hubUrlOf(raw)?.origin;
+        if (origin) {
+          markRemoteNetworkOffline(origin, undefined, error.failure);
+        }
+        throw proxyError;
+      }
     }
   };
 }
