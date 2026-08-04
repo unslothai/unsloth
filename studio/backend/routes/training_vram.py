@@ -104,6 +104,7 @@ def summarize_resident_stt() -> Dict[str, Any]:
     # the other two engines just reported.
     try:
         from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
+
         mtmd = get_mtmd_stt_sidecar()
         if not model:
             model = mtmd.loaded_model
@@ -487,6 +488,7 @@ def free_stt_model_for_training(reason: str) -> List[str]:
     # holds VRAM exactly like the other two and has to be freed as well.
     try:
         from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
+
         mtmd = get_mtmd_stt_sidecar()
         mtmd_model = mtmd.loaded_model
         if mtmd_model or mtmd.is_loading():

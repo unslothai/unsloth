@@ -107,7 +107,6 @@ def is_available() -> bool:
 def _llama_server_child_env(binary: str) -> dict:
     """The chat backend's llama-server environment, for the same binary."""
     from core.inference.llama_cpp import LlamaCppBackend
-
     return LlamaCppBackend._llama_server_env_for_binary(binary)
 
 
