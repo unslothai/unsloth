@@ -48,31 +48,45 @@ SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 
 
 # ---- the premise ---------------------------------------------------------
+#
+# Every check below drives torch.amp.autocast(device_type = "cuda"). On a CPU
+# runner torch warns "CUDA is not available. Disabling" and hands back a no-op,
+# which would make these pass or fail for reasons that have nothing to do with
+# the code under test. Claiming the device is present is what lets them run
+# anywhere; nothing here needs a GPU, only torch's own dispatch decisions.
+
+class _pretend_cuda:
+    """torch.cuda answering as a card without bfloat16, or with it."""
+
+    def __init__(self, has_bf16):
+        self.has_bf16 = has_bf16
+
+    def __enter__(self):
+        self._saved = (torch.cuda.is_available, torch.cuda.is_bf16_supported)
+        torch.cuda.is_available = lambda *args, **kwargs: True
+        torch.cuda.is_bf16_supported = lambda *args, **kwargs: self.has_bf16
+        return self
+
+    def __exit__(self, *exc):
+        torch.cuda.is_available, torch.cuda.is_bf16_supported = self._saved
+
 
 def test_bfloat16_autocast_raises_without_hardware_support():
     """Guards everything below: if torch ever downgraded this to a warning,
     the bug would be a silent precision change instead of a crash, and these
     tests would be asserting the wrong thing."""
-    real = torch.cuda.is_bf16_supported
-    torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
-    try:
+    with _pretend_cuda(has_bf16 = False):
         with pytest.raises(RuntimeError, match = "does not support bfloat16"):
             with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16):
                 pass
-    finally:
-        torch.cuda.is_bf16_supported = real
 
 
 def test_disabling_autocast_skips_that_check():
-    real = torch.cuda.is_bf16_supported
-    torch.cuda.is_bf16_supported = lambda *args, **kwargs: False
-    try:
+    with _pretend_cuda(has_bf16 = False):
         with torch.amp.autocast(
             device_type = "cuda", dtype = torch.bfloat16, enabled = False
         ):
             pass
-    finally:
-        torch.cuda.is_bf16_supported = real
 
 
 # ---- _prepare_inputs, which is injected as source ------------------------
@@ -111,20 +125,16 @@ def test_the_injected_snippet_only_autocasts_when_asked(
     if precision is not None:
         env["ACCELERATE_MIXED_PRECISION"] = precision
 
-    real = torch.cuda.is_bf16_supported
-    torch.cuda.is_bf16_supported = lambda *args, **kwargs: has_bf16
-    try:
-        namespace = {
-            "torch": torch, "os": type(sys)("os"), "nullcontext": nullcontext,
-            "seen": [],
-        }
-        namespace["os"].environ = env
+    namespace = {
+        "torch": torch, "os": type(sys)("os"), "nullcontext": nullcontext,
+        "seen": [],
+    }
+    namespace["os"].environ = env
+    with _pretend_cuda(has_bf16 = has_bf16):
         exec(
             _prepare_inputs_snippet() + "\n    seen.append(torch.is_autocast_enabled('cuda'))\n",
             namespace,
         )
-    finally:
-        torch.cuda.is_bf16_supported = real
     assert namespace["seen"] == [expect_enabled]
 
 
@@ -160,6 +170,36 @@ def test_force_float32_still_autocasts_in_float16():
         if "_autocast_dtype" not in block:
             continue
         assert "self._autocast_enabled = True" in block, block
+
+
+def test_forced_float32_still_autocasts_in_the_injected_header():
+    """UNSLOTH_FORCE_FLOAT32 sets 'no' as well, but wants fp16 autocast: the
+    dtype expression already forces float16 for it and the two other consumers
+    set _autocast_enabled True. Reading 'no' alone here would have left
+    Gemma3 and gpt-oss generation in full float32."""
+    from contextlib import nullcontext
+
+    namespace = {
+        "torch": torch, "os": type(sys)("os"), "nullcontext": nullcontext, "seen": [],
+    }
+    namespace["os"].environ = {
+        "ACCELERATE_MIXED_PRECISION": "no", "UNSLOTH_FORCE_FLOAT32": "1",
+    }
+    with _pretend_cuda(has_bf16 = False):
+        exec(
+            _prepare_inputs_snippet()
+            + "\n    seen.append(torch.get_autocast_dtype('cuda') if torch.is_autocast_enabled('cuda') else None)\n",
+            namespace,
+        )
+    assert namespace["seen"] == [torch.float16]
+
+
+def test_chunk_sizing_follows_the_flag_not_the_cached_dtype():
+    """The cached dtype stays bfloat16 when autocast is off, so sizing off it
+    alone estimates half the memory the float32 forward actually uses."""
+    line = next(l for l in SRC.splitlines() if "dtype_bytes = 16" in l)
+    block = SRC[SRC.index(line):SRC.index(line) + 400]
+    assert "_autocast_enabled" in block, block
 
 
 if __name__ == "__main__":

@@ -897,7 +897,10 @@ def grpo_trainer__prepare_inputs(function_name, function):
         "torch.amp.autocast(device_type = 'cuda', "
         # 'no' is a real value, set by full finetuning and by an explicit float32
         # load. Falling through to bfloat16 raises on the T4/V100 those land on.
-        "enabled = os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') != 'no', "
+        # UNSLOTH_FORCE_FLOAT32 also sets 'no' but still wants fp16 autocast here,
+        # which is what the dtype expression below already does for it.
+        "enabled = (os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') != 'no' "
+        "or os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1'), "
         "dtype = ((torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16) "
         "if not torch.is_autocast_enabled('cuda') else nullcontext())"
         "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '0' else torch.float16):",
@@ -1481,7 +1484,12 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             lm_head = self.model.get_output_embeddings().weight
 
-            dtype_bytes = 16 if self._autocast_dtype in [torch.float16, torch.bfloat16] else 32
+            # The cached dtype says nothing when autocast is off: the forward
+            # runs in float32 and sizing it as 16-bit halves the estimate.
+            dtype_bytes = 16 if (
+                getattr(self, "_autocast_enabled", True)
+                and self._autocast_dtype in [torch.float16, torch.bfloat16]
+            ) else 32
             total_rows = input_ids.shape[0]
             seq_len = input_ids.shape[1]
             hidden_dim = lm_head.shape[1]
