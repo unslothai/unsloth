@@ -367,6 +367,22 @@ class TestMissingSharedLibrary:
         assert "libgomp1" in msg
         assert "package manager" in msg
 
+    def test_a_relative_dt_needed_is_an_exact_path_too(self):
+        # glibc's rule is `strchr (name, '/') == NULL`: a slash anywhere means
+        # no search happened, so subdir/libfoo.so names one exact file just as
+        # an absolute path does. Reproduced on glibc 2.39 with a SONAME-less .so
+        # linked by relative path; it takes both to get here, so this is about
+        # matching the loader's rule rather than a case users hit.
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "subdir/libvendor.so: cannot open shared object file: "
+            "No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "subdir/libvendor.so" in msg
+        assert "package manager" not in msg
+        assert "that exact location" in msg
+
     def test_a_windows_absolute_path_is_recognised_too(self):
         out = (
             "llama-server: error while loading shared libraries: "

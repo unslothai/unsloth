@@ -7295,11 +7295,14 @@ class LlamaCppBackend:
             return True
 
     @staticmethod
-    def _is_absolute_library_path(lib: str) -> bool:
-        # os.path.isabs is platform-bound, and this classifies a string produced
-        # on whatever host ran llama-server, so match both spellings.
+    def _is_library_path(lib: str) -> bool:
+        # glibc's own discriminator is `strchr (name, '/') == NULL`
+        # (elf/dl-load.c): a slash anywhere means the name is a pathname and no
+        # search happens, so a relative DT_NEEDED is as exact as an absolute
+        # one. os.sep would be platform-bound and this string comes from
+        # whatever host ran llama-server, so match both separators.
         lib = (lib or "").strip()
-        return bool(re.match(r"^(?:/|\\\\|[A-Za-z]:[\\/])", lib))
+        return "/" in lib or "\\" in lib
 
     @staticmethod
     def _missing_library_message(lib: str, binary: Optional[str] = None) -> str:
@@ -7318,11 +7321,11 @@ class LlamaCppBackend:
                 "binary is a custom install Unsloth does not manage, so reinstall "
                 "or rebuild that llama.cpp, then load the model again."
             )
-        # A bare soname means the loader searched the standard directories, which
-        # is what a package populates. A full path means one exact file is absent
-        # (an absolute DT_NEEDED, e.g. a vendor .so under /opt), and no package
-        # will put a file there, so do not send the user to a package manager.
-        if LlamaCppBackend._is_absolute_library_path(lib):
+        # A bare soname means the loader searched the standard directories,
+        # which is what a package populates. Any name carrying a separator is a
+        # pathname the loader opened directly (e.g. a vendor .so under /opt), so
+        # one exact file is absent and no package will put it there.
+        if LlamaCppBackend._is_library_path(lib):
             _remedy = (
                 "run `unsloth studio update`"
                 if LlamaCppBackend._is_unsloth_managed_binary(binary)
