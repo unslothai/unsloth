@@ -36,8 +36,8 @@
 #   - unsloth `huggingfacenotorch` extras (the canonical install path
 #     for fine-tuning users; pulls transformers / peft / accelerate /
 #     trl / datasets / diffusers / sentence-transformers / etc.)
-#   - all six Studio backend requirements files
-#   - Studio frontend (npm) and Tauri shell (cargo)
+#   - all six Unsloth backend requirements files
+#   - Unsloth frontend (npm) and Tauri shell (cargo)
 # Each Python step builds a filtered dep list from pyproject.toml +
 # requirements/*.txt before auditing. We do NOT install any of these
 # -- pip-audit resolves through PyPI metadata, scan_packages.py
@@ -218,7 +218,7 @@ jobs:
         #       on the runner). A comment line is left in place so the
         #       skipped specs are obvious in the artifact.
         # The `huggingface` extra is `huggingfacenotorch` plus torch /
-        # torchvision / triton, deliberately skipped: Studio backend
+        # torchvision / triton, deliberately skipped: Unsloth backend
         # already pins a torch and the +cu* / +cpu local-version tags
         # trip up the PyPI resolver in `-r` mode.
         run: |
@@ -253,7 +253,7 @@ jobs:
         # `-r requirements.txt` resolves the requirements through pip's
         # dependency resolver against PyPI metadata and audits the
         # resolved tree without ever executing setup.py / install
-        # hooks. Way faster than installing the full Studio runtime
+        # hooks. Way faster than installing the full Unsloth runtime
         # and -- critically -- safer: an attacker who has compromised
         # a transitive dep cannot run code in this job.
         #
@@ -326,9 +326,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─────────────────────────────────────────────────────────────
-      # npm: Studio frontend
+      # npm: Unsloth frontend
       # ─────────────────────────────────────────────────────────────
-      - name: npm audit (Studio frontend)
+      - name: npm audit (Unsloth frontend)
         # `npm audit` resolves the lockfile through the npmjs.com
         # advisory DB. `--audit-level=high` filters the noise floor
         # to only HIGH and CRITICAL. We do NOT pass --omit=dev: a
@@ -342,7 +342,7 @@ jobs:
           # Always also write the full JSON for grep-ability.
           npm audit --json > ../../logs-npm-audit.json || true
           {
-            echo "## npm audit (Studio frontend)"
+            echo "## npm audit (Unsloth frontend)"
             echo
             echo '```'
             tail -200 ../../logs-npm-audit.txt
@@ -350,9 +350,9 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       # ─────────────────────────────────────────────────────────────
-      # cargo: Studio Tauri shell
+      # cargo: Unsloth Tauri shell
       # ─────────────────────────────────────────────────────────────
-      - name: cargo audit (Studio Tauri)
+      - name: cargo audit (Unsloth Tauri)
         # `--deny warnings` would make the job fail on any advisory.
         # Keep non-blocking initially; drop continue-on-error after
         # the baseline closes.
@@ -362,7 +362,7 @@ jobs:
           set +e
           cargo audit | tee ../../logs-cargo-audit.txt
           {
-            echo "## cargo audit (Studio Tauri)"
+            echo "## cargo audit (Unsloth Tauri)"
             echo
             echo '```'
             tail -200 ../../logs-cargo-audit.txt
@@ -559,7 +559,7 @@ jobs:
 
       # ─────────────────────────────────────────────────────────────
       # CycloneDX SBOM. Lets downstream consumers audit what's
-      # actually shipped in unsloth wheels and the Studio backend
+      # actually shipped in unsloth wheels and the Unsloth backend
       # runtime. Generates one JSON file per requirements input plus
       # a combined SBOM keyed off pyproject.toml; uploads as a build
       # artifact (and a future step can attest it via SLSA).
@@ -740,7 +740,7 @@ jobs:
     # `--with-deps` makes the scan transitive: every package the
     # declared set resolves to gets fetched and pattern-scanned, not
     # just the top-level pins. Resolving the full transitive closure
-    # of the unsloth + Studio dep tree downloads several hundred
+    # of the unsloth + Unsloth dep tree downloads several hundred
     # archives, hence the longer timeout.
     #
     # Sharded across runners for wall-clock parallelism. Each shard
@@ -749,7 +749,7 @@ jobs:
     # composition tries to balance load:
     #   - hf-stack: pyproject extras + no-torch-runtime
     #               (~150 archives, transformers/peft/accelerate/...)
-    #   - studio:   FastAPI/Studio backend + overrides + extras-no-deps
+    #   - studio:   FastAPI/Unsloth backend + overrides + extras-no-deps
     #               (~150 archives, smaller scientific stack)
     #   - extras:   the heavy openai-whisper / scikit-learn / librosa
     #               stack (~250 archives, dominant cost)
@@ -964,7 +964,7 @@ jobs:
     # documented at scripts/scan_npm_packages.py top-of-file. The
     # script is stdlib-only so adding it does not increase the
     # transitive supply-chain surface.
-    name: npm scan-packages (Studio frontend tarballs)
+    name: npm scan-packages (Unsloth frontend tarballs)
     runs-on: ubuntu-latest
     timeout-minutes: 30
     needs: []
@@ -1173,7 +1173,7 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install Studio frontend deps (--ignore-scripts)
+      - name: Install Unsloth frontend deps (--ignore-scripts)
         # `npm audit signatures` requires node_modules to be populated.
         # `--ignore-scripts` is mandatory: this is exactly the lever the
         # new-install-script gate below protects against, and we must

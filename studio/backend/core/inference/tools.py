@@ -5,6 +5,7 @@
 (DuckDuckGo), Python code execution, and terminal commands."""
 
 import ast
+import codecs
 import fnmatch
 import http.client
 import os
@@ -13,14 +14,17 @@ import signal
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
 import asyncio
+import queue
 import random
 import re
 import shlex
+import shutil
 import ssl
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import urllib.parse
 import urllib.request
 
@@ -45,6 +49,10 @@ from loggers import get_logger
 logger = get_logger(__name__)
 
 _EXEC_TIMEOUT = 300  # 5 minutes
+_RAG_SEARCH_SLOT = threading.BoundedSemaphore(1)
+# Candidate multiplier when a website policy will filter the results after the search.
+_POLICY_OVERFETCH = 4
+_DISABLE_DNS_PINNING_ENV = "UNSLOTH_STUDIO_DISABLE_DNS_PINNING"
 
 # Splits the UI source-map from the result; loops strip it (like __IMAGES__).
 RAG_SOURCES_SENTINEL = "\n__RAG_SOURCES__:"
@@ -73,7 +81,21 @@ if sys.platform != "win32":
 # Raster-image allowlist for sandbox file serving.
 # No .svg (XSS via embedded scripts), no .html, no .pdf.
 _IMAGE_EXTS = frozenset({".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"})
-_MAX_OUTPUT_CHARS = 8000  # truncate long output
+
+
+def _env_int(name: str, default: int) -> int:
+    """Read an int env override; fall back to ``default`` on unset/garbage."""
+    try:
+        value = int(os.environ.get(name, "") or default)
+    except (TypeError, ValueError):
+        return default
+    return value if value > 0 else default
+
+
+# Model-visible cap on python/terminal tool results (protects the context
+# window). The live UI stream is capped separately and higher, so _truncate's
+# notice stays mode-neutral (see tool_stream_exec.TOOL_OUTPUT_STREAM_MAX_CHARS).
+_MAX_OUTPUT_CHARS = _env_int("UNSLOTH_TOOL_RESULT_MAX_CHARS", 16000)
 _BLOCKED_COMMANDS_COMMON = frozenset(
     {
         "rm",
@@ -103,11 +125,16 @@ _BLOCKED_COMMANDS_COMMON = frozenset(
         "netcat",
         "socat",
         "ssh",
+        "slogin",
         "scp",
         "sftp",
         "rsync",
         "eval",
         "source",
+        # `.` is the POSIX synonym for `source`: `. ./script.sh` runs the file's
+        # contents in the current shell, past a classifier that never sees them.
+        # Matched at command position only, so `find . -type f` / `cd .` are fine.
+        ".",
     }
 )
 _BLOCKED_COMMANDS_WIN = frozenset(
@@ -129,7 +156,9 @@ _BLOCKED_COMMANDS = (
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
 # Bash keywords starting a new command position (then $cmd, do $cmd, etc.).
-_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif"})
+# `if`/`while`/`until` are followed by a CONDITION the shell executes, so a
+# command right after them is at command position (if rm -rf x; then :; fi).
+_SHELL_KEYWORDS_AS_SEP = frozenset({"then", "do", "else", "elif", "if", "while", "until", "!"})
 # Wrappers whose next non-flag argument is the command Bash will exec.
 _COMMAND_PREFIXES = frozenset(
     {
@@ -145,12 +174,49 @@ _COMMAND_PREFIXES = frozenset(
         "timeout",
         "ionice",
         "chroot",
+        "setpriv",
         "sudo",
         "doas",
         "su",
         "xargs",
     }
 )
+# Wrapper options whose VALUE is a separate token (env -u NAME, nice -n 5).
+# Unconsumed, the value is mistaken for the wrapped command: `env -u FOO rm -rf x`
+# reads as command `FOO`. Shared by the auto gate and the blocklist walk.
+_WRAPPER_VALUE_FLAGS_BY_CMD = {
+    # env -i/--ignore-environment is VALUELESS; only -u/--unset takes a name.
+    "env": frozenset({"-u", "--unset"}),
+    "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
+    "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
+    "nice": frozenset({"-n", "--adjustment"}),
+    "ionice": frozenset({"-c", "--class", "-n", "--classdata", "-p", "--pid"}),
+    "xargs": frozenset(
+        {"-I", "-L", "-P", "-d", "--delimiter", "-a", "--arg-file", "-n", "-s", "-E"}
+    ),
+    "chroot": frozenset({"--userspec", "--groups"}),
+    # setpriv <options> <program>: only the value-taking options consume a token.
+    "setpriv": frozenset(
+        {
+            "--reuid",
+            "--regid",
+            "--groups",
+            "--inh-caps",
+            "--ambient-caps",
+            "--bounding-set",
+            "--securebits",
+            "--pdeathsig",
+            "--selinux-label",
+            "--apparmor-profile",
+            "--landlock-access",
+            "--landlock-rule",
+        }
+    ),
+    # exec -a NAME runs cmd under NAME, so NAME is a value, not the command.
+    "exec": frozenset({"-a"}),
+    "setsid": frozenset(),
+    "nohup": frozenset(),
+}
 _ASSIGNMENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
 # Env-assignment prefixes that change command lookup or code loading, so
 # `LD_PRELOAD=x ls` / `PATH=. ls` run attacker code before the read-only
@@ -179,16 +245,1091 @@ _AUTO_UNSAFE_ENV_ASSIGN = frozenset(
 )
 
 
-def _env_assignment_is_unsafe(name: str) -> bool:
+# A search-path entry that can shadow a real binary or module: absolute, home or
+# a parent escape. A relative entry (`PYTHONPATH=src`) points inside the session
+# workdir, the agent's own directory, and is the common spelling in ordinary work.
+_PATH_ENTRY_ESCAPES_RE = re.compile(r"(?:^|:)\s*(?:/|~|\$|[A-Za-z]:[\\/]|\.\.)")
+
+
+def _env_assignment_is_unsafe(name: str, value: str = "") -> bool:
     """True if a NAME=value prefix affects command lookup/loading."""
-    return (
-        name in _AUTO_UNSAFE_ENV_ASSIGN
-        or name.startswith(("LD_", "DYLD_"))
-        or name.endswith("PATH")
+    if name in _AUTO_UNSAFE_ENV_ASSIGN or name.startswith(("LD_", "DYLD_")):
+        return True
+    if name == "PATH":
+        # Every value counts: PATH picks the BINARY, and a relative entry is the
+        # sharpest form of that (`PATH=. ls` runs ./ls).
+        return True
+    # The other search paths (PYTHONPATH, NODE_PATH, ...) only shadow a real
+    # module when the entry escapes the workdir.
+    return name.endswith("PATH") and bool(_PATH_ENTRY_ESCAPES_RE.search(value))
+
+
+# Container CLIs start or reach into a container (docker run -v /:/host), but
+# their read subcommands are ordinary inspection and must not interrupt. An
+# unrecognised subcommand still asks, so the list can only be too small.
+_CONTAINER_CLIS = frozenset({"docker", "podman", "nerdctl", "ctr", "crictl", "lxc", "kubectl"})
+_CONTAINER_READ_SUBCOMMANDS = frozenset(
+    {
+        "ps",
+        "images",
+        "logs",
+        "inspect",
+        "version",
+        "info",
+        "stats",
+        "top",
+        "port",
+        "diff",
+        "history",
+        "search",
+        "events",
+        "ls",
+        "list",
+        "get",
+        "describe",
+        "df",
+        "help",
+        "explain",
+        "api-resources",
+        "api-versions",
+    }
+)
+# Windows `if exist FILE cmd` / `if defined VAR cmd` put an operand between the
+# keyword and the command, so the command word is two tokens along.
+# awk runs its program text, which can shell out through the system() builtin
+# or by piping to a shell ("cmd" | "sh"). Screening the program keeps ordinary
+# field work (awk '{print $1}') running while the escape hatches ask.
+_AWK_COMMANDS = frozenset({"awk", "gawk", "mawk", "nawk", "busybox-awk"})
+_AWK_SHELL_ESCAPE_RE = re.compile(
+    r"\bsystem\s*\(|\|\s*&?\s*[\"']\s*(?:/\S*/)?(?:sh|bash|zsh|ksh|dash|cmd)\b|"
+    r"\bENVIRON\s*\[|\bprintf\s*\|"
+)
+# sed shells out like awk: GNU's `e` runs the rest of its line through popen and
+# the `s///e` flag runs the pattern space, hiding a command inside a text-editing
+# argument. Screened so ordinary editing (sed 's/a/b/g') stays unprompted.
+_SED_COMMANDS = frozenset({"sed", "gsed", "ssed"})
+# `s///` flags that may precede `e`. `w` is absent: it takes the rest of the
+# line as a filename, so the e in `s/a/b/w report.txt` is part of that name.
+_SED_SUBST_FLAGS = frozenset("0123456789gpiImMe")
+# sed short options that consume text, so no later letter in the cluster is a
+# flag: -e/-f take a script and -l a length (attached or next token), while -i's
+# backup suffix is ATTACHED ONLY (`-ifoo` otherwise reads as an attached `-f oo`).
+_SED_VALUE_FLAGS = "efl"
+_SED_ATTACHED_VALUE_FLAGS = "i"
+# A backslash in a sed text argument escapes the next character, newline
+# included, so it is stripped before the payload is read as a shell command.
+_SED_TEXT_ESCAPE_RE = re.compile(r"\\([\s\S])")
+# A plain parameter reference in a sed program (`sed "$p" f`). Bare `$NAME` /
+# `${NAME}` only: anything with an operator is a transformation this scan does
+# not model, so the program is judged UNREAD (see _sed_program_unresolved).
+_PROGRAM_VAR_RE = re.compile(r"\$\{(\w+)\}|\$(\w+)")
+# An unbraced expansion bash performs: a name (`$p`), a positional (`$1`) or a
+# special parameter ($@ $* $# $? $- $$ $!). Any other `$` is literal (verified:
+# `printf '%s' "$ d"` prints `$ d`), which keeps sed's `$` address out of scope.
+_UNBRACED_PARAM_RE = re.compile(r"\$(?:[A-Za-z_]\w*|[0-9]+|[@*#?$!-])")
+# Arithmetic evaluates to an INTEGER, so it spells no sed command. A digit in its
+# place keeps `sed -n "1,$((n + 1))p" f` silent while still exposing the `e` in
+# `sed "$((c+1))e rm -f victim"`, which runs rm.
+_ARITHMETIC_VALUE = "0"
+# The FLOOR every invocation gets for its argument walk, which keeps a line
+# padded with `-exec sed` words linear. A flat cap is padding an attacker
+# controls: `sed -n ...x128 '1e rm -f victim'` pushed the script past 128.
+_MAX_SED_ARG_SCAN = 128
+# Argument tokens the sed screen may walk across ONE command line, split over the
+# sed words on it, so a lone sed reads its whole list and the work stays linear.
+_SED_SCAN_BUDGET = 200_000
+# Wrappers may sit between `find -exec` and the command it runs; bounded so a
+# line padded with `-exec env -exec env ...` cannot make the scan quadratic.
+_MAX_EXEC_PREFIX_SCAN = 32
+# First window tried when balancing a `$(...)`, quadrupled until the span closes
+# (_substitution_span), so a line of many short substitutions stays linear.
+_SUBSTITUTION_SPAN_STEP = 64
+# Quote state (_shell_quote_states) of a backslash and the character behind it.
+# Distinct from the surrounding quoting because bash expands neither: the `$(` in
+# `sed "s/\$(CC)/gcc/" Makefile` opens no command substitution.
+_ESCAPED_CHAR_STATE = "\\"
+_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
+_FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+# A find action is COMPLETE at its terminator: words after it are find's next
+# predicate, not CMD's. Reading past it took a following `-exec grep -e safe {} +`
+# for sed's script. `\;` is listed too, for the non-posix lexer.
+_FIND_EXEC_TERMINATORS = frozenset({"+", ";", "\\;"})
+# The `;` spellings END the action wherever they stand: a quoted `';'` and an
+# escaped `\;` reach find as the same word. `+` is absent because find reads it
+# as the batched terminator only directly after a `{}` (see _exec_scan_layout).
+_FIND_EXEC_SEMICOLONS = frozenset({";", "\\;"})
+# ...but ONLY inside such an action. shlex strips quoting, so a sed FILE operand
+# spelled `';'` or `'+'` arrives as the same token as a real separator, and
+# ending the scan there dropped the `-e` script behind it: verified that
+# `sed -n ';' -e '1e rm -f victim' input` really runs rm. Outside an action only
+# an UNQUOTED `;` ends the invocation.
+
+# The characters a separator token can be built from, masked while the command
+# is lexed a second time so a quoted one is told apart from a real one.
+_SEPARATOR_CHARS = frozenset("".join(_SHELL_SEPARATORS))
+# Placeholder for a quoted separator character during that second lex. Any
+# non-whitespace, non-quote, non-punctuation_chars character serves, so the
+# masked text splits into the same words and the token lists line up.
+_QUOTED_SEPARATOR_MARK = "\x00"
+# The characters bash expands a word against the filesystem for, and the
+# placeholder standing in for a QUOTED one during the same second lex.
+_GLOB_CHARS = frozenset("*?[")
+_QUOTED_GLOB_MARK = "\x01"
+# The characters a redirection is built from, and the placeholder standing in
+# for a QUOTED one. A redirection is something the shell PERFORMS, so a quoted
+# spelling is an ordinary word the command receives instead.
+_REDIRECT_CHARS = frozenset("<>")
+_QUOTED_REDIRECT_MARK = "\x02"
+# The characters that open an expansion, and the placeholder for one the quoting
+# made literal. Double quoting is NOT literal here (`sed "$p" f` expands), so
+# only single-quoted and escaped states count (see _unquoted_expansion_indexes).
+_EXPANSION_CHARS = frozenset("$`")
+_QUOTED_EXPANSION_MARK = "\x04"
+# The characters punctuation_chars glues into one token. A run like `|&` matches
+# no _SHELL_SEPARATORS entry, so the sed screen read past the end of the command
+# (`sed '1e rm -f victim' input |& grep -e safe` runs rm). `{`/`}` are absent so
+# find's `{}` stays an ordinary word.
+_OPERATOR_TOKEN_CHARS = frozenset(";&|()`")
+# One shell redirection, as the lexer hands it over. The target may be glued on
+# (`2>/dev/null`) or be the next token (`> out.txt`); `&` splits off under
+# punctuation_chars, so `2>&1` arrives as three.
+_REDIRECTION_RE = re.compile(r"^(?:\d+|&)?(?:<<<|<<-|<<|<>|>>|>\||<&|>&|<|>)")
+
+
+def _looks_like_separator(token: str) -> bool:
+    """Whether a lexed token is a shell operator rather than a word a command
+    receives. A known separator, or a RUN of punctuation_chars characters, which
+    is how bash builds `|&`, `;;` and `;&`."""
+    if token in _SHELL_SEPARATORS:
+        return True
+    return bool(token) and not (set(token) - _OPERATOR_TOKEN_CHARS)
+
+
+def _redirection_span(
+    tokens: "list[str]",
+    index: int,
+    quoted: "frozenset[int]" = frozenset(),
+    quoted_redirects: "frozenset[int]" = frozenset(),
+) -> "tuple[int, ...]":
+    """The token indexes one shell redirection at ``index`` occupies, or ``()``.
+
+    The shell REMOVES a redirection before the command sees its arguments, so
+    leaving the words in place made it the command's first operand: verified that
+    `sed </dev/null '1e rm -f victim' input` and `> out.txt rm -rf victim` both
+    run for real. A detached target is claimed only when it is an ordinary word.
+    """
+    if tokens[index] == "&" and index + 1 < len(tokens) and tokens[index + 1][:1] in "<>":
+        # `&>out.txt` splits in two, and reading the `&` as a background
+        # operator ended the command early. Only a redirection may follow, so
+        # `echo hi & rm -rf victim` keeps its separator.
+        tail = _redirection_span(tokens, index + 1, quoted, quoted_redirects)
+        return (index, *tail) if tail else ()
+    if index in quoted_redirects:
+        # The quoting makes it a WORD the command receives: `sed -f '>prog' -e
+        # '1e rm -f victim' input` takes `>prog` as the script FILE and really
+        # runs the payload, while removing it as a redirection left -e unread.
+        return ()
+    match = _REDIRECTION_RE.match(tokens[index])
+    if not match:
+        return ()
+    if tokens[index][match.end() :]:
+        return (index,)  # target glued on: `2>/dev/null`, `>out.txt`
+    span = [index]
+    nxt = index + 1
+    if nxt >= len(tokens):
+        return tuple(span)
+    if tokens[nxt] in {"&", "|"}:
+        # `2>&1` and `>|out.txt` each arrive as three tokens, and the middle one
+        # was read as the end of the command (verified: both run the payload).
+        span.append(nxt)
+        nxt += 1
+    if nxt < len(tokens) and not (_looks_like_separator(tokens[nxt]) and nxt not in quoted):
+        # The shell hands the target to open(), not to sed: `sed > --sandbox
+        # '1e touch MARKER' input` and its `> ';'` twin both really run it. Only
+        # a BARE operator is refused, since that line is malformed anyway.
+        span.append(nxt)
+    return tuple(span)
+
+
+# `[` and `[[` are the test builtins, not patterns.
+_TEST_BUILTINS = frozenset({"[", "[[", "]", "]]"})
+
+
+def _is_unresolved_command_glob(base: str) -> bool:
+    """Whether a command word is a glob bash expands to some other name
+    (`/bin/r[m]` runs rm). A pattern with no literal character (a bare `*`) is
+    not one, and the test builtins are not patterns."""
+    if base in _TEST_BUILTINS or not any(ch in base for ch in "*?["):
+        return False
+    return any(ch.isalnum() for ch in base)
+
+
+def _blocked_matching_glob(base: str) -> "set[str]":
+    """Blocked command names a command-position glob can expand to."""
+    if not _is_unresolved_command_glob(base):
+        return set()
+    return {name for name in _BLOCKED_COMMANDS if fnmatch.fnmatchcase(name, base)}
+
+
+def _is_sed_command(base: str) -> bool:
+    """Whether a command word runs sed: an exact name, or a command-position GLOB
+    that could expand to one, since bash resolves `/usr/bin/s[e]d` to sed after
+    this scan. Fail closed: a non-sed program holds no `e` and yields no
+    payload."""
+    if base in _SED_COMMANDS:
+        return True
+    return _is_unresolved_command_glob(base) and any(
+        fnmatch.fnmatchcase(name, base) for name in _SED_COMMANDS
     )
 
 
-_FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
+def _sed_short_flag(token: str) -> "tuple[str, str] | None":
+    """The first value-taking short option in a sed flag cluster, as
+    ``(letter, text glued after it)``, or ``None``. The scan stops there because
+    the rest of the token is that option's value: `-ifoo` is -i with backup
+    suffix "foo", not an attached -f."""
+    if not token.startswith("-") or token.startswith("--"):
+        return None
+    for index, ch in enumerate(token[1:]):
+        if ch in _SED_VALUE_FLAGS or ch in _SED_ATTACHED_VALUE_FLAGS:
+            return ch, token[index + 2 :]
+    return None
+
+
+def _sed_long_flag(name: str) -> str:
+    """Which value-taking sed long option ``--name`` is: "e" for --expression,
+    "f" for --file, "l" for --line-length, "" otherwise. getopt allows unambiguous
+    abbreviations, so --e/--ex are --expression and --fi upwards is --file (--f is
+    ambiguous with --follow-symlinks). --in-place's suffix is always attached."""
+    if len(name) <= 2:
+        return ""
+    if "--expression".startswith(name):
+        return "e"
+    if len(name) > 3 and "--file".startswith(name):
+        return "f"
+    if "--line-length".startswith(name):
+        return "l"
+    return ""
+
+
+def _sed_disables_exec(name: str) -> bool:
+    """Whether the long option ``name`` puts sed in a mode that REFUSES to shell
+    out. --sandbox disables e/r/w and --posix drops the GNU extensions `e` belongs
+    to, so a script COMPILED under either aborts the run (exit 1) and its payload
+    is inert. WHICH scripts that covers depends on where the flag sits: see
+    _sed_invocation. Only unambiguous abbreviations count (`--s` is ambiguous and
+    sed exits on it), and an `=` spelling is rejected by sed too.
+    """
+    if len(name) >= 4 and "--sandbox".startswith(name):
+        return True
+    return len(name) >= 3 and "--posix".startswith(name)
+
+
+def _sed_scan_limit(sed_words: int) -> int:
+    """How many argument tokens ONE sed invocation may walk looking for its
+    script. A lone sed gets the whole budget, so padding cannot push the script
+    out of view; a line packed with sed words falls back to the floor, which
+    keeps the walk linear (`-exec sed ` repeated to 16KB: 39s against 3s)."""
+    if sed_words <= 1:
+        return _SED_SCAN_BUDGET
+    return max(_MAX_SED_ARG_SCAN, _SED_SCAN_BUDGET // sed_words)
+
+
+# An -f operand naming a STREAM rather than a file on disk, so the script arrives
+# on stdin and "no program found" is ignorance rather than safety:
+# `sed -f - input <<EOF ... 1e touch MARKER ... EOF` really runs the payload.
+_SED_STREAM_PROGRAM_SOURCES = frozenset({"-", "/dev/stdin", "/dev/fd/0"})
+
+
+def _sed_program_source_is_stream(value: str) -> bool:
+    """Whether an `-f` operand reads the script from a stream this scan cannot
+    follow. A named file (`sed -f prog.sed input`) stays out: it is documented
+    residue rather than something to fail on. A process substitution counts, since
+    `sed -f <(printf 'e rm -f victim') input` really runs rm; the lexer splits
+    that operand at the `(`, which is why the bare `<`/`>` are here too."""
+    if value in _SED_STREAM_PROGRAM_SOURCES or value.startswith("/dev/fd/"):
+        return True
+    return value[:1] in "<>"
+
+
+def _end_program_source(programs: "list[str]", exec_disabled: bool) -> None:
+    """Close the script source the pieces collected so far belong to, by appending
+    the blank line the join needs.
+
+    A source BOUNDARY ends any line continuation open across it, so a trailing
+    `a\\` appends a blank line instead of swallowing the next source's first line.
+    Verified on GNU sed 4.9: `sed -e '1a\\' -f /dev/null -e 'e touch MARKER' input`
+    creates the file while the same line without the -f does not.
+    """
+    if programs and programs[-1] and not exec_disabled:
+        programs.append("")
+
+
+def _sed_invocation(
+    tokens: "list[str]",
+    start: int,
+    limit: int = _MAX_SED_ARG_SCAN,
+    stops: "frozenset[int]" = frozenset(),
+    skips: "frozenset[int]" = frozenset(),
+    globs: "frozenset[int]" = frozenset(),
+    expandable: "frozenset[int]" = frozenset(),
+) -> "tuple[list[str], bool, bool]":
+    """The sed invocation whose command word sits at ``start``, as
+    ``(program alternatives, unread, live_program)``.
+
+    sed joins its -e values with newlines, so `sed -e '1a\\' -e 'e rm -rf x'`
+    appends a line instead of executing it and the pieces are judged together.
+    With no -e or -f the first positional is the script.
+
+    --sandbox / --posix abort at COMPILE time, and sed compiles each -e as it is
+    parsed while the positional waits for the whole option list, so the flag
+    suppresses exactly the scripts written after it (verified on GNU sed 4.9:
+    `sed -e '1e touch MARKER' --sandbox input` still runs). One written after the
+    POSITIONAL suppresses only while getopt permutes, and POSIXLY_CORRECT turns
+    that off from outside the command text, so it is not read as suppressing.
+    `--` is honoured: a `--sandbox` behind it is an input FILENAME.
+
+    ``unread`` says the program is at best a PREFIX of the real one, so an empty
+    result proves nothing and callers fail closed on it.
+
+    ``stops`` and ``skips`` are token INDEXES, not text: where the invocation
+    ends (a separator the shell performs, or the `+` / `;` closing this sed's
+    find action) and which words are a redirection the shell removes before sed
+    runs. Both distinctions need the original quoting, which the text has lost.
+    A skip yields to a pending -e/-f/-l value, since that word is sed's.
+    """
+    programs: "list[str]" = []
+    first_positional = ""
+    positional_disabled = False  # a mode flag preceded the positional script
+    positional_globbed = False  # ...and bash rewrites it before sed is started
+    positional_live = False  # ...and it holds an expansion the shell performs
+    # A program flag AHEAD of the positional word makes that word an input FILE.
+    # One BEHIND it does so only while getopt permutes, and POSIXLY_CORRECT turns
+    # permutation off from outside the command text, so the positional is still
+    # read as a script then (verified on GNU sed 4.9 that
+    # `POSIXLY_CORRECT=1 sed '1e touch MARKER' input -f /dev/null` creates it).
+    program_flag_before_positional = False
+    # A mode flag has been seen, so every script COMPILED after it is inert.
+    # Monotone by construction, so the live pieces are always a PREFIX rather
+    # than a hole in the middle of one `-e '1a\' -e 'e rm -rf x'` program.
+    exec_disabled = False
+    end_of_options = False  # `--` seen: no later word is an option
+    value_pending = ""  # "e", "f" or "l": the next token is that flag's value
+    hit_separator = False  # the invocation ended before the window ran out
+    stream_program = False  # an -f names a stream, so the script is not in argv
+    glob_program = False  # the script word is one bash rewrites before sed sees it
+    live_program = False  # ...and it holds an expansion the shell really performs
+    window = tokens[start + 1 : start + 1 + limit]
+    for offset, token in enumerate(window):
+        if start + 1 + offset in stops:
+            hit_separator = True
+            break
+        if start + 1 + offset in skips:
+            # A redirection: the shell removed it before sed ran. Checked AHEAD
+            # of the pending value, because one standing where that value goes is
+            # removed too and the value is the word BEHIND it (`sed -n -e >out
+            # '1e touch MARKER' input` really runs the payload).
+            continue
+        if value_pending:
+            # The value is consumed either way; only a script sed still compiles
+            # goes into the program.
+            if value_pending == "e" and not exec_disabled:
+                programs.append(token)
+                glob_program = glob_program or start + 1 + offset in globs
+                live_program = live_program or start + 1 + offset in expandable
+            elif value_pending == "f" and _sed_program_source_is_stream(token):
+                stream_program = True
+            value_pending = ""
+            continue
+        if not end_of_options and token == "--":
+            end_of_options = True
+            continue
+        if not end_of_options and token.startswith("--"):
+            name, sep, value = token.partition("=")
+            if not sep and _sed_disables_exec(name):
+                exec_disabled = True
+                continue
+            letter = _sed_long_flag(name)
+            if not letter:
+                continue
+            # -l only matters so its operand is not mistaken for the script.
+            if letter in "ef" and not first_positional:
+                program_flag_before_positional = True
+            if letter == "f":
+                _end_program_source(programs, exec_disabled)
+                stream_program = stream_program or (
+                    bool(sep) and _sed_program_source_is_stream(value)
+                )
+            if not sep:
+                value_pending = letter
+            elif letter == "e" and not exec_disabled:
+                programs.append(value)
+                glob_program = glob_program or start + 1 + offset in globs
+                live_program = live_program or start + 1 + offset in expandable
+            continue
+        if not end_of_options and token.startswith("-"):
+            # A cluster glues the value on (-ne'1p') or takes the next (-ne '1p').
+            found = _sed_short_flag(token)
+            if found is None:
+                continue
+            letter, attached = found
+            if letter in _SED_ATTACHED_VALUE_FLAGS:
+                # -i's suffix is the rest of the token; it never takes the next
+                # one, so the script is still the positional ahead.
+                continue
+            if letter in "ef" and not first_positional:
+                program_flag_before_positional = True
+            if letter == "f":
+                _end_program_source(programs, exec_disabled)
+                stream_program = stream_program or (
+                    bool(attached) and _sed_program_source_is_stream(attached)
+                )
+            if not attached:
+                value_pending = letter
+            elif letter == "e" and not exec_disabled:
+                programs.append(attached)
+                glob_program = glob_program or start + 1 + offset in globs
+                live_program = live_program or start + 1 + offset in expandable
+            continue
+        if not first_positional:
+            first_positional = token
+            positional_disabled = exec_disabled
+            positional_globbed = start + 1 + offset in globs
+            positional_live = start + 1 + offset in expandable
+    joined = ["\n".join(programs)] if programs else []
+    if first_positional and not positional_disabled and not program_flag_before_positional:
+        glob_program = glob_program or positional_globbed
+        live_program = live_program or positional_live
+        if not programs:
+            joined = [first_positional]
+        else:
+            # A program option stands BEHIND the positional, so which of the two
+            # sed compiles depends on permutation. They are ALTERNATIVES, not one
+            # program: joining them let an unterminated command in one swallow
+            # the other, and `POSIXLY_CORRECT=1 sed '1e touch MARKER' input -e
+            # safe` read as safe although it really runs the payload.
+            joined.append(first_positional)
+    # Complete when a separator closed the invocation, or when the window
+    # already covered every remaining argument.
+    scan_overflowed = not hit_separator and len(tokens) > start + 1 + limit
+    # A still-pending -f value means the invocation ended before its operand was
+    # read at all -- a process substitution ends it at the `(` -- so the program
+    # is unknown rather than absent.
+    joined = [piece.replace(_ANSI_C_NEWLINE_MARK, "\n") for piece in joined]
+    unread = scan_overflowed or stream_program or glob_program or value_pending == "f"
+    return joined, unread, live_program
+
+
+def _sed_text(text: str) -> str:
+    """Unescape one sed text argument the way read_text does: every backslash
+    drops away and the character behind it stays, so `e touch MARK\\ER` runs
+    MARKER."""
+    return _SED_TEXT_ESCAPE_RE.sub(r"\1", text).strip()
+
+
+def _sed_exec_payloads(program: str) -> "list[str]":
+    """Shell payloads a sed program executes, in order.
+
+    `e COMMAND` runs COMMAND. A bare `e` and the `s///e` flag run the pattern
+    space, which only exists at run time, so they yield an EMPTY payload:
+    executes, but nothing to screen. An empty list means it only edits text.
+
+    The walk skips every region where an `e` is data (regexes, replacements,
+    a/i/c text, r/w filenames, b/t labels, comments), keeping `:e;N;$!be;...`,
+    `sed 's/e/E/g'` and `sed 's/a/b/w report.txt'` out of the results.
+    """
+    payloads: "list[str]" = []
+    n = len(program)
+
+    def _end_of_line(pos: int) -> int:
+        end = program.find("\n", pos)
+        return n if end < 0 else end
+
+    def _end_of_text(pos: int) -> int:
+        # read_text, which collects `e`/`a`/`i`/`c` text: a backslash escapes
+        # the next character, so a line ending in one carries the text onto the
+        # NEXT line instead of stopping there.
+        while pos < n and program[pos] != "\n":
+            pos += 2 if program[pos] == "\\" else 1
+        return min(pos, n)
+
+    def _skip_bracket(pos: int) -> int:
+        # A bracket expression, where the delimiter is data (`s/[/]/x/` really
+        # substitutes a slash). A leading `]` is literal; [:class:] nests.
+        pos += 1
+        if pos < n and program[pos] == "^":
+            pos += 1
+        if pos < n and program[pos] == "]":
+            pos += 1
+        while pos < n and program[pos] != "]":
+            if program[pos] == "[" and pos + 1 < n and program[pos + 1] in ":.=":
+                end = program.find(program[pos + 1] + "]", pos + 2)
+                pos = n if end < 0 else end + 2
+                continue
+            pos += 1
+        return pos + 1
+
+    def _skip_section(pos: int, delim: str, brackets: bool) -> int:
+        # One delimited section of a regex / s/// / y///, through its closing
+        # delimiter. Brackets apply to regex halves only; elsewhere `[` is data.
+        while pos < n and program[pos] != delim:
+            if program[pos] == "\\":
+                pos += 2
+            elif brackets and program[pos] == "[":
+                pos = _skip_bracket(pos)
+            else:
+                pos += 1
+        return pos + 1
+
+    def _skip_address(pos: int) -> int:
+        # A line number (GNU's first~step included), `$`, /regex/ or \%regex%,
+        # each allowing I/M modifiers.
+        if pos < n and program[pos] == "$":
+            return pos + 1
+        if pos < n and program[pos].isdigit():
+            while pos < n and (program[pos].isdigit() or program[pos] == "~"):
+                pos += 1
+            return pos
+        if pos < n and program[pos] == "/":
+            pos = _skip_section(pos + 1, "/", brackets = True)
+        elif pos < n and program[pos] == "\\" and pos + 1 < n:
+            pos = _skip_section(pos + 2, program[pos + 1], brackets = True)
+        else:
+            return pos
+        while pos < n and program[pos] in "IM":
+            pos += 1
+        return pos
+
+    i = 0
+    while i < n:
+        if program[i] in " \t\n;{}":
+            # Separators and block braces carry no command.
+            i += 1
+            continue
+        if program[i] == "#":
+            i = _end_of_line(i)
+            continue
+        i = _skip_address(i)
+        if i < n and program[i] == ",":
+            i += 1
+            while i < n and program[i] in " \t":
+                i += 1
+            if i < n and program[i] in "+~":
+                # `addr,+N` / `addr,~N` end the range relative to the first match.
+                i += 1
+                while i < n and program[i].isdigit():
+                    i += 1
+            else:
+                i = _skip_address(i)
+        while i < n and program[i] in " \t!":
+            # `1!e cmd`: negation, the command word is still ahead.
+            i += 1
+        if i >= n:
+            break
+        cmd, i = program[i], i + 1
+        if cmd == "e":
+            # The payload ends at an UNESCAPED newline, so a `;` inside it is
+            # shell text and `e\` + newline hands the next line to the same
+            # shell (`1e\` / `rm -f victim` really runs rm).
+            end = _end_of_text(i)
+            payloads.append(_sed_text(program[i:end]))
+            i = end
+        elif cmd in "sy" and i < n:
+            delim, i = program[i], i + 1
+            i = _skip_section(i, delim, brackets = cmd == "s")
+            i = _skip_section(i, delim, brackets = False)
+            if cmd == "s":
+                executes = False
+                while i < n and program[i] in _SED_SUBST_FLAGS:
+                    executes = executes or program[i] == "e"
+                    i += 1
+                if executes:
+                    payloads.append("")
+                if i < n and program[i] == "w":
+                    i = _end_of_line(i)
+        elif cmd in "aic":
+            # Literal text; the `a\` + newline form continues on a trailing "\".
+            i = _end_of_text(i)
+        elif cmd in "rRwW":
+            i = _end_of_line(i)  # the filename runs to the end of the line
+        elif cmd in "btT:v":
+            # A label (or `v` version) ends at the next separator.
+            while i < n and program[i] not in ";\n}":
+                i += 1
+    return payloads
+
+
+def _assignment_bindings(
+    tokens: "list[str]", quoted: "frozenset[int]" = frozenset()
+) -> "list[tuple[int, str, str | None]]":
+    """Every `NAME=value` word as ``(token index, name, value)``, in the order
+    the shell performs the assignments.
+
+    An ordered LIST, not a map, because bash uses the binding performed most
+    recently BEFORE the reference: first-wins let
+    `p='1,3p'; p='1e rm -f victim'; sed "$p" input` read as `1,3p` while rm
+    really runs. The index rides along so _bindings_before can drop the
+    assignments that only happen after the sed.
+
+    A non-literal value is recorded as ``None``, which CLEARS the name rather
+    than leaving a stale earlier one standing, since resolving to that would
+    invent a program rather than read one.
+
+    Only a word that really changes SHELL state counts. An assignment-shaped
+    ARGUMENT (`echo p='1,3p'`), one in a subshell and one used as a command's
+    environment prefix all leave `$p` alone, and recording them overwrote a
+    payload with a value bash never assigned; all three run rm for real. A
+    conditional one after `&&` may or may not run, so it is UNRESOLVED instead.
+    """
+    bindings: "list[tuple[int, str, str | None]]" = []
+    pending: "list[tuple[int, str, str | None]]" = []  # the run at this position
+    at_command = True  # an assignment here is a prefix, not an argument
+    depth = 0  # inside ( ... ), where an assignment does not escape
+    conditional = False  # after && / || : the assignment may never run
+    function_body = 0  # inside f() { ... }, which bash has not run yet
+    saw_parens = False  # the `()` of a function definition just went past
+    for index, token in enumerate(tokens):
+        if token == "{" and saw_parens:
+            function_body += 1
+            saw_parens = False
+            continue
+        if token == "}" and function_body:
+            function_body -= 1
+            at_command = True
+            continue
+        if _looks_like_separator(token) and index not in quoted:
+            # Nothing followed the run, so it changed the shell's own state.
+            bindings.extend(pending)
+            pending = []
+            saw_parens = set(token) <= {"(", ")"} and ")" in token
+            depth = max(0, depth + token.count("(") - token.count(")"))
+            conditional = "&&" in token or "||" in token
+            at_command = True
+            continue
+        if function_body and _ASSIGNMENT_RE.match(token):
+            # A body bash has not run yet, and may never run: `p='1e rm -f
+            # victim'; f() { p='1,3p'; }; sed "$p" input` really runs rm.
+            # Clearing the name is right whether or not f is ever called.
+            name = token.partition("=")[0]
+            pending.append((index, name, None))
+            continue
+        if at_command and _ASSIGNMENT_RE.match(token):
+            if depth == 0:
+                name, _, value = token.partition("=")
+                literal = None if "$" in value or "`" in value else value
+                pending.append((index, name, None if conditional else literal))
+            continue
+        if at_command:
+            # A command word: the run in front of it is that command's
+            # ENVIRONMENT, which bash hands the CHILD and not itself.
+            pending = []
+            at_command = False
+    bindings.extend(pending)
+    return bindings
+
+
+def _bindings_before(
+    bindings: "list[tuple[int, str, str | None]]", cursor: int, limit: int, env: "dict[str, str]"
+) -> int:
+    """Fold into ``env`` every binding at a token index below ``limit``, starting
+    at ``cursor``, and return the cursor to pass in next time. Later bindings
+    overwrite earlier ones, so ``env`` holds what the shell would have in scope
+    at token ``limit``. Seds are visited left to right, so the cursor only moves
+    forward and the whole line costs ONE walk of the binding list."""
+    while cursor < len(bindings) and bindings[cursor][0] < limit:
+        _index, name, value = bindings[cursor]
+        if value is None:
+            env.pop(name, None)
+        else:
+            env[name] = value
+        cursor += 1
+    return cursor
+
+
+def _resolve_program_vars(program: str, env: "dict[str, str]") -> str:
+    """``program`` with each `$NAME` / `${NAME}` replaced by its assigned value.
+
+    A sed script held in a variable (`p='# note<newline>e CMD'; sed "$p" f`) is
+    only a program once the reference is resolved, and only in a pass that KEEPS
+    the quoted newline: the blanket newline pass turns the value into one long
+    sed comment. An unassigned name is left as written, so nothing is invented.
+    """
+    return _PROGRAM_VAR_RE.sub(lambda m: env.get(m.group(1) or m.group(2), m.group(0)), program)
+
+
+def _sed_program_variants(program: str, env: "dict[str, str]") -> "list[str]":
+    """The sed program as written, plus the variable-resolved and
+    arithmetic-collapsed forms. All are screened, because any spelling can be the
+    one holding the `e`: the raw text in `sed "e $file"`, the resolved one in
+    `sed "$p"`, the collapsed one in `sed "$((c+1))e rm -f victim"`."""
+    if "$" not in program:
+        return [program]
+    variants = [program]
+    resolved = _resolve_program_vars(program, env)
+    if resolved != program:
+        variants.append(resolved)
+    for form in list(variants):
+        collapsed = _collapse_shell_arithmetic(form)
+        if collapsed not in variants:
+            variants.append(collapsed)
+    return variants
+
+
+def _expansion_key(text: str) -> str:
+    """One expansion, keyed so the raw-command spelling and the post-lex one
+    compare equal. Only the escaping differs between them, so it is dropped."""
+    return text.replace("\\", "")
+
+
+def _sed_program_unresolved(variants: "list[str]", live: "set[str]") -> bool:
+    """Whether NO spelling of the sed program is one this scan actually READ,
+    because every one still holds an expansion bash would rewrite.
+
+    The program is knowable only when each expansion reduces to text:
+    `p='1,3p'; sed "$p" f` does, `sed "${p#x }" f` does not. The parameter
+    transformations (`${p%y}`, `${p/a/b}`, `${p:-z}`, `${p^^}`, `${!p}`, ...) are
+    not modelled one at a time; an unread program is UNKNOWN and the auto gate
+    asks, which makes every unmodelled form safe by default rather than a way
+    past (`p='x e rm -f victim'; sed "${p#x }" input` really runs rm).
+
+    Only expansions the shell RUNS count, and only where they land in the
+    PROGRAM, so one the program merely quotes (`sed 's/$(x)/y/' f`), an escaped
+    one (`sed "s/\\$(CC)/gcc/" Makefile`) and one in a FILE operand
+    (`sed -n '1,3p' $(ls)`) are all left running.
+    """
+    if not live:
+        return False
+    # shlex removes the escaping as it splits, so the SAME expansion is spelled
+    # one way in the raw command and another in the token, and an exact
+    # comparison read a generated program as one already read. Keying both sides
+    # without backslashes can only make a spelling MATCH, so it fails closed.
+    keys = {_expansion_key(found) for found in live}
+    return not any(
+        all(_expansion_key(found) not in keys for found in _shell_expansions(variant, quoted = False))
+        for variant in variants
+    )
+
+
+def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) -> "frozenset[int]":
+    """Indexes of ``tokens`` that only LOOK like a shell separator because the
+    quoting has been stripped off them.
+
+    shlex hands back the identical token `;` for a real separator and for a
+    quoted `';'` a command receives as data, so `sed -n ';' -e '1e rm -f victim'
+    input` looked like a sed that had already ended and the `-e` script behind
+    the `;` was never read (verified on GNU sed 4.9: it runs rm).
+
+    Told apart by masking every separator character the shell QUOTES and lexing
+    a second time. Only those characters change, and each inside the word it
+    already belonged to, so the two token lists line up; the alignment is
+    asserted by the length check, and anything unexpected reports nothing.
+    """
+    if not any(_looks_like_separator(token) for token in tokens):
+        # Nothing to tell apart: skip the quote walk and the second lex.
+        return frozenset()
+    if _QUOTED_SEPARATOR_MARK in text:
+        return frozenset()  # the mark is not ours to read back
+    states = _shell_quote_states(text)
+    masked = "".join(
+        _QUOTED_SEPARATOR_MARK if char in _SEPARATOR_CHARS and states[index] else char
+        for index, char in enumerate(text)
+    )
+    if _QUOTED_SEPARATOR_MARK not in masked:
+        return frozenset()  # every separator character was bare
+    try:
+        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
+        lexer.whitespace_split = True
+        marked = list(lexer)
+    except ValueError:
+        return frozenset()
+    if len(marked) != len(tokens):
+        return frozenset()
+    return frozenset(
+        index
+        for index, token in enumerate(marked)
+        if _QUOTED_SEPARATOR_MARK in token and _looks_like_separator(tokens[index])
+    )
+
+
+def _masked_tokens(
+    text: str, tokens: "list[str]", punctuation: str, chars: "frozenset[str]", mark: str
+) -> "list[str] | None":
+    """``tokens`` re-lexed with every one of ``chars`` the QUOTING made literal
+    replaced by ``mark``, or ``None`` when the two lexes do not line up and
+    nothing can be said. Each replacement stays inside the word it already
+    belonged to, so the second lex yields the same words; the alignment is
+    asserted by the length check rather than assumed."""
+    if not any(char in chars for char in text) or mark in text:
+        return None
+    states = _shell_quote_states(text)
+    masked = "".join(
+        mark if char in chars and states[index] else char for index, char in enumerate(text)
+    )
+    try:
+        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
+        lexer.whitespace_split = True
+        marked = list(lexer)
+    except ValueError:
+        return None
+    return marked if len(marked) == len(tokens) else None
+
+
+def _quoted_redirection_indexes(
+    text: str, tokens: "list[str]", punctuation: str
+) -> "frozenset[int]":
+    """Indexes of ``tokens`` that only LOOK like a redirection because the
+    quoting has been stripped off them.
+
+    A QUOTED redirection is a word the shell hands the command: `sed -f '>prog'
+    -e '1e rm -f victim' input` takes `>prog` as the script FILE and really runs
+    the payload. Decided on the operator the token OPENS with, so `2>'/dev/null'`
+    keeps its bare `2>` and stays a redirection while `'>prog'` does not.
+    """
+    marked = _masked_tokens(text, tokens, punctuation, _REDIRECT_CHARS, _QUOTED_REDIRECT_MARK)
+    if marked is None:
+        return frozenset()
+    return frozenset(
+        index
+        for index, token in enumerate(tokens)
+        if _REDIRECTION_RE.match(token) and not _REDIRECTION_RE.match(marked[index])
+    )
+
+
+def _unquoted_expansion_indexes(
+    text: str, tokens: "list[str]", punctuation: str
+) -> "frozenset[int]":
+    """Indexes of ``tokens`` holding an expansion the shell really PERFORMS.
+
+    Live expansions are collected over the whole command, so matching a sed
+    program against them by text alone attributed another command's expansion to
+    a program that merely spells the same thing, and the read-only
+    `echo "$p"; sed 's/$p/x/' f` asked. This supplies the missing occurrence.
+
+    Double quoting is deliberately not literal: `sed "$p" f` expands and must
+    stay in. Only single, ANSI-C and backslash quoting make these characters
+    data.
+    """
+    if not any(char in _EXPANSION_CHARS for char in text) or _QUOTED_EXPANSION_MARK in text:
+        return frozenset()
+    states = _shell_quote_states(text)
+    masked = "".join(
+        _QUOTED_EXPANSION_MARK
+        if char in _EXPANSION_CHARS and states[index] and states[index] != '"'
+        else char
+        for index, char in enumerate(text)
+    )
+    try:
+        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
+        lexer.whitespace_split = True
+        marked = list(lexer)
+    except ValueError:
+        return frozenset()
+    if len(marked) != len(tokens):
+        return frozenset()
+    return frozenset(
+        index
+        for index, token in enumerate(marked)
+        if any(char in _EXPANSION_CHARS for char in token)
+    )
+
+
+def _unquoted_glob_indexes(text: str, tokens: "list[str]", punctuation: str) -> "frozenset[int]":
+    """Indexes of ``tokens`` holding a pathname-expansion metacharacter the shell
+    will EXPAND, rather than one the quoting made literal.
+
+    bash expands after this scan, so a word it rewrites is not the word the
+    command receives: in a directory holding a file named `1e rm -f victim`,
+    `sed *` hands sed that filename as its script and really runs rm. The quoted
+    spellings a sed program uses must stay readable (`sed 's/a*/b/' f` expands
+    nothing). Told apart by masking and re-lexing, as in
+    _quoted_separator_indexes.
+    """
+    if not any(char in _GLOB_CHARS for char in text) or _QUOTED_GLOB_MARK in text:
+        return frozenset()
+    states = _shell_quote_states(text)
+    masked = "".join(
+        _QUOTED_GLOB_MARK if char in _GLOB_CHARS and states[index] else char
+        for index, char in enumerate(text)
+    )
+    try:
+        lexer = shlex.shlex(masked, posix = True, punctuation_chars = punctuation)
+        lexer.whitespace_split = True
+        marked = list(lexer)
+    except ValueError:
+        return frozenset()
+    if len(marked) != len(tokens):
+        return frozenset()
+    return frozenset(
+        index for index, token in enumerate(marked) if any(char in _GLOB_CHARS for char in token)
+    )
+
+
+def _xargs_replacement(tokens: "list[str]", start: int, end: int) -> str:
+    """The placeholder the xargs word at ``start`` substitutes into the command
+    words behind it, or "" when it replaces nothing. GNU xargs takes it attached
+    (`-I{}`), as the next word (`-I {}`) or after an `=` (`--replace={}`); `-i`
+    and a bare `--replace` default to `{}`."""
+    index = start + 1
+    while index < end:
+        token = tokens[index]
+        name, sep, value = token.partition("=")
+        if name in {"--replace", "--replace-str"}:
+            return value if sep and value else "{}"
+        if token.startswith("-I"):
+            if len(token) > 2:
+                return token[2:]
+            return tokens[index + 1] if index + 1 < end else "{}"
+        if token.startswith("-i") and len(token.rstrip()) >= 2:
+            return token[2:] or "{}"
+        index += 1
+    return ""
+
+
+def _xargs_hides_sed_program(tokens: "list[str]", xargs: int, sed: int, program: str) -> bool:
+    """Whether an xargs is the one deciding what program its sed runs.
+
+    xargs appends the words it reads on stdin, and with -I substitutes them into
+    the words already there, so the program need not be in the command TEXT at
+    all. Both of these run rm for real, one holding no program and the other only
+    the placeholder, so the sed fails closed:
+        printf '1e rm -f victim\\0input\\0' | xargs -0 sed
+        printf '1e rm -f victim\\n' | xargs -I{} sed '{}' input
+    The ordinary idioms are untouched, since their program is right there and the
+    placeholder stands where the FILE goes:
+        find . -name '*.py' | xargs sed -i 's/a/b/g'
+        find . -name '*.py' | xargs -I{} sed -i 's/a/b/' {}
+    """
+    if not program.strip():
+        return True
+    placeholder = _xargs_replacement(tokens, xargs, sed)
+    return bool(placeholder) and placeholder in program
+
+
+def _sed_program_is_a_placeholder(program: str) -> bool:
+    """Whether the whole sed program is a token another tool REWRITES before sed
+    starts. find replaces `{}` with the pathname it found, so with a file named
+    `1e rm -f victim` the line
+    `printf 'input' | find '1e rm -f victim' -exec xargs sed {} +` really runs rm
+    while `{}` read as an already-known program. A `{}` among the FILE operands
+    (`find . -exec sed -i 's/a/b/' {} +`) is not the program and is untouched."""
+    return program.strip() == "{}"
+
+
+def _forwards_exec_flags(base: str) -> bool:
+    """Whether a command word runs a tool whose `-exec` / `-x` options hand the
+    words behind them to a child command. Exact names, plus any command-position
+    GLOB that could expand to one, so `/usr/bin/fin[d] . -exec rm {} \\;` is not
+    read as an ordinary word."""
+    if base in _EXEC_FLAG_FORWARDING_COMMANDS:
+        return True
+    return _is_unresolved_command_glob(base) and any(
+        fnmatch.fnmatchcase(name, base) for name in _EXEC_FLAG_FORWARDING_COMMANDS
+    )
+
+
+def _exec_scan_layout(
+    tokens: "list[str]",
+    quoted: "frozenset[int]",
+    quoted_redirects: "frozenset[int]" = frozenset(),
+) -> "tuple[frozenset[int], frozenset[int], frozenset[int]]":
+    """``(exec-flag indexes, invocation-stop indexes, redirection indexes)`` for
+    one token list, in a single left-to-right pass.
+
+    An exec-flag index is a `find`/`fd` option whose following words are a
+    COMMAND that tool runs. Recognised only while a find/fd word the shell
+    really RUNS is in scope: those letters belong to too many other tools, so
+    `grep -x rm file` and the grep `-x` in `find . -exec grep -x rm {} \\;` must
+    not have rm hard-blocked.
+
+    A stop index ends a sed invocation: a separator the shell PERFORMS, or the
+    `;` / `{} +` closing an open exec action. Outside an action those are
+    ordinary operands, which keeps `sed -n ';' -e '1e rm -f victim' input`
+    readable while a real terminator still stops the scan.
+
+    A redirection index is a word the shell consumes and never hands to the
+    command. Taken FIRST, so the `&` in `sed 2>&1 '1e rm -f victim' input` reads
+    as part of that redirection rather than as the end of the invocation.
+    """
+    exec_flags: "set[int]" = set()
+    stops: "set[int]" = set()
+    redirects: "set[int]" = set()
+    forwarding = False  # a find/fd command word is in scope
+    in_action = False  # inside its `-exec CMD ...` action
+    at_command = True  # the next ordinary word is one the shell RUNS
+    wrapper = ""  # a command prefix (env/timeout/sudo) awaiting that word
+    skip_operand = False  # ...and its option's value stands in between
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        span = _redirection_span(tokens, index, quoted, quoted_redirects)
+        if span:
+            redirects.update(span)
+            index = span[-1] + 1
+            continue
+        here = index
+        index += 1
+        if _looks_like_separator(token) and here not in quoted:
+            stops.add(here)
+            forwarding = in_action = False
+            at_command = True
+            wrapper = ""
+            skip_operand = False
+            continue
+        if in_action and (
+            token in _FIND_EXEC_SEMICOLONS or (token == "+" and here and tokens[here - 1] == "{}")
+        ):
+            # find ends the batched form at `{} +` only: a `+` anywhere else is
+            # an ordinary argument it hands the child, so
+            # `find . -exec sed -n '+' -e '1e touch MARKER' {} +` really runs the
+            # payload. The `;` forms need no such test: a quoted `';'` and an
+            # escaped `\\;` reach find as the same word and both terminate.
+            stops.add(here)
+            in_action = False
+            continue
+        if forwarding and token == "--" and not in_action:
+            # Nothing behind fd's `--` is an option: `fd -- -x rm` merely lists
+            # `rm/-x` and was being refused.
+            forwarding = False
+            at_command = False
+            continue
+        flag = token.split("=", 1)[0]
+        if forwarding and (
+            flag in _FIND_EXEC_FLAGS or (not in_action and flag in _EXEC_FORWARD_FLAGS)
+        ):
+            exec_flags.add(here)
+            in_action = True
+            continue
+        if forwarding and not in_action and token[:2] in {"-x", "-X"} and len(token) > 2:
+            # fd takes the command attached to the short option too:
+            # `fd '^victim$' . -xrm` deletes the match for real (fdfind 9.0.0).
+            exec_flags.add(here)
+            in_action = True
+            continue
+        if at_command and token in _SHELL_KEYWORDS_AS_SEP:
+            continue  # `then find ...` / `do find ...`: still a command position
+        if skip_operand:
+            skip_operand = False  # a wrapper option's value (env -u NAME)
+            continue
+        if token.startswith("-") or _ASSIGNMENT_RE.match(token):
+            # A wrapper option whose value is a SEPARATE token precedes that
+            # value and not the wrapped command, so `env -u FOO find ...` keeps
+            # looking for find rather than stopping at FOO.
+            skip_operand = token in _WRAPPER_VALUE_FLAGS_BY_CMD.get(wrapper, frozenset())
+            continue
+        if wrapper and token.lstrip("-").isdigit():
+            continue  # `timeout 5 find ...`: the wrapper's own operand
+        base = os.path.basename(token.strip(";&|()`{}")).lower()
+        if at_command and base in _COMMAND_PREFIXES:
+            wrapper = base
+            continue
+        if at_command and _forwards_exec_flags(base):
+            # Only a find/fd the shell really RUNS forwards its exec flags. Any
+            # token spelled `fd`/`find` used to turn one on, so `echo fd -x rm`
+            # and `grep fd -x rm file` came back with rm and were refused.
+            forwarding = True
+        at_command = False
+        wrapper = ""
+    return frozenset(exec_flags), frozenset(stops), frozenset(redirects)
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -203,9 +1344,13 @@ def _find_blocked_commands(command: str) -> set[str]:
     """
     blocked: set[str] = set()
 
+    # Decode ANSI-C quoting first ($'ssh' -> ssh) so a blocked name hidden behind
+    # it is still detected at command position.
+    command = _decode_ansi_c(command, keep_one_word = True)
+
     # punctuation_chars splits separators into their own tokens, so command
-    # position is detected even in `echo done; rm -rf x` (no whitespace) or
-    # quote-split names (`r''m` collapses to `rm` after `;`).
+    # position is detected even in `echo done; rm -rf x` (no whitespace).
+    lexed_posix = sys.platform != "win32"
     try:
         if sys.platform == "win32":
             tokens = shlex.split(command, posix = False)
@@ -215,6 +1360,23 @@ def _find_blocked_commands(command: str) -> set[str]:
             tokens = list(lexer)
     except ValueError:
         tokens = command.split()
+        lexed_posix = False
+    # Which separator tokens the shell only produced because the quoting was
+    # stripped. The non-posix (Windows) lexer KEEPS the quote marks, so a quoted
+    # `';'` never looks like a separator there and nothing has to be recovered;
+    # the split() fallback has no quoting model at all, so it reports nothing
+    # either and both platforms reach the same verdict.
+    quoted_separators = (
+        _quoted_separator_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+    )
+    quoted_redirects = (
+        _quoted_redirection_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+    )
+    exec_flag_indexes, invocation_stops, redirect_indexes = _exec_scan_layout(
+        tokens, quoted_separators, quoted_redirects
+    )
+    # Built only when a sed is actually reached, since it costs a second lex.
+    glob_indexes: "frozenset[int] | None" = None
 
     def _token_basename(tok: str) -> str:
         # Strip glued-on meta-chars (`rm;`) so the basename still matches `rm`.
@@ -225,20 +1387,111 @@ def _find_blocked_commands(command: str) -> set[str]:
             base = stem
         return base
 
+    def _exec_child_index(start: int) -> "tuple[int, bool]":
+        """The command a `find -exec` actually runs, as ``(index, overflowed)``;
+        the index is -1 when the action holds no command word at all.
+
+        Command prefixes forward to their target, so `-exec env sed ...` runs
+        sed. Wrapper flags, assignment prefixes and duration operands are
+        stepped over as the walk above does, and a wrapper option taking a
+        SEPARATE value consumes it too, else that value reads as the command
+        (`-exec env -u FOO sed ...` came back with `FOO`). The hop is bounded so
+        `-exec env -exec env ...` cannot make this quadratic.
+
+        ``overflowed`` says the bound ran out with words still ahead. That is
+        NOT the same as finding nothing, and reporting both as "no child" let a
+        long enough chain read as safe: `-exec` + 33 `env` + `rm -f victim ;`
+        really deletes. The caller fails closed on it.
+        """
+        i, steps, wrapper = start, 0, ""
+        while i < len(tokens) and steps < _MAX_EXEC_PREFIX_SCAN:
+            token = tokens[i]
+            if token in _SHELL_SEPARATORS or token in _FIND_EXEC_TERMINATORS:
+                return -1, False
+            steps += 1
+            if wrapper and token in _WRAPPER_VALUE_FLAGS_BY_CMD.get(wrapper, frozenset()):
+                # `env -u NAME`, `stdbuf -o L`: the option and its operand, both
+                # consumed in ONE step -- the budget bounds the work done per
+                # -exec, and stepping over two tokens costs no more than one.
+                # An attached spelling (-uNAME, --unset=NAME) carries its own
+                # value and is skipped by the plain-option branch below.
+                i += 2
+                continue
+            if wrapper and (
+                token.startswith("-") or _ASSIGNMENT_RE.match(token) or token.lstrip("-").isdigit()
+            ):
+                # `env -i`, `env A=b`, `timeout 5`: the wrapper's own argument.
+                i += 1
+                continue
+            base = _token_basename(token)
+            if base in _COMMAND_PREFIXES:
+                wrapper = base
+                i += 1
+                continue
+            return i, False
+        # Walking off the end means the action really held nothing; stopping on
+        # the bound with words still ahead means the child is merely UNREAD.
+        return -1, steps >= _MAX_EXEC_PREFIX_SCAN and i < len(tokens)
+
     expect_command = True  # start of string is a command position
     prefix_pending = False  # last cmd-position token was a wrapper (env/time/xargs/...)
-    for token in tokens:
-        if token in _SHELL_SEPARATORS or token in _SHELL_KEYWORDS_AS_SEP:
+    prefix_command = ""  # which wrapper that was, for its own value-taking options
+    skip_operand = False  # consume a wrapper/conditional operand, not the command
+    sed_indexes: "list[int]" = []  # command-position sed words, for the `e` scan below
+    sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
+    xargs_index = -1  # an xargs awaiting the command it wraps
+    for token_index, token in enumerate(tokens):
+        if skip_operand:
+            # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand
+            # where the command word would otherwise be.
+            skip_operand = False
+            continue
+        if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
+            skip_operand = token.lower() != "not"
+            continue
+        if prefix_pending and token == "-a":
+            skip_operand = True
+            continue
+        if token_index in redirect_indexes:
+            # The shell performs the redirection and hands the command neither
+            # word, so command position is unchanged by it: `> out.txt rm -rf
+            # victim` and `2>&1 rm -rf victim` both really delete, while reading
+            # `out.txt` (and the `1`) as the command word left the `rm` behind
+            # it in argument position and the blocklist came back empty.
+            continue
+        # A keyword only separates where a COMMAND may start (see below).
+        # A quoted operator is DATA the command receives, not a separator, so it
+        # leaves command position alone: `printf '%s' '|&' rm` and
+        # `grep '|&' rm file` run nothing and must not be refused.
+        if (_looks_like_separator(token) and token_index not in quoted_separators) or (
+            token in _SHELL_KEYWORDS_AS_SEP and expect_command
+        ):
             expect_command = True
             prefix_pending = False
+            prefix_command = ""
+            xargs_index = -1
             continue
         if token.startswith("-"):
+            # A wrapper option whose value is a SEPARATE token precedes that
+            # value, not the wrapped command. Without consuming it the value is
+            # read as the command word and the real command behind it is never
+            # reached: `env -u PATH rm -rf x` and `xargs -I {} rm -rf build`
+            # both came back empty. An attached spelling (-uPATH, --unset=PATH)
+            # carries its own value and falls through to the plain-flag case.
+            if prefix_pending and token in _WRAPPER_VALUE_FLAGS_BY_CMD.get(
+                prefix_command, frozenset()
+            ):
+                skip_operand = True
+                continue
             # Flags belong to the active command, but keep expect_command while a
             # wrapper prefix awaits its command (`stdbuf -oL cmd`, `xargs -- cmd`).
             if not prefix_pending:
                 expect_command = False
             continue
         if not expect_command:
+            continue
+        # A redirection may precede the command word (`</dev/null rm -rf x`).
+        if _REDIR_PREFIX_RE.match(token):
             continue
         # FOO=bar assignment prefix; next non-assignment token is the command.
         if _ASSIGNMENT_RE.match(token):
@@ -247,22 +1500,92 @@ def _find_blocked_commands(command: str) -> set[str]:
         if prefix_pending and token.lstrip("-").isdigit():
             continue
         base = _token_basename(token)
+        if _is_sed_command(base):
+            sed_indexes.append(token_index)
+            if xargs_index >= 0:
+                sed_xargs[token_index] = xargs_index
         if base in _BLOCKED_COMMANDS:
             blocked.add(base)
+        else:
+            blocked |= _blocked_matching_glob(base)
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag,
         # non-numeric token is the real command. sudo is also in _BLOCKED_COMMANDS.
         if base in _COMMAND_PREFIXES:
+            if base == "xargs" and xargs_index < 0:
+                xargs_index = token_index
             prefix_pending = True
+            prefix_command = base
             continue
         expect_command = False
         prefix_pending = False
+        prefix_command = ""
+        xargs_index = -1
 
-    # `find ... -exec CMD ... ;` and `-execdir CMD ... ;` invoke CMD directly.
+    # `alias zap='rm -rf'` stores a command bash runs when the alias is invoked,
+    # so the body is scanned as a command in its own right.
     for i, tok in enumerate(tokens):
-        if tok in _FIND_EXEC_FLAGS and i + 1 < len(tokens):
-            base = _token_basename(tokens[i + 1])
-            if base in _BLOCKED_COMMANDS:
-                blocked.add(base)
+        if _token_basename(tok) != "alias":
+            continue
+        for nxt in tokens[i + 1 :]:
+            if nxt in _SHELL_SEPARATORS:
+                break
+            _name, _sep, _value = nxt.partition("=")
+            if _sep and _value:
+                blocked |= _find_blocked_commands(_value)
+
+    # `find ... -exec CMD ... ;`, `-execdir CMD ... ;` and fd's `-x` / `-X` /
+    # `--exec` / `--exec-batch` all invoke CMD directly (_exec_scan_layout picks
+    # which spellings count where). Reading only find's own flags left every fd
+    # form unscanned, so `fd -x rm -rf x` and `fd -x sed '1e rm -f victim' {}`
+    # -- both verified to run -- reached the hard blocklist as nothing at all.
+    for i, tok in enumerate(tokens):
+        # The long flags also carry the command attached (fd --exec=rm), where
+        # the value is command position rather than a discarded option argument.
+        attached = ""
+        if tok[:2] in {"-x", "-X"} and len(tok) > 2 and i in exec_flag_indexes:
+            # fd takes the command attached to the short option (`fd ... -xrm`),
+            # where the value is command position rather than an option argument.
+            attached = tok[2:].strip("\"'")
+        elif "=" in tok and tok.split("=", 1)[0] in _ATTACHED_EXEC_FLAGS:
+            attached = tok.split("=", 1)[1].strip("\"'")
+        if attached:
+            attached_base = _token_basename(attached.split()[0])
+            if _is_sed_command(attached_base):
+                # The words after the flag are that sed's arguments, so its
+                # program is screened from the FLAG. fd 9 actually takes them
+                # as search paths and runs nothing, so this only ever blocks
+                # a command that could not have worked anyway; a spelling
+                # that does forward them would otherwise be a free pass.
+                sed_indexes.append(i)
+            if attached_base in _BLOCKED_COMMANDS:
+                blocked.add(attached_base)
+            else:
+                blocked |= _blocked_matching_glob(attached_base)
+        if i in exec_flag_indexes and i + 1 < len(tokens):
+            # The word right after the flag AND the command it forwards to: a
+            # wrapper is a command in its own right (`-exec sudo ls`) as well as
+            # a step on the way to another one (`-exec env rm -rf x`), so
+            # dropping either half loses a real detection.
+            child, prefix_overflowed = _exec_child_index(i + 1)
+            if prefix_overflowed:
+                # The wrapper chain outran the hop budget, so the command that
+                # finally runs was never reached: block the chain itself rather
+                # than let `-exec env ...x33 rm -f victim ;` ride in behind it.
+                blocked.add(_token_basename(tokens[i + 1]))
+                continue
+            exec_words = [i + 1] if child in (-1, i + 1) else [i + 1, child]
+            for word in exec_words:
+                base = _token_basename(tokens[word])
+                if _is_sed_command(base):
+                    # find runs its -exec child directly, but the walk above only
+                    # reaches `find`, so a sed there never got its program
+                    # screened (`find . -exec sed '1e rm -f victim' {} +`, and
+                    # behind a wrapper `find . -exec env sed '1e ...' {} +`).
+                    sed_indexes.append(word)
+                if base in _BLOCKED_COMMANDS:
+                    blocked.add(base)
+                else:
+                    blocked |= _blocked_matching_glob(base)
 
     # Regex catches blocked words at command boundaries shlex misses: inside
     # $(rm -rf), <(rm), backtick chains, or "foo;rm". Anchored to command-position
@@ -306,8 +1629,66 @@ def _find_blocked_commands(command: str) -> set[str]:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             break  # stop at first non-flag token
 
+    # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
+    # scan above sees only as a text argument, so screen it like `bash -c`. The
+    # pattern-space forms yield an empty payload; the auto gate prompts on those.
+    sed_limit = _sed_scan_limit(len(sed_indexes))
+    # Built at most once per call, and only when some program actually names a
+    # variable, so a line packed with sed words stays linear.
+    sed_vars: "dict[str, str] | None" = None
+    sed_bindings: "list[tuple[int, str, str | None]] | None" = None
+    sed_cursor = 0
+    # Visited left to right so the binding cursor below only moves forward.
+    for i in sorted(set(sed_indexes)):
+        # A script --sandbox / --posix stops sed compiling is already left out of
+        # the program (_sed_invocation), so a name inside one is never blocked.
+        if glob_indexes is None:
+            glob_indexes = (
+                _unquoted_glob_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
+            )
+        alternatives, scan_overflowed, _live = _sed_invocation(
+            tokens, i, sed_limit, invocation_stops, redirect_indexes, glob_indexes
+        )
+        program = "\n".join(alternatives)
+        if scan_overflowed:
+            # The script sits past the scan window, so an empty program here is
+            # only ignorance: block the sed itself rather than let an
+            # `e rm -rf ~` ride in behind enough padding options.
+            blocked.add(_token_basename(tokens[i]))
+            continue
+        if _sed_program_is_a_placeholder(program):
+            # find rewrites `{}` before the child starts, so this is not a
+            # program that was read (see _sed_program_is_a_placeholder).
+            blocked.add(_token_basename(tokens[i]))
+            continue
+        if i in sed_xargs and _xargs_hides_sed_program(tokens, sed_xargs[i], i, program):
+            # The program comes off stdin or out of an -I placeholder, so it is
+            # not in the text to read at all (see _xargs_hides_sed_program).
+            blocked.add(_token_basename(tokens[i]))
+            continue
+        if "$" in program:
+            # A program held in a variable (p='...e rm -f victim'; sed "$p" f)
+            # only shows its `e` once the reference is resolved. shlex kept the
+            # quoted value whole, newlines and all, so the binding is exact.
+            # Only the assignments AHEAD of this sed are in scope, and the last
+            # of them wins, which is the pair that `p='1,3p';
+            # p='1e rm -f victim'; sed "$p" input` turns on.
+            if sed_bindings is None:
+                sed_bindings = _assignment_bindings(tokens, quoted_separators)
+                sed_vars = {}
+            sed_cursor = _bindings_before(sed_bindings, sed_cursor, i, sed_vars)
+        for alternative in alternatives:
+            for variant in _sed_program_variants(alternative, sed_vars or {}):
+                for payload in _sed_exec_payloads(variant):
+                    if payload:
+                        blocked |= _find_blocked_commands(payload)
+
     return blocked
 
+
+# Directory holding the sandbox ``sitecustomize.py`` shim (code-interpreter
+# path remap); placed on the sandboxed child's PYTHONPATH in _build_safe_env.
+_SANDBOX_SITE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sandbox_site")
 
 # ── "Approve for me" (permission_mode="auto") safety detection ──────────────
 # Auto mode pauses only calls classified here as potentially unsafe. The sandbox
@@ -496,8 +1877,22 @@ _AUTO_RECURSIVE_LISTERS = frozenset({"tree", "du"})
 # absent too: it appends arguments read from stdin that this scan never sees, so
 # `echo -o out /etc/passwd | xargs sort` forwards to `sort -o out /etc/passwd`
 # (a write + sensitive read) while only the allow-listed literals are visible.
+# setsid/exec/builtin forward to a child command just like env/nohup, so
+# classification continues at the child rather than stopping at the wrapper.
 _AUTO_SAFE_WRAPPERS = frozenset(
-    {"env", "command", "time", "timeout", "nice", "ionice", "stdbuf", "nohup"}
+    {
+        "env",
+        "command",
+        "builtin",
+        "exec",
+        "time",
+        "timeout",
+        "nice",
+        "ionice",
+        "stdbuf",
+        "nohup",
+        "setsid",
+    }
 )
 
 # MCP tools whose names look read-only auto-run; anything else asks.
@@ -530,6 +1925,344 @@ _AUTO_SENSITIVE_MCP_NOUN_RE = re.compile(
     r"secret|token|credential|password|passwd|passphrase|apikey|"
     r"(?:api|access|private|secret|signing|encryption|auth|session)[_\-]?keys?"
     r")s?(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# Split a camelCase boundary with an underscore (runCommand -> run_Command) so
+# the term-boundary MCP regexes match camelCase tool names too.
+_CAMEL_CASE_RE = re.compile(r"(?<=[a-z0-9])(?=[A-Z])")
+# A name that reads (get_release, search_code, list_invoices) names its SUBJECT,
+# not the action, so the impact and runtime-noun patterns below must not fire on
+# it, or the everyday read tools of every server would prompt.
+_AUTO_READ_MCP_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:get|list|read|search|find|fetch|query|describe|show|view|"
+    r"inspect|status|info|count|exists|lookup|browse|preview|download|export|"
+    r"history|log|logs|diff|compare|summarize|summarise)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# The runtime nouns alone (python, code, script, notebook) name a subject as
+# often as an action, so they only count when nothing reads.
+_AUTO_EXEC_MCP_VERB_ONLY_RE = re.compile(
+    r"(?:^|[_\-])(?:exec|execute|run|eval|spawn|invoke|launch|shell|bash|zsh|"
+    r"powershell|pwsh|terminal|subprocess|interpreter)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+_AUTO_EXEC_MCP_RUNTIME_NOUN_RE = re.compile(
+    r"(?:^|[_\-])(?:python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|code|"
+    r"script|repl|sandbox|notebook)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# An MCP tool that runs arbitrary commands/code (run_command, eval_code, bash)
+# is as unsafe as a terminal call and runs on the server, outside the terminal
+# sandbox, so auto gates it. Whole name segments only, so get_command and
+# list_shells stay read.
+_AUTO_EXEC_MCP_TOOL_RE = re.compile(
+    r"(?:^|[_\-])(?:"
+    r"exec|execute|run|eval|spawn|invoke|launch|"
+    r"shell|bash|zsh|powershell|pwsh|terminal|subprocess|interpreter|"
+    # A bare runtime name (mcp__srv__python, __node, __code) is an execution
+    # tool even without a verb: its payload runs on the MCP server.
+    r"python[0-9.]*|node|nodejs|deno|bun|ruby|perl|php|code|script|repl|sandbox|notebook"
+    r")(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# A destructive verb as a whole name segment: an honestly-named MCP tool
+# (delete_file, delete_repo, drop_table, purge_index) runs outside the terminal
+# sandbox and causes data loss, so auto prompts on it even when the arguments
+# carry no SQL/HTTP mutation marker. Non-destructive mutations (create/update/
+# add/set/insert/patch) still run; a read that merely contains one of these as
+# a substring (undelete, list_removed) does not match on the segment boundary.
+_AUTO_DESTRUCTIVE_MCP_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:"
+    r"delete|destroy|drop|purge|wipe|truncate|erase|remove|unlink|"
+    r"teardown|revoke|terminate|uninstall|clear|reset|empty|flush|prune|expire"
+    r")(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# A name without separators (mcp__srv__runcommand, __shellexec) never reaches the
+# segment boundaries above, so match the verb+object compounds directly.
+_MCP_EXEC_VERBS = r"execute|exec|run|eval|spawn|invoke|launch|start"
+_MCP_EXEC_OBJECTS = r"command|cmd|shell|script|code|process|program|bash|terminal|proc|task|job"
+_AUTO_EXEC_MCP_COMPOUND_RE = re.compile(
+    r"(?:^|[_\-])(?:"
+    rf"(?:{_MCP_EXEC_VERBS})(?:{_MCP_EXEC_OBJECTS})"
+    rf"|(?:{_MCP_EXEC_OBJECTS})(?:{_MCP_EXEC_VERBS})"
+    r")(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# The verbs an MCP tool name may carry and still run without a prompt: reads, and
+# ordinary writes that create or edit a record. Destructive, privilege and
+# money-moving verbs are caught by the patterns above before this is consulted.
+_AUTO_KNOWN_MCP_VERBS = frozenset(
+    {
+        # read / inspect
+        "get",
+        "list",
+        "read",
+        "search",
+        "find",
+        "fetch",
+        "query",
+        "describe",
+        "show",
+        "view",
+        "inspect",
+        "status",
+        "info",
+        "count",
+        "exists",
+        "resolve",
+        "lookup",
+        "browse",
+        "diff",
+        "log",
+        "logs",
+        "history",
+        "summarize",
+        "summarise",
+        "analyze",
+        "analyse",
+        "validate",
+        "check",
+        "test",
+        "ping",
+        "preview",
+        "head",
+        "stat",
+        "download",
+        "export",
+        "render",
+        "format",
+        "parse",
+        "compare",
+        "explain",
+        "select",
+        "retrieve",
+        "audit",
+        "review",
+        "monitor",
+        "trace",
+        "profile",
+        "benchmark",
+        "lint",
+        "detect",
+        "classify",
+        "rank",
+        "score",
+        "predict",
+        "infer",
+        "evaluate",
+        # ordinary writes
+        "create",
+        "add",
+        "insert",
+        "update",
+        "edit",
+        "modify",
+        "set",
+        "put",
+        "patch",
+        "post",
+        "send",
+        "write",
+        "append",
+        "upload",
+        "comment",
+        "assign",
+        "label",
+        "tag",
+        "move",
+        "rename",
+        "copy",
+        "clone",
+        "sync",
+        "merge",
+        "close",
+        "reopen",
+        "open",
+        "start",
+        "stop",
+        "pause",
+        "resume",
+        "cancel",
+        "schedule",
+        "notify",
+        "register",
+        "save",
+        "store",
+        "apply",
+        "submit",
+        "request",
+        "generate",
+        "convert",
+        "translate",
+        "complete",
+        "index",
+        "ingest",
+        "embed",
+        "train",
+        "call",
+        "load",
+        "init",
+        "configure",
+        "config",
+        "upsert",
+        "retry",
+        "replay",
+        "approve",
+        "reject",
+        "acknowledge",
+        "annotate",
+        "draft",
+        "subscribe",
+        "watch",
+        "listen",
+        "poll",
+        "wait",
+        "sleep",
+        # browser / ui drivers
+        "navigate",
+        "click",
+        "type",
+        "scroll",
+        "hover",
+        "press",
+        "screenshot",
+        "capture",
+        "snapshot",
+        "extract",
+        "crawl",
+        "scrape",
+        "fill",
+        "focus",
+        # data shaping
+        "sort",
+        "filter",
+        "group",
+        "aggregate",
+        "split",
+        "chunk",
+        "tokenize",
+        "encode",
+        "decode",
+        "hash",
+        "sign",
+        "verify",
+        "compress",
+        "decompress",
+        "dedupe",
+        "normalize",
+        "normalise",
+        "sanitize",
+        "sanitise",
+        "redact",
+        "mask",
+        "compute",
+        "calculate",
+        "solve",
+        "simulate",
+        "plot",
+        "chart",
+        # build / ship
+        "build",
+        "compile",
+        "bundle",
+        "package",
+        "backup",
+        "restore",
+        "ask",
+        "answer",
+        "chat",
+        "prompt",
+        "respond",
+        "reply",
+        "transcribe",
+    }
+)
+
+
+# Verbs the patterns above already gate. A name carrying one is still screenable
+# even though reaching this point means it did not match: `undelete` is the
+# reverse of a verb this classifier knows.
+_AUTO_GATED_MCP_VERBS = frozenset(
+    {
+        "delete",
+        "remove",
+        "drop",
+        "destroy",
+        "purge",
+        "wipe",
+        "truncate",
+        "clear",
+        "reset",
+        "empty",
+        "flush",
+        "prune",
+        "expire",
+        "revoke",
+        "grant",
+        "authorize",
+        "authorise",
+        "elevate",
+        "escalate",
+        "impersonate",
+        "promote",
+        "transfer",
+        "payout",
+        "charge",
+        "refund",
+        "publish",
+        "deploy",
+        "release",
+        "install",
+        "uninstall",
+        "lock",
+        "mount",
+    }
+)
+_AUTO_MCP_VERB_VOCAB = _AUTO_KNOWN_MCP_VERBS | _AUTO_GATED_MCP_VERBS
+
+
+def _mcp_verb_is_known(tool_name: str) -> bool:
+    """Whether any term of an MCP tool name is a verb this classifier knows.
+    A name with none of them cannot be screened, so the caller fails closed."""
+    for part in re.split(r"[_\-]+", tool_name.lower()):
+        if not part:
+            continue
+        if part in _AUTO_KNOWN_MCP_VERBS:
+            return True
+        # The reverse or the repeat of a recognised verb (undelete, reopen,
+        # resend) is just as screenable as the verb itself.
+        for prefix in ("un", "re"):
+            if part.startswith(prefix) and part[len(prefix) :] in _AUTO_MCP_VERB_VOCAB:
+                return True
+    return False
+
+
+# Privilege escalation over MCP: granting a role/permission/policy hands out
+# access the operator never approved. An unambiguous privilege verb matches on
+# its own; the soft verbs below (assign/add/set/attach/bind) only count next to a
+# privilege noun, so assign_issue / add_label keep running.
+_AUTO_PRIVILEGE_MCP_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:grant|authorize|authorise|elevate|escalate|impersonate|sudo|promote)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+# Money movement and other irreversible external side effects: an MCP call
+# that pays, refunds, wires or transfers funds cannot be undone by the
+# operator, so it asks even though it is not "destructive" in the fs sense.
+_AUTO_HIGH_IMPACT_MCP_RE = re.compile(
+    r"(?:^|[_\-])(?:transfer|payout|payment|pay|charge|refund|wire|remit|"
+    r"withdraw|deposit|invoice|subscription|subscriptions|billing|"
+    r"publish|deploy|release)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+_AUTO_PRIVILEGE_MCP_NOUN_RE = re.compile(
+    r"(?:^|[_\-])(?:role|roles|permission|permissions|privilege|privileges|acl|acls|"
+    r"policy|policies|scope|scopes|grant|grants|membership|member|members|"
+    r"collaborator|collaborators|admin|owner)(?:[_\-]|$)",
+    re.IGNORECASE,
+)
+_AUTO_PRIVILEGE_MCP_SOFT_VERB_RE = re.compile(
+    r"(?:^|[_\-])(?:assign|add|set|attach|bind|put|update|create)(?:[_\-]|$)",
     re.IGNORECASE,
 )
 
@@ -764,12 +2497,49 @@ _PY_WRITE_MODE_RE = re.compile(r"[wax+]")
 # A file-mode literal ("w", "rb", "a+"): letters/flags only, no path chars.
 # Used to tell a Path.open("w") mode from a ZipFile.open("name.txt") filename.
 _PY_MODE_LITERAL_RE = re.compile(r"^[rwxa][btru+]*$")
+# Destructive filesystem calls in the python tool pair with the terminal `rm`
+# gate, so auto prompts. `rmtree`/`unlink`/`rmdir`/`removedirs` name only fs
+# deletion, so any receiver counts; `remove` is gated on the `os` module alone so
+# a benign list.remove() stays out. A bare import binding is caught separately.
+_PY_DESTRUCTIVE_FS_ATTRS = frozenset({"unlink", "rmtree", "rmdir", "removedirs"})
+# psutil ends a process exactly as os.kill does, which is already gated.
+_PY_PROCESS_KILL_ATTRS = frozenset({"kill", "terminate", "send_signal", "suspend"})
+_PY_PROCESS_MODULES = frozenset({"psutil"})
+# Gated only on the os module (or an alias) so a truncate/remove-like method on
+# another receiver stays out. os.truncate zeroes a file like the gated terminal
+# `truncate`; os.kill/os.killpg terminate like the blocked `kill`.
+_PY_DESTRUCTIVE_FS_OS_ATTRS = frozenset({"remove", "truncate", "ftruncate", "kill", "killpg"})
+_PY_DESTRUCTIVE_FS_IMPORT_NAMES = frozenset(
+    {
+        "remove",
+        "unlink",
+        "rmtree",
+        "rmdir",
+        "removedirs",
+        "truncate",
+        "ftruncate",
+        "kill",
+        "killpg",
+    }
+)
+# Modules whose destructive names are the same calls: posix/nt are os's
+# platform twins (from posix import unlink; nt.remove(...)).
+_PY_DESTRUCTIVE_FS_MODULES = ("os", "posix", "nt", "shutil", "pathlib")
 
 # Reading these off the host escapes the intent of "read-only is safe": they
 # hold credentials. Path traversal (../) escapes the per-session workdir.
 _SENSITIVE_PATH_RE = re.compile(
     r"(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube|config/gcloud|config/gh)(?:[/\\]|$)"
     r"|\.(?:netrc|npmrc|pypirc|git-credentials|env)(?:$|[/\\.\s'\"])"
+    # User-level persistence: a write into a shell startup file or an XDG
+    # autostart/user-service dir runs on the next login, the /etc boot-hook risk
+    # without root, and the sandbox does not confine absolute paths (>> ~/.bashrc
+    # reaches the real file). Rarely read in a dev session, so gating any
+    # reference does not over-prompt.
+    r"|(?:^|[/\\\s'\"=])\.(?:bashrc|bash_profile|bash_login|bash_logout|bash_aliases"
+    r"|profile|zshrc|zprofile|zshenv|zlogin|zlogout|kshrc|cshrc|tcshrc|login"
+    r"|xprofile|xinitrc|xsession)(?:$|[/\\\s'\"])"
+    r"|(?:^|[/\\])\.config[/\\](?:autostart|systemd[/\\]user|environment\.d)(?:[/\\]|$)"
     r"|id_rsa|id_ed25519|id_ecdsa|id_dsa"
     # Hugging Face stores the login token at ~/.cache/huggingface/token and the
     # legacy ~/.huggingface/token (plus the multi-token store stored_tokens); the
@@ -777,8 +2547,14 @@ _SENSITIVE_PATH_RE = re.compile(
     # optional leading dot covers the .huggingface dotdir form.
     r"|(?:^|[/\\])\.?huggingface[/\\](?:token|stored_tokens)(?:$|[/\\.\s'\"])"
     # /etc/ssh holds the host private keys (ssh_host_*_key); the whole dir is
-    # sensitive, not just passwd/shadow/sudoers.
-    r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$))"
+    # sensitive, not just passwd/shadow/sudoers. The trailing group is the system
+    # persistence set: a write there (tee /etc/ld.so.preload, a drop into
+    # /etc/cron.d or /etc/systemd) installs a boot/login/preload hook, and the
+    # sandbox keeps host-fs access. Effectively write-only in a dev session, so
+    # gating any reference does not over-prompt.
+    r"|credentials|/etc/(?:passwd|shadow|sudoers|ssh(?:[/\\]|$)"
+    r"|cron[^/\\]*(?:[/\\]|$)|profile\.d(?:[/\\]|$)|systemd(?:[/\\]|$)"
+    r"|ld\.so\.preload(?:$|[/\\.\s'\"])|ld\.so\.conf|rc\.local|init\.d(?:[/\\]|$))"
     # Bash opens /dev/tcp/host/port and /dev/udp/host/port as network sockets,
     # so a redirection to one reaches the network without the confirm prompt.
     r"|/dev/(?:tcp|udp)/"
@@ -908,9 +2684,18 @@ _BRACE_ANY_RE = re.compile(r"\{[^{}]*,[^{}]*\}|\{[^{}]+\.\.[^{}]+(?:\.\.-?\d+)?\
 _SHELL_PARAM_OP_RE = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+]([^{}]*)\}")
 
 
+# The credential-path pattern is superlinear in the text length and a real path
+# is short, so text far past any real path fails closed: the caller asks rather
+# than spending unbounded time. Ordinary commands are far below these bounds.
+_MAX_PATH_SCAN_CHARS = 2048
+_MAX_TERMINAL_SCAN_CHARS = 4096
+
+
 def _references_sensitive_path(text: str) -> bool:
     """True if a command or string literal reads a credential path or escapes
     the sandbox workdir via parent traversal."""
+    if len(text) > _MAX_PATH_SCAN_CHARS:
+        return True
     norm = _REDUNDANT_SLASH_RE.sub("", text)
     debracket = _GLOB_BRACKET_RE.sub(lambda m: m.group(1)[0], text)
     return bool(
@@ -1016,16 +2801,65 @@ def _expand_param_defaults(command: str) -> str:
     return _SHELL_PARAM_OP_RE.sub(lambda m: m.group(1), command)
 
 
-def _decode_ansi_c(command: str) -> str:
+# Bash expands $'...' to a single word, so a separator inside it is data. Callers
+# that tokenize the decoded text neutralize these first, otherwise
+# `printf '%s' $'a\\nrm -rf x'` reads as two commands and the printf is refused.
+_ANSI_C_SEPARATOR_RE = re.compile(r"[\s;&|()<>`]")
+# A newline revealed by ANSI-C decoding, and the mark standing in for it. Any
+# character shlex leaves inside a quoted word serves, as long as the boundary
+# regex in _find_blocked_commands does not read it as the start of a command.
+_ANSI_C_NEWLINE_MARK = "\x03"
+_ANSI_C_NEWLINE_RE = re.compile(r"[\n\r]")
+
+
+def _folded_str_literal(node) -> "str | None":
+    """The string an expression evaluates to when built only from string literals
+    ("un" + "link", f"un{'link'}"), else None. Resolves a name spelled
+    dynamically but fully known at parse time."""
+    if isinstance(node, ast.Constant):
+        return node.value if isinstance(node.value, str) else None
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Add):
+        left = _folded_str_literal(node.left)
+        right = _folded_str_literal(node.right)
+        return None if left is None or right is None else left + right
+    if isinstance(node, ast.JoinedStr):
+        parts = []
+        for value in node.values:
+            piece = _folded_str_literal(value)
+            if piece is None:
+                return None
+            parts.append(piece)
+        return "".join(parts)
+    if isinstance(node, ast.FormattedValue) and node.format_spec is None:
+        return _folded_str_literal(node.value)
+    return None
+
+
+def _decode_ansi_c(command: str, *, keep_one_word: bool = False) -> str:
     """Decode bash ANSI-C quoted words (cat $'/etc/pass\\x77d' -> cat /etc/passwd)
     so an escape-obfuscated path is visible to the scan. Fail-open: only adds
-    detections."""
+    detections. With ``keep_one_word`` the decoded text cannot introduce new
+    shell syntax, which is what bash does with it."""
 
     def dec(m):
         try:
-            return bytes(m.group(1), "utf-8").decode("unicode_escape")
+            text = bytes(m.group(1), "utf-8").decode("unicode_escape")
         except (UnicodeDecodeError, ValueError):
             return m.group(0)
+        if not keep_one_word:
+            return text
+        if _ANSI_C_NEWLINE_MARK not in text:
+            # Re-quote rather than flatten: bash gives the command ONE word
+            # however much whitespace the decoding reveals, and a sed program
+            # ends its COMMENT at a newline, so the spaces and the `#` around it
+            # all carry meaning. An apostrophe is re-quoted `'\''` for the same
+            # reason. The newline stands as a MARK because it is data for the
+            # command bash starts, not a place a new one begins, and the
+            # boundary regex below would read a bare one as the latter;
+            # _sed_invocation puts it back where its meaning matters.
+            body = _ANSI_C_NEWLINE_RE.sub(_ANSI_C_NEWLINE_MARK, text)
+            return "'" + body.replace("'", "'\\''") + "'"
+        return _ANSI_C_SEPARATOR_RE.sub("_", text)
 
     return _ANSI_C_RE.sub(dec, command)
 
@@ -1370,6 +3204,20 @@ def _folded_is_sensitive(folded) -> bool:
     )
 
 
+def _command_references_sensitive(command: str) -> bool:
+    """True if a shell command reads/writes a credential path or escapes the
+    sandbox workdir (../), after undoing the shell expansions that would hide it:
+    quotes/backslash escapes, brace/parameter/ANSI-C expansion and NAME=value
+    prefixes, so `cat /et\\c/passwd`, `p="/proc/$PPID"; cat $p/environ` and
+    `cat /e{t,}c/pass?d` are all caught."""
+    stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
+    candidates = []
+    for c in (command, stripped, _decode_ansi_c(command)):
+        c_param = _expand_param_defaults(c)
+        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
+    return any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates)
+
+
 def _terminal_is_potentially_unsafe(command: str) -> bool:
     """Classify a terminal command for auto mode (fail closed)."""
     if not command or not command.strip():
@@ -1379,21 +3227,8 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
     if ">" in command or "`" in command or "$(" in command or "<(" in command:
         return True
     # Reads that escape the sandbox workdir (../) or hit credential paths are
-    # not "safe" reads; ask before running them. Strip shell quotes/backslash
-    # escapes and expand NAME=value prefixes first so `cat /proc/$PPID/enviro''n`,
-    # `cat /et\c/passwd`, and `p="/proc/$PPID"; cat $p/environ` are caught too.
-    stripped = _SHELL_QUOTE_RE.sub("", command).replace("\\", "")
-    # Bash applies brace/parameter/ANSI-C expansion after this classifier, so a
-    # path split across a brace group (/etc/pass{w,}d), a default/substring param
-    # (${x:-wd}, ${p:0:6}), or an escape ($'...') is invisible to the raw scan;
-    # expand first (ANSI-C decoded from the raw command, before backslash strip).
-    candidates = []
-    for c in (command, stripped, _decode_ansi_c(command)):
-        c_param = _expand_param_defaults(c)
-        candidates.extend((c, c_param, _expand_braces(c_param), _expand_shell_assignments(c_param)))
-    # Run both the literal and glob-sensitive scans over every candidate, so a
-    # brace-expanded glob (cat /e{t,}c/pass?d -> /etc/pass?d) is caught.
-    if any(_glob_hits_sensitive(c) or _references_sensitive_path(c) for c in candidates):
+    # not "safe" reads; ask before running them.
+    if _command_references_sensitive(command):
         return True
     # Newlines (and CR) separate commands in a shell but read as plain
     # whitespace to shlex, which would demote "ls\nrm x" to argument position.
@@ -1450,7 +3285,7 @@ def _terminal_is_potentially_unsafe(command: str) -> bool:
         # purely of separator characters still separates commands.
         if (
             token in _SHELL_SEPARATORS
-            or token in _SHELL_KEYWORDS_AS_SEP
+            or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
             or not set(token) - set(";&|()")
         ):
             expect_command = True
@@ -2199,22 +4034,45 @@ _MCP_METADATA_HOST_RE = re.compile(
 )
 
 
+# Argument names that carry a credential outward regardless of their value.
+_MCP_CREDENTIAL_KEY_RE = re.compile(
+    r"^(?:authorization|proxy-authorization|cookie|set-cookie|"
+    r"x-api-key|api[-_]?key|apikey|x-auth-token|auth[-_]?token|access[-_]?token|"
+    r"refresh[-_]?token|id[-_]?token|bearer|private[-_]?key|secret[-_]?key|"
+    r"client[-_]?secret|password|passwd|session[-_]?token)$",
+    re.IGNORECASE,
+)
+
+
 def _mcp_arguments_reference_sensitive(arguments) -> bool:
     """True if any string in an MCP call's arguments names a credential path, a
     credential/secret environment variable (get_env {"name": "OPENAI_API_KEY"}),
     or a cloud-metadata host (fetch_url {"url": "http://169.254.169.254/..."})."""
 
-    def walk(value) -> bool:
+    def key_is_credential(key) -> bool:
+        return isinstance(key, str) and bool(_MCP_CREDENTIAL_KEY_RE.match(key.strip()))
+
+    def walk(value, is_prose: bool = False) -> bool:
         if isinstance(value, str):
+            # A path can be carried under any argument name, so prose keys are
+            # skipped rather than path keys allowlisted: an issue body mentioning
+            # a credential file is text to store, not a file to open.
+            if is_prose:
+                return False
             return (
                 _references_sensitive_path(value)
                 or bool(_AUTO_SENSITIVE_MCP_NOUN_RE.search(value))
                 or bool(_MCP_METADATA_HOST_RE.search(value))
             )
         if isinstance(value, dict):
-            return any(walk(v) for v in value.values())
+            if any(key_is_credential(k) for k in value):
+                return True
+            return any(
+                walk(v, is_prose or (isinstance(k, str) and k.lower() in _MCP_PROSE_KEYS))
+                for k, v in value.items()
+            )
         if isinstance(value, (list, tuple)):
-            return any(walk(v) for v in value)
+            return any(walk(v, is_prose) for v in value)
         return False
 
     return walk(arguments)
@@ -2322,14 +4180,69 @@ _MUTATING_HTTP_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 _HTTP_METHOD_KEYS = frozenset({"method", "http_method", "httpmethod", "verb", "http_verb"})
 
 
+# Argument names that carry free text the tool stores or displays rather than
+# acts on, so a path or a statement mentioned inside them is a mention.
+_MCP_PROSE_KEYS = frozenset(
+    {
+        "text",
+        "body",
+        "message",
+        "msg",
+        "description",
+        "comment",
+        "content",
+        "title",
+        "summary",
+        "note",
+        "notes",
+        "prompt",
+        "caption",
+        "reason",
+        "markdown",
+        "blocks",
+        "detail",
+        "details",
+        "context",
+    }
+)
+# Argument names that carry a statement the tool will execute, as opposed to
+# free text the tool will merely store or display.
+_MCP_QUERY_KEYS = frozenset(
+    {
+        "query",
+        "sql",
+        "statement",
+        "stmt",
+        "command",
+        "cmd",
+        "script",
+        "expression",
+        "expr",
+        "filter",
+        "pipeline",
+        "aggregate",
+        "mutation",
+        "operation",
+        "graphql",
+        "queries",
+        "statements",
+        "commands",
+    }
+)
+
+
 def _mcp_arguments_mutate(arguments) -> bool:
     """True if an MCP call's arguments carry a mutating command, so a read-named
     but write-capable tool (query_database {"query": "DELETE FROM runs"},
     query_graphql {"query": "mutation { deleteIssue(id: 1) }"}, or an HTTP tool
     {"method": "DELETE"}) asks."""
 
-    def walk(value) -> bool:
+    def walk(value, in_query: bool = False) -> bool:
         if isinstance(value, str):
+            # Prose that merely mentions DELETE FROM (a chat message, an issue
+            # body) is not a statement this call will run.
+            if not in_query:
+                return False
             _sql = _SQL_COMMENT_RE.sub(" ", value)
             return (
                 bool(_MCP_ARG_MUTATION_RE.search(_sql))
@@ -2346,9 +4259,12 @@ def _mcp_arguments_mutate(arguments) -> bool:
                     and v.strip().upper() in _MUTATING_HTTP_METHODS
                 ):
                     return True
-            return any(walk(v) for v in value.values())
+            return any(
+                walk(v, in_query or (isinstance(k, str) and k.lower() in _MCP_QUERY_KEYS))
+                for k, v in value.items()
+            )
         if isinstance(value, (list, tuple)):
-            return any(walk(v) for v in value)
+            return any(walk(v, in_query) for v in value)
         return False
 
     return walk(arguments)
@@ -2394,6 +4310,12 @@ _RENDER_HTML_NETWORK_RE = re.compile(
     # Bracket-access obfuscation: window['fetch'](...), self["open"](...).
     r"\[\s*[\"'](?:fetch|open|XMLHttpRequest|WebSocket|EventSource|importScripts|"
     r"sendBeacon|serviceWorker)[\"']\s*\]|"
+    # The same for the navigation sinks: location['assign'](...),
+    # location["href"] = URL. Anchored to location (dotted or bracketed) so an
+    # ordinary str['replace'](...) or obj['href'] read stays static.
+    r"(?:\blocation|\[\s*[\"']location[\"']\s*\])\s*\[\s*[\"'](?:assign|replace)[\"']\s*\]\s*\(|"
+    r"(?:\blocation|\[\s*[\"']location[\"']\s*\])\s*\[\s*[\"']href[\"']\s*\]"
+    r"\s*=\s*[\"'`]?\s*(?:https?:|/)|"
     # Computed bracket key spliced at runtime on a global host object
     # (window['fet'+'ch'](...)): a quoted fragment adjacent to a + inside the
     # index. Anchored to a host object so a plain obj['a'+'b'] key stays safe.
@@ -2430,6 +4352,22 @@ def is_always_safe_tool(name: str) -> bool:
     arguments are known. render_html is intentionally excluded: a networked
     canvas needs approval, which cannot be judged before its arguments stream."""
     return name in _ALWAYS_SAFE_TOOLS
+
+
+# Tools whose provisional card is only a text preview of the arguments, so it can stream
+# while awaiting approval.
+_TEXT_PREVIEW_TOOLS = frozenset({"python", "terminal"})
+
+
+def has_text_only_provisional_card(name: str) -> bool:
+    """True when streaming this tool's arguments before approval shows only text.
+
+    A large code payload takes a minute or more to write, and suppressing the
+    card until the call completes leaves the chat blank the whole time. Nothing
+    runs before the decision either way, and you have to read the code to make
+    it.
+    """
+    return name in _TEXT_PREVIEW_TOOLS
 
 
 def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
@@ -2472,16 +4410,2131 @@ def is_potentially_unsafe_tool_call(name: str, arguments: dict) -> bool:
     return True
 
 
+# Terminal commands that are high risk regardless of their arguments, so auto
+# ("Approve for me") pauses them while ordinary dev commands (pip install, mkdir,
+# cp, make, git, ...) run. The hard-block command set, rlimits, secret-env
+# stripping and the per-session scratch workdir stay on beneath this prompt.
+_HIGH_RISK_COMMANDS = frozenset(
+    {
+        # privilege escalation
+        "sudo",
+        "su",
+        "doas",
+        "pkexec",
+        # destructive filesystem / storage devices (mkfs* matched by prefix)
+        "rm",
+        "rmdir",
+        "shred",
+        "dd",
+        "wipefs",
+        "fdisk",
+        "parted",
+        "blkdiscard",
+        "chattr",
+        "truncate",
+        # Windows cmd.exe built-ins that delete files / trees (the terminal
+        # executor runs `cmd /c` there, and these are not in _BLOCKED_COMMANDS_WIN)
+        "del",
+        "erase",
+        "rd",
+        # Ending a process kills work in progress (a training run, the server
+        # itself); a power command ends every process at once.
+        "kill",
+        "pkill",
+        "killall",
+        "taskkill",
+        "tskill",
+        "shutdown",
+        "reboot",
+        "halt",
+        "poweroff",
+        # setcap grants file capabilities, a privilege change without sudo.
+        "setcap",
+        # accounts / persistence / system services
+        "crontab",
+        # at/batch hand the payload to atd, which runs it later as this user and
+        # outside this invocation's blocklist, rlimits, timeout and cancellation.
+        "at",
+        "batch",
+        "atrm",
+        "systemctl",
+        "service",
+        "useradd",
+        "userdel",
+        "usermod",
+        "groupadd",
+        "groupdel",
+        "groupmod",
+        "adduser",
+        "deluser",
+        "addgroup",
+        "delgroup",
+        "gpasswd",
+        "newusers",
+        "chgpasswd",
+        "passwd",
+        "chpasswd",
+        "visudo",
+        "chsh",
+        # firewall / mounts
+        "iptables",
+        "ip6tables",
+        "nft",
+        "ufw",
+        "mount",
+        "umount",
+        # remote exec / raw network transfer
+        "ssh",
+        "slogin",
+        "scp",
+        "sftp",
+        "telnet",
+        "nc",
+        "ncat",
+        "netcat",
+        "socat",
+        "ftp",
+        "tftp",
+        # POSIX unlink(1) deletes a file exactly like rm, which is gated above.
+        "unlink",
+        # Windows / macOS storage destruction, the platform twins of the POSIX
+        # mkfs/wipefs/dd family already gated above.
+        "format",
+        "diskpart",
+        "diskutil",
+        # Windows / macOS scheduled tasks, registry and service control: the twins
+        # of crontab/systemctl. Gated wholesale (a read-only `reg query` prompts
+        # too) because the destructive subcommand lives in the arguments.
+        "systemd-run",
+        "schtasks",
+        "reg",
+        "sc",
+        "launchctl",
+        # container/VM runtimes: the daemon acts with host privileges, so
+        # `docker run -v /:/host ...` writes the real filesystem, escaping the
+        # child's workdir and rlimit sandbox entirely. chroot/nsenter/unshare
+        # cross a privilege or namespace boundary and then exec a nested command,
+        # so the wrapper hides the real action.
+        "chroot",
+        "nsenter",
+        "unshare",
+        "docker",
+        "podman",
+        "nerdctl",
+        "ctr",
+        "crictl",
+        "lxc",
+        "machinectl",
+        "kubectl",
+    }
+)
+# sysctl's write and load forms change kernel parameters; a read-only query
+# (sysctl -a, sysctl net.ipv4.ip_forward) stays automatic.
+_SYSCTL_WRITE_FLAGS = frozenset({"-w", "--write", "-p", "--load", "--system"})
+# setpriv changes privilege state and then execs its remaining arguments, so the
+# real command sits behind it. Kept out of _AUTO_SAFE_WRAPPERS (it is not safe in
+# its own right) and instead made transparent only for the high-risk scan, where
+# the flags that raise privilege are gated on their own.
+_PRIVILEGE_EXEC_WRAPPERS = frozenset({"setpriv"})
+_SETPRIV_PRIVILEGE_FLAGS = frozenset(
+    {
+        "--reuid",
+        "--regid",
+        "--ruid",
+        "--euid",
+        "--rgid",
+        "--egid",
+        "--groups",
+        "--init-groups",
+        "--inh-caps",
+        "--ambient-caps",
+        "--bounding-set",
+        "--securebits",
+        "--selinux-label",
+        "--apparmor-profile",
+    }
+)
+# fallocate replaces a range with a hole, zeroes it or removes it, destroying
+# file contents in place. Plain allocation (-l SIZE) only grows a file.
+_FALLOCATE_DESTRUCTIVE_FLAGS = frozenset(
+    {"-p", "--punch-hole", "-z", "--zero-range", "-c", "--collapse-range", "-d", "--dig-holes"}
+)
+# High risk only with a recursive flag (chmod -R 777 .); a scoped
+# `chmod +x build.sh` stays out.
+_HIGH_RISK_RECURSIVE_COMMANDS = frozenset({"chmod", "chown", "chgrp"})
+# Commands that forward command position to a following command name
+# (find . -exec rm, echo x | xargs rm, parallel rm, watch rm), so the wrapped
+# command is checked against the high-risk sets too.
+_HIGH_RISK_FORWARDING_COMMANDS = frozenset(
+    {
+        "find",
+        "fd",
+        "xargs",
+        "parallel",
+        "watch",
+        "strace",
+        "ltrace",
+        "ktrace",
+        "dtruss",
+        "perf",
+        "valgrind",
+    }
+)
+# Of those, find/fd only execute a child after an explicit -exec-style flag.
+# A tracer or profiler runs the rest of the line as a child process, so the
+# real command sits in argument position behind it.
+_TRACER_LAUNCHERS = frozenset({"strace", "ltrace", "ktrace", "dtruss", "perf", "valgrind"})
+_EXEC_FLAG_FORWARDING_COMMANDS = frozenset({"find", "fd"})
+_EXEC_FORWARD_FLAGS = frozenset(
+    {"-exec", "-execdir", "-ok", "-okdir", "--exec", "--exec-batch", "-x", "-X"}
+)
+# The long forms also accept the command attached to the flag (fd --exec=rm),
+# where the value is command position rather than a discarded option argument.
+_ATTACHED_EXEC_FLAGS = frozenset({"-exec", "-execdir", "--exec", "--exec-batch"})
+# find/fd flags that delete matches outright (a bare `find . -delete`, with no
+# separate command token to catch); an `-exec rm` is caught via forwarding.
+_HIGH_RISK_FIND_FLAGS = frozenset({"-delete"})
+# Flags whose VALUE is a command the tool then executes, so a payload (even a
+# hard-blocked one) rides inside an argument instead of at command position.
+# GNU tar --checkpoint-action=exec=CMD, rsync/scp -e REMOTE_SHELL.
+_HIGH_RISK_ARG_EXEC_FLAGS = frozenset({"--checkpoint-action", "--rsh", "--rsync-path"})
+# ...but only for the utilities that actually run them; otherwise a mere
+# mention (printf '%s' --rsh, a grep for the flag name) would prompt.
+_ARG_EXEC_FLAG_OWNERS = frozenset({"tar", "gtar", "bsdtar", "rsync", "scp", "sftp"})
+# An interpreter run as a network server (python -m http.server, uvicorn app:api)
+# listens on a socket; the sandbox has no network namespace, so the session
+# workdir becomes reachable wherever that port is exposed. Position-scoped, since
+# a bare mention (pip install uvicorn, grep uvicorn reqs.txt) starts no listener.
+_LISTENER_PY_MODULES = (
+    r"http\.server|SimpleHTTPServer|uvicorn|gunicorn|waitress|flask|"
+    r"twisted|websockets|aiohttp\.web"
+)
+_LISTENER_PY_MODULE_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?"
+    r"(?:python|pypy)[0-9.]*\s+(?:-\S+\s+)*-m\s+(?:" + _LISTENER_PY_MODULES + r")\b",
+    re.IGNORECASE,
+)
+# The same modules as the command-position regex, matched after wrapper
+# resolution so `env python -m http.server` and `timeout 60 python -m ...`
+# are seen too.
+_LISTENER_PY_MODULE_NAMES = frozenset(
+    {
+        "http.server",
+        "simplehttpserver",
+        "uvicorn",
+        "gunicorn",
+        "waitress",
+        "flask",
+        "twisted",
+        "websockets",
+        "aiohttp.web",
+    }
+)
+_LISTENER_BINARIES = frozenset({"uvicorn", "gunicorn", "waitress-serve", "hypercorn", "daphne"})
+_LISTENER_BIN_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    r"(?:uvicorn|gunicorn|waitress-serve|hypercorn|daphne)\b"
+)
+# curl upload/POST flags: local data sent out (exfiltration surface). The short
+# forms may be attached (-d@f, -Ffile=@dump.sql), so they match prefix-wise.
+_CURL_UPLOAD_LONG_FLAGS = frozenset(
+    {
+        "--data",
+        "--data-ascii",
+        "--data-binary",
+        "--data-raw",
+        "--data-urlencode",
+        "--form",
+        "--upload-file",
+    }
+)
+_CURL_UPLOAD_SHORT_FLAGS = ("-d", "-F", "-T")
+# curl's explicit-method flags and the methods that mutate/delete a remote
+# resource (a plain GET download stays out). POST is omitted: it is the ordinary
+# upload verb and is already caught by the body/upload flags above.
+# wget spells the request method --method=DELETE.
+_WGET_METHOD_FLAGS = frozenset({"--method"})
+_CURL_METHOD_FLAGS = frozenset({"-X", "--request"})
+_CURL_DESTRUCTIVE_METHODS = frozenset({"delete", "put", "patch"})
+# wget upload/POST flags. Kept separate from curl's so a benign wget short option
+# (wget -T 10 timeout, wget -F force-html) is not misread as an upload.
+_WGET_UPLOAD_FLAGS = frozenset({"--post-data", "--post-file", "--body-data", "--body-file"})
+# curl/wget output piped straight into an interpreter is remote code execution.
+_PIPE_TO_INTERPRETER_RE = re.compile(
+    r"\|\s*(?:sudo\s+)?(?:sh|bash|zsh|dash|ksh|fish|python[0-9.]*|node|ruby|perl|php)\b"
+)
+_BARE_TRUNCATING_REDIRECT_RE = re.compile(r"(?:^|[;&|\n(]|&&|\|\|)\s*(?::|true)?\s*>(?!>)\s*\S")
+_HERESTRING_TO_INTERPRETER_RE = re.compile(
+    r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|python[0-9.]*|node|ruby|perl|php)\b[^\n]*<<<"
+)
+# An interpreter that executes a process substitution's output as a script
+# (bash <(printf 'rm -rf x'), source <(...)): the generated content is never
+# literal text, so it is unscreenable and fails closed. A non-interpreter consumer
+# (diff <(sort a) <(sort b)) only reads the file and stays out.
+_PROC_SUBST_EXEC_RE = re.compile(
+    r"\b(?:sh|bash|zsh|dash|ksh|fish|ash|source|eval|python[0-9.]*|node|nodejs|bun|ruby|perl|php)\b"
+    r"[^\n]*<\("
+    r"|(?:^|[;&|\n(]|&&|\|\|)\s*\.\s+<\("
+)
+# Network clients beyond curl/wget that open a socket to a remote host: the
+# sandbox has no network namespace, so they can exfil the workdir or fetch and run
+# remote code. Command position only, so a filename argument (scp ./ssh_notes.txt)
+# is not misread as the command.
+_NETWORK_CLIENT_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    r"(?:nc|ncat|netcat|telnet|socat|ssh|slogin|scp|sftp)\b"
+)
+# openssl's s_client/s_server open a TLS socket, the classic no-curl exfil channel
+# (tar czf - . | openssl s_client -connect host:443). Plain openssl (dgst, enc) is
+# local and stays out. Matched on the resolved command segment, so the wrapped
+# forms (env openssl s_client) are seen too.
+_OPENSSL_NETWORK_SUBCOMMANDS = frozenset({"s_client", "s_server"})
+# `getent shadow` returns password hashes straight from NSS, so the read
+# never spells out /etc/shadow for the path check to find.
+_GETENT_CREDENTIAL_DATABASES = frozenset({"shadow", "gshadow"})
+_OPENSSL_NETWORK_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?openssl\s+s_(?:client|server)\b"
+)
+# An array expansion (${x[*]}, ${x[@]}) builds a command from elements the static
+# scan cannot resolve; fed to a shell -c/eval it runs an unscreened payload.
+# Paired with the var-executed-as-command test so `echo "${a[@]}"` is left alone.
+_ARRAY_EXPANSION_RE = re.compile(r"\$\{\w+\[[@*]\]\}")
+# A wrapper's bare duration/count argument (timeout 5 rm, timeout 1.5s rm) that
+# precedes the real command, so it is not mistaken for the command itself.
+_WRAPPER_DURATION_RE = re.compile(r"\d+(?:\.\d+)?[smhd]?$")
+# Non-shell interpreters running an inline program (python -c, node -e, php -r):
+# the terminal path never screens that program the way the python tool does.
+# sh/bash -c are omitted, the hard-block already recurses into their payloads.
+_INLINE_CODE_INTERPRETERS = frozenset(
+    {
+        "python",
+        "python2",
+        "python3",
+        "pypy",
+        "pypy3",
+        "node",
+        "nodejs",
+        "deno",
+        "bun",
+        "ruby",
+        "perl",
+        "php",
+    }
+)
+_INLINE_CODE_FLAGS = frozenset({"-c", "-e", "-E", "-r", "--eval", "--exec"})
+# Inline-code flags are per-interpreter: a flag that evaluates code for one runtime
+# is an ordinary option for another (`python -E` ignores PYTHON* env, it is not
+# eval). Value is (exact flags, short letters that may appear in a cluster).
+_INLINE_CODE_FLAG_SPEC = {
+    "python": (frozenset({"-c"}), "c"),
+    "pypy": (frozenset({"-c"}), "c"),
+    "node": (frozenset({"-e", "--eval"}), "e"),
+    "nodejs": (frozenset({"-e", "--eval"}), "e"),
+    "deno": (frozenset({"-e", "--eval"}), "e"),
+    "bun": (frozenset({"-e", "--eval"}), "e"),
+    "ruby": (frozenset({"-e"}), "e"),
+    # perl -e and -E both run a one-liner (-E also enables feature bundles).
+    "perl": (frozenset({"-e", "-E"}), "eE"),
+    # php -r runs code; -B / -R / -E run begin / per-line / end code.
+    "php": (frozenset({"-r", "-B", "-R", "-E"}), "rBRE"),
+}
+
+
+def _inline_code_flag_spec(name: str):
+    """(exact flags, short-cluster letters) that make `name` run inline code."""
+    base = name
+    if _VERSIONED_INTERPRETER_RE.match(base):
+        base = re.sub(r"\d+(?:\.\d+)*$", "", base)
+    else:
+        base = re.sub(r"^(python|pypy)[23]$", r"\1", base)
+    return _INLINE_CODE_FLAG_SPEC.get(base)
+
+
+# node/bun evaluate and print the argument to -p / --print, arbitrary code just
+# like -e/--eval. Scoped to the JS runtimes: -p is a print-loop switch for
+# perl/ruby/sed, not inline eval.
+_NODE_PRINT_INTERPRETERS = frozenset({"node", "nodejs", "bun"})
+# Runtimes that expose inline evaluation as a SUBCOMMAND (deno eval "...",
+# bun eval "..."), which the flag scan above never sees.
+_EVAL_SUBCOMMAND_INTERPRETERS = frozenset({"deno", "bun"})
+_NODE_PRINT_FLAGS = frozenset({"-p", "--print"})
+# Windows cmd.exe runs the rest of the line as a nested command after /c (or /k),
+# so the payload is screened recursively like a shell -c payload. cmd is not in
+# the hard-block set, and del/erase/rd were added to the high-risk set for it.
+_CMD_SHELLS = frozenset({"cmd"})
+# PowerShell runs an arbitrary inline program passed to -Command /
+# -EncodedCommand (and their unambiguous prefixes), which the terminal path cannot
+# parse. On Windows both names are hard-blocked; elsewhere pwsh is not, so gate an
+# inline-command invocation there. A bare `pwsh script.ps1` file run stays out.
+_POWERSHELL_INTERPRETERS = frozenset({"powershell", "pwsh"})
+# Versioned interpreter binaries (python3.11, python2.7, pypy3.10) are the same
+# inline-code risk as their unversioned names, so recognise the version suffix.
+_VERSIONED_INTERPRETER_RE = re.compile(r"^(?:python|pypy|perl|ruby|php|node)\d+(?:\.\d+)*$")
+# busybox / toybox dispatch to an applet given as the first argument, so the
+# applet, not the multicall binary, is the command whose risk is judged.
+_MULTICALL_BINARIES = frozenset({"busybox", "toybox"})
+# `cd /proc/$PPID; cat environ` reads a sensitive path after the chdir even though
+# no single token spells it out, so a chdir into a sensitive dir is gated.
+_CHDIR_COMMANDS = frozenset({"cd", "pushd", "chdir"})
+# The absolute system dirs are anchored so an unrelated user dir (/home/x/etc)
+# does not match; the credential dotfile dirs match anywhere in the path.
+_SENSITIVE_CHDIR_RE = re.compile(
+    r"^~?/proc/[^/\s'\"]+"
+    r"|^~?/etc(?:/|$)"
+    r"|^~?/root(?:/|$)"
+    r"|^~?/(?:var/)?run/secrets(?:/|$)"
+    r"|(?:^|[/\\])\.(?:ssh|aws|azure|gnupg|docker|kube)(?:[/\\]|$)"
+    r"|(?:^|[/\\])\.config[/\\](?:gcloud|gh)(?:[/\\]|$)",
+    re.IGNORECASE,
+)
+
+
+def _is_inline_code_interpreter(name: str) -> bool:
+    """True for an interpreter whose ``-c`` / ``-e`` runs an inline program the
+    terminal path never screens, including versioned python/pypy binaries."""
+    return name in _INLINE_CODE_INTERPRETERS or bool(_VERSIONED_INTERPRETER_RE.match(name))
+
+
+def _short_flag_cluster(token: str) -> "list[str]":
+    """Split a combined short-option token into its individual flags
+    (`-qf` -> ['-q', '-f']). A long option, a `-x=value` form or a bare `-`
+    yields nothing, so only genuine clusters are expanded."""
+    if len(token) < 3 or not token.startswith("-") or token.startswith("--") or "=" in token:
+        return []
+    return ["-" + ch for ch in token[1:]]
+
+
+def _short_flag_arg(token: str, letters: str) -> "str | None":
+    """For a short-flag cluster (``-lc``, ``-Bc``, ``-c``), if one of ``letters``
+    appears as a flag in it, return the text glued after that letter -- ``""`` when
+    the value is the next token, or the attached payload for ``-c'cmd'``. ``None``
+    when no such flag is present, or for long options / non-flags. Catches combined
+    forms (``bash -lc 'git clean'``) an exact ``-c`` match would miss."""
+    if not token.startswith("-") or token.startswith("--"):
+        return None
+    body = token[1:]
+    for i, ch in enumerate(body):
+        if ch in letters:
+            return body[i + 1 :]
+    return None
+
+
+def _shell_quote_states(command: str) -> "list[str]":
+    """The quote context of every character: ``""`` outside quoting, ``"'"``
+    (or ``"$'"`` for ANSI-C, which honours backslash escapes) inside single
+    quoting, ``'"'`` inside double quoting, and ``_ESCAPED_CHAR_STATE`` for a
+    backslash and the character it quotes. A quote mark itself reports the
+    context it opens from, so a character is text bash expands exactly when its
+    state is ``""`` or ``'"'``.
+
+    Tracked character by character rather than paired off with a regex, because
+    a regex matches the apostrophe in `echo "it's"` against the next quote,
+    inverting the state for everything after it.
+    """
+    states: "list[str]" = []
+    quote = ""
+    i, n = 0, len(command)
+    while i < n:
+        ch = command[i]
+        if quote in ("'", "$'"):
+            # A plain single quote protects even backslashes; ANSI-C does not,
+            # so `\'` there is a quote character rather than the end of the word.
+            if quote == "$'" and ch == "\\" and i + 1 < n:
+                states += [quote, quote]
+                i += 2
+                continue
+            states.append(quote)
+            if ch == "'":
+                quote = ""
+            i += 1
+            continue
+        if ch == "\\" and i + 1 < n:
+            # Reported under its OWN state rather than the surrounding one:
+            # marking `\$` as ordinary double-quoted text made `$(` there look
+            # like a live substitution, so an everyday `sed "s/\$(CC)/gcc/"
+            # Makefile` asked for confirmation while real bash hands sed a
+            # literal `$(CC)` and nothing runs (verified: it prints CC=cc).
+            states += [_ESCAPED_CHAR_STATE, _ESCAPED_CHAR_STATE]
+            i += 2
+            continue
+        states.append(quote)
+        if quote == '"':
+            # Only the closing quote ends it; an apostrophe here is text.
+            if ch == '"':
+                quote = ""
+        elif ch == "'":
+            quote = "$'" if i and command[i - 1] == "$" else "'"
+        elif ch == '"':
+            quote = '"'
+        i += 1
+    return states
+
+
+def _substitution_span(command: str, start: int) -> int:
+    """Index just past the `)` that closes the `$(` at ``start``.
+
+    The body of a substitution is a FRESH shell context -- bash re-parses it, so
+    quoting reopens inside even when the whole thing sits in double quotes --
+    and a paren the body QUOTES is text, not nesting. Counting it raised the
+    depth, the real `)` then never brought the depth back to zero, and the span
+    ran on past the end of the word: `sed "$(printf '(' >/dev/null; printf 'e
+    rm -f victim')" input` yielded a span with ` input` glued on, which no
+    longer matched the sed program it had to be found inside, so the generated
+    script went unnoticed.
+
+    _shell_quote_states is a left-to-right machine, so the states it reports for
+    a prefix are the ones it reports for the whole string; the window is grown
+    until the span closes, which keeps the cost a constant multiple of the
+    substitution's own length rather than a walk to the end of the line for
+    every one of them.
+    """
+    n = len(command)
+    width = _SUBSTITUTION_SPAN_STEP
+    while True:
+        stop = min(n, start + 1 + width)
+        body = command[start + 1 : stop]
+        depth = 0
+        for offset, state in enumerate(_shell_quote_states(body)):
+            if state:
+                continue  # quoted: data to the nested shell, not a delimiter
+            char = body[offset]
+            if char == "(":
+                depth += 1
+            elif char == ")":
+                depth -= 1
+                if depth == 0:
+                    return start + 2 + offset
+        if stop >= n:
+            return n
+        width *= 4
+
+
+def _arithmetic_span(command: str, start: int) -> int:
+    """Index just past the `))` / `]` closing the arithmetic expansion at
+    ``start`` -- `$((...))`, or the deprecated `$[...]` bash 5.2 still
+    evaluates (`echo $[1+2]` prints 3)."""
+    opener = command[start + 1]
+    closer = ")" if opener == "(" else "]"
+    depth, i, n = 0, start + 1, len(command)
+    while i < n:
+        if command[i] == opener:
+            depth += 1
+        elif command[i] == closer:
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def _brace_param_span(command: str, start: int) -> int:
+    """Index just past the `}` closing the `${` at ``start``. Braces nest
+    (`${a:-${b}}`) and a backslash quotes the one behind it."""
+    depth, i, n = 0, start + 1, len(command)
+    while i < n:
+        if command[i] == "\\":
+            i += 2
+            continue
+        if command[i] == "{":
+            depth += 1
+        elif command[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+        i += 1
+    return n
+
+
+def _collapse_shell_arithmetic(program: str) -> str:
+    """``program`` with each arithmetic expansion replaced by a digit
+    (_ARITHMETIC_VALUE), which is a faithful stand-in because arithmetic always
+    evaluates to an integer.
+
+    Without it the expansion's own punctuation is read as sed source and hides
+    the command behind it: `sed "$((c+1))e rm -f victim"` runs rm for real
+    (`$((c+1))` is 1), while the raw text takes the `c` for an append-text
+    command and swallows the payload as its operand. An expansion holding a
+    COMMAND substitution is left alone, so the substitution stays visible to
+    _sed_program_unresolved rather than being collapsed out of sight.
+    """
+    out: "list[str]" = []
+    i, n = 0, len(program)
+    while i < n:
+        if program.startswith("$((", i) or program.startswith("$[", i):
+            end = _arithmetic_span(program, i)
+            if not _HAS_COMMAND_SUBST_RE.search(program[i:end]):
+                out.append(_ARITHMETIC_VALUE)
+                i = end
+                continue
+        out.append(program[i])
+        i += 1
+    return "".join(out)
+
+
+def _shell_expansions(command: str, quoted: bool = True) -> "list[str]":
+    """Every expansion bash performs, as the exact text each one occupies:
+    `$(...)`, backticks, `${...}` in ANY form and a bare `$NAME` / `$?`.
+
+    With ``quoted`` (the default) the text is a whole command line, so a
+    single-quoted or backslash-escaped expansion is literal and reported as
+    nothing -- ``sed 's/`//g' NOTES.md`` and `sed "s/\\$(CC)/gcc/" Makefile`
+    both yield an empty list. With ``quoted`` False the text is a token shlex
+    has already unquoted, where every character counts; comparing the two tells
+    an expansion the shell RUNS from one a sed program merely quotes.
+
+    ARITHMETIC is skipped: it evaluates to an integer, so it can spell no sed
+    command (_ARITHMETIC_VALUE). One holding a command substitution is stepped
+    INTO instead, so the substitution inside `sed "$(( $(cat n) ))p"` is still
+    reported.
+    """
+    found: "list[str]" = []
+    states = _shell_quote_states(command) if quoted else None
+    i, n = 0, len(command)
+    while i < n:
+        if states is not None and states[i] not in ("", '"'):
+            i += 1
+            continue
+        if command[i] == "`":
+            end = command.find("`", i + 1)
+            end = n if end < 0 else end + 1
+            found.append(command[i:end])
+            i = end
+            continue
+        if command.startswith("$((", i) or command.startswith("$[", i):
+            end = _arithmetic_span(command, i)
+            # Stepping over the `$` alone would report the arithmetic's own
+            # `(name)` as a substitution; stepping over the whole span would
+            # hide a `$(...)` nested inside it. Do each where it applies.
+            i = i + 2 if _HAS_COMMAND_SUBST_RE.search(command[i:end]) else end
+            continue
+        if command.startswith("$(", i):
+            end = _substitution_span(command, i)
+            found.append(command[i:end])
+            i = end
+            continue
+        if command.startswith("${", i):
+            end = _brace_param_span(command, i)
+            found.append(command[i:end])
+            i = end
+            continue
+        match = _UNBRACED_PARAM_RE.match(command, i)
+        if match:
+            found.append(match.group(0))
+            i = match.end()
+            continue
+        i += 1
+    return found
+
+
+def _separate_unquoted_newlines(text: str) -> str:
+    """``text`` with each UNQUOTED newline replaced by `;`, which shlex reads as
+    a command boundary. A newline inside quotes is DATA -- a sed comment ends at
+    one -- so it survives, unlike a blanket replacement. A BACKSLASH-escaped
+    newline is a line continuation bash deletes rather than a separator, so it
+    survives too; the blanket pass still supplies that boundary if one is
+    wanted, since it replaces every newline unconditionally."""
+    states = _shell_quote_states(text)
+    out = []
+    for i, ch in enumerate(text):
+        if ch in "\r\n" and states[i] == "":
+            # \r\n is one boundary, not two.
+            if not (ch == "\n" and i and text[i - 1] == "\r"):
+                out.append(";")
+        else:
+            out.append(ch)
+    return "".join(out)
+
+
+# git subcommands that discard or overwrite work: `clean` deletes untracked files,
+# `restore` overwrites the worktree from the index/HEAD, `rm` deletes tracked
+# files, and the plumbing entries delete refs/reflogs/objects or rewrite history.
+# `reset`/`push`/`checkout` only qualify with a destructive flag or pathspec, so
+# `git reset --soft`, a plain `git push` and ordinary git (add/commit/log) run.
+_HIGH_RISK_GIT_SUBCOMMANDS = frozenset(
+    {"clean", "restore", "rm", "update-ref", "filter-branch", "prune", "gc", "reflog"}
+)
+_HIGH_RISK_GIT_RESET_FLAGS = frozenset({"--hard"})
+_HIGH_RISK_GIT_PUSH_FLAGS = frozenset(
+    # --delete/-d removes a remote ref; --mirror and --prune delete remote refs
+    # that are absent locally. All are remote data loss, like a force push.
+    {"-f", "--force", "--force-with-lease", "-d", "--delete", "--mirror", "--prune"}
+)
+# `git worktree remove --force` deletes a linked worktree even when it holds
+# uncommitted work or is locked. An unforced remove refuses on a dirty worktree,
+# so it stays out.
+_HIGH_RISK_GIT_WORKTREE_FLAGS = frozenset({"-f", "--force"})
+# `git switch -f/--discard-changes` throws away tracked working-tree edits.
+_HIGH_RISK_GIT_SWITCH_FLAGS = frozenset({"-C", "-f", "--force", "--discard-changes"})
+# `git branch -D` force-deletes a branch, discarding unmerged commits; -M
+# force-renames over an existing branch. Plain -d/--delete refuses to drop
+# unmerged work, so it stays out.
+_HIGH_RISK_GIT_BRANCH_FLAGS = frozenset({"-D", "-M", "-f", "--force"})
+# `git stash clear` / `drop` destroy stashed work with no reflog to recover it.
+_HIGH_RISK_GIT_STASH_ACTIONS = frozenset({"clear", "drop"})
+# `git checkout -- <path>` / `git checkout .` / `git checkout -f` discard tracked
+# working-tree changes; a bare `git checkout <branch>` (switching) does not.
+_HIGH_RISK_GIT_CHECKOUT_FLAGS = frozenset({"-f", "--force", "-B"})
+# `git checkout-index -f` overwrites working-tree files from the index.
+_HIGH_RISK_GIT_CHECKOUT_INDEX_FLAGS = frozenset({"-f", "--force"})
+# `git tag -d` deletes a ref; `git tag -f` replaces one that already exists.
+_HIGH_RISK_GIT_TAG_FLAGS = frozenset({"-d", "--delete", "-f", "--force"})
+# `git -c alias.NAME=PAYLOAD` defines an alias git then runs; a leading `!` makes
+# the payload a shell command.
+_GIT_ALIAS_ASSIGN_RE = re.compile(r"^alias\.[^=]+=(.*)$", re.DOTALL)
+# `git --config-env=alias.n=VAR n` names an environment variable whose value
+# becomes the alias body, so the code is never present in the command text.
+_GIT_CONFIG_ENV_ALIAS_RE = re.compile(r"(?:^|=)alias\.", re.IGNORECASE)
+# git global options taking a separate value token (git -C repo clean); the value
+# must be consumed so it is not mistaken for the subcommand.
+_GIT_GLOBAL_VALUE_FLAGS = frozenset(
+    {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env"}
+)
+# Shells whose `-c PAYLOAD` runs an inline program: the payload is recursively
+# screened, so a high-risk command wrapped in `bash -c '...'` is still caught. The
+# hard-block only recurses for its own smaller command set.
+_SHELL_C_INTERPRETERS = frozenset({"sh", "bash", "zsh", "dash", "ksh", "fish", "ash"})
+# A command synthesized by a command substitution at command position
+# ($(printf rm) -rf build) cannot be read statically. A substitution in argument
+# position (echo $(date), make $(FILES)) is left alone.
+_COMMAND_SUBST_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=[^\s;&|()]*\s+)*(?:\$\(|`)"
+)
+
+# A command substitution appearing anywhere ($(...) that is not arithmetic
+# $((...)), or a backtick). Used to catch a substitution stashed in a variable
+# (x=`...`) that a later dynamic exec runs, which never surfaces as literal text.
+_HAS_COMMAND_SUBST_RE = re.compile(r"\$\((?!\()|`")
+# The same as below, but only when the expansion is the WHOLE command word. A
+# variable used as a path prefix (${VENV}/bin/python) still leaves a literal
+# basename the scan can screen, so it is not unresolvable.
+_BARE_VAR_AS_COMMAND_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*\$\{?\w+\}?(?=\s|$)"
+)
+# A variable expansion executed as a command: $VAR at command position, or a shell
+# `-c` / eval whose payload contains a `$` expansion. Paired with
+# _HAS_COMMAND_SUBST_RE this flags `x=`printf 'git clean -fd'`; bash -c "$x"`,
+# assembled at runtime and so unscreenable statically.
+_VAR_EXECUTED_AS_COMMAND_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*\$\{?\w"
+    r"|\b(?:sh|bash|zsh|dash|ksh|ash)\b[^\n]*?\s-c\b[^\n]*\$"
+    r"|\beval\b[^\n]*\$"
+)
+
+
+_SHELL_SEGMENT_SPLIT_RE = re.compile(r"^(?:;|&&|\|\||\||&)$")
+
+
+# Wrappers that may sit in front of a network client without changing what it
+# does, so the client is still at command position behind them.
+_CLIENT_WRAPPERS = frozenset(
+    {"env", "command", "timeout", "nohup", "nice", "ionice", "stdbuf", "setsid", "exec"}
+)
+_CLIENT_WRAPPER_PREFIX = (
+    r"(?:(?:env|command|timeout|nohup|nice|ionice|stdbuf|setsid|exec)\s+"
+    r"(?:-\S+\s+|\d+(?:\.\d+)?[smhd]?\s+)*)*"
+)
+# The terminal sandbox shares the backend's installed environment, so removing
+# a package (pip uninstall torch) breaks the running process. Installing does
+# not, and is ordinary work, so only the removal verbs are gated.
+_PKG_REMOVE_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*(?:\S*/)?"
+    r"(?:(?:python[0-9.]*\s+-m\s+)?pip[0-9]*|uv\s+pip|pipx|conda|mamba|micromamba)"
+    r"\s+(?:uninstall|remove)\b",
+    re.IGNORECASE,
+)
+_CURL_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    + _CLIENT_WRAPPER_PREFIX
+    + r"(?:\S*/)?curl\b",
+    re.IGNORECASE,
+)
+_WGET_AT_CMD_RE = re.compile(
+    r"(?:^|[;&|\n(]|&&|\|\|)\s*(?:[A-Za-z_]\w*=\S*\s+)*"
+    + _CLIENT_WRAPPER_PREFIX
+    + r"(?:\S*/)?wget\b",
+    re.IGNORECASE,
+)
+
+
+def _tokens_for_client_segment(tokens: list, has_curl: bool, has_wget: bool):
+    """Tokens of the segments whose command is curl/wget, or None if there is no
+    such segment. Keeps an unrelated command's option letters out of the upload
+    scan (`ls -T && echo curl`)."""
+    segments: list = []
+    current: list = []
+    for t in tokens:
+        if _SHELL_SEGMENT_SPLIT_RE.match(t):
+            segments.append(current)
+            current = []
+        else:
+            current.append(t)
+    segments.append(current)
+    kept: list = []
+    for seg in segments:
+        # Skip leading NAME=value prefixes to find the command word.
+        i = 0
+        while i < len(seg) and re.match(r"^[A-Za-z_]\w*=", seg[i]):
+            i += 1
+        if i >= len(seg):
+            continue
+        # Step past a wrapper (env curl, timeout 5 curl) to the real client.
+        while i < len(seg):
+            base = os.path.basename(seg[i].strip(";&|()`{}")).lower()
+            if base not in _CLIENT_WRAPPERS:
+                break
+            i += 1
+            while i < len(seg) and (seg[i].startswith("-") or _WRAPPER_DURATION_RE.match(seg[i])):
+                i += 1
+        if i >= len(seg):
+            continue
+        base = os.path.basename(seg[i].strip(";&|()`{}")).lower()
+        if (has_curl and base == "curl") or (has_wget and base == "wget"):
+            kept.extend(seg[i:])
+    return kept or None
+
+
+def _command_is_network_exec_or_exfil(command: str) -> bool:
+    """curl/wget used to run remote code (piped into a shell, or via process
+    substitution) or to upload local data. Plain downloads (curl -O, wget URL)
+    are ordinary and stay out. Fails closed on an unparseable command."""
+    low = command.lower()
+    # A non-curl/wget client (nc/ssh/socat) or openssl's TLS socket is a remote
+    # reach in its own right, so gate it before the upload-flag logic below.
+    if _NETWORK_CLIENT_AT_CMD_RE.search(command) or _OPENSSL_NETWORK_RE.search(low):
+        return True
+    # A mention in argument position (`grep curl notes.txt`) is not an invocation,
+    # and treating it as one lends another command's option letters to the scan.
+    has_curl = bool(_CURL_AT_CMD_RE.search(command))
+    has_wget = bool(_WGET_AT_CMD_RE.search(command))
+    if not has_curl and not has_wget:
+        return False
+    if _PIPE_TO_INTERPRETER_RE.search(low):
+        return True
+    if "<(" in command:  # bash <(curl ...) process substitution
+        return True
+    try:
+        tokens = shlex.split(command.replace("\n", " "), posix = True)
+    except ValueError:
+        return True
+    # Scope the flag scan to the segment that actually runs curl/wget: a shared
+    # option letter from an unrelated command (`ls -T && echo curl`) is not an
+    # upload flag.
+    tokens = _tokens_for_client_segment(tokens, has_curl, has_wget)
+    if tokens is None:
+        return False
+    method_pending = False
+    for t in tokens:
+        name = t.split("=", 1)[0]
+        # curl -X DELETE / --request PUT mutates a remote resource, not a plain
+        # download. Separated, attached (-XDELETE) and --request=DELETE forms.
+        if has_curl:
+            if method_pending:
+                method_pending = False
+                if t.lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+            if name in _CURL_METHOD_FLAGS:
+                if "=" in t and t.split("=", 1)[1].lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+                method_pending = True
+                continue
+            if t.startswith("-X") and t[2:].lower() in _CURL_DESTRUCTIVE_METHODS:
+                return True
+        if has_wget:
+            # wget --method=DELETE / --method DELETE is the same remote mutation.
+            if method_pending:
+                method_pending = False
+                if t.lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+            if name in _WGET_METHOD_FLAGS:
+                if "=" in t and t.split("=", 1)[1].lower() in _CURL_DESTRUCTIVE_METHODS:
+                    return True
+                method_pending = True
+                continue
+        if has_curl and (
+            name in _CURL_UPLOAD_LONG_FLAGS
+            # a curl short upload flag, attached or not (-d@f, -Ffile=@dump.sql)
+            or (not name.startswith("--") and name.startswith(_CURL_UPLOAD_SHORT_FLAGS))
+        ):
+            return True
+        if has_wget and name in _WGET_UPLOAD_FLAGS:
+            return True
+    return False
+
+
+# `git clean -n` / `--dry-run` only lists what would be removed.
+_GIT_CLEAN_DRY_RUN_FLAGS = frozenset({"-n", "--dry-run"})
+
+
+def _container_subcommand_is_read_only(tokens: list, start: int) -> bool:
+    """Whether a container CLI's first positional is a read subcommand. A bare
+    `docker` or `docker --version` prints help and runs nothing."""
+    for t in tokens[start + 1 :]:
+        if t in _SHELL_SEPARATORS or not set(t) - set(";&|()"):
+            break
+        if t.startswith("-"):
+            continue
+        return t.lower() in _CONTAINER_READ_SUBCOMMANDS
+    return True
+
+
+def _segment_has_command_after(tokens: list, start: int) -> bool:
+    """Whether a command word follows an assignment in the same segment. A bare
+    `export PATH=...` or `FOO=bar` runs nothing: every terminal call gets its own
+    shell process, so an assignment with no command dies with it."""
+    for t in tokens[start + 1 :]:
+        if t in _SHELL_SEPARATORS or not set(t) - set(";&|()"):
+            return False
+        if _ASSIGNMENT_RE.match(t) or t.startswith("-"):
+            continue
+        return True
+    return False
+
+
+def _segment_has_flag(
+    tokens: list,
+    start: int,
+    exact: frozenset,
+    letters: str = "",
+) -> bool:
+    """Whether a flag appears in the same command segment as ``start``, so a
+    later command's options are not read as this command's."""
+    for t in tokens[start + 1 :]:
+        if t in _SHELL_SEPARATORS or not set(t) - set(";&|()"):
+            break
+        if t in exact:
+            return True
+        if letters and t[:1] == "-" and t[:2] != "--" and "=" not in t:
+            if any(ch in letters for ch in t[1:]):
+                return True
+    return False
+
+
+def _segment_is_recursive(tokens: list, start: int) -> bool:
+    """Whether a recursive flag (-R / --recursive / an -rf style cluster) belongs
+    to the command starting at ``start``: scan only up to the next separator, so
+    `grep -R x . && chmod +x f` does not make the chmod look recursive."""
+    for t in tokens[start + 1 :]:
+        if t in _SHELL_SEPARATORS or not set(t) - set(";&|()"):
+            break
+        if t in ("-R", "--recursive"):
+            return True
+        if t[:1] == "-" and t[:2] != "--" and "=" not in t and "R" in t[1:]:
+            return True
+    return False
+
+
+def _inline_python_is_high_risk(code: str) -> bool:
+    """Screen a `python -c` payload with the same analyzer the python tool uses,
+    so an ordinary one-liner runs and a destructive one still asks. Source that
+    does not parse fails closed: shell quoting may have mangled it, leaving
+    nothing to screen."""
+    try:
+        ast.parse(code)
+    except SyntaxError:
+        return True
+    return _python_is_high_risk(code)
+
+
+def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
+    """High-risk terminal command for auto mode: credential/secret access,
+    privilege escalation, destructive/persistence changes, or network
+    exec/exfil. Ordinary dev commands run without a prompt. Fails closed
+    (prompts) on an unparseable command. ``_depth`` bounds the recursion into
+    shell ``-c`` payloads."""
+    if len(command) > _MAX_TERMINAL_SCAN_CHARS:
+        # Far longer than any ordinary command, and screening it is superlinear,
+        # so it asks instead.
+        return True
+    if not command or not command.strip():
+        return False
+    # A credential/secret path read or write, or a sandbox escape (../), asks.
+    if _command_references_sensitive(command):
+        return True
+    # A bare redirection with no command (`> notes.txt`, `: > notes.txt`) truncates
+    # the file to zero bytes, the same loss as the gated `truncate -s 0`. A
+    # redirect after a real command (`python train.py > out.log`) stays out.
+    if _BARE_TRUNCATING_REDIRECT_RE.search(command):
+        return True
+    # A process substitution an interpreter executes runs a script the static scan
+    # cannot read, so fail closed.
+    if _PROC_SUBST_EXEC_RE.search(command):
+        return True
+    # A script piped into a shell (printf '...' | bash) or fed as a herestring
+    # (bash <<< '...') is executed without ever appearing at command position.
+    if _PKG_REMOVE_AT_CMD_RE.search(command):
+        return True
+    if _PIPE_TO_INTERPRETER_RE.search(command.lower()):
+        return True
+    _herestring = _HERESTRING_TO_INTERPRETER_RE.search(command)
+    if _herestring:
+        return True
+    # Newlines separate commands in a shell but read as whitespace to shlex, and
+    # ANSI-C quoting ($'rm') hides the real command name.
+    decoded = _decode_ansi_c(command, keep_one_word = True)
+    normalized = decoded.replace("\r\n", ";").replace("\n", ";").replace("\r", ";")
+    # Identical to the blanket form unless a newline is actually present, so the
+    # usual single-line command never pays for the quote walk.
+    quoted_newlines_kept = (
+        _separate_unquoted_newlines(decoded) if "\n" in decoded or "\r" in decoded else normalized
+    )
+    # Matched against a sed program below to tell an expansion the shell RUNS
+    # from one the program merely quotes. Held in both newline forms so the
+    # match works whichever pass produced the tokens.
+    live_expansions: "set[str]" = set()
+    if "$" in command or "`" in command:
+        live_expansions = {
+            form
+            for expansion in _shell_expansions(command)
+            for form in (
+                expansion,
+                expansion.replace("\r\n", ";").replace("\n", ";").replace("\r", ";"),
+            )
+        }
+    # A verb hidden behind an assignment (c=rm; $c x) or a default parameter
+    # (${c:-rm}) is expanded so the resolved token is scanned too.
+    expanded = _expand_shell_assignments(_expand_param_defaults(normalized))
+    # Run the network exfil check over the expanded form too, so a curl/wget
+    # name assembled from variables (c=cu d=rl; $c$d -F ...) is still seen.
+    if _command_is_network_exec_or_exfil(command) or _command_is_network_exec_or_exfil(expanded):
+        return True
+    # A command substitution at command position generates the command Bash runs.
+    if _COMMAND_SUBST_AT_CMD_RE.search(command):
+        return True
+    # A variable executed at command position hides the name that actually runs. A
+    # plain assignment is resolved by the expansion above, so reaching here means
+    # the binding came from somewhere this scan cannot follow (a command
+    # substitution, or `printf -v c rm`). No name left to screen: fail closed.
+    if _HAS_COMMAND_SUBST_RE.search(command) and _VAR_EXECUTED_AS_COMMAND_RE.search(command):
+        return True
+    if _BARE_VAR_AS_COMMAND_RE.search(expanded):
+        return True
+    # An array run as a command (x=(git clean -fd); bash -c "${x[*]}") carries no
+    # command substitution, and assignment expansion does not resolve arrays, so
+    # the check above misses it. A benign array print is untouched.
+    if _ARRAY_EXPANSION_RE.search(command) and _VAR_EXECUTED_AS_COMMAND_RE.search(command):
+        return True
+    # A newline inside a QUOTED argument is data, not a separator, and turning
+    # it into `;` rewrites that data: a sed comment ends at a real newline, so
+    # `sed '# note<newline>e CMD'` reads as one long comment once the newline is
+    # gone. So a pass that only separates the UNQUOTED ones is scanned too. It
+    # keeps every command boundary the blanket form has, so the token stream is
+    # the same and only quoted content differs: the pass adds detections without
+    # merging two commands into one segment. The set collapses to a single scan
+    # for the usual single-line command.
+    for text in {normalized, expanded, quoted_newlines_kept}:
+        try:
+            lexer = shlex.shlex(text, posix = True, punctuation_chars = ";&|()")
+            lexer.whitespace_split = True
+            tokens = list(lexer)
+        except ValueError:
+            return True
+        recursive = any(
+            t in ("-R", "--recursive")
+            or (t[:1] == "-" and t[:2] != "--" and "=" not in t and "R" in t[1:])
+            for t in tokens
+        )
+        find_like = any(
+            os.path.basename(t.strip(";&|()`{}")).lower() in ("find", "fd") for t in tokens
+        )
+        # Shared out over the sed words present, so a lone sed reads its whole
+        # argument list and a line packed with them stays linear (_sed_scan_limit).
+        sed_scan_limit = _sed_scan_limit(
+            sum(1 for t in tokens if os.path.basename(t.strip(";&|()`{}")).lower() in _SED_COMMANDS)
+        )
+        # Built at most once per pass, and only when a sed program actually
+        # names a variable, so a line packed with sed words stays linear.
+        sed_vars: "dict[str, str] | None" = None
+        sed_bindings: "list[tuple[int, str, str | None]] | None" = None
+        sed_cursor = 0
+        # Where a sed invocation really ends. Built at most once per pass, and
+        # only once a sed is actually reached, so a line without one never pays
+        # for the quote walk it needs (_quoted_separator_indexes).
+        sed_stops: "frozenset[int] | None" = None
+        sed_skips: "frozenset[int]" = frozenset()
+        sed_quoted: "frozenset[int]" = frozenset()
+        sed_globs: "frozenset[int]" = frozenset()
+        sed_expandable: "frozenset[int]" = frozenset()
+        if find_like and any(t.split("=", 1)[0] in _HIGH_RISK_FIND_FLAGS for t in tokens):
+            return True
+        # GNU tar runs --checkpoint-action=exec=CMD at each checkpoint, hiding a
+        # command (including hard-blocked ones) inside an argument.
+        if any(
+            os.path.basename(t.strip(";&|()`{}")).lower() in _ARG_EXEC_FLAG_OWNERS for t in tokens
+        ) and any(t.split("=", 1)[0] in _HIGH_RISK_ARG_EXEC_FLAGS for t in tokens):
+            return True
+        # An interpreter serving on the network exposes the session workdir; the
+        # sandbox keeps no network namespace.
+        if _LISTENER_PY_MODULE_RE.search(text) or _LISTENER_BIN_AT_CMD_RE.search(text):
+            return True
+        expect_command = True  # at the start of a command (after a separator)
+        prefix_pending = False  # inside a wrapper (env/timeout/...) still seeking the command
+        scan_forward = False  # a forwarding command (find/xargs/...) precedes another command
+        current_command = ""  # the resolved command whose flags / git subcommand we judge
+        git_subcommand = ""  # the first positional after `git`
+        shell_c_pending = False  # a shell `-c` precedes its inline payload
+        wrapper_value_pending = False  # a wrapper option precedes its value
+        exec_flag_pending = False  # inside find/fd, waiting for -exec
+        git_checkout_positionals = 0  # positionals seen after `git checkout`
+        git_worktree_action = ""  # the action after `git worktree`
+        win_operand_pending = False  # operand of a Windows `if exist`/`if defined`
+        inline_python_pending = False  # next token is a `python -c` payload
+        py_module_pending = False  # next token is the module after `python -m`
+        git_submodule_action = ""  # the action after `git submodule`
+        awk_program_pending = False  # next positional is an awk program
+        git_config_alias_pending = False  # `git config alias.x` precedes its body
+        git_glob_pending = False  # a git global option (-C repo) precedes its value
+        chdir_pending = False  # a cd/pushd precedes its target directory
+        xargs_index = -1  # an xargs awaiting the command whose argv it builds
+        for _tok_idx, token in enumerate(tokens):
+            if (
+                token in _SHELL_SEPARATORS
+                or (token in _SHELL_KEYWORDS_AS_SEP and expect_command)
+                or not set(token) - set(";&|()")
+            ):
+                expect_command = True
+                prefix_pending = False
+                xargs_index = -1
+                # A dangling wrapper option (env -u ; rm ...) must not consume
+                # the next segment's command word.
+                wrapper_value_pending = False
+                scan_forward = False
+                current_command = ""
+                git_subcommand = ""
+                git_worktree_action = ""
+                win_operand_pending = False
+                inline_python_pending = False
+                py_module_pending = False
+                git_submodule_action = ""
+                awk_program_pending = False
+                shell_c_pending = False
+                git_glob_pending = False
+                chdir_pending = False
+                continue
+            if py_module_pending:
+                py_module_pending = False
+                if token.strip("\"'").lower() in _LISTENER_PY_MODULE_NAMES:
+                    return True
+            if inline_python_pending:
+                inline_python_pending = False
+                if _depth >= 3 or _inline_python_is_high_risk(token):
+                    return True
+                continue
+            if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
+                # `if exist FILE del FILE`: the operand sits where the command
+                # word would be, so the real command is still ahead.
+                win_operand_pending = token.lower() != "not"
+                continue
+            if win_operand_pending:
+                win_operand_pending = False
+                continue
+            if expect_command and _REDIR_PREFIX_RE.match(token):
+                # Bash accepts a redirection before the command word
+                # (`</dev/null rm -rf build`); the command is still to come.
+                continue
+            if exec_flag_pending and token == "--":
+                # fd tells a user whose PATTERN starts with a dash to write
+                # `fd -- '-foo'`, so nothing behind the marker is an option and
+                # `fd -- -x rm` merely lists a file called `-x`.
+                exec_flag_pending = False
+                continue
+            if token.startswith("-"):
+                flag = token.split("=", 1)[0]
+                # find/fd: the command after -exec/-ok is the one that runs.
+                if exec_flag_pending and flag in _EXEC_FORWARD_FLAGS:
+                    # `fd . --exec=rm` attaches the command to the flag, so the
+                    # value is the command that runs, not an option argument.
+                    if "=" in token and flag in _ATTACHED_EXEC_FLAGS:
+                        attached = token.split("=", 1)[1].strip("\"'")
+                        if attached and (
+                            _depth >= 3 or _terminal_is_high_risk(attached, _depth + 1)
+                        ):
+                            return True
+                    scan_forward = True
+                    expect_command = True
+                    continue
+                if exec_flag_pending and token[:2] in {"-x", "-X"} and len(token) > 2:
+                    # fd takes the command attached to the SHORT option too, and
+                    # only the exact spellings were read as one: `fd '^victim$'
+                    # . -xrm` deletes the match for real (fdfind 9.0.0).
+                    attached = token[2:].strip("\"'")
+                    if attached and (_depth >= 3 or _terminal_is_high_risk(attached, _depth + 1)):
+                        return True
+                    scan_forward = True
+                    expect_command = True
+                    continue
+                if current_command == "setpriv" and flag in _SETPRIV_PRIVILEGE_FLAGS:
+                    # Ahead of the wrapper-value skip below, which would otherwise
+                    # swallow `--reuid 0` before it is judged.
+                    return True
+                # A wrapper option taking a SEPARATE value (env -u NAME): the next
+                # token is that value, not the wrapped command.
+                if (
+                    prefix_pending
+                    and "=" not in token
+                    and flag in _WRAPPER_VALUE_FLAGS_BY_CMD.get(current_command, frozenset())
+                ):
+                    wrapper_value_pending = True
+                    continue
+                # An interpreter running inline code (python -c, node -e) executes
+                # a program the terminal path never screens. Matches the long
+                # --eval/--exec forms and any short cluster carrying -c.
+                _inline_spec = (
+                    _inline_code_flag_spec(current_command)
+                    if _is_inline_code_interpreter(current_command)
+                    else None
+                )
+                _current_is_python_family = current_command.startswith(("python", "pypy"))
+                if _current_is_python_family and flag == "-m":
+                    py_module_pending = True
+                    continue
+                if _inline_spec is not None and (
+                    flag in _inline_spec[0] or _short_flag_arg(token, _inline_spec[1]) is not None
+                ):
+                    # Python payloads go through the python tool's analyzer, so an
+                    # ordinary one-liner runs and a destructive one asks. The other
+                    # runtimes have no analyzer here, so they stay gated.
+                    if _current_is_python_family:
+                        # A bare `-c` yields an EMPTY attached value, not None,
+                        # so the payload is the next token; only a non-empty
+                        # value is the attached form (python -c'print(1)').
+                        _attached = _short_flag_arg(token, _inline_spec[1])
+                        if _attached:
+                            if _depth >= 3 or _inline_python_is_high_risk(_attached):
+                                return True
+                            continue
+                        inline_python_pending = True
+                        continue
+                    return True
+                # node/bun -p / --print evaluate and print arbitrary source, the
+                # same inline-code risk as -e/--eval (attached node -p'...' too).
+                if current_command in _NODE_PRINT_INTERPRETERS and (
+                    flag in _NODE_PRINT_FLAGS or _short_flag_arg(token, "p") is not None
+                ):
+                    return True
+                # PowerShell -Command / -EncodedCommand run an inline program the
+                # terminal path cannot screen; a bare `pwsh script.ps1` still runs.
+                if current_command in _POWERSHELL_INTERPRETERS and flag.lower().startswith(
+                    ("-c", "-e")
+                ):
+                    return True
+                # A shell `-c PAYLOAD` runs its quoted payload; screen it
+                # recursively. Combined clusters (bash -lc) carry -c too.
+                if current_command in _SHELL_C_INTERPRETERS:
+                    payload = _short_flag_arg(token, "c")
+                    if payload is not None:
+                        # A short run of plain letters after `c` (bash -ce) is more
+                        # bash OPTIONS, not an attached payload: the command string
+                        # still comes from the next token.
+                        if payload and payload.isalpha() and len(payload) <= 4:
+                            shell_c_pending = True
+                        elif payload:
+                            if _depth >= 3:
+                                return True
+                            if _terminal_is_high_risk(payload, _depth + 1):
+                                return True
+                        else:
+                            shell_c_pending = True
+                # env -S 'cmd' runs the string as a new command, so screen it;
+                # env -C chdirs (enabling a relative sensitive read), so it asks.
+                if current_command == "env":
+                    if flag in ("-C", "--chdir"):
+                        return True
+                    payload = None
+                    if token.startswith("-S") and token != "-S":
+                        payload = token[2:]  # attached: -S'cmd'
+                    elif flag == "--split-string" and "=" in token:
+                        payload = token.split("=", 1)[1]
+                    elif token == "-S" or flag == "--split-string":
+                        shell_c_pending = True  # payload is the next token
+                    if (
+                        payload is not None
+                        and _depth < 3
+                        and _terminal_is_high_risk(payload, _depth + 1)
+                    ):
+                        return True
+                if current_command == "sysctl" and flag in _SYSCTL_WRITE_FLAGS:
+                    return True
+                if current_command == "fallocate" and (
+                    flag in _FALLOCATE_DESTRUCTIVE_FLAGS
+                    or any(f in _FALLOCATE_DESTRUCTIVE_FLAGS for f in _short_flag_cluster(token))
+                ):
+                    return True
+                if (
+                    current_command == "git"
+                    and git_subcommand == "worktree"
+                    and git_worktree_action == "remove"
+                    and flag in _HIGH_RISK_GIT_WORKTREE_FLAGS
+                ):
+                    return True
+                if current_command == "git":
+                    # reset --hard discards the working tree; push --force
+                    # overwrites a remote ref.
+                    if git_subcommand == "reset" and flag in _HIGH_RISK_GIT_RESET_FLAGS:
+                        return True
+                    if git_subcommand == "push" and (
+                        flag in _HIGH_RISK_GIT_PUSH_FLAGS
+                        or any(f in _HIGH_RISK_GIT_PUSH_FLAGS for f in _short_flag_cluster(token))
+                    ):
+                        return True
+                    # git checkout -f / --force, or an explicit `--` path
+                    # separator (git checkout -- file), discards tracked edits.
+                    if git_subcommand == "checkout" and (
+                        flag in _HIGH_RISK_GIT_CHECKOUT_FLAGS
+                        or any(
+                            f in _HIGH_RISK_GIT_CHECKOUT_FLAGS for f in _short_flag_cluster(token)
+                        )
+                        or token == "--"
+                        or flag == "--pathspec-from-file"
+                    ):
+                        return True
+                    if git_subcommand == "checkout-index" and (
+                        flag in _HIGH_RISK_GIT_CHECKOUT_INDEX_FLAGS
+                        or any(
+                            f in _HIGH_RISK_GIT_CHECKOUT_INDEX_FLAGS
+                            for f in _short_flag_cluster(token)
+                        )
+                    ):
+                        return True
+                    if git_subcommand == "tag" and (
+                        flag in _HIGH_RISK_GIT_TAG_FLAGS
+                        or any(f in _HIGH_RISK_GIT_TAG_FLAGS for f in _short_flag_cluster(token))
+                    ):
+                        return True
+                    if git_subcommand == "switch" and (
+                        flag in _HIGH_RISK_GIT_SWITCH_FLAGS
+                        or any(f in _HIGH_RISK_GIT_SWITCH_FLAGS for f in _short_flag_cluster(token))
+                    ):
+                        return True
+                    # git branch -D / -M drops or overwrites unmerged commits.
+                    if git_subcommand == "branch" and (
+                        flag in _HIGH_RISK_GIT_BRANCH_FLAGS
+                        or any(f in _HIGH_RISK_GIT_BRANCH_FLAGS for f in _short_flag_cluster(token))
+                    ):
+                        return True
+                    # --config-env=<key>=<envvar> reads the value from the
+                    # environment, unresolvable here, so an alias key would store
+                    # unscreened code git runs on the next call.
+                    if flag == "--config-env" and _GIT_CONFIG_ENV_ALIAS_RE.search(token):
+                        return True
+                    # A git global option with a separate value (git -C repo clean)
+                    # precedes its value, not the subcommand.
+                    if not git_subcommand and "=" not in token and flag in _GIT_GLOBAL_VALUE_FLAGS:
+                        git_glob_pending = True
+                continue
+            if _ASSIGNMENT_RE.match(token):
+                _assign_name, _, _assign_value = token.partition("=")
+                # `alias zap='rm -rf'` stores a command bash runs when the alias
+                # is invoked, the same shape as a git alias body.
+                if current_command == "alias" and _assign_value:
+                    if _depth >= 3 or _terminal_is_high_risk(_assign_value, _depth + 1):
+                        return True
+                # PATH/LD_PRELOAD-style assignments hijack command lookup, but only
+                # for the command they prefix: a bare `export PATH=...` runs
+                # nothing, and the shell it was set in exits immediately.
+                if _env_assignment_is_unsafe(
+                    _assign_name, _assign_value
+                ) and _segment_has_command_after(tokens, _tok_idx):
+                    return True
+                continue
+            raw = token.strip(";&|()`{}")
+            if not raw:
+                continue
+            # cmd.exe /c (or /k) runs the following token as a nested command. /c is
+            # not a `-`-flag, so it is handled here in argument position after cmd.
+            if current_command in _CMD_SHELLS and raw.lower() in ("/c", "/k"):
+                shell_c_pending = True
+                continue
+            # The payload of a shell `-c`, screened recursively (bounded depth).
+            if shell_c_pending:
+                shell_c_pending = False
+                # An unquoted payload (cmd /c git clean -fd) spans the remaining
+                # tokens, so screen the whole remainder.
+                payload = " ".join(tokens[_tok_idx:])
+                if _depth >= 3:
+                    # Too deeply nested to screen: fail closed.
+                    return True
+                if _terminal_is_high_risk(payload, _depth + 1):
+                    return True
+                if payload != raw and _terminal_is_high_risk(raw, _depth + 1):
+                    return True
+                expect_command = False
+                continue
+            # The value of a git global option (git -C repo clean): not the subcommand.
+            if git_glob_pending:
+                git_glob_pending = False
+                # `git -c alias.x=BODY` defines an alias git later executes, so the
+                # payload is real code hiding in an option value: screen it.
+                m = _GIT_ALIAS_ASSIGN_RE.match(raw)
+                if m and _depth < 3:
+                    alias_body = m.group(1)
+                    # A `!` alias runs through a shell; a plain one is a git
+                    # subcommand, so screen it as `git <body>` to reach the git
+                    # gates (alias.n='clean -fd' really runs `git clean -fd`).
+                    nested = alias_body[1:] if alias_body.startswith("!") else "git " + alias_body
+                    if _terminal_is_high_risk(nested, _depth + 1):
+                        return True
+                continue
+            # The value of a wrapper option (env -u FOO, stdbuf -o L): not the
+            # command, so skip it and keep looking for the wrapped command.
+            if wrapper_value_pending:
+                wrapper_value_pending = False
+                continue
+            # A wrapper's bare duration argument (timeout 5 rm) is not the command.
+            if prefix_pending and _WRAPPER_DURATION_RE.fullmatch(raw):
+                continue
+            base = os.path.basename(raw).lower()
+            stem, ext = os.path.splitext(base)
+            if ext in {".exe", ".com", ".bat", ".cmd"}:
+                base = stem
+            if (expect_command or prefix_pending) and (
+                base in _AUTO_SAFE_WRAPPERS
+                or base in _MULTICALL_BINARIES
+                or base in _PRIVILEGE_EXEC_WRAPPERS
+            ):
+                # A wrapper (env/timeout) or a multicall binary (busybox rm)
+                # precedes the real command; keep seeking it, but track it so its
+                # own flags (env -S / -C) are judged in the meantime.
+                prefix_pending = True
+                expect_command = False
+                current_command = base
+                continue
+            if expect_command or prefix_pending or scan_forward:
+                if base in _HIGH_RISK_COMMANDS or base.startswith("mkfs"):
+                    # A container CLI reading its own state (docker ps, docker
+                    # logs) inspects; anything else starts or enters a container.
+                    if not (
+                        base in _CONTAINER_CLIS
+                        and _container_subcommand_is_read_only(tokens, _tok_idx)
+                    ):
+                        return True
+                # Bash expands a command-position glob after this scan, so the name
+                # here is not the one that runs (`/bin/r[m] -rf x`): ask.
+                if _is_unresolved_command_glob(base):
+                    return True
+                # A server binary resolved here covers the wrapped and absolute
+                # forms (env uvicorn app:api, timeout 60 gunicorn, /usr/bin/uvicorn).
+                if base in _LISTENER_BINARIES:
+                    return True
+                if base in _HIGH_RISK_RECURSIVE_COMMANDS and _segment_is_recursive(
+                    tokens, _tok_idx
+                ):
+                    return True
+                if base in _HIGH_RISK_FORWARDING_COMMANDS:
+                    if base == "xargs" and xargs_index < 0:
+                        # It builds the argv of whatever follows, so a sed there
+                        # may be handed a program this scan cannot see.
+                        xargs_index = _tok_idx
+                    # find/fd only run a child at -exec/-ok; forwarding from the
+                    # command itself would make `find . -name rm` prompt.
+                    if base in _EXEC_FLAG_FORWARDING_COMMANDS:
+                        scan_forward = False
+                        exec_flag_pending = True
+                    else:
+                        scan_forward = True
+                elif base == "git":
+                    # Only git needs the forwarding scan to stop: its risk lives in
+                    # the SUBCOMMAND (git clean), so following tokens are git's own
+                    # arguments. Others keep scanning, since find's predicates sit
+                    # between `find` and `-exec rm`.
+                    scan_forward = False
+                # Remember the resolved command so its own flags (python -c), git
+                # subcommand or chdir target can be judged as they follow.
+                current_command = base
+                if base in _CHDIR_COMMANDS:
+                    chdir_pending = True
+                if base in _AWK_COMMANDS:
+                    awk_program_pending = True
+                if base in _SED_COMMANDS:
+                    # `e` / `s///e` shell out from inside the script, which may
+                    # ride on -e/--expression rather than the next positional.
+                    # A script --sandbox / --posix stops sed compiling is already
+                    # left out of the program (_sed_invocation), so a payload
+                    # inside one never reaches this screen.
+                    if sed_stops is None:
+                        # A quoted `';'` / `'+'` operand is a sed FILE, not the
+                        # end of the invocation; reading it as one dropped the
+                        # `-e` script behind it (`sed -n ';' -e '1e rm -f
+                        # victim' input` really runs rm). A redirection is the
+                        # other way round: those words never reach sed at all.
+                        sed_quoted = _quoted_separator_indexes(text, tokens, ";&|()")
+                        _flags, sed_stops, sed_skips = _exec_scan_layout(
+                            tokens, sed_quoted, _quoted_redirection_indexes(text, tokens, ";&|()")
+                        )
+                        sed_globs = _unquoted_glob_indexes(text, tokens, ";&|()")
+                        sed_expandable = _unquoted_expansion_indexes(text, tokens, ";&|()")
+                    sed_alternatives, sed_overflowed, sed_live = _sed_invocation(
+                        tokens,
+                        _tok_idx,
+                        sed_scan_limit,
+                        sed_stops,
+                        sed_skips,
+                        sed_globs,
+                        sed_expandable,
+                    )
+                    sed_program = "\n".join(sed_alternatives)
+                    if sed_overflowed:
+                        # The script was pushed past the scan window by padding
+                        # options, so "no payload found" only means "not looked
+                        # at": ask instead of falling through to safe.
+                        return True
+                    if _sed_program_is_a_placeholder(sed_program):
+                        # find rewrites `{}` before the child starts.
+                        return True
+                    if xargs_index >= 0 and _xargs_hides_sed_program(
+                        tokens, xargs_index, _tok_idx, sed_program
+                    ):
+                        # xargs builds the argv from stdin or an -I placeholder,
+                        # so the program is not in the text to read at all.
+                        return True
+                    if "$" in sed_program:
+                        # A program held in a variable (p='# note<newline>e CMD';
+                        # sed "$p" f) is only a program once the reference is
+                        # resolved, and only THIS pass keeps the quoted newline
+                        # that ends the comment: the blanket one turns the whole
+                        # value into a single inert comment line. Only the
+                        # assignments ahead of this sed can reach it, and the
+                        # last of them is the one bash uses.
+                        if sed_bindings is None:
+                            sed_bindings = _assignment_bindings(tokens, sed_quoted)
+                            sed_vars = {}
+                        sed_cursor = _bindings_before(sed_bindings, sed_cursor, _tok_idx, sed_vars)
+                    sed_variants = [
+                        variant
+                        for alternative in sed_alternatives
+                        for variant in _sed_program_variants(alternative, sed_vars or {})
+                    ]
+                    if any(_sed_exec_payloads(variant) for variant in sed_variants):
+                        return True
+                    # A program the shell still has to build is not knowable
+                    # here -- sed splices the result straight into the program
+                    # text, where it can open `;e CMD` from any position -- so
+                    # an unread one asks rather than being assumed to only edit
+                    # text (_sed_program_unresolved).
+                    # Only where the program's OWN occurrence is one the
+                    # shell expands: the live set covers the whole command, so
+                    # matching by text alone made the read-only
+                    # `echo "$p"; sed 's/$p/x/' f` ask for an expansion another
+                    # command performs.
+                    if sed_live and _sed_program_unresolved(sed_variants, live_expansions):
+                        return True
+            elif current_command == "git" and not git_subcommand:
+                # The first positional after `git` is its subcommand.
+                git_subcommand = base
+                if base == "clean" and _segment_has_flag(
+                    tokens, _tok_idx, _GIT_CLEAN_DRY_RUN_FLAGS, "n"
+                ):
+                    # A dry run lists what would go and removes nothing.
+                    expect_command = False
+                    prefix_pending = False
+                    continue
+                if base in _HIGH_RISK_GIT_SUBCOMMANDS:
+                    return True
+            elif awk_program_pending:
+                awk_program_pending = False
+                if _AWK_SHELL_ESCAPE_RE.search(raw):
+                    return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "submodule"
+                and git_submodule_action == "foreach"
+            ):
+                # `git submodule foreach '<cmd>'` runs the argument in every
+                # submodule, so it is a command in its own right.
+                git_submodule_action = ""
+                if _depth >= 3 or _terminal_is_high_risk(raw, _depth + 1):
+                    return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "submodule"
+                and not git_submodule_action
+            ):
+                git_submodule_action = base
+            elif current_command == "getent" and base in _GETENT_CREDENTIAL_DATABASES:
+                # The database name is the whole request; no path is mentioned.
+                return True
+            elif current_command == "openssl" and base in _OPENSSL_NETWORK_SUBCOMMANDS:
+                # openssl s_client/s_server open a TLS socket. The regex above is
+                # anchored at command position, so it misses the wrapped forms.
+                return True
+            elif current_command == "sysctl" and "=" in raw:
+                # `sysctl net.ipv4.ip_forward=1` writes without needing -w.
+                return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "worktree"
+                and not git_worktree_action
+            ):
+                git_worktree_action = base
+            elif current_command in _EVAL_SUBCOMMAND_INTERPRETERS and base == "eval":
+                # `deno eval "..."` / `bun eval "..."` run inline code as a
+                # subcommand rather than a flag, the same risk as -e.
+                return True
+            elif current_command == "git" and git_subcommand == "checkout" and base == ".":
+                # `git checkout .` discards every tracked working-tree change.
+                return True
+            elif current_command == "git" and git_subcommand == "checkout":
+                # A SECOND positional means the first was a commit-ish and this is
+                # a pathspec (git checkout HEAD file), which overwrites the file. A
+                # single one is ambiguous with a branch name and is left alone.
+                git_checkout_positionals += 1
+                if git_checkout_positionals >= 2:
+                    return True
+            elif (
+                current_command == "git" and git_subcommand == "config" and git_config_alias_pending
+            ):
+                git_config_alias_pending = False
+                # The stored alias body is code git runs on the next invocation.
+                nested = raw[1:] if raw.startswith("!") else "git " + raw
+                if _depth >= 3 or _terminal_is_high_risk(nested, _depth + 1):
+                    return True
+            elif (
+                current_command == "git"
+                and git_subcommand == "config"
+                and raw.lower().startswith("alias.")
+            ):
+                git_config_alias_pending = True
+            elif (
+                current_command == "git"
+                and git_subcommand == "stash"
+                and base in _HIGH_RISK_GIT_STASH_ACTIONS
+            ):
+                # `git stash clear` / `drop` destroys stashed work unrecoverably.
+                return True
+            elif current_command == "git" and git_subcommand == "push" and raw[:1] in ("+", ":"):
+                # A refspec forcing (+src:dst) or deleting (:dst) a remote ref is
+                # the punctuation form of --force / --delete.
+                if len(raw) > 1:
+                    return True
+            elif chdir_pending:
+                # A chdir into a sensitive directory sets up a relative read that no
+                # single token spells out (cd /proc/$PPID; cat environ).
+                chdir_pending = False
+                if any(
+                    _SENSITIVE_CHDIR_RE.search(cand)
+                    for cand in (raw, _expand_param_defaults(raw), _expand_shell_assignments(raw))
+                ):
+                    return True
+            expect_command = False
+            prefix_pending = False
+    return False
+
+
+def _python_is_high_risk(code: str) -> bool:
+    """High-risk python for auto mode: code the sandbox static analysis would
+    refuse anyway (shell escape, network egress, a sensitive read), that
+    reads/writes a credential path, or that runs dynamically built code past
+    those static checks. Ordinary in-workdir file writes and computation run
+    without a prompt."""
+    if not code or not code.strip():
+        return False
+    # _check_code_safety objecting means execution would be refused outright, so a
+    # confirmation first beats a silent refusal.
+    if _check_code_safety(code) is not None:
+        return True
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        # Unparsable code never runs, but scan the raw text anyway.
+        return _references_sensitive_path(code)
+    # A credential basename only names a file when it appears in a string, so match
+    # it there rather than across the source: `credentials = {}` and
+    # `def load_credentials()` do no I/O and must not prompt.
+    for _node in ast.walk(tree):
+        if (
+            isinstance(_node, ast.Constant)
+            and isinstance(_node.value, str)
+            and _references_sensitive_path(_node.value)
+        ):
+            return True
+    # A destructive filesystem call (shutil.rmtree, Path.unlink) asks, for parity
+    # with the terminal `rm` gate. Collect bare import aliases first.
+    destructive_fs_aliases: "set[str]" = set()
+    # Modules whose handles end processes; tracked so an unrelated .kill() on a
+    # user-defined object is not mistaken for one.
+    psutil_names: "set[str]" = set()
+    for _node in ast.walk(tree):
+        if isinstance(_node, ast.Import):
+            for _a in _node.names:
+                if _a.name.split(".")[0] in _PY_PROCESS_MODULES:
+                    psutil_names.add("psutil")
+        elif (
+            isinstance(_node, ast.ImportFrom)
+            and (_node.module or "").split(".")[0] in _PY_PROCESS_MODULES
+        ):
+            psutil_names.add("psutil")
+    # `import os as filesystem` rebinds the module, so os.remove reached through
+    # the alias (filesystem.remove) must resolve too; posix is os's low-level twin.
+    os_module_aliases: "set[str]" = {"os", "posix", "nt"}
+
+    def _is_os_module_ref(value) -> bool:
+        # A Name bound to os/posix/nt, a walrus binding one, or a literal
+        # __import__("os") call used directly. builtins.__import__ is the same
+        # callable reached through the module, so both spellings resolve.
+        if isinstance(value, ast.Name):
+            return value.id in os_module_aliases
+        if isinstance(value, ast.NamedExpr):
+            return _is_os_module_ref(value.value)
+        if not isinstance(value, ast.Call):
+            return False
+        func = value.func
+        is_import = (isinstance(func, ast.Name) and func.id == "__import__") or (
+            isinstance(func, ast.Attribute) and func.attr == "__import__"
+        )
+        return (
+            is_import
+            and bool(value.args)
+            and isinstance(value.args[0], ast.Constant)
+            and value.args[0].value in ("os", "posix", "nt")
+        )
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module in _PY_DESTRUCTIVE_FS_MODULES:
+            for alias in node.names:
+                if alias.name in _PY_DESTRUCTIVE_FS_IMPORT_NAMES:
+                    destructive_fs_aliases.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name in ("os", "posix", "nt") and alias.asname:
+                    os_module_aliases.add(alias.asname)
+        elif isinstance(node, ast.Assign) and _is_os_module_ref(node.value):
+            # m = __import__("os") binds the module under a new name.
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    os_module_aliases.add(tgt.id)
+        elif isinstance(node, ast.NamedExpr) and _is_os_module_ref(node.value):
+            # (fs := os).remove(...) binds it in an expression instead.
+            if isinstance(node.target, ast.Name):
+                os_module_aliases.add(node.target.id)
+
+    def _is_fs_module_ref(value) -> bool:
+        # os/posix/nt (including aliases), or a literal shutil/pathlib name.
+        if _is_os_module_ref(value):
+            return True
+        return isinstance(value, ast.Name) and value.id in _PY_DESTRUCTIVE_FS_MODULES
+
+    def _is_process_kill(node) -> bool:
+        # psutil.Process(pid).kill() / .terminate(), including a handle bound to
+        # a name first. Keyed on the psutil import so an unrelated .kill() on a
+        # user object does not prompt.
+        if "psutil" not in psutil_names:
+            return False
+        return isinstance(node, ast.Attribute) and node.attr in _PY_PROCESS_KILL_ATTRS
+
+    def _is_destructive_attr(attr: str, value) -> bool:
+        # A destructive-name attribute (unlink/rmtree/...) on any receiver, or
+        # `remove` specifically on the os module (or an alias of it).
+        if attr in _PY_DESTRUCTIVE_FS_ATTRS:
+            return True
+        return attr in _PY_DESTRUCTIVE_FS_OS_ATTRS and _is_os_module_ref(value)
+
+    def _module_dict_target(value):
+        # The module namespace as a dict: vars(os) or os.__dict__.
+        if isinstance(value, ast.Attribute) and value.attr == "__dict__":
+            return value.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "vars"
+            and len(value.args) == 1
+        ):
+            return value.args[0]
+        return None
+
+    def _is_module_dict_lookup(node) -> bool:
+        # vars(os)["remove"] / os.__dict__["unlink"] is getattr spelled through
+        # the namespace dict, so screen the key the same way. Anchored to a
+        # filesystem module, leaving an ordinary d["remove"] alone.
+        if not isinstance(node, ast.Subscript):
+            return False
+        module = _module_dict_target(node.value)
+        if module is None:
+            return False
+        attr = _folded_str_literal(node.slice)
+        if attr is None:
+            return _is_fs_module_ref(module)
+        return _is_destructive_attr(attr, module)
+
+    # `rm = getattr(os, "remove")` stores the lookup and calls it later, so the
+    # direct getattr(...)(...) shape never sees it. Bind the name here instead.
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "getattr"
+            and len(node.value.args) >= 2
+        ):
+            continue
+        _attr = _folded_str_literal(node.value.args[1])
+        _hit = (
+            _is_fs_module_ref(node.value.args[0])
+            if _attr is None
+            else _is_destructive_attr(_attr, node.value.args[0])
+        )
+        if _hit:
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    destructive_fs_aliases.add(tgt.id)
+
+    # `f = open(path, "r+")` then `f.truncate(0)` zeroes the file. Gated via the
+    # handle name, not the bare `.truncate` attribute: pandas DataFrame.truncate()
+    # is common here and non-destructive.
+    file_handles: "set[str]" = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Call)
+            and isinstance(node.value.func, ast.Name)
+            and node.value.func.id == "open"
+        ):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name):
+                    file_handles.add(tgt.id)
+        elif isinstance(node, (ast.With, ast.AsyncWith)):
+            # `with open(p, "r+") as f:` binds the handle like an assignment.
+            for item in node.items:
+                ctx = item.context_expr
+                if (
+                    isinstance(ctx, ast.Call)
+                    and isinstance(ctx.func, ast.Name)
+                    and ctx.func.id == "open"
+                    and isinstance(item.optional_vars, ast.Name)
+                ):
+                    file_handles.add(item.optional_vars.id)
+    if file_handles:
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "truncate"
+                and isinstance(node.func.value, ast.Name)
+                and node.func.value.id in file_handles
+            ):
+                return True
+    # A bound reference (f = os.remove; f(x)) hides the call site behind a plain
+    # Name, so record the target name as a destructive alias to catch f(...) below.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Subscript):
+            if _is_module_dict_lookup(node.value):
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        destructive_fs_aliases.add(tgt.id)
+        elif isinstance(node, ast.Assign) and isinstance(node.value, ast.Attribute):
+            if _is_destructive_attr(node.value.attr, node.value.value):
+                for tgt in node.targets:
+                    if isinstance(tgt, ast.Name):
+                        destructive_fs_aliases.add(tgt.id)
+        elif (
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.value, ast.Attribute)
+            and isinstance(node.target, ast.Name)
+        ):
+            # An annotated binding (f: object = os.remove) is the same alias.
+            if _is_destructive_attr(node.value.attr, node.value.value):
+                destructive_fs_aliases.add(node.target.id)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute):
+            if _is_destructive_attr(func.attr, func.value):
+                return True
+            if _is_process_kill(func):
+                return True
+        elif isinstance(func, ast.Subscript):
+            if _is_module_dict_lookup(func):
+                return True
+        elif isinstance(func, ast.Name) and func.id in destructive_fs_aliases:
+            return True
+        elif isinstance(func, ast.NamedExpr):
+            # (f := os.remove)(...) binds and calls in one expression.
+            inner = func.value
+            if isinstance(inner, ast.Attribute) and _is_destructive_attr(inner.attr, inner.value):
+                return True
+            if isinstance(inner, ast.Name) and inner.id in destructive_fs_aliases:
+                return True
+            if _is_module_dict_lookup(inner):
+                return True
+        # getattr(os, "remove")(x) resolves the attribute at runtime. The name is
+        # folded first ("un" + "link"); one that cannot be folded at all on a
+        # filesystem module fails closed, since there is nothing left to screen.
+        if (
+            isinstance(func, ast.Call)
+            and isinstance(func.func, ast.Name)
+            and func.func.id == "getattr"
+            and len(func.args) >= 2
+        ):
+            attr_name = _folded_str_literal(func.args[1])
+            if attr_name is None:
+                if _is_fs_module_ref(func.args[0]):
+                    return True
+            elif _is_destructive_attr(attr_name, func.args[0]):
+                return True
+    # A sensitive path split across names or joins (p = "/etc"; open(p + "/shadow"))
+    # is not a contiguous literal above, so fold the string-literal variables
+    # through _folded_path and re-check. An unresolved fragment folds to a sentinel
+    # so a partial fold never false-positives.
+    str_vars: "dict[str, str]" = {}
+    for node in ast.walk(tree):
+        if not (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            continue
+        value = node.value
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            str_vars[node.targets[0].id] = value.value
+        elif isinstance(value, (ast.Call, ast.BinOp, ast.JoinedStr, ast.Name)):
+            # Record a fully-literal folded path so a later reuse (p / "shadow")
+            # resolves; a dynamic fold is skipped so only known paths bind.
+            folded = _folded_path(value, str_vars)
+            if folded and "\x00" not in folded and "\x02" not in folded:
+                str_vars[node.targets[0].id] = folded
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.BinOp, ast.JoinedStr, ast.Call)):
+            folded = _folded_path(node, str_vars)
+            if folded and _folded_is_sensitive(folded):
+                return True
+    # exec/eval/compile/__import__ of a non-literal (exec(b64decode(...)),
+    # eval(input()), __import__(name)) runs whatever it builds at runtime, past
+    # the static checks above; ask. A literal eval("1+1") is harmless and runs.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = None
+        if isinstance(func, ast.Name):
+            name = func.id
+        elif isinstance(func, ast.Attribute):
+            if func.attr == "import_module":  # importlib.import_module(name)
+                name = "__import__"
+            elif func.attr in ("exec", "eval", "compile"):  # builtins.exec(...)
+                name = func.attr
+        if name not in ("exec", "eval", "compile", "__import__"):
+            continue
+        # The source is the first positional, or the source=/name= keyword when
+        # called by keyword (compile(source=x), importlib.import_module(name=x)).
+        arg = node.args[0] if node.args else None
+        if arg is None:
+            for kw in node.keywords:
+                if kw.arg in ("source", "name"):
+                    arg = kw.value
+                    break
+        if arg is None:
+            continue
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, (str, bytes)):
+            # A literal source is only as safe as the code it runs, so screen it
+            # recursively.
+            if name == "__import__":
+                # A module name is not analyzable as code, but a literal
+                # __import__("socket") binds a side-effecting module just like a
+                # static import, so apply the same module screen.
+                mod = (
+                    arg.value.decode("utf-8", "replace")
+                    if isinstance(arg.value, bytes)
+                    else arg.value
+                )
+                if isinstance(mod, str) and mod.split(".")[0] in _AUTO_UNSAFE_PY_MODULES:
+                    return True
+                continue
+            inner = (
+                arg.value.decode("utf-8", "replace") if isinstance(arg.value, bytes) else arg.value
+            )
+            if _python_is_high_risk(inner):
+                return True
+            continue
+        return True
+    return False
+
+
+def is_high_risk_tool_call(name: str, arguments: dict) -> bool:
+    """Whether a tool call is sensitive enough to pause for approval in auto
+    ("Approve for me") mode.
+
+    Unlike is_potentially_unsafe_tool_call (which prompts on anything not
+    read-only), this prompts only on genuinely sensitive actions - credential
+    access, privilege escalation, destructive/persistence changes, and network
+    exec/exfil - and lets ordinary development commands run. The hard-block command
+    set, rlimits and secret-env stripping remain in force underneath. Unknown tools
+    fail closed (prompt).
+    """
+    if name in _ALWAYS_SAFE_TOOLS:
+        return False
+    if name == "render_html":
+        # A static canvas is fine; only a networked canvas can egress.
+        return _render_html_reaches_network(arguments)
+    if name.startswith(MCP_TOOL_PREFIX):
+        tool_name = name.split("__", 2)[-1]
+        # Split camelCase into `_`-delimited terms so the term-boundary regexes
+        # below match camelCase names too.
+        tool_name = _CAMEL_CASE_RE.sub("_", tool_name)
+        # An execution tool runs arbitrary commands on the MCP server, outside the
+        # terminal sandbox; a credential noun discloses secrets; a read/write
+        # pointed at a sensitive path is a sensitive access. All prompt, while
+        # ordinary create/update/delete MCP calls run.
+        _reads = bool(_AUTO_READ_MCP_VERB_RE.search(tool_name))
+        if _AUTO_EXEC_MCP_COMPOUND_RE.search(tool_name):
+            return True
+        if _AUTO_EXEC_MCP_TOOL_RE.search(tool_name) and not (
+            _reads and not _AUTO_EXEC_MCP_VERB_ONLY_RE.search(tool_name)
+        ):
+            return True
+        if _AUTO_DESTRUCTIVE_MCP_VERB_RE.search(tool_name):
+            return True
+        if _AUTO_PRIVILEGE_MCP_VERB_RE.search(tool_name):
+            return True
+        if _AUTO_HIGH_IMPACT_MCP_RE.search(tool_name) and not _reads:
+            return True
+        if _AUTO_PRIVILEGE_MCP_NOUN_RE.search(
+            tool_name
+        ) and _AUTO_PRIVILEGE_MCP_SOFT_VERB_RE.search(tool_name):
+            return True
+        if _AUTO_SENSITIVE_MCP_NOUN_RE.search(tool_name):
+            return True
+        if _mcp_arguments_reference_sensitive(arguments):
+            return True
+        # A read-named tool carrying a destructive payload (query_database
+        # {"query": "DELETE FROM runs"}) masks a destructive external action behind
+        # a read-looking name. Honestly-named create/update calls still run.
+        if _mcp_arguments_mutate(arguments):
+            return True
+        # MCP names are an open vocabulary, not the finite set of POSIX utilities,
+        # so the denylists above cannot be complete: an unfamiliar verb
+        # (nuke_database) would sail through as ordinary. A name carrying no
+        # recognised verb at all therefore asks.
+        if not _mcp_verb_is_known(tool_name):
+            return True
+        return False
+    if name == "terminal":
+        return _terminal_is_high_risk(str(arguments.get("command", "")))
+    if name == "python":
+        return _python_is_high_risk(str(arguments.get("code", "")))
+    return True
+
+
+def _canon_win_path(p: str) -> str:
+    """Canonical form for trust comparison: realpath (expands 8.3 aliases and
+    resolves junctions/symlinks) + normcase/normpath."""
+    return os.path.normcase(os.path.normpath(os.path.realpath(p)))
+
+
+def _augment_native_program_roots(roots: list[str]) -> list[str]:
+    """Add the native Program Files sibling for any x86 root by stripping the
+    `` (x86)`` suffix, so a 32-bit process (whose known-folder ids map only to
+    the x86 root) still trusts a 64-bit Git install."""
+    out = list(roots)
+    for root in roots:
+        base = root.rstrip("\\/")
+        if base.lower().endswith(" (x86)"):
+            native = base[: -len(" (x86)")]
+            if native and native not in out:
+                out.append(native)
+    return out
+
+
+def _windows_program_roots() -> list[str]:
+    """Program Files install roots, resolved ONLY from the Windows known-folder
+    API (SHGetKnownFolderPath). Fails closed (returns ``[]``) if the API is
+    unavailable: env vars (%ProgramFiles%, even %SystemDrive%) are caller-
+    overrideable and could relocate the trust boundary, so we never derive a
+    trusted root from them. On any real Windows host shell32 is present, so
+    this only returns empty in a broken/non-Windows environment where the
+    sandbox git-PATH feature is not needed anyway (#7317).
+    """
+    roots: list[str] = []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        # FOLDERID_ProgramFiles, _ProgramFilesX86, _ProgramFilesX64. The X64
+        # id (Win10 1703+) yields the native root even from a 32-bit process,
+        # where the first two both map to Program Files (x86).
+        folder_ids = (
+            "{905e63b6-c1bf-494e-b29c-65b732d3d21a}",
+            "{7C5A40EF-A0FB-4BFC-874A-C0F2E0B9FA8E}",
+            "{6D809377-6AF0-444b-8957-A3773F02200E}",
+        )
+        _SHGet = ctypes.windll.shell32.SHGetKnownFolderPath
+        _CoTaskMemFree = ctypes.windll.ole32.CoTaskMemFree
+        for fid in folder_ids:
+            guid = ctypes.create_string_buffer(16)
+            ctypes.windll.ole32.CLSIDFromString(wintypes.LPCWSTR(fid), ctypes.byref(guid))
+            ptr = ctypes.c_wchar_p()
+            if _SHGet(ctypes.byref(guid), 0, None, ctypes.byref(ptr)) == 0:
+                if ptr.value:
+                    roots.append(ptr.value)
+                _CoTaskMemFree(ptr)
+    except Exception:
+        return []
+    return _augment_native_program_roots(roots)
+
+
+def _resolve_trusted_windows_git() -> tuple[str, str]:
+    """Find a git launcher in a TRUSTED Program Files dir. Returns
+    ``(canonical_dir, ext)`` or ``("", "")``.
+
+    ``shutil.which`` returns only the first PATH match, which may be an
+    untrusted user shim; scan the remaining PATH entries for a later trusted
+    Git so bare ``git`` still resolves (#7317).
+    """
+    exts = [e for e in (os.environ.get("PATHEXT") or ".EXE;.CMD;.BAT;.COM").split(os.pathsep)]
+    candidates: list[str] = []
+    primary = shutil.which("git")
+    if primary:
+        candidates.append(primary)
+    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if not entry or not os.path.isabs(entry):
+            continue
+        for ext in exts:
+            cand = os.path.join(entry, "git" + ext)
+            if os.path.isfile(cand):
+                candidates.append(cand)
+    for git_exe in candidates:
+        git_dir = os.path.dirname(git_exe)
+        if os.path.isabs(git_dir) and _is_trusted_windows_program_dir(git_dir):
+            return os.path.realpath(git_dir), os.path.splitext(git_exe)[1].upper()
+    return "", ""
+
+
+def _is_trusted_windows_program_dir(path: str) -> bool:
+    """True when ``path`` sits under a system-managed Program Files root.
+
+    Only the Program Files roots are trusted (admin-writable only), resolved
+    via the known-folder API so an overridden env var cannot relocate them,
+    never ``%SystemRoot%`` (Git does not install there and it holds
+    world-writable subdirs like ``Windows\\Temp``). Per-user managers
+    (Scoop/Choco shims under the profile) are refused. Paths are canonicalized
+    so 8.3 aliases and junctions still resolve to their real root (#7317).
+    """
+    norm = _canon_win_path(path)
+    for root in _windows_program_roots():
+        root_norm = _canon_win_path(root)
+        if norm == root_norm or norm.startswith(root_norm + os.sep):
+            return True
+    return False
+
+
 def _build_safe_env(workdir: str) -> dict[str, str]:
     """Build a minimal, credential-free environment for sandboxed subprocesses.
 
     Whitelist-built from scratch (parent env NOT inherited): only PATH/HOME/
-    TMPDIR/LANG/TERM/PYTHONIOENCODING (+VIRTUAL_ENV or Windows SystemRoot) reach
-    the child; all credential vars (HF_TOKEN, AWS_*, etc.) are absent. HOME
-    points at the sandbox workdir so SDKs can't read the operator's cached creds.
+    TMPDIR/LANG/TERM/PYTHONIOENCODING/PYTHONPATH (+VIRTUAL_ENV or Windows
+    SystemRoot and a minimal PATHEXT) reach the child; all credential vars
+    (HF_TOKEN, AWS_*, etc.) are absent. HOME points at the sandbox workdir so SDKs can't read the
+    operator's cached creds. PYTHONPATH carries only the sandbox sitecustomize
+    shim directory.
+
+    PATH starts with the Studio interpreter / venv and OS system dirs so
+    ``python``/``pip`` stay pinned. On Windows only, Git-for-Windows install
+    dirs from the host PATH are appended so bare ``git`` resolves (#7317).
+    User-writable host PATH entries (venv, ``node_modules/.bin``, etc.) are
+    never inherited — they could shadow auto-safe terminal commands.
     """
     # Start from the running interpreter's dir so 'python'/'pip' resolve to the
-    # same environment the Studio server runs in.
+    # same environment the Unsloth server runs in.
     exe_dir = os.path.dirname(sys.executable)
     path_entries = [exe_dir] if exe_dir else []
 
@@ -2498,6 +6551,20 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
 
+    # Windows Git installs live outside System32; inherit the dir of the git
+    # the HOST shell resolves, but ONLY when it sits under a system install
+    # root (Program Files, windir). A user-writable dir (Scoop/Choco shims)
+    # is refused: it would let an attacker drop rg.exe/jq.exe beside git and
+    # have an auto-approved bare command execute it (#7317).
+    git_ext = ""
+    if sys.platform == "win32":
+        # Append the CANONICAL (realpath) trusted git dir, scanning past any
+        # untrusted user shim that sorts first on PATH; the canonical path
+        # cannot be retargeted via a junction after the trust check.
+        _trusted_git_dir, git_ext = _resolve_trusted_windows_git()
+        if _trusted_git_dir:
+            path_entries.append(_trusted_git_dir)
+
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
 
@@ -2508,12 +6575,24 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
+        # sitecustomize shim: remaps ChatGPT code-interpreter paths (/mnt/data
+        # etc.) onto the sandbox CWD; see sandbox_site/sitecustomize.py.
+        "PYTHONPATH": _SANDBOX_SITE_DIR,
     }
     if venv:
         env["VIRTUAL_ENV"] = venv
     # Windows needs SystemRoot for Python/subprocess to work.
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
+        # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
+        pathext = ".EXE;.COM"
+        if git_ext and git_ext not in (".EXE", ".COM"):
+            # Keep the host git launcher (e.g. a .CMD shim) resolvable.
+            pathext += ";" + git_ext
+        env["PATHEXT"] = pathext
+        # cmd/CreateProcess search cwd before PATH for bare names; disable so
+        # a workdir rg.exe/git.exe cannot shadow auto-approved commands.
+        env["NoDefaultCurrentDirectoryInExePath"] = "1"
     return env
 
 
@@ -2542,13 +6621,10 @@ _BYPASS_ENV_SECRET_NAMES = frozenset(
         "KAGGLE_KEY",
         "MYSQL_PWD",  # exact name: markers use PASSWD, not PWD (PWD is the cwd var)
         "LD_PRELOAD",
-        # Auth brokers / capability handles: not secrets by value, but they
-        # hand the child the operator's live agent (ssh/gpg), kube config, or
-        # docker daemon. Names are listed because there is no value signal to
-        # key off. URL config vars (HTTP_PROXY, PIP_INDEX_URL, DATABASE_URL,
-        # ...) are intentionally NOT name-listed: a benign proxy/index without
-        # credentials must keep working in bypass mode, while a credentialed
-        # value is dropped by _is_secret_env_value() regardless of its name.
+        # Auth brokers / capability handles: hand the child the operator's live
+        # agent (ssh/gpg), kube config, or docker daemon. Listed by name (no
+        # value signal). URL config vars are NOT name-listed: a credentialed
+        # value is dropped by _is_secret_env_value() regardless of name.
         "SSH_AUTH_SOCK",
         "SSH_AGENT_PID",
         "GPG_AGENT_INFO",
@@ -2568,37 +6644,30 @@ _BYPASS_ENV_SECRET_MARKERS = (
     "CREDENTIAL",
     "PRIVATE_KEY",
     "AUTH",  # e.g. NPM_CONFIG__AUTH (npm _auth), REDISCLI_AUTH
-    # Azure App Service connection strings: SQLCONNSTR_/CUSTOMCONNSTR_/... and
-    # WEBSITE_CONTENTAZUREFILECONNECTIONSTRING carry DB/storage credentials.
+    # Azure App Service connection strings carry DB/storage credentials.
     "CONNSTR",
     "CONNECTIONSTRING",
 )
 # Non-secret hardening flags that match a secret prefix/marker but must be KEPT
-# so bypass mode does not silently undo an operator's opt-out. AWS_EC2_METADATA_
-# DISABLED tells the AWS SDK/CLI not to pull instance-role creds from IMDS;
-# dropping it would re-open that path for a bypassed tool.
+# so bypass mode does not undo an operator's opt-out (e.g.
+# AWS_EC2_METADATA_DISABLED blocks the AWS SDK from pulling IMDS creds).
 _BYPASS_ENV_KEEP_NAMES = frozenset(
     {
         "AWS_EC2_METADATA_DISABLED",
         "AWS_EC2_METADATA_V1_DISABLED",
     }
 )
-# Matches a URL that embeds userinfo before the host, covering both
-# "scheme://user:pass@host" and token-only "scheme://token@host" (and
-# percent-encoded variants). The userinfo must precede the first '/', so an '@'
-# in a path or query does not false-positive. Used to scrub credential-bearing
-# URL values regardless of the variable's name.
+# Matches a URL embedding userinfo before the host ("scheme://user:pass@host"
+# and token-only forms). The userinfo must precede the first '/', so an '@' in
+# a path/query does not false-positive.
 _URL_USERINFO_RE = re.compile(r"://[^/\s@]+@")
-# Connection-string credential fields (ADO.NET / Azure storage / Service Bus):
-# "...;Password=...", "...;AccountKey=...", "...;SharedAccessKey=...". Catches
-# credential-bearing values whose names dodge the name classifier. "accesskey"
-# also covers Shared/Secret AccessKey via substring; the Name fields (e.g.
-# SharedAccessKeyName=) do not match since "=" must follow the keyword.
+# Connection-string credential fields (ADO.NET / Azure storage / Service Bus)
+# whose names dodge the name classifier. The Name fields (SharedAccessKeyName=)
+# don't match since "=" must follow the keyword.
 _SECRET_VALUE_RE = re.compile(r"(?i)(?:password|pwd|accountkey|accesskey)\s*=\s*[^\s;]")
 
-# Names that hold no secret value but point SDKs at the operator's real
+# Names holding no secret value but pointing SDKs at the operator's real
 # home/cache/config (cached tokens, cred files), defeating the HOME repoint.
-# Startup always sets HF_HOME (-> $HF_HOME/token), so this is the live leak.
 # Dropped in bypass mode so tools fall back to the empty repointed HOME.
 _BYPASS_ENV_CRED_LOCATION_NAMES = frozenset(
     {
@@ -2679,12 +6748,12 @@ def _is_secret_env_value(value: str) -> bool:
 
 
 def _build_bypass_env(workdir: str) -> dict[str, str]:
-    """Env for bypass exec: full host env (unrestricted) minus credential vars,
-    with HOME/TMPDIR repointed at the workdir so SDKs cannot read cached creds.
+    """Env for bypass exec: full host env minus credential vars, with HOME/TMPDIR
+    repointed at the workdir so SDKs cannot read cached creds.
 
-    Note: stripping the child env is necessary but not sufficient on its own -
-    a same-UID child can still read the parent's environment via procfs, so
-    callers also harden the parent (see _harden_parent_against_proc_env_leak).
+    Stripping the child env is necessary but not sufficient (a same-UID child can
+    read the parent's env via procfs), so callers also harden the parent (see
+    _harden_parent_against_proc_env_leak).
     """
     env = {
         k: v
@@ -2699,6 +6768,12 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     # the bypassed tool writes under the per-session sandbox dir on every OS.
     env["TEMP"] = workdir
     env["TMP"] = workdir
+    # sitecustomize path shim (see _build_safe_env). Bypass inherits the
+    # operator's PYTHONPATH, so prepend rather than replace.
+    inherited_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (_SANDBOX_SITE_DIR, inherited_pythonpath) if part
+    )
     # Windows SDKs read creds under the profile dirs, not $HOME; repoint set
     # ones to the workdir (HOMEDRIVE/HOMEPATH are dropped above).
     for var in _BYPASS_ENV_WINDOWS_PROFILE_VARS:
@@ -2772,7 +6847,7 @@ def _bypass_preexec():
     """Minimal pre-exec for bypass exec: os.setsid() only.
 
     Required, not a restriction: _kill_process_tree does killpg(getpgid(child)),
-    so without a new session a timeout/cancel would kill the Studio server too.
+    so without a new session a timeout/cancel would kill the Unsloth server too.
     """
     try:
         os.setsid()
@@ -2780,33 +6855,23 @@ def _bypass_preexec():
         pass
 
 
-# Hardening the Studio parent is done once (PR_SET_DUMPABLE is process-global
+# Hardening the Unsloth parent is done once (PR_SET_DUMPABLE is process-global
 # and sticky); guarded so repeated bypass calls do not re-issue the prctl.
 _parent_proc_hardened = False
 
 
 def _harden_parent_against_proc_env_leak() -> bool:
-    """Make the Studio process's /proc/<pid>/environ unreadable to its children.
+    """Make the Unsloth process's /proc/<pid>/environ unreadable to its children.
 
     Stripping the child env is not enough on Linux: a bypassed same-UID child
-    runs unsandboxed and can read /proc/<getppid()>/environ to recover the
-    tool-executing process's *unfiltered* secrets (HF_TOKEN, cloud keys, ...).
-    Clearing the dumpable flag (PR_SET_DUMPABLE=0) reparents this process's
-    /proc entries to root, so a same-UID child can no longer read its environ.
+    can read /proc/<getppid()>/environ to recover the parent's unfiltered
+    secrets. Clearing PR_SET_DUMPABLE reparents this process's /proc entries to
+    root, closing that read.
 
-    Returns True when the process is hardened or hardening is unnecessary (no
-    /proc leak off Linux), and False when it is needed but could not be applied
-    (e.g. prctl denied by a seccomp policy). Callers must fail closed - refuse
-    the unsandboxed exec - when this returns False, rather than running with the
-    parent environ still readable.
-
-    Scope: this closes the direct parent read (the demonstrated leak). It is a
-    mitigation, not a full boundary - a bypassed tool is unsandboxed by design,
-    so it can still walk /proc to a same-UID *ancestor* (e.g. the launching
-    shell) or read on-disk credentials by absolute path. Complete isolation
-    needs a separate uid / PID+mount namespace, which is out of scope here; the
-    UI already warns the mode is dangerous. Applied lazily on first bypass exec
-    so non-bypass operation is unchanged.
+    Returns True when hardened or unnecessary (off Linux), False when needed but
+    unappliable (e.g. prctl denied by seccomp); callers must then fail closed.
+    This is a mitigation, not a full boundary - a bypassed tool can still walk
+    /proc to an ancestor or read creds by path. Applied lazily on first bypass.
     """
     global _parent_proc_hardened
     if _parent_proc_hardened:
@@ -2933,11 +6998,20 @@ WEB_SEARCH_TOOL = {
     },
 }
 
+# Appended to the python/terminal descriptions: models habitually write to
+# /mnt/data (a ChatGPT code-interpreter path), which does not exist here.
+_SANDBOX_PATHS_NOTE = (
+    " Read and write files using relative paths in the current working "
+    "directory, which persists for this conversation; absolute paths like "
+    "/mnt/data or /tmp/outputs do not exist."
+)
+
 PYTHON_TOOL = {
     "type": "function",
     "function": {
         "name": "python",
-        "description": "Execute Python code in a sandbox and return stdout/stderr.",
+        "description": "Execute Python code in a sandbox and return stdout/stderr."
+        + _SANDBOX_PATHS_NOTE,
         "parameters": {
             "type": "object",
             "properties": {
@@ -2955,7 +7029,7 @@ TERMINAL_TOOL = {
     "type": "function",
     "function": {
         "name": "terminal",
-        "description": "Execute a terminal command and return stdout/stderr.",
+        "description": "Execute a terminal command and return stdout/stderr." + _SANDBOX_PATHS_NOTE,
         "parameters": {
             "type": "object",
             "properties": {
@@ -3034,9 +7108,8 @@ ALL_TOOLS = [
 ]
 
 
-# OpenAI's function.name regex ^[a-zA-Z0-9_-]{1,64}$, enforced before streaming.
-# MCP tool names with '.', '/', spaces, etc. would 400 the whole request, so we
-# validate up front and skip with a warning.
+# OpenAI's function.name regex; MCP names that violate it would 400 the whole
+# request, so validate up front and skip with a warning.
 _OPENAI_FN_NAME_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
@@ -3080,10 +7153,38 @@ def _mcp_specs_for_server(server: dict, mcp_tools: list[dict]) -> list[dict]:
     return specs
 
 
+def cached_mcp_tools() -> tuple[list[dict], bool]:
+    """The MCP schemas already in cache, and whether that is the whole set.
+
+    get_enabled_mcp_tools() renders the same servers, but reaches the network to do it: it
+    spawns stdio servers, blocks for a probe timeout on one that is down, and writes cache and
+    cool-off state. A background token count must not do any of that, so this reads only what
+    those probes have already filled in.
+
+    ``complete`` is False when an enabled server has nothing cached and is not in its
+    post-failure cool-off, meaning a completion would probe it and render schemas this cannot
+    price. A cool-off server renders nothing on the completion path either, so skipping that one
+    is exact rather than short. Callers that must not undercount should decline on False.
+    """
+    servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
+    if not stdio_mcp_enabled():
+        servers = [s for s in servers if not is_stdio(s["url"])]
+
+    specs: list[dict] = []
+    complete = True
+    for server in servers:
+        payload = get_cached_tools(server["id"])
+        if payload is None:
+            if not in_failure_cooloff(server["id"]):
+                complete = False
+            continue
+        specs.extend(_mcp_specs_for_server(server, payload))
+    return specs, complete
+
+
 async def get_enabled_mcp_tools() -> list[dict]:
     servers = [s for s in mcp_servers_db.list_servers() if s.get("is_enabled")]
-    # Never spawn stdio servers when stdio is disabled on this host (e.g. a DB
-    # carried from a desktop install onto a Colab/network deployment).
+    # Never spawn stdio servers when stdio is disabled on this host.
     if not stdio_mcp_enabled():
         servers = [s for s in servers if not is_stdio(s["url"])]
     if not servers:
@@ -3108,15 +7209,11 @@ async def get_enabled_mcp_tools() -> list[dict]:
             ),
             return_exceptions = True,
         )
-        # An edit/delete can land while we await a probe (up to 305 s for
-        # OAuth); its cache eviction is a no-op against an entry we haven't
-        # written yet. Re-read and drop a result whose server changed or
-        # was removed mid-probe, else a stale tool list caches indefinitely.
+        # An edit/delete can land while we await a probe; re-read and drop a
+        # result whose server changed or was removed mid-probe, else a stale
+        # tool list (or cool-off on a just-fixed server) persists.
         current = {s["id"]: s for s in mcp_servers_db.list_servers()}
         for server, payload in zip(uncached, results):
-            # Guard the failure branch too: a stale failure must not park a
-            # cool-off on the fresh config, or the server the user just fixed
-            # is skipped for the whole window.
             fresh = current.get(server["id"])
             if fresh is None or any(
                 fresh.get(k) != server.get(k) for k in TOOL_CACHE_INVALIDATING_FIELDS
@@ -3175,6 +7272,8 @@ def execute_tool(
     thread_id: str | None = None,
     rag_scope: dict | None = None,
     disable_sandbox: bool = False,
+    output_callback = None,
+    website_policy: dict | None = None,
 ) -> str:
     """Execute a tool by name with the given arguments; returns a string.
 
@@ -3187,11 +7286,21 @@ def execute_tool(
     ``disable_sandbox``: Bypass Permissions; run python/terminal without the
     safety checks, blocklist, or resource caps (secrets still stripped). Only
     affects local code tools; web_search / MCP are unchanged.
+    ``output_callback``: optional ``callable(str)`` invoked with incremental
+    stdout/stderr chunks while python/terminal executions run (UI live
+    output). Purely observational: the returned result string is identical
+    with or without it. Tools without incremental output ignore it.
+    ``website_policy``: hidden server-validated domain limits for web_search.
     """
     logger.info(f"execute_tool: name={name}, session_id={session_id}, timeout={timeout}")
     effective_timeout = _EXEC_TIMEOUT if timeout is _TIMEOUT_UNSET else timeout
     if name == "search_knowledge_base":
-        return _search_knowledge_base(arguments, rag_scope)
+        return _search_knowledge_base_with_budget(
+            arguments,
+            rag_scope,
+            effective_timeout,
+            cancel_event,
+        )
     if name == "render_html":
         return _render_html_result(arguments)
     if name.startswith(MCP_TOOL_PREFIX):
@@ -3247,6 +7356,8 @@ def execute_tool(
             arguments.get("query", ""),
             url = arguments.get("url"),
             timeout = effective_timeout,
+            cancel_event = cancel_event,
+            website_policy = website_policy,
         )
     if name == "python":
         return _python_exec(
@@ -3255,6 +7366,7 @@ def execute_tool(
             effective_timeout,
             session_id,
             disable_sandbox = disable_sandbox,
+            output_callback = output_callback,
         )
     if name == "terminal":
         return _bash_exec(
@@ -3263,6 +7375,7 @@ def execute_tool(
             effective_timeout,
             session_id,
             disable_sandbox = disable_sandbox,
+            output_callback = output_callback,
         )
     return f"Unknown tool: {name}"
 
@@ -3311,6 +7424,83 @@ def _search_knowledge_base(arguments: dict, rag_scope: dict | None) -> str:
         import json as _json
         return text + RAG_SOURCES_SENTINEL + _json.dumps(sources, ensure_ascii = False)
     return text
+
+
+def _search_knowledge_base_with_budget(
+    arguments: dict,
+    rag_scope: dict | None,
+    timeout: int | None,
+    cancel_event = None,
+) -> str:
+    if cancel_event is not None and cancel_event.is_set():
+        return "Error: knowledge base search cancelled."
+    deadline = time.monotonic() + timeout if timeout is not None else None
+    while not _RAG_SEARCH_SLOT.acquire(timeout = 0.05):
+        if cancel_event is not None and cancel_event.is_set():
+            return "Error: knowledge base search cancelled."
+        if deadline is not None and time.monotonic() >= deadline:
+            return "Error: knowledge base search timed out."
+
+    # The running search owns the admission slot until it actually stops; release it exactly once,
+    # from whichever path terminates the work. Releasing on caller timeout/cancel would let a
+    # second search in while the first worker is still doing embedding/index/GPU work, defeating
+    # the capacity-of-one bound, so the worker frees the slot in its finally instead.
+    _slot_lock = threading.Lock()
+    _slot_released = False
+
+    def release_slot() -> None:
+        nonlocal _slot_released
+        with _slot_lock:
+            if _slot_released:
+                return
+            _slot_released = True
+        _RAG_SEARCH_SLOT.release()
+
+    if cancel_event is not None and cancel_event.is_set():
+        release_slot()
+        return "Error: knowledge base search cancelled."
+    if deadline is not None and time.monotonic() >= deadline:
+        release_slot()
+        return "Error: knowledge base search timed out."
+
+    if timeout is None and cancel_event is None:
+        try:
+            return _search_knowledge_base(arguments, rag_scope)
+        finally:
+            release_slot()
+
+    result: queue.Queue = queue.Queue(maxsize = 1)
+
+    def search() -> None:
+        try:
+            result.put((True, _search_knowledge_base(arguments, rag_scope)))
+        except BaseException as exc:
+            result.put((False, exc))
+        finally:
+            release_slot()
+
+    try:
+        threading.Thread(target = search, name = "rag-tool-search", daemon = True).start()
+    except Exception:
+        release_slot()
+        raise
+    while True:
+        # Caller gives up, but the worker thread still holds the slot and releases it in its
+        # finally when it truly finishes -- so concurrency stays bounded to one.
+        if cancel_event is not None and cancel_event.is_set():
+            return "Error: knowledge base search cancelled."
+        if deadline is not None and time.monotonic() >= deadline:
+            return "Error: knowledge base search timed out."
+        wait = 0.05
+        if deadline is not None:
+            wait = min(wait, max(0.001, deadline - time.monotonic()))
+        try:
+            ok, value = result.get(timeout = wait)
+        except queue.Empty:
+            continue
+        if ok:
+            return value
+        raise value
 
 
 # Forced first-pass RAG retrieval: a high cosine floor keeps it precise (fires on
@@ -3468,11 +7658,10 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
     sidebar_k = _opt_int(rag_scope.get("default_top_k"))
     top_k = min(sidebar_k, lean_k) if sidebar_k is not None else lean_k
 
-    # Whole-document mode: a thread-attached file under budget is injected in full so
-    # the model reads everything. A KB selection is exclusive, so whole-doc never
-    # preempts it; in a project chat the project sources are still retrieved top-K and
-    # appended under one citation numbering. Oversized files (or no thread doc) fall
-    # through to the combined top-K retrieval below.
+    # Whole-document mode: a thread-attached file under budget is injected in
+    # full. A KB selection is exclusive so whole-doc never preempts it; project
+    # sources are still retrieved top-K and appended under one citation
+    # numbering. Oversized/absent thread docs fall through to top-K below.
     if whole_doc_requested:
         try:
             budget = _whole_doc_budget(rag_scope, conversation)
@@ -3577,10 +7766,118 @@ def build_rag_autoinject(conversation: list[dict], rag_scope: dict | None) -> di
 
 
 _MAX_PAGE_CHARS = 16000  # cap fetched page text (after HTML-to-MD conversion)
-# Raw download cap > _MAX_PAGE_CHARS because SSR pages embed large <head>
-# sections stripped during conversion; 512 KB reaches article content even
-# where <head> alone is ~200 KB.
+# Raw download cap > _MAX_PAGE_CHARS since SSR pages embed large <head> sections
+# stripped during conversion; 512 KB still reaches article content.
 _MAX_FETCH_BYTES = 512 * 1024
+# PDF cross-reference data lives at EOF, so extraction needs the whole body.
+_MAX_PDF_FETCH_BYTES = 10 * 1024 * 1024
+_MAX_WEB_PDF_PAGES = 50
+# Control/undecodable chars, excluding text whitespace and ESC (for ANSI logs).
+# Binary when they exceed 12.5%, after allowing 16 minor encoding glitches.
+_BINARY_CHAR_RE = re.compile("[\\x00-\\x08\\x0b\\x0c\\x0e-\\x1a\\x1c-\\x1f\\x7f-\\x9f\\ufffd]")
+_MIN_BINARY_CHARS = 16
+_BINARY_CHAR_DIVISOR = 8
+# Common binary signatures that can otherwise look text-heavy when mislabeled.
+_PDF_MAGIC = b"%PDF-"
+_BINARY_MAGIC = (
+    _PDF_MAGIC,
+    b"PK\x03\x04",  # zip / docx / xlsx / pptx / epub / jar
+    b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1",  # OLE / legacy Office
+    b"\x89PNG\r\n\x1a\n",  # PNG
+    b"\xff\xd8\xff",  # JPEG
+    b"GIF87a",
+    b"GIF89a",
+    b"\x1f\x8b",  # gzip
+    b"BZh",  # bzip2
+    b"\xfd7zXZ\x00",  # xz
+    b"\x28\xb5\x2f\xfd",  # zstd
+)
+
+# Check UTF-32 first because its little-endian BOM starts with the UTF-16 BOM.
+_UNICODE_BOM_CODECS = (
+    (codecs.BOM_UTF32_LE, "utf-32"),
+    (codecs.BOM_UTF32_BE, "utf-32"),
+    (codecs.BOM_UTF16_LE, "utf-16"),
+    (codecs.BOM_UTF16_BE, "utf-16"),
+    (codecs.BOM_UTF8, "utf-8-sig"),
+)
+
+# A cp1252 retry needs 75% ASCII structure so it cannot rescue high-byte binary.
+_MIN_SINGLE_BYTE_ASCII_RATIO = 3 / 4
+_ASCII_TEXT_BYTES = frozenset((*range(0x20, 0x7F), 0x09, 0x0A, 0x0D, 0x1B))
+
+
+def _looks_binary(text: str) -> bool:
+    """Whether control or undecodable characters exceed the binary threshold."""
+    return len(_BINARY_CHAR_RE.findall(text)) > max(
+        _MIN_BINARY_CHARS, len(text) // _BINARY_CHAR_DIVISOR
+    )
+
+
+def _magic_head(data: bytes) -> bytes:
+    head = data[:1024].lstrip()
+    for bom, _codec in _UNICODE_BOM_CODECS:
+        if head.startswith(bom):
+            head = head.removeprefix(bom).lstrip()
+            break
+    return head
+
+
+def _has_pdf_magic(data: bytes) -> bool:
+    return _magic_head(data).startswith(_PDF_MAGIC)
+
+
+def _has_binary_magic(data: bytes) -> bool:
+    """Whether a common binary signature follows optional BOM or whitespace."""
+    return _magic_head(data).startswith(_BINARY_MAGIC)
+
+
+def _has_single_byte_text_evidence(data: bytes) -> bool:
+    """True when *data* has enough ASCII structure for a cp1252 text retry."""
+    if not data:
+        return True
+    ascii_text_bytes = sum(byte in _ASCII_TEXT_BYTES for byte in data)
+    return ascii_text_bytes / len(data) >= _MIN_SINGLE_BYTE_ASCII_RATIO
+
+
+def _extract_pdf_text(data: bytes) -> str:
+    """Extract page-delimited text with the same parser used by RAG ingestion."""
+    from ..rag.parsers import parse_pdf_bytes
+
+    pages, total_pages = parse_pdf_bytes(data, max_pages = _MAX_WEB_PDF_PAGES)
+    page_limit_reached = total_pages > _MAX_WEB_PDF_PAGES
+    parts: list[str] = []
+    length = 0
+    text_limited = False
+    for page in pages:
+        page_text = page.text.strip()
+        if not page_text:
+            continue
+        section = f"## Page {page.page_number}\n\n{page_text}"
+        piece = ("\n\n" if parts else "") + section
+        remaining = _MAX_PAGE_CHARS - length
+        if len(piece) > remaining:
+            parts.append(piece[:remaining])
+            text_limited = True
+            break
+        parts.append(piece)
+        length += len(piece)
+
+    text = "".join(parts).rstrip()
+    if not text:
+        if page_limit_reached:
+            return f"(PDF contains no extractable text in the first {_MAX_WEB_PDF_PAGES} pages)"
+        return ""
+    limits = []
+    if text_limited:
+        limits.append(f"text limited to {_MAX_PAGE_CHARS:,} characters")
+    if page_limit_reached:
+        limits.append(f"page processing capped at {_MAX_WEB_PDF_PAGES} pages")
+    if limits:
+        marker = f"\n\n... (PDF extraction {'; '.join(limits)})"
+        text = text[: _MAX_PAGE_CHARS - len(marker)].rstrip() + marker
+    return text
+
 
 _USER_AGENTS = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -3654,7 +7951,8 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
 
     try:
         infos = socket.getaddrinfo(hostname, port, type = socket.SOCK_STREAM)
-    except OSError as e:
+    except (OSError, UnicodeError) as e:
+        # IDNA encoding rejects a hostname with UnicodeError, not OSError.
         return False, f"Failed to resolve host: {e}", ""
 
     if not infos:
@@ -3662,10 +7960,8 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
 
     for *_, sockaddr in infos:
         ip = ipaddress.ip_address(sockaddr[0])
-        # `not ip.is_global` is the source of truth: it rejects every category
-        # below PLUS shared/CGNAT (100.64.0.0/10) and benchmarking/doc ranges
-        # Python marks is_private=False and is_global=False. The explicit
-        # predicates only give human-readable categories in the error message.
+        # `not ip.is_global` is the source of truth (also rejects CGNAT and
+        # benchmarking/doc ranges); the explicit predicates only label the error.
         if (
             not ip.is_global
             or ip.is_private
@@ -3682,28 +7978,301 @@ def _validate_and_resolve_host(hostname: str, port: int) -> tuple[bool, str, str
     return True, "", first_ip
 
 
-def _fetch_page_text(
-    url: str,
-    max_chars: int = _MAX_PAGE_CHARS,
-    timeout: int = 30,
-) -> str:
-    """Fetch a URL and return plain text content (HTML tags stripped).
+# Binary application subtypes rejected by MIME; other application types are
+# sniffed so textual artifacts such as SQL stay usable.
+_BINARY_APPLICATION_SUBTYPES = frozenset(
+    {
+        "epub+zip",
+        "gzip",
+        "java-archive",
+        "pdf",
+        "vnd.apple.installer+xml",
+        "wasm",
+        "x-7z-compressed",
+        "x-bzip2",
+        "x-gzip",
+        "x-rar-compressed",
+        "x-tar",
+        "x-xz",
+        "zip",
+        "zstd",
+    }
+)
 
-    Blocks private/loopback/link-local targets (SSRF protection) and caps
-    the download size to avoid unbounded memory usage.
+
+def _is_text_candidate_content_type(content_type: str | None) -> bool:
+    """Whether a MIME type is textual or ambiguous enough for byte sniffing."""
+    match = re.match(r"[\w.+-]+/[\w.+-]+", content_type or "")
+    if not match:
+        return True
+    ct = match.group(0).lower()
+    if ct.startswith("text/"):
+        return True
+    if ct.startswith("application/"):
+        subtype = ct[len("application/") :]
+        return subtype not in _BINARY_APPLICATION_SUBTYPES
+    return False
+
+
+# First path segments on github.com that are site pages, not repo owners.
+_GITHUB_NON_OWNER_SEGMENTS = frozenset(
+    {
+        "about",
+        "apps",
+        "codespaces",
+        "collections",
+        "contact",
+        "customer-stories",
+        "dashboard",
+        "discussions",
+        "enterprise",
+        "explore",
+        "features",
+        "issues",
+        "join",
+        "login",
+        "marketplace",
+        "new",
+        "notifications",
+        "organizations",
+        "orgs",
+        "pricing",
+        "pulls",
+        "search",
+        "security",
+        "settings",
+        "signup",
+        "site",
+        "sponsors",
+        "team",
+        "topics",
+        "trending",
+    }
+)
+_GITHUB_NAME_RE = re.compile(r"\A[A-Za-z0-9_.\-]{1,100}\Z")
+
+
+def _github_repo_readme_api_url(url: str) -> str | None:
+    """README API URL for a ``github.com/{owner}/{repo}`` page, else None.
+
+    A repo root page rendered as HTML is mostly UI chrome (nav, file table,
+    stats); the ``/readme`` API returns the raw README markdown unauthenticated,
+    which is what the model actually wants to read.
     """
     from urllib.parse import urlparse
 
     parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        return f"Blocked: only http/https URLs are allowed (got {parsed.scheme!r})."
-    if not parsed.hostname:
-        return "Blocked: URL is missing a hostname."
+    host = (parsed.hostname or "").lower()
+    if host not in ("github.com", "www.github.com"):
+        return None
+    parts = [p for p in parsed.path.split("/") if p]
+    if len(parts) != 2:
+        return None
+    owner, repo = parts
+    if owner.lower() in _GITHUB_NON_OWNER_SEGMENTS:
+        return None
+    if repo.endswith(".git"):
+        repo = repo[: -len(".git")]
+    if not (_GITHUB_NAME_RE.match(owner) and _GITHUB_NAME_RE.match(repo)):
+        return None
+    return f"https://api.github.com/repos/{owner}/{repo}/readme"
 
+
+# A single fetch can chain several steps (README API attempt, HTML fallback, up
+# to five redirect hops, each reading a body). A per-operation socket timeout
+# bounds one stalled step but not their sum, and nothing aborts on client
+# disconnect, so one overall wall-clock deadline (plus a cooperative
+# cancel_event) bounds the whole fetch instead.
+def _fetch_budget_exceeded(deadline, cancel_event):
+    """User-facing error string when the fetch must stop early, else None."""
+    if cancel_event is not None and cancel_event.is_set():
+        return "Failed to fetch URL: cancelled."
+    if deadline is not None and time.monotonic() >= deadline:
+        return "Failed to fetch URL: timed out."
+    return None
+
+
+def _fetch_hop_timeout(timeout, deadline):
+    """Per-operation socket timeout: the lesser of the caller's per-op timeout
+    and the time left on the deadline, so one slow hop cannot overrun the whole
+    budget. Callers check ``_fetch_budget_exceeded`` first, so remaining time is
+    positive here; the tiny floor only guards a race."""
+    if deadline is None:
+        return timeout
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        remaining = 0.001
+    return remaining if timeout is None else min(timeout, remaining)
+
+
+def _resolve_with_budget(hostname, port, deadline, cancel_event):
+    """``_validate_and_resolve_host`` bounded by the overall fetch budget.
+
+    ``getaddrinfo`` is blocking with no deadline of its own, so a slow resolver
+    (or a request cancelled before dispatch) could run past the budget. Resolve
+    on a daemon thread and poll the budget so the fetch aborts on time; the
+    abandoned lookup is discarded. With no deadline and no cancel_event this is a
+    plain synchronous call, so opt-out callers keep the old behavior and cost.
+    """
+    budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+    if budget_error is not None:
+        return False, budget_error, ""
+    if deadline is None and cancel_event is None:
+        return _validate_and_resolve_host(hostname, port)
+
+    result: "queue.Queue" = queue.Queue(maxsize = 1)
+
+    def _resolve():
+        try:
+            result.put(_validate_and_resolve_host(hostname, port))
+        except Exception as exc:  # defensive: never let the worker die silently
+            result.put((False, f"Failed to resolve host: {exc}", ""))
+
+    threading.Thread(target = _resolve, name = "web-fetch-dns", daemon = True).start()
+    while True:
+        budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+        if budget_error is not None:
+            return False, budget_error, ""
+        try:
+            return result.get(timeout = 0.05)
+        except queue.Empty:
+            continue
+
+
+def _read_capped_body(resp, max_bytes, timeout, deadline, cancel_event):
+    """Read up to ``max_bytes``, enforcing the overall budget between chunks.
+
+    A single ``resp.read(max_bytes)`` can block for the whole transfer if the
+    server dribbles bytes just inside each socket-inactivity timeout, so the body
+    is read in chunks with the budget re-checked (and the socket timeout
+    re-tightened toward the deadline) each round. The joined bytes are identical
+    to one capped read. Returns ``(error_or_None, body_bytes)``.
+    """
+    # Best-effort handle on the underlying socket so its timeout tightens as the
+    # deadline nears; absent on test doubles, where the between-chunk budget
+    # check still bounds the read.
+    sock = getattr(getattr(getattr(resp, "fp", None), "raw", None), "_sock", None)
+    chunks = []
+    remaining = max_bytes
+    while remaining > 0:
+        budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+        if budget_error is not None:
+            try:
+                resp.close()
+            except Exception:
+                pass
+            return budget_error, b""
+        if sock is not None:
+            try:
+                sock.settimeout(_fetch_hop_timeout(timeout, deadline))
+            except Exception:
+                pass
+        chunk = resp.read(min(65536, remaining))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+    if budget_error is not None:
+        try:
+            resp.close()
+        except Exception:
+            pass
+        return budget_error, b""
+    return None, b"".join(chunks)
+
+
+_DOTTED_HOST_RE = re.compile(r"[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+")
+# ASCII-only because str.isdigit() is True for digits int() refuses ("²"), and
+# capped at 5 digits so the range check never converts an unbounded integer.
+_PORT_RE = re.compile(r"[0-9]{1,5}")
+
+
+def _normalize_url_scheme(url: str) -> str:
+    """Prepend ``https://`` to bare hosts (``google.com``, ``example.com:8443``).
+
+    ``urlparse`` reads the host of a ``host:port`` input as the scheme, so those
+    are recognised by a dotted host-like scheme with an empty netloc. Rewrites a
+    dotted host with an optional in-range port, and the ``//host`` form. Real
+    schemes (``file:``, ``javascript:``, including ``file:80``), root-relative
+    paths (``/login``) and bad ports are returned untouched so the caller
+    rejects them. A dotted scheme is indistinguishable from ``host:port``, so
+    ``com.acme.app:443/cb`` is rewritten too; an empty port (``example.com:``)
+    is kept as-is, matching ``https://example.com:``.
+
+    The host is matched against the raw authority, never against what
+    ``urlparse`` returned, because urlsplit strips tabs/newlines (3.10) and
+    leading C0/space (3.12). Anything it would strip fails the match, so the
+    decision and the rewritten string cannot disagree across versions."""
+    from urllib.parse import urlparse
+
+    url = url.strip()
+    try:
+        parsed = urlparse(url)
+    except ValueError:
+        # Unmatched IPv6 brackets, or an NFKC-decomposing netloc: not a bare host.
+        return url
+    if parsed.scheme:
+        if parsed.netloc or not _DOTTED_HOST_RE.fullmatch(parsed.scheme):
+            return url
+        rest = url
+    elif url.startswith("//"):
+        rest = url[2:]
+    elif url.startswith("/"):
+        return url
+    else:
+        rest = url
+
+    authority = re.split(r"[/?#]", rest, maxsplit = 1)[0]
+    host, _, port = authority.partition(":")
+    if not _DOTTED_HOST_RE.fullmatch(host):
+        return url
+    if port and not (_PORT_RE.fullmatch(port) and 1 <= int(port) <= 65535):
+        return url
+    return "https://" + rest
+
+
+def _fetch_url_raw(
+    url: str,
+    timeout: int = 30,
+    extra_headers: dict | None = None,
+    deadline: float | None = None,
+    cancel_event = None,
+    website_policy: dict | None = None,
+) -> tuple[str | None, str, str]:
+    """Fetch a URL with SSRF protection; return ``(error, body_text, content_type)``.
+
+    ``error`` is a user-facing message string when the fetch failed (the
+    existing "Blocked:" / "Failed to fetch URL:" wording), else ``None``.
+    Blocks private/loopback/link-local targets and caps the download size.
+    No input reaches the caller as an exception: the URL is model-supplied, so
+    every malformed form resolves to one of these strings.
+
+    ``deadline`` is an optional ``time.monotonic`` cutoff for the whole fetch
+    (redirect hops and body read included) and ``cancel_event`` aborts it when
+    the caller goes away; both default off so callers keep the old behavior.
+    """
+    from urllib.parse import urlparse
+    from .web_access_policy import check_url_access
+
+    # Before the policy gate: it requires an http(s) scheme, so a bare host
+    # would be refused there and never reach the fetch.
+    url = _normalize_url_scheme(url)
+    allowed, reason, canonical_host = check_url_access(url, website_policy)
+    if not allowed:
+        return reason, "", ""
+
+    # check_url_access already parsed this and read .port, so this cannot raise.
+    parsed = urlparse(url)
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
-    ok, reason, pinned_ip = _validate_and_resolve_host(parsed.hostname, port)
+    ok, reason, pinned_ip = _resolve_with_budget(
+        canonical_host,
+        port,
+        deadline,
+        cancel_event,
+    )
     if not ok:
-        return reason
+        return reason, "", ""
 
     try:
         from urllib.error import HTTPError as _HTTPError
@@ -3711,74 +8280,337 @@ def _fetch_page_text(
 
         max_bytes = _MAX_FETCH_BYTES
         current_url = url
-        current_host = parsed.hostname
+        current_host = canonical_host
         ua = random.choice(_USER_AGENTS)
 
         for _hop in range(5):
-            # Pin to the validated IP (prevents DNS rebinding): rewrite URL to
-            # the IP, set the Host header.
+            budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+            if budget_error is not None:
+                return budget_error, "", ""
             cp = urlparse(current_url)
-            # Bracket IPv6 addresses so the netloc is valid in a URL.
-            ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
-            ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
-            pinned_url = urlunparse(cp._replace(netloc = ip_netloc))
+            # Bracket IPv6 so the netloc stays a valid URL.
+            validated_netloc = f"[{current_host}]" if ":" in current_host else current_host
+            if cp.port:
+                validated_netloc = f"{validated_netloc}:{cp.port}"
+            if os.environ.get(_DISABLE_DNS_PINNING_ENV) == "1":
+                # Enterprise proxies need the hostname in CONNECT for policy and TLS interception.
+                request_url = urlunparse(cp._replace(netloc = validated_netloc))
+            else:
+                # Pin to the validated IP to prevent DNS rebinding.
+                ip_str = f"[{pinned_ip}]" if ":" in pinned_ip else pinned_ip
+                ip_netloc = f"{ip_str}:{cp.port}" if cp.port else ip_str
+                request_url = urlunparse(cp._replace(netloc = ip_netloc))
 
             opener = urllib.request.build_opener(
                 _NoRedirect,
                 _SNIHTTPSHandler(current_host),
             )
 
-            req = urllib.request.Request(
-                pinned_url,
-                headers = {
-                    "User-Agent": ua,
-                    "Host": current_host,
-                },
-            )
+            headers = {
+                "User-Agent": ua,
+                "Host": validated_netloc,
+            }
+            if extra_headers:
+                headers.update(extra_headers)
+            req = urllib.request.Request(request_url, headers = headers)
             try:
-                resp = opener.open(req, timeout = timeout)
+                # Cap the socket timeout at the time left on the overall deadline
+                # so a single slow hop cannot outlast the whole fetch budget.
+                resp = opener.open(req, timeout = _fetch_hop_timeout(timeout, deadline))
             except _HTTPError as e:
                 if e.code not in (301, 302, 303, 307, 308):
-                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+                    return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
                 location = e.headers.get("Location")
                 if not location:
-                    return "Failed to fetch URL: redirect missing Location header."
+                    return "Failed to fetch URL: redirect missing Location header.", "", ""
                 current_url = urljoin(current_url, location)
+                # Server-controlled, so never scheme-upgraded; the gate below
+                # reads .port first, so the parse after it cannot raise.
+                allowed, policy_reason, redirect_host = check_url_access(
+                    current_url,
+                    website_policy,
+                )
+                if not allowed:
+                    return policy_reason, "", ""
                 rp = urlparse(current_url)
-                if rp.scheme not in ("http", "https") or not rp.hostname:
-                    return "Blocked: redirect target is not a valid http/https URL."
                 rp_port = rp.port or (443 if rp.scheme == "https" else 80)
-                ok2, reason2, pinned_ip = _validate_and_resolve_host(
-                    rp.hostname,
+                ok2, reason2, pinned_ip = _resolve_with_budget(
+                    redirect_host,
                     rp_port,
+                    deadline,
+                    cancel_event,
                 )
                 if not ok2:
-                    return reason2
-                current_host = rp.hostname
+                    return reason2, "", ""
+                current_host = redirect_host
                 continue
-            # Success: read capped body.
-            raw_bytes = resp.read(max_bytes)
+
+            # get_content_type() defaults to "text/plain" when the header is
+            # absent (RFC 2045); report "" instead so callers can tell a missing
+            # header apart from a server that really declared text/plain.
+            if resp.headers.get("Content-Type") is None:
+                content_type = ""
+            else:
+                content_type = (resp.headers.get_content_type() or "").lower()
+
+            # Success: read the capped body enforcing the budget between chunks
+            # (see _read_capped_body), so a slow-drip server can't stretch a
+            # single resp.read past the deadline.
+            declared_pdf = content_type == "application/pdf"
+            read_limit = _MAX_PDF_FETCH_BYTES + 1 if declared_pdf else max_bytes
+            body_error, raw_bytes = _read_capped_body(
+                resp,
+                read_limit,
+                timeout,
+                deadline,
+                cancel_event,
+            )
+            if body_error is not None:
+                return body_error, "", ""
+
+            # A missing or wrong PDF MIME type is common: once the initial text-sized
+            # read identifies PDF magic, finish the bounded download to reach the EOF xref.
+            if not declared_pdf and len(raw_bytes) == max_bytes and _has_pdf_magic(raw_bytes):
+                tail_error, tail = _read_capped_body(
+                    resp,
+                    _MAX_PDF_FETCH_BYTES - max_bytes + 1,
+                    timeout,
+                    deadline,
+                    cancel_event,
+                )
+                if tail_error is not None:
+                    return tail_error, "", ""
+                raw_bytes += tail
             break
         else:
-            return "Failed to fetch URL: too many redirects."
+            return "Failed to fetch URL: too many redirects.", "", ""
 
-        charset = resp.headers.get_content_charset() or "utf-8"
-        raw_html = raw_bytes.decode(charset, errors = "replace")
+        is_pdf = declared_pdf or _has_pdf_magic(raw_bytes)
+        if is_pdf:
+            if len(raw_bytes) > _MAX_PDF_FETCH_BYTES:
+                return (
+                    "(PDF content exceeds the download limit; not readable as text)",
+                    "",
+                    content_type,
+                )
+            budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+            if budget_error is not None:
+                return budget_error, "", content_type
+            try:
+                pdf_text = _extract_pdf_text(raw_bytes)
+            except Exception as exc:
+                logger.debug("web PDF text extraction failed (%s)", type(exc).__name__)
+                return "(PDF content could not be read as text)", "", content_type
+            budget_error = _fetch_budget_exceeded(deadline, cancel_event)
+            if budget_error is not None:
+                return budget_error, "", content_type
+            if not pdf_text:
+                pdf_text = "(PDF contains no extractable text)"
+            # Report the true type even for a mislabeled body so the caller's "html"
+            # check routes the extracted text to the plain-text path, not html_to_markdown.
+            return None, pdf_text, "application/pdf"
+
+        # Reject known-binary MIME types before decoding. Binary is returned as the
+        # error string so the caller surfaces the placeholder, not replacement chars.
+        if not _is_text_candidate_content_type(content_type):
+            # Only echo a clean MIME token back to the model.
+            m = re.match(r"[\w.+-]+/[\w.+-]+", content_type or "")
+            safe_type = m.group(0) if m else "unknown type"
+            return (
+                f"(non-text content: {safe_type}, {len(raw_bytes)} bytes; not readable as text)",
+                "",
+                content_type,
+            )
+
+        # Catch text-labeled binary via its magic signature.
+        if _has_binary_magic(raw_bytes):
+            return (
+                f"(binary content, {len(raw_bytes)} bytes; not readable as text)",
+                "",
+                content_type,
+            )
+
+        declared = resp.headers.get_content_charset()
+        declared_codec = codecs.lookup(declared).name if declared else None
+        bom_codec = next(
+            (codec for bom, codec in _UNICODE_BOM_CODECS if raw_bytes.startswith(bom)),
+            None,
+        )
+        raw_html = raw_bytes.decode(declared or bom_codec or "utf-8", errors = "replace")
+
+        # Catch mislabeled or unlabeled binary, including valid UTF-8 controls.
+        if _looks_binary(raw_html):
+            # Rescue undeclared cp1252 only when the bytes have text structure.
+            alt = (
+                raw_bytes.decode("cp1252", "replace")
+                if declared_codec in (None, "iso8859-1")
+                and _has_single_byte_text_evidence(raw_bytes)
+                else None
+            )
+            if alt is not None and not _looks_binary(alt):
+                raw_html = alt
+            else:
+                return (
+                    f"(binary content, {len(raw_bytes)} bytes; not readable as text)",
+                    "",
+                    content_type,
+                )
+
+        return None, raw_html, content_type
     except _HTTPError as e:
-        return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}"
+        return f"Failed to fetch URL: HTTP {e.code} {getattr(e, 'reason', '')}", "", ""
     except Exception as e:
-        return f"Failed to fetch URL: {e}"
+        return f"Failed to fetch URL: {e}", "", ""
+
+
+# Tags that, at the very START of a body, mark it as HTML. Excludes ambiguous
+# tags (<div>/<p>/<span>/<a>/<img>/<h1>..<h6>/<table>) that legitimately open
+# centered-logo or badge-layout Markdown READMEs and must stay Markdown.
+_HTML_LEADING_TAGS = (
+    "html",
+    "head",
+    "body",
+    "title",
+    "meta",
+    "link",
+    "script",
+    "style",
+    "article",
+    "section",
+    "main",
+    "header",
+    "footer",
+    "nav",
+    "aside",
+    "figure",
+    "form",
+    "ul",
+    "ol",
+    "dl",
+    "pre",
+    "blockquote",
+)
+_HTML_LEADING_RE = re.compile(r"<(?:!doctype\s+html|/?(?:" + "|".join(_HTML_LEADING_TAGS) + r")\b)")
+
+
+def _looks_like_html(body: str) -> bool:
+    """True only when the document ITSELF opens with HTML.
+
+    Matches an HTML doctype or a leading document/structure tag after optional
+    whitespace, not a mere substring, so a Markdown README with a fenced HTML
+    example or tags further down stays Markdown. Also detects bare fragments
+    (``<body>``/``<article>``/...) with no doctype, so a page with a
+    missing/wrong Content-Type is still converted.
+    """
+    probe = body.lstrip()[:256].lower()
+    return bool(_HTML_LEADING_RE.match(probe))
+
+
+# Stricter than _HTML_LEADING_RE: only a real document opener (doctype or leading
+# <html>/<head>/<body>), never a block tag a Markdown file can open with. Used on
+# the raw GitHub README body so a Markdown README starting with an HTML block is
+# not run through html_to_markdown, which would collapse its headings, lists and
+# fenced code onto one line.
+_HTML_DOCUMENT_RE = re.compile(r"<(?:!doctype\s+html\b|/?(?:html|head|body)\b)")
+
+
+def _looks_like_html_document(body: str) -> bool:
+    """True only when the body opens as a full HTML document (e.g. a .html README)."""
+    probe = body.lstrip()[:256].lower()
+    return bool(_HTML_DOCUMENT_RE.match(probe))
+
+
+def _truncate_page_text(text: str, max_chars: int) -> str:
+    if not text:
+        return "(page returned no readable text)"
+    if len(text) > max_chars:
+        return text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
+    return text
+
+
+def _fetch_page_text(
+    url: str,
+    max_chars: int = _MAX_PAGE_CHARS,
+    timeout: int = 30,
+    cancel_event = None,
+    website_policy: dict | None = None,
+) -> str:
+    """Fetch a URL and return readable text content.
+
+    HTML responses are converted to Markdown with a main-content heuristic
+    (``<article>``/``<main>`` scoping, hidden-element and boilerplate
+    stripping); non-HTML text responses are returned as-is. GitHub repo root
+    pages are rewritten to the README API so the model reads the README
+    instead of the repo page's UI chrome. Blocks private/loopback/link-local
+    targets (SSRF protection) and caps the download size.
+    """
+    # One wall-clock budget for the whole fetch. The README API attempt and its
+    # HTML fallback both draw from it, so a slow/failed API call cannot hand the
+    # fallback a fresh full timeout and double the worst case.
+    deadline = None if timeout is None else time.monotonic() + timeout
+    from .web_access_policy import check_url_access
+
+    # Before the policy gate (needs a scheme) and the README routing (reads host/path).
+    url = _normalize_url_scheme(url)
+    allowed, reason, _hostname = check_url_access(url, website_policy)
+    if not allowed:
+        return reason
+    policy_kwargs = {"website_policy": website_policy} if website_policy is not None else {}
+    readme_api_url = _github_repo_readme_api_url(url)
+    if readme_api_url:
+        err, body, _ctype = _fetch_url_raw(
+            readme_api_url,
+            timeout = timeout,
+            extra_headers = {
+                "Accept": "application/vnd.github.raw+json",
+                "X-GitHub-Api-Version": "2022-11-28",
+            },
+            deadline = deadline,
+            cancel_event = cancel_event,
+            **policy_kwargs,
+        )
+        # The README API is unauthenticated and rate-limited; on any failure fall
+        # back to the HTML page fetch. A 200 body is authoritative even when it is
+        # HTML (a .html README): convert it rather than falling back to the repo
+        # page's UI chrome, keeping the raw body if extraction yields nothing.
+        if err is None and body.strip():
+            readme_body = body
+            # The raw file is almost always Markdown. Only a real HTML document (a
+            # .html README) is converted; a Markdown README that merely opens with
+            # a block tag is kept as-is (see _HTML_DOCUMENT_RE).
+            if _looks_like_html_document(body):
+                from ._html_to_md import html_to_markdown
+                converted = html_to_markdown(body, main_content = True)
+                readme_body = converted if converted.strip() else body
+            if readme_body.strip():
+                return _truncate_page_text(
+                    f"README of {url} (fetched via the GitHub README API):\n\n" + readme_body,
+                    max_chars,
+                )
+
+    err, body, content_type = _fetch_url_raw(
+        url,
+        timeout = timeout,
+        deadline = deadline,
+        cancel_event = cancel_event,
+        **policy_kwargs,
+    )
+    if err is not None:
+        return err
+
+    # Trust a declared HTML type, and otherwise sniff the body: servers with a
+    # missing or wrong Content-Type (e.g. text/plain on an HTML page) still get
+    # converted, matching the pre-extraction behavior of always converting.
+    is_html = "html" in content_type or _looks_like_html(body)
+    if not is_html:
+        # Plain text / markdown / JSON (e.g. raw.githubusercontent.com):
+        # converting through the HTML renderer would collapse its whitespace.
+        return _truncate_page_text(body.strip(), max_chars)
 
     # Convert HTML to Markdown with the builtin converter (no external deps).
     from ._html_to_md import html_to_markdown
 
-    text = html_to_markdown(raw_html)
-
-    if not text:
-        return "(page returned no readable text)"
-    if len(text) > max_chars:
-        text = text[:max_chars] + f"\n\n... (truncated, {len(text)} chars total)"
-    return text
+    return _truncate_page_text(html_to_markdown(body, main_content = True), max_chars)
 
 
 def _web_search(
@@ -3786,6 +8618,8 @@ def _web_search(
     max_results: int = 5,
     timeout: int = _EXEC_TIMEOUT,
     url: str | None = None,
+    cancel_event = None,
+    website_policy: dict | None = None,
 ) -> str:
     """Search the web using DuckDuckGo and return formatted results.
 
@@ -3794,23 +8628,52 @@ def _web_search(
     # Direct URL fetch mode.
     if url and url.strip():
         fetch_timeout = 60 if timeout is None else min(timeout, 60)
-        return _fetch_page_text(url.strip(), timeout = fetch_timeout)
+        return _fetch_page_text(
+            url.strip(),
+            timeout = fetch_timeout,
+            cancel_event = cancel_event,
+            website_policy = website_policy,
+        )
 
     if not query or not query.strip():
         return "No query provided."
+    # A disconnect sets cancel_event; DDGS.text() is blocking and cannot be
+    # interrupted mid-flight, so gate on either side: skip an already-cancelled
+    # request, and discard results that land after the client has gone.
+    if cancel_event is not None and cancel_event.is_set():
+        return "Search cancelled."
     try:
         from ddgs import DDGS
 
-        results = DDGS(timeout = timeout).text(query, max_results = max_results)
+        from .web_access_policy import check_url_access, scope_search_query
+
+        effective_query = scope_search_query(query, website_policy)
+        # The policy filters below, so ask for a deeper pool when one actually restricts: a page
+        # whose top hits are all disallowed otherwise yields nothing even when valid results rank
+        # just under them. Test the domain lists, not the dict: a run always stores a normalized
+        # policy, which is truthy even when unrestricted.
+        restricted = any(
+            (website_policy or {}).get(key) for key in ("allowedDomains", "blockedDomains")
+        )
+        wanted = max_results * _POLICY_OVERFETCH if restricted else max_results
+        results = DDGS(timeout = timeout).text(effective_query, max_results = wanted)
+        if cancel_event is not None and cancel_event.is_set():
+            return "Search cancelled."
         if not results:
             return "No results found."
         parts = []
         for r in results:
-            parts.append(
-                f"Title: {r.get('title', '')}\n"
-                f"URL: {r.get('href', '')}\n"
-                f"Snippet: {r.get('body', '')}"
-            )
+            if len(parts) >= max_results:
+                break
+            href = str(r.get("href") or "").strip()
+            allowed, _reason, _hostname = check_url_access(href, website_policy)
+            if not allowed:
+                continue
+            title = " ".join(str(r.get("title") or "").split())
+            snippet = " ".join(str(r.get("body") or "").split())
+            parts.append(f"Title: {title}\nURL: {href}\nSnippet: {snippet}")
+        if not parts:
+            return "No results found within the website access limits."
         text = "\n\n---\n\n".join(parts)
         text += (
             "\n\n---\n\nIMPORTANT: These are only short snippets. "
@@ -4799,19 +9662,37 @@ def _check_code_safety(code: str) -> str | None:
     return None
 
 
+def _capture_process_group(proc):
+    """Return the setsid process-group id, or ``None`` when unavailable.
+
+    Captured right after ``Popen`` so a later ``poll()`` / ``wait()`` that reaps
+    the leader cannot make ``os.getpgid(proc.pid)`` fail first. POSIX-only:
+    Windows has no process groups (and no ``os.getpgid``), so return ``None``
+    there and let the single-pid ``proc.kill()`` fallback handle cleanup.
+    """
+    if os.name != "posix" or not hasattr(os, "getpgid"):
+        return None
+    try:
+        return os.getpgid(proc.pid)
+    except (AttributeError, ProcessLookupError, PermissionError, OSError):
+        return None
+
+
 def _kill_process_tree(proc) -> None:
     """SIGKILL the setsid process group; fall back to single-pid kill."""
     if proc.poll() is not None:
         return
-    try:
-        pgid = os.getpgid(proc.pid)
-    except (ProcessLookupError, PermissionError):
-        pgid = None
-    if pgid is not None:
+    pgid = None
+    if hasattr(os, "getpgid"):
+        try:
+            pgid = os.getpgid(proc.pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pgid = None
+    if pgid is not None and hasattr(os, "killpg"):
         try:
             os.killpg(pgid, signal.SIGKILL)
             return
-        except (ProcessLookupError, PermissionError):
+        except (ProcessLookupError, PermissionError, OSError):
             pass
     try:
         proc.kill()
@@ -4819,23 +9700,234 @@ def _kill_process_tree(proc) -> None:
         pass
 
 
+def _killpg_captured(pgid) -> None:
+    """SIGKILL a process group captured before its leader was waited on.
+
+    Once ``proc`` exits, ``os.getpgid(proc.pid)`` fails and ``_kill_process_tree``
+    short-circuits, so a stdout-holding grandchild that outlived the parent could
+    not otherwise be signaled. The pre-captured setsid group id still targets the
+    whole tree. No-op with no ``os.killpg`` (Windows) or nothing captured.
+    """
+    if pgid is None or not hasattr(os, "killpg"):
+        return
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError, OSError):
+        pass
+
+
 def _cancel_watcher(
     proc,
     cancel_event,
     poll_interval = 0.2,
+    pgid = None,
 ):
-    """Daemon thread that kills a process when cancel_event is set."""
+    """Daemon thread that kills a process when cancel_event is set.
+
+    ``pgid`` is the group id captured right after spawn; killing it directly
+    reaps a stdout-holding grandchild even when the watcher's own ``poll()``
+    already reaped the leader (which makes ``_kill_process_tree`` short-circuit).
+    """
     while proc.poll() is None:
         if cancel_event is not None and cancel_event.is_set():
+            _killpg_captured(pgid)
             _kill_process_tree(proc)
             return
         cancel_event.wait(poll_interval) if cancel_event else None
 
 
 def _truncate(text: str, limit: int = _MAX_OUTPUT_CHARS) -> str:
+    # Mode-neutral notice: this result serves both the streaming UI and
+    # non-streaming callers and must stay byte-identical with and without an
+    # output_callback (a regression-tested invariant), so it can't claim the
+    # user saw the full output.
     if len(text) > limit:
-        return text[:limit] + f"\n\n... (truncated, {len(text)} chars total)"
+        return text[:limit] + (
+            f"\n\n... (truncated to {limit} chars for the model; {len(text)} chars "
+            "total. The full output is not retained here; any files the code wrote "
+            "persist in the working directory.)"
+        )
     return text
+
+
+# ChatGPT code-interpreter path conventions models write out of habit; none
+# exist in the Unsloth sandbox, so a failure on one earns the retry hint.
+_MISSING_PATH_PREFIXES = (
+    "/mnt/data",
+    "/mnt/outputs",
+    "/home/sandbox",
+    "/workspace",
+    "/tmp/outputs",
+)
+
+# Matches the quoted path in a Python OSError str and the bare path in a bash
+# "No such file or directory" error; applied only to the error line.
+_QUOTED_ABS_PATH_RE = re.compile(r"""['"](/[^'"\n]+)['"]""")
+_BASH_ABS_PATH_RE = re.compile(r"(/[^\s:'\"]+):\s*No such file or directory")
+
+# The sandbox CWD is a per-thread dir under ~/studio_sandbox; an absolute path
+# under it is a genuine local miss, not a hallucinated out-of-sandbox write.
+_SANDBOX_ROOT = os.path.join(os.path.expanduser("~"), "studio_sandbox")
+
+
+def _missing_error_lines(output: str) -> list[str]:
+    """The lines that actually name a missing file (a FileNotFoundError message
+    or a bash "No such file or directory"). Traceback frame lines such as
+    ``File "/workspace/proj/script.py"`` are excluded, so an unrelated absolute
+    path mentioned elsewhere in the output is never treated as the failing one."""
+    return [
+        line
+        for line in output.splitlines()
+        if "No such file or directory" in line or "FileNotFoundError" in line
+    ]
+
+
+def _extract_missing_abs_path(output: str) -> str | None:
+    """Pull the absolute path a FileNotFoundError / bash error named, if any."""
+    for line in reversed(_missing_error_lines(output)):
+        m = _QUOTED_ABS_PATH_RE.search(line)
+        if m:
+            return m.group(1)
+        m = _BASH_ABS_PATH_RE.search(line)
+        if m:
+            return m.group(1)
+    return None
+
+
+def _is_outside_workdir(abs_path: str, workdir: str | None = None) -> bool:
+    """True when ``abs_path`` is not the working directory or under it.
+
+    ``workdir`` is the executor's actual working directory (defaults to the
+    sandbox root). Project-backed sessions run under a root OUTSIDE
+    ``~/studio_sandbox`` (see ``_get_workdir``), so a legitimate miss inside a
+    project must be judged against the real workdir, not a static sandbox root,
+    or it is wrongly classed as an external habit path.
+    """
+    try:
+        root = os.path.realpath(workdir or _SANDBOX_ROOT)
+        rp = os.path.realpath(abs_path)
+    except (OSError, ValueError):
+        return True
+    return rp != root and not rp.startswith(root + os.sep)
+
+
+def _missing_path_hint(output: str, workdir: str | None = None) -> str:
+    """Model-visible healing when an execution fails on an absolute path missing
+    in the sandbox (a code-interpreter habit path, or one invented from the CWD).
+    Detected on the full pre-truncation output; the hint echoes the failing path
+    so the model retries with the right relative name."""
+    error_lines = _missing_error_lines(output)
+    if not error_lines:
+        return ""
+    abs_path = _extract_missing_abs_path(output)
+    # A convention prefix is an out-of-sandbox signal only when the exact failing
+    # path could not be isolated; scoped to the failing-path error line(s) so a
+    # prefix mentioned elsewhere doesn't trigger a misleading hint.
+    convention = any(prefix in line for line in error_lines for prefix in _MISSING_PATH_PREFIXES)
+    if abs_path is not None:
+        # Judge the isolated path against the real workdir even when it matches a
+        # convention prefix, so a genuine miss inside a project rooted under such
+        # a prefix (e.g. /workspace/proj) is not steered out of its subdirectory.
+        if not _is_outside_workdir(abs_path, workdir):
+            return ""
+    elif not convention:
+        # Nothing marks this as an out-of-sandbox miss; stay silent.
+        return ""
+    if abs_path:
+        example = f"'{os.path.basename(abs_path)}', not '{abs_path}'"
+    else:
+        example = "'output.html', not '/mnt/data/output.html'"
+    return (
+        "\nHint: that absolute path does not exist in this sandbox. The current "
+        "working directory is writable and persists for this conversation; retry "
+        f"with a relative path (for example {example})."
+    )
+
+
+def _drain_process_output(
+    proc,
+    timeout,
+    output_callback,
+    cancel_event = None,
+    *,
+    pgid = None,
+) -> tuple[str, bool]:
+    """``proc.communicate(timeout=...)`` equivalent that also streams each
+    stdout line to ``output_callback`` as it is produced.
+
+    Returns ``(output, timed_out)``. The joined output is identical to what
+    ``communicate`` would return: the same TextIOWrapper decodes the stream,
+    so encoding, error replacement, and newline translation all match. On
+    timeout the process tree is killed (mirroring the non-streaming path).
+    With ``timeout=None`` the drain waits for EOF like ``communicate`` would,
+    stopping early only when ``cancel_event`` is set.
+    """
+    chunks: list[str] = []
+
+    # Captured before waiting so a stdout-holding grandchild can still be killed
+    # after the leader is reaped (getpgid then fails). Callers pass it in from
+    # right after Popen; fall back to capturing here for direct callers.
+    if pgid is None:
+        pgid = _capture_process_group(proc)
+
+    def _reader() -> None:
+        try:
+            for line in iter(proc.stdout.readline, ""):
+                chunks.append(line)
+                if output_callback is not None:
+                    try:
+                        output_callback(line)
+                    except Exception:  # noqa: BLE001 - observer must never kill the tool
+                        logger.debug("tool output_callback raised", exc_info = True)
+        except (ValueError, OSError):
+            pass  # pipe closed during kill
+
+    reader = threading.Thread(target = _reader, daemon = True)
+    reader.start()
+    started_at = time.monotonic()
+    timed_out = False
+    try:
+        proc.wait(timeout = timeout)
+    except subprocess.TimeoutExpired:
+        timed_out = True
+        _kill_process_tree(proc)
+        # Also kill the pre-captured group in case the leader was reaped in the
+        # window before _kill_process_tree sampled its pgid, reaping a
+        # stdout-holding grandchild (matches the non-streaming timeout path).
+        _killpg_captured(pgid)
+        try:
+            proc.wait(timeout = 5)
+        except subprocess.TimeoutExpired:
+            pass
+    # A grandchild that inherited stdout can hold the pipe open past the main
+    # process's exit.
+    if not timed_out:
+        if timeout is not None:
+            # Wait out the remaining budget like communicate() would, polling
+            # cancel_event in slices (the cancel watcher is gone once the leader
+            # exits) so a chatty grandchild doesn't keep draining after a Stop.
+            # The normal path still reaches EOF on its own with the same bytes.
+            deadline = started_at + timeout
+            while reader.is_alive():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    timed_out = True
+                    _killpg_captured(pgid)
+                    break
+                if cancel_event is not None and cancel_event.is_set():
+                    _killpg_captured(pgid)
+                    break
+                reader.join(timeout = min(0.5, remaining))
+        else:
+            # Unlimited timeout: drain until the pipe closes (like
+            # communicate(timeout=None)), stopping early only on cancellation.
+            while reader.is_alive():
+                if cancel_event is not None and cancel_event.is_set():
+                    _killpg_captured(pgid)
+                    break
+                reader.join(timeout = 0.5)
+    reader.join(timeout = 5)
+    return "".join(chunks), timed_out
 
 
 def _python_exec(
@@ -4844,11 +9936,14 @@ def _python_exec(
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
     disable_sandbox: bool = False,
+    output_callback = None,
 ) -> str:
     """Execute Python code in a subprocess sandbox.
 
     disable_sandbox (Bypass Permissions): skip the safety analysis and rlimit
     pre-exec, and use the host env minus secrets.
+    output_callback: optional callable(str) streamed each stdout line as it is
+    produced; the returned result is unchanged.
     """
     if not code or not code.strip():
         return "No code provided."
@@ -4858,11 +9953,16 @@ def _python_exec(
         error = _check_code_safety(code)
         if error:
             return error
+        # Stripping the child env is not enough: a same-UID child can read
+        # /proc/<getppid()>/environ to recover the unfiltered secrets, so close
+        # that read here too, not only in bypass mode. Best-effort: the child env
+        # is already scrubbed, so a system where prctl is denied still runs.
+        _harden_parent_against_proc_env_leak()
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
         return (
-            "Execution error: could not harden the Studio process against "
+            "Execution error: could not harden the Unsloth process against "
             "/proc environment reads; refusing bypass execution."
         )
 
@@ -4907,23 +10007,32 @@ def _python_exec(
         else:
             popen_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
 
-        proc = subprocess.Popen([sys.executable, tmp_path], **popen_kwargs)
+        # -u forces unbuffered child stdout so a bare print() streams live
+        # instead of sitting in the pipe's block buffer until exit. Applied
+        # unconditionally to stay byte-identical with and without streaming;
+        # unlike PYTHONUNBUFFERED=1 it never pollutes the child's os.environ.
+        proc = subprocess.Popen([sys.executable, "-u", tmp_path], **popen_kwargs)
 
-        # Spawn cancel watcher if we have a cancel event
+        # Capture the group before any watcher can reap the leader (see
+        # _capture_process_group); None on Windows.
+        pgid = _capture_process_group(proc)
+
         if cancel_event is not None:
             watcher = threading.Thread(
-                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
+                target = _cancel_watcher,
+                args = (proc, cancel_event, 0.2, pgid),
+                daemon = True,
             )
             watcher.start()
 
-        try:
-            output, _ = proc.communicate(timeout = timeout)
-        except subprocess.TimeoutExpired:
-            _kill_process_tree(proc)
-            try:
-                proc.communicate(timeout = 5)
-            except subprocess.TimeoutExpired:
-                pass
+        # Always drain via _drain_process_output (output_callback may be None):
+        # it kills the captured group on cancellation, reaping a grandchild that
+        # outlived the leader, and returns bytes identical to communicate() so
+        # the streaming vs non-streaming result stays byte-identical.
+        output, timed_out = _drain_process_output(
+            proc, timeout, output_callback, cancel_event, pgid = pgid
+        )
+        if timed_out:
             return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
@@ -4932,7 +10041,13 @@ def _python_exec(
         result = output or ""
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
+        # Detect the missing-path pattern on the full output (truncation could
+        # hide the trailing traceback); append the hint after truncation. External
+        # paths are judged against the real workdir (project sessions live outside
+        # the default sandbox root).
+        hint = _missing_path_hint(result, workdir)
         result = _truncate(result) if result.strip() else "(no output)"
+        result += hint
 
         # Detect new/overwritten images and append sentinel for the frontend
         if session_id and os.path.isdir(workdir):
@@ -4971,11 +10086,14 @@ def _bash_exec(
     timeout: int = _EXEC_TIMEOUT,
     session_id: str | None = None,
     disable_sandbox: bool = False,
+    output_callback = None,
 ) -> str:
     """Execute a bash command in a subprocess sandbox.
 
     disable_sandbox (Bypass Permissions): skip the command blocklist and rlimit
     pre-exec, and use the host env minus secrets.
+    output_callback: optional callable(str) streamed each stdout line as it is
+    produced; the returned result is unchanged.
     """
     if not command or not command.strip():
         return "No command provided."
@@ -4985,11 +10103,16 @@ def _bash_exec(
         blocked = _find_blocked_commands(command)
         if blocked:
             return f"Blocked command(s) for safety: {', '.join(sorted(blocked))}"
+        # Stripping the child env is not enough: a same-UID child can read
+        # /proc/<getppid()>/environ to recover the unfiltered secrets, so close
+        # that read here too, not only in bypass mode. Best-effort: the child env
+        # is already scrubbed, so a system where prctl is denied still runs.
+        _harden_parent_against_proc_env_leak()
     elif not _harden_parent_against_proc_env_leak():
         # Close the /proc/<parent>/environ secret-recovery path first; if it
         # cannot be applied, fail closed rather than leak the parent environ.
         return (
-            "Execution error: could not harden the Studio process against "
+            "Execution error: could not harden the Unsloth process against "
             "/proc environment reads; refusing bypass execution."
         )
 
@@ -5000,6 +10123,11 @@ def _bash_exec(
             stdout = subprocess.PIPE,
             stderr = subprocess.STDOUT,
             text = True,
+            # Match _python_exec: decode utf-8 with "replace" so invalid output
+            # bytes never raise UnicodeDecodeError (which the streaming reader
+            # thread would swallow), keeping both paths byte-identical.
+            encoding = "utf-8",
+            errors = "replace",
             cwd = workdir,
             env = safe_env,
         )
@@ -5010,20 +10138,25 @@ def _bash_exec(
 
         proc = subprocess.Popen(_get_shell_cmd(command), **popen_kwargs)
 
+        # Capture the group before any watcher can poll/reap the leader (see
+        # _python_exec); None on Windows.
+        pgid = _capture_process_group(proc)
+
         if cancel_event is not None:
             watcher = threading.Thread(
-                target = _cancel_watcher, args = (proc, cancel_event), daemon = True
+                target = _cancel_watcher,
+                args = (proc, cancel_event, 0.2, pgid),
+                daemon = True,
             )
             watcher.start()
 
-        try:
-            output, _ = proc.communicate(timeout = timeout)
-        except subprocess.TimeoutExpired:
-            _kill_process_tree(proc)
-            try:
-                proc.communicate(timeout = 5)
-            except subprocess.TimeoutExpired:
-                pass
+        # Always drain via _drain_process_output (see _python_exec): kills the
+        # captured group on cancellation and returns bytes identical to
+        # communicate(), keeping streaming vs non-streaming byte-identical.
+        output, timed_out = _drain_process_output(
+            proc, timeout, output_callback, cancel_event, pgid = pgid
+        )
+        if timed_out:
             return _truncate(f"Execution timed out after {timeout} seconds.")
 
         if cancel_event is not None and cancel_event.is_set():
@@ -5032,7 +10165,10 @@ def _bash_exec(
         result = output or ""
         if proc.returncode != 0:
             result = f"Exit code {proc.returncode}:\n{result}"
-        return _truncate(result) if result.strip() else "(no output)"
+        # Same missing-path healing as _python_exec.
+        hint = _missing_path_hint(result, workdir)
+        result = _truncate(result) if result.strip() else "(no output)"
+        return result + hint
 
     except Exception as e:
         return f"Execution error: {e}"

@@ -119,7 +119,7 @@ class TestFriendlyUpstreamError:
         raw = '{"error":{"code":400,"message":"Failed to initialize samplers: failed to parse grammar","type":"invalid_request_error"}}'
         msg = _friendly_upstream_error(raw)
         assert "failed to parse grammar" not in msg  # raw body is not surfaced verbatim
-        assert "tool-calling grammar" in msg and "Update Studio" in msg
+        assert "tool-calling grammar" in msg and "Update Unsloth" in msg
 
     def test_failed_to_initialize_samplers_alone_matches(self):
         assert "tool-calling grammar" in _friendly_upstream_error("Failed to initialize samplers")
@@ -262,7 +262,7 @@ class TestChatMessageToolRoles:
 
     def test_tool_empty_content_accepted(self):
         # Empty tool output (mkdir, git add, ...) is routine in agentic loops;
-        # OpenAI and llama-server both accept it, so Studio must not 400.
+        # OpenAI and llama-server both accept it, so Unsloth must not 400.
         msg = ChatMessage(role = "tool", tool_call_id = "call_1", content = "")
         assert msg.content == ""
 
@@ -400,7 +400,7 @@ class TestChatCompletionRequestToolFields:
         assert req.session_id == "abc"
 
     def test_stream_defaults_false_matching_openai_spec(self):
-        # OpenAI defaults `stream` to false. Studio used to default true,
+        # OpenAI defaults `stream` to false. Unsloth used to default true,
         # breaking naive curl/.NET clients (#5047) that omit it. Pin the fix.
         req = self._make()
         assert req.stream is False
@@ -664,7 +664,7 @@ class TestChatCompletionRequestToolFields:
                 raise AssertionError("client tools must use passthrough")
 
             def generate_chat_completion_with_tools(self, **_kwargs):
-                raise AssertionError("Studio tool loop must stay disabled")
+                raise AssertionError("Unsloth tool loop must stay disabled")
 
         async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
             captured["body"] = inference_route._build_openai_passthrough_body(
@@ -707,11 +707,11 @@ class TestChatCompletionRequestToolFields:
         assert monitor.active_count() == 0
 
     def test_permission_mode_does_not_reject_client_tool_passthrough(self, monkeypatch):
-        # A non-streaming client-tool passthrough (client tools, no Studio tool
+        # A non-streaming client-tool passthrough (client tools, no Unsloth tool
         # loop) that also carries permission_mode "ask"/"auto" must reach the
         # provider passthrough, not the confirm-without-stream guard: the
         # validator leaves confirm_tool_calls unset for passthrough, and a bare
-        # permission_mode only gates Studio's own local tool loop. An explicit
+        # permission_mode only gates Unsloth's own local tool loop. An explicit
         # confirm_tool_calls=True still forces the local-confirm rejection.
         # The pre-switch guard only runs when an automatic load may run, so force
         # that predicate on to exercise it against a resident passthrough backend.
@@ -732,7 +732,7 @@ class TestChatCompletionRequestToolFields:
                 raise AssertionError("client tools must use passthrough")
 
             def generate_chat_completion_with_tools(self, **_kwargs):
-                raise AssertionError("Studio tool loop must stay disabled")
+                raise AssertionError("Unsloth tool loop must stay disabled")
 
         async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
             inference_route.api_monitor.finish(kwargs.get("monitor_id"))
@@ -757,7 +757,7 @@ class TestChatCompletionRequestToolFields:
             return self._v1_client(monkeypatch, _GGUFBackend())
 
         # A process --enable-tools policy must not turn a client-tool passthrough
-        # into a Studio local loop, so a policy of None or True both keep the
+        # into an Unsloth local loop, so a policy of None or True both keep the
         # passthrough (the guard mirrors _explicit_studio_tool_loop_requested).
         for policy in (None, True):
             for mode in ("ask", "auto"):
@@ -810,7 +810,7 @@ class TestChatCompletionRequestToolFields:
         assert "requires stream=true" in resp.json()["error"]["message"]
 
     def test_permission_mode_policy_forced_local_loop_rejected_before_switch(self, monkeypatch):
-        # A process --enable-tools policy forces Studio's own tool loop on even
+        # A process --enable-tools policy forces Unsloth's own tool loop on even
         # when the request omits enable_tools and carries no client tools. A
         # non-streaming ask/auto request is then confirm-gated with no stream to
         # prompt on, so it must 400 at the pre-switch guard -- before
@@ -863,7 +863,7 @@ class TestChatCompletionRequestToolFields:
     def test_enable_tools_on_non_tool_backend_keeps_client_tools_on_passthrough(self, monkeypatch):
         # DiffusionGemma forces supports_tools off while passthrough stays
         # available (#6851): enable_tools=True must not steal client tools
-        # from the passthrough into a Studio tool loop that cannot run.
+        # from the passthrough into an Unsloth tool loop that cannot run.
         import routes.inference as inference_route
 
         captured = {}
@@ -883,7 +883,7 @@ class TestChatCompletionRequestToolFields:
                 raise AssertionError("client tools must use passthrough")
 
             def generate_chat_completion_with_tools(self, **_kwargs):
-                raise AssertionError("Studio tool loop cannot run on a non-tool backend")
+                raise AssertionError("Unsloth tool loop cannot run on a non-tool backend")
 
         async def fake_passthrough(llama_backend, payload, model_name, **kwargs):
             captured["body"] = inference_route._build_openai_passthrough_body(
@@ -1054,7 +1054,7 @@ class TestChatCompletionRequestToolFields:
         monkeypatch.setattr(
             inference_route,
             "_detect_safetensors_features",
-            lambda backend, chat_template: {"supports_tools": True},
+            lambda backend, chat_template, tools = None: {"supports_tools": True},
         )
         monitor = ApiMonitor(max_entries = 3)
         monkeypatch.setattr(inference_route, "api_monitor", monitor)
@@ -1190,6 +1190,41 @@ class TestBuildPassthroughPayloadToolChoice:
         tc = {"type": "function", "function": {"name": "f"}}
         body = _build_passthrough_payload(**self._args(), tool_choice = tc)
         assert body["tool_choice"] == tc
+
+    def test_llama_incompatible_tool_constraints_are_omitted(self):
+        args = self._args()
+        schema = args["openai_tools"][0]["function"]["parameters"]
+        schema["properties"] = {
+            "declarationKey": {"type": "string", "pattern": r"\S"},
+            "exactKey": {"type": "string", "pattern": r"^[A-Z]+$"},
+            "nested": {
+                "type": "array",
+                "items": {
+                    "anyOf": [
+                        {"type": "string", "pattern": "token"},
+                        {"type": "string", "pattern": "^fixed$"},
+                    ],
+                    "default": {"pattern": "annotation data"},
+                },
+            },
+            "largeScript": {"type": "string", "minLength": 1, "maxLength": 65536},
+            "boundedScript": {"type": "string", "maxLength": 2000},
+        }
+
+        body = _build_passthrough_payload(**args)
+        forwarded = body["tools"][0]["function"]["parameters"]["properties"]
+
+        assert forwarded["declarationKey"] == {"type": "string"}
+        assert forwarded["exactKey"]["pattern"] == r"^[A-Z]+$"
+        nested = forwarded["nested"]["items"]
+        assert nested["anyOf"][0] == {"type": "string"}
+        assert nested["anyOf"][1]["pattern"] == "^fixed$"
+        assert nested["default"] == {"pattern": "annotation data"}
+        assert forwarded["largeScript"] == {"type": "string", "minLength": 1}
+        assert forwarded["boundedScript"]["maxLength"] == 2000
+        assert schema["properties"]["declarationKey"]["pattern"] == r"\S"
+        assert schema["properties"]["nested"]["items"]["anyOf"][0]["pattern"] == "token"
+        assert schema["properties"]["largeScript"]["maxLength"] == 65536
 
     def test_stream_omits_usage_options_when_client_did_not_request_them(self):
         args = self._args()
@@ -1611,7 +1646,7 @@ class TestOpenAICompatibilityHelpers:
     def test_openai_stream_error_sse_closes_with_done(self):
         error = {"error": {"message": "boom"}}
         assert _openai_stream_error_sse(error) == (
-            'data: {"error": {"message": "boom"}}\n\n' "data: [DONE]\n\n"
+            'data: {"error": {"message": "boom"}}\n\ndata: [DONE]\n\n'
         )
 
     @pytest.mark.parametrize(
@@ -2581,7 +2616,7 @@ class TestGgufVisionToolRouting:
             raise AssertionError("plain GGUF path should not be used")
 
         def _tools(**_kwargs):
-            raise AssertionError("Studio tool loop should not steal response_format")
+            raise AssertionError("Unsloth tool loop should not steal response_format")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2654,7 +2689,7 @@ class TestGgufVisionToolRouting:
             raise AssertionError("plain GGUF path should not be used")
 
         def _tools(**_kwargs):
-            raise AssertionError("Studio tool loop should not replace client tools")
+            raise AssertionError("Unsloth tool loop should not replace client tools")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2726,7 +2761,7 @@ class TestGgufVisionToolRouting:
             yield "plain response"
 
         def _tools(**_kwargs):
-            raise AssertionError("tool_choice='none' must not start Studio's tool loop")
+            raise AssertionError("tool_choice='none' must not start Unsloth's tool loop")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2780,7 +2815,7 @@ class TestGgufVisionToolRouting:
             raise AssertionError("plain GGUF path should not be used")
 
         def _tools(**_kwargs):
-            raise AssertionError("enabled_tools alone must not start Studio's tool loop")
+            raise AssertionError("enabled_tools alone must not start Unsloth's tool loop")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -2844,7 +2879,7 @@ class TestGgufVisionToolRouting:
             raise AssertionError("plain GGUF path should not be used")
 
         def _tools(**_kwargs):
-            raise AssertionError("enabled_tools alone must not start Studio's tool loop")
+            raise AssertionError("enabled_tools alone must not start Unsloth's tool loop")
 
         backend = SimpleNamespace(
             is_loaded = True,
@@ -4580,6 +4615,9 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"prompt": "hi", "stream": False}
 
+                async def is_disconnected(self):
+                    return False
+
             class FailingAsyncClient:
                 async def __aenter__(self):
                     return self
@@ -4587,14 +4625,18 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def __aexit__(self, *_args):
                     return False
 
+                async def aclose(self):
+                    return None
+
                 async def post(self, *_args, **_kwargs):
                     raise httpx.ConnectError("llama down")
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            # Per-request client so a forced swap can close it mid-call; the pooled one is shared.
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FailingAsyncClient(),
             )
             monkeypatch.setattr(
@@ -4632,9 +4674,15 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"prompt": "hi", "stream": False}
 
+                async def is_disconnected(self):
+                    return False
+
             captured = []
 
             class CapturingClient:
+                async def aclose(self):
+                    return None
+
                 async def post(self, _url, *, json, **_kwargs):
                     captured.append(dict(json))
                     return httpx.Response(
@@ -4652,7 +4700,9 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
+            monkeypatch.setattr(
+                inf_mod, "_cancelable_nonstreaming_client", lambda: CapturingClient()
+            )
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
@@ -4683,9 +4733,15 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"prompt": "hi", "stream": False, "max_tokens": 0}
 
+                async def is_disconnected(self):
+                    return False
+
             captured = []
 
             class CapturingClient:
+                async def aclose(self):
+                    return None
+
                 async def post(self, _url, *, json, **_kwargs):
                     captured.append(dict(json))
                     return httpx.Response(
@@ -4703,7 +4759,9 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
-            monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: CapturingClient())
+            monkeypatch.setattr(
+                inf_mod, "_cancelable_nonstreaming_client", lambda: CapturingClient()
+            )
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
@@ -4741,6 +4799,7 @@ class TestApiMonitorProviderAndCompletionStreams:
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
             monkeypatch.setattr(inf_mod, "nonstreaming_client", lambda: UnusedClient())
+            monkeypatch.setattr(inf_mod, "_cancelable_nonstreaming_client", lambda: UnusedClient())
             monkeypatch.setattr(
                 inf_mod,
                 "get_llama_cpp_backend",
@@ -4845,12 +4904,18 @@ class TestApiMonitorProviderAndCompletionStreams:
                 async def json(self):
                     return {"input": ["alpha", "beta"], "model": "embed"}
 
+                async def is_disconnected(self):
+                    return False
+
             class FakeAsyncClient:
                 async def __aenter__(self):
                     return self
 
                 async def __aexit__(self, *_args):
                     return False
+
+                async def aclose(self):
+                    return None
 
                 async def post(self, *_args, **_kwargs):
                     assert monitor.active_count() == 1
@@ -4864,9 +4929,10 @@ class TestApiMonitorProviderAndCompletionStreams:
 
             monitor = ApiMonitor(max_entries = 3)
             monkeypatch.setattr(inf_mod, "api_monitor", monitor)
+            # Per-request client so a forced swap can close it mid-call; the pooled one is shared.
             monkeypatch.setattr(
                 inf_mod,
-                "nonstreaming_client",
+                "_cancelable_nonstreaming_client",
                 lambda: FakeAsyncClient(),
             )
             monkeypatch.setattr(
@@ -6337,7 +6403,7 @@ class TestApiMonitorSafetensorsUsage:
                     }
                     yield "safe reply"
 
-                def reset_generation_state(self):
+                def reset_generation_state(self, caller_cancel_event = None):
                     pass
 
             monitor = ApiMonitor(max_entries = 3)
@@ -6408,7 +6474,7 @@ class TestApiMonitorSafetensorsUsage:
                     cancel_event.set()
                     yield {"type": "content", "text": "ignored"}
 
-                def reset_generation_state(self):
+                def reset_generation_state(self, caller_cancel_event = None):
                     pass
 
             monitor = ApiMonitor(max_entries = 3)
@@ -6469,11 +6535,22 @@ class TestApiMonitorSafetensorsUsage:
                 def generate_chat_completion_with_tools(self, **_kwargs):
                     yield {"type": "content", "text": "unused"}
 
-                def reset_generation_state(self):
+                def reset_generation_state(self, caller_cancel_event = None):
                     nonlocal reset_called
                     reset_called = True
 
-            async def fake_to_thread(*_args, **_kwargs):
+            async def fake_to_thread(
+                func = None,
+                *_args,
+                **_kwargs,
+            ):
+                # Only the generation hop should cancel; resolution runs before the row opens.
+                if getattr(func, "__name__", "") == "resolve_local_gguf":
+                    return None
+                # Resolving what is already serving is pre-row work too, offloaded for the
+                # same reason: _loaded_satisfies reaches the singleton, whose build detects.
+                if func in (inf_mod.get_inference_backend, inf_mod._loaded_satisfies):
+                    return func(*_args, **_kwargs)
                 raise asyncio.CancelledError()
 
             monitor = ApiMonitor(max_entries = 3)
@@ -6619,6 +6696,29 @@ class TestApiMonitorAudioInput:
             assert entry["status"] == "completed"
             assert entry["reply"] == "hello world"
             assert monitor.active_count() == 0
+
+            def failing_chunks():
+                yield "partial"
+                raise RuntimeError("generation failed")
+
+            self._patch_audio_backend(monkeypatch, failing_chunks())
+            error_monitor = ApiMonitor(max_entries = 3)
+            monkeypatch.setattr(inf_mod, "api_monitor", error_monitor)
+            error_response = await openai_chat_completions(
+                payload,
+                request = request,
+                current_subject = "test",
+            )
+            error_chunks = [
+                chunk.decode() if isinstance(chunk, bytes) else chunk
+                async for chunk in error_response.body_iterator
+            ]
+
+            assert '"type": "server_error"' in error_chunks[-1]
+            assert error_chunks[-1].endswith("data: [DONE]\n\n")
+            [error_entry] = error_monitor.snapshot()
+            assert error_entry["status"] == "error"
+            assert error_monitor.active_count() == 0
 
         asyncio.run(_run())
 

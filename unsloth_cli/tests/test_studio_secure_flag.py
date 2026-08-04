@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Tests for the `--secure/--no-secure` Studio flag: option registration,
+"""Tests for the `--secure/--no-secure` Unsloth flag: option registration,
 re-exec/run_server forwarding, the forced 127.0.0.1 bind, and rejection
 alongside --no-cloudflare or before a subcommand. Modeled on
 test_studio_cloudflare_flag.py."""
@@ -244,7 +244,7 @@ class _RunServerCaptured(SystemExit):
         self.kwargs = dict(kwargs)
 
 
-def test_run_in_venv_passes_secure_and_forces_host(monkeypatch, tmp_path):
+def test_run_in_venv_passes_secure_and_forces_host(monkeypatch, tmp_path, stub_tool_policy_state):
     import types
 
     studio_mod = _studio()
@@ -261,6 +261,11 @@ def test_run_in_venv_passes_secure_and_forces_host(monkeypatch, tmp_path):
 
     fake_venv = tmp_path / "unsloth_studio"
     monkeypatch.setattr(sys, "prefix", str(fake_venv))
+    # A built dist is not present in a fresh clone, and without it the public
+    # launch gate exits before run_server is ever reached.
+    monkeypatch.setattr(
+        studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
+    )
 
     from unsloth_cli import _tool_policy as _tp_mod
 

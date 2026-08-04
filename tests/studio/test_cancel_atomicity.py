@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import random
 import threading
 from pathlib import Path
 
 
 SOURCE_PATH = Path(__file__).resolve().parents[2] / "studio" / "backend" / "routes" / "inference.py"
-_SRC = SOURCE_PATH.read_text()
+_SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 _TREE = ast.parse(_SRC)
 
 
@@ -107,6 +108,20 @@ _WANTED = {
 }
 
 
+def _load_active_generations():
+    """The real registry `_TrackedCancel` records runs in.
+
+    Loaded straight off disk rather than imported, so the extracted class runs
+    against the genuine module without pulling in the whole route package (and
+    without putting studio/backend on sys.path for the rest of the session).
+    """
+    path = SOURCE_PATH.parents[1] / "state" / "active_generations.py"
+    spec = importlib.util.spec_from_file_location("studio_active_generations", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _load_registry_module():
     chunks = []
     for n in _TREE.body:
@@ -125,7 +140,7 @@ def _load_registry_module():
             and n.target.id in _WANTED
         ):
             chunks.append(seg)
-    mod = {}
+    mod = {"active_generations": _load_active_generations()}
     exec(
         "import threading, time\nfrom typing import Optional\n" + "\n\n".join(chunks),
         mod,

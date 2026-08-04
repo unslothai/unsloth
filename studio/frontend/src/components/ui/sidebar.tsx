@@ -24,13 +24,21 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip"
+import { PanelResizeHandle } from "@/components/ui/panel-resize-handle"
+import { useT } from "@/i18n"
 import { useIsMobile } from "@/hooks/use-mobile"
+import {
+  SIDEBAR_WIDTH_DEFAULT,
+  SIDEBAR_WIDTH_MIN,
+  clampSidebarWidth,
+  useSidebarWidth,
+} from "@/hooks/use-sidebar-width"
 import { HugeiconsIcon } from "@hugeicons/react"
 import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons"
 
 const noop = () => {}
 
-const SIDEBAR_WIDTH = "17.5rem"
+const SIDEBAR_WIDTH = `${SIDEBAR_WIDTH_DEFAULT}px`
 const SIDEBAR_WIDTH_ICON = "3rem"
 const SIDEBAR_KEYBOARD_SHORTCUT = "b"
 
@@ -46,6 +54,11 @@ type SidebarContextProps = {
   pinned: boolean
   setPinned: (value: boolean) => void
   togglePinned: () => void
+  width: number
+  storedWidth: number
+  maxWidth: number
+  setWidth: (value: number) => void
+  resetWidth: () => void
 }
 
 const SidebarContext = React.createContext<SidebarContextProps | null>(null)
@@ -80,6 +93,13 @@ function SidebarProvider({
 }) {
   const isMobile = useIsMobile()
   const [openMobile, setOpenMobile] = React.useState(false)
+  const {
+    width,
+    max: maxWidth,
+    stored: storedWidth,
+    setWidth,
+    resetWidth,
+  } = useSidebarWidth()
 
   const prevIsMobileRef = React.useRef(isMobile)
   React.useEffect(() => {
@@ -163,8 +183,13 @@ function SidebarProvider({
       pinned,
       setPinned,
       togglePinned,
+      width,
+      storedWidth,
+      maxWidth,
+      setWidth,
+      resetWidth,
     }),
-    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned]
+    [state, open, setOpen, isMobile, openMobile, setOpenMobile, toggleSidebar, hasPinMode, pinned, setPinned, togglePinned, width, storedWidth, maxWidth, setWidth, resetWidth]
   )
 
   return (
@@ -173,7 +198,8 @@ function SidebarProvider({
         data-slot="sidebar-wrapper"
         style={
           {
-            "--sidebar-width": SIDEBAR_WIDTH,
+            // The drag handle writes this same property live while resizing.
+            "--sidebar-width": `${width}px`,
             "--sidebar-width-icon": SIDEBAR_WIDTH_ICON,
             ...style,
           } as React.CSSProperties
@@ -194,6 +220,7 @@ function Sidebar({
   side = "left",
   variant = "sidebar",
   collapsible = "offcanvas",
+  collapseToZero = false,
   className,
   children,
   dir,
@@ -202,6 +229,7 @@ function Sidebar({
   side?: "left" | "right"
   variant?: "sidebar" | "floating" | "inset"
   collapsible?: "offcanvas" | "icon" | "none"
+  collapseToZero?: boolean
 }) {
   const { isMobile, state, openMobile, setOpenMobile, hasPinMode, pinned } = useSidebar()
 
@@ -246,13 +274,15 @@ function Sidebar({
       className={cn(
         "group peer text-sidebar-foreground relative shrink-0",
         hasPinMode && pinned && "w-(--sidebar-width)",
-        hasPinMode && !pinned && "w-(--sidebar-width-icon)",
+        hasPinMode && !pinned && (collapseToZero ? "w-0" : "w-(--sidebar-width-icon)"),
       )}
       data-state={state}
       data-collapsible={state === "collapsed" ? collapsible : ""}
       data-variant={variant}
       data-side={side}
       data-slot="sidebar"
+      aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}
+      inert={(hasPinMode && !pinned && collapseToZero) || undefined}
     >
       {/* This is what handles the sidebar gap on desktop */}
       <div
@@ -265,9 +295,11 @@ function Sidebar({
                 // Pin mode: always push content. Expanded when pinned.
                 pinned
                   ? "w-(--sidebar-width)"
-                  : (variant === "floating" || variant === "inset"
-                      ? "w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
-                      : "w-(--sidebar-width-icon)"),
+                  : collapseToZero
+                    ? "w-0"
+                    : (variant === "floating" || variant === "inset"
+                        ? "w-[calc(var(--sidebar-width-icon)+(--spacing(4)))]"
+                        : "w-(--sidebar-width-icon)"),
               )
             : cn(
                 // Legacy mode: original shadcn behavior.
@@ -286,8 +318,12 @@ function Sidebar({
           hasPinMode
             ? cn(
                 // Pin mode: always push content, full height.
-                "absolute top-0 bottom-0 flex w-(--sidebar-width) data-[side=left]:left-0",
-                "group-data-[collapsible=icon]:w-(--sidebar-width-icon)",
+                "absolute top-0 bottom-0 flex data-[side=left]:left-0",
+                pinned
+                  ? "w-(--sidebar-width)"
+                  : collapseToZero
+                    ? "w-0 overflow-hidden"
+                    : "w-(--sidebar-width-icon)",
               )
             : cn(
                 // Legacy mode: fixed to viewport (original shadcn behavior).
@@ -311,7 +347,60 @@ function Sidebar({
         >
           {children}
         </div>
+        {(!collapseToZero || pinned) && <SidebarResizeHandle side={side} />}
       </div>
+    </div>
+  )
+}
+
+/**
+ * The sidebar's draggable edge, over the shared panel handle.
+ */
+function SidebarResizeHandle({
+  className,
+  side = "left",
+}: {
+  className?: string
+  side?: "left" | "right"
+}) {
+  const { open, toggleSidebar, width, storedWidth, maxWidth, setWidth, resetWidth } =
+    useSidebar()
+  const ref = React.useRef<HTMLDivElement>(null)
+  const t = useT()
+
+  return (
+    <div ref={ref} className="contents">
+      <PanelResizeHandle
+        edge={side === "right" ? "left" : "right"}
+        open={open}
+        width={width}
+        stored={storedWidth}
+        min={SIDEBAR_WIDTH_MIN}
+        max={maxWidth}
+        clamp={clampSidebarWidth}
+        setWidth={setWidth}
+        resetWidth={resetWidth}
+        onToggle={toggleSidebar}
+        target={() =>
+          ref.current?.closest<HTMLElement>('[data-slot="sidebar-wrapper"]') ?? null
+        }
+        cssVar="--sidebar-width"
+        // The custom titlebar renders outside the wrapper and cannot inherit it.
+        rootVar="--studio-sidebar-live-width"
+        measure={() =>
+          ref.current
+            ?.closest<HTMLElement>('[data-slot="sidebar-container"]')
+            ?.getBoundingClientRect().width ?? SIDEBAR_WIDTH_MIN
+        }
+        label={t("shell.aria.resizeSidebar")}
+        toggleLabel={t("shell.aria.openSidebar")}
+        collapseHint={t("shell.resize.collapse")}
+        expandHint={t("shell.resize.expand")}
+        dragHint={t("shell.resize.drag")}
+        shortcut="ModB"
+        dataSlot="sidebar-resize-handle"
+        className={className}
+      />
     </div>
   )
 }
@@ -471,7 +560,7 @@ function SidebarGroupLabel({
       data-slot="sidebar-group-label"
       data-sidebar="group-label"
       className={cn(
-        "text-[#94a3b8] dark:text-[#666] ring-sidebar-ring h-auto pt-3 pb-2 px-4 rounded-md text-[10px] font-semibold uppercase tracking-[0em] group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 focus-visible:ring-1 [&>svg]:size-3 flex shrink-0 items-center outline-hidden [&>svg]:shrink-0",
+        "text-[#94a3b8] dark:text-[#666] ring-sidebar-ring h-auto pt-3 pb-2 px-4 rounded-md text-ui-10 font-semibold uppercase tracking-[0em] group-data-[collapsible=icon]:-mt-8 group-data-[collapsible=icon]:opacity-0 focus-visible:ring-1 [&>svg]:size-3 flex shrink-0 items-center outline-hidden [&>svg]:shrink-0",
         className
       )}
       {...props}
@@ -777,6 +866,7 @@ export {
   SidebarMenuSubItem,
   SidebarProvider,
   SidebarRail,
+  SidebarResizeHandle,
   SidebarSeparator,
   SidebarTrigger,
   useSidebar,

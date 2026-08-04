@@ -4,7 +4,7 @@
 """Regression tests for #6890: repeated base-model downloads across checkpoint exports.
 
 merge_and_overwrite_lora downloads missing 16-bit shards with hf_hub_download(local_dir),
-which never populates the persistent HF hub cache; a temporary merge directory (Studio
+which never populates the persistent HF hub cache; a temporary merge directory (Unsloth
 GGUF exports delete it) means every checkpoint export re-downloads the full base model.
 _prewarm_base_model_hub_cache snapshot-downloads the base into the hub cache first so
 the zoo's cache-copy fast path is hit on later exports.

@@ -172,6 +172,136 @@ def anthropic_messages_to_openai(
     return result
 
 
+_ANTHROPIC_SCHEMA_CLIENT_TOOL_PARAMETERS = {
+    "bash": {
+        "type": "object",
+        "properties": {
+            "command": {"type": "string"},
+            "restart": {"type": "boolean"},
+        },
+        "anyOf": [
+            {"required": ["command"]},
+            {"properties": {"restart": {"const": True}}, "required": ["restart"]},
+        ],
+    },
+    "text_editor": {
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "enum": ["view", "str_replace", "create", "insert"],
+            },
+            "path": {"type": "string"},
+            "view_range": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 2,
+                "maxItems": 2,
+            },
+            "old_str": {"type": "string"},
+            "new_str": {"type": "string"},
+            "file_text": {"type": "string"},
+            "insert_line": {"type": "integer"},
+            "insert_text": {"type": "string"},
+        },
+        "required": ["command", "path"],
+    },
+    "computer": {
+        "type": "object",
+        "properties": {
+            "action": {"type": "string"},
+            "coordinate": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 2,
+                "maxItems": 2,
+            },
+            "text": {"type": "string"},
+            "duration": {"type": "number"},
+            "scroll_direction": {"type": "string"},
+            "scroll_amount": {"type": "integer"},
+            "start_coordinate": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 2,
+                "maxItems": 2,
+            },
+            "key": {"type": "string"},
+        },
+        "required": ["action"],
+        "additionalProperties": True,
+    },
+    "memory": {
+        "type": "object",
+        "properties": {
+            "command": {
+                "type": "string",
+                "enum": ["view", "create", "str_replace", "insert", "delete", "rename"],
+            },
+            "path": {"type": "string"},
+            "view_range": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "minItems": 2,
+                "maxItems": 2,
+            },
+            "file_text": {"type": "string"},
+            "old_str": {"type": "string"},
+            "new_str": {"type": "string"},
+            "insert_line": {"type": "integer"},
+            "insert_text": {"type": "string"},
+            "old_path": {"type": "string"},
+            "new_path": {"type": "string"},
+        },
+        "required": ["command"],
+    },
+}
+
+_ANTHROPIC_SCHEMA_CLIENT_TOOL_DESCRIPTIONS = {
+    "bash": "Run a command in the caller-owned persistent bash session, or restart it.",
+    "text_editor": "View, create, or edit files in the caller-owned filesystem.",
+    "computer": "Interact with the caller-owned computer using an action and its parameters.",
+    "memory": "Store and retrieve files in the caller-owned persistent memory directory.",
+}
+
+
+def anthropic_schema_client_tool_kind(tool) -> Optional[str]:
+    """Return the kind of a schema-less Anthropic client tool, if recognized."""
+    td = tool if isinstance(tool, dict) else tool.model_dump()
+    if td.get("input_schema") is not None:
+        return None
+    type_ = td.get("type")
+    if not isinstance(type_, str):
+        return None
+    kind, separator, version = type_.rpartition("_")
+    if (
+        separator
+        and kind in _ANTHROPIC_SCHEMA_CLIENT_TOOL_PARAMETERS
+        and len(version) == 8
+        and version.isdigit()
+    ):
+        return kind
+    return None
+
+
+def _anthropic_schema_client_tool_parameters(td: dict, kind: str) -> dict:
+    parameters = _ANTHROPIC_SCHEMA_CLIENT_TOOL_PARAMETERS[kind]
+    if kind != "text_editor":
+        return parameters
+
+    version = td["type"].rpartition("_")[2]
+    commands = list(parameters["properties"]["command"]["enum"])
+    if version < "20250429":
+        commands.append("undo_edit")
+    return {
+        **parameters,
+        "properties": {
+            **parameters["properties"],
+            "command": {**parameters["properties"]["command"], "enum": commands},
+        },
+    }
+
+
 def anthropic_tools_to_openai(tools: list) -> list[dict]:
     """Convert Anthropic client tools to OpenAI function-tool format."""
     result = []
@@ -179,6 +309,9 @@ def anthropic_tools_to_openai(tools: list) -> list[dict]:
         td = t if isinstance(t, dict) else t.model_dump()
         name = td.get("name")
         input_schema = td.get("input_schema")
+        schema_client_kind = anthropic_schema_client_tool_kind(td)
+        if schema_client_kind is not None:
+            input_schema = _anthropic_schema_client_tool_parameters(td, schema_client_kind)
         if not name or input_schema is None:
             continue
         result.append(
@@ -186,7 +319,8 @@ def anthropic_tools_to_openai(tools: list) -> list[dict]:
                 "type": "function",
                 "function": {
                     "name": name,
-                    "description": td.get("description", ""),
+                    "description": td.get("description")
+                    or _ANTHROPIC_SCHEMA_CLIENT_TOOL_DESCRIPTIONS.get(schema_client_kind, ""),
                     "parameters": input_schema,
                 },
             }
@@ -539,7 +673,7 @@ class AnthropicPassthroughEmitter:
 
         Only calls naming a tool in ``allowed_tools`` (the client's declared
         tools) are promoted; everything else streams as text exactly as before.
-        Never enabled for Studio's own tool loop.
+        Never enabled for Unsloth's own tool loop.
         """
         from core.inference.passthrough_healing import StreamToolCallHealer
 

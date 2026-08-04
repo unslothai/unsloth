@@ -34,7 +34,13 @@ import { Delete02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useCallback, useEffect, useRef, useState } from "react";
 import { Spinner } from "@/components/ui/spinner";
-import { translate, useT } from "@/i18n";
+import {
+  type Locale,
+  formatRelativeTime,
+  translate,
+  useLocale,
+  useT,
+} from "@/i18n";
 
 type StudioT = ReturnType<typeof useT>;
 
@@ -78,13 +84,17 @@ function wasContinuedInVisibleRuns(
   run: TrainingRunSummary,
   runs: TrainingRunSummary[],
 ): boolean {
-  if (run.status !== "stopped" || !run.output_dir) return false;
+  if ((run.status !== "stopped" && run.status !== "error") || !run.output_dir)
+    return false;
   const startedAt = new Date(run.started_at).getTime();
   return runs.some(
     (other) =>
       other.id !== run.id &&
       other.output_dir === run.output_dir &&
-      (other.status === "stopped" || other.status === "completed") &&
+      (other.status === "stopped" ||
+        other.status === "completed" ||
+        other.status === "error" ||
+        other.status === "running") &&
       new Date(other.started_at).getTime() > startedAt,
   );
 }
@@ -167,15 +177,19 @@ function Sparkline({
   );
 }
 
-function formatRelativeTime(isoDate: string, t: StudioT): string {
+function formatRunRelativeTime(
+  isoDate: string,
+  t: StudioT,
+  locale: Locale,
+): string {
   const diff = Date.now() - new Date(isoDate).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return t("studio.history.relativeJustNow");
-  if (mins < 60) return t("studio.history.relativeMinutesAgo", { count: mins });
+  if (mins < 60) return formatRelativeTime(locale, -mins, "minute");
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return t("studio.history.relativeHoursAgo", { count: hrs });
+  if (hrs < 24) return formatRelativeTime(locale, -hrs, "hour");
   const days = Math.floor(hrs / 24);
-  return t("studio.history.relativeDaysAgo", { count: days });
+  return formatRelativeTime(locale, -days, "day");
 }
 
 
@@ -189,6 +203,7 @@ export function HistoryCardGrid({
   onResumeStarted,
 }: HistoryCardGridProps): ReactElement {
   const t = useT();
+  const locale = useLocale();
   const [runs, setRuns] = useState<TrainingRunSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -421,15 +436,15 @@ export function HistoryCardGrid({
               <div className="flex items-center justify-between pr-6">
                 <span
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-[10px] font-semibold",
+                    "inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 text-ui-10 font-semibold",
                     badge.className,
                   )}
                 >
                   {isRunning && <Spinner className="size-2.5" />}
                   {formatStatusLabel(wasContinued ? "resumed_later" : run.status, t)}
                 </span>
-                <span className="text-[10px] text-muted-foreground">
-                  {formatRelativeTime(run.started_at, t)}
+                <span className="text-ui-10 text-muted-foreground">
+                  {formatRunRelativeTime(run.started_at, t, locale)}
                 </span>
               </div>
               {canResume && (
@@ -437,7 +452,7 @@ export function HistoryCardGrid({
                   type="button"
                   size="xs"
                   variant="outline"
-                  className="absolute bottom-3 left-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
+                  className="absolute bottom-3 left-4 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
                   disabled={isStarting || isResuming}
                   onClick={(e) => {
                     e.stopPropagation();
@@ -452,7 +467,7 @@ export function HistoryCardGrid({
                   type="button"
                   size="xs"
                   variant="outline"
-                  className="absolute bottom-3 right-4 h-6 rounded-full px-2.5 text-[11px] leading-none shadow-sm"
+                  className="absolute bottom-3 right-4 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
                   onClick={async (e) => {
                     e.stopPropagation();
                     // Encode each segment but keep "/" so the /p route matches.
@@ -520,7 +535,7 @@ export function HistoryCardGrid({
                   />
                 </div>
               )}
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted-foreground">
+              <div className="flex flex-wrap gap-x-4 gap-y-1 text-ui-11 text-muted-foreground">
                 <span>
                   {t("studio.history.loss")}:{" "}
                   {run.final_loss != null ? run.final_loss.toFixed(4) : "--"}

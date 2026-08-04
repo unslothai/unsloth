@@ -8,7 +8,7 @@ import { HistoryCardGrid } from "./history-card-grid";
 
 /**
  * Recent training runs surfaced on Data Recipes and Export. Selecting a run
- * stores its id and navigates to Studio, which auto-opens its History tab.
+ * stores its id and navigates to Unsloth, which auto-opens its History tab.
  * Renders nothing once we know there are no runs.
  */
 export function RecentTrainingsSection() {
@@ -22,7 +22,7 @@ export function RecentTrainingsSection() {
 
   return (
     <section className="mt-10">
-      <h2 className="mb-4 text-[18px] font-semibold tracking-[-0.02em] text-foreground">
+      <h2 className="mb-4 text-ui-18 font-semibold tracking-[-0.02em] text-foreground">
         Recent trainings
       </h2>
       <HistoryCardGrid

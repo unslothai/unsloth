@@ -3,11 +3,12 @@
 
 """Security smoke for the public /p preview routes.
 
-Real ``preview_router`` with stubbed model calls. Covers HMAC capability gating
-(missing/invalid/wrong-ref tokens 404 before any load), path-traversal rejection,
-request sanitization (tools / provider routing / use_adapter / generation clamp),
-asset-path containment, the page CSP + no-referrer headers and HTML escaping, and
-that the preview lock is held until a streaming response fully drains.
+Real ``preview_router`` with stubbed model calls (``load_model_for_preview`` /
+``openai_chat_completions``). Covers HMAC capability gating (missing/invalid/wrong-ref
+tokens 404 before any load), path-traversal rejection, request sanitization (tools /
+provider routing / use_adapter / generation clamp), asset-path containment, the page CSP
++ no-referrer headers and HTML escaping, and that the preview lock is held until a
+streaming response fully drains.
 """
 
 import asyncio
@@ -531,7 +532,7 @@ def slot_state():
 def fake_slot(slot_state, monkeypatch):
     state = {"ident": None, "loads": []}
 
-    async def _fake_impl(load_req, fastapi_request, subject):
+    async def _fake_impl(load_req, fastapi_request, subject, **kwargs):
         state["loads"].append(load_req.model_path)
         if state.get("fail_load"):
             # Mirror a load that tears the old model down, then fails.
@@ -748,7 +749,7 @@ def test_chat_returns_503_when_model_busy(tmp_path, monkeypatch, slot_state):
 
     monkeypatch.setattr(_sr, "outputs_root", lambda: outputs)
 
-    async def _fake_impl(load_req, fastapi_request, subject):
+    async def _fake_impl(load_req, fastapi_request, subject, **kwargs):
         raise AssertionError("must not load while busy")
 
     monkeypatch.setattr(inference, "_load_model_impl", _fake_impl)
@@ -941,7 +942,7 @@ def test_preview_reload_failure_restores_prior_ownership(slot_state, monkeypatch
     llama_keepwarm._preview_pending = 0
     inference._set_preview_resident("/outputs/run/ckpt-A")  # A is preview-owned
 
-    async def _clear_then_fail(load_req, fastapi_request, subject):
+    async def _clear_then_fail(load_req, fastapi_request, subject, **kwargs):
         inference._set_preview_resident(None)  # mirror _load_model_impl reclaiming slot
         raise HTTPException(status_code = 500, detail = "spawn failed")  # A still resident
 
@@ -1067,7 +1068,7 @@ def test_preview_load_assembly_failure_marks_new_checkpoint(fake_slot, monkeypat
     # was loaded only by this preview), not restored to A (which would leave B Studio-owned).
     inference._set_preview_resident("/outputs/run/ckpt-a")  # prior preview A
 
-    async def _load_then_assembly_fail(load_req, fastapi_request, subject):
+    async def _load_then_assembly_fail(load_req, fastapi_request, subject, **kwargs):
         fake_slot["loads"].append(load_req.model_path)
         fake_slot["ident"] = load_req.model_path  # B is now the resident slot
         raise HTTPException(status_code = 500, detail = "assembly failed after load")
@@ -1383,12 +1384,12 @@ def test_preload_unload_teardown_restores_preview_marker():
     # restores the marker before propagating.
     non_gguf = src[src.index("Unloading GGUF model before loading Unsloth model") :]
     non_gguf = non_gguf[: non_gguf.index("Shut down any export subprocess")]
-    assert "llama_backend.unload_model()" in non_gguf
+    assert "llama_backend.unload_model" in non_gguf
     assert "_restore_marker_if_prior_preview_still_resident()" in non_gguf
     assert "raise" in non_gguf
     # GGUF path: the pre-load unsloth_backend.unload_model teardown is wrapped the same way.
     gguf = src[src.index("before loading GGUF") :]
-    gguf = gguf[: gguf.index("Inherit llama_extra_args")]
+    gguf = gguf[: gguf.index("Every rejection and source check has completed")]
     assert "_restore_marker_if_prior_preview_still_resident()" in gguf
     assert "raise" in gguf
 
@@ -1700,13 +1701,24 @@ def test_native_chat_stream_cancels_mark_response_failed():
     # sentinel and breaks without hitting the pre-next check, so the finalize marks it too.
     import inspect
     src = inspect.getsource(inference.openai_chat_completions)
+    lines = src.splitlines(keepends = True)
+
+    def _body(name):
+        # Slice by indentation, not the next "async def": these generators nest their own
+        # async helpers, which a naive scan would cut the body off at.
+        for i, line in enumerate(lines):
+            if line.lstrip().startswith(f"async def {name}()"):
+                indent = len(line) - len(line.lstrip())
+                out = [line]
+                for nxt in lines[i + 1 :]:
+                    if nxt.strip() and (len(nxt) - len(nxt.lstrip())) <= indent:
+                        break
+                    out.append(nxt)
+                return "".join(out)
+        raise AssertionError(name)
+
     for gen in ("gguf_tool_stream", "gguf_stream_chunks", "sf_tool_stream", "stream_chunks"):
-        start = src.index(f"async def {gen}()")
-        try:
-            nxt = src.index("async def ", start + 1)
-        except ValueError:
-            nxt = len(src)
-        block = src[start:nxt]
+        block = _body(gen)
         # cancel-break + disconnect-return + post-loop sentinel-break all mark failed.
         assert block.count("mark_current_response_failed()") >= 3, gen
         # The post-loop mark sits just before the "completed" finalize, guarding the

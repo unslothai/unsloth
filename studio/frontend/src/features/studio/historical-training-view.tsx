@@ -2,18 +2,29 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { TrainingViewData } from "@/features/training";
-import { getTrainingRun, onTrainingRunUpdated } from "@/features/training";
+import {
+  getTrainingRun,
+  onTrainingRunUpdated,
+  useTrainingActions,
+  useTrainingRuntimeStore,
+} from "@/features/training";
 import type { TrainingRunDetailResponse } from "@/features/training";
 import { parseBackendTrainingMethod } from "@/features/training/lib/training-methods";
 import { type ReactElement, useEffect, useState } from "react";
 import { ChartsSection } from "./sections/charts-section";
 import { ProgressSection } from "./sections/progress-section";
+import { mapRunConfigToOverride } from "./sections/run-config-override";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
+import { PlayIcon } from "@hugeicons/core-free-icons";
+import { HugeiconsIcon } from "@hugeicons/react";
 import { translate, useT } from "@/i18n";
 
 type StudioT = ReturnType<typeof useT>;
 
 interface HistoricalTrainingViewProps {
   runId: string;
+  onResumeStarted?: () => void;
 }
 
 function mapToViewData(
@@ -92,10 +103,27 @@ function mapToViewData(
 
 export function HistoricalTrainingView({
   runId,
+  onResumeStarted,
 }: HistoricalTrainingViewProps): ReactElement {
   const t = useT();
   const [detail, setDetail] = useState<TrainingRunDetailResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [resuming, setResuming] = useState(false);
+  const { resumeTrainingRunFromHistory } = useTrainingActions();
+  const isStarting = useTrainingRuntimeStore((state) => state.isStarting);
+  const isTrainingRunning = useTrainingRuntimeStore(
+    (state) => state.isTrainingRunning,
+  );
+
+  const handleResume = async () => {
+    setResuming(true);
+    try {
+      const ok = await resumeTrainingRunFromHistory(runId);
+      if (ok) onResumeStarted?.();
+    } finally {
+      setResuming(false);
+    }
+  };
 
   // Derive loading from detail/error; no separate state.
   const loading = detail === null && error === null;
@@ -147,28 +175,31 @@ export function HistoricalTrainingView({
   }
 
   const viewData = mapToViewData(detail, t);
-  const configOverride = detail.config
-    ? {
-        epochs: detail.config.num_epochs as number | undefined,
-        batchSize: detail.config.batch_size as number | undefined,
-        learningRate: detail.config.learning_rate as string | undefined,
-        maxSteps: detail.config.max_steps as number | undefined,
-        contextLength: detail.config.max_seq_length as number | undefined,
-        warmupSteps: detail.config.warmup_steps as number | undefined,
-        optimizerType: detail.config.optim as string | undefined,
-        loraRank: detail.config.lora_r as number | undefined,
-        loraAlpha: detail.config.lora_alpha as number | undefined,
-        loraDropout: detail.config.lora_dropout as number | undefined,
-        loraVariant: detail.config.use_rslora
-          ? "rslora"
-          : detail.config.use_loftq
-            ? "loftq"
-            : "lora",
-      }
-    : undefined;
+  const configOverride = mapRunConfigToOverride(detail.config);
 
   return (
     <div className="flex flex-col gap-6">
+      {detail.run.can_resume && (
+        <div className="flex justify-end">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="gap-1.5"
+            disabled={isStarting || resuming || isTrainingRunning}
+            onClick={() => void handleResume()}
+          >
+            {resuming ? (
+              <Spinner className="size-3.5" />
+            ) : (
+              <HugeiconsIcon icon={PlayIcon} className="size-3.5" />
+            )}
+            {resuming
+              ? t("studio.history.resuming")
+              : t("studio.history.resumeTraining")}
+          </Button>
+        </div>
+      )}
       <ProgressSection
         data={viewData}
         isHistorical
