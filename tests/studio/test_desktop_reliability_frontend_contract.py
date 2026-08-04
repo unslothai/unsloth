@@ -414,10 +414,10 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     assert "usesNativeMacTitlebar && !pinned" in navbar
     assert "<DesktopTitlebarNavigation" in navbar
 
-    assert 'top-px z-[60]' in navbar
-    assert 'z-40 h-[48px]' in navbar
-    assert 'aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}' in primitive
-    assert 'inert={(hasPinMode && !pinned && collapseToZero) || undefined}' in primitive
+    assert "top-px z-[60]" in navbar
+    assert "z-40 h-[48px]" in navbar
+    assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
+    assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
 
 
 def test_visible_mac_sidebar_header_is_a_drag_region():
