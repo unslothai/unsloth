@@ -577,10 +577,14 @@ def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
 def _inference_backend_blocks_delete(repo_id: str) -> bool:
     """Whether the subprocess inference backend holds *repo_id*; same fail-open-on-acquire / surface-on-query contract as :func:`_llama_cpp_blocks_delete`."""
     try:
-        from core.inference import get_inference_backend
-        backend = get_inference_backend()
+        from core.inference.orchestrator import peek_inference_backend
+
+        # Peek, never construct: building one just to learn nothing is loaded imports torch.
+        backend = peek_inference_backend()
     except Exception as e:
         logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
+        return False
+    if backend is None:
         return False
     active_name = backend.active_model_name
     return bool(active_name) and _loaded_id_matches_repo(active_name, repo_id)
@@ -662,15 +666,18 @@ async def delete_cached_model_response(
 
     # Guard fails closed: if a live backend's load state can't be read, abort
     # with 503 rather than risk unlinking weights under a running process.
-    try:
-        blocks_detail = None
+    # Every guard is sync and the chat ones reach get_inference_backend(), whose cold build waits
+    # on hardware detection. One worker keeps the `or` short-circuit and keeps the event loop free.
+    def _load_state_blocks_delete() -> Optional[str]:
         if _llama_cpp_blocks_delete(repo_id, variant) or (
             _inference_backend_blocks_delete(repo_id)
         ):
-            blocks_detail = "Unload the model before deleting"
-        else:
-            # The guards above are chat-only; Images / Video hold their own pipelines.
-            blocks_detail = _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
+            return "Unload the model before deleting"
+        # The guards above are chat-only; Images / Video hold their own pipelines.
+        return _diffusion_blocks_delete(repo_id) or _video_blocks_delete(repo_id)
+
+    try:
+        blocks_detail = await asyncio.to_thread(_load_state_blocks_delete)
     except Exception as e:
         logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {e}")
         raise HTTPException(

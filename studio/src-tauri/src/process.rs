@@ -531,7 +531,7 @@ pub(crate) fn resolve_backend_binary() -> Result<std::path::PathBuf, String> {
     }
 
     find_unsloth_binary()
-        .ok_or_else(|| "Unsloth binary not found. Please install Unsloth Studio first.".to_string())
+        .ok_or_else(|| "Unsloth binary not found. Please install Unsloth first.".to_string())
 }
 
 fn backend_args(port: u16) -> Vec<String> {
@@ -698,6 +698,7 @@ pub fn start_backend(
 
     info!("{}", start_line);
     diagnostics::append_phase_line(&backend_log.handle, "meta", &start_line);
+    start_watchdog(app, state, shutdown, generation, &backend_log);
 
     if let Some(stdout) = stdout {
         let app_handle = app.clone();
@@ -740,10 +741,7 @@ pub fn start_backend(
 
 async fn generic_backend_health_ok(port: u16) -> bool {
     let started = std::time::Instant::now();
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
+    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
         Ok(client) => client,
         Err(error) => {
             warn!("Could not build backend validation client: {}", error);
@@ -899,6 +897,101 @@ async fn validate_candidate_port(
     }
 }
 
+/// How long a backend may take to become reachable before the window stops waiting.
+///
+/// A healthy managed backend imports torch and serves /api/health in roughly 12 s on a
+/// CI runner. This is deliberately an order of magnitude looser: the deadline exists to
+/// end an unbounded wait, not to police slow machines, and a false "failed to start" on
+/// a cold laptop would be worse than the bug it fixes.
+const BACKEND_START_DEADLINE: Duration = Duration::from_secs(300);
+
+/// Report an unresponsive backend early, with its own output.
+///
+/// A backend that hangs (alive, silent, never binds its port) is not unreported today:
+/// `commands.rs`'s health watchdog kills it and emits `server-crashed` once three
+/// 15 s probes fail past `BACKEND_STARTUP_GRACE_PERIOD`, so at roughly t+330 s. What
+/// that path cannot do is say why: `server-crashed` carries no payload, so the user
+/// gets "Server stopped unexpectedly" and nothing to act on.
+///
+/// This fires ~30 s earlier, carries the backend's last log lines, and deliberately
+/// does NOT kill it, leaving the kill policy with the watchdog that has the health
+/// evidence to justify it.
+fn start_watchdog(
+    app: &AppHandle,
+    state: &BackendState,
+    shutdown: &ShutdownFlag,
+    generation: u64,
+    backend_log: &BackendLog,
+) {
+    let app = app.clone();
+    let state = Arc::clone(state);
+    let shutdown = Arc::clone(shutdown);
+    let backend_log = backend_log.clone();
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        while started.elapsed() < BACKEND_START_DEADLINE {
+            std::thread::sleep(Duration::from_secs(1));
+            if shutdown.load(Ordering::SeqCst) {
+                return;
+            }
+            match state.lock() {
+                Ok(proc) => {
+                    // A newer start superseded this one, or the backend is gone: either
+                    // way this watchdog is watching something that no longer exists.
+                    if proc.generation != generation || !proc.has_owned_backend() {
+                        return;
+                    }
+                    // The port is only recorded after validation, so this is
+                    // "reachable", not merely "printed a number".
+                    if proc.port.is_some() {
+                        return;
+                    }
+                }
+                Err(_) => {
+                    warn!("Backend start watchdog giving up: state mutex poisoned");
+                    return;
+                }
+            }
+        }
+
+        let (still_ours, tail) = match state.lock() {
+            Ok(proc) => {
+                // Same three conditions as the loop. Dropping has_owned_backend here
+                // would let a crash in the last second be overwritten by a message
+                // claiming the backend is still running.
+                if proc.generation != generation || proc.port.is_some() || !proc.has_owned_backend()
+                {
+                    (false, String::new())
+                } else {
+                    let skip = proc.logs.len().saturating_sub(20);
+                    let tail: Vec<String> = proc.logs.iter().skip(skip).cloned().collect();
+                    (true, tail.join("\n"))
+                }
+            }
+            Err(_) => (false, String::new()),
+        };
+        if !still_ours || shutdown.load(Ordering::SeqCst) {
+            return;
+        }
+
+        let secs = BACKEND_START_DEADLINE.as_secs();
+        let msg = if tail.trim().is_empty() {
+            format!(
+                "The Unsloth backend did not start within {secs} seconds and produced no \
+                 output at all. It is still running but is not responding."
+            )
+        } else {
+            format!(
+                "The Unsloth backend did not start within {secs} seconds. Its last output \
+                 was:\n{tail}"
+            )
+        };
+        error!("Backend start deadline exceeded after {}s", secs);
+        diagnostics::append_phase_line(&backend_log.handle, "error", &msg);
+        let _ = app.emit("server-start-timeout", msg);
+    });
+}
+
 /// Read lines from a child process stream (stdout or stderr).
 /// For stdout, parse TAURI_PORT=(\d+) candidates for async validation.
 /// When stdout closes and the stop was not intentional, emit server-crashed.
@@ -914,11 +1007,17 @@ fn read_output_stream<R: std::io::Read>(
     let mut reader = std::io::BufReader::new(stream);
     let port_re = Regex::new(r"TAURI_PORT=(\d+)").unwrap();
     let mut buf = Vec::new();
+    // Did we leave the loop because the child closed the stream, or for a reason of our
+    // own? That decides whether dropping the read end here is safe. See below.
+    let mut saw_eof = false;
 
     loop {
         buf.clear();
         match reader.read_until(b'\n', &mut buf) {
-            Ok(0) => break,
+            Ok(0) => {
+                saw_eof = true;
+                break;
+            }
             Ok(_) => {
                 let text = String::from_utf8_lossy(trim_line_endings(&buf)).into_owned();
                 let log_line = if is_stderr {
@@ -998,6 +1097,39 @@ fn read_output_stream<R: std::io::Read>(
         }
     }
 
+    // Every other way out of that loop (a generation mismatch, a poisoned mutex, a read
+    // error) leaves the child ALIVE while this function is about to drop the read end.
+    // That closes the pipe underneath it, and the backend's next write takes EPIPE and
+    // dies. Seen under strace on a failing run: three good writes, then
+    //     write(1, "Session log: ...", 88) = -1 EPIPE
+    //     --- SIGPIPE ---  exit_group(1)
+    // with that same line reaching the session log on disk a moment later. The server
+    // had everything it needed and stopped only because we stopped listening.
+    //
+    // So never hand a live child a reader-less pipe: if we are giving up on parsing,
+    // keep draining to EOF. Discarding costs one blocked thread; closing costs the
+    // backend.
+    if !saw_eof {
+        warn!(
+            "Backend {} reader stopped parsing without eof (generation {}); draining so \
+             the child keeps a reader",
+            if is_stderr { "stderr" } else { "stdout" },
+            generation
+        );
+        use std::io::Read;
+        let mut sink = [0u8; 8192];
+        loop {
+            match reader.read(&mut sink) {
+                Ok(0) => break,
+                Ok(_) => continue,
+                // read_until retries this internally; a raw read does not, and giving
+                // up on EINTR would drop the read end and re-create the EPIPE above.
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+        }
+    }
+
     // Stream closed. Only the stdout reader checks for crashes.
     if !is_stderr {
         let mut exit_record: Option<(String, bool)> = None;
@@ -1012,18 +1144,17 @@ fn read_output_stream<R: std::io::Read>(
                 .as_mut()
                 .and_then(OwnedBackendHandle::spawned_child_mut)
             {
-                match child.try_wait() {
-                    Ok(Some(status)) => {
+                match exit_status_after_stdout_closed(child) {
+                    Some(status) => {
                         info!("Backend stdout stream ended with status: {}", status);
-                        exit_record = Some((status.to_string(), intentional));
+                        exit_record = Some((status, intentional));
                         true
                     }
-                    Ok(None) => {
-                        warn!("Backend stdout stream ended, but process is still running");
-                        false
-                    }
-                    Err(e) => {
-                        warn!("Failed to query backend status after stdout closed: {}", e);
+                    None => {
+                        warn!(
+                            "Backend stdout stream ended and the process has still not \
+                             reported an exit status; leaving it marked as running"
+                        );
                         false
                     }
                 }
@@ -1054,6 +1185,40 @@ fn read_output_stream<R: std::io::Read>(
             let _ = app.emit("server-crashed", ());
         }
     }
+}
+
+/// Exit status of a child whose stdout just closed, or None if it really is still alive.
+///
+/// A single non-blocking `try_wait()` at the instant stdout EOFs is a race: the pipe
+/// closes when the process drops its handles, observably before the process object
+/// signals, so a backend that HAS died reports `Ok(None)`.
+///
+/// Losing that race was not cosmetic. `exited` stayed false, the owner metadata was
+/// never cleared, `proc.port` kept pointing at a dead server and no `server-crashed`
+/// was emitted, so the window sat on the startup screen with nothing reported. Seen on
+/// Windows CI, which logged "process is still running" for a PID that was already gone.
+///
+/// Returning None still means "genuinely alive", which matters because Studio may close
+/// its own stdout once logging moves to the session log, so stdout EOF alone must not
+/// be read as death. Same poll shape as `wait_for_child_exit` below.
+fn exit_status_after_stdout_closed(child: &mut Box<dyn ChildWrapper + Send>) -> Option<String> {
+    for attempt in 0..30 {
+        match child.try_wait() {
+            Ok(Some(status)) => return Some(status.to_string()),
+            Ok(None) => {
+                // Cheap first look before paying for any sleep: a clean shutdown has
+                // usually reaped by the time we get here.
+                if attempt > 0 {
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+            }
+            Err(e) => {
+                warn!("Failed to query backend status after stdout closed: {}", e);
+                return None;
+            }
+        }
+    }
+    None
 }
 
 fn wait_for_child_exit(child: &mut Box<dyn ChildWrapper + Send>, label: &str) -> bool {
@@ -1365,4 +1530,64 @@ fn stop_backend_inner(
     }
 
     result
+}
+
+// The race this pins is not visible from the type system, so it uses real processes
+// rather than a mock: a child's stdout pipe can EOF a moment before the kernel reports
+// the exit, and a single non-blocking try_wait() at that instant returns Ok(None). The
+// old code read that as "still running", never emitted server-crashed, and left the
+// window waiting on a backend that was already gone.
+#[cfg(test)]
+#[cfg(unix)]
+mod exit_status_after_stdout_closed_tests {
+    use super::*;
+
+    fn spawn(args: &[&str]) -> Box<dyn ChildWrapper + Send> {
+        let mut cmd = Command::new(args[0]);
+        cmd.args(&args[1..])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut wrap = CommandWrap::from(cmd);
+        wrap.wrap(ProcessGroup::leader());
+        wrap.spawn().expect("spawn test child")
+    }
+
+    #[test]
+    fn reports_the_status_of_a_child_that_has_already_exited() {
+        let mut child = spawn(&["/bin/sh", "-c", "exit 3"]);
+        let status = exit_status_after_stdout_closed(&mut child)
+            .expect("a child that exited must be reported, not read as alive");
+        assert!(status.contains('3'), "expected the real exit code in {status:?}");
+    }
+
+    // The half of the contract a naive "retry until you get something" would break: a
+    // backend may legitimately close its own stdout after moving logging to its session
+    // log, and calling that a crash would kill a healthy backend.
+    #[test]
+    fn a_child_that_is_still_running_is_not_reported_as_dead() {
+        let mut child = spawn(&["/bin/sh", "-c", "exec sleep 30"]);
+        let status = exit_status_after_stdout_closed(&mut child);
+        let _ = child.start_kill();
+        assert!(
+            status.is_none(),
+            "a live child must not be reported as exited (got {status:?})"
+        );
+    }
+
+    // The regression itself: exit and observation race, so the check has to survive the
+    // child dying at an arbitrary point rather than only before or only after.
+    #[test]
+    fn wins_the_race_against_a_child_exiting_mid_check() {
+        for delay_ms in [0, 5, 25, 120, 400] {
+            let mut child = spawn(&[
+                "/bin/sh",
+                "-c",
+                &format!("sleep {}; exit 7", delay_ms as f64 / 1000.0),
+            ]);
+            assert!(
+                exit_status_after_stdout_closed(&mut child).is_some(),
+                "child exiting after {delay_ms}ms was read as still alive"
+            );
+        }
+    }
 }

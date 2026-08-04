@@ -160,7 +160,7 @@ export type AppearanceCustomization = {
   chatFont: string | null;
   codeFont: string | null;
   importedFonts: ImportedFont[];
-  /** Root font size in px (rem base). null = browser default (16). */
+  /** UI font size in px. null = app default (15). */
   uiFontSize: number | null;
   /** Code/pre font size in px. null = inherit each element's own size. */
   codeFontSize: number | null;
@@ -205,8 +205,9 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   })),
 };
 
-export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 16 } as const;
+export const UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 } as const;
 export const CODE_FONT_SIZE_RANGE = { min: 10, max: 20, default: 13 } as const;
+const UI_FONT_SIZE_CSS_BASE = 16;
 
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
 
@@ -773,12 +774,13 @@ export function applyCustomizationToDocument(
   // size: rem-based layout geometry must not move with the preference. The
   // scale reaches text through the --text-* / --text-ui-* / --leading-*
   // tokens in index.css.
-  if (c.uiFontSize !== null && c.uiFontSize !== UI_FONT_SIZE_RANGE.default) {
+  const effectiveUiFontSize = c.uiFontSize ?? UI_FONT_SIZE_RANGE.default;
+  if (effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default) {
     setVar(
       "--ui-font-scale",
-      String(c.uiFontSize / UI_FONT_SIZE_RANGE.default),
+      String(effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE),
     );
-    el.setAttribute("data-ui-font-size", String(c.uiFontSize));
+    el.setAttribute("data-ui-font-size", String(effectiveUiFontSize));
   } else {
     setVar("--ui-font-scale", null);
     el.removeAttribute("data-ui-font-size");

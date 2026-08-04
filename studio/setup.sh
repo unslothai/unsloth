@@ -608,6 +608,37 @@ _studio_owned_adoptable() {
     [ -f "$1/UNSLOTH_WHISPER_PREBUILT_INFO.json" ] && return 0
     return 1
 }
+# Search (+x), not read (+r), is what the marker probes need: inside a directory
+# we cannot search every probe reports absent, so our own install reads as someone else's.
+_studio_dir_unsearchable() {
+    [ -d "$1" ] || return 1
+    ( cd "$1" ) 2>/dev/null && return 1
+    return 0
+}
+
+# Mirrors Exit-PathAccessDenied in setup.ps1. owner-unverified means the marker
+# was unreadable, so do not claim the tree is ours or advise deleting it.
+_path_access_denied() {
+    _pad_dir="$1"
+    _pad_label="$2"
+    _pad_mode="${3:-}"
+    step "permissions" "$_pad_label at $_pad_dir cannot be read: permission denied" "$C_ERR"
+    if [ "$_pad_mode" = "owner-unverified" ]; then
+        substep "Unsloth cannot confirm this folder is its own install while it is unreadable, so it will not tell you to remove it" "$C_WARN"
+        substep "Restore access, or move the folder aside, then re-run setup:" "$C_WARN"
+    else
+        substep "This folder lives outside the app, so reinstalling Unsloth Studio reuses it and fails the same way" "$C_WARN"
+        substep "Simplest fix: delete or rename $_pad_dir, then re-run setup (it is a managed cache and gets reinstalled)" "$C_WARN"
+        substep "If deleting is denied too, it belongs to another user; restore access with:" "$C_WARN"
+    fi
+    substep "ls -ld \"$_pad_dir\"" "$C_WARN"
+    substep "chmod -R u+rwX \"$_pad_dir\"" "$C_WARN"
+    if [ "$_pad_mode" = "owner-unverified" ]; then
+        setup_fail 1 "Permission denied reading $_pad_label at $_pad_dir. Unsloth cannot confirm that folder is its own install while it is unreadable: restore access, or move it aside, then re-run setup."
+    fi
+    setup_fail 1 "Permission denied reading the existing $_pad_label at $_pad_dir. Delete or rename that folder (Unsloth reinstalls it) or restore access, then re-run setup. Reinstalling the app does not reset it."
+}
+
 _assert_studio_owned_or_absent() {
     _aso_dir="$1"
     _aso_label="$2"
@@ -616,6 +647,11 @@ _assert_studio_owned_or_absent() {
         if _studio_owned_adoptable "$_aso_dir"; then
             : > "$_aso_dir/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             return 0
+        fi
+        # An unsearchable tree hides its own marker and so looks like someone else's:
+        # report permissions, not ownership.
+        if _studio_dir_unsearchable "$_aso_dir"; then
+            _path_access_denied "$_aso_dir" "$_aso_label" owner-unverified
         fi
         echo "ERROR: $_aso_dir already exists and is not marked as an Unsloth-owned $_aso_label." >&2
         echo "       Move it aside or choose an empty UNSLOTH_STUDIO_HOME before re-running." >&2
@@ -1094,6 +1130,93 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             substep "studio install incomplete -- forcing dependency pass to repair..."
             _SKIP_PYTHON_DEPS=false
         fi
+        # An XPU pin the venv does not satisfy. Only the dependency pass acts on it
+        # (install_python_stack's _ensure_xpu_torch), so without this escape a CPU install
+        # switched to UNSLOTH_TORCH_INDEX_FAMILY=xpu keeps its CPU wheel forever: the package
+        # version is current, so the fast path calls it up to date. Mirrors setup.ps1.
+        _setup_pin="${UNSLOTH_TORCH_INDEX_URL:-${UNSLOTH_TORCH_INDEX_FAMILY:-}}"
+        # Strip query/fragment first: an authenticated mirror (…/whl/xpu?token=...) is a
+        # supported pin shape, and missing it reads as "no XPU pin" and skips the repair.
+        _setup_pin="${_setup_pin%%\#*}"
+        _setup_pin="${_setup_pin%%\?*}"
+        # ALL trailing slashes, like the shared leaf parsers: a single %/ leaves "…/xpu/" behind.
+        while [ "${_setup_pin%/}" != "$_setup_pin" ]; do _setup_pin="${_setup_pin%/}"; done
+        # Exact, lowercased leaf, like every other leaf parser: a *xpu suffix match (…/private-xpu)
+        # would force a pass every update that _ensure_xpu_torch then declines to act on, and an
+        # uncased match would miss UNSLOTH_TORCH_INDEX_FAMILY=XPU that those parsers do accept.
+        _setup_pin_leaf=$(printf '%s' "${_setup_pin##*/}" | tr '[:upper:]' '[:lower:]')
+        # Disk first, no interpreter: version.py carries the local label, so a wedged Intel
+        # driver cannot hang `studio update` inside `import torch`. Read unconditionally, not
+        # only under a pin: the pin is one-shot, so the installed wheel is the only durable
+        # signal -- the same one _ensure_xpu_triton keys on.
+        _setup_pin_ok=false
+        _setup_pin_is_xpu=false
+        for _setup_pin_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+            [ -f "$_setup_pin_tv" ] || continue
+            _setup_pin_ver=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_setup_pin_tv" | head -1)
+            case "$_setup_pin_ver" in
+                *+xpu)
+                    _setup_pin_is_xpu=true
+                    _setup_pin_maj=${_setup_pin_ver%%.*}
+                    _setup_pin_rest=${_setup_pin_ver#*.}
+                    _setup_pin_min=${_setup_pin_rest%%.*}
+                    case "$_setup_pin_maj$_setup_pin_min" in
+                        *[!0-9]*) ;;
+                        *) [ "$_setup_pin_maj" -eq 2 ] && [ "$_setup_pin_min" -ge 6 ] && \
+                           [ "$_setup_pin_min" -lt 11 ] && _setup_pin_ok=true ;;
+                    esac
+                    ;;
+            esac
+            break
+        done
+        # Correct torch is not enough: the Triton swap also lives in install_python_stack, so a
+        # migrated +xpu venv with a leftover generic triton keeps the CUDA build shadowing the
+        # XPU one. The dist-info glob below matches only generic "triton-<ver>" -- the XPU builds
+        # are pytorch_triton_xpu-* / triton_xpu-*.
+        # Leaves the shared classifiers recognise as a non-XPU family. EXACT families, mirroring
+        # install.sh _is_pip_rocm_family_leaf and install_python_stack _is_cuda_family_leaf: a
+        # merely prefixed leaf (cu128-private) is a custom verbatim pin they never repair, so
+        # escaping on one would force a pass every update that changes nothing.
+        _setup_known_nonxpu_leaf() {
+            case "$1" in
+                cpu|gfx[0-9]*) return 0 ;;
+                cu[0-9]*) case "${1#cu}" in *[!0-9]*) return 1 ;; esac ;;
+                rocm[0-9]*)
+                    # Both parts non-empty all-digits: rocm7., rocm7.2.1 are custom pins.
+                    _setup_rocm_rest="${1#rocm}"
+                    case "$_setup_rocm_rest" in
+                        *.*.*) return 1 ;;
+                        *.*)
+                            case "${_setup_rocm_rest%%.*}" in *[!0-9]*) return 1 ;; esac
+                            case "${_setup_rocm_rest#*.}" in "" | *[!0-9]*) return 1 ;; esac
+                            ;;
+                        *[!0-9]*) return 1 ;;
+                    esac
+                    ;;
+                *) return 1 ;;
+            esac
+            return 0
+        }
+        _setup_pin_known_nonxpu=false
+        _setup_known_nonxpu_leaf "$_setup_pin_leaf" && _setup_pin_known_nonxpu=true
+        _setup_generic_triton=false
+        if [ "$_setup_pin_is_xpu" = true ] || [ "$_setup_pin_leaf" = "xpu" ]; then
+            for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do
+                [ -d "$_setup_tri" ] && _setup_generic_triton=true && break
+            done
+        fi
+        if [ "$_setup_pin_leaf" = "xpu" ] && [ "$_setup_pin_ok" = false ]; then
+            substep "XPU index pinned but torch does not match -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_generic_triton" = true ]; then
+            substep "generic triton shadows the XPU build -- forcing dependency pass to repair..."
+            _SKIP_PYTHON_DEPS=false
+        elif [ "$_setup_pin_is_xpu" = true ] && [ "$_setup_pin_known_nonxpu" = true ]; then
+            # Migrating AWAY from XPU: the pin is authoritative, but only install_python_stack
+            # acts on it, so an up-to-date install kept its +xpu wheel over the requested family.
+            substep "$_setup_pin_leaf pinned over an XPU wheel -- forcing dependency pass to migrate..."
+            _SKIP_PYTHON_DEPS=false
+        fi
     elif [ -n "$INSTALLED_VER" ] && [ -n "$LATEST_VER" ]; then
         substep "$_PKG_NAME $INSTALLED_VER -> $LATEST_VER available, updating..."
     elif [ -z "$LATEST_VER" ]; then
@@ -1190,6 +1313,40 @@ _setup_amd_detected=false
 _setup_nvidia_usable=false
 _setup_gfx_all=""
 _setup_mkt=""
+# Intel XPU. There is no vendor probe here like nvidia-smi / rocminfo -- Linux Intel support is
+# an explicit index pin, not autodetection -- so the installed runtime IS the signal. The local
+# label is read off disk first so a CPU-only host never pays for an `import torch`.
+_setup_torch_is_xpu=false
+_setup_xpu_ready=false
+for _setup_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+    [ -f "$_setup_tv" ] || continue
+    grep -q "^__version__ = '[^']*+xpu" "$_setup_tv" 2>/dev/null || continue
+    _setup_torch_is_xpu=true
+    # A +xpu wheel installs fine on a host whose driver never initialises, so only the runtime
+    # answer reaches the summary below. Bounded, because a stalled Intel driver wedges inside
+    # `import torch`: 60s rather than the smi probes' 10s, since a cold import is seconds on its
+    # own. The SIGALRM deadline lives inside the probe too, for hosts without `timeout` (base
+    # macOS, minimal Linux images). Either deadline expiring means "no XPU", as a failure does.
+    _setup_xpu_probe='import signal; signal.alarm(60); import torch,sys; sys.exit(0 if torch.xpu.is_available() else 1)'
+    if command -v timeout >/dev/null 2>&1; then
+        timeout 60 "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1 && _setup_xpu_ready=true
+    elif "$VENV_DIR/bin/python" -c "$_setup_xpu_probe" >/dev/null 2>&1; then
+        _setup_xpu_ready=true
+    fi
+    break
+done
+
+# bitsandbytes carries XPU kernels (libbitsandbytes_xpu2025.so, _xpu2026.so) only from 0.50.0,
+# and unsloth's own floor is 0.45.5, so a pre-XPU wheel satisfies it forever. install.sh raises
+# the floor, but `unsloth studio update` runs THIS file, so an existing XPU user would keep a
+# kernel-less bitsandbytes and lose 4-bit QLoRA. Keyed on the wheel, not the runtime: a stalled
+# driver is no reason to skip the upgrade. --no-deps (torch and numpy are in), best effort.
+if [ "$_setup_torch_is_xpu" = true ]; then
+    # run_quiet_no_exit, NOT run_quiet: the latter exits via setup_fail, aborting an otherwise
+    # fine `studio update` over a best-effort step and leaving the warning below unreachable.
+    run_quiet_no_exit "install bitsandbytes (xpu)" fast_install --no-deps "bitsandbytes>=0.50.0" || \
+        substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable."
+fi
 # NVIDIA priority: classify NVIDIA first and skip the AMD probes entirely on
 # a usable-NVIDIA host (mirrors _has_rocm_gpu in install_python_stack.py).
 # This also keeps a wedged rocminfo/amd-smi from hanging setup before the
@@ -1281,6 +1438,18 @@ elif [ "$_setup_amd_detected" = true ]; then
     substep "ROCm: $_setup_rocm_root"
     [ -n "$_setup_rocm_ver" ] && substep "hipconfig: $_setup_rocm_ver"
     [ -n "$_setup_mkt" ] && [ -n "$_setup_gfx" ] && substep "GPU: $_setup_mkt"
+elif [ "$_setup_xpu_ready" = true ]; then
+    # Ranks below NVIDIA and AMD, as in setup.ps1: those hosts get their own wheels.
+    step "gpu" "Intel GPU detected (XPU runtime)"
+    substep "PyTorch XPU (SYCL) provides training and GPU inference on this GPU."
+elif [ "$_setup_torch_is_xpu" = true ]; then
+    # +xpu wheel installed but torch.xpu.is_available() said no: the Intel compute driver is
+    # missing or too old. Falling through would call the hardware unsupported instead.
+    step "gpu" "Intel GPU (XPU runtime unavailable)" "$C_WARN"
+    substep "PyTorch has the XPU build but cannot initialise it -- update the Intel GPU compute driver."
+    # Not "runs on CPU": with neither CUDA nor XPU, unsloth/device_type.py raises at import.
+    # llama.cpp is unaffected, which is what chat and GGUF run on.
+    substep "Until then training and GPU inference are unavailable; chat and GGUF still work."
 elif [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ "$(uname -m 2>/dev/null)" = "arm64" ]; then
     # Apple Silicon: llama.cpp builds with Metal over unified memory, so not a CPU-only host.
     step "gpu" "Apple Silicon (Metal, unified memory)"
@@ -1444,7 +1613,14 @@ if [ -n "${UNSLOTH_LOCAL_LLAMA_CPP_DIR:-}" ]; then
         if [ "$_STUDIO_HOME_IS_CUSTOM" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
         fi
-        rm -rf "$LLAMA_CPP_DIR"
+        rm -rf "$LLAMA_CPP_DIR" || true
+        if [ -e "$LLAMA_CPP_DIR" ]; then
+            if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
+            fi
+            step "llama.cpp" "the existing install could not be replaced with a link" "$C_ERR"
+            setup_fail 3 "$LLAMA_CPP_DIR could not be replaced with a link to $_RESOLVED_LOCAL."
+        fi
         ln -sfn "$_RESOLVED_LOCAL" "$LLAMA_CPP_DIR"
         _link_local_llama_quantize_shim "$LLAMA_CPP_DIR"
         step "llama.cpp" "linked local directory: $_RESOLVED_LOCAL"
@@ -1580,7 +1756,7 @@ else
             step "llama.cpp" "Vulkan was explicitly requested, so the installer will not keep the existing backend" "$C_ERR"
             setup_fail 1 "Vulkan was explicitly requested, so the installer will not keep the existing llama.cpp backend."
         fi
-    else
+    elif [ "$_PREBUILT_STATUS" -eq 2 ]; then
         step "llama.cpp" "prebuilt install failed" "$C_WARN"
         print_llama_error_log "$_PREBUILT_LOG"
         rm -f "$_PREBUILT_LOG"
@@ -1595,6 +1771,15 @@ else
             substep "falling back to source build"
             _NEED_LLAMA_SOURCE_BUILD=true
         fi
+    else
+        step "llama.cpp" "prebuilt helper failed unexpectedly" "$C_ERR"
+        print_llama_error_log "$_PREBUILT_LOG"
+        rm -f "$_PREBUILT_LOG"
+        if [ -d "$LLAMA_CPP_DIR" ]; then
+            substep "existing install was restored or left unchanged"
+        fi
+        substep "source build was not started because it cannot repair an unexpected helper or permissions error"
+        setup_fail 1 "llama.cpp prebuilt helper failed unexpectedly (exit code $_PREBUILT_STATUS). Check the error above and retry setup."
     fi
 fi
 
@@ -2131,7 +2316,16 @@ else
         # Swap only after build succeeds -- preserves existing install on failure
         if [ "$BUILD_OK" = true ]; then
             _assert_studio_owned_or_absent "$LLAMA_CPP_DIR" "llama.cpp install"
-            rm -rf "$LLAMA_CPP_DIR"
+            # || true: without it a raw rm error aborts under errexit to a bare exit
+            # code, build stranded. Keep stderr: rm names the exact subpath, we cannot.
+            rm -rf "$LLAMA_CPP_DIR" || true
+            if [ -e "$LLAMA_CPP_DIR" ]; then
+                if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then
+                    _path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"
+                fi
+                step "llama.cpp" "built, but the existing install could not be replaced" "$C_ERR"
+                setup_fail 3 "The llama.cpp build succeeded but $LLAMA_CPP_DIR could not be replaced. The new build is at $_BUILD_TMP."
+            fi
             mv "$_BUILD_TMP" "$LLAMA_CPP_DIR"
             : > "$LLAMA_CPP_DIR/$_STUDIO_OWNED_MARKER" 2>/dev/null || true
             # Symlink to llama.cpp root -- check_llama_cpp() looks for the binary there
@@ -2335,5 +2529,25 @@ echo ""
 # successful -- the footer above already reports the limitation and Unsloth
 # is still usable for non-GGUF workflows.
 if [ "$_LLAMA_CPP_DEGRADED" = true ] && [ "${SKIP_STUDIO_BASE:-0}" = "1" ]; then
-    setup_fail 1 "llama.cpp setup did not produce a usable server"
+    # In Tauri mode a non-zero exit is not "report", it is "abort": install.rs turns the
+    # error into "Installation failed", so one transient prebuilt download failure (a
+    # single HTTP 403 rate limit will do it) fails the whole first-launch install of an
+    # app whose own footer just said Installed. Everything except GGUF inference works,
+    # and whisper.cpp in this same script already degrades rather than failing for
+    # exactly this case. Match it, and say what is missing and how to get it back.
+    #
+    # PROGRESS, not STEP: install.rs maps [TAURI:STEP] to the install-step event, and
+    # use-tauri-backend.ts counts those against the seven-entry INSTALL_STEPS list that
+    # install.sh already emits in full, so an eighth marker renders "Step 8 of 7" and
+    # discards the payload. [TAURI:PROGRESS] becomes install-progress-detail, which
+    # InstallingContent renders verbatim, so the user actually reads the limitation.
+    case "${UNSLOTH_TAURI_MODE:-0}" in
+        1|true)
+            printf '[TAURI:PROGRESS] %s\n' \
+                "llama.cpp unavailable; GGUF inference is disabled until 'unsloth studio update' succeeds"
+            ;;
+        *)
+            setup_fail 1 "llama.cpp setup did not produce a usable server"
+            ;;
+    esac
 fi

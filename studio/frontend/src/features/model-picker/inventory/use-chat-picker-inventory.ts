@@ -29,17 +29,23 @@ function isCompleteCachedRow(row: CachedInventoryRow): boolean {
 function toCachedGgufRepo(row: CachedInventoryRow): CachedGgufRepo {
   return {
     repo_id: row.repoId,
+    // Listed by repo id, loaded by the pinned id: dropping it sends the picker back down the ref.
+    load_id: row.loadId,
     size_bytes: row.bytes,
     cache_path: row.cachePath ?? "",
     last_modified: row.lastModified ?? undefined,
     has_vision: row.capabilities.supportsVision,
     task: row.task ?? null,
+    has_variant_state: row.hasVariantState ?? false,
   };
 }
 
 function toCachedModelRepo(row: CachedInventoryRow): CachedModelRepo {
   return {
     repo_id: row.repoId,
+    load_id: row.loadId,
+    // Delete targets the copy the row describes; without it the request hits the active cache.
+    cache_path: row.cachePath,
     size_bytes: row.bytes,
     last_modified: row.lastModified ?? undefined,
     task: row.task ?? null,

@@ -17,6 +17,7 @@ import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
   readPersistedSpeculativeType,
+  resolveStagedDiffusionClassification,
   useChatRuntimeStore,
 } from "@/features/chat";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
@@ -39,6 +40,7 @@ import {
   useId,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
 import { syncModelOverride } from "../api/model-overrides";
 import {
@@ -64,8 +66,11 @@ import {
   isDefaultConfig,
   normalizeMaxSeqLength,
   normalizePerModelConfig,
+  readAdvancedSettingsOpen,
   resolveInitialConfig,
+  saveAdvancedSettingsOpen,
   savePerModelConfig,
+  subscribeAdvancedSettingsOpen,
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
@@ -758,9 +763,19 @@ export function ModelConfigPage({
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(() =>
-    hasNonDefaultAdvanced(config),
+  // Read live, not snapshotted at mount: the sidebar copy of Run Settings stays
+  // mounted while collapsed, so it has to follow a toggle made in the picker.
+  const advancedPreference = useSyncExternalStore(
+    subscribeAdvancedSettingsOpen,
+    readAdvancedSettingsOpen,
+    () => null,
   );
+  // Until the switch is used anywhere, a model carrying non-default advanced
+  // values opens the section on its own so those stay visible. Frozen at mount
+  // so editing a field back to its default cannot close the section underfoot.
+  const [autoOpenAdvanced] = useState(() => hasNonDefaultAdvanced(config));
+  const showAdvanced = advancedPreference ?? autoOpenAdvanced;
+  const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
   const gpuLayersInputRef = useRef<NumericValueInputHandle>(null);
@@ -801,6 +816,7 @@ export function ModelConfigPage({
     layerCount: number | null;
     moeLayerCount: number | null;
     isDiffusion?: boolean;
+    diffusionUnknown?: boolean;
   } | null>(null);
   useEffect(() => {
     if (contextFetchKey == null) {
@@ -855,7 +871,13 @@ export function ModelConfigPage({
     contextFetchKey != null &&
     stagedDims == null &&
     (config.gpuMemoryMode === "manual" || config.selectedGpuIds != null);
-  const classifiedIsDiffusion = isDiffusion ? true : stagedDims?.isDiffusion;
+  // Tri-state on purpose: an inconclusive probe stays undefined so onRun hands
+  // "unknown" to the selection. Collapsing it to false would tell a compare pane
+  // this is an ordinary GGUF, letting it inherit another model's split (#7574).
+  const classifiedIsDiffusion = resolveStagedDiffusionClassification(
+    isDiffusion,
+    stagedDims,
+  );
   const resolvedIsDiffusion = classifiedIsDiffusion === true;
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
@@ -1169,6 +1191,10 @@ export function ModelConfigPage({
                   aria-label="Context Length"
                 />
               ) : null}
+              <p className="text-ui-11 leading-relaxed text-muted-foreground">
+                By default, Unsloth uses the model's full context, lowering it
+                only if it will not fit your device's memory.
+              </p>
               {isActiveModel &&
                 loadedMaxContextLength != null &&
                 contextValue > loadedMaxContextLength && (
@@ -1209,7 +1235,7 @@ export function ModelConfigPage({
               <Switch
                 className="panel-switch shrink-0"
                 checked={showAdvanced}
-                onCheckedChange={setShowAdvanced}
+                onCheckedChange={toggleAdvanced}
                 aria-label="Show advanced settings"
               />
             </div>

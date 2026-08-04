@@ -50,6 +50,9 @@ export interface CachedInventoryRow {
   lastModified?: number | null;
   partial?: boolean;
   partialTransport?: string | null;
+  /** A download manifest or cancel marker exists for some quant. Moves when a
+   *  sibling is cancelled, which changes neither bytes nor mtime. */
+  hasVariantState?: boolean;
   pipelineTag?: string | null;
   // Inferred pipeline task from the backend. The task-scoped pickers filter On Device rows on it.
   task?: string | null;

@@ -1476,8 +1476,9 @@ jobs:
       matrix:
         include:
           # The consumer path: install.ps1 from this ref, unsloth from PyPI, so
-          # studio/setup.ps1 comes out of the RELEASED wheel -- which is why this row and the
-          # overlay one below do not reach the same place. See the pin on the Install step.
+          # studio/setup.ps1 comes out of the RELEASED wheel rather than this ref's. That is
+          # the difference from the overlay row below; both are expected to install end to
+          # end and both gate.
           - overlay: false
           # This ref's studio/setup.ps1 and install_python_stack.py, via
           # UNSLOTH_CI_SOURCE_OVERLAY (install.ps1:2643). Without it a branch changing
@@ -1547,19 +1548,30 @@ jobs:
         id: install
         shell: pwsh
         # Both rows gate. This used to carry a RELEASE-LAG PIN for overlay=false: a Server
-        # Core container has no Microsoft Store and so no winget, and the RELEASED
+        # Core container has no Microsoft Store and so no winget, ever, and the RELEASED
         # studio/setup.ps1 hard-stopped on a winget-only git gate and reached for winget
-        # again for the VC++ runtime. #7549 relaxed both, but it landed 2026-07-28 and the
-        # newest wheel at the time was 2026.7.5 (2026-07-23), so the PyPI row could not get
-        # past it and was tolerated. unsloth 2026.7.6 shipped 2026-07-29 and carries the
-        # relaxed gates, so the row installs end to end and the pin's own tripwire fired to
-        # say so. Nothing is tolerated here now.
+        # again for the VC++ runtime, so the row that installs from PyPI on purpose could
+        # not get past it. #7549 relaxed both, and unsloth 2026.7.6 (uploaded 2026-07-29,
+        # after #7549 merged) is the first wheel to ship them, so the row now installs end
+        # to end and the pin's own tripwire fired to say so. Nothing is tolerated here.
         run: |
           $overlayArg = if ('${{ matrix.overlay }}' -eq 'true') { 'C:\ci' } else { '' }
           docker exec virgin powershell.exe -NoLogo -NoProfile -NonInteractive `
             -ExecutionPolicy Bypass -File C:\ci\.github\scripts\virgin-windows-install.ps1 `
             -Overlay "$overlayArg" *>&1 | Tee-Object -FilePath logs/install-outer.log
           exit $LASTEXITCODE
+
+      # Both rows. A `docker exec` that lost its container also exits 0, so the exit code
+      # alone cannot tell a completed harness from one that never ran. Read the harness's
+      # own verdict instead. Needs no `if:`, because a failed Install skips it.
+      - name: Assert the in-container harness reported passing
+        shell: pwsh
+        run: |
+          $log = Get-Content logs/install-outer.log -Raw
+          if (-not ($log -match 'VIRGIN WINDOWS CONTAINER INSTALL PASSED')) {
+            Write-Host '::error::the install step exited 0 but the in-container harness never printed its passing verdict'
+            exit 1
+          }
 
       # The overlay row runs this ref's studio/setup.ps1, so it carries #7549 and must
       # install end to end. The in-container harness already asserts the venv interpreter,
@@ -1571,12 +1583,6 @@ jobs:
         shell: pwsh
         run: |
           $log = Get-Content logs/install-outer.log -Raw
-          # A `docker exec` that lost its container also exits 0, so read the harness's own
-          # verdict rather than trust the exit code alone.
-          if (-not ($log -match 'VIRGIN WINDOWS CONTAINER INSTALL PASSED')) {
-            Write-Host '::error::the install step exited 0 but the in-container harness never printed its passing verdict'
-            exit 1
-          }
           # The overlay hook is this PR's own feature and gates unconditionally: without it
           # this row is indistinguishable from the released-wheel one.
           if (-not ($log -match 'CI: overlaying source checkout')) {
@@ -1609,10 +1615,6 @@ jobs:
           # needs VCRUNTIME140_1.dll; this says the DLL got there rather than always being.
           Write-Host '::notice::no Store, no winget, no git and no preinstalled VC++ runtime, and the install completed anyway'
 
-      # RELEASE-LAG PIN (overlay=false). See the Install step: this row installs from PyPI on
-      # purpose and the released setup.ps1 predates #7549. continue-on-error would otherwise
-      # tolerate a bootstrap outage or an unrelated early exit like the intended diagnostic,
-      # so every branch but the pinned failure exits 1 and fails the (required) job.
       - name: Recover the install log from the container
         if: always()
         shell: pwsh

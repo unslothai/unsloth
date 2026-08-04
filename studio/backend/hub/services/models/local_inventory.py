@@ -569,6 +569,8 @@ async def _collect_models_from_default_sources(
 
 
 def _scan_custom_folder(folder_path: Path) -> List[LocalModelInfo]:
+    from utils.models.model_config import detect_gguf_model
+
     supported_formats: set[ModelFormat] = {"gguf", "safetensors", "adapter"}
     generic = [
         m
@@ -588,7 +590,22 @@ def _scan_custom_folder(folder_path: Path) -> List[LocalModelInfo]:
         if m.model_format in supported_formats
         if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
     ]
-    return generic[:_MAX_MODELS_PER_CUSTOM_FOLDER]
+    selectable = []
+    for model in generic:
+        if model.model_format != "gguf" or model.partial:
+            selectable.append(model)
+            continue
+        path = Path(model.path)
+        if path.is_dir():
+            if any(
+                detect_gguf_model(str(file), model_root = str(folder_path)) is not None
+                for file in path.glob("*")
+                if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
+            ):
+                selectable.append(model)
+        elif detect_gguf_model(model.path, model_root = str(folder_path)) is not None:
+            selectable.append(model)
+    return selectable[:_MAX_MODELS_PER_CUSTOM_FOLDER]
 
 
 def _promote_to_custom_source(model: LocalModelInfo) -> LocalModelInfo:

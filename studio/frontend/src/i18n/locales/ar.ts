@@ -24,7 +24,7 @@ export const ar = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "قائمة حساب {name}",
     updateAvailable: "يتوفر تحديث",
     resize: {
@@ -50,6 +50,7 @@ export const ar = {
       compare: "مقارنة",
       search: "بحث",
       hub: "مركز النماذج",
+      projects: "المشاريع",
       train: "تدريب",
       recipes: "الوصفات",
       export: "تصدير",
@@ -101,6 +102,8 @@ export const ar = {
       title: "الإعدادات",
       description: "إدارة تفضيلات Unsloth الخاصة بك.",
       closeAriaLabel: "إغلاق الإعدادات",
+      searchPlaceholder: "ابحث في الإعدادات…",
+      searchNoResults: "لم يُعثر على أي إعداد.",
     },
     tabs: {
       general: "عام",
@@ -111,6 +114,140 @@ export const ar = {
       connections: "الاتصالات",
       apiKeys: "API",
       about: "حول",
+      data: "البيانات",
+      agents: "الوكلاء",
+      voice: "الصوت",
+    },
+    voice: {
+      title: "الصوت",
+      description: "الميكروفون والإملاء وتحويل الكلام إلى نص والقراءة بصوت عالٍ",
+      dictation: {
+        sectionTitle: "الإملاء",
+        engineLabel: "محرك الإملاء",
+        engineBrowser: "المتصفح",
+        engineBrowserDescription:
+          "يفرّغ الصوت نصيًا باستخدام خدمة الكلام في متصفحك. اختر «التفريغ النصي المحلي» لاستخدام نموذج STT.",
+        engineModel: "التفريغ النصي المحلي",
+        engineModelDescription:
+          "يشغّل نموذج تحويل الكلام إلى نص (STT) محليًا ويعمل دون اتصال. نزّله ثم حمّله، ويُفرَغ من الذاكرة بعد فترة من عدم الاستخدام.",
+        sttModelLabel: "نموذج التعرّف على الكلام",
+        sttModelDescription: "اختر نموذج STT أو ابحث عنه لتشغيله محليًا.",
+        sttModelSearchPlaceholder: "ابحث عن نموذج",
+        sttModelSearching: "جارٍ البحث في Hugging Face…",
+        sttModelValidating: "جارٍ التحقق من التوافق مع Whisper…",
+        sttModelNoResults: "لم يُعثر على نماذج Whisper",
+        sttModelInvalid: "لا يمكن استخدام هذا المستودع للإملاء",
+        sttModelFailed: "تعذّر تحميل نموذج STT",
+        sttModelUnsupported: "التسجيل غير مدعوم في هذا المتصفح",
+        sttChecking: "جارٍ التحقق…",
+        sttOnDemand: "تم التنزيل",
+        sttLoadingModel: "جارٍ تحميل النموذج…",
+        sttReady: "مُحمَّل على {device}",
+        sttLoaded: "مُحمَّل",
+        sttUnavailable:
+          "غير مثبّت على هذا الخادم. نفّذ `unsloth studio update` لتفعيل الإملاء المحلي.",
+        sttRetry: "إعادة المحاولة",
+        sttDownloadChecking: "جارٍ التحقق من حالة التنزيل…",
+        sttNotDownloaded: "لم يُنزَّل",
+        sttDownloadStatusFailed: "تعذّر التحقق من حالة التنزيل",
+        sttDownload: "تنزيل",
+        sttDownloading: "جارٍ التنزيل… {progress}%",
+        sttCancelDownload: "إلغاء",
+        sttCancellingDownload: "جارٍ الإلغاء…",
+        sttDownloadComplete: "تم تنزيل نموذج التعرّف على الكلام",
+        sttDownloadFailed: "تعذّر تنزيل نموذج التعرّف على الكلام",
+        sttLoad: "تحميل",
+        sttUnload: "تفريغ النموذج من الذاكرة",
+        sttUnloading: "جارٍ تفريغ النموذج من الذاكرة…",
+        microphoneLabel: "الميكروفون",
+        microphoneDescription: "يُستخدم للإملاء",
+        microphoneFallbackHint:
+          "يُستخدم للإملاء. يعود إلى الجهاز الافتراضي للنظام إذا تعذّر على محرك الكلام في المتصفح استخدام هذا الجهاز",
+        microphoneGrantDescription:
+          "اسمح بالوصول إلى الميكروفون لعرض أسماء الأجهزة",
+        allowMicrophone: "السماح بالميكروفون",
+        micAccessBlocked:
+          "تم حظر الوصول إلى الميكروفون. اسمح بالوصول إلى الميكروفون لصفحة Unsloth هذه ثم أعد المحاولة.",
+        micAccessUnsupported:
+          "الوصول إلى الميكروفون غير مدعوم في هذا المتصفح أو السياق.",
+        systemDefault: "الافتراضي للنظام",
+        savedMicDisconnected: "ميكروفون محفوظ (غير متصل)",
+        languageLabel: "لغة الإملاء",
+        languageDescription: "اللغة المراد التعرّف عليها",
+        languageAuto: "تلقائي (لغة المتصفح)",
+      },
+      dictionary: {
+        sectionTitle: "قاموس الإملاء",
+        sectionDescription: "حدّد كيف يتهجّى الإملاء كلمات أو عبارات بعينها",
+        manageLabel: "تهجئات مخصّصة",
+        manage: "إدارة",
+        backToVoice: "العودة إلى الصوت",
+        addEntry: "إضافة مدخل",
+      },
+      recents: {
+        sectionTitle: "سجل الإملاء",
+        sectionDescription: "يُحفظ كل إملاء هنا حتى تتمكن من استعادة النص",
+        manageLabel: "سجل الإملاء",
+        manage: "إدارة",
+        pageDescription:
+          "يُحفظ كل إملاء. اعرضه أو انسخه أو احذفه، أو افتح المحادثة التي استُخدم فيها.",
+        searchPlaceholder: "ابحث في الإملاءات",
+        sortLabel: "ترتيب الإملاءات",
+        sortNewest: "الأحدث",
+        sortOldest: "الأقدم",
+        sortAlpha: "من الألف إلى الياء",
+        noMatches: "لا توجد إملاءات تطابق بحثك",
+        detailTitle: "إملاء محفوظ",
+        backToVoice: "العودة إلى الصوت",
+        backToRecents: "العودة إلى الإملاءات الأخيرة",
+        view: "عرض الإملاء كاملًا",
+        empty: "لا توجد إملاءات بعد",
+        dictationColumn: "الإملاء",
+        dateColumn: "تاريخ الإنشاء",
+        copy: "نسخ الإملاء",
+        copied: "تم النسخ إلى الحافظة",
+        copyFailed: "تعذّر النسخ إلى الحافظة",
+        delete: "حذف الإملاء",
+        deleteTitle: "حذف الإملاء",
+        deleteDescription:
+          "هل تريد حذف هذا الإملاء المحفوظ؟ لا يمكن التراجع عن ذلك.",
+        deleteLinkedDescription:
+          "هل تريد حذف هذا الإملاء المحفوظ؟ يمكنك أيضًا حذف المحادثة التي استُخدم فيها. لا يمكن التراجع عن ذلك.",
+        deleteWithChat: "حذف المحادثة والإملاء",
+        deleteWithChatFailed: "تعذّر حذف المحادثة",
+        clear: "مسح السجل",
+        clearTitle: "مسح سجل الإملاء",
+        clearDescription:
+          "هل تريد حذف كل الإملاءات المحفوظة؟ لا يمكن التراجع عن ذلك.",
+        clearConfirm: "مسح الكل",
+        showMore: "عرض المزيد ({count})",
+        openChat: "فتح المحادثة",
+      },
+      readAloud: {
+        sectionTitle: "القراءة بصوت عالٍ",
+        buttonLabel: "زر القراءة بصوت عالٍ",
+        buttonDescription: "إظهاره في ردود المساعد",
+        engineLabel: "محرك TTS",
+        engineSystemDescription: "الأصوات المدمجة في الجهاز",
+        engineStudioDescription:
+          "يستخدم النموذج الصوتي المُحمَّل (مثل Orpheus)",
+        engineSystem: "أصوات النظام",
+        engineStudio: "تحميل نموذج TTS",
+        modelLabel: "نموذج TTS",
+        modelDescription:
+          "حمّل نموذجًا صوتيًا من محدّد النماذج (مثل Orpheus TTS)",
+        voiceLabel: "الصوت",
+        voiceDescription: "أفضل الأصوات على هذا الجهاز",
+        speedLabel: "السرعة",
+        pitchLabel: "طبقة الصوت",
+        volumeLabel: "مستوى الصوت",
+        previewLabel: "معاينة الصوت",
+        previewDescription: "تشغيل عيّنة قصيرة",
+        previewAction: "معاينة",
+        stopAction: "إيقاف",
+        ttsLabel: "تحويل النص إلى كلام",
+        notSupported: "غير مدعوم في هذا المتصفح",
+      },
     },
     general: {
       title: "عام",
@@ -143,6 +280,7 @@ export const ar = {
         updating: "جارٍ التحديث...",
         updated: "تم تحديث كلمة المرور.",
         updateFailed: "فشل تحديث كلمة المرور.",
+        newHasSpaces: "لا يمكن أن تحتوي كلمة المرور الجديدة على مسافات.",
       },
       chatDefaults: "الإعدادات الافتراضية للمحادثة",
       autoTitleNewChats: "عنونة المحادثات الجديدة تلقائيًا",
@@ -163,16 +301,22 @@ export const ar = {
         enable: "تبديل النموذج حسب الطلب",
         enableDescription:
           "عندما يسمّي طلب متوافق مع OpenAI ملف GGUF مُنزّلاً مختلفًا، يتم تحميله قبل الخدمة. مُعطّل افتراضيًا؛ الأسماء غير المعروفة تُبقي على النموذج المُحمَّل.",
-        idleUnload: "الإلغاء التلقائي عند الخمول",
+        idleUnload: "التفريغ التلقائي عند الخمول",
         idleUnloadDescription:
-          "إلغاء تحميل النموذج بعد هذا العدد من ثواني الخمول لتحرير الـ VRAM؛ الطلب التالي يعيد تحميله. القيمة 0 تُبقيه محمَّلاً. الحد الأدنى 60 ثانية.",
+          "تفريغ النموذج من الذاكرة بعد هذا العدد من ثواني الخمول لتحرير الـ VRAM؛ الطلب التالي يعيد تحميله. القيمة 0 تُبقيه محمَّلاً. الحد الأدنى 60 ثانية.",
         idleNeedsEnable:
           "فعّل تبديل النموذج حسب الطلب حتى يعاد تحميل النموذج غير المحمَّل عند الاستخدام التالي.",
         idleActiveViaEnv:
-          "الإلغاء التلقائي عند الخمول مُفعَّل عبر متغير البيئة UNSLOTH_MODEL_IDLE_TTL.",
+          "التفريغ التلقائي عند الخمول مُفعَّل عبر متغير البيئة UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "فشل تحميل إعدادات التبديل التلقائي للنموذج.",
         saveError: "فشل حفظ إعدادات التبديل التلقائي للنموذج.",
         idleError: "أدخل 0 لإبقاء النموذج محمَّلاً، أو 60 ثانية على الأقل.",
+        autoDownload: "تنزيل النماذج غير المنزَّلة",
+        autoDownloadDescription:
+          "يجلب ملف GGUF المذكور في طلب واجهة API إذا لم يكن منزَّلًا بعد. عندئذٍ يمكن لأي شخص لديه مفتاح API استهلاك مساحة القرص وعرض النطاق.",
+        keepKv: "الاحتفاظ بسياق المحادثة عند التفريغ التلقائي بسبب الخمول",
+        keepKvDescription:
+          "يحفظ ذاكرة KV المؤقتة قبل التفريغ التلقائي عند الخمول، حتى لا تعيد المحادثات المستأنفة قراءة السجل. بحد أقصى 10 جيجابايت على القرص.",
       },
       previewSharing: {
         sectionTitle: "مشاركة المعاينة",
@@ -244,6 +388,12 @@ export const ar = {
           "يمسح التفضيلات المحلية فقط ويعيد تحميل Unsloth. تُحفظ المحادثات ووصول API والإعدادات المخزّنة في قاعدة البيانات.",
         confirmAction: "إعادة التعيين وإعادة التحميل",
       },
+      permissions: {
+        sectionTitle: "الأذونات",
+        bypassLabel: "أذونات الأدوات",
+        bypassDescription:
+          "كيفية موافقة Unsloth على استدعاءات أدوات المحادثة (الطرفية، python، الويب، MCP) قبل تشغيلها. وضع «Full access» يعطّل الموافقات وصندوق عزل الشيفرة.",
+      },
     },
     profile: {
       title: "الملف الشخصي",
@@ -267,10 +417,73 @@ export const ar = {
         "تم تحديث الصورة لهذه الجلسة، لكنها قد لا تُحفظ بعد إعادة التحميل.",
       photoUpdateErrorTitle: "تعذّر تحديث صورة الملف الشخصي",
       imageUseError: "تعذّر استخدام هذه الصورة.",
+      uploadPhoto: "رفع صورة",
+      removePhoto: "إزالة",
+      pictureOptions: "خيارات صورة الملف الشخصي",
+      greetingSloth: "الكسلان في التحية",
+      greetingSlothDescription: "إظهار الكسلان في تحية المحادثة.",
+      noPicture: "لا توجد صورة ملف شخصي",
+      noneLabel: "بلا",
+      stats: {
+        title: "إحصاءاتك",
+        subtitle:
+          "كل ما يلي محسوب من سجلك الخاص. لا يُجمَع أي شيء ولا يُرسَل إلى Unsloth.",
+        retry: "إعادة المحاولة",
+        privacyNote:
+          "تُحسب الإحصاءات من سجل المحادثات والتدريب المحفوظ في نسخة Unsloth لديك. لا يُجمَع أي شيء، ولا يُرسَل شيء إلى Unsloth أو إلى أي طرف ثالث.",
+        emptyChats:
+          "لا توجد محادثات بعد. ابدأ محادثة وستظهر إحصاءاتك هنا.",
+        lifetimeTokens: "إجمالي التوكنات",
+        peakTokens: "يوم الذروة",
+        longestChat: "أطول محادثة",
+        currentStreak: "التتابع الحالي",
+        longestStreak: "أطول تتابع",
+        activityTitle: "نشاط التوكنات",
+        activityDescription: "الفترة: {weeks} · {total}",
+        mode: {
+          daily: "يومي",
+          weekly: "أسبوعي",
+          cumulative: "تراكمي",
+        },
+        cellTooltip: "{date} · {tokens}، {messages}",
+        weekTooltip: "أسبوع {date} · {tokens}",
+        less: "أقل",
+        more: "أكثر",
+        insightsTitle: "تحليل النشاط",
+        totalChats: "إجمالي المحادثات",
+        totalMessages: "إجمالي الرسائل",
+        tokensIn: "التوكنات المُرسَلة",
+        tokensOut: "التوكنات المُولَّدة",
+        cachedTokens: "التوكنات المخزّنة مؤقتًا",
+        cachedValue: "{tokens} ({percent}% من المُدخَلات)",
+        avgTokensPerChat: "متوسط التوكنات لكل محادثة",
+        timeInChat: "الوقت في المحادثة",
+        activeDays: "الأيام النشطة",
+        toolCalls: "استدعاءات الأدوات",
+        attachments: "الملفات المرفقة",
+        avgSpeed: "متوسط السرعة",
+        bestSpeed: "أسرع رد",
+        firstToken: "متوسط الزمن حتى أول توكن",
+        tokensPerSecond: "{value} توكن/ث",
+        topModelsTitle: "النماذج الأكثر استخدامًا",
+        topModelsDescription: "مرتّبة حسب التوكنات المتبادلة",
+        modelSummary: "{tokens} · {messages}",
+        noModels: "لم يُسجَّل أي استخدام للنماذج بعد.",
+        trainingTitle: "التدريب",
+        trainingDescription: "عمليات الضبط الدقيق في مساحة العمل هذه",
+        trainingRuns: "عمليات التدريب",
+        trainingCompleted: "مكتملة",
+        trainingSteps: "الخطوات",
+        trainingTokens: "التوكنات المُدرَّب عليها",
+        trainingTime: "زمن التدريب",
+        bestLoss: "أقل خسارة",
+        runSteps: "{steps}",
+        runLoss: "الخسارة {loss}",
+      },
     },
     appearance: {
       title: "المظهر",
-      description: "كيفية ظهور Unsloth Studio على هذا الجهاز.",
+      description: "كيفية ظهور Unsloth على هذا الجهاز.",
       theme: {
         title: "السمة",
         label: "نظام الألوان",
@@ -278,6 +491,93 @@ export const ar = {
         system: "النظام",
         light: "فاتح",
         dark: "داكن",
+      },
+      palette: {
+        label: "لوحة الألوان",
+        description: "الألوان المستخدمة في Unsloth في الوضعين الفاتح والداكن.",
+        standard: "قياسية",
+        classic: "كلاسيكية",
+        minimal: "بسيطة",
+      },
+      custom: {
+        reset: "إعادة تعيين",
+        resetAll: "إعادة تعيين التخصيص",
+        preferencesTitle: "التفضيلات",
+        colors: {
+          lightGroup: "المظهر الفاتح",
+          darkGroup: "المظهر الداكن",
+          accent: "لون التمييز",
+          background: "الخلفية",
+          foreground: "المقدمة",
+        },
+        fontDefault: "افتراضي",
+        fontBundledGroup: "مدمجة",
+        fontImportedGroup: "مستوردة",
+        fontDeviceGroup: "على هذا الجهاز",
+        fontFolderGroup: "من مجلد",
+        fontDeviceLoading: "جارٍ البحث عن خطوط الجهاز…",
+        fontSearch: "ابحث عن الخطوط…",
+        fontNoResults: "لم يُعثر على خطوط.",
+        colorPicker: {
+          hue: "درجة اللون",
+          hex: "لون سداسي عشري",
+          eyedropper: "اختيار لون من الشاشة",
+        },
+        uiFont: {
+          label: "خط الواجهة",
+        },
+        headingFont: {
+          label: "خط العناوين",
+        },
+        chatFont: {
+          label: "خط المحادثة",
+        },
+        codeFont: {
+          label: "خط الشيفرة",
+        },
+        importFont: {
+          upload: "رفع",
+          scanFolder: "اختيار مجلد",
+          alreadyAvailable:
+            "هذا الخط متوفر بالفعل، لذا تُستخدم النسخة الموجودة.",
+          folderNoFonts: "لم يُعثر على ملفات خطوط في ذلك المجلد.",
+          remove: "إزالة",
+          errorInvalidType:
+            "نوع ملف غير مدعوم. استخدم ‎.woff2 أو ‎.woff أو ‎.ttf أو ‎.otf.",
+          errorTooLarge: "ملف الخط كبير جدًا (بحد أقصى 1.5 ميجابايت).",
+          errorLimit: "يمكنك استيراد 3 خطوط كحد أقصى.",
+          errorStorageFull:
+            "لا توجد مساحة تخزين محلية كافية لهذا الخط. أزل خطًا مستوردًا أولًا.",
+          errorFailed: "تعذّر تحميل ملف الخط هذا.",
+        },
+        uiFontSize: {
+          label: "حجم خط الواجهة",
+          description: "اضبط الحجم الأساسي المستخدم في واجهة Unsloth.",
+        },
+        codeFontSize: {
+          label: "حجم خط الشيفرة",
+          description: "اضبط الحجم الأساسي المستخدم للشيفرة.",
+        },
+        fontSmoothing: {
+          label: "تنعيم الخطوط",
+          description: "استخدام تنعيم حواف الخطوط.",
+        },
+        contrast: {
+          label: "التباين",
+          description: "قوة الحدود والنص الثانوي.",
+        },
+        reduceMotion: {
+          label: "تقليل الحركة",
+          description: "قلّل الرسوم المتحركة أو اتبع إعداد نظامك.",
+          system: "النظام",
+          on: "تشغيل",
+          off: "إيقاف",
+        },
+        pointerCursors: {
+          label: "استخدام مؤشر اليد",
+          description:
+            "تغيير المؤشر إلى يد عند المرور فوق العناصر التفاعلية.",
+        },
       },
       language: {
         title: "اللغة",
@@ -290,6 +590,13 @@ export const ar = {
         compactSidebar: "تثبيت الشريط الجانبي افتراضيًا",
         compactSidebarDescription:
           "إبقاء الشريط الجانبي موسّعًا بدلاً من طيّه إلى أيقونات.",
+      },
+      sidebarMenu: {
+        title: "قائمة الشريط الجانبي",
+        description:
+          "أظهر عناصر قائمة الملف الشخصي في الشريط الجانبي وأخفها وأعد ترتيبها. تبقى الإعدادات والمساعدة وتسجيل الخروج وإيقاف التشغيل ثابتة.",
+        darkModeToggle: "مفتاح الوضع الداكن",
+        dragToReorder: "اسحب لإعادة الترتيب",
       },
     },
     resources: {
@@ -333,6 +640,16 @@ export const ar = {
         copied: "تم نسخ المسار",
         openError: "تعذّر فتح المجلد",
         copyError: "تعذّر نسخ المسار",
+        futureDownloads: "التنزيلات الجديدة فقط",
+        environmentManaged: "يُدار عبر متغيّر البيئة {variable}.",
+        locationFree: "{free} متاح",
+        changeAction: "تغيير",
+        resetAction: "استخدام الافتراضي",
+        chooseTitle: "اختيار موقع تنزيل النماذج",
+        chooseAction: "استخدامه للتنزيلات القادمة",
+        cacheSaved: "تم تحديث موقع تنزيل النماذج",
+        cacheSaveError: "تعذّر تحديث موقع تنزيل النماذج",
+        cachePickerError: "تعذّر فتح أداة اختيار المجلد",
       },
       environment: {
         title: "البيئة",
@@ -344,6 +661,101 @@ export const ar = {
         processMemory: "ذاكرة العملية",
         notInstalled: "غير مثبّت",
         unknown: "غير معروف",
+      },
+    },
+    agents: {
+      title: "الوكلاء",
+      description:
+        "اربط وكلاء البرمجة مثل Claude Code وCodex بنموذج محلي باستخدام unsloth start.",
+      intro:
+        "يربط Claude Code وCodex وHermes وOpenClaw وOpenCode وغيرها من الوكلاء بنموذج يقدّمه Unsloth محليًا، دون اتصال بالإنترنت تمامًا. يشغّل خادمًا متوافقًا مع OpenAI ولا يمسّ ملفات إعدادات وكيلك إطلاقًا.",
+      readDocs: "قراءة التوثيق",
+      copy: "نسخ",
+      copied: "تم النسخ",
+      commandBuilder: "منشئ الأوامر",
+      agent: "وكيل البرمجة",
+      model: "النموذج",
+      searchModels: "ابحث عن نماذج GGUF...",
+      noModels: "لا توجد نماذج GGUF مطابقة.",
+      showingModels:
+        "يتم عرض {shown} من أصل {total} نتيجة. تابع الكتابة لتضييق القائمة.",
+      quantization: "التكميم",
+      loadingQuantizations: "جارٍ تحميل أنواع التكميم...",
+      noQuantizations: "لا يوجد تكميم منفصل",
+      recommended: "موصى به",
+      downloaded: "تم التنزيل",
+      quantizationLoadError:
+        "تعذّر تحميل جميع أنواع التكميم. سيستخدم الأمر قيمة النموذج المتاحة.",
+      generatedCommand: "الأمر المُنشأ",
+      docs: "التوثيق",
+      agentDocs: "فتح توثيق إعداد {agent}",
+      copyGeneratedCommand: "نسخ الأمر المُنشأ",
+      modelNote:
+        "يتطلب Codex نموذج GGUF يقدّمه llama-server. أما الوكلاء الآخرون فيمكنهم استخدام النماذج المبنية على transformers أيضًا؛ احذف ‎--model لاستخدام النموذج المُحمَّل بالفعل في Unsloth.",
+      subagent: {
+        title: "استخدام نموذج محلي كوكيل فرعي",
+        description:
+          "أبقِ {agent} على نموذجه الحالي وفوّض مهام محددة إلى نموذج Unsloth المحلي هذا.",
+        setupCommand: "أمر الإعداد",
+        copySetupCommand: "نسخ أمر إعداد الوكيل الفرعي",
+        usagePrompt: "ثم اكتب في {agent}:",
+        copyUsagePrompt: "نسخ موجّه استخدام الوكيل الفرعي",
+        defaultPrompt: "شغّل وكيلًا محليًا لتنفيذ هذه الدالة.",
+        opencodePrompt: "@unsloth ابحث عن سبب فشل هذا الاختبار",
+      },
+      quickstart: {
+        title: "بناء أمر",
+        description:
+          "شغّل وكيلًا على النموذج المُحمَّل حاليًا في Studio. حمّل نموذجًا أولًا، ثم استبدل claude بأي وكيل مدعوم أدناه.",
+        noneDetected: "لم يُعثر في متغيّر PATH لديك على أي واجهة أوامر لوكيل مدعوم.",
+        installed: "مثبّت",
+      },
+      supportedAgents: {
+        title: "الوكلاء المدعومون",
+        description: "يُشغَّل كل وكيل بأمره الخاص:",
+        requiresGguf: "يحتاج إلى نموذج GGUF",
+      },
+      models: {
+        title: "اختيار نموذج",
+        description:
+          "استخدم ‎--model لاختيار النموذج والتكميم، و‎--context-length لتحديد نافذة السياق. استخدم لاحقة تكميم أو الراية الصريحة ‎--gguf-variant.",
+        suffixLabel: "مع لاحقة تكميم",
+        variantLabel: "مع راية صريحة للنسخة",
+      },
+      options: {
+        title: "الخيارات الشائعة",
+        description:
+          "تُحلَّل رايات Unsloth أولًا؛ وأي شيء لا يتعرّف عليه يُمرَّر كما هو إلى الوكيل.",
+        model:
+          "يختار نموذجًا. بدون ‎--model يستخدم unsloth start النموذج المُحمَّل حاليًا في Studio، ويُظهر خطأ إن لم يكن هناك أي نموذج محمَّل.",
+        contextLength:
+          "يحدد طول السياق المطلوب (اسم بديل: ‎--max-seq-length).",
+        ggufVariant: "يختار نسخة تكميم GGUF.",
+        loadIn4bit: "يفعّل أو يعطّل التحميل بـ 4 بت لنماذج Hugging Face.",
+        tensorParallel:
+          "يفعّل أو يعطّل التوازي التنسوري عبر عدة أجهزة GPU.",
+        serve: "يفعّل أو يعطّل الخادم المحلي التلقائي.",
+        launch: "يشغّل الوكيل، أو يكتفي بطباعة الأمر والبيئة.",
+        persist: "يحتفظ بمساحة تخزين الوكيل التي يديرها Unsloth بين عمليات التشغيل.",
+        asSubagent:
+          "يبقي الوكيل الأصلي على نموذجه الحالي ويسجّل Unsloth كوكيل فرعي محلي (Claude Code وCodex وOpenCode).",
+        apiKey: "يمرّر مفتاح API الخاص بـ Unsloth (أو اضبط UNSLOTH_API_KEY).",
+        yolo: "يتخطى طلبات الموافقة. استخدمه في البيئات الموثوقة فقط.",
+      },
+      remote: {
+        title: "الاتصال بنسخة بعيدة من Studio",
+        description:
+          "وجّه unsloth start إلى نسخة من Studio تعمل في مكان آخر بضبط ما يلي قبل التشغيل (أو مرّر ‎--api-key مباشرة):",
+      },
+      passthrough: {
+        title: "تمرير وسائط إلى الوكيل",
+        description:
+          "الوسائط التي تأتي بعد رايات Unsloth تُمرَّر إلى الوكيل نفسه، لذا تظل أوامره الأصلية مثل resume تعمل:",
+      },
+      dryRun: {
+        title: "المعاينة دون تشغيل",
+        description:
+          "أضف ‎--no-launch لطباعة البيئة والأمر بدلًا من تشغيل الوكيل. وإذا كان ‎--model مضبوطًا، فقد يُحدَّد النموذج ويُحمَّل رغم ذلك.",
       },
     },
     chat: {
@@ -418,6 +830,53 @@ export const ar = {
         "فشل مسح أحد مواقع التخزين؛ قد تبقى {count} محادثة. يُرجى إعادة المحاولة.",
       failedToClearChats: "فشل مسح المحادثات",
     },
+    data: {
+      title: "البيانات",
+      description:
+        "أدر سجل المحادثات والملفات المرفوعة المخزّنة على هذا الجهاز.",
+      archivedChats: "المحادثات المؤرشفة",
+      archivedChatsDescription: "اعرض المحادثات التي أرشفتها وأدرها.",
+      manageAction: "إدارة",
+      exportArchivedChats: "تصدير",
+      exportingArchivedChats: "جارٍ التصدير...",
+      exportedOneArchivedChat: "تم تصدير محادثة مؤرشفة واحدة",
+      exportedArchivedChatCount: "عدد المحادثات المؤرشفة المصدَّرة: {count}",
+      noArchivedChatsToExport: "لا توجد محادثات مؤرشفة للتصدير.",
+      failedToExportArchivedChats: "تعذّر تصدير المحادثات المؤرشفة",
+      archiveAllChats: "أرشفة جميع المحادثات",
+      archiveAllChatsDescription:
+        "ينقل كل محادثة في «الأخيرة» و«المشاريع» إلى الأرشيف.",
+      noChatsToArchive: "لا توجد محادثات للأرشفة.",
+      archiveAllAction: "أرشفة الكل",
+      archivingAction: "جارٍ الأرشفة...",
+      archiveAllChatsTitle: "أرشفة جميع المحادثات؟",
+      archiveAllChatsConfirmDescription:
+        "ينقل كل محادثة على هذا الجهاز إلى الأرشيف. تبقى المحادثات المؤرشفة متاحة ويمكن إخراجها من الأرشيف في أي وقت.",
+      archivedAllChats: "تمت أرشفة جميع المحادثات",
+      archivedOneChat: "تمت أرشفة محادثة واحدة",
+      archivedChatCount: "عدد المحادثات المؤرشفة: {count}",
+      failedToArchiveChats: "تعذّرت أرشفة المحادثات",
+      confirmBeforeDeleting: "التأكيد قبل الحذف",
+      confirmBeforeDeletingDescription:
+        "يطلب تأكيدًا قبل حذف أي محادثة. عطّله للحذف الفوري.",
+      filesSection: "الملفات",
+      uploadedFiles: "الملفات المرفوعة",
+      uploadedFilesDescription:
+        "اعرض الملفات المرفوعة إلى المحادثات والمشاريع وقواعد المعرفة وأدرها.",
+      fineTuneExport: "استخدام المحادثات كبيانات تدريب",
+      fineTuneExportDescription:
+        "أنشئ مجموعة بيانات JSONL للضبط الدقيق من محادثاتك. حمّلها في تبويب التدريب، أو حسّنها في الوصفات، أو صدّرها.",
+      fineTuneExportAction: "تصدير JSONL",
+      fineTuneRunAction: "تشغيل",
+      fineTuneExportingAction: "جارٍ التصدير...",
+      fineTuneOpenRecipesAction: "فتح في الوصفات",
+      fineTuneOpeningRecipesAction: "جارٍ الفتح...",
+      fineTuneTrainAction: "تحميل في تبويب التدريب",
+      fineTuneTrainingAction: "جارٍ التحميل...",
+      fineTuneExportFailed: "تعذّر تصدير بيانات التدريب",
+      fineTuneRecipeFailed: "تعذّر فتح المحادثات في الوصفات",
+      fineTuneTrainFailed: "تعذّر تحميل مجموعة البيانات في تبويب التدريب",
+    },
     connections: {
       title: "الاتصالات",
       description: "إدارة المزوّدين والاتصالات الخارجية.",
@@ -452,7 +911,7 @@ export const ar = {
       osWindows: "Windows",
       secureHttps: "HTTPS آمن",
       secureHttpsHint:
-        "لا يزال منفذ 0.0.0.0 قابلاً للوصول عالميًا. للحصول على أمان كامل، شغّل Unsloth Studio باستخدام --secure لعرض رابط HTTPS هذا فقط.",
+        "لا يزال منفذ 0.0.0.0 قابلاً للوصول عالميًا. للحصول على أمان كامل، شغّل Unsloth باستخدام --secure لعرض رابط HTTPS هذا فقط.",
       copyTunnelUrl: "نسخ رابط النفق",
       copySnippet: "نسخ المقتطف",
       copy: "نسخ",
@@ -484,6 +943,8 @@ export const ar = {
         "ستفقد التطبيقات التي تستخدم هذا التوكن الوصول فورًا. لا يمكن التراجع عن هذا الإجراء.",
       revokeAction: 'إلغاء "{name}"',
       revoking: "جارٍ الإلغاء...",
+      usageNoModel:
+        "حمّل نموذجًا أو نزّله لعرض أمثلة قابلة للتشغيل. لا يوجد في هذا الخادم أي نموذج يمكن استخدامه في الأمثلة بعد.",
     },
     about: {
       title: "حول",
@@ -495,6 +956,7 @@ export const ar = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "التحديث",
       help: "مساعدة",
       documentation: "الوثائق",
@@ -504,7 +966,7 @@ export const ar = {
       reportIssue: "الإبلاغ عن مشكلة",
       license: {
         sectionTitle: "الترخيص",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "مفتوح المصدر بموجب GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
@@ -512,12 +974,12 @@ export const ar = {
         libraryDescription: "مرخّص بموجب Apache 2.0.",
       },
       dangerZone: "منطقة الخطر",
-      shutDownStudio: "إيقاف تشغيل Unsloth Studio",
+      shutDownStudio: "إيقاف تشغيل Unsloth",
       shutDownStudioDescription:
         "يوقف خادم Unsloth وينهي جلستك.",
       shutDown: "إيقاف التشغيل",
       update: {
-        title: "تحديث Unsloth Studio",
+        title: "تحديث Unsloth",
         commandText: "نص {label}",
         copied: "تم النسخ",
         copyCommand: "نسخ الأمر",
@@ -812,6 +1274,8 @@ export const ar = {
       enablePacking: "تفعيل التعبئة (packing)",
       assistantCompletionsOnly: "إكمالات المساعد فقط",
       readMore: "اقرأ المزيد",
+      optimizerTooltipMlx:
+        "خوارزمية التحسين. AdamW هي الافتراضية. يستهلك Lion ذاكرة أقل لكنه يحتاج عادةً إلى معدّل تعلّم أدنى.",
     },
     training: {
       title: "التدريب",

@@ -60,6 +60,7 @@ _INFERENCE_SUFFIXES = (
     "/completions",
     "/messages",
     "/messages/count_tokens",  # counts via the loaded tokenizer; protect like /messages
+    "/chat/count_tokens",
     "/embeddings",
     "/responses",
     "/generate/stream",  # Unsloth's own streaming route on the same llama-server

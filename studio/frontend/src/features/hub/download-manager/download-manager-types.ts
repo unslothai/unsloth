@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { TransferSample } from "@/lib/transfer-stats";
 import type { InventoryHint } from "../inventory/types";
 import type { DownloadJobState } from "./api";
 import type { DownloadKind } from "./constants";
@@ -73,7 +74,8 @@ export interface JobRuntime {
   inFlight: boolean;
   cancelRequested: boolean;
   watchdog: number | null;
-  speedSample: { bytes: number; tMs: number } | null;
+  /** Rolling byte samples behind the stability-gated rate/ETA. */
+  speedSamples: TransferSample[];
   idleSinceMs: number | null;
   lastProgressPollAt: number | null;
   pollFailureStartedAt: number | null;

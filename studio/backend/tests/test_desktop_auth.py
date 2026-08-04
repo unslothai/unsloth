@@ -703,6 +703,9 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
 
     import studio.backend.main as backend_main
 
+    # DEVICE alongside the two it is set with, since /api/health waits on
+    # ensure_hardware_detected(). CPU + "mlx_unavailable" is an MLX-less Apple Silicon.
+    monkeypatch.setattr(backend_main._hw_module, "DEVICE", backend_main._hw_module.DeviceType.CPU)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", True)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY_REASON", "mlx_unavailable")
 
