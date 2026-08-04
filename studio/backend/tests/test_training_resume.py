@@ -787,9 +787,7 @@ def test_invalid_post_rewind_checkpoint_does_not_lift_the_cap(monkeypatch, tmp_p
     partial.mkdir()
     (partial / "trainer_state.json").write_text(json.dumps({"global_step": 8}))
     assert resume.resume_step_cap(run, "pt") == 5
-    assert resume.get_resume_checkpoint_path(str(run), backend = "pt") == str(
-        run / "checkpoint-5"
-    )
+    assert resume.get_resume_checkpoint_path(str(run), backend = "pt") == str(run / "checkpoint-5")
 
 
 def test_has_resume_state_is_false_without_a_usable_backend(tmp_path, monkeypatch):
