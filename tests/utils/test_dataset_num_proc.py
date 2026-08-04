@@ -30,6 +30,15 @@ from pathlib import Path
 
 import pytest
 
+try:
+    # Imported here, before the dnp fixture spoofs sys.platform. multiprocess
+    # chooses its concrete contexts at import time from sys.platform, so a first
+    # import under a spoofed one would hand a Windows runner the POSIX fork
+    # contexts and the tests below would then be reading a fiction.
+    import multiprocess  # noqa: F401
+except ImportError:
+    pass
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 MODULE_PATH = REPO_ROOT / "unsloth" / "utils" / "dataset_num_proc.py"

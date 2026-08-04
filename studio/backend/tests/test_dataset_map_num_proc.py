@@ -26,6 +26,18 @@ import pytest
 
 import utils.hardware.hardware as hw
 
+try:
+    # Imported here, before the fixture below spoofs sys.platform. multiprocess
+    # chooses its concrete contexts at import time from sys.platform, so a first
+    # import under a spoofed one hands a Windows runner the POSIX fork contexts,
+    # and the pool then dies reaching for os.WNOHANG.
+    import multiprocess  # noqa: F401
+except ImportError:
+    pass
+
+# The real one, read before anything can lie about it.
+_HOST_PLATFORM = sys.platform
+
 
 @pytest.fixture(autouse = True)
 def _fork_platform(monkeypatch):
@@ -48,7 +60,7 @@ def _require_fork(multiprocess):
     handle, os.WNOHANG missing). The version split they assert is checked
     without processes in tests/utils/test_dataset_num_proc.py.
     """
-    if "fork" not in multiprocess.get_all_start_methods():
+    if _HOST_PLATFORM == "win32" or "fork" not in multiprocess.get_all_start_methods():
         pytest.skip("needs fork to build a real worker pool")
 
 
