@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """GGML_CUDA_ENABLE_UNIFIED_MEMORY must be set only for AMD unified-memory APUs
-(gfx1150/gfx1151), never for discrete AMD, NVIDIA, CPU or macOS."""
+(gfx1150/gfx1151/gfx1152), never for discrete AMD, NVIDIA, CPU or macOS."""
 
 from __future__ import annotations
 
@@ -35,6 +35,8 @@ def _fake_torch(
     [
         ("6.2.0", ["gfx1151:xnack-"], True),  # Strix Halo APU (suffix stripped)
         ("6.2.0", ["gfx1150"], True),  # Strix Point APU
+        ("6.2.0", ["gfx1152"], True),  # Krackan Point APU (Radeon 860M/840M)
+        ("6.2.0", ["gfx1152:sramecc-:xnack-"], True),  # same, feature flags stripped
         ("6.2.0", ["gfx1100"], False),  # discrete RDNA3
         ("6.2.0", ["gfx1201"], False),  # discrete RDNA4
         ("6.2.0", ["gfx942"], False),  # MI300X (data center)

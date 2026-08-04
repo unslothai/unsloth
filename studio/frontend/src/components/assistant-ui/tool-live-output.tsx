@@ -4,7 +4,7 @@
 "use client";
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
-import { toolOutputKey, useToolPaneScope } from "@/features/chat";
+import { useToolOutputFor, useToolPaneScope } from "@/features/chat";
 import { useEffect, useMemo, useRef } from "react";
 import { tailText } from "./tool-result-output";
 
@@ -16,8 +16,10 @@ import { tailText } from "./tool-result-output";
  */
 export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
   const paneScope = useToolPaneScope();
-  const output = useChatRuntimeStore(
-    (s) => s.toolLiveOutput[toolOutputKey(paneScope, toolCallId)] ?? "",
+  const output = useToolOutputFor(
+    useChatRuntimeStore((s) => s.toolLiveOutput),
+    paneScope,
+    toolCallId,
   );
   const scrollRef = useRef<HTMLPreElement>(null);
   // Pinned to the bottom until the user scrolls up (handler below), so

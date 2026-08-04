@@ -12,7 +12,7 @@ from pathlib import Path
 SOURCE_PATH = (
     Path(__file__).resolve().parents[2] / "studio" / "backend" / "core" / "export" / "export.py"
 )
-SRC = SOURCE_PATH.read_text()
+SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 TREE = ast.parse(SRC)
 
 

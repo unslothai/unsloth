@@ -17,6 +17,7 @@ import {
   updateStoredChatThread,
 } from "../utils/chat-history-storage";
 import { clearComposerDraft } from "../utils/composer-draft";
+import { stopChatThread } from "../utils/stop-chat-thread";
 import {
   markChatThreadsDeleted,
   removeChatThreadTombstones,
@@ -25,6 +26,8 @@ import {
 export interface SidebarItem {
   type: "single" | "compare";
   id: string;
+  /** The pane threads behind this row id; `runningByThreadId` is keyed per pane thread. */
+  threadIds?: string[];
   title: string;
   createdAt: number;
   updatedAt: number;
@@ -56,11 +59,13 @@ export function groupThreads(
       const existing = pairItems.get(t.pairId);
       if (existing) {
         existing.updatedAt = Math.max(existing.updatedAt, lastActivityAt(t));
+        existing.threadIds?.push(t.id);
         continue;
       }
       const item: SidebarItem = {
         type: "compare",
         id: t.pairId,
+        threadIds: [t.id],
         title: t.title,
         createdAt: t.createdAt,
         updatedAt: lastActivityAt(t),
@@ -160,10 +165,9 @@ export function useChatSidebarItems(options?: {
 }
 
 function cancelIfRunning(threadId: string): void {
-  const { runningByThreadId, cancelByThreadId } =
-    useChatRuntimeStore.getState();
-  if (!runningByThreadId[threadId]) return;
-  cancelByThreadId[threadId]?.();
+  // Reaches a background thread, which cancelByThreadId cannot: a deleted chat must stop,
+  // or the run keeps writing to a conversation that is gone.
+  stopChatThread(threadId);
 }
 
 export async function renameChatItem(

@@ -14,7 +14,7 @@ SOURCE_PATH = (
     / "inference"
     / "llama_cpp.py"
 )
-SRC = SOURCE_PATH.read_text()
+SRC = SOURCE_PATH.read_text(encoding = "utf-8")
 TREE = ast.parse(SRC)
 
 

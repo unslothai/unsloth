@@ -37,8 +37,12 @@ export interface ModelSelectorChangeMeta {
   /** Direct local .gguf file picked without a variant (custom folder / LM
    *  Studio). Marks it as a GGUF source for the deferred-load staging flow. */
   isGguf?: boolean;
+  /** Staged metadata confirmed the separate DiffusionGemma runner. */
+  isDiffusion?: boolean;
   config?: PerModelConfig;
   forceReload?: boolean;
+  /** model_path to send when the pick loads from elsewhere, e.g. a pinned snapshot dir. */
+  loadId?: string | null;
   /** Native path token so an active-model reload can reopen a file-picked GGUF. */
   nativePathToken?: string;
   nativePathExpiresAtMs?: number | null;
@@ -49,6 +53,17 @@ export interface ModelPickTarget {
   displayName: string;
   ggufVariant?: string | null;
   isGguf: boolean;
+  /**
+   * Whether an OpenAI-compatible request can actually load this model. Not the same as isGguf:
+   * local_model_resolver skips Ollama's scanner. Defaults to isGguf when unknown.
+   */
+  apiLoadable?: boolean;
+  /**
+   * Identity the saved settings are keyed by, when that is not what loads: a repo cached
+   * outside the active HF cache loads by snapshot path while its settings key on the repo
+   * id. Probes that must open the model keep using `id`.
+   */
+  configId?: string;
   meta: ModelSelectorChangeMeta;
 }
 

@@ -31,6 +31,8 @@ from ..utils.packing import (
     build_xformers_block_causal_mask,
 )
 
+flash_attn_func = None
+flash_attn_varlen_func = None
 if HAS_FLASH_ATTENTION:
     from flash_attn import flash_attn_func, flash_attn_varlen_func
 HAS_XFORMERS = xformers is not None

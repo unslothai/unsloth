@@ -257,6 +257,8 @@ def _run_oxc_batch(
             cwd = str(_OXC_TOOL_DIR),
             input = json.dumps(payload),
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             capture_output = True,
             check = False,
             env = env,

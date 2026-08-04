@@ -599,7 +599,9 @@ def test_tool_xml_strip_handles_hyphenated_function_names():
 
     from core.inference.tool_call_parser import _DEEPSEEK_OPEN_RE_SRC as _DS_OPEN_SRC
 
-    src = (Path(__file__).resolve().parent.parent / "routes/inference.py").read_text()
+    src = (Path(__file__).resolve().parent.parent / "routes/inference.py").read_text(
+        encoding = "utf-8"
+    )
     m = _re.search(r"_TOOL_XML_RE = _re\.compile\((.*?)\n\)", src, _re.DOTALL)
     assert m, "could not extract _TOOL_XML_RE"
     ns: dict = {"_re": _re, "_DS_OPEN_SRC": _DS_OPEN_SRC}

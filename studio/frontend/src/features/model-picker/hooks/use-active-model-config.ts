@@ -20,6 +20,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const kvCacheDtype = useChatRuntimeStore((s) => s.kvCacheDtype);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
+  const nParallel = useChatRuntimeStore((s) => s.nParallel);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
@@ -28,6 +29,9 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const gpuLayers = useChatRuntimeStore((s) => s.gpuLayers);
   const nCpuMoe = useChatRuntimeStore((s) => s.nCpuMoe);
   const selectedGpuIds = useChatRuntimeStore((s) => s.selectedGpuIds);
+  const selectedGpuIndexKind = useChatRuntimeStore(
+    (s) => s.selectedGpuIndexKind,
+  );
 
   const isGguf =
     activeGgufVariant != null ||
@@ -44,6 +48,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       kvCacheDtype: kvCacheDtype ?? null,
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
+      nParallel: nParallel ?? null,
       tensorParallel: tensorParallel ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
     };
@@ -56,6 +61,7 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       gpuLayers,
       nCpuMoe,
       selectedGpuIds,
+      selectedGpuIndexKind,
     };
   }, [
     checkpoint,
@@ -65,12 +71,14 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     kvCacheDtype,
     speculativeType,
     specDraftNMax,
+    nParallel,
     tensorParallel,
     chatTemplateOverride,
     gpuMemoryMode,
     gpuLayers,
     nCpuMoe,
     selectedGpuIds,
+    selectedGpuIndexKind,
   ]);
 
   return { checkpoint, isGguf, config };

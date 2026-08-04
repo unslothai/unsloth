@@ -15,7 +15,9 @@ trl==0.23.1
 torch-c-dlpack-ext
 sentence_transformers==5.2.0
 transformers==4.57.6
-pytorch_tokenizers
+# No macOS x86_64 wheel at any version, so uv falls back to an sdist that shells out to
+# cmake. Skipping it on Intel Macs keeps that install compiler-free.
+pytorch_tokenizers; sys_platform != "darwin" or platform_machine == "arm64"
 kernels==0.12.1
 # kernels<3.11 imports tomli as its tomllib fallback; --no-deps skips its own
 # marker dep, so list it here (no-op on the 3.12/3.13 default installs).

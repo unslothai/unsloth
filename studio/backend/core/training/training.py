@@ -30,7 +30,7 @@ from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
-from utils.hardware import prepare_gpu_selection
+from utils.hardware import get_device, prepare_gpu_selection
 from utils.native_path_leases import (
     native_path_secret_removed_for_child_start,
     run_without_native_path_secret,
@@ -196,6 +196,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "gradient_checkpointing": values.get("gradient_checkpointing", "unsloth"),
         "use_rslora": values.get("use_rslora", False),
         "use_loftq": values.get("use_loftq", False),
+        "use_dora": values.get("use_dora", False),
         "train_on_completions": values.get("train_on_completions", False),
         "finetune_vision_layers": values.get("finetune_vision_layers", True),
         "finetune_language_layers": values.get("finetune_language_layers", True),
@@ -219,6 +220,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
             config[key] = values.get(key)
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
+    # The parent's detected backend: the worker's apply_gpu_ids() targets the
+    # right visibility env var from this, without probing torch pre-mask.
+    config["device_backend"] = get_device().value
     return config
 
 
@@ -452,6 +456,7 @@ class _MLXTrainerAdapter:
         use_gradient_checkpointing: Union[str, bool] = "unsloth",
         use_rslora: bool = False,
         use_loftq: bool = False,
+        use_dora: bool = False,
     ) -> bool:
         self._peft_config = {
             "use_lora": bool(use_lora),
@@ -462,6 +467,7 @@ class _MLXTrainerAdapter:
             "gradient_checkpointing": use_gradient_checkpointing,
             "use_rslora": bool(use_rslora),
             "use_loftq": bool(use_loftq),
+            "use_dora": bool(use_dora),
             "finetune_vision_layers": bool(finetune_vision_layers),
             "finetune_language_layers": bool(finetune_language_layers),
             "finetune_attention_modules": bool(finetune_attention_modules),
@@ -569,6 +575,7 @@ class _MLXTrainerAdapter:
             "gradient_checkpointing": "unsloth",
             "use_rslora": False,
             "use_loftq": False,
+            "use_dora": False,
             "finetune_vision_layers": True,
             "finetune_language_layers": True,
             "finetune_attention_modules": True,

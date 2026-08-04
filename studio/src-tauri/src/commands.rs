@@ -276,9 +276,7 @@ pub async fn check_health(port: u16) -> Result<bool, String> {
 
 async fn check_health_inner(port: u16) -> Result<bool, reqwest::Error> {
     let url = format!("http://127.0.0.1:{}/api/health", port);
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(2))
-        .build()?;
+    let client = crate::loopback_http::client(std::time::Duration::from_secs(2))?;
     let resp = client.get(&url).send().await?;
     let json: serde_json::Value = resp.json().await?;
 
@@ -356,7 +354,7 @@ fn open_existing_dir(dir: &std::path::Path) -> Result<(), String> {
     open_existing_dir_with(dir, |path| open::that_detached(path))
 }
 
-/// Open the Unsloth Studio directory in the system file manager.
+/// Open the Unsloth directory in the system file manager.
 #[tauri::command]
 pub fn open_logs_dir(window: tauri::WebviewWindow) -> Result<(), String> {
     crate::native_intents::ensure_main_window(&window)?;

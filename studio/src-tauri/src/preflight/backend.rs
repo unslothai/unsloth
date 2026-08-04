@@ -1,6 +1,6 @@
 use super::types::BackendProbe;
 use super::version::{
-    backend_version_stale_reason, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+    backend_version_stale_reason, DESKTOP_BACKEND_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
 };
 use serde::{Deserialize, Serialize};
 
@@ -149,7 +149,7 @@ fn backend_capability_stale_reason(health: &BackendHealth) -> Option<String> {
             .clone()
             .or_else(|| Some("desktop_auth_unsupported".to_string()));
     }
-    if health.desktop_manageability_version.unwrap_or(0) < DESKTOP_MANAGEABILITY_VERSION {
+    if health.desktop_manageability_version.unwrap_or(0) < DESKTOP_BACKEND_MANAGEABILITY_VERSION {
         return Some("desktop_manageability_unsupported".to_string());
     }
     if health.supports_desktop_backend_ownership != Some(true) {
@@ -170,10 +170,7 @@ struct DesktopLoginProbe<'a> {
 }
 
 pub(super) async fn probe_ownerless_spawned_backend(port: u16) -> BackendProbe {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
+    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
         Ok(client) => client,
         Err(_) => return BackendProbe::Missing,
     };
@@ -294,10 +291,7 @@ pub(super) async fn backend_desktop_auth_status(
 }
 
 pub(super) async fn probe_existing_backends(ignored_ports: &[u16]) -> BackendProbe {
-    let client = match reqwest::Client::builder()
-        .timeout(Duration::from_secs(2))
-        .build()
-    {
+    let client = match crate::loopback_http::client(Duration::from_secs(2)) {
         Ok(client) => client,
         Err(_) => return BackendProbe::Missing,
     };

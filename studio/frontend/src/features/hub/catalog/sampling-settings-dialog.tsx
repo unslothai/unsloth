@@ -103,6 +103,9 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
   const { selectModel } = useChatModelRuntime();
   const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeModelIsDiffusion = useChatRuntimeStore(
+    (s) => s.loadedIsDiffusion,
+  );
   const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
   const ggufNativeContextLength = useChatRuntimeStore(
     (s) => s.ggufNativeContextLength,
@@ -131,7 +134,9 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
       const previousConfig = currentRuntimePerModelConfig({
         includeMaxSeqLength: true,
       });
-      applyPerModelConfigToRuntime(config);
+      applyPerModelConfigToRuntime(config, {
+        isDiffusion: activeModelIsDiffusion,
+      });
       void selectModel({
         id: activeCheckpoint,
         source: "local",
@@ -139,13 +144,14 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
         nativePathToken: nativeToken ?? undefined,
         nativePathExpiresAtMs: nativeExpiry,
         isGguf: activeModelIsGguf,
+        isDiffusion: activeModelIsDiffusion,
         isDownloaded: true,
         keepSpeculative: true,
         previousConfig,
         forceReload: true,
       });
     },
-    [selectModel, activeModelIsGguf],
+    [selectModel, activeModelIsGguf, activeModelIsDiffusion],
   );
 
   // Reasoning + tools: same store bindings as the chat page.
@@ -235,6 +241,7 @@ export function SamplingSettingsButton({ className }: { className?: string }) {
                   modelId={checkpoint}
                   ggufVariant={activeGgufVariant ?? null}
                   isGguf={activeModelIsGguf}
+                  isDiffusion={activeModelIsDiffusion}
                   nativeContextLength={ggufNativeContextLength}
                   loadedContextLength={ggufContextLength}
                   loadedConfig={activeModelConfig}

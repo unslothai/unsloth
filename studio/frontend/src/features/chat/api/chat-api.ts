@@ -8,6 +8,8 @@ import { prepareHfTokenForUse } from "@/features/hf-auth";
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
+import { isHuggingFaceOffline } from "@/features/hub/lib/network";
+// eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
@@ -31,6 +33,12 @@ import type {
   UnloadModelRequest,
   ValidateModelResponse,
 } from "../types/api";
+import {
+  type GgufVariantsRequestOptions,
+  ggufVariantsQuery,
+  runBoundedVariantsRequest,
+} from "./gguf-variants-request";
+import { assertCompletedPaddedBody } from "./padded-response";
 
 export const CHAT_HISTORY_UPDATED_EVENT = "unsloth-chat-history-updated";
 export const CHAT_PROJECTS_UPDATED_EVENT = "unsloth-chat-projects-updated";
@@ -47,6 +55,21 @@ export class StreamInterruptedError extends Error {
         "Use Retry to regenerate.",
     );
     this.name = "StreamInterruptedError";
+  }
+}
+
+/**
+ * Thrown when a reasoning model consumes its output budget before emitting any
+ * standard content. Keeping this distinct from a dropped connection lets the
+ * chat UI explain why a completed stream contains only a thinking panel.
+ */
+export class GenerationLengthError extends Error {
+  constructor() {
+    super(
+      "The model reached the Max Tokens limit before producing a final answer. " +
+        "Increase Max Tokens or disable thinking, then retry.",
+    );
+    this.name = "GenerationLengthError";
   }
 }
 
@@ -74,10 +97,41 @@ function parseErrorText(status: number, body: unknown): string {
   return `Request failed (${status})`;
 }
 
-async function parseJsonOrThrow<T>(response: Response): Promise<T> {
+/**
+ * `/api/inference/load` and `/unload` pad their body so a proxy cannot time the
+ * request out, which commits the status before the work finishes: a failure found
+ * after that can only arrive in-band, under a 200, as `_deferred_error`.
+ */
+function deferredError(body: unknown): { status: number; message: string } | null {
+  const deferred =
+    body && typeof body === "object"
+      ? (body as { _deferred_error?: { status_code?: unknown; detail?: unknown } })
+          ._deferred_error
+      : undefined;
+  if (!deferred || typeof deferred !== "object") return null;
+  const status =
+    typeof deferred.status_code === "number" ? deferred.status_code : 500;
+  return { status, message: parseErrorText(status, { detail: deferred.detail }) };
+}
+
+/**
+ * `paddedLabel` opts a caller into `assertCompletedPaddedBody`; only the two padded
+ * routes may, since a truncated body means unfinished there but is legitimate elsewhere.
+ */
+async function parseJsonOrThrow<T>(
+  response: Response,
+  paddedLabel?: string,
+): Promise<T> {
   const body = await response.json().catch(() => null);
   if (!response.ok) {
     throw new Error(parseErrorText(response.status, body));
+  }
+  const deferred = deferredError(body);
+  if (deferred) {
+    throw new Error(deferred.message);
+  }
+  if (paddedLabel !== undefined) {
+    assertCompletedPaddedBody(body, paddedLabel);
   }
   return body as T;
 }
@@ -114,11 +168,43 @@ export async function getApiMonitorEntry(id: string): Promise<ApiMonitorEntry> {
   return parseJsonOrThrow<ApiMonitorEntry>(response);
 }
 
+export async function clearApiMonitor(): Promise<void> {
+  const response = await authFetch("/api/inference/monitor", {
+    method: "DELETE",
+  });
+  await parseJsonOrThrow<{ cleared: boolean }>(response);
+}
+
+export interface ActiveGenerationsResponse {
+  count: number;
+  /** Conversations with a generation in flight. Shorter than `count` when a
+   *  first turn started before its thread id was persisted. */
+  thread_ids: string[];
+  /** One entry per in-flight request. `kind` is "chat" unless it is an
+   *  embeddings / completions / audio call, which has no conversation. */
+  active?: { thread_id: string | null; kind?: string }[];
+  parallel_slots: number;
+}
+
+/**
+ * Chats generating on the backend right now. Authoritative where `runningByThreadId` is not:
+ * that map is per-tab, empty after a reload and blind to a second tab, and /load and /unload
+ * 409 on these.
+ */
+export async function getActiveGenerations(): Promise<ActiveGenerationsResponse> {
+  const response = await authFetch("/api/inference/active-generations");
+  return parseJsonOrThrow<ActiveGenerationsResponse>(response);
+}
+
 export async function loadModel(
   payload: LoadModelRequest,
 ): Promise<LoadModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  if (!preparedToken.proceed) throw new Error("Model load cancelled.");
+  // Tagged so auto-load can tell a user cancellation from a backend rejection.
+  if (!preparedToken.proceed)
+    throw Object.assign(new Error("Model load cancelled."), {
+      unslothUserCancelled: true,
+    });
   const response = await authFetch("/api/inference/load", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -129,14 +215,38 @@ export async function loadModel(
       nativePathLease: undefined,
     }),
   });
-  return parseJsonOrThrow<LoadModelResponse>(response);
+  return parseJsonOrThrow<LoadModelResponse>(response, "Model load");
+}
+
+export async function countChatInputTokens(payload: {
+  model: string;
+  messages: OpenAIChatCompletionsRequest["messages"];
+  enable_thinking?: boolean;
+  reasoning_effort?: OpenAIChatCompletionsRequest["reasoning_effort"];
+  preserve_thinking?: boolean;
+  enable_tools?: boolean;
+  enabled_tools?: string[];
+  mcp_enabled?: boolean;
+  rag_scope?: Record<string, unknown>;
+  auto_heal_tool_calls?: boolean;
+  // `model` is informational: the endpoint counts with whatever is resident and reports which.
+}): Promise<{ input_tokens: number; model?: string }> {
+  const response = await authFetch("/api/inference/chat/count_tokens", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  return parseJsonOrThrow<{ input_tokens: number; model?: string }>(response);
 }
 
 export async function validateModel(
   payload: LoadModelRequest,
 ): Promise<ValidateModelResponse> {
   const preparedToken = await prepareHfTokenForUse(payload.hf_token);
-  if (!preparedToken.proceed) throw new Error("Model load cancelled.");
+  if (!preparedToken.proceed)
+    throw Object.assign(new Error("Model load cancelled."), {
+      unslothUserCancelled: true,
+    });
   const response = await authFetch("/api/inference/validate", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -149,11 +259,18 @@ export async function validateModel(
       // /load. Default placement is sized against the selected GPUs.
       max_seq_length: payload.max_seq_length,
       load_in_4bit: payload.load_in_4bit,
+      cache_type_kv: payload.cache_type_kv ?? null,
+      tensor_parallel: payload.tensor_parallel ?? false,
       gpu_ids: payload.gpu_ids,
       // Manual placement is an explicit override: Auto layers use llama.cpp
       // --fit, while a pinned layer count is owned by the user. Tell validate
       // so it applies the same training-guard policy as /load.
       gpu_memory_mode: payload.gpu_memory_mode,
+      // Only 0 changes the verdict: a zero-layer DiffusionGemma split places
+      // no layers, so validate must not refuse what /load would accept.
+      gpu_layers: payload.gpu_layers,
+      // Slots scale the KV estimate; keep validate sized like the load.
+      n_parallel: payload.n_parallel,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
@@ -176,6 +293,10 @@ export async function fetchGgufStagedMetadata(payload: {
   contextLength: number | null;
   layerCount: number | null;
   moeLayerCount: number | null;
+  isDiffusion: boolean;
+  /** Unclassifiable, so `isDiffusion: false` above means "not known to be diffusion":
+   *  callers picking a GPU split must assume possibly-diffusion. */
+  diffusionUnknown: boolean;
 }> {
   let nativePathLease: string | null = null;
   if (payload.nativePathToken) {
@@ -185,7 +306,14 @@ export async function fetchGgufStagedMetadata(payload: {
       ).nativePathLease;
     } catch {
       // Lease expired / revoked: degrade to no metadata (the load can re-mint).
-      return { contextLength: null, layerCount: null, moeLayerCount: null };
+      // Nothing was read, so the diffusion answer is unknown rather than false.
+      return {
+        contextLength: null,
+        layerCount: null,
+        moeLayerCount: null,
+        isDiffusion: false,
+        diffusionUnknown: true,
+      };
     }
   }
   const response = await authFetch("/api/inference/validate", {
@@ -204,6 +332,9 @@ export async function fetchGgufStagedMetadata(payload: {
     contextLength: res.context_length ?? null,
     layerCount: res.layer_count ?? null,
     moeLayerCount: res.moe_layer_count ?? null,
+    isDiffusion: res.is_diffusion ?? false,
+    // Absent on a pre-#7575 backend, which never reported the inconclusive case.
+    diffusionUnknown: res.diffusion_unknown ?? false,
   };
 }
 
@@ -213,7 +344,7 @@ export async function unloadModel(payload: UnloadModelRequest): Promise<void> {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
-  await parseJsonOrThrow<unknown>(response);
+  await parseJsonOrThrow<unknown>(response, "Model unload");
 }
 
 /**
@@ -252,6 +383,16 @@ export interface CachedGgufRepo {
   /** True when the repo ships an mmproj adapter (image inputs). Optional for
    * older-backend compatibility. */
   has_vision?: boolean;
+  /** True when some quant has a download manifest or cancel marker. Optional
+   * for older-backend compatibility. */
+  has_variant_state?: boolean;
+  partial?: boolean;
+  capabilities?: CachedRepoCapabilities | null;
+}
+
+/** The subset of a row's capabilities auto-load acts on; Hub view models have a wider type. */
+export interface CachedRepoCapabilities {
+  can_chat?: boolean;
 }
 
 export async function getGgufDownloadProgress(
@@ -333,6 +474,9 @@ export interface LocalModelInfo {
   // Backend-detected weights format ("gguf" when known), so the UI can
   // classify scanned folders whose name lacks a -GGUF suffix.
   model_format?: string | null;
+  // Set when a cached snapshot holds an incomplete download, so consumers can skip
+  // weights that cannot load yet.
+  partial?: boolean;
   updated_at?: number | null;
 }
 
@@ -368,6 +512,8 @@ export interface CachedModelRepo {
   /** Owning cache dir; sent so a delete targets this copy, not the active
    * cache. Optional for older-backend compatibility. */
   cache_path?: string | null;
+  partial?: boolean;
+  capabilities?: CachedRepoCapabilities | null;
 }
 
 export async function listCachedModels(
@@ -925,23 +1071,16 @@ export async function browseFolders(
 export async function listGgufVariants(
   repoId: string,
   hfToken?: string,
-  options?: {
-    preferLocalCache?: boolean;
-    localPath?: string | null;
-  },
+  options?: GgufVariantsRequestOptions,
 ): Promise<GgufVariantsResponse> {
-  const params = new URLSearchParams({ repo_id: repoId });
-  if (options?.preferLocalCache) {
-    params.set("prefer_local_cache", "true");
-  }
-  const localPath = options?.localPath?.trim();
-  if (localPath) {
-    params.set("local_path", localPath);
-  }
-  const response = await authFetch(`/api/models/gguf-variants?${params}`, {
-    headers: hubTokenHeader(hfToken),
+  const params = ggufVariantsQuery(repoId, options, isHuggingFaceOffline());
+  return runBoundedVariantsRequest(options?.signal, async (signal) => {
+    const response = await authFetch(`/api/models/gguf-variants?${params}`, {
+      headers: hubTokenHeader(hfToken),
+      signal,
+    });
+    return parseJsonOrThrow<GgufVariantsResponse>(response);
   });
-  return parseJsonOrThrow<GgufVariantsResponse>(response);
 }
 
 export interface KvCacheEstimate {
@@ -982,6 +1121,61 @@ function parseSseEvent(rawEvent: string): string[] {
   return dataLines;
 }
 
+function hasNonWhitespaceText(value: unknown): boolean {
+  if (typeof value === "string") {
+    return value.trim().length > 0;
+  }
+  if (Array.isArray(value)) {
+    return value.some((item) => hasNonWhitespaceText(item));
+  }
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return ["thinking", "text", "content", "reasoning", "summary"].some(
+    (key) => key in record && hasNonWhitespaceText(record[key]),
+  );
+}
+
+function classifyStructuredDeltaContent(content: unknown): {
+  hasAssistantContent: boolean;
+  hasReasoningContent: boolean;
+} {
+  if (typeof content === "string") {
+    return {
+      hasAssistantContent: hasNonWhitespaceText(content),
+      hasReasoningContent: false,
+    };
+  }
+  if (!Array.isArray(content)) {
+    return {
+      hasAssistantContent: false,
+      hasReasoningContent: false,
+    };
+  }
+
+  let hasAssistantContent = false;
+  let hasReasoningContent = false;
+  for (const part of content) {
+    if (typeof part === "string") {
+      hasAssistantContent ||= hasNonWhitespaceText(part);
+      continue;
+    }
+    if (!part || typeof part !== "object") {
+      continue;
+    }
+    const record = part as Record<string, unknown>;
+    if (record.type === "thinking" || record.type === "reasoning") {
+      hasReasoningContent ||= hasNonWhitespaceText(record);
+    } else if (record.type === "text" || record.type === "output_text") {
+      const text =
+        typeof record.text === "string" ? record.text : record.content;
+      hasAssistantContent ||= hasNonWhitespaceText(text);
+    }
+  }
+  return { hasAssistantContent, hasReasoningContent };
+}
+
 export async function* streamChatCompletions(
   payload: OpenAIChatCompletionsRequest,
   signal: AbortSignal,
@@ -1009,6 +1203,19 @@ export async function* streamChatCompletions(
   // EOF without `[DONE]` or a finish_reason chunk means the stream was cut
   // mid-generation: surface as interrupted, not silent success.
   let sawTerminalSignal = false;
+  let terminalFinishReason: string | null = null;
+  let sawAssistantContent = false;
+  let sawReasoningContent = false;
+
+  const throwIfReasoningOnlyLength = () => {
+    if (
+      terminalFinishReason === "length" &&
+      sawReasoningContent &&
+      !sawAssistantContent
+    ) {
+      throw new GenerationLengthError();
+    }
+  };
 
   try {
     while (true) {
@@ -1018,6 +1225,7 @@ export async function* streamChatCompletions(
         if (!sawTerminalSignal) {
           throw new StreamInterruptedError();
         }
+        throwIfReasoningOnlyLength();
         break;
       }
 
@@ -1039,6 +1247,7 @@ export async function* streamChatCompletions(
         if (dataText === "[DONE]") {
           completed = true;
           sawTerminalSignal = true;
+          throwIfReasoningOnlyLength();
           return;
         }
 
@@ -1094,11 +1303,31 @@ export async function* streamChatCompletions(
         }
         // finish_reason is a valid terminal signal for providers that close
         // the stream without an explicit [DONE] sentinel.
-        const finishReason = (
+        const parsedChoices = (
           parsed as {
-            choices?: Array<{ finish_reason?: string | null }>;
+            choices?: Array<{
+              delta?: Record<string, unknown>;
+              finish_reason?: string | null;
+            }>;
           }
-        ).choices?.[0]?.finish_reason;
+        ).choices;
+        for (const choice of parsedChoices ?? []) {
+          const delta = choice.delta;
+          if (delta) {
+            const contentState = classifyStructuredDeltaContent(delta.content);
+            sawAssistantContent ||= contentState.hasAssistantContent;
+            sawReasoningContent ||= contentState.hasReasoningContent;
+            const reasoning =
+              delta.reasoning_content ??
+              delta.reasoning ??
+              delta.reasoning_details;
+            sawReasoningContent ||= hasNonWhitespaceText(reasoning);
+          }
+          if (choice.finish_reason) {
+            terminalFinishReason = choice.finish_reason;
+          }
+        }
+        const finishReason = parsedChoices?.[0]?.finish_reason;
         if (finishReason) {
           sawTerminalSignal = true;
         }

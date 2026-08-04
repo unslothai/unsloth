@@ -13,6 +13,7 @@ export type SettingsTab =
   | "connections"
   | "data"
   | "api-keys"
+  | "agents"
   | "about";
 
 export type SettingsScrollTarget = "about-updates";
@@ -69,6 +70,7 @@ function loadInitialTab(): SettingsTab {
     "connections",
     "data",
     "api-keys",
+    "agents",
     "about",
   ];
   return valid.includes(stored as SettingsTab)

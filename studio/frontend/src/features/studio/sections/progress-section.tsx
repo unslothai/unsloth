@@ -189,9 +189,8 @@ export function ProgressSection({
   const cfgLoraDropout = cfg?.loraDropout;
   const cfgLoraVariant = cfg?.loraVariant;
 
-  // Mirror the training form: on Mac the CUDA/bitsandbytes optimizer names run
-  // as plain AdamW (the MLX backend normalizes them), so label them AdamW here
-  // too rather than by the requested, unnormalized name.
+  // Mirror the training form: on Mac the MLX backend runs CUDA optimizers as
+  // AdamW, so label them AdamW here too.
   const effectiveOptimizer =
     platformDeviceType === "mac" &&
     OPTIMIZER_OPTIONS.some((o) => o.value === cfgOptimizerType)

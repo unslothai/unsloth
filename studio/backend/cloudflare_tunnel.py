@@ -310,6 +310,7 @@ class CloudflareTunnel:
                 stderr = subprocess.STDOUT,
                 stdin = subprocess.DEVNULL,
                 text = True,
+                encoding = "utf-8",
                 errors = "replace",
                 bufsize = 1,
                 **_windows_hidden_kwargs(),

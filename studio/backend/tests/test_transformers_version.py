@@ -59,9 +59,31 @@ from utils.transformers_version import (
     get_transformers_tier,
     activate_transformers_for_subprocess,
     _venv_dir_is_valid,
+    _venv_dir_is_valid_and_undamaged,
     _ensure_venv_dir,
     hf_endpoint_unreachable,
 )
+
+
+@pytest.fixture(autouse = True)
+def _no_ambient_proxy(monkeypatch):
+    """Module-wide: these tests patch urlopen, which a selected proxy opener bypasses.
+
+    Every remote read here goes through ``_hf_urlopen``, which calls ``opener.open`` when
+    a proxy applies. A runner with HTTPS_PROXY / ALL_PROXY set would then make a real
+    request instead of hitting the patch, so results would track ambient CI connectivity.
+    """
+    for key in (
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "NO_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "no_proxy",
+    ):
+        monkeypatch.delenv(key, raising = False)
 
 
 @pytest.fixture(autouse = True)
@@ -217,7 +239,7 @@ class TestRemoteLoraBase:
 
         with patch("urllib.request.urlopen", side_effect = fake_urlopen):
             assert _remote_lora_base("user/adapter") == "org/base"
-        assert seen["url"].startswith("https://hf.mirror.internal/user/adapter/raw/main/")
+        assert seen["url"].startswith("https://hf.mirror.internal/user/adapter/resolve/main/")
 
     @staticmethod
     def _seed_adapter_cache(
@@ -373,6 +395,33 @@ class TestCheckTokenizerConfigNeedsV5:
         assert _check_tokenizer_config_needs_v5("org/gated", "tok") is True  # authed hit
         assert seen_auth == [None, "Bearer tok"]
         assert _tokenizer_class_cache[("org/gated", None)] is False  # miss not poisoning
+
+    def test_remote_fetch_respects_hf_endpoint(self, monkeypatch):
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal/")
+        seen = {}
+
+        class _Resp:
+            def read(self):
+                return json.dumps({"tokenizer_class": "TokenizersBackend"}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return _Resp()
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        assert _check_tokenizer_config_needs_v5("org/model") is True
+        assert seen["url"] == (
+            "https://hf.mirror.internal/org/model/resolve/main/tokenizer_config.json"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -717,6 +766,20 @@ class TestConfigJsonHfCacheFallback:
         monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
         with patch("urllib.request.urlopen", return_value = _hf_response(fresh)):
             assert _load_config_json("org/model") == fresh  # network wins, not stale cache
+
+    def test_remote_fetch_respects_hf_endpoint(self, monkeypatch):
+        monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+        monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf.mirror.internal/")
+        seen = {}
+
+        def fake_urlopen(req, timeout = 10):
+            seen["url"] = req.full_url
+            return _hf_response({"model_type": "llama"})
+
+        with patch("urllib.request.urlopen", side_effect = fake_urlopen):
+            assert _load_config_json("org/model") == {"model_type": "llama"}
+        assert seen["url"] == "https://hf.mirror.internal/org/model/resolve/main/config.json"
 
     def test_network_failure_falls_back_to_cache(self, tmp_path: Path, monkeypatch):
         cfg = {"model_type": "nemotron_h", "hybrid_override_pattern": "M-M*-"}
@@ -1739,6 +1802,222 @@ class TestVenvDirIsValidLogging:
 
 
 # ---------------------------------------------------------------------------
+# _venv_dir_is_valid_and_undamaged — issue #7715
+# A sidecar whose METADATA survived a disk-full or an interrupted pip passes
+# every package-level check, so the wipe-and-reinstall in _ensure_venv_dir
+# never fires and the worker dies importing transformers instead.
+# ---------------------------------------------------------------------------
+
+
+class TestVenvDirFileIntegrity:
+    def _make_venv(
+        self,
+        venv_dir: Path,
+        pkg: str = "transformers",
+        version: str = "5.3.0",
+        files: dict | None = None,
+        record_extra: list | None = None,
+    ) -> Path:
+        """Fake target-dir install of *pkg* with a RECORD matching what it wrote."""
+        di = venv_dir / f"{pkg}-{version}.dist-info"
+        di.mkdir(parents = True)
+        (di / "METADATA").write_text(f"Name: {pkg}\nVersion: {version}\n")
+        files = files if files is not None else {f"{pkg}/__init__.py": "x" * 40}
+        rows = []
+        for rel, body in files.items():
+            path = venv_dir / rel
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_text(body)
+            rows.append(f"{rel},sha256=deadbeef,{len(body)}")
+        rows.extend(record_extra or [])
+        # pip records its own metadata with a blank size, as real wheels do.
+        rows.append(f"{pkg}-{version}.dist-info/METADATA,sha256=cafe,")
+        rows.append(f"{pkg}-{version}.dist-info/RECORD,,")
+        (di / "RECORD").write_text("\n".join(rows) + "\n")
+        return venv_dir
+
+    def test_intact_sidecar_is_valid(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_truncated_file_is_detected(self, tmp_path: Path, caplog):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("x")  # disk-full shape
+
+        caplog.set_level(logging.INFO)
+        result = _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+        assert result is False, "a truncated file must force the wipe-and-reinstall"
+        joined = " ".join(r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING)
+        assert "transformers/__init__.py" in joined, f"damage not named in the log: {joined!r}"
+
+    def test_deleted_file_is_detected(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_damage_in_an_unpinned_dependency_is_detected(self, tmp_path: Path):
+        """The whole dir is prepended to sys.path, so a shadowing dep breaks the
+        import just as surely as transformers itself."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        self._make_venv(venv_dir, pkg = "regex", version = "2026.7.19")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        (venv_dir / "regex" / "__init__.py").write_text("")
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_console_script_rows_are_ignored(self, tmp_path: Path):
+        """pip --target records scripts at a path that cannot resolve.
+
+        pip installs through a temporary normal-scheme prefix and writes RECORD
+        before flattening, so a healthy sidecar records ../../bin/hf while the
+        file lands in <target>/bin. Believing those rows fails CLOSED on a
+        healthy install, and since the repair reinstalls with the same pip it
+        would wipe and re-download several hundred MB on every activation,
+        forever.
+        """
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = [
+                "../../bin/hf,sha256=deadbeef,343",
+                "../../Scripts/hf.exe,sha256=deadbeef,343",
+            ],
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_in_target_script_rows_are_ignored(self, tmp_path: Path):
+        """uv records bin/hf, which does resolve -- but pip --upgrade rmtree's a
+        colliding directory in the target, so a later install into the same
+        sidecar deletes an earlier package's scripts. Nothing imports from
+        there, so the row carries no signal either way."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            record_extra = [
+                "bin/hf,sha256=deadbeef,343",
+                "Scripts/hf.exe,sha256=deadbeef,343",
+            ],
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_skipping_scripts_does_not_mask_real_damage(self, tmp_path: Path):
+        """The skip must be scoped to script rows, not a blanket exemption."""
+        venv_dir = self._make_venv(
+            tmp_path / "venv", record_extra = ["../../bin/hf,sha256=deadbeef,343"]
+        )
+        (venv_dir / "transformers" / "__init__.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_larger_than_recorded_is_not_damage(self, tmp_path: Path):
+        """A packaging collision leaves a bigger file, not a broken one."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("y" * 400)
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_multiply_owned_path_skips_the_size_check_but_not_existence(self, tmp_path: Path):
+        venv_dir = self._make_venv(
+            tmp_path / "venv",
+            files = {"transformers/__init__.py": "x" * 40, "shared/mod.py": "z" * 90},
+        )
+        self._make_venv(
+            venv_dir,
+            pkg = "other",
+            version = "1.0.0",
+            files = {"other/__init__.py": "o" * 10},
+            record_extra = ["shared/mod.py,sha256=beef,999999"],
+        )
+        # Two RECORDs disagree on the size; whichever copy landed says nothing
+        # about either, so this is not damage.
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        # Ambiguous sizes cannot explain the file being gone.
+        (venv_dir / "shared" / "mod.py").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_directory_standing_in_for_a_recorded_file_is_damage(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        target = venv_dir / "transformers" / "__init__.py"
+        target.unlink()
+        target.mkdir()  # st_size 4096 on POSIX would sail past a shrinkage test
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_blank_size_row_still_reports_a_deletion(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "data.bin").write_text("q")
+        record = venv_dir / "transformers-5.3.0.dist-info" / "RECORD"
+        record.write_text(record.read_text() + "transformers/data.bin,,\n")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+        (venv_dir / "transformers" / "data.bin").unlink()
+        assert not _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_missing_record_is_not_damage(self, tmp_path: Path):
+        """Fails open: the answer to a finding is to delete hundreds of MB."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers-5.3.0.dist-info" / "RECORD").unlink()
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_pyc_and_dist_info_rows_are_ignored(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        record = venv_dir / "transformers-5.3.0.dist-info" / "RECORD"
+        record.write_text(
+            record.read_text()
+            + "transformers/__pycache__/__init__.cpython-311.pyc,sha256=aa,500\n"
+            + "transformers-5.3.0.dist-info/direct_url.json,sha256=bb,500\n"
+        )
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_directory_rows_are_ignored(self, tmp_path: Path):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        record = venv_dir / "transformers-5.3.0.dist-info" / "RECORD"
+        record.write_text(record.read_text() + "transformers/subdir/,,\n")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_default_is_package_level_only(self, tmp_path: Path):
+        """The routing predicate keeps the cheap semantics: it runs several times
+        per /validate request with no cache in front of it."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+        assert _venv_dir_is_valid(str(venv_dir), ("transformers==5.3.0",)) is True
+
+    def test_env_kill_switch_disables_the_scan(self, tmp_path: Path, monkeypatch):
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+        monkeypatch.setenv("UNSLOTH_SKIP_SIDECAR_FILE_CHECK", "1")
+        assert _venv_dir_is_valid_and_undamaged(str(venv_dir), ("transformers==5.3.0",))
+
+    def test_ensure_venv_dir_wipes_and_reinstalls_a_damaged_sidecar(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """End to end: the damage reaches the repair that already exists."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+
+        installed = []
+
+        def _fake_install(pkg, target):
+            installed.append(pkg)
+            return True
+
+        monkeypatch.setattr("utils.transformers_version._install_to_dir", _fake_install)
+        ok = _ensure_venv_dir(str(venv_dir), ("transformers==5.3.0",), "transformers 5.3.0")
+
+        assert ok is True
+        assert installed == ["transformers==5.3.0"], "damaged sidecar was not reinstalled"
+        assert not (venv_dir / "transformers").exists(), "damaged tree was not wiped first"
+
+    def test_ensure_venv_dir_restores_the_studio_owned_marker(self, tmp_path: Path, monkeypatch):
+        """The wipe takes setup.sh's ownership marker with the old directory. Without a
+        new one, the next `unsloth studio update` under a custom UNSLOTH_STUDIO_HOME
+        aborts on a sidecar we just repaired, and adoption cannot rescue it because that
+        needs a prebuilt-info file a venv never has."""
+        venv_dir = self._make_venv(tmp_path / "venv")
+        (venv_dir / ".unsloth-studio-owned").touch()
+        (venv_dir / "transformers" / "__init__.py").write_text("x")
+
+        monkeypatch.setattr("utils.transformers_version._install_to_dir", lambda pkg, target: True)
+        assert _ensure_venv_dir(str(venv_dir), ("transformers==5.3.0",), "transformers 5.3.0")
+
+        assert (venv_dir / ".unsloth-studio-owned").is_file()
+
+
+# ---------------------------------------------------------------------------
 # _ensure_venv_dir — issue #6103
 # A slow runtime install must log each package as it starts, otherwise it
 # looks like a hang.
@@ -2527,6 +2806,8 @@ class TestOfflineCacheNotPoisoned:
 
 
 class TestHfEndpointUnreachable:
+    # Ambient proxies are cleared module-wide by _no_ambient_proxy.
+
     def test_reachable_returns_false(self, monkeypatch):
         class _Resp:
             def __enter__(self):
@@ -2566,6 +2847,70 @@ class TestHfEndpointUnreachable:
         monkeypatch.setattr("urllib.request.urlopen", _tls)
         # TLS reached the server: treat as reachable so the load surfaces the cert error.
         assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_connection_refused_is_reachable(self, monkeypatch):
+        import urllib.error
+
+        def _refused(*a, **k):
+            raise urllib.error.URLError(ConnectionRefusedError("refused"))
+
+        monkeypatch.setattr("urllib.request.urlopen", _refused)
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_connection_reset_is_reachable(self, monkeypatch):
+        """A reset proves the path answered, exactly like the refusal above.
+
+        urllib wraps an OSError raised while sending, so this is the URLError form.
+        """
+        import urllib.error
+
+        def _reset(*a, **k):
+            raise urllib.error.URLError(ConnectionResetError(104, "Connection reset by peer"))
+
+        monkeypatch.setattr("urllib.request.urlopen", _reset)
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_remote_disconnect_is_reachable(self, monkeypatch):
+        """getresponse() is not inside urllib's OSError->URLError wrapper, so a server
+        that accepts the HEAD then closes raises http.client.RemoteDisconnected raw --
+        and it subclasses ConnectionResetError -> OSError."""
+        import http.client
+
+        def _disconnect(*a, **k):
+            raise http.client.RemoteDisconnected("Remote end closed connection without response")
+
+        monkeypatch.setattr("urllib.request.urlopen", _disconnect)
+        assert hf_endpoint_unreachable(timeout = 2) is False
+
+    def test_real_server_that_accepts_then_closes_is_reachable(self, monkeypatch):
+        """End-to-end over a real socket: no mocking of the exception type at all."""
+        import socket
+        import threading
+
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("127.0.0.1", 0))
+        srv.listen(4)
+
+        def _accept_then_close():
+            try:
+                conn, _ = srv.accept()
+            except OSError:
+                return
+            try:
+                conn.recv(4096)
+            except OSError:
+                pass
+            conn.close()
+
+        thread = threading.Thread(target = _accept_then_close, daemon = True)
+        thread.start()
+        monkeypatch.setenv("HF_ENDPOINT", f"http://127.0.0.1:{srv.getsockname()[1]}")
+        try:
+            assert hf_endpoint_unreachable(timeout = 2) is False
+        finally:
+            srv.close()
+            thread.join(5)
 
     def test_dns_failure_is_unreachable(self, monkeypatch):
         import socket
@@ -2672,7 +3017,7 @@ class TestLatestTierForces16Bit:
 
     def _read(self, rel):
         backend_dir = Path(__file__).resolve().parent.parent
-        return (backend_dir / rel).read_text()
+        return (backend_dir / rel).read_text(encoding = "utf-8")
 
     def test_worker_guard_present(self):
         src = self._read("core/inference/worker.py")
@@ -2721,7 +3066,9 @@ class TestLatestTierForces16Bit:
             "fallback so /validate does not 409 a 4-bit load /load would allow"
         )
         # requires_trust_remote_code must be resolved before the flip consumes it.
-        assert body.index("requires_trust_remote_code = any(") < body.index(
+        # Anchored on the resolving call, not its expression form: the any() now runs
+        # inside _offline_guarded on a worker thread.
+        assert body.index("_requires_trust_remote_code_for_model(_t") < body.index(
             "not requires_trust_remote_code"
         )
 
@@ -3141,6 +3488,10 @@ class TestKillSwitchBeatsMappingCache:
 
         key = tv._probe_cache_key("some/model")
         monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
+        # A cached 'latest' only ever arises while the tier is pinned, since an unpinned
+        # one is not in the probe order at all, and an unpinned cache entry is now
+        # re-probed in its own right. Hold the pin so this stays a test of the switch.
+        monkeypatch.setattr(tv, "latest_venv_pinned_version", lambda: "5.99.0")
         monkeypatch.setenv("UNSLOTH_STUDIO_NO_LATEST_TRANSFORMERS", "1")
         # With the switch set, the cached latest entry must not short-circuit;
         # the probe re-resolves against the non-latest order (stub it to 530).
@@ -3233,3 +3584,375 @@ class TestRaiseTierForNested:
         monkeypatch.setattr(tv, "_config_needs_510", lambda cfg: False)
         monkeypatch.setattr(tv, "_config_needs_550", lambda cfg: True)
         assert tv.get_transformers_tier(str(ckpt), probe = False) == "latest"
+
+
+class TestDamagedLatestSidecarRepairHandoff:
+    """A worker child refuses to repair the sidecar, so damage it finds must reach the
+    parent's routing self-heal. The routing predicate is package-level and cannot see a
+    truncated file, so without a handoff every worker retry fails forever waiting for a
+    repair nothing ever triggers."""
+
+    def _sidecar(
+        self,
+        root: Path,
+        model_types = ("brandnew",),
+    ) -> Path:
+        """A pinned latest sidecar whose RECORD matches what it wrote."""
+        import utils.transformers_version as tv
+
+        di = root / "transformers-5.99.0.dist-info"
+        di.mkdir(parents = True, exist_ok = True)
+        (di / "METADATA").write_text("Name: transformers\nVersion: 5.99.0\n")
+        mapping = ", ".join(f'"{t}": "C"' for t in model_types)
+        files = {
+            "transformers/__init__.py": "x" * 40,
+            "transformers/models/auto/configuration_auto.py": "CONFIG_MAPPING_NAMES = {%s}\n"
+            % mapping,
+        }
+        rows = []
+        for rel, body in files.items():
+            path = root / rel
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_text(body)
+            rows.append(f"{rel},sha256=deadbeef,{len(body)}")
+        rows.append("transformers-5.99.0.dist-info/RECORD,,")
+        (di / "RECORD").write_text("\n".join(rows) + "\n")
+        (root / tv._LATEST_PIN_MARKER).write_text(
+            json.dumps({"version": "5.99.0", "packages": ["transformers==5.99.0"]})
+        )
+        return root
+
+    def _patch(
+        self,
+        monkeypatch,
+        live: Path,
+        is_child: bool = False,
+    ):
+        """Point the module at *live* and make a repair succeed without pip."""
+        import multiprocessing
+        import utils.transformers_version as tv
+
+        monkeypatch.setattr(tv, "_VENV_T5_LATEST_DIR", str(live))
+        monkeypatch.setattr(tv, "_latest_tier_disabled", lambda: False)
+        monkeypatch.setattr(tv, "_env_offline", lambda: False)
+        monkeypatch.setattr(tv, "_workers_active_for_repair", lambda: False)
+        monkeypatch.setattr(tv, "_config_mapping_cache", {})
+        monkeypatch.setattr(tv, "_latest_repair_failed_at", 0.0)
+        monkeypatch.setattr(
+            multiprocessing, "parent_process", lambda: object() if is_child else None
+        )
+        installs = []
+
+        def _fake_install(pkg, target):
+            installs.append(pkg)
+            self._sidecar(Path(target))
+            return True
+
+        monkeypatch.setattr(tv, "_install_to_dir", _fake_install)
+        return tv, installs
+
+    def _damage(self, live: Path):
+        """Disk-full shape: the file is still there, just short."""
+        (live / "transformers" / "__init__.py").write_text("x")
+
+    def _is_damaged(self, tv, live: Path) -> bool:
+        return bool(tv._sidecar_damaged_files(str(live)))
+
+    def test_damage_predating_the_process_heals_before_any_worker_starts(
+        self, monkeypatch, tmp_path
+    ):
+        """The parent resolves the mapping through _overlay_transformers_dir on a cache
+        miss, which is the one place that can afford the RECORD scan."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, installs = self._patch(monkeypatch, live)
+        self._damage(live)
+        assert tv._venv_dir_is_valid(
+            str(live), ("transformers==5.99.0",)
+        ), "precondition: the package-level predicate cannot see this damage"
+
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+
+        assert installs == ["transformers==5.99.0"], "the parent did not self-heal"
+        assert not self._is_damaged(tv, live)
+
+    def test_worker_child_flags_damage_instead_of_only_refusing(self, monkeypatch, tmp_path):
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, installs = self._patch(monkeypatch, live, is_child = True)
+        self._damage(live)
+
+        assert tv._ensure_venv_t5_latest_exists() is False, "a child must not repair"
+        assert installs == []
+        assert tv._latest_repair_requested(), "the child left no signal for the parent"
+
+    def test_flagged_damage_breaks_the_worker_retry_deadlock(self, monkeypatch, tmp_path):
+        """The reported deadlock, end to end.
+
+        Damage that appears AFTER this process cached the latest mapping is invisible to
+        every parent-side predicate cheap enough to run per request, so the parent keeps
+        routing to 'latest' and the child keeps refusing. Pinned here is that the loop
+        terminates: the child's flag makes the next parent routing call repair, and the
+        retry after that activates.
+        """
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, installs = self._patch(monkeypatch, live)
+
+        # Warm the mapping cache from the healthy sidecar, as any earlier request does.
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+        assert "latest" in tv._config_mapping_cache
+        installs.clear()
+
+        self._damage(live)
+
+        # Parent keeps routing to 'latest' off the cached mapping and never scans.
+        for _ in range(3):
+            assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+        assert installs == [], "the cached hot path must not pay for a scan"
+        assert self._is_damaged(tv, live)
+
+        # The worker child sees the damage, refuses, and flags it.
+        monkeypatch.setattr("multiprocessing.parent_process", lambda: object())
+        assert tv._ensure_venv_t5_latest_exists() is False
+        assert installs == []
+
+        # The next parent routing call repairs. Before the fix it never did, and the
+        # worker below failed forever.
+        monkeypatch.setattr("multiprocessing.parent_process", lambda: None)
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+        assert installs == ["transformers==5.99.0"], "the parent never repaired"
+        assert not self._is_damaged(tv, live)
+
+        # The worker retry now succeeds, which is the property that was deadlocked.
+        monkeypatch.setattr("multiprocessing.parent_process", lambda: object())
+        assert tv._ensure_venv_t5_latest_exists() is True
+        assert not tv._latest_repair_requested(), "a satisfied request must not persist"
+
+    def test_stale_flag_on_a_healthy_sidecar_is_cleared_not_acted_on(self, monkeypatch, tmp_path):
+        """A false positive here costs a several-hundred-MB re-download, so a flag a
+        clean scan contradicts must be dropped, and must not re-arm the branch."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, installs = self._patch(monkeypatch, live)
+        sentinel = live / "transformers" / "__init__.py"
+        tv._request_latest_repair()
+
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+
+        assert installs == [], "a healthy sidecar must never be wiped on a stale flag"
+        assert sentinel.read_text() == "x" * 40
+        assert not tv._latest_repair_requested(), "the stale flag must not survive"
+
+    def test_cached_mapping_hit_never_scans_the_sidecar(self, monkeypatch, tmp_path):
+        """The revalidation on a _config_mapping_cache HIT runs several times per
+        /validate request, so it must stay package level."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        assert tv._config_model_types("latest") == frozenset({"brandnew"})
+
+        monkeypatch.setattr(
+            tv,
+            "_sidecar_damaged_files",
+            lambda d, limit = 3: pytest.fail("the cached hot path must not scan RECORDs"),
+        )
+        for _ in range(5):
+            assert tv._config_model_types("latest") == frozenset({"brandnew"})
+
+    def test_repair_backoff_window_never_repeats_the_scan(self, monkeypatch, tmp_path):
+        """A sidecar that cannot be repaired (offline, pip down) must not put a ~25 ms
+        scan on every routing call for the whole backoff window."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+        self._damage(live)
+
+        assert tv._overlay_transformers_dir("latest") is None  # scans, tries, fails
+
+        monkeypatch.setattr(
+            tv,
+            "_sidecar_damaged_files",
+            lambda d, limit = 3: pytest.fail("the backoff window must not re-scan"),
+        )
+        for _ in range(5):
+            tv._overlay_transformers_dir("latest")
+
+    def test_backoff_window_keeps_the_damaged_sidecar_withheld(self, monkeypatch, tmp_path):
+        """Backing off from pip must not double as declaring the sidecar usable: the
+        cheap predicate cannot see a truncated file, so without the marker every
+        routing call in the window routes latest-only models straight back into a
+        sidecar whose worker activation is known to fail."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+        self._damage(live)
+
+        assert tv._overlay_transformers_dir("latest") is None  # scans, tries, fails
+        assert tv._venv_dir_is_valid(
+            str(live), ("transformers==5.99.0",)
+        ), "precondition: only the scan can see this damage, not the cheap predicate"
+
+        monkeypatch.setattr(
+            tv,
+            "_sidecar_damaged_files",
+            lambda d, limit = 3: pytest.fail("the backoff window must not re-scan"),
+        )
+        for _ in range(5):
+            assert tv._overlay_transformers_dir("latest") is None
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) != "latest"
+
+    def test_every_unrepaired_exit_flags_the_damage(self, monkeypatch, tmp_path):
+        """Offline, a child, and a swap already running each return before any repair.
+        Whichever one is taken, the damage has to be recorded, or the cheap predicate
+        keeps reporting the sidecar healthy and nothing ever revisits it."""
+        import multiprocessing
+
+        bailouts = {
+            "offline": lambda tv: monkeypatch.setattr(tv, "_env_offline", lambda: True),
+            "child": lambda tv: monkeypatch.setattr(
+                multiprocessing, "parent_process", lambda: object()
+            ),
+            "swap_running": lambda tv: monkeypatch.setattr(
+                tv, "try_begin_sidecar_swap", lambda kind = None: False
+            ),
+        }
+        for name, arrange in bailouts.items():
+            live = self._sidecar(tmp_path / f"venv_t5_latest_{name}")
+            tv, _ = self._patch(monkeypatch, live)
+            arrange(tv)
+            self._damage(live)
+
+            assert tv._ensure_venv_t5_latest_exists() is False, name
+            assert tv._latest_repair_requested(), f"{name} exited without recording the damage"
+            assert not tv._latest_sidecar_intact(), name
+
+    def test_cached_probe_result_does_not_survive_a_flagged_sidecar(self, monkeypatch, tmp_path):
+        """_probe_tier caches per process. A result cached while the sidecar was healthy
+        must not keep sending workers into it once damage is known, the way the
+        config-mapping cache already refuses to."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+        key = f"{tv._probe_cache_key('some/model')}\0floor=default:def=1"
+        monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
+
+        self._damage(live)
+        tv._request_latest_repair()
+
+        assert (
+            tv._probe_tier("some/model", None, "test", include_default = True, floor = "default")
+            != "latest"
+        )
+
+    def test_file_check_kill_switch_suppresses_the_whole_handoff(self, monkeypatch, tmp_path):
+        """UNSLOTH_SKIP_SIDECAR_FILE_CHECK is the escape hatch for a false positive; it
+        must leave no path that still wipes the sidecar."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, installs = self._patch(monkeypatch, live)
+        monkeypatch.setenv("UNSLOTH_SKIP_SIDECAR_FILE_CHECK", "1")
+        self._damage(live)
+
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+        assert installs == []
+        monkeypatch.setattr("multiprocessing.parent_process", lambda: object())
+        assert tv._ensure_venv_t5_latest_exists() is True
+        assert not tv._latest_repair_requested()
+
+    def test_kill_switch_frees_the_sidecar_mid_backoff(self, monkeypatch, tmp_path):
+        """The hatch exists for a false positive, so it has to work at the moment one is
+        being hit: with a marker already written and a repair already failed, it must
+        restore routing now rather than one backoff window later."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+        self._damage(live)
+
+        assert tv._overlay_transformers_dir("latest") is None  # arms marker + backoff
+        assert tv._latest_repair_requested(), "precondition: the marker is armed"
+
+        monkeypatch.setenv("UNSLOTH_SKIP_SIDECAR_FILE_CHECK", "1")
+
+        assert tv._overlay_transformers_dir("latest") is not None
+        assert tv._tier_from_config_mapping({"model_type": "brandnew"}) == "latest"
+
+    def test_an_unreadable_file_is_not_reported_as_damage(self, monkeypatch, tmp_path):
+        """A wipe costs a several-hundred-MB re-download, so the scan may only condemn
+        what it can prove: EIO or ESTALE on a flaky mount says the file could not be
+        read, never that it is gone."""
+        import errno
+
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        real_stat = Path.stat
+
+        def _flaky(self, *a, **k):
+            if self.name == "__init__.py":
+                raise OSError(errno.EIO, "Input/output error")
+            return real_stat(self, *a, **k)
+
+        monkeypatch.setattr(Path, "stat", _flaky)
+
+        assert tv._sidecar_damaged_files(str(live)) == []
+        assert tv._latest_sidecar_undamaged() is True
+        assert tv._overlay_transformers_dir("latest") is not None
+
+    def test_a_deleted_file_is_still_reported_as_damage(self, monkeypatch, tmp_path):
+        """The counterpart: narrowing the caught errors must not blind the scan to a
+        genuinely missing file."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        (live / "transformers" / "__init__.py").unlink()
+
+        assert tv._sidecar_damaged_files(str(live)) == [
+            "transformers: transformers/__init__.py is missing"
+        ]
+
+    def test_an_inconclusive_scan_does_not_retire_proven_damage(self, monkeypatch, tmp_path):
+        """Skipping unreadable rows means an empty result can mean 'nothing proven', not
+        'proven healthy'. A worker already proved this sidecar damaged, and a scan that
+        could not read the file must not erase that and hand it back to routing."""
+        import errno
+
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        # A repair that cannot complete, so what is observed is the decision itself and
+        # not a rebuild papering over it.
+        monkeypatch.setattr(tv, "_install_to_dir", lambda pkg, target: False)
+        self._damage(live)
+        tv._request_latest_repair()
+        real_stat = Path.stat
+
+        def _flaky(self, *a, **k):
+            if self.name == "__init__.py":
+                raise OSError(errno.EIO, "Input/output error")
+            return real_stat(self, *a, **k)
+
+        monkeypatch.setattr(Path, "stat", _flaky)
+        assert tv._sidecar_damaged_files(str(live)) == []  # the scan sees nothing
+        assert tv._sidecar_scan(str(live)) == ([], True)  # but knows it is blind
+
+        assert tv._ensure_venv_t5_latest_exists() is False
+        assert tv._latest_repair_requested(), "an unreadable scan cannot disprove damage"
+
+    def test_a_clean_scan_still_retires_a_stale_marker(self, monkeypatch, tmp_path):
+        """The counterpart: a scan that really did read every row must still clear the
+        marker, or a request left by a lost race loops forever."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        tv._request_latest_repair()
+
+        assert tv._ensure_venv_t5_latest_exists() is True
+        assert not tv._latest_repair_requested()
+
+    def test_a_cached_probe_does_not_survive_the_pin_being_deleted(self, monkeypatch, tmp_path):
+        """Deleting the pin takes the repair marker with it, so the marker cannot carry
+        this case. Activation short-circuits on a missing pin before it can signal
+        anything, so a cached latest would fail every retry until the process restarts."""
+        live = self._sidecar(tmp_path / "venv_t5_latest")
+        tv, _ = self._patch(monkeypatch, live)
+        import shutil
+
+        key = f"{tv._probe_cache_key('some/model')}\0floor=default:def=1"
+        monkeypatch.setitem(tv._probe_tier_cache, key, "latest")
+        shutil.rmtree(live)
+
+        assert (
+            tv._probe_tier("some/model", None, "test", include_default = True, floor = "default")
+            != "latest"
+        )
