@@ -1700,6 +1700,7 @@ def test_native_chat_stream_cancels_mark_response_failed():
     # post-loop finalize mark: a cancel observed inside the threaded next() call returns the
     # sentinel and breaks without hitting the pre-next check, so the finalize marks it too.
     import inspect
+
     src = inspect.getsource(inference.openai_chat_completions)
     lines = src.splitlines(keepends = True)
 
