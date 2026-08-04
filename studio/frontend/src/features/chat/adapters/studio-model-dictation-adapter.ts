@@ -331,9 +331,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     let lastFrameAt = 0;
     let cutting = false;
     let finalCutDone = false;
-    // One budget per failure the user can act on. The warm-up and the segments
-    // fail for their own reasons, so a warm-up toast must not spend the budget
-    // that reports actually losing recorded audio.
+    // Separate budgets: a warm-up toast must not spend the one that reports
+    // actually losing recorded audio.
     let reportedTranscriptionError = false;
     let reportedPreloadError = false;
 
@@ -355,13 +354,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       toastSttError(error, "A recorded segment could not be transcribed.");
     };
 
-    /**
-     * The warm-up is cache-only and fails whenever the model is missing, still
-     * downloading, or briefly unavailable. Recording continues either way: the
-     * model may be ready by the time the user stops, and /transcribe/raw loads
-     * it itself. What must not happen is this failure silencing the one at stop
-     * time, leaving the user with an empty composer and no explanation.
-     */
+    // The cache-only warm-up fails whenever the model is missing or still
+    // downloading. Recording continues anyway: the model may be ready by the
+    // time the user stops, and /transcribe/raw loads it itself.
     const reportPreloadError = (error: unknown) => {
       if (reportedPreloadError || cancelled || ended) return;
       reportedPreloadError = true;
