@@ -4,17 +4,15 @@
 """Tests for ``dataset_map_num_proc()``.
 
 ``None``, not ``1``, is the disable sentinel: on ``datasets`` >= 4.1 (Studio pins
-4.3.0) ``map()`` takes the pool branch for any ``num_proc >= 1``, so ``1`` still
-builds a ``Pool(1)``. ``datasets`` 3.x runs ``1`` in-process, so the version
-split is asserted per installed release rather than hard-coded.
+4.3.0) ``map()`` takes the pool branch for any ``num_proc >= 1``, while 3.x runs
+``1`` in-process, so that split is asserted per installed release.
 
-There is deliberately no CUDA-initialized guard here; see the note in
-``dataset_map_num_proc``'s docstring. The XPU guard is pre-existing behaviour and
-is covered below so it cannot regress.
+There is deliberately no CUDA-initialized guard; see ``dataset_map_num_proc``'s
+docstring. The XPU guard is pre-existing and covered so it cannot regress.
 
-The device probes, the platform and torch itself are all substituted, so this
-runs identically on a GPU box, a CPU-only Linux runner, and the macOS and
-Windows legs where the function short-circuits to None.
+The device probes, the platform and torch itself are substituted, so this runs
+identically on a GPU box, a CPU-only Linux runner, and the macOS and Windows
+legs where the function short-circuits to None.
 """
 
 from __future__ import annotations
@@ -27,10 +25,10 @@ import pytest
 import utils.hardware.hardware as hw
 
 try:
-    # Imported here, before the fixture below spoofs sys.platform. multiprocess
-    # chooses its concrete contexts at import time from sys.platform, so a first
-    # import under a spoofed one hands a Windows runner the POSIX fork contexts,
-    # and the pool then dies reaching for os.WNOHANG.
+    # Before the fixture below spoofs sys.platform: multiprocess picks its
+    # concrete contexts from sys.platform at import time, so a first import under
+    # a spoofed one hands a Windows runner the POSIX fork contexts and the pool
+    # then dies reaching for os.WNOHANG.
     import multiprocess  # noqa: F401
 except ImportError:
     pass
@@ -44,8 +42,8 @@ def _fork_platform(monkeypatch):
     """Pin a platform where workers are possible.
 
     ``dataset_map_num_proc`` returns None outright on win32 and darwin, so every
-    assertion below that expects a count is really an assertion about Linux. The
-    parametrised platform test sets its own value after this, which wins.
+    assertion expecting a count is really about Linux. The parametrised platform
+    test sets its own value after this, which wins.
     """
     monkeypatch.setattr(sys, "platform", "linux")
 
@@ -53,12 +51,10 @@ def _fork_platform(monkeypatch):
 def _require_fork(multiprocess):
     """Skip when this host cannot fork.
 
-    The two tests below build real worker processes to observe whether
-    ``datasets`` takes its pool branch. That is a claim about the num_proc
-    guard, not about any particular start method, and under spawn inside pytest
-    the pool itself fails for unrelated reasons (WinError 10038 closing a
-    handle, os.WNOHANG missing). The version split they assert is checked
-    without processes in tests/utils/test_dataset_num_proc.py.
+    The two tests below build real workers to observe whether ``datasets`` takes
+    its pool branch -- a claim about the num_proc guard, not about any start
+    method, and under spawn inside pytest the pool fails for unrelated reasons
+    (WinError 10038, missing os.WNOHANG).
     """
     if _HOST_PLATFORM == "win32" or "fork" not in multiprocess.get_all_start_methods():
         pytest.skip("needs fork to build a real worker pool")
@@ -78,9 +74,8 @@ def _torch_module(monkeypatch):
     """The real torch, or a stand-in when the runner has none.
 
     ``dataset_map_num_proc`` imports torch to read ``<device>.is_initialized()``
-    and reads an ImportError as "runtime not touched yet". On a torch-less
-    runner that turns the XPU guard into a no-op, so these tests would fail
-    where they expect None and pass for the wrong reason elsewhere.
+    and reads an ImportError as "runtime not touched yet", which on a torch-less
+    runner would turn the XPU guard into a no-op.
     """
     try:
         import torch
@@ -113,12 +108,11 @@ def _patch_runtime(monkeypatch, name, *, is_initialized):
 def test_dataset_map_num_proc_parallelizes_on_initialized_cuda(monkeypatch):
     """An initialized CUDA context must not disable dataset workers.
 
-    Forking after torch.cuda._lazy_init() is a real hazard in general, but the
-    map child only runs the tokenizer and never touches CUDA. 300 forced-fork
-    map() runs on an initialized context produced no failures, and since
-    detect_hardware() always initializes CUDA, a guard here would serialize
-    tokenization for every CUDA training run. Pinned so it is not added back
-    without new evidence.
+    Forking after torch.cuda._lazy_init() is a hazard in general, but the map
+    child only runs the tokenizer, and 300 forced-fork map() runs on an
+    initialized context produced no failures. Since detect_hardware() always
+    initializes CUDA, a guard would serialize tokenization for every CUDA run.
+    Pinned so it is not added back without new evidence.
     """
     _patch_device(monkeypatch, hw.DeviceType.CUDA)
     _patch_runtime(monkeypatch, "cuda", is_initialized = True)
@@ -170,8 +164,8 @@ def test_dataset_map_num_proc_cpu_host_parallelizes(monkeypatch):
 def test_none_builds_no_pool_but_a_count_does(monkeypatch):
     """The disable sentinel must actually reach ``datasets`` as "no pool".
 
-    This is the property the whole module rests on, so assert it against the
-    installed ``datasets`` rather than trusting the docstring.
+    The property the whole module rests on, so assert it against the installed
+    ``datasets`` rather than trusting the docstring.
     """
     datasets = pytest.importorskip("datasets")
     multiprocess = pytest.importorskip("multiprocess")
@@ -202,10 +196,9 @@ def test_none_builds_no_pool_but_a_count_does(monkeypatch):
 def test_num_proc_one_is_not_a_disable_sentinel():
     """Pin the reason ``dataset_map_num_proc`` returns ``None`` and never ``1``.
 
-    ``datasets`` changed this: 3.x runs ``num_proc=1`` in-process, 4.x (Studio
-    pins 4.3.0) takes the pool branch for any ``num_proc >= 1`` and builds a
-    ``Pool(1)``. Only ``None`` is in-process on both, so this asserts per
-    installed version rather than picking one and hard-coding it.
+    ``datasets`` 3.x runs ``num_proc=1`` in-process; 4.x (Studio pins 4.3.0)
+    builds a ``Pool(1)``. Only ``None`` is in-process on both, so assert per
+    installed version rather than hard-coding one.
     """
     datasets = pytest.importorskip("datasets")
     multiprocess = pytest.importorskip("multiprocess")

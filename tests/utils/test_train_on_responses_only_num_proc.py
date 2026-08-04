@@ -14,10 +14,10 @@
 
 """The worker-count bound applied to unsloth_zoo's train_on_responses_only.
 
-The zoo sizes its own dataset.map() workers with the uncapped heuristic that
-issue #2693 is about, so unsloth.chat_templates wraps it. These tests pin the
-two things that make the wrapper non-obvious: None means "auto" to the zoo (not
-"in-process"), and an explicit count switches off the zoo's small-split guard.
+The zoo sizes its own dataset.map() workers with the uncapped heuristic issue
+#2693 is about, so unsloth.chat_templates wraps it. These tests pin the two
+things that make the wrapper non-obvious: None means "auto" to the zoo, not
+"in-process", and an explicit count switches off its small-split guard.
 """
 
 import importlib.util
@@ -76,13 +76,10 @@ SMALL = dnp.ZOO_MIN_ROWS_FOR_MULTIPROC - 1
 def _reset(monkeypatch):
     dnp.reset_warning_state()
     monkeypatch.delenv(dnp.NUM_PROC_ENV_VAR, raising = False)
-    # Pin CPUs, memory and start method so the assertions are about the
-    # wrapper's policy, not about whatever this machine happens to have.
-    # The CPU count matters: the auto count is min(max(cpu_count // 2, 2),
-    # AUTO_NUM_PROC_CAP), so every assertion below that expects the cap needs
-    # >= 2 * AUTO_NUM_PROC_CAP logical CPUs to reach it. Without this the six
-    # large-split tests pass on a big host and fail on any smaller one -- a
-    # 4-core GitHub runner yields 2, not 8.
+    # Pin CPUs, memory and start method so the assertions are about the wrapper's
+    # policy, not this machine. The CPU count matters: auto is
+    # min(max(cpu_count // 2, 2), AUTO_NUM_PROC_CAP), so reaching the cap needs
+    # >= 2 * AUTO_NUM_PROC_CAP logical CPUs -- a 4-core runner yields 2, not 8.
     psutil = pytest.importorskip("psutil")
     monkeypatch.setattr(psutil, "cpu_count", lambda *a, **k: 64)
     monkeypatch.setattr(dnp, "_affordable_workers", lambda: 1000)
@@ -98,11 +95,10 @@ def _zoo_source():
     """Read unsloth_zoo's dataset_utils source without importing it.
 
     Importing the package pulls torch, which is not always loadable in a test
-    environment, and these two checks only need the text.
+    environment, and these two checks only need the text. find_spec on the
+    submodule would import unsloth_zoo, so locate the top level package (which
+    is not executed) and read the file off disk.
     """
-    # find_spec on the submodule would import the unsloth_zoo package, which
-    # patches torch on import and fails on some environments. Locate the top
-    # level package (which is not executed) and read the file off disk.
     spec = importlib.util.find_spec("unsloth_zoo")
     locations = list(getattr(spec, "submodule_search_locations", None) or [])
     if spec is None or not locations:
@@ -116,8 +112,8 @@ def _zoo_source():
 def test_zoo_threshold_constant_has_not_drifted():
     """ZOO_MIN_ROWS_FOR_MULTIPROC mirrors a local inside the zoo function.
 
-    It cannot be imported, so if the zoo ever changes it this canary is the only
-    thing standing between us and silently removing its small-split guard.
+    It cannot be imported, so this canary is the only thing between a zoo change
+    and silently removing its small-split guard.
     """
     match = re.search(r"_MIN_ROWS_FOR_MULTIPROC\s*=\s*([0-9_]+)", _zoo_source())
     assert match is not None, (
@@ -195,13 +191,11 @@ def test_auto_unsized_split_passes_none_through():
 def test_an_unsized_split_does_not_hide_a_large_sized_one(trainer):
     """Regression: one unsized split disabled the bound for every other split.
 
-    An unsized split used to abandon the whole measurement, so this returned
-    None -- and the zoo reads None as "auto", not as "in-process". It then sized
-    the *sized* split with its own uncapped min(max(cpu_count + 4, 2), 64): on a
-    192-core host that is 64 forked workers, the exact failure this wrapper
-    exists to bound. The unsized split itself can never use workers (the zoo's
-    IterableDataset branch passes no num_proc), so it must be skipped, not
-    treated as a veto.
+    An unsized split used to abandon the measurement and return None, which the
+    zoo reads as "auto", not "in-process" -- so it sized the *sized* split with
+    its own uncapped min(max(cpu_count + 4, 2), 64), 64 forked workers on a
+    192-core host. The unsized split can never use workers anyway (the zoo's
+    IterableDataset branch passes no num_proc), so skip it, do not veto on it.
     """
     assert dnp.resolve_responses_only_num_proc(trainer, None) == dnp.AUTO_NUM_PROC_CAP
 
@@ -243,8 +237,8 @@ def test_env_override_wins_on_the_split_size_shortcut(monkeypatch, trainer):
     """The escape hatch must win everywhere, including the early return.
 
     The shortcut for splits the zoo would not have parallelized used to return
-    before UNSLOTH_DATASET_NUM_PROC was read, so an explicit count set by a user
-    who had just been told to set it was dropped.
+    before UNSLOTH_DATASET_NUM_PROC was read, dropping a count set by a user who
+    had just been told to set it.
     """
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "3")
     assert dnp.resolve_responses_only_num_proc(trainer, None) == 3
@@ -266,11 +260,10 @@ def _spawn(monkeypatch):
 def test_serial_is_none_not_one_on_spawn(_spawn, requested):
     """On spawn the zoo must be left to veto, not handed a Pool(1).
 
-    ``1`` is not in-process on ``datasets`` >= 4.1 (num_proc >= 1 takes the
-    Pool branch), and under spawn every one of those children re-imports the
-    user's ``__main__`` -- the loop in #3211 / #3397 that this policy exists to
-    prevent. ``None`` is safe here precisely because it is *not* serial to the
-    zoo: its auto path runs its own non-fork veto and lands in-process.
+    ``1`` is not in-process on ``datasets`` >= 4.1, and under spawn each of those
+    children re-imports the user's ``__main__`` (#3211 / #3397). ``None`` is safe
+    precisely because it is *not* serial to the zoo: its auto path runs its own
+    non-fork veto and lands in-process.
     """
     assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(BIG)), requested) is None
 
@@ -278,10 +271,10 @@ def test_serial_is_none_not_one_on_spawn(_spawn, requested):
 def test_env_forced_serial_on_a_large_split_is_one_on_fork(monkeypatch):
     """The fork side of the same branch, where 1 is the best available value.
 
-    The zoo's row guard cannot help on a large split, and None would be read as
-    "auto" and inflated to its uncapped count, so one forked worker is the floor
-    this wrapper can express. Pinned so the spawn tests above cannot be
-    "fixed" by making every start method return None.
+    The zoo's row guard cannot help on a large split and None would be read as
+    "auto" and inflated, so one forked worker is the floor this wrapper can
+    express. Pinned so the spawn tests above cannot be "fixed" by making every
+    start method return None.
     """
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "0")
     assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(BIG)), None) == 1
@@ -297,10 +290,9 @@ def test_env_explicit_count_is_not_downgraded_on_spawn(_spawn, monkeypatch):
 def test_env_forced_in_process_leaves_the_zoo_guard_in_charge(monkeypatch, raw):
     """UNSLOTH_DATASET_NUM_PROC=0 must not turn into a Pool(1) on a small split.
 
-    The zoo's own guard already yields None for a split under its threshold, and
-    None -- not the 1 this function can express -- is the only value datasets
-    runs in-process on every release. So the hatch is honoured by leaving the
-    value alone here, not by substituting a count.
+    The zoo's guard already yields None under its threshold, and None -- not the
+    1 this function can express -- is the only value datasets runs in-process on
+    every release, so honour the hatch by leaving the value alone.
     """
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, raw)
     assert dnp.resolve_responses_only_num_proc(_Trainer(_Split(SMALL)), None) is None

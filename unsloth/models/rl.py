@@ -1429,20 +1429,19 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += saving_check
 
     # Edit dataset_num_proc
-    # The policy lives in unsloth.utils.dataset_num_proc, not inline here, because
-    # this heuristic had drifted into four copies and two of them were wrong: they
-    # asked stdlib `multiprocessing` about the start method when `datasets` uses
-    # `multiprocess`, and they used `1` as the "no multiprocessing" sentinel when
-    # only `None` is in-process on datasets >= 4.1 (`1` still builds a Pool(1)).
+    # The policy lives in unsloth.utils.dataset_num_proc rather than inline: this
+    # heuristic had drifted into four copies, two of them wrong (stdlib
+    # `multiprocessing` asked about a start method `datasets` takes from
+    # `multiprocess`, and `1` used as the serial sentinel when it builds a Pool(1)
+    # on datasets >= 4.1).
     #
-    # serial_as_none = False: this writes back to the *config*, and
-    # unsloth_zoo.sft_prepare_dataset reads a config `None` as "auto-size me".
-    # Collapsing an explicit 1 to None here would therefore inflate it to the
-    # auto worker count downstream. The config keeps the user's intent; the
-    # map() call site (patched in rl_replacements.py) makes it safe.
+    # serial_as_none = False because this writes back to the *config*, where
+    # unsloth_zoo.sft_prepare_dataset reads `None` as "auto-size me": collapsing
+    # an explicit 1 would inflate it downstream. The config keeps the user's
+    # intent; the map() call site (rl_replacements.py) makes it safe.
     #
-    # The import is guarded so a generated file that outlives an unsloth downgrade
-    # degrades to the caller's own value rather than failing to construct a config.
+    # The import is guarded so a generated file outliving an unsloth downgrade
+    # degrades to the caller's value rather than failing to build a config.
     if "dataset_num_proc" in call_args:
         num_proc_check = (
             "try:\n"

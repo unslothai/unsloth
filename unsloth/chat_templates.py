@@ -58,23 +58,21 @@ else:
     @_functools.wraps(_zoo_train_on_responses_only)
     def train_on_responses_only(*args, **kwargs):
         # The zoo still sizes its own dataset.map() workers with the uncapped
-        # min(max(cpu_count + 4, 2), 64) heuristic, so on a large host this call
-        # forks dozens of workers that each get a dill-pickled tokenizer copy
-        # (issue #2693). It is a separate package, so bound the count on the way
-        # in. resolve_responses_only_num_proc explains how "in-process" has to
-        # be encoded for the zoo (it reads None as "auto") and why the row count
-        # matters.
+        # min(max(cpu_count + 4, 2), 64) heuristic, forking dozens of workers
+        # that each get a dill-pickled tokenizer copy (issue #2693). It is a
+        # separate package, so bound the count on the way in;
+        # resolve_responses_only_num_proc explains how "in-process" has to be
+        # encoded for the zoo, which reads None as "auto".
         from .utils.dataset_num_proc import resolve_responses_only_num_proc
 
         try:
             bound = _ZOO_RESPONSES_ONLY_SIGNATURE.bind_partial(*args, **kwargs)
         except TypeError:
-            # Signature drift, or a genuinely bad call. Either way let the zoo
-            # raise its own error rather than masking it with ours.
+            # Signature drift, or a bad call. Let the zoo raise its own error.
             return _zoo_train_on_responses_only(*args, **kwargs)
 
-        # return_function returns the masking closure before the zoo ever reads
-        # num_proc, so there is nothing to bound on that path.
+        # return_function hands back the masking closure before the zoo reads
+        # num_proc, so there is nothing to bound.
         if bound.arguments.get("return_function", False):
             return _zoo_train_on_responses_only(*args, **kwargs)
 

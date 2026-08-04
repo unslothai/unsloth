@@ -3256,10 +3256,9 @@ def get_torch_device_str() -> str:
 
 
 # Mirrors AUTO_NUM_PROC_CAP in unsloth.utils.dataset_num_proc. Duplicated rather
-# than imported because that import pulls in unsloth's whole __init__, and this
-# module is loaded during hardware detection long before any of it is needed;
-# tests/utils/test_dataset_num_proc.py carries a canary that fails if the two
-# ever drift, the same arrangement the Zoo's row threshold already uses.
+# than imported: that import pulls in unsloth's whole __init__, and this module
+# loads during hardware detection long before any of it is needed. A canary in
+# tests/utils/test_dataset_num_proc.py fails if the two ever drift.
 _STUDIO_NUM_PROC_CAP = 8
 
 
@@ -3291,15 +3290,13 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
     if desired is None or not isinstance(desired, int):
         desired = max(1, (os.cpu_count() or 1) // 3)
 
-    # Bound it. Every number reaching here is a backend heuristic, not something
-    # a user typed: the line above is cpu_count // 3 and trainer.py asks for
-    # cpu_count // 4, so a 64-core host produces 16 and a 192-core one 48.
-    # unsloth.utils.dataset_num_proc reads an explicit int as a deliberate
-    # request and only clamps it by free memory, so on a large machine with RAM
-    # to spare those counts survive all the way to Dataset.map -- which is the
-    # shape of issue #2693, and slower besides: 32 workers measured 14.2s
-    # against 6.3s in-process, at ~1GB each. UNSLOTH_DATASET_NUM_PROC still
-    # overrides, since it is read downstream and bypasses this entirely.
+    # Bound it. Every number reaching here is a backend heuristic, not user
+    # intent: cpu_count // 3 above and cpu_count // 4 from trainer.py, so a
+    # 64-core host produces 16 and a 192-core one 48. Downstream those look like
+    # deliberate requests and are only clamped by free memory, so on a roomy
+    # machine they reach Dataset.map intact -- the shape of issue #2693, and
+    # slower besides (32 workers measured 14.2s against 6.3s in-process, ~1GB
+    # each). UNSLOTH_DATASET_NUM_PROC is read downstream and still overrides.
     if desired > _STUDIO_NUM_PROC_CAP:
         logger.info(
             f"num_proc {desired} -> {_STUDIO_NUM_PROC_CAP}: tokenization stops "
@@ -3347,9 +3344,8 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
     Returns ``None`` on spawn platforms (Windows, macOS). ``None`` -- not ``1``
     -- is the disable sentinel: on ``datasets`` >= 4.1 (Studio pins 4.3.0)
     ``map()`` takes the pool branch for any ``num_proc >= 1``, so ``num_proc=1``
-    still builds a ``Pool(1)``. Older ``datasets`` (the 3.x range the library
-    extra still allows) does run ``num_proc=1`` in-process, but only ``None``
-    is in-process on every supported version.
+    still builds a ``Pool(1)``. Only ``None`` is in-process on every version the
+    library extra allows.
 
     Also returns ``None`` on XPU once its runtime is initialized in this
     process: ``os.fork()`` corrupts the Level-Zero context, making Triton
@@ -3357,13 +3353,12 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
     Pre-init XPU hosts can still parallelize CPU-side preprocessing.
 
     There is deliberately no CUDA equivalent. Forking after
-    ``torch.cuda._lazy_init()`` is a real hazard in general, but the child here
-    only runs the tokenizer and never touches CUDA, and 300 forced-fork map()
-    runs on an initialized CUDA context produced no failures. Since
-    ``detect_hardware()`` always initializes CUDA, adding the guard would force
-    in-process tokenization for every CUDA training run -- a throughput cost
-    with no measured benefit. The worker-count bound in
-    ``unsloth.utils.dataset_num_proc`` is what actually addresses issue #2693.
+    ``torch.cuda._lazy_init()`` is a hazard in general, but the child here only
+    runs the tokenizer, and 300 forced-fork map() runs on an initialized CUDA
+    context produced no failures. Since ``detect_hardware()`` always initializes
+    CUDA, the guard would serialize tokenization for every CUDA run at no
+    measured benefit. The worker-count bound in
+    ``unsloth.utils.dataset_num_proc`` is what addresses issue #2693.
     """
     if sys.platform in ("win32", "darwin"):
         return None
