@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+import stat
 import threading
 import time
 from dataclasses import dataclass, replace
@@ -1106,15 +1107,7 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
     weight_map = index.get("weight_map") if isinstance(index, dict) else None
     if not isinstance(weight_map, dict) or not weight_map:
         return True
-    named = {
-        shard.replace("\\", "/").rsplit("/", 1)[-1]
-        for shard in weight_map.values()
-        if isinstance(shard, str)
-    }
-    # Coverage matters only for the family this index describes: one it names nothing of is stale
-    # content beside it, which the loader never reads because it opens weight_map and nothing else.
-    if not family_files <= named and not named.isdisjoint(family_files):
-        return True
+    shards: set[PurePosixPath] = set()
     for shard in weight_map.values():
         # Names are relative to the index: anything reaching outside is not a shard of this family.
         if not isinstance(shard, str) or not shard:
@@ -1126,23 +1119,28 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
         windows = PureWindowsPath(shard)
         if parts.is_absolute() or ".." in parts.parts or windows.is_absolute() or windows.drive:
             return True
+        shards.add(parts)
+    named = {shard.name for shard in shards}
+    # Coverage matters only for the family this index describes: one it names nothing of is stale
+    # content beside it, which the loader never reads because it opens weight_map and nothing else.
+    if not family_files <= named and not named.isdisjoint(family_files):
+        return True
+    for shard in shards:
         try:
-            named = index_path.parent / parts
-            if not named.is_file() or named.stat().st_size <= 0:
+            named = index_path.parent / shard
+            shard_stat = named.stat()
+            if not stat.S_ISREG(shard_stat.st_mode) or shard_stat.st_size <= 0:
                 return True
         except (OSError, ValueError):
             return True
     # A shard names its own total, so an index listing one of a set has to list the whole set: the
     # loader opens exactly what is mapped and silently drops whatever the map leaves out.
     declared: dict[tuple[str, str, int], set[int]] = {}
-    for shard in weight_map.values():
-        if not isinstance(shard, str):
-            continue
-        rel = PurePosixPath(shard.replace("\\", "/"))
-        match = _WEIGHT_SHARD_RE.search(rel.name)
+    for shard in shards:
+        match = _WEIGHT_SHARD_RE.search(shard.name)
         if match is None:
             continue
-        key = (str(rel.parent), rel.name[: match.start()], int(match.group(2)))
+        key = (str(shard.parent), shard.name[: match.start()], int(match.group(2)))
         declared.setdefault(key, set()).add(int(match.group(1)))
     return any(total <= 0 or len(seen) < total for (_d, _p, total), seen in declared.items())
 

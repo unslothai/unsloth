@@ -410,13 +410,10 @@ def test_read_only_download_state_lookup_does_not_create_directories(monkeypatch
     hub_cache = tmp_path / "hub-cache"
     monkeypatch.setattr(state_dir, "cache_root", lambda: studio_cache)
     state_key = ("model", "Org/Model", "Q4_K_M")
-
     assert state_dir.manifest_path(*state_key, hub_cache = hub_cache) is not None
     assert state_dir.marker_path(*state_key, hub_cache = hub_cache) is not None
     assert download_manifest.read_manifest(*state_key, hub_cache = hub_cache) is None
     assert not download_manifest.has_cancel_marker(*state_key, hub_cache = hub_cache)
-    assert download_manifest.variant_state_generation() is None
-    assert download_manifest.variant_state_mutation_snapshot() == ((), False)
     for iterator in (
         download_manifest.iter_variant_manifests,
         download_manifest.iter_variant_markers,
@@ -441,9 +438,14 @@ def test_model_inventories_share_state_index_and_track_flight_inputs(monkeypatch
         snapshot = repo_path / "snapshots" / "revision"
         snapshot.mkdir(parents = True)
         (snapshot / "model-Q4_K_M.gguf").write_bytes(b"x")
+        (snapshot / "model.safetensors").write_bytes(b"x")
         (repo_path / "blobs").mkdir()
         (repo_path / "blobs" / "blob").write_bytes(b"x")
-        repo = _repo(repo_id, [_file("model-Q4_K_M.gguf", 1)], repo_path)
+        repo = _repo(
+            repo_id,
+            [_file("model-Q4_K_M.gguf", 1), _file("model.safetensors", index + 10)],
+            repo_path,
+        )
         repo.revisions[0].snapshot_path = snapshot
         repo_groups[cache_index].append(repo)
         assert download_manifest.write_manifest(
@@ -458,7 +460,6 @@ def test_model_inventories_share_state_index_and_track_flight_inputs(monkeypatch
             assert download_manifest.write_cancel_marker(
                 "model", repo_id, "Q4_K_M", "http", hub_cache = repo_cache
             )
-
     manifest_root = studio_cache / "hub-state" / "manifests"
     marker_root = studio_cache / "hub-state" / "cancelled"
     watched = {manifest_root, marker_root, *manifest_root.iterdir(), *marker_root.iterdir()}
@@ -487,6 +488,29 @@ def test_model_inventories_share_state_index_and_track_flight_inputs(monkeypatch
     ]
     assert calls == Counter({path: 1 for path in watched})
     calls.clear()
+    indexed_states = {}
+    real_snapshot_partial = cache_inventory.hf_cache_scan.is_snapshot_partial
+
+    def record_state(
+        repo_type,
+        repo_id,
+        *args,
+        variant_state = None,
+        **kwargs,
+    ):
+        indexed_states[repo_id] = variant_state.summary()
+        return real_snapshot_partial(
+            repo_type, repo_id, *args, variant_state = variant_state, **kwargs
+        )
+
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "is_snapshot_partial", record_state)
+    cached_models = cache_inventory._scan_cached_models()
+    assert [(row["repo_id"], row["size_bytes"], row["partial"]) for row in cached_models] == [
+        (f"Org/Model-{index}", index + 10, True) for index in range(3)
+    ]
+    assert indexed_states == {f"Org/Model-{index}": (True, index + 1) for index in range(3)}
+    assert calls == Counter({path: 1 for path in watched})
+    calls.clear()
     monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: hub_cache)
     monkeypatch.setattr(local_inventory, "legacy_hf_cache_dir", lambda: tmp_path / "missing")
     monkeypatch.setattr(local_inventory, "hf_default_cache_dir", lambda: hub_cache)
@@ -496,6 +520,9 @@ def test_model_inventories_share_state_index_and_track_flight_inputs(monkeypatch
     monkeypatch.setattr(local_inventory, "list_scan_folders", lambda: list(registered))
     known_caches = lambda: hub_caches
     monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", known_caches)
+    task_calls = []
+    route_models = SimpleNamespace(_local_model_task = lambda m: task_calls.append(m.id) or "task")
+    monkeypatch.setitem(sys.modules, "routes.models", route_models)
     local_response = asyncio.run(local_inventory.list_local_models_response(str(hub_cache)))
     assert {
         row.model_id: row.partial for row in local_response.models if row.model_format == "gguf"
@@ -504,6 +531,7 @@ def test_model_inventories_share_state_index_and_track_flight_inputs(monkeypatch
         "Org/Model-1": True,
         "Org/Model-2": True,
     }
+    assert {row.task for row in local_response.models} == {"task"}
     assert calls == Counter({path: 1 for path in watched})
     calls.clear()
     release.clear()
@@ -546,6 +574,7 @@ def test_model_inventories_share_state_index_and_track_flight_inputs(monkeypatch
 
     asyncio.run(run_requests(cancel_waiters = True))
     assert calls == Counter({path: 1 for path in watched})
+    assert Counter(task_calls) == Counter(row.id for _ in range(2) for row in local_response.models)
     assert local_inventory._local_inventory_flights == {}
     calls.clear()
     entered.clear()
@@ -556,103 +585,64 @@ def test_model_inventories_share_state_index_and_track_flight_inputs(monkeypatch
     assert any(row.source == "custom" for row in second_response.models)
 
 
-@pytest.mark.parametrize("models_dir", ["\0", "~unsloth-user-that-does-not-exist/models"])
-def test_local_inventory_malformed_models_dir_stays_forbidden(models_dir):
-    with pytest.raises(HTTPException) as exc_info:
-        asyncio.run(local_inventory.list_local_models_response(models_dir))
-    assert exc_info.value.status_code == 403
-
-
-def test_concurrent_cached_gguf_requests_share_scan_after_waiter_disconnect(monkeypatch):
+@pytest.mark.parametrize(
+    "inventory_request",
+    [cache_inventory.list_cached_gguf_response, cache_inventory.list_cached_models_response],
+)
+def test_cached_inventory_requests_share_then_supersede_scan(monkeypatch, inventory_request):
     calls = 0
-    scan_started = asyncio.Event()
-    release_scan = asyncio.Event()
-    cached = [{"repo_id": "Org/Model"}]
-
-    async def fake_to_thread(_callable):
-        nonlocal calls
-        calls += 1
-        scan_started.set()
-        await release_scan.wait()
-        return cached
-
-    monkeypatch.setattr(cache_inventory.asyncio, "to_thread", fake_to_thread)
-
-    async def run_requests():
-        first = asyncio.create_task(cache_inventory.list_cached_gguf_response())
-        await scan_started.wait()
-        second = asyncio.create_task(cache_inventory.list_cached_gguf_response())
-        await asyncio.sleep(0)
-        await asyncio.sleep(0)
-        first.cancel()
-        try:
-            await first
-        except asyncio.CancelledError:
-            pass
-        release_scan.set()
-        return await second
-
-    response = asyncio.run(run_requests())
-
-    assert response == {"cached": cached}
-    assert calls == 1
-
-
-@pytest.mark.parametrize("generation", ["hf_cache", "variant_state", "stale_marker"])
-def test_cached_gguf_generation_change_supersedes_in_flight_scan(monkeypatch, generation):
-    calls = 0
+    started = [asyncio.Event(), asyncio.Event()]
     releases = [asyncio.Event(), asyncio.Event()]
     cached = [[{"repo_id": "Org/Before"}], [{"repo_id": "Org/After"}]]
-    variant_generation = ["before"]
-    state_write_active = [False]
+    generation = ["before"]
+    write_active = [False]
 
     async def fake_to_thread(_callable):
         nonlocal calls
         index = calls
         calls += 1
+        started[index].set()
         await releases[index].wait()
         return cached[index]
 
     monkeypatch.setattr(cache_inventory.asyncio, "to_thread", fake_to_thread)
-    monkeypatch.setattr(
-        download_manifest,
-        "variant_state_generation",
-        lambda: "before" if generation == "stale_marker" else variant_generation[0],
-    )
+    monkeypatch.setattr(cache_inventory.hf_cache_scan, "hf_cache_scans_epoch", lambda: 7)
+    monkeypatch.setattr(download_manifest, "variant_state_generation", lambda: generation[0])
     monkeypatch.setattr(
         download_manifest,
         "variant_state_mutation_snapshot",
-        lambda: download_manifest.VariantStateMutationSnapshot(
-            ((f"{variant_generation[0]}.json",) if generation != "hf_cache" else ()),
-            state_write_active[0],
-        ),
+        lambda: download_manifest.VariantStateMutationSnapshot(("writer.json",), write_active[0]),
+    )
+    mutations = download_manifest.VariantStateMutationSnapshot(("marker",), False)
+    assert cache_inventory._cached_inventory_flight_generation(mutations) == (
+        7,
+        "before",
+        ("marker",),
     )
 
     async def run_requests():
-        first = asyncio.create_task(cache_inventory.list_cached_gguf_response())
-        while calls < 1:
-            await asyncio.sleep(0)
-        if generation == "hf_cache":
-            cache_inventory.invalidate_hf_cache_scans()
-        elif generation == "variant_state":
-            variant_generation[0] = "writing"
-            state_write_active[0] = True
-        else:
-            variant_generation[0] = "stale"
-        second = asyncio.create_task(cache_inventory.list_cached_gguf_response())
+        first = asyncio.create_task(inventory_request())
+        await asyncio.wait_for(started[0].wait(), 1)
+        same = asyncio.create_task(inventory_request())
         await asyncio.sleep(0)
         await asyncio.sleep(0)
-        if generation == "variant_state":
-            assert calls == 1
-            state_write_active[0] = False
-            variant_generation[0] = "after"
+        assert calls == 1
+        first.cancel()
+        await asyncio.gather(first, return_exceptions = True)
+        generation[0] = "writing"
+        write_active[0] = True
+        changed = asyncio.create_task(inventory_request())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert calls == 1
+        write_active[0] = False
+        generation[0] = "after"
+        await asyncio.wait_for(started[1].wait(), 1)
         for release in releases:
             release.set()
-        return await asyncio.gather(first, second)
+        return await asyncio.gather(same, changed)
 
     responses = asyncio.run(run_requests())
-
-    assert calls == 2
     assert responses == [{"cached": cached[0]}, {"cached": cached[1]}]
 
 

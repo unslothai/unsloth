@@ -105,10 +105,33 @@ def test_legacy_hf_scan_uses_snapshot_path_for_inactive_cache(tmp_path):
 def test_collect_local_models_scans_previous_cache(monkeypatch, tmp_path):
     active = tmp_path / "active"
     previous = tmp_path / "previous"
-    active.mkdir()
-    snapshot = previous / "models--Org--Previous" / "snapshots" / "revision"
+    active_partial = active / "models--Org--Model" / "blobs" / "abc.incomplete"
+    active_partial.parent.mkdir(parents = True)
+    active_partial.write_bytes(b"partial")
+    snapshot = previous / "models--Org--Model" / "snapshots" / "revision"
     snapshot.mkdir(parents = True)
+    (snapshot / "model.safetensors").write_bytes(b"complete")
+    registered = tmp_path / "registered"
+    (registered / "models--Org--Registered").mkdir(parents = True)
+    state = SimpleNamespace(for_repo = lambda *_a, **_k: state, iter_manifests = lambda: ())
+    build_calls = []
 
+    def record_build(repositories, **kwargs):
+        assert kwargs["active_hub_cache"] == active
+        build_calls.append(set(repositories))
+        return state
+
+    def indexed_partial(
+        *args,
+        variant_state = None,
+        **_kwargs,
+    ):
+        assert variant_state is state
+        return any((args[2] / "blobs").glob("*.incomplete"))
+
+    monkeypatch.setattr("hub.utils.download_manifest.build_variant_state_index", record_build)
+    monkeypatch.setattr("hub.utils.inventory_scan.is_snapshot_partial", indexed_partial)
+    monkeypatch.setattr("hub.utils.inventory_scan.is_gguf_repo_partial", lambda *_a, **_k: False)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
@@ -116,38 +139,101 @@ def test_collect_local_models_scans_previous_cache(monkeypatch, tmp_path):
     monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, previous])
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
 
-    rows = models_route.collect_local_models(tmp_path / "models")
-
-    previous_row = next(row for row in rows if row.model_id == "Org/Previous")
-    assert previous_row.id == str(snapshot.resolve())
-
-
-def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_path):
-    active = tmp_path / "active"
-    previous = tmp_path / "previous"
-    active_partial = active / "models--Org--Model" / "blobs" / "abc.incomplete"
-    active_partial.parent.mkdir(parents = True)
-    active_partial.write_bytes(b"partial")
-    snapshot = previous / "models--Org--Model" / "snapshots" / "revision"
-    snapshot.mkdir(parents = True)
-    (snapshot / "model.safetensors").write_bytes(b"complete")
-
-    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
-    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
-    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
-    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
-    monkeypatch.setattr(
-        "utils.hf_cache_settings.known_hf_hub_caches",
-        lambda: [active, previous],
+    rows = models_route.collect_local_models(
+        tmp_path / "models", custom_folders = [{"path": str(registered)}]
     )
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
-
-    rows = models_route.collect_local_models(tmp_path / "models")
-
     [row] = [row for row in rows if row.model_id == "Org/Model"]
     assert row.id == str(snapshot.resolve())
     assert row.partial is False
     assert row.active_cache is False
+    assert len(build_calls) == 1
+    assert build_calls[0] == {
+        ("model", "Org/Model", active),
+        ("model", "Org/Model", previous),
+        ("model", "Org/Registered", registered),
+    }
+
+
+def test_compat_local_inventory_route_shares_scan_snapshot(monkeypatch, tmp_path):
+    sources = models_route._CompatLocalInventorySources(
+        tmp_path / "active",
+        tmp_path / "legacy",
+        tmp_path / "default",
+        (tmp_path / "lm",),
+        (tmp_path / "known",),
+    )
+    source_snapshot = [sources]
+    folders = [{"id": 1, "path": "/custom", "created_at": "now"}]
+    monkeypatch.setattr(models_route, "_compat_local_inventory_sources", lambda: source_snapshot[0])
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: folders)
+    monkeypatch.setattr("hub.utils.inventory_scan.hf_cache_scans_epoch", lambda: 7)
+    monkeypatch.setattr(
+        "hub.utils.download_manifest.variant_state_generation", lambda: "generation"
+    )
+    monkeypatch.setattr(
+        "hub.utils.download_manifest.variant_state_mutation_snapshot",
+        lambda: SimpleNamespace(markers = ("marker",), in_progress = False),
+    )
+    started, keyed, changed_keyed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    release, workers = asyncio.Event(), []
+    real_key, keys = models_route._compat_local_inventory_key, []
+
+    def record_key(*args):
+        keys.append(real_key(*args))
+        if len(keys) == 2:
+            keyed.set()
+        elif len(keys) == 3:
+            changed_keyed.set()
+        return keys[-1]
+
+    monkeypatch.setattr(models_route, "_compat_local_inventory_key", record_key)
+
+    async def fake_to_thread(function, *args, **kwargs):
+        if function is models_route.collect_local_models:
+            workers.append((kwargs["sources"], kwargs["custom_folders"]))
+            started.set()
+            await release.wait()
+            return []
+        return function(*args, **kwargs)
+
+    monkeypatch.setattr(models_route.asyncio, "to_thread", fake_to_thread)
+
+    async def run_requests():
+        request = lambda: models_route.list_local_models(str(Path("./models").resolve()), "test")
+        first = asyncio.create_task(request())
+        await asyncio.wait_for(started.wait(), 1)
+        second = asyncio.create_task(request())
+        await asyncio.wait_for(keyed.wait(), 1)
+        await asyncio.sleep(0)
+        assert workers == [(sources, folders)]
+        source_snapshot[0] = sources._replace(legacy_hf = tmp_path / "changed")
+        third = asyncio.create_task(request())
+        await asyncio.wait_for(changed_keyed.wait(), 1)
+        await asyncio.sleep(0)
+        assert workers == [(sources, folders), (source_snapshot[0], folders)]
+        release.set()
+        return await asyncio.gather(first, second, third)
+
+    responses = asyncio.run(run_requests())
+    assert [response.hf_cache_dir for response in responses] == [str(sources.hf_cache_dir)] * 3
+    normalize = models_route.os.path.normcase
+    assert (
+        keys[0]
+        == keys[1]
+        == (
+            normalize(str(Path("./models").resolve())),
+            tuple(
+                tuple(normalize(str(item)) for item in path)
+                if isinstance(path, tuple)
+                else normalize(str(path))
+                for path in sources
+            ),
+            7,
+            "generation",
+            ("marker",),
+            (("1", "/custom", "now"),),
+        )
+    )
 
 
 def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypatch):
@@ -185,14 +271,19 @@ def test_legacy_custom_inventory_filters_registered_mtp_root(tmp_path, monkeypat
         "utils.models.model_config._iter_gguf_files",
         fail_recursive_variant_scan,
     )
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [{"path": str(root)}])
+    monkeypatch.setattr(
+        "storage.studio_db.list_scan_folders",
+        lambda: pytest.fail("captured custom folders were reloaded"),
+    )
     monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
     monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
     monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [])
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: tmp_path / "active")
 
-    rows = models_route.collect_local_models(tmp_path / "models")
+    rows = models_route.collect_local_models(
+        tmp_path / "models", custom_folders = [{"path": str(root)}]
+    )
     paths = {row.path for row in rows}
 
     assert {str(main), str(model_dir), str(snapshot.resolve())} <= paths
@@ -614,7 +705,7 @@ def test_a_later_attempts_cancel_marker_does_not_break_the_pinned_quant(monkeypa
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -674,7 +765,7 @@ def test_the_pins_excuse_covers_only_the_quants_it_holds(monkeypatch, tmp_path):
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
     monkeypatch.setattr(
         GV,
@@ -731,7 +822,7 @@ def test_a_later_attempts_incomplete_blob_does_not_break_the_pinned_quant(monkey
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
     variant = GgufVariantInfo(
         filename = "Model-Q4_K_M.gguf",
@@ -3436,7 +3527,7 @@ def test_a_cancelled_siblings_resume_survives_the_local_listing(monkeypatch, tmp
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
 
     # Disk-only means disk-only: a remote listing here would be the bug this route avoids.
@@ -3479,7 +3570,7 @@ def test_a_cancelled_sibling_survives_a_failed_remote_listing(monkeypatch, tmp_p
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
 
     def _unreachable(*args, **kwargs):
@@ -3518,7 +3609,7 @@ def test_a_cancelled_siblings_marker_shows_on_the_repo_row(monkeypatch, tmp_path
     monkeypatch.setattr("hub.utils.hf_cache_state.hf_cache_roots", lambda **kw: [active])
     monkeypatch.setattr(
         "hub.utils.hf_cache_state.hf_cache_root",
-        lambda create = False, root = None: (root if root is not None else active),
+        lambda create = False, root = None: root if root is not None else active,
     )
 
     from hub.services.models import cache_inventory

@@ -65,10 +65,19 @@ class _CachedGgufScanFlight(NamedTuple):
 
 
 _cached_gguf_scan_flight: Optional[_CachedGgufScanFlight] = None
+_cached_models_scan_flight: Optional[_CachedGgufScanFlight] = None
 
 # Identity for a cached file with no HF blob (Windows without Developer Mode: hf
 # moves the blob into snapshots/ and leaves blobs/ empty).
 _LOCAL_SIZE_IDENTITY_PREFIX = "size:"
+
+
+def _cached_inventory_flight_generation(mutations) -> tuple[int, Optional[str], tuple[str, ...]]:
+    return (
+        hf_cache_scan.hf_cache_scans_epoch(),
+        download_manifest.variant_state_generation(),
+        mutations.markers,
+    )
 
 
 def get_repo_snapshot_metadata_cached(
@@ -560,11 +569,7 @@ async def _shared_cached_gguf_scan() -> list[dict]:
     while mutations.in_progress:
         await asyncio.sleep(0.01)
         mutations = download_manifest.variant_state_mutation_snapshot()
-    generation = (
-        hf_cache_scan.hf_cache_scans_epoch(),
-        download_manifest.variant_state_generation(),
-        mutations.markers,
-    )
+    generation = _cached_inventory_flight_generation(mutations)
     flight = _cached_gguf_scan_flight
     if flight is None or flight.task.done() or flight.generation != generation:
         flight = _CachedGgufScanFlight(
@@ -882,6 +887,19 @@ def _scan_cached_models() -> list[dict]:
     from utils.hf_cache_settings import get_hf_cache_paths
 
     active_hub_cache = get_hf_cache_paths().hub_cache
+    try:
+        variant_states = download_manifest.build_variant_state_index(
+            [
+                ("model", repo.repo_id, Path(repo.repo_path).parent)
+                for cache_scan in cache_scans
+                for repo in cache_scan.repos
+                if str(repo.repo_type) == "model"
+            ],
+            active_hub_cache = active_hub_cache,
+        )
+    except Exception as e:
+        logger.warning("Could not build shared cached-model state index: %s", e)
+        variant_states = None
 
     seen_lower: dict[str, dict] = {}
     inspected = 0
@@ -934,6 +952,15 @@ def _scan_cached_models() -> list[dict]:
                     repo_id,
                     repo_path,
                     snapshot_dir = load_snapshot,
+                    variant_state = (
+                        variant_states.for_repo(
+                            "model",
+                            repo_id,
+                            hub_cache = repo_path.parent,
+                        )
+                        if variant_states is not None
+                        else None
+                    ),
                 )
                 # A companion-only prefetch (pipeline manifest + VAE / text-encoder but no transformer shards, left by a GGUF load) passes
                 # the download check yet cannot from_pretrained, so mark it partial and the pickers stop advertising it as on-device.
@@ -1010,10 +1037,32 @@ def _scan_cached_models() -> list[dict]:
     return cached
 
 
+async def _shared_cached_models_scan() -> list[dict]:
+    global _cached_models_scan_flight
+
+    mutations = download_manifest.variant_state_mutation_snapshot()
+    while mutations.in_progress:
+        await asyncio.sleep(0.01)
+        mutations = download_manifest.variant_state_mutation_snapshot()
+    generation = _cached_inventory_flight_generation(mutations)
+    flight = _cached_models_scan_flight
+    if flight is None or flight.task.done() or flight.generation != generation:
+        flight = _CachedGgufScanFlight(
+            generation,
+            asyncio.create_task(asyncio.to_thread(_scan_cached_models)),
+        )
+        _cached_models_scan_flight = flight
+    try:
+        return await asyncio.shield(flight.task)
+    finally:
+        if flight.task.done() and _cached_models_scan_flight is flight:
+            _cached_models_scan_flight = None
+
+
 async def list_cached_models_response(hf_token: Optional[str] = None):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        cached = await asyncio.to_thread(_scan_cached_models)
+        cached = await _shared_cached_models_scan()
         return {"cached": cached}
     except Exception as e:
         logger.error(

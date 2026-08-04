@@ -789,14 +789,6 @@ async def _scan_local_models_response(
         )
         local_models += await _collect_models_from_custom_folders(custom_folders)
         models = _dedupe_local_models(_filter_hidden_models(local_models))
-        # Tag each row with its pipeline task, as /api/models/local does: the Images and Video pickers filter On Device rows on
-        # it and the chat picker routes a diffusion pick by it, so an untagged row is dropped. Imported lazily to avoid a cycle.
-        try:
-            from routes.models import _local_model_task
-            models = [m.model_copy(update = {"task": _local_model_task(m)}) for m in models]
-        except Exception as e:  # noqa: BLE001 -- classification never breaks the listing
-            logger.warning("Could not classify local model tasks: %s", e)
-
         return LocalModelListResponse(
             models_dir = str(models_root),
             hf_cache_dir = str(hf_cache_dir),
@@ -824,6 +816,22 @@ def _clear_local_inventory_flight(
 async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
     """Coalesce overlapping local inventory requests for the same models root."""
     custom_folders = await _load_custom_folders()
+
+    async def scan_and_classify() -> LocalModelListResponse:
+        response = await _scan_local_models_response(models_dir, custom_folders)
+        # These rows feed the same pickers as /api/models/local. Classify inside the shared
+        # worker so retrying waiters do not repeat GGUF metadata reads.
+        try:
+            from routes.models import _local_model_task
+            models = [
+                model.model_copy(update = {"task": _local_model_task(model)})
+                for model in response.models
+            ]
+            return response.model_copy(update = {"models": models})
+        except Exception as e:  # noqa: BLE001 -- classification never breaks the listing
+            logger.warning("Could not classify local model tasks: %s", e)
+            return response
+
     custom_generation = tuple(
         (
             str(folder.get("id", "")),
@@ -845,7 +853,7 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
     )
     flight = _local_inventory_flights.get(key)
     if flight is None or flight.done():
-        flight = asyncio.create_task(_scan_local_models_response(models_dir, custom_folders))
+        flight = asyncio.create_task(scan_and_classify())
         _local_inventory_flights[key] = flight
         flight.add_done_callback(
             lambda task, flight_key = key: _clear_local_inventory_flight(flight_key, task)
