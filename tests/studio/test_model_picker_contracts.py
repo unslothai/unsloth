@@ -414,9 +414,9 @@ def test_a_pinned_cached_row_loads_from_the_id_the_backend_pinned():
     # literal now rather than the bare localSource ternary.
     call = re.search(r"listGgufVariants\(repoId, hfToken, \{.*?\n\s*\}\)", picker, re.S)
     assert call, "the expander must still list variants for the row's own repo"
-    assert "...(localSource ? { localPath: localSource } : {})" in call.group(0), (
-        "the expander drops the row's own cache directory"
-    )
+    assert "...(localSource ? { localPath: localSource } : {})" in call.group(
+        0
+    ), "the expander drops the row's own cache directory"
     assert "preferLocalCache" not in call.group(0)
     assert "cachePath={c.cache_path}" in picker
 

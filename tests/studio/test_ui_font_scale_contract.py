@@ -63,9 +63,7 @@ def test_css_default_scale_matches_the_store_default():
     size, and the applier only drops data-ui-font-size at the store's value.
     Derive the scale so the two cannot drift: when they did, everything
     rendered at one size while the preference control called it another."""
-    rng = re.search(
-        r"UI_FONT_SIZE_RANGE = \{ min: (\d+), max: (\d+), default: (\d+) \}", STORE
-    )
+    rng = re.search(r"UI_FONT_SIZE_RANGE = \{ min: (\d+), max: (\d+), default: (\d+) \}", STORE)
     assert rng is not None
     base = re.search(r"const UI_FONT_SIZE_CSS_BASE = (\d+);", STORE)
     assert base is not None

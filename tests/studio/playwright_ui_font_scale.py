@@ -47,7 +47,9 @@ DEFAULT = int(_RANGE.group(3))
 # the preference divided by it.
 _BASE = re.search(r"UI_FONT_SIZE_CSS_BASE\s*=\s*(\d+)", _STORE)
 if _BASE is None:
-    raise AssertionError("[font-scale] FAIL: no UI_FONT_SIZE_CSS_BASE in appearance-custom-store.ts")
+    raise AssertionError(
+        "[font-scale] FAIL: no UI_FONT_SIZE_CSS_BASE in appearance-custom-store.ts"
+    )
 CSS_BASE = int(_BASE.group(1))
 
 
