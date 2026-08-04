@@ -68,7 +68,9 @@ def test_non_arm64_prefers_uv_managed_python_before_winget_bootstrap():
     non_arm64 = source.index('} elseif ((Get-HostMachineArch) -ne "arm64") {')
     managed = source.index("$DetectedPython = New-UvManagedPythonRequest")
     managed_flag = source.index("--managed-python --python")
-    venv_create = source.index('step "venv" "creating Python $($DetectedPython.Version) virtual environment"')
+    venv_create = source.index(
+        'step "venv" "creating Python $($DetectedPython.Version) virtual environment"'
+    )
     winget = source.index(
         "winget install -e --id $pythonPackageId --source winget --architecture x64"
     )
@@ -79,9 +81,7 @@ def test_non_arm64_prefers_uv_managed_python_before_winget_bootstrap():
         'substep "no compatible system Python found; uv will download and manage it for this environment"'
         in source
     )
-    assert (
-        'uv venv $VenvDir --managed-python --python "$($DetectedPython.Path)"' in source
-    )
+    assert 'uv venv $VenvDir --managed-python --python "$($DetectedPython.Path)"' in source
 
 
 def test_arm64_python_bootstrap_stays_x64_specific():
