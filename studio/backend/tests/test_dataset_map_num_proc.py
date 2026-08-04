@@ -12,7 +12,9 @@ There is deliberately no CUDA-initialized guard here; see the note in
 ``dataset_map_num_proc``'s docstring. The XPU guard is pre-existing behaviour and
 is covered below so it cannot regress.
 
-The probes are monkeypatched so this runs on any host, GPU or not.
+The device probes, the platform and torch itself are all substituted, so this
+runs identically on a GPU box, a CPU-only Linux runner, and the macOS and
+Windows legs where the function short-circuits to None.
 """
 
 from __future__ import annotations
@@ -25,6 +27,17 @@ import pytest
 import utils.hardware.hardware as hw
 
 
+@pytest.fixture(autouse = True)
+def _fork_platform(monkeypatch):
+    """Pin a platform where workers are possible.
+
+    ``dataset_map_num_proc`` returns None outright on win32 and darwin, so every
+    assertion below that expects a count is really an assertion about Linux. The
+    parametrised platform test sets its own value after this, which wins.
+    """
+    monkeypatch.setattr(sys, "platform", "linux")
+
+
 def _patch_device(
     monkeypatch,
     device,
@@ -35,13 +48,30 @@ def _patch_device(
     monkeypatch.setattr(hw, "get_visible_gpu_count", lambda: visible_gpus)
 
 
+def _torch_module(monkeypatch):
+    """The real torch, or a stand-in when the runner has none.
+
+    ``dataset_map_num_proc`` imports torch to read ``<device>.is_initialized()``
+    and reads an ImportError as "runtime not touched yet". On a torch-less
+    runner that turns the XPU guard into a no-op, so these tests would fail
+    where they expect None and pass for the wrong reason elsewhere.
+    """
+    try:
+        import torch
+        return torch
+    except ImportError:
+        stub = types.ModuleType("torch")
+        monkeypatch.setitem(sys.modules, "torch", stub)
+        return stub
+
+
 def _patch_runtime(monkeypatch, name, *, is_initialized):
     """Install a fake ``torch.<name>`` whose is_initialized() we control.
 
     ``is_initialized`` may be a bool or a callable that raises, to model a probe
     that fails rather than answering.
     """
-    import torch
+    torch = _torch_module(monkeypatch)
 
     if callable(is_initialized):
         probe = is_initialized
