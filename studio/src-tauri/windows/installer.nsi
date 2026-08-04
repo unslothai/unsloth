@@ -100,10 +100,9 @@ InstallDir "${PLACEHOLDER_INSTALL_DIR}"
 VIProductVersion "${VERSIONWITHBUILD}"
 VIAddVersionKey "ProductName" "${PRODUCTNAME}"
 VIAddVersionKey "FileDescription" "${PRODUCTNAME}"
-; Not in upstream's template. ${MANUFACTURER} is bundle.publisher and is already
-; written as the Add/Remove Programs Publisher value, so these cannot be empty
-; and cannot disagree with it. An installer with no CompanyName reads as
-; unattributed to reputation checks.
+; Not in upstream's template. ${MANUFACTURER} is bundle.publisher, already written
+; as the Add/Remove Programs Publisher, so these cannot be empty or disagree with
+; it. An installer with no CompanyName reads as unattributed to reputation checks.
 VIAddVersionKey "CompanyName" "${MANUFACTURER}"
 VIAddVersionKey "InternalName" "${INSTALLIDENTITY}"
 VIAddVersionKey "LegalCopyright" "${COPYRIGHT}"

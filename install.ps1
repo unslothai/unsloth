@@ -21,8 +21,7 @@ function Install-UnslothStudio {
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
 
     # Same fix as studio/setup.ps1, for the same reason. This script also calls
-    # Expand-Archive (Microsoft.PowerShell.Archive) and Get-ExecutionPolicy
-    # (Microsoft.PowerShell.Security), both of which resolve via PSModulePath.
+    # Expand-Archive and Get-ExecutionPolicy, which resolve via PSModulePath.
     # The desktop app reaches here as Tauri -> Rust -> powershell.exe
     # (studio/src-tauri/src/install.rs), and PowerShell only rewrites
     # PSModulePath for a direct pwsh -> powershell.exe hop, so the Rust process
@@ -1607,11 +1606,10 @@ exit 0
         }
     }
 
-    # Fallback for hosts without winget. Does what astral's install.ps1 does --
-    # same archive, destination and user-PATH prepend -- but the only thing
-    # fetched is a data file with a pinned SHA-256, never script text run
-    # in-process, which is what AMSI and cloud ML scanners score hardest.
-    # Bumping $UvPinnedVersion means bumping all three hashes with it:
+    # Fallback for hosts without winget. Same archive, destination and user-PATH
+    # prepend as astral's install.ps1, but it fetches a data file with a pinned
+    # SHA-256 instead of script text run in-process, which is what AMSI and cloud
+    # ML scanners score hardest. Bumping the version means bumping all 3 hashes:
     #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
     $UvPinnedVersion = "0.12.1"
     $UvPinnedAssets = @{
@@ -1645,10 +1643,9 @@ exit 0
             $destDir = Join-Path $userHome ".local\bin"
         }
 
-        # Same mirrors and precedence astral's installer uses. Each serves the
-        # identical release asset, so the pinned hash below holds across all of
-        # them. UV_DOWNLOAD_URL is deliberately not honoured: it points at an
-        # arbitrary version, which the pin would then correctly reject.
+        # Same mirrors and precedence as astral's installer; each serves the
+        # identical asset, so the pin holds across all of them. UV_DOWNLOAD_URL is
+        # not honoured: it points at an arbitrary version the pin would reject.
         $uvBase = if ($env:UV_INSTALLER_GHE_BASE_URL) {
             @("$($env:UV_INSTALLER_GHE_BASE_URL.TrimEnd('/'))/astral-sh/uv/releases/download/$UvPinnedVersion")
         } elseif ($env:UV_INSTALLER_GITHUB_BASE_URL) {
@@ -1729,10 +1726,8 @@ exit 0
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
         }
-        # Fallback: if winget is unavailable or didn't put uv on PATH, install
-        # the pinned uv release directly. This is the only supported path on
-        # hosts without winget (Windows ARM64 runners, corporate machines
-        # without the Store, etc.).
+        # winget unavailable or it didn't put uv on PATH: install the pinned
+        # release directly (ARM64 runners, machines without the Store).
         if (-not (Test-UvVersionOk)) {
             Install-UvFromRelease | Out-Null
             Refresh-SessionPath
