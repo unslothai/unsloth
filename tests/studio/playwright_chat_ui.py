@@ -1288,8 +1288,10 @@ with sync_playwright() as p:
             spacings = [_px(value) for value in actual["letterSpacing"]]
             # Tolerance, not equality: the browser reports the computed value rounded to a
             # few decimals, so 0.023em of 14.53125px comes back as "0.334219px".
-            if len(spacings) != 1 or spacings[0] is None or (
-                abs(spacings[0] - expected_spacing) > 0.002
+            if (
+                len(spacings) != 1
+                or spacings[0] is None
+                or (abs(spacings[0] - expected_spacing) > 0.002)
             ):
                 fail(
                     f"chat letter spacing {label}/{role}: expected "
