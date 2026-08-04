@@ -374,7 +374,11 @@ export function ModelsPage() {
   const inferenceGpu = useInferenceGpuInfo();
   // Content availability, not browser reachability: a proxied feed is usable
   // even while the browser itself cannot reach the Hub.
-  const online = useHubAvailability().phase === "available";
+  const hubPhase = useHubAvailability().phase;
+  const online = hubPhase === "available";
+  // The footer survives a failed page, so its button must too: auto-fill stays
+  // off while probing, but a click is the user asking us to try again.
+  const canProbe = online || hubPhase === "probing";
   const deviceType = usePlatformStore((s) => s.deviceType);
   const hubSearch = useSearch({ from: "/hub" });
   const urlModel = hubSearch.model ?? null;
@@ -1107,6 +1111,7 @@ export function ModelsPage() {
     scannedCount,
     {
       enabled: online && isDiscoverTab && hasMore,
+      manualEnabled: canProbe && isDiscoverTab && hasMore,
       isFetching: isLoading || isLoadingMore,
       resultCount: filteredDiscoverRows.length,
       maxAutoFillFetches: 5,

@@ -284,7 +284,7 @@ function hostLabel(origin: string | null): string {
   try {
     return new URL(origin).host;
   } catch {
-    return `${service}|${origin}`;
+    return origin;
   }
 }
 
