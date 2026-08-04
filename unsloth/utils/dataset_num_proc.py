@@ -413,8 +413,11 @@ def map_failure_diagnostics(num_proc: Optional[int]) -> "Iterator[None]":
             f"  Each worker holds its own copy of the tokenizer and its dataset "
             f"shard, so this run needed roughly {estimated_gb:g}GB on top of the "
             f"model. The most common cause is the out-of-memory killer.\n"
-            f"  Tokenize in-process with {NUM_PROC_ENV_VAR}=0, or pick a worker "
-            f"count with {NUM_PROC_ENV_VAR}=<n>.\n"
+            f"  Retry with {NUM_PROC_ENV_VAR}=0 for the fewest workers this path "
+            f"can use, or {NUM_PROC_ENV_VAR}=<n> to choose a count. That is "
+            f"in-process everywhere except train_on_responses_only on a split "
+            f"over {ZOO_MIN_ROWS_FOR_MULTIPROC:,} rows, where it is one worker: "
+            f"the Zoo reads a bare None there as 'size it for me'.\n"
             f"  Original error: {exception}"
         ) from exception
 

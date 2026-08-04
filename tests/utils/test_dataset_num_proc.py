@@ -661,3 +661,59 @@ def test_studio_bounds_its_own_computed_worker_count(dnp):
         "safe_num_proc no longer bounds its result; studio would send "
         "cpu_count // 3 workers straight to Dataset.map"
     )
+
+
+def test_the_recovery_advice_does_not_promise_more_than_it_delivers(dnp):
+    """UNSLOTH_DATASET_NUM_PROC=0 is not in-process on every path.
+
+    The dead-worker message is the one place a user is told what to do next, so
+    it has to be true. On fork, train_on_responses_only with a split at or over
+    the Zoo's threshold gets ``1`` rather than ``None`` -- deliberately, since a
+    bare None there is read as "size it for me" and would inflate to the Zoo's
+    uncapped count -- and ``datasets`` >= 4.1 turns that into a Pool(1). So the
+    advice is in-process almost everywhere and one worker in that one case, and
+    saying "tokenize in-process" flatly was wrong for exactly the large-dataset
+    runs that die in the first place.
+    """
+    with pytest.raises(RuntimeError) as excinfo:
+        with dnp.map_failure_diagnostics(8):
+            raise RuntimeError("One of the subprocesses has abruptly died during map operation.")
+    message = str(excinfo.value)
+    assert f"{dnp.NUM_PROC_ENV_VAR}=0" in message
+    assert "one worker" in message, "the exception to in-process has to be stated"
+    assert "train_on_responses_only" in message, "and which path it applies to"
+    assert f"{dnp.ZOO_MIN_ROWS_FOR_MULTIPROC:,}" in message, "and above which size"
+
+
+def test_the_advice_matches_what_the_resolver_actually_returns(dnp, monkeypatch):
+    """Executed, not just read: the claim above is checked against the code.
+
+    A message asserting a behaviour the resolver does not have would be worse
+    than the vague one it replaced, so drive both branches and compare.
+    """
+
+    class _Split:
+        def __init__(self, n):
+            self.n = n
+
+        def __len__(self):
+            return self.n
+
+    class _Trainer:
+        def __init__(self, split):
+            self.train_dataset = split
+            self.eval_dataset = None
+
+    monkeypatch.setattr(dnp, "multiprocessing_start_method", lambda: "fork")
+    monkeypatch.setattr(dnp, "_affordable_workers", lambda: 1000)
+    monkeypatch.setattr(dnp.sys, "platform", "linux")
+    monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "0")
+
+    over = dnp.resolve_responses_only_num_proc(
+        _Trainer(_Split(dnp.ZOO_MIN_ROWS_FOR_MULTIPROC + 1)), None
+    )
+    under = dnp.resolve_responses_only_num_proc(
+        _Trainer(_Split(dnp.ZOO_MIN_ROWS_FOR_MULTIPROC - 1)), None
+    )
+    assert over == 1, "over the threshold the best expressible request is one worker"
+    assert under is None, "under it the Zoo's own guard already goes in-process"
