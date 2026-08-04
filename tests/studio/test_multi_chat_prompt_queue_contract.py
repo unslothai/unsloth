@@ -27,6 +27,9 @@ SHARED_COMPOSER = (FRONTEND / "features/chat/shared-composer.tsx").read_text(enc
 QUEUE_BOUNDARY = (FRONTEND / "features/chat/utils/prompt-queue-boundary.ts").read_text(
     encoding = "utf-8"
 )
+QUEUED_MODEL_CAPABILITIES = (
+    FRONTEND / "features/chat/utils/queued-model-capabilities.ts"
+).read_text(encoding = "utf-8")
 PRE_STREAM_RESERVATION = (FRONTEND / "features/chat/utils/pre-stream-run-reservation.ts").read_text(
     encoding = "utf-8"
 )
@@ -413,6 +416,12 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "waitForPromptQueueTargetIdle(run);" in retained_failure
     assert "loadedIsMultimodal: isMultimodalResponse(status)" in lifecycle
+    assert "isAudio: status.is_audio ?? false" in lifecycle
+    assert "hasAudioInput: status.has_audio_input ?? false" in lifecycle
+    assert CHAT_ADAPTER.count("models: mergeQueuedModelCapabilities(") == 2
+    assert "modelIndex === index ? { ...model, ...capabilities } : model" in (
+        QUEUED_MODEL_CAPABILITIES
+    )
     assert "loadedIsMultimodal: state.loadedIsMultimodal" in CHAT_ADAPTER
     assert "queuedEmptyModelRuntime?.loadedIsMultimodal" in auto_load_merge
     assert "usesLocalModel:" in target

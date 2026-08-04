@@ -20,6 +20,10 @@ import {
   consumeQueuedChatRunSettings,
   snapshotQueuedChatRunSettings,
 } from "../utils/queued-chat-run-settings";
+import {
+  mergeQueuedModelCapabilities,
+  type QueuedModelCapabilities,
+} from "../utils/queued-model-capabilities";
 import type { MessageTiming, ToolCallMessagePart } from "@assistant-ui/core";
 import type { ChatModelAdapter } from "@assistant-ui/react";
 import { parsePartialJsonObject } from "assistant-stream/utils";
@@ -1692,6 +1696,7 @@ type QueuedResolvedModelRuntime = {
   supportsPreserveThinking: boolean;
   ggufContextLength: number | null;
   loadedIsMultimodal: boolean;
+  modelCapabilities: QueuedModelCapabilities | null;
 };
 
 type ChatRuntimeState = ReturnType<typeof useChatRuntimeStore.getState>;
@@ -1794,6 +1799,9 @@ function restoreVisibleModelState(snapshot: VisibleModelStateSnapshot): void {
 function queuedResolvedModelFromStore(
   state: ChatRuntimeState,
 ): QueuedResolvedModelRuntime {
+  const activeModel = state.models.find(
+    (model) => model.id === state.params.checkpoint,
+  );
   return {
     checkpoint: state.params.checkpoint,
     supportsTools: state.supportsTools,
@@ -1805,6 +1813,15 @@ function queuedResolvedModelFromStore(
     supportsPreserveThinking: state.supportsPreserveThinking,
     ggufContextLength: state.ggufContextLength,
     loadedIsMultimodal: state.loadedIsMultimodal,
+    modelCapabilities: activeModel
+      ? {
+          isVision: activeModel.isVision,
+          isGguf: activeModel.isGguf,
+          isAudio: activeModel.isAudio,
+          audioType: activeModel.audioType,
+          hasAudioInput: activeModel.hasAudioInput,
+        }
+      : null,
   };
 }
 
@@ -2674,6 +2691,13 @@ async function resolveQueuedEmptyLocalModel(
               ? (status.context_length ?? null)
               : null,
             loadedIsMultimodal: isMultimodalResponse(status),
+            modelCapabilities: {
+              isVision: status.is_vision ?? false,
+              isGguf: status.is_gguf ?? false,
+              isAudio: status.is_audio ?? false,
+              audioType: status.audio_type ?? null,
+              hasAudioInput: status.has_audio_input ?? false,
+            },
           },
         };
       }
@@ -2864,6 +2888,11 @@ export function createOpenAIStreamAdapter(
                   queuedEmptyModelRuntime !== null
                     ? queuedEmptyModelRuntime.ggufContextLength
                     : liveRuntime.ggufContextLength,
+                models: mergeQueuedModelCapabilities(
+                  liveRuntime.models,
+                  queuedEmptyModelRuntime?.checkpoint ?? "",
+                  queuedEmptyModelRuntime?.modelCapabilities ?? null,
+                ),
               }
           : liveRuntime;
         if (!resolvedThreadId) throw new Error("Research requires a saved chat.");
@@ -3216,6 +3245,11 @@ export function createOpenAIStreamAdapter(
               loadedIsMultimodal:
                 queuedEmptyModelRuntime?.loadedIsMultimodal ??
                 liveRuntime.loadedIsMultimodal,
+              models: mergeQueuedModelCapabilities(
+                liveRuntime.models,
+                queuedEmptyModelRuntime?.checkpoint ?? "",
+                queuedEmptyModelRuntime?.modelCapabilities ?? null,
+              ),
             }
         : liveRuntime;
       const { params } = runtime;
