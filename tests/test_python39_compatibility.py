@@ -150,9 +150,7 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
         for expression in [] if deferred else evaluated_annotations(tree):
             for inner in ast.walk(expression):
                 if isinstance(inner, ast.BinOp) and isinstance(inner.op, ast.BitOr):
-                    offenders.append(
-                        f"{where}:{inner.lineno}: {ast.unparse(inner)} (annotation)"
-                    )
+                    offenders.append(f"{where}:{inner.lineno}: {ast.unparse(inner)} (annotation)")
         for expression in evaluated_values(tree):
             for inner in ast.walk(expression):
                 if (
@@ -160,9 +158,7 @@ def test_no_pep604_unions_are_evaluated_on_the_declared_floor():
                     and isinstance(inner.op, ast.BitOr)
                     and looks_like_a_type(inner)
                 ):
-                    offenders.append(
-                        f"{where}:{inner.lineno}: {ast.unparse(inner)} (type alias)"
-                    )
+                    offenders.append(f"{where}:{inner.lineno}: {ast.unparse(inner)} (type alias)")
     assert not offenders, (
         "PEP 604 unions evaluated below 3.10. Annotations are deferred by `from __future__ "
         "import annotations`; type aliases need typing.Union, which that import does NOT "
