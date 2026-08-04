@@ -26,6 +26,7 @@ Usage:
   python scripts/notebook_validator.py api         --converted-dir _converted --surface _api_surface.json
   python scripts/notebook_validator.py all         --notebooks-dir <dir>
   python scripts/notebook_validator.py refresh-colab --out scripts/data/colab_pip_freeze.gpu.txt
+  python scripts/notebook_validator.py refresh-colab --all --snapshot-dir scripts/data
 """
 
 from __future__ import annotations
@@ -87,6 +88,12 @@ COLAB_ORACLE_FILES: dict[str, str] = {
     "apt-list-gpu.txt": "colab_apt_list.gpu.txt",
     "os-info-gpu.txt": "colab_os_info.gpu.txt",
 }
+# Only the pip oracle feeds a rule: `lint --colab-pin` reads it, and that is
+# what R-INST-002/003/004/005 resolve against. apt-list / os-info are human
+# context (what else the image ships), so their drift is reported but never
+# fails --strict -- otherwise an Ubuntu security bump nothing can consult
+# turns the daily cron red.
+COLAB_STRICT_ORACLE = "pip-freeze.gpu.txt"
 COLAB_ORACLE_BASE_URL = "https://raw.githubusercontent.com/googlecolab/backend-info/main/"
 
 # ----- Compat tables. PRs add rows as new releases land. ----- #
@@ -1066,15 +1073,33 @@ def cmd_all(args: argparse.Namespace) -> int:
     return 0 if all(rc == 0 for rc in rcs) else 1
 
 
+def _fetch_oracle(url: str) -> bytes | None:
+    try:
+        with urllib.request.urlopen(url, timeout = 15) as r:
+            return r.read()
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
+        print(f"FAIL: could not fetch {url}: {e}", file = sys.stderr)
+        return None
+
+
 def cmd_refresh_colab(args: argparse.Namespace) -> int:
-    """Pull the latest Colab pip-freeze.gpu.txt and write to disk."""
+    """Pull the latest Colab pip-freeze.gpu.txt and write to disk. --all
+    refreshes every oracle file into --snapshot-dir instead, which is how a
+    colab-diff drift report is acknowledged in one command."""
+    if args.all:
+        snapshot_dir = pathlib.Path(args.snapshot_dir).resolve()
+        snapshot_dir.mkdir(parents = True, exist_ok = True)
+        for upstream_name, snapshot_name in COLAB_ORACLE_FILES.items():
+            data = _fetch_oracle(COLAB_ORACLE_BASE_URL + upstream_name)
+            if data is None:
+                return 2
+            _atomic_write_bytes(snapshot_dir / snapshot_name, data)
+            print(f"wrote {len(data)} bytes to {snapshot_dir / snapshot_name}")
+        return 0
     out = pathlib.Path(args.out).resolve()
     out.parent.mkdir(parents = True, exist_ok = True)
-    try:
-        with urllib.request.urlopen(COLAB_PIP_FREEZE_URL, timeout = 15) as r:
-            data = r.read()
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError) as e:
-        print(f"FAIL: could not fetch {COLAB_PIP_FREEZE_URL}: {e}", file = sys.stderr)
+    data = _fetch_oracle(COLAB_PIP_FREEZE_URL)
+    if data is None:
         return 2
     _atomic_write_bytes(out, data)
     print(f"wrote {len(data)} bytes to {out}")
@@ -1145,10 +1170,12 @@ def _diff_oracle(
 
 def cmd_colab_diff(args: argparse.Namespace) -> int:
     """Diff each Colab oracle file against its committed snapshot and print
-    NEW/REMOVED/CHANGED. Advisory (rc=0) by default; --strict makes any diff
-    rc=1 so the daily cron fails loudly on upstream rotation."""
+    NEW/REMOVED/CHANGED. Advisory (rc=0) by default; --strict makes drift in
+    the rule-bearing oracle (COLAB_STRICT_ORACLE) rc=1 so the daily cron fails
+    loudly on upstream rotation."""
     snapshot_dir = pathlib.Path(args.snapshot_dir).resolve()
     any_diff = False
+    strict_diff = False
     for upstream_name, snapshot_name in COLAB_ORACLE_FILES.items():
         url = COLAB_ORACLE_BASE_URL + upstream_name
         snap_path = snapshot_dir / snapshot_name
@@ -1176,6 +1203,7 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             print("  no drift")
             continue
         any_diff = True
+        strict_diff = strict_diff or upstream_name == COLAB_STRICT_ORACLE
         for k, v in new[:50]:
             print(f"  NEW      {k}=={v}")
         if len(new) > 50:
@@ -1188,17 +1216,18 @@ def cmd_colab_diff(args: argparse.Namespace) -> int:
             print(f"  CHANGED  {k}: {old} -> {ver}")
         if len(changed) > 80:
             print(f"  ...and {len(changed) - 80} more changed entries")
-    if any_diff and args.strict:
+    if strict_diff and args.strict:
         print(
-            "\n::error::Colab oracle drifted from committed snapshot; "
-            "refresh scripts/data/colab_*.txt to acknowledge.",
+            f"\n::error::Colab oracle {COLAB_STRICT_ORACLE} drifted from its "
+            "committed snapshot; run `notebook_validator.py refresh-colab --all "
+            "--snapshot-dir scripts/data` to acknowledge.",
             file = sys.stderr,
         )
         return 1
     if any_diff:
         print(
-            "\n::notice::Colab oracle drifted; "
-            "refresh scripts/data/colab_*.txt at your convenience."
+            "\n::notice::Colab oracle drifted; run `notebook_validator.py "
+            "refresh-colab --all --snapshot-dir scripts/data` at your convenience."
         )
     return 0
 
@@ -1248,13 +1277,19 @@ def main(argv: list[str] | None = None) -> int:
 
     pa = sub.add_parser("refresh-colab")
     pa.add_argument("--out", default = str(COLAB_FALLBACK_FILE))
+    pa.add_argument(
+        "--all",
+        action = "store_true",
+        help = "refresh every oracle file into --snapshot-dir, not just pip-freeze",
+    )
+    pa.add_argument("--snapshot-dir", default = str(DATA_DIR))
 
     pa = sub.add_parser("colab-diff")
     pa.add_argument("--snapshot-dir", default = str(DATA_DIR))
     pa.add_argument(
         "--strict",
         action = "store_true",
-        help = "exit 1 on any drift (default: advisory; exit 0)",
+        help = f"exit 1 on {COLAB_STRICT_ORACLE} drift (default: advisory; exit 0)",
     )
 
     args = p.parse_args(argv)
