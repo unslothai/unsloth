@@ -770,9 +770,15 @@ async def get_gguf_variants_answer(
                     detail = "No cached GGUF variants available while offline.",
                 )
 
-        try:
-            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
-        except Exception:
+        def _cache_fallback_response():
+            """This request's cached answer, scoped to the cache the request names, or None.
+
+            Two callers need it: an unreachable Hub, and a listing the lister already served
+            from its own cache. That second read is repo-wide, so with the repo in the active
+            cache as well it answered for a request pinned elsewhere with the active copy's
+            quants. Redoing it here scopes the listing and, through ``answered_from``, keeps
+            its context metadata on the same copy.
+            """
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
                 return scoped_response
@@ -786,11 +792,34 @@ async def get_gguf_variants_answer(
                 return _with_state_partials(
                     _local_response(repo_id, variants, has_vision, complete)
                 )
+            # Last resort: a repo cached only under another root still lists, rather than the
+            # row going empty. No single directory answered, so provenance stays unset and the
+            # context read falls back repo-wide with it -- wrong together beats mismatched.
+            cached = list_gguf_variants_from_hf_cache(repo_id)
+            if cached is not None:
+                variants, has_vision, complete = cached
+                return _with_state_partials(
+                    _local_response(repo_id, variants, has_vision, complete)
+                )
             partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
             if partial is not None:
                 variants, has_vision = partial
                 return _partial_local_response(repo_id, variants, has_vision)
+            return None
+
+        try:
+            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
+        except Exception:
+            fallback = _cache_fallback_response()
+            if fallback is not None:
+                return fallback
             raise
+
+        # siblings is None only when the lister answered from the cache rather than the Hub.
+        if siblings is None:
+            fallback = _cache_fallback_response()
+            if fallback is not None:
+                return fallback
 
         filenames = [v.filename for v in variants]
         best = pick_best_gguf(filenames)
