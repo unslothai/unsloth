@@ -1500,10 +1500,12 @@ _REPO_WIDE_HELPERS = frozenset(
     {
         "_cache_inventory_fields",
         # The row's pipeline task. Repo-wide on purpose and NOT a snapshot signal: it answers "which
-        # model is this", which every revision of a repo agrees on (the non-GGUF classifier decides
-        # on the repo id's family and trust rules; the GGUF one on general.architecture, identical
-        # in every cached quant). Scoping it would only lose rows -- an unreadable header in the one
-        # pinned snapshot would drop the repo from the Images/Video pickers entirely.
+        # model is this", which every revision of a repo agrees on. The non-GGUF classifier returns
+        # non-None only when detect_family(repo_id) does, and _repo_is_diffusers is True whenever
+        # that holds, so its newest-revision _repo_has_pipeline_index branch cannot change the
+        # answer; the GGUF one reads general.architecture, identical in every cached quant. Scoping
+        # it would only lose rows -- an unreadable header in the one pinned snapshot would drop the
+        # repo from the Images/Video pickers entirely.
         "_cached_row_task",
         "_repo_gguf_last_modified",
         "_repo_gguf_payload_snapshots",
@@ -3116,9 +3118,12 @@ def test_a_newer_companion_only_snapshot_does_not_make_the_ref_snapshot_partial(
 
     from hub.services.models import cache_inventory
 
+    # No root config.json: real diffusers pipelines ship model_index.json and per-component
+    # configs only, and a fixture that adds one would pin a layout that does not occur.
     pipeline = {
-        "config.json": b'{"model_type":"flux"}',
         "model_index.json": b'{"_class_name":"FluxPipeline"}',
+        "transformer/config.json": b'{"_class_name":"FluxTransformer2DModel"}',
+        "vae/config.json": b'{"_class_name":"AutoencoderKL"}',
         "text_encoder/model.safetensors": b"\0" * 256,
         "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
         "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
