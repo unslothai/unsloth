@@ -651,18 +651,26 @@ def test_a_zoo_that_can_resize_is_asked_for_the_workers_own_cache(monkeypatch):
         seen["applied"] = True
         return {}
 
-    monkeypatch.setattr(shim, "_load_optional", lambda _name: types.SimpleNamespace(
-        apply_xet_env = _apply, resize_for_cache_dir = _resize,
-    ))
-    env = {"HF_HUB_CACHE": "/new/volume/hub",
-           "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT": "64000000000"}
+    monkeypatch.setattr(
+        shim,
+        "_load_optional",
+        lambda _name: types.SimpleNamespace(
+            apply_xet_env = _apply,
+            resize_for_cache_dir = _resize,
+        ),
+    )
+    env = {
+        "HF_HUB_CACHE": "/new/volume/hub",
+        "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT": "64000000000",
+    }
     written = shim.apply_xet_env(env, env["HF_HUB_CACHE"])
     assert seen["cache_dir"] == "/new/volume/hub"
     assert "applied" not in seen, "resizing and applying both would size the worker twice"
     assert written["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"] == "1000000000"
     assert env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"] == "1000000000"
 
-    monkeypatch.setattr(shim, "_load_optional",
-                        lambda _name: types.SimpleNamespace(apply_xet_env = _apply))
+    monkeypatch.setattr(
+        shim, "_load_optional", lambda _name: types.SimpleNamespace(apply_xet_env = _apply)
+    )
     assert shim.apply_xet_env({}, "/new/volume/hub") == {}
     assert seen["applied"] is True
