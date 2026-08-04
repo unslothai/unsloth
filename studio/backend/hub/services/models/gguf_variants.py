@@ -26,6 +26,7 @@ from hub.utils.hf_cache_state import (
     repo_cache_dir_name,
 )
 from hub.utils.gguf import (
+    GgufVariantInfo,
     extract_quant_label,
     iter_hf_cache_snapshots,
     is_big_endian_gguf_path,
@@ -577,8 +578,32 @@ async def get_gguf_variants_response(
                 default_variant = default_variant,
             )
 
-        # Local directory path (e.g. LM Studio models) — scan filesystem
-        if is_local_path(repo_id):
+        # Local directory path (e.g. LM Studio models) — scan filesystem.
+        # Load-path parity: ModelConfig.from_identifier resolves identifiers
+        # existence-first, so a marker-less relative name that exists for this
+        # process is a local model, not a Hub id, and a direct .gguf file is
+        # loadable without the metadata siblings the directory scan requires.
+        local_target = None
+        try:
+            probe = Path(repo_id).expanduser()
+            if is_local_path(repo_id) or probe.exists():
+                local_target = probe
+        except OSError:
+            local_target = None
+        if local_target is not None:
+            if local_target.is_file() and local_target.suffix.lower() == ".gguf":
+                try:
+                    size = local_target.stat().st_size
+                except OSError:
+                    size = 0
+                variants = [
+                    GgufVariantInfo(
+                        filename = local_target.name,
+                        quant = extract_quant_label(local_target.name),
+                        size_bytes = size,
+                    )
+                ]
+                return _local_response(repo_id, variants, False)
             variants, has_vision = list_local_gguf_variants(repo_id)
 
             return _local_response(repo_id, variants, has_vision)

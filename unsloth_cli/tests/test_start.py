@@ -6075,3 +6075,19 @@ def test_codex_attach_check_defers_shorthand_when_canonical_probe_errors(monkeyp
 
     monkeypatch.setattr(start, "_http_json", http_json)
     start._attach_gguf_check_for_codex(BASE, "sk-test", "Qwen3-0.6B")
+
+
+def test_codex_attach_check_probes_hub_shaped_gguf_ids(monkeypatch, capsys):
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
+    urls = _fake_variants(monkeypatch, {"variants": []})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "owner/model.gguf")
+    assert len(urls) == 1
+    assert "owner%2Fmodel.gguf" in urls[0]
+
+
+def test_codex_attach_check_defers_when_raw_name_exists_locally(monkeypatch, tmp_path):
+    (tmp_path / "models" / "qwen").mkdir(parents = True)
+    monkeypatch.chdir(tmp_path)
+    _fake_variants(monkeypatch, {"variants": []})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "models/qwen")

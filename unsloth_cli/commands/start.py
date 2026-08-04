@@ -1740,10 +1740,14 @@ def _attach_gguf_check_for_codex(base: str, key: str, model: Optional[str]) -> N
     if not model:
         return
     repo, _ = _split_repo_variant(model)
-    # A direct .gguf file is GGUF by definition, and the variants route lists
-    # only directories (or a file's parent with model metadata), so an empty
-    # answer there would wrongly reject a loadable file.
-    if repo.lower().endswith(".gguf"):
+    # A .gguf filesystem path is GGUF by definition; only the hub-id shape
+    # (owner/name.gguf, which the server also treats as a repo) gets probed.
+    if repo.lower().endswith(".gguf") and not (
+        repo.count("/") == 1
+        and not repo.startswith(("/", ".", "~"))
+        and ":" not in repo
+        and "\\" not in repo
+    ):
         return
     # Mirror the load path's shorthand precedence: the raw name first (it may
     # be a directory relative to the server's cwd), then the unsloth/<name>
@@ -1763,6 +1767,14 @@ def _attach_gguf_check_for_codex(base: str, key: str, model: Optional[str]) -> N
         if isinstance(variants, list) and variants:
             return
         if candidate == candidates[-1] and isinstance(variants, list):
+            # Older servers classify marker-less relative paths as hub ids; a
+            # local hit for the raw name means it may be a server-side model
+            # the server would resolve from its own cwd, so defer.
+            try:
+                if Path(os.path.expanduser(repo)).exists():
+                    return
+            except OSError:
+                return
             _fail_codex_needs_gguf(candidate)
 
 
