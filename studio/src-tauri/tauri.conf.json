@@ -1,5 +1,5 @@
 {
-  "productName": "Unsloth Studio (Desktop)",
+  "productName": "Unsloth",
   "identifier": "ai.unsloth.studio",
   "build": {
     "beforeDevCommand": {
@@ -16,12 +16,12 @@
   "app": {
     "withGlobalTauri": true,
     "security": {
-      "csp": "default-src 'self'; connect-src 'self' http://localhost:* ws://localhost:* ws://127.0.0.1:* http://127.0.0.1:* https://huggingface.co https://*.huggingface.co https://datasets-server.huggingface.co; img-src 'self' data: blob: https:; media-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-src 'self' http://localhost:* http://127.0.0.1:*"
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost http://localhost:* ws://localhost:* ws://127.0.0.1:* http://127.0.0.1:* https://huggingface.co https://*.huggingface.co https://datasets-server.huggingface.co; img-src 'self' data: blob: https: http://localhost:* http://127.0.0.1:*; media-src 'self' data: blob: https:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; frame-src 'self' http://localhost:* http://127.0.0.1:*"
     },
     "windows": [
       {
         "label": "main",
-        "title": "Unsloth Studio (Desktop)",
+        "title": "Unsloth",
         "width": 760,
         "height": 560,
         "center": true,
@@ -69,6 +69,10 @@
       "icons/icon.icns"
     ],
     "windows": {
+      "webviewInstallMode": {
+        "type": "embedBootstrapper",
+        "silent": true
+      },
       "nsis": {
         "installerHooks": "./windows/hooks.nsh",
         "template": "./windows/installer.nsi",
@@ -86,6 +90,9 @@
       },
       "deb": {
         "desktopTemplate": "./linux/unsloth.desktop",
+        "provides": ["unsloth-studio-desktop"],
+        "conflicts": ["unsloth-studio-desktop"],
+        "replaces": ["unsloth-studio-desktop"],
         "postRemoveScript": "./linux/postremove.sh"
       }
     }

@@ -16,7 +16,11 @@ from loggers import get_logger
 from hub.utils import download_manifest
 from hub.utils import download_registry
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils.gguf import extract_quant_label, extract_quant_token
+from hub.utils.gguf import (
+    extract_quant_label,
+    extract_quant_token,
+    is_mtp_only_drafter_path as _is_mtp_only_drafter_path,
+)
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
     iter_repo_cache_dirs,
@@ -35,7 +39,6 @@ from hub.services.models.common import (
     _is_gguf_filename,
     _is_main_gguf_filename,
     _is_mmproj_filename,
-    _is_mtp_drafter_path,
 )
 
 logger = get_logger(__name__)
@@ -216,8 +219,10 @@ def _delete_gguf_variant_from_repos(
                 target_repo,
                 # Companions: mmproj and the MTP drafter -- downloaded with
                 # every variant, so the last variant's delete reclaims them.
+                # MTP only: DSpark is opt-in and in no variant plan, so Studio
+                # never fetched it and must not reclaim it.
                 lambda name: _is_gguf_filename(name)
-                and (_is_mmproj_filename(name) or _is_mtp_drafter_path(name)),
+                and (_is_mmproj_filename(name) or _is_mtp_only_drafter_path(name)),
             )
             for snap, _blob, name in companion_matches:
                 try:
@@ -577,10 +582,14 @@ def _llama_cpp_blocks_delete(repo_id: str, variant: Optional[str]) -> bool:
 def _inference_backend_blocks_delete(repo_id: str) -> bool:
     """Whether the subprocess inference backend holds *repo_id*; same fail-open-on-acquire / surface-on-query contract as :func:`_llama_cpp_blocks_delete`."""
     try:
-        from core.inference import get_inference_backend
-        backend = get_inference_backend()
+        from core.inference.orchestrator import peek_inference_backend
+
+        # Peek, never construct: building one just to learn nothing is loaded imports torch.
+        backend = peek_inference_backend()
     except Exception as e:
         logger.debug(f"Inference backend unavailable during delete guard for {repo_id}: {e}")
+        return False
+    if backend is None:
         return False
     active_name = backend.active_model_name
     return bool(active_name) and _loaded_id_matches_repo(active_name, repo_id)
@@ -609,10 +618,15 @@ async def delete_cached_model_response(
 
     # Guard fails closed: if a live backend's load state can't be read, abort
     # with 503 rather than risk unlinking weights under a running process.
-    try:
-        blocks_delete = _llama_cpp_blocks_delete(repo_id, variant) or (
+    # Both guards are sync and the second reaches get_inference_backend(), whose cold
+    # build waits on hardware detection. One worker keeps the `or` short-circuit.
+    def _load_state_blocks_delete() -> bool:
+        return _llama_cpp_blocks_delete(repo_id, variant) or (
             _inference_backend_blocks_delete(repo_id)
         )
+
+    try:
+        blocks_delete = await asyncio.to_thread(_load_state_blocks_delete)
     except Exception as e:
         logger.warning(f"Load-state verification failed for {repo_id}; refusing delete: {e}")
         raise HTTPException(

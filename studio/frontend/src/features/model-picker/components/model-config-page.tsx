@@ -17,6 +17,7 @@ import {
   GPU_LAYERS_AUTO,
   fetchGgufStagedMetadata,
   readPersistedSpeculativeType,
+  resolveStagedDiffusionClassification,
   useChatRuntimeStore,
 } from "@/features/chat";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
@@ -39,7 +40,9 @@ import {
   useId,
   useRef,
   useState,
+  useSyncExternalStore,
 } from "react";
+import { syncModelOverride } from "../api/model-overrides";
 import {
   useDefaultChatTemplate,
   useModelMaxPositionEmbeddings,
@@ -62,8 +65,12 @@ import {
   floorMaxSeqLength,
   isDefaultConfig,
   normalizeMaxSeqLength,
+  normalizePerModelConfig,
+  readAdvancedSettingsOpen,
   resolveInitialConfig,
+  saveAdvancedSettingsOpen,
   savePerModelConfig,
+  subscribeAdvancedSettingsOpen,
 } from "../model-config/per-model-config";
 import { ChatTemplateEditorDialog } from "./chat-template-editor-dialog";
 import type { ModelPickTarget } from "./model-selector/types";
@@ -699,6 +706,11 @@ interface ModelConfigPageProps {
   initialConfig?: PerModelConfig | null;
   isDiffusion?: boolean;
   variant?: "page" | "sidebar";
+  /**
+   * Page variant only: render the built-in "Run settings" title block. A host that
+   * already shows the model name as its page heading turns this off.
+   */
+  showHeader?: boolean;
 }
 
 export function ModelConfigPage({
@@ -710,6 +722,7 @@ export function ModelConfigPage({
   initialConfig = null,
   isDiffusion = false,
   variant = "page",
+  showHeader = true,
 }: ModelConfigPageProps) {
   const rememberId = useId();
   const isActiveModel = loadedConfig != null;
@@ -723,9 +736,12 @@ export function ModelConfigPage({
   const loadedMaxContextLength = useChatRuntimeStore(
     (s) => s.ggufMaxContextLength,
   );
+  // What settings are stored under, which is not always what loads. Every read, write
+  // and mirror uses it; the probes keep target.id, since they have to open the model.
+  const configId = target.configId ?? target.id;
   const gpuDevices = useGpuDevices();
   const resolveInitial = () => {
-    const resolved = resolveInitialConfig(target.id, target.ggufVariant);
+    const resolved = resolveInitialConfig(configId, target.ggufVariant);
     if (loadedConfig) {
       return { config: loadedConfig, remembered: resolved.remembered };
     }
@@ -747,9 +763,19 @@ export function ModelConfigPage({
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(() =>
-    hasNonDefaultAdvanced(config),
+  // Read live, not snapshotted at mount: the sidebar copy of Run Settings stays
+  // mounted while collapsed, so it has to follow a toggle made in the picker.
+  const advancedPreference = useSyncExternalStore(
+    subscribeAdvancedSettingsOpen,
+    readAdvancedSettingsOpen,
+    () => null,
   );
+  // Until the switch is used anywhere, a model carrying non-default advanced
+  // values opens the section on its own so those stay visible. Frozen at mount
+  // so editing a field back to its default cannot close the section underfoot.
+  const [autoOpenAdvanced] = useState(() => hasNonDefaultAdvanced(config));
+  const showAdvanced = advancedPreference ?? autoOpenAdvanced;
+  const toggleAdvanced = saveAdvancedSettingsOpen;
   const contextInputRef = useRef<NumericValueInputHandle>(null);
   const maxSeqLengthInputRef = useRef<NumericValueInputHandle>(null);
   const gpuLayersInputRef = useRef<NumericValueInputHandle>(null);
@@ -790,6 +816,7 @@ export function ModelConfigPage({
     layerCount: number | null;
     moeLayerCount: number | null;
     isDiffusion?: boolean;
+    diffusionUnknown?: boolean;
   } | null>(null);
   useEffect(() => {
     if (contextFetchKey == null) {
@@ -844,7 +871,13 @@ export function ModelConfigPage({
     contextFetchKey != null &&
     stagedDims == null &&
     (config.gpuMemoryMode === "manual" || config.selectedGpuIds != null);
-  const classifiedIsDiffusion = isDiffusion ? true : stagedDims?.isDiffusion;
+  // Tri-state on purpose: an inconclusive probe stays undefined so onRun hands
+  // "unknown" to the selection. Collapsing it to false would tell a compare pane
+  // this is an ordinary GGUF, letting it inherit another model's split (#7574).
+  const classifiedIsDiffusion = resolveStagedDiffusionClassification(
+    isDiffusion,
+    stagedDims,
+  );
   const resolvedIsDiffusion = classifiedIsDiffusion === true;
   const gpuIndexKind =
     pinnableGpuContext(gpuDevices, resolvedIsDiffusion).indexKind ?? null;
@@ -1017,16 +1050,47 @@ export function ModelConfigPage({
     const effectiveAtBaseline = perModelConfigsEqual(effectiveConfig, baseline);
     const effectivePersistenceOnly =
       isActiveModel && effectiveAtBaseline && rememberChanged;
-    const defaultConfig = isDefaultConfig(effectiveRuntimeConfig);
+    // Judge what storage keeps: savePerModelConfig normalizes first, so judging the raw
+    // object reported saved while the write dropped it.
+    const normalizedRuntimeConfig = normalizePerModelConfig(
+      effectiveRuntimeConfig,
+    );
+    const defaultConfig = isDefaultConfig(normalizedRuntimeConfig);
     let saveFailed = false;
+    const evicted: { modelId: string; ggufVariant: string | null }[] = [];
     if (remember) {
       saveFailed = !savePerModelConfig(
-        target.id,
+        configId,
         target.ggufVariant,
-        effectiveRuntimeConfig,
+        normalizedRuntimeConfig,
+        evicted,
       );
     } else {
-      saveFailed = !deletePerModelConfig(target.id, target.ggufVariant);
+      saveFailed = !deletePerModelConfig(configId, target.ggufVariant);
+    }
+    // Mirror to the server so an API load gets these settings, not app defaults. Best-effort:
+    // the localStorage write above already governs this browser, and it is skipped when that
+    // write failed, or the two would permanently disagree. Gated on auto-switch reach, not just
+    // GGUF-ness, since the resolver skips Ollama, and a native-path lease is the same case: the
+    // id is only the file's display name, which the resolver never keys.
+    if (
+      !saveFailed &&
+      (target.apiLoadable ?? target.isGguf) &&
+      !nativePathToken
+    ) {
+      syncModelOverride(
+        configId,
+        target.ggufVariant,
+        remember ? normalizedRuntimeConfig : null,
+      );
+    }
+    // Saving can push the local map over budget and drop other models, whose server
+    // entries would keep applying with nothing able to forget them. Not a Forget: only
+    // the mirrored fields go, and launch flags set through the API stay.
+    for (const dropped of evicted) {
+      syncModelOverride(dropped.modelId, dropped.ggufVariant, null, {
+        keepLaunchFlags: true,
+      });
     }
     if (effectivePersistenceOnly) {
       if (saveFailed) {
@@ -1056,7 +1120,7 @@ export function ModelConfigPage({
 
   return (
     <div className="flex flex-col">
-      {variant === "page" && (
+      {variant === "page" && showHeader && (
         <div className="flex items-center gap-2.5 pb-4">
           {onBack && (
             <button
@@ -1127,6 +1191,10 @@ export function ModelConfigPage({
                   aria-label="Context Length"
                 />
               ) : null}
+              <p className="text-ui-11 leading-relaxed text-muted-foreground">
+                By default, Unsloth uses the model's full context, lowering it
+                only if it will not fit your device's memory.
+              </p>
               {isActiveModel &&
                 loadedMaxContextLength != null &&
                 contextValue > loadedMaxContextLength && (
@@ -1167,7 +1235,7 @@ export function ModelConfigPage({
               <Switch
                 className="panel-switch shrink-0"
                 checked={showAdvanced}
-                onCheckedChange={setShowAdvanced}
+                onCheckedChange={toggleAdvanced}
                 aria-label="Show advanced settings"
               />
             </div>

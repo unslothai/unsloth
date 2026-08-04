@@ -58,6 +58,7 @@ import {
   resolveManualAutoCtxPin,
 } from "../presets/preset-policy";
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
+import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
 import {
   isMultimodalResponse,
@@ -75,6 +76,8 @@ import type {
 
 export type SelectedModelInput = {
   id: string;
+  /** Sent as model_path in place of the id, which stays the identity the UI shows. */
+  loadId?: string | null;
   isLora?: boolean;
   ggufVariant?: string;
   /** Where the pick came from (e.g. "hub", "local", "external"). Used to decide
@@ -111,17 +114,14 @@ function rememberApprovedRemoteCode(
   if (fingerprint) approvedRemoteCodeFingerprints.set(checkpoint, fingerprint);
 }
 
+// Class carries the progress-bar spacing; layout is shared CSS now.
 const MODEL_LOAD_TOAST_CLASSNAMES = {
-  toast: "chat-model-load-toast items-center gap-2.5",
+  toast: "chat-model-load-toast",
   content: "gap-0.5 flex-1 min-w-0",
   title: "leading-5",
   description: "mt-0 w-full",
   cancelButton:
     "!h-auto !rounded-none !border-0 !bg-transparent !px-1 !text-ui-11 !font-normal !text-muted-foreground hover:!bg-transparent hover:!text-destructive focus-visible:!text-destructive",
-} as const;
-
-const MODEL_LOADED_TOAST_CLASSNAMES = {
-  toast: "chat-model-loaded-toast items-center gap-2.5",
 } as const;
 
 const LORA_SUFFIX_RE = /_(\d{9,})$/;
@@ -311,6 +311,14 @@ async function syncInferenceStatusToStore(options?: {
       if (checkpointId) {
         const previousGgufVariant =
           useChatRuntimeStore.getState().activeGgufVariant;
+        // A model loaded outside this tab replaces the resident one, and the pin belonged to the
+        // old one: keeping it reloads that one from another's settings.
+        if (
+          checkpointId !== selectedCheckpoint ||
+          (statusRes.gguf_variant ?? null) !== (previousGgufVariant ?? null)
+        ) {
+          useChatRuntimeStore.setState({ activeLoadId: null });
+        }
         setCheckpoint(checkpointId, statusRes.gguf_variant);
         applyActiveModelStatusToStore(statusRes, {
           previousCheckpoint: selectedCheckpoint,
@@ -319,6 +327,20 @@ async function syncInferenceStatusToStore(options?: {
         // setModels(listRes...) above used catalog data, which omits audio
         // capability. Re-apply live status so attach gates survive a refresh.
         syncModelCapabilities(checkpointId, statusRes);
+
+        // Studio starting against an already-resident GGUF: history can load before this first
+        // status refresh has a checkpoint or window, so its own recount never runs. A null thread
+        // would publish an empty count, hence the mounted-thread guard.
+        const hydrated = useChatRuntimeStore.getState();
+        if (
+          !selectedCheckpoint &&
+          hydrated.contextUsage == null &&
+          hydrated.activeThreadId != null &&
+          hydrated.ggufContextLength != null &&
+          !isExternalModelId(checkpointId)
+        ) {
+          void refreshContextUsage({ threadId: hydrated.activeThreadId });
+        }
       }
     } else if (!statusRes.active_model && !isExternalSelectionActive) {
       // specFallbackReason survives here, so clearing activeModelIsLocal
@@ -491,6 +513,8 @@ export function useChatModelRuntime() {
   const selectModel = useCallback(
     async (selection: string | SelectedModelInput) => {
       const modelId = typeof selection === "string" ? selection : selection.id;
+      const loadPath =
+        (typeof selection === "string" ? null : selection.loadId) || modelId;
       const ggufVariant =
         typeof selection === "string" ? undefined : selection.ggufVariant;
       const forceReload =
@@ -576,6 +600,11 @@ export function useChatModelRuntime() {
           }
           const previousGgufVariant =
             useChatRuntimeStore.getState().activeGgufVariant;
+          // The poll skips its own clearing while an external pick is active, so a pin taken
+          // for an earlier resident can survive; Apply would then reload that old model.
+          if (useChatRuntimeStore.getState().activeLoadId !== modelId) {
+            useChatRuntimeStore.setState({ activeLoadId: null });
+          }
           useChatRuntimeStore
             .getState()
             .setCheckpoint(modelId, residentStatus.gguf_variant);
@@ -586,6 +615,9 @@ export function useChatModelRuntime() {
             readoptingSameModel: true,
           });
           syncModelCapabilities(modelId, residentStatus);
+          // setCheckpoint above blanked the bar, this path returns before the post-load recount,
+          // and a mounted thread does not rerun its history loader, so the bar would stay empty.
+          void refreshContextUsage({ afterModelLoad: true });
           return;
         }
       }
@@ -680,6 +712,7 @@ export function useChatModelRuntime() {
       loadingModelRef.current = loadInfo;
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
+      const postLoadRefresh = { needed: false };
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -710,7 +743,7 @@ export function useChatModelRuntime() {
             }
             isDiffusion = (
               await fetchGgufStagedMetadata({
-                model_path: modelId,
+                model_path: loadPath,
                 gguf_variant: ggufVariant ?? null,
                 hf_token: preparedToken.token,
                 nativePathToken: nativePathToken ?? null,
@@ -733,6 +766,7 @@ export function useChatModelRuntime() {
             stateBeforeUnload.params.maxSeqLength;
           const previousActiveNativePathToken =
             stateBeforeUnload.activeNativePathToken;
+          const previousActiveLoadId = stateBeforeUnload.activeLoadId;
           const previousIsGguf =
             previousModel?.isGguf === true
             || previousVariant != null
@@ -877,7 +911,7 @@ export function useChatModelRuntime() {
               }),
             );
             const validation = await validateModel({
-              model_path: modelId,
+              model_path: loadPath,
               nativePathLease: validateNativePathLease,
               hf_token: hfToken,
               max_seq_length: validateMaxSeqLength,
@@ -890,6 +924,9 @@ export function useChatModelRuntime() {
               ...(isGguf
                 ? {
                     gpu_memory_mode: loadGpuMemoryMode,
+                    // Sized like the follow-up /load: else a manual DiffusionGemma
+                    // split 409s during training even when it fits.
+                    gpu_layers: validateGpuLayers,
                     n_parallel: validateNParallel,
                   }
                 : {}),
@@ -1053,7 +1090,7 @@ export function useChatModelRuntime() {
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
             const loadResponse = await loadModel({
-              model_path: modelId,
+              model_path: loadPath,
               nativePathLease: loadNativePathLease,
               hf_token: hfToken,
               max_seq_length: loadMaxSeqLength,
@@ -1102,14 +1139,29 @@ export function useChatModelRuntime() {
                 presetSource: useChatRuntimeStore.getState().activePresetSource,
               }),
             );
-            // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default
+            // Qwen3.5/3.6 small models (0.8B, 2B, 4B, 9B) disable thinking by default.
+            // Anchored regex: first "Xb" / "X.Xb" after start-of-string or
+            // [-_/.] so the version literal in "qwen3.5" / "qwen3.6" doesn't
+            // match first, and for "Qwen3.5-35B-A3B" the result is 35 (total
+            // params), not 3 (MoE active params).
             let reasoningDefault = loadResponse.supports_reasoning ?? false;
             if (reasoningDefault) {
               const mid = modelId.toLowerCase();
               if (mid.includes("qwen3.5") || mid.includes("qwen3.6")) {
-                const sizeMatch = mid.match(/(\d+\.?\d*)\s*b/);
-                if (sizeMatch && parseFloat(sizeMatch[1]) < 9) {
-                  reasoningDefault = false;
+                // Scan path segments right to left so the size nearest the leaf
+                // wins over a size-like parent dir; trailing boundary stops "8bit".
+                const sizeRe = /(?:^|[-_.])(\d+\.?\d*)\s*([bm])(?:$|[-_.])/;
+                const sizeMatch = mid
+                  .replace(/\\/g, "/")
+                  .split("/")
+                  .reduceRight<RegExpMatchArray | null>(
+                    (found, seg) => found ?? seg.match(sizeRe),
+                    null,
+                  );
+                if (sizeMatch) {
+                  const size = parseFloat(sizeMatch[1]);
+                  const sizeB = sizeMatch[2] === "m" ? size / 1000 : size;
+                  if (sizeB <= 9) reasoningDefault = false;
                 }
               }
             }
@@ -1171,6 +1223,8 @@ export function useChatModelRuntime() {
                 ? stateBeforeUnload.reasoningEnabled
                 : reasoningDefault;
             rememberApprovedRemoteCode(modelId, approvedRemoteCodeFingerprint);
+            // A later rollback reads the snapshot path, not the id this was stored under.
+            rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);
             useChatRuntimeStore.setState({
               ggufContextLength: nativeCtx,
               ggufMaxContextLength,
@@ -1213,6 +1267,7 @@ export function useChatModelRuntime() {
               loadedIsMultimodal: isMultimodalResponse(loadResponse),
               loadedIsDiffusion: loadResponse.is_diffusion ?? false,
               activeModelIsLocal: loadResponse.is_local_model ?? false,
+              activeLoadId: loadPath === modelId ? null : loadPath,
               activeNativePathToken: nativePathToken ?? null,
               activeNativePathExpiresAtMs: nativePathToken
                 ? nativePathExpiresAtMs
@@ -1253,6 +1308,10 @@ export function useChatModelRuntime() {
               }
             }
             await refresh({ signal: abortCtrl.signal });
+            postLoadRefresh.needed = Boolean(
+              (loadResponse.is_gguf || isGguf || ggufVariant) &&
+                !isExternalModelId(modelId),
+            );
             if (
               !isLora &&
               !(loadResponse.is_lora ?? false) &&
@@ -1289,7 +1348,8 @@ export function useChatModelRuntime() {
               }
               try {
                 const rollbackResponse = await loadModel({
-                  model_path: previousCheckpoint,
+                  // The pin it loaded from: without it this retries the ref that needed pinning.
+                  model_path: previousActiveLoadId || previousCheckpoint,
                   nativePathLease: rollbackNativePathLease,
                   hf_token: hfToken,
                   max_seq_length: rollbackMaxSeqLength,
@@ -1326,6 +1386,7 @@ export function useChatModelRuntime() {
                 );
                 useChatRuntimeStore.setState({
                   activeModelIsLocal: rollbackResponse.is_local_model ?? false,
+                  activeLoadId: previousActiveLoadId ?? null,
                   activeNativePathToken: previousActiveNativePathToken ?? null,
                   // Restore the previous token's lease together with the token so a
                   // rollback never pairs restored token A with failed load B's expiry.
@@ -1636,7 +1697,6 @@ export function useChatModelRuntime() {
           if (abortCtrl.signal.aborted) return;
           if (loadToastDismissedRef.current) {
             toast.success(`${toastDisplayName} loaded`, {
-              classNames: MODEL_LOADED_TOAST_CLASSNAMES,
               closeButton: true,
               duration: 8000,
             });
@@ -1645,7 +1705,6 @@ export function useChatModelRuntime() {
               id: toastId,
               description: undefined,
               cancel: undefined,
-              classNames: MODEL_LOADED_TOAST_CLASSNAMES,
               closeButton: true,
               duration: 8000,
               onDismiss: undefined,
@@ -1685,6 +1744,9 @@ export function useChatModelRuntime() {
         } finally {
           if (progressInterval) clearInterval(progressInterval);
           resetLoadingUi();
+          if (postLoadRefresh.needed && !abortCtrl.signal.aborted) {
+            void refreshContextUsage({ afterModelLoad: true });
+          }
         }
       } catch (error) {
         restorePreviousConfig();

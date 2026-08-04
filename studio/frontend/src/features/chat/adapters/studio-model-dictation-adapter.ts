@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   applyDictationDictionary,
   isCuratedSttModel,
@@ -13,6 +14,11 @@ import {
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 import { startDictationLevelMeter } from "./dictation-level";
+import {
+  beginDictationSession,
+  markDictationFailed,
+  markDictationTranscript,
+} from "./dictation-outcome";
 import {
   type StudioDictationSession,
   isMissingDeviceError,
@@ -265,6 +271,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     if (!StudioModelDictationAdapter.isSupported()) {
       throw new Error("Recording is not supported in this browser.");
     }
+    beginDictationSession();
 
     // Pin the model, language, and linked chat chosen when recording began, so a
     // mid-session settings change or thread switch cannot affect later segments
@@ -334,7 +341,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           ? error.message
           : "A recorded segment could not be transcribed.";
       console.error("STT transcription error:", error);
-      toast.error(message);
+      toast.error(message, {
+        action: {
+          label: "Open Voice settings",
+          onClick: () => useSettingsDialogStore.getState().openDialog("voice"),
+        },
+      });
     };
 
     const buildTranscript = () =>
@@ -362,6 +374,7 @@ export class StudioModelDictationAdapter implements DictationAdapter {
       stream = null;
       const corrected = transcript ? applyDictationDictionary(transcript) : "";
       if (reason !== "cancelled" && corrected) {
+        markDictationTranscript();
         for (const callback of speechCallbacks) {
           callback({ transcript: corrected, isFinal: true });
         }
@@ -403,6 +416,9 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         } catch (error) {
           if (!cancelled && !abortController.signal.aborted) {
             // Keep transcribed segments, but never hide that part was lost.
+            // Only a lost segment is partial: the model preload shares this
+            // reporter and can fail without costing any audio.
+            markDictationFailed();
             reportTranscriptionError(error);
           }
         } finally {

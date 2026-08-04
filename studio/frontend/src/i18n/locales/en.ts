@@ -21,7 +21,7 @@ export const en = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "{name} account menu",
     updateAvailable: "Update available",
     resize: {
@@ -47,6 +47,7 @@ export const en = {
       compare: "Compare",
       search: "Search",
       hub: "Model hub",
+      projects: "Projects",
       train: "Train",
       recipes: "Recipes",
       export: "Export",
@@ -156,6 +157,7 @@ export const en = {
         sttUnload: "Unload",
         sttUnloading: "Unloading…",
         microphoneLabel: "Microphone",
+        microphoneFallbackName: "Microphone {index}",
         microphoneDescription: "Used for dictation",
         microphoneFallbackHint:
           "Used for dictation. Falls back to the system default if the browser speech engine cannot use this device",
@@ -179,6 +181,10 @@ export const en = {
         manage: "Manage",
         backToVoice: "Back to Voice",
         addEntry: "Add entry",
+        newEntryAria: "New dictionary entry",
+        entryPlaceholder: "Jane Doe",
+        entryAria: "Dictionary entry {index}",
+        removeEntryAria: "Remove dictionary entry {index}",
       },
       recents: {
         sectionTitle: "Dictation history",
@@ -238,6 +244,7 @@ export const en = {
         volumeLabel: "Volume",
         previewLabel: "Preview voice",
         previewDescription: "Play a short sample",
+        previewFailed: "TTS preview failed",
         previewAction: "Preview",
         stopAction: "Stop",
         ttsLabel: "Text to speech",
@@ -253,6 +260,8 @@ export const en = {
         "Used to load gated models and push artifacts.",
       hideToken: "Hide token",
       showToken: "Show token",
+      clearToken: "Clear",
+      checkingToken: "Checking token...",
       tokenValidated: "Token validated",
       password: "Password",
       passwordDescription: "Change the password for this Unsloth account.",
@@ -301,6 +310,7 @@ export const en = {
         idleUnload: "Idle auto-unload",
         idleUnloadDescription:
           "Free VRAM after this many idle seconds. 0 keeps it loaded, minimum 60.",
+        idleSecondsAriaLabel: "Idle auto-unload seconds",
         idleNeedsEnable: "Turn on Switch model by request first.",
         idleActiveViaEnv: "Active via UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Failed to load model auto-switch settings.",
@@ -430,17 +440,15 @@ export const en = {
         longestChat: "Longest chat",
         currentStreak: "Current streak",
         longestStreak: "Longest streak",
-        dayCount: "{count} days",
-        dayCountOne: "1 day",
         activityTitle: "Token activity",
-        activityDescription: "{total} tokens over the last {weeks} weeks",
+        activityDescription: "{total} over the last {weeks}",
         mode: {
           daily: "Daily",
           weekly: "Weekly",
           cumulative: "Cumulative",
         },
-        cellTooltip: "{date} · {tokens} tokens, {messages} messages",
-        weekTooltip: "Week of {date} · {tokens} tokens",
+        cellTooltip: "{date} · {tokens}, {messages}",
+        weekTooltip: "Week of {date} · {tokens}",
         less: "Less",
         more: "More",
         insightsTitle: "Activity insights",
@@ -461,7 +469,7 @@ export const en = {
         tokensPerSecond: "{value} tok/s",
         topModelsTitle: "Most used models",
         topModelsDescription: "Ranked by tokens exchanged",
-        modelSummary: "{tokens} · {messages} msgs",
+        modelSummary: "{tokens} · {messages}",
         noModels: "No model usage recorded yet.",
         trainingTitle: "Training",
         trainingDescription: "Fine-tuning runs from this workspace",
@@ -471,13 +479,13 @@ export const en = {
         trainingTokens: "Tokens trained",
         trainingTime: "Training time",
         bestLoss: "Best loss",
-        runSteps: "{steps} steps",
+        runSteps: "{steps}",
         runLoss: "loss {loss}",
       },
     },
     appearance: {
       title: "Appearance",
-      description: "How Unsloth Studio looks on this device.",
+      description: "How Unsloth looks on this device.",
       theme: {
         title: "Theme",
         label: "Color scheme",
@@ -601,6 +609,12 @@ export const en = {
       disableOverlay: "Disable overlay",
       liveMonitor: {
         title: "Live monitor",
+        apiTitle: "API monitor",
+        summary: "Live requests, errors, and token usage",
+        status: "{active} active · {recent} recent · {model}",
+        noModelLoaded: "no model loaded",
+        autoOpen: "Show the floating monitor automatically",
+        autoOpenDescription: "Opens a small panel when API traffic arrives.",
         cpu: "CPU",
         ram: "RAM",
         disk: "Disk",
@@ -612,6 +626,8 @@ export const en = {
       },
       gpu: {
         title: "GPU devices",
+        ggufInference: "GGUF inference",
+        unavailable: "unavailable",
         noGpu: "No visible GPU detected. CPU-only resources are shown above.",
         unknownDevice: "Unknown GPU",
         deviceWithIndex: "GPU {index}",
@@ -687,7 +703,7 @@ export const en = {
       agentDocs: "Open {agent} setup docs",
       copyGeneratedCommand: "Copy generated command",
       modelNote:
-        "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth Studio.",
+        "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
       subagent: {
         title: "Use a local model as a subagent",
         description:
@@ -756,6 +772,28 @@ export const en = {
     chat: {
       title: "Chat",
       description: "Customize how chat behaves on this device.",
+      modelSelection: {
+        title: "Select model settings",
+        expandQuantizations: "Expand quantizations",
+        expandQuantizationsDescription:
+          "On: On Device GGUF models show their quantizations right away. Off: click a model to view its quantizations.",
+        showAllQuantizations: "Show all quantizations",
+        showAllQuantizationsDescription:
+          "On: list every On Device quantization, including not downloaded. Off: show only downloaded quantizations.",
+      },
+      menu: {
+        title: "Chat menu",
+        description:
+          "Pin items to chat's + side menu. Others move into “More”.",
+        chatWithFiles: "Chat with Files (RAG)",
+        mcp: "MCP",
+        savedPrompts: "Saved prompts",
+        compareChat: "Compare chat",
+        exportChat: "Export chat",
+      },
+      showResponseModel: "Show response model",
+      showResponseModelDescription:
+        "Show model metadata in assistant responses.",
       modelDisclaimer: "Show model disclaimer",
       modelDisclaimerDescription:
         'Show "LLMs can make mistakes" under the chat box.',
@@ -826,6 +864,8 @@ export const en = {
     },
     data: {
       title: "Data",
+      backToData: "Back to Data",
+      exportFailed: "Could not export chats",
       description:
         "Manage chat history and uploaded files stored on this device.",
       archivedChats: "Archived chats",
@@ -907,7 +947,7 @@ export const en = {
       osWindows: "Windows",
       secureHttps: "Secure HTTPS",
       secureHttpsHint:
-        "The 0.0.0.0 port is still reachable globally. For full security, launch Unsloth Studio with --secure to expose only this HTTPS link.",
+        "The 0.0.0.0 port is still reachable globally. For full security, launch Unsloth with --secure to expose only this HTTPS link.",
       copyTunnelUrl: "Copy tunnel URL",
       copySnippet: "Copy snippet",
       copy: "Copy",
@@ -921,13 +961,8 @@ export const en = {
       codingAgentsDetectedHint: "Detected on this machine: {agents}.",
       relativeNever: "never",
       relativeJustNow: "just now",
-      relativeHoursAgo: "{count}h ago",
-      relativeDaysAgo: "{count}d ago",
-      relativeMonthsAgo: "{count}mo ago",
-      relativeYearsAgo: "{count}y ago",
       expired: "expired",
       today: "today",
-      inDays: "in {count}d",
       created: "Created {value}",
       used: "Used {value}",
       expires: "Expires {value}",
@@ -945,11 +980,14 @@ export const en = {
       description: "Docs, release notes, feedback, and build info.",
       studioVersion: "Unsloth Version",
       packageVersion: "Package Version",
+      desktopAppVersion: "Desktop App Version",
+      desktopAppVersionUnavailable: "Unavailable",
       llamaCppVersion: "llama.cpp Version",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Update",
       help: "Help",
       documentation: "Documentation",
@@ -959,7 +997,7 @@ export const en = {
       reportIssue: "Report an issue",
       license: {
         sectionTitle: "License",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "Open source under the GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
@@ -967,12 +1005,12 @@ export const en = {
         libraryDescription: "Licensed under Apache 2.0.",
       },
       dangerZone: "Danger zone",
-      shutDownStudio: "Shut down Unsloth Studio",
+      shutDownStudio: "Shut down Unsloth",
       shutDownStudioDescription:
         "Stops the Unsloth server and ends your session.",
       shutDown: "Shut down",
       update: {
-        title: "Update Unsloth Studio",
+        title: "Update Unsloth",
         commandText: "{label} text",
         copied: "Copied",
         copyCommand: "Copy command",
@@ -995,7 +1033,30 @@ export const en = {
           "If you still have the repo checkout, run the local installer from it:",
         restartAfterUpdate: "Restart Unsloth after updating.",
         desktopManaged:
-          "The desktop app keeps its bundled backend updated and will prompt when a new version is available.",
+          "The desktop app checks for new app versions automatically. You can also check or update here at any time.",
+        desktopReady: "Desktop app updates",
+        desktopReadyDescription:
+          "Check whether a newer desktop app version is available.",
+        desktopChecking: "Checking for updates",
+        desktopCheckingDescription: "This usually takes a few seconds.",
+        desktopAvailable: "Desktop app {version} is available",
+        desktopAvailableDescription:
+          "Update now and the desktop app will restart when it finishes.",
+        desktopExternalServer:
+          "Run `unsloth studio update` from the terminal that started your server.",
+        desktopManualInstall:
+          "Open the release page to install the latest Linux package.",
+        desktopCheckFailed: "Could not check for updates",
+        desktopCheckFailedDescription: "Check your connection and try again.",
+        desktopCurrent: "Desktop app is up to date",
+        desktopCurrentDescription:
+          "Unsloth will continue checking automatically.",
+        checkForUpdates: "Check for updates",
+        checkAgain: "Check again",
+        retryCheck: "Try again",
+        checking: "Checking...",
+        updateNow: "Update now",
+        openReleasePage: "Open release page",
         unknownInstall:
           "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",
         localCheckout:
@@ -1337,9 +1398,6 @@ export const en = {
       steps: "Steps",
       lossTrendSparkline: "Loss trend sparkline",
       relativeJustNow: "just now",
-      relativeMinutesAgo: "{count}m ago",
-      relativeHoursAgo: "{count}h ago",
-      relativeDaysAgo: "{count}d ago",
       status: {
         completed: "Completed",
         stopped: "Stopped",

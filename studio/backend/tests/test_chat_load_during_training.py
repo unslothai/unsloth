@@ -486,23 +486,33 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         llama_extra_args = None,
         cache_type_kv = None,
         tensor_parallel = False,
+        gpu_layers = -1,
     ):
         config = config or SimpleNamespace(is_gguf = False, is_lora = False, path = None)
+        placement = self.route._LoadPlacement(
+            requested_gpu_ids,
+            requested_gpu_ids,
+            gpu_ids_are_vulkan_ordinals,
+            self.route._classify_diffusion_gguf(config) if config.is_gguf else False,
+        )
         with _stub_guard_deps(
             training_active = training_active, decision = decision, captured = captured
         ):
-            self.route._guard_chat_load_against_training(
-                config,
-                model_identifier = "unsloth/Qwen3-1.7B",
+            request = SimpleNamespace(
+                model_path = "unsloth/Qwen3-1.7B",
                 hf_token = None,
-                load_in_4bit = True,
                 max_seq_length = 0,
-                requested_gpu_ids = requested_gpu_ids,
-                llama_extra_args = llama_extra_args,
                 cache_type_kv = cache_type_kv,
                 tensor_parallel = tensor_parallel,
                 gpu_memory_mode = gpu_memory_mode,
-                gpu_ids_are_vulkan_ordinals = gpu_ids_are_vulkan_ordinals,
+                gpu_layers = gpu_layers,
+            )
+            self.route._guard_chat_load_against_training(
+                config,
+                request,
+                load_in_4bit = True,
+                placement = placement,
+                llama_extra_args = llama_extra_args,
             )
 
     def test_noop_when_training_inactive(self):
@@ -606,6 +616,59 @@ class TestChatLoadGuardRoute(unittest.TestCase):
         self.assertEqual(len(captured), 1)
         self.assertEqual(captured[0]["single_device_gpu"], "1")
         self.assertEqual(captured[0]["requested_gpu_ids"], [3, 1])
+
+    def _guard_zero_layer(self, *, diffusion_kind, captured):
+        """Drive the guard with a manual zero-layer split and a shim that has --ngl."""
+        config = SimpleNamespace(is_gguf = True)
+        backend = SimpleNamespace(diffusion_split_supported = lambda: True)
+        with (
+            patch.object(self.route, "_classify_diffusion_gguf", return_value = diffusion_kind),
+            patch.object(self.route, "get_llama_cpp_backend", return_value = backend),
+            patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5),
+            patch.object(self.route.LlamaCppBackend, "_effective_gpu_count", return_value = 2),
+        ):
+            self._guard(
+                config = config,
+                captured = captured,
+                training_active = True,
+                decision = (False, {"reason": "must not run"}),
+                gpu_memory_mode = "manual",
+                gpu_layers = 0,
+            )
+
+    def test_zero_layer_diffusion_split_bypasses_the_training_guard(self):
+        """A confirmed DiffusionGemma at ngl 0 places no layers, so it is not refused."""
+        captured = []
+        self._guard_zero_layer(diffusion_kind = True, captured = captured)
+        self.assertEqual(captured, [])
+
+    def test_zero_layer_unclassified_gguf_still_hits_the_training_guard(self):
+        """An unreadable header is not a diffusion promise: --gpu-layers 0 on an
+        ordinary GGUF can still hold VRAM, so the estimate must run."""
+        captured = []
+        with self.assertRaises(HTTPException) as ctx:
+            self._guard_zero_layer(diffusion_kind = None, captured = captured)
+        self.assertEqual(ctx.exception.status_code, 409)
+        self.assertEqual(len(captured), 1)
+
+    def test_zero_layer_unclassified_gguf_is_not_sized_as_cpu_only(self):
+        """Reaching the guard is not enough: it must not be handed a CPU-only token.
+
+        can_load_chat_during_training short-circuits an EMPTY single_device_gpu to
+        "cpu_only" and always returns True, so an unclassified GGUF passed through with
+        force_cpu would be allowed during training on an assumption that only holds for
+        confirmed diffusion. The sibling test above stubs can_load, so it cannot see this.
+        """
+        captured = []
+        with self.assertRaises(HTTPException):
+            self._guard_zero_layer(diffusion_kind = None, captured = captured)
+        self.assertEqual(len(captured), 1)
+        token = captured[0].get("single_device_gpu")
+        self.assertTrue(
+            token is None or str(token).strip() != "",
+            "an unclassified zero-layer GGUF must not be budgeted as CPU-only; "
+            f"single_device_gpu was {token!r}, which training_vram reads as cpu_only",
+        )
 
     def test_unclassified_gguf_on_vulkan_build_budgets_as_ordinals(self):
         # Unknown GGUFs still use the Vulkan ordinal namespace selected by the build.
@@ -717,7 +780,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
 
     def test_gguf_config_passes_is_gguf_and_override(self):
         captured = []
-        config = SimpleNamespace(is_gguf = True)
+        config = SimpleNamespace(identifier = "unsloth/Canonical-Repo", is_gguf = True)
         with patch.object(self.route, "_estimate_gguf_required_gb", return_value = 12.5):
             self._guard(
                 config = config,
@@ -727,6 +790,7 @@ class TestChatLoadGuardRoute(unittest.TestCase):
             )
         self.assertEqual(captured[0]["is_gguf"], True)
         self.assertEqual(captured[0]["required_override_gb"], 12.5)
+        self.assertEqual(captured[0]["model_name"], config.identifier)
 
     def test_vulkan_gguf_estimate_keeps_tensor_cache_coercion(self):
         config = SimpleNamespace(is_gguf = True)
@@ -894,11 +958,11 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             patch.object(
                 self.route,
                 "_guard_chat_load_against_training",
-                lambda config, **kw: captured.update(kw),
+                lambda config, request, **kw: captured.update(request = request, **kw),
             ),
         ):
             asyncio.run(self.route.validate_model(request, current_subject = "u"))
-        self.assertEqual(captured.get("gpu_memory_mode"), "manual")
+        self.assertEqual(captured["request"].gpu_memory_mode, "manual")
 
     def test_validate_forwards_inherited_extras_and_parallel_to_guard(self):
         # Validate and load must size the same inherited command.
@@ -932,14 +996,14 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
             patch.object(
                 self.route,
                 "_guard_chat_load_against_training",
-                lambda config, **kw: captured.update(kw),
+                lambda config, request, **kw: captured.update(request = request, **kw),
             ),
         ):
             asyncio.run(self.route.validate_model(request, current_subject = "u"))
         self.assertEqual(captured.get("llama_extra_args"), ["-c", "32768"])
         self.assertIn("n_parallel", captured)
-        self.assertEqual(captured.get("cache_type_kv"), "f32")
-        self.assertTrue(captured.get("tensor_parallel"))
+        self.assertEqual(captured["request"].cache_type_kv, "f32")
+        self.assertTrue(captured["request"].tensor_parallel)
 
     def test_metadata_probe_skips_training_guard(self):
         # Header-only probes allocate no VRAM.
@@ -1341,7 +1405,9 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             patch.object(self.route, "resolve_effective_chat_template_override", return_value = None),
             patch.object(self.route, "get_inference_backend", return_value = inf),
             patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
-            patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),
+            patch.object(
+                self.route, "_hf_offline_if_unreachable", lambda: contextlib.nullcontext()
+            ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             _stub_guard_deps(training_active = True, decision = (False, info)),
         ):
@@ -1369,9 +1435,14 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             is_loaded = True,
             model_identifier = "x.gguf",
             hf_variant = None,
+            hf_repo = None,
+            gguf_path = None,
             extra_args = ["--spec-draft-device", "CUDA1"],
             extra_args_source = ("x.gguf", None),
+            last_load_intent = None,
+            layer_preserves_tensor_intent = False,
             is_vulkan_build = lambda: True,
+            adopt_load_intent_if_matched = lambda intent: False,
         )
         llama.unload_model = MagicMock()
         cfg = SimpleNamespace(
@@ -1399,7 +1470,6 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
                 return_value = ("x.gguf", "x.gguf", False),
             ),
             patch.object(self.route, "resolve_effective_chat_template_override", return_value = None),
-            patch.object(self.route, "_request_matches_loaded_settings", return_value = False),
             patch.object(
                 self.route,
                 "_resolve_gguf_gpu_ids_for_request",
@@ -1407,7 +1477,9 @@ class TestLoadModelGuardIntegration(unittest.TestCase):
             ),
             patch.object(self.route, "get_inference_backend", return_value = inf),
             patch.object(self.route, "get_llama_cpp_backend", return_value = llama),
-            patch.object(self.route, "_hf_offline_if_dns_dead", lambda: contextlib.nullcontext()),
+            patch.object(
+                self.route, "_hf_offline_if_unreachable", lambda: contextlib.nullcontext()
+            ),
             patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
             _stub_guard_deps(training_active = True, decision = (True, {}), captured = captured),
         ):

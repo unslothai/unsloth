@@ -27,6 +27,11 @@ on:
       - 'install.ps1'
       - 'pyproject.toml'
       - 'tests/studio_setup_ps1/**'
+      # The PowerShell unit tests this workflow runs live here. Without this a
+      # PR touching only one of them never exercises it, and no other workflow
+      # runs them. Scoped to *.ps1 so python-only changes under tests/studio do
+      # not pull in the GGUF smoke jobs.
+      - 'tests/studio/*.ps1'
       - '.github/workflows/studio-windows-inference-smoke.yml'
   push:
     branches: [main, pip]
@@ -78,10 +83,20 @@ jobs:
             if ($errs) { $errs | ForEach-Object { $_.ToString() }; exit 1 }
             Write-Host "$f parsed with no errors"
           }
+          # Propagate each child test's failure before continuing: the step only
+          # inherits the LAST command's exit code, so without these every test
+          # but the last one could fail and still report green (studio-windows-
+          # update-smoke.yml already does this).
           pwsh -NoProfile -File tests/studio/test_resolve_cuda_toolkit.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/studio/test_torch_flavor.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/studio/test_node_decision.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
           pwsh -NoProfile -File tests/studio/test_node_probe_guard.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          pwsh -NoProfile -File tests/studio/test_path_probe_access_denied.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
 
       # uninstall.ps1: native uninstall must keep the shared unsloth.ico while a
       # WSL shortcut still references it (dual install), else that shortcut blanks.
@@ -1749,20 +1764,85 @@ jobs:
         with:
           persist-credentials: false
 
+      # This workflow is in its own `paths` filter, so editing the bootstrap below
+      # always runs this job. No pytest workflow filters on this file, so running the
+      # guard here is what makes it fire on a workflow-only change.
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Guard the Pester bootstrap
+        shell: bash
+        run: |
+          python -m pip install --quiet pyyaml pytest
+          python -m pytest tests/studio/test_pester_bootstrap_hardening.py -q
+
       - name: Install Pester v5
         shell: pwsh
         run: |
-          # PSGallery is intermittently absent from the repository list on GitHub's Windows
-          # runners, which makes `Set-PSRepository PSGallery` fail with "No repository with the
-          # name 'PSGallery' was found." Re-register the default gallery first so the policy
-          # change and module install below always have a repository to target.
-          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
-            Register-PSRepository -Default -ErrorAction SilentlyContinue
+          $ErrorActionPreference = 'Stop'
+
+          $moduleName = 'Pester'
+          $minimum    = [version]'5.5.0'
+
+          function Get-InstalledPester {
+              Get-Module -ListAvailable -Name $moduleName |
+                  Where-Object { $_.Version -ge $minimum } |
+                  Sort-Object Version -Descending |
+                  Select-Object -First 1
           }
-          Set-PSRepository PSGallery -InstallationPolicy Trusted
-          Install-Module Pester -MinimumVersion 5.5.0 -Force -SkipPublisherCheck -Scope CurrentUser
-          Import-Module Pester -MinimumVersion 5.5.0
-          Get-Module Pester | Select-Object Name, Version | Format-Table
+
+          # The runner image ships Pester 5.x, so only reach for the network when it
+          # does not already satisfy the minimum.
+          $installed = Get-InstalledPester
+          if (-not $installed) {
+              # PSResourceGet talks to PSGallery over HTTPS directly. The legacy
+              # PackageManagement path bootstraps nuget.exe, which intermittently fails on
+              # GitHub's Windows runners with "NuGet.Commands.CommandException: Missing
+              # option value for: '-source'", leaving PSGallery unregistered.
+              $hasPSResourceGet = [bool](Get-Command Install-PSResource -ErrorAction SilentlyContinue)
+              $usePSResourceGet = $hasPSResourceGet
+
+              for ($attempt = 1; $attempt -le 3; $attempt++) {
+                  try {
+                      if ($usePSResourceGet) {
+                          if (-not (Get-PSResourceRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+                              Register-PSResourceRepository -PSGallery
+                          }
+                          Install-PSResource -Name $moduleName -Version "[$minimum,)" `
+                              -Repository PSGallery -TrustRepository -Scope CurrentUser
+                      } else {
+                          # Never silence this: a swallowed failure here is what made the next
+                          # line die with "No repository with the name 'PSGallery' was found."
+                          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+                              Register-PSRepository -Default
+                          }
+                          Set-PSRepository PSGallery -InstallationPolicy Trusted
+                          Install-Module $moduleName -MinimumVersion $minimum -Force `
+                              -SkipPublisherCheck -Scope CurrentUser
+                      }
+
+                      $installed = Get-InstalledPester
+                      if ($installed) { break }
+                      throw "$moduleName >= $minimum still not present after install"
+                  } catch {
+                      Write-Host "::warning::$moduleName install attempt $attempt/3 failed: $($_.Exception.Message)"
+                      if ($attempt -eq 3) { throw }
+                      # The two clients fail independently: PSGallery has served 500s to
+                      # PSResourceGet while Install-Module kept working. Swap after a
+                      # failure rather than retrying the same client three times.
+                      if ($hasPSResourceGet) { $usePSResourceGet = -not $usePSResourceGet }
+                      Start-Sleep -Seconds (5 * $attempt)
+                  }
+              }
+          }
+
+          Import-Module $moduleName -MinimumVersion $minimum -Force
+          $loaded = Get-Module $moduleName
+          if (-not $loaded -or $loaded.Version -lt $minimum) {
+              throw "$moduleName >= $minimum failed to import"
+          }
+          $loaded | Select-Object Name, Version | Format-Table
 
       - name: Run Pester suite
         shell: pwsh
@@ -1947,8 +2027,31 @@ jobs:
           if (-not (Test-VCRedistInstalled)) { throw 'Detection did not recover after restoring the registry (test restore bug).' }
 
           Write-Host '== C. Literal uninstall on this throwaway VM (official installer), observe detection =='
+          # aka.ms redirects to a CDN that intermittently cuts the response mid
+          # body ("The response ended prematurely"), which failed this job twice
+          # in one day. Retry with backoff, and require a plausible size so a
+          # truncated download is caught here rather than as a mystery exit code
+          # from Start-Process below.
           $exe = Join-Path $env:RUNNER_TEMP 'vc_redist.x64.exe'
-          Invoke-WebRequest -Uri 'https://aka.ms/vs/17/release/vc_redist.x64.exe' -OutFile $exe
+          $vcUrl = 'https://aka.ms/vs/17/release/vc_redist.x64.exe'
+          $got = $false
+          foreach ($attempt in 1..4) {
+              try {
+                  Remove-Item $exe -Force -ErrorAction SilentlyContinue
+                  Invoke-WebRequest -Uri $vcUrl -OutFile $exe -UseBasicParsing -TimeoutSec 180
+                  $size = (Get-Item $exe -ErrorAction Stop).Length
+                  if ($size -lt 10MB) { throw "truncated download: $size bytes" }
+                  $sig = Get-AuthenticodeSignature $exe
+                  if ($sig.Status -ne 'Valid') { throw "signature is $($sig.Status)" }
+                  Write-Host ("  vc_redist.x64.exe {0:N0} bytes, signed by {1}" -f $size, $sig.SignerCertificate.Subject)
+                  $got = $true
+                  break
+              } catch {
+                  Write-Host "  vc_redist download attempt $attempt failed: $($_.Exception.Message)"
+                  if ($attempt -lt 4) { Start-Sleep -Seconds (10 * $attempt) }
+              }
+          }
+          if (-not $got) { throw 'Could not download vc_redist.x64.exe after 4 attempts.' }
           Start-Process -FilePath $exe -ArgumentList '/uninstall', '/quiet', '/norestart' -Wait
           Show-GroundTruth
           Write-Host ("  Test-VCRedistInstalled after uninstall -> {0}" -f (Test-VCRedistInstalled))

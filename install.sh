@@ -337,6 +337,9 @@ _gfx906_bnb_prune() {
 # and, on PyPI, first in 0.50.0. Keep this floor in step with the amd extra in
 # pyproject.toml and studio/install_python_stack.py.
 _BNB_ROCM_PYPI_FALLBACK="bitsandbytes>=0.50.0"
+# Intel XPU: separate constant, same floor by coincidence. 0.50.0 manylinux is the first with
+# libbitsandbytes_xpu2025.so / _xpu2026.so; studio/setup.ps1's XPU pass uses the same floor.
+_BNB_XPU_SPEC="bitsandbytes>=0.50.0"
 # bitsandbytes ships no ROCm binary in its aarch64 wheel at any version: the PyPI
 # 0.50.0 and continuous-release_main aarch64 wheels both carry only
 # libbitsandbytes_cpu.so plus CUDA variants. So neither install path below gives
@@ -487,6 +490,7 @@ _tauri_torch_index_family() {
         */cu128) echo "cu128" ;;
         */cu130) echo "cu130" ;;
         */cpu) echo "cpu" ;;
+        */xpu) echo "xpu" ;;
         */rocm[0-9]*.[0-9]*)
             _diag_family=${_diag_url##*/}
             case "$_diag_family" in
@@ -522,6 +526,7 @@ _tauri_gpu_branch() {
                 echo "rocm"
             fi ;;
         radeon) echo "rocm_radeon" ;;
+        xpu) echo "xpu" ;;
         cpu) echo "cpu" ;;
         none) echo "no_torch" ;;
         *) echo "unknown" ;;
@@ -1431,6 +1436,32 @@ LAUNCHER_EOF
         rm -f "$_css_gem_png"
     fi
 
+    # Also try to find the pre-built Tauri icon.icns (1024×1024, professionally
+    # built with all required sizes).  Prefer it over the sips-generated icon
+    # for the macOS .app bundle — it ships in the pip package at
+    # studio/src-tauri/icons/icon.icns and is higher quality with @2x variants.
+    _css_tauri_icns=""
+    for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/src-tauri/icons; do
+        if [ -f "$_sp/icon.icns" ]; then
+            _css_tauri_icns="$_sp/icon.icns"
+        fi
+    done
+    if [ -z "$_css_tauri_icns" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/src-tauri/icons/icon.icns" ]; then
+        _css_tauri_icns="$_css_script_dir/studio/src-tauri/icons/icon.icns"
+    fi
+
+    # Also look for the higher-resolution Tauri icon.png (1024×1024) for
+    # the Linux .desktop icon — better than the 512px rounded variant.
+    _css_tauri_png=""
+    for _sp in "$_css_venv_dir"/lib/python*/site-packages/studio/src-tauri/icons; do
+        if [ -f "$_sp/icon.png" ]; then
+            _css_tauri_png="$_sp/icon.png"
+        fi
+    done
+    if [ -z "$_css_tauri_png" ] && [ -n "$_css_script_dir" ] && [ -f "$_css_script_dir/studio/src-tauri/icons/icon.png" ]; then
+        _css_tauri_png="$_css_script_dir/studio/src-tauri/icons/icon.png"
+    fi
+
     # ── Platform-specific shortcuts ──
     # Env-mode installs are workspace-scoped: skip persistent desktop /
     # Start-Menu / dock launchers that may point at a deleted workspace.
@@ -1450,7 +1481,19 @@ LAUNCHER_EOF
         _css_desktop="$_css_app_dir/unsloth-studio.desktop"
         # Escape backslashes and double-quotes for .desktop Exec= field
         _css_exec_escaped=$(printf '%s' "$_css_launcher" | sed 's/\\/\\\\/g; s/"/\\"/g')
-        _css_icon_escaped=$(printf '%s' "$_css_icon_png" | sed 's/\\/\\\\/g; s/"/\\"/g')
+        # Prefer the higher-resolution Tauri icon.png, but persist it under the
+        # installed data directory so local-checkout shortcuts survive repo moves.
+        _css_desktop_icon="$_css_icon_png"
+        if [ -f "$_css_tauri_png" ]; then
+            _css_desktop_icon_tmp="${_css_icon_png}.tmp"
+            if cp "$_css_tauri_png" "$_css_desktop_icon_tmp" 2>/dev/null \
+                && mv "$_css_desktop_icon_tmp" "$_css_icon_png" 2>/dev/null; then
+                :
+            else
+                rm -f "$_css_desktop_icon_tmp"
+            fi
+        fi
+        _css_icon_escaped=$(printf '%s' "$_css_desktop_icon" | sed 's/\\/\\\\/g; s/"/\\"/g')
         cat > "$_css_desktop" << DESKTOP_EOF
 [Desktop Entry]
 Version=1.0
@@ -1542,8 +1585,14 @@ STUB_EOF
             && mv "$_css_macos_dir/launch-studio.tmp" "$_css_macos_dir/launch-studio"
         chmod +x "$_css_macos_dir/launch-studio"
 
-        # Build AppIcon.icns from unsloth-gem.png (2240x2240)
-        if [ -f "$_css_gem_png" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
+        # ── AppIcon ──
+        # Prefer the pre-built Tauri icon.icns (1024×1024, professionally built
+        # with all sizes).  Fall back to generating one from the gem PNG via
+        # sips+iconutil, then to a plain PNG copy.
+        if [ -f "$_css_tauri_icns" ] \
+            && cp "$_css_tauri_icns" "$_css_res_dir/AppIcon.icns" 2>/dev/null; then
+            :
+        elif [ -f "$_css_gem_png" ] && command -v sips >/dev/null 2>&1 && command -v iconutil >/dev/null 2>&1; then
             _css_tmpdir=$(mktemp -d 2>/dev/null)
             if [ -d "$_css_tmpdir" ]; then
                 _css_iconset="$_css_tmpdir/AppIcon.iconset"
@@ -1560,7 +1609,7 @@ STUB_EOF
                 rm -rf "$_css_tmpdir"
             fi
         fi
-        # Fallback: copy PNG as icon
+        # Last-resort fallback: copy PNG as icon
         if [ ! -f "$_css_res_dir/AppIcon.icns" ] && [ -f "$_css_icon_png" ]; then
             cp "$_css_icon_png" "$_css_res_dir/AppIcon.icns" 2>/dev/null || true
         fi
@@ -2266,7 +2315,16 @@ if [ -x "$VENV_DIR/bin/python" ]; then
     # rebuilds the venv for clean state, but must keep the torch release the user
     # already has (see _previous_torch_pin below). Last line only: sitecustomize or
     # import-hook noise on stdout must not corrupt the version.
-    _PREV_TORCH_VER=$("$VENV_DIR/bin/python" -c \
+    # Disk first, no interpreter: `import torch` can block forever on a wedged Intel driver,
+    # and this runs before setup.sh's bounded probes. version.py carries the same label; the
+    # interpreter stays as the fallback for a layout without one.
+    _PREV_TORCH_VER=""
+    for _prev_tv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+        [ -f "$_prev_tv" ] || continue
+        _PREV_TORCH_VER=$(sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_prev_tv" | head -n 1)
+        break
+    done
+    [ -n "$_PREV_TORCH_VER" ] || _PREV_TORCH_VER=$("$VENV_DIR/bin/python" -c \
         "import torch; print(torch.__version__)" 2>/dev/null | tail -n 1 || true)
     # New layout already exists — replace only after preserving rollback copy.
     substep "preserving existing environment for rollback..."
@@ -2628,6 +2686,56 @@ _probe_amd_gfx_arch() {
     printf '%s\n' "$_pg"
 }
 
+# Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
+# every GPU, "uncovered" for an incompatible mix, empty when no fallback is needed or the
+# inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because the wheel must support
+# the host. Shared decision with install.ps1 / setup.ps1 / install_python_stack.py.
+_nvidia_cu126_verdict() {
+    [ -n "$1" ] || return 0
+    _ncv_caps=$(_run_bounded "$1" --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null) || return 0
+    printf '%s\n' "$_ncv_caps" | awk '
+        { gsub(/^[[:space:]]+|[[:space:]]+$/, "") }   # match the .Trim()/.strip() siblings
+        /^[0-9]+\.[0-9]+$/ {
+            split($0, _sm, ".")
+            _n = (_sm[1] * 10) + _sm[2]
+            seen = 1
+            if (_n < 75) legacy = 1
+            if (_n < 50 || _n > 90) outside_cu126 = 1
+            next
+        }
+        /./ { unreadable = 1 }
+        END {
+            if (!seen || unreadable || !legacy) exit
+            print outside_cu126 ? "uncovered" : "cu126"
+        }
+    '
+}
+
+# Cap cu128/cu130 at cu126 when it covers every physical GPU: PyTorch 2.11's cu128/cu130
+# start at sm_75, cu126 spans sm_50-90. Non-x86_64 keeps driver-only selection.
+_cap_cuda_family_for_pre_turing() {
+    case "$_ARCH" in
+        x86_64|amd64) ;;
+        *) printf '%s\n' "$1"; return ;;
+    esac
+    case "$1" in
+        cu128|cu130) ;;
+        *) printf '%s\n' "$1"; return ;;
+    esac
+    case "$(_nvidia_cu126_verdict "$2")" in
+        cu126)
+            echo "[WARN] Pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $1 wheels start at sm_75." >&2
+            printf '%s\n' "cu126"
+            return
+            ;;
+        uncovered)
+            echo "[WARN] This host mixes pre-Turing NVIDIA GPUs with GPUs that cu126 cannot serve; no PyTorch 2.11 CUDA family covers both." >&2
+            echo "[WARN] Keeping $1, so the pre-Turing GPUs will be unusable. Set UNSLOTH_TORCH_INDEX_FAMILY=cu126 to choose the other way." >&2
+            ;;
+    esac
+    printf '%s\n' "$1"
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -2803,20 +2911,24 @@ get_torch_index_url() {
     fi
     _major=${_cuda_ver%%.*}
     _minor=${_cuda_ver#*.}
-    if [ "$_major" -ge 13 ]; then echo "$_base/cu130"
-    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 8 ]; then echo "$_base/cu128"
-    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 6 ]; then echo "$_base/cu126"
-    elif [ "$_major" -ge 12 ]; then echo "$_base/cu124"
-    elif [ "$_major" -ge 11 ]; then echo "$_base/cu118"
-    else echo "$_base/cpu"; fi
+    if [ "$_major" -ge 13 ]; then _cuda_tag=cu130
+    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 8 ]; then _cuda_tag=cu128
+    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 6 ]; then _cuda_tag=cu126
+    elif [ "$_major" -ge 12 ]; then _cuda_tag=cu124
+    elif [ "$_major" -ge 11 ]; then _cuda_tag=cu118
+    else echo "$_base/cpu"; return; fi
+    echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi")"
 }
 
 # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
-# torch.__version__ ($1) -> flavor tag (cuXXX / rocm / cpu); untagged wheel = cpu.
+# torch.__version__ ($1) -> flavor tag (cuXXX / rocm / xpu / cpu); untagged wheel = cpu.
+# The xpu arm is load-bearing: without it a +xpu wheel reads as "cpu" and is force-reinstalled
+# on every run. Parity with the ps1 side.
 _torch_flavor_tag() {
     case "$1" in
         *+cu[0-9]*) printf '%s\n' "$1" | sed -n 's/.*+\(cu[0-9][0-9]*\).*/\1/p' ;;
         *+rocm*)    echo "rocm" ;;
+        *+xpu*)     echo "xpu" ;;
         *+cpu*)     echo "cpu" ;;
         "")         echo "" ;;
         *)          echo "cpu" ;;
@@ -2954,7 +3066,7 @@ _install_torch_default_index() {
     fi
 }
 
-# Expected tag from the index leaf ($1): cuXXX / cpu / rocm (rocmX.Y and gfx* ->
+# Expected tag from the index leaf ($1): cuXXX / cpu / xpu / rocm (rocmX.Y and gfx* ->
 # rocm). Empty on an unknown leaf (odd mirror) so the repair safely no-ops.
 _expected_torch_flavor_tag() {
     _leaf=$(_torch_index_url_leaf "$1")
@@ -2968,6 +3080,8 @@ _expected_torch_flavor_tag() {
             esac
             ;;
         cpu)          echo "cpu" ;;
+        # Intel XPU (SYCL) is a GPU flavor, so a pinned xpu index repairs a stale CPU wheel.
+        xpu)          echo "xpu" ;;
         # Exact rocm/gfx families only; a custom rocm*-suffixed leaf -> "" (custom).
         *)
             if _is_pip_rocm_family_leaf "$_leaf"; then echo "rocm"; else echo ""; fi
@@ -2975,8 +3089,23 @@ _expected_torch_flavor_tag() {
     esac
 }
 
+# Installed torch's version label, for expected-flavor tag $1. The xpu path reads it off disk
+# (as setup.sh's fast-path escape does): `import torch` can block forever on a wedged Intel
+# driver. Other families keep the interpreter read.
+_installed_torch_version_for_tag() {
+    if [ "$1" = "xpu" ]; then
+        for _itv in "$VENV_DIR"/lib/python*/site-packages/torch/version.py; do
+            [ -f "$_itv" ] || continue
+            sed -n "s/^__version__ = '\([^']*\)'.*/\1/p" "$_itv" | head -n 1
+            return
+        done
+        return
+    fi
+    "$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true
+}
+
 # Whether index ($1) supports a plain --default-index reinstall. pytorch.org cuXXX /
-# rocmX.Y AND the repo.amd.com gfx* indexes are all PEP 503 simple indexes that uv
+# xpu / rocmX.Y AND the repo.amd.com gfx* indexes are all PEP 503 simple indexes that uv
 # resolves (torch + every transitive dep) via --default-index -- the same URLs the
 # fresh-install paths above already use -- so a stale wheel is auto-repairable.
 # Unknown/odd-mirror leaves -> no, so we warn rather than risk a wrong reinstall.
@@ -2984,6 +3113,8 @@ _torch_index_repairable() {
     _leaf=$(_torch_index_url_leaf "$1")
     case "$_leaf" in
         cu[0-9]*) echo "yes" ;;
+        # /whl/xpu is a plain PEP 503 index (oneAPI runtime and triton-xpu are ordinary deps).
+        xpu)      echo "yes" ;;
         # Only EXACT rocm/gfx families resolve via --default-index; a suffixed leaf is verbatim.
         *)
             if _is_pip_rocm_family_leaf "$_leaf"; then echo "yes"; else echo "no"; fi
@@ -3399,6 +3530,14 @@ case "$_torch_index_leaf" in
         TORCH_CONSTRAINT="torch>=2.4,<2.12.0"
         TORCHVISION_CONSTRAINT="torchvision>=0.19,<0.27.0"
         TORCHAUDIO_CONSTRAINT="torchaudio>=2.4,<2.12.0"
+        ;;
+    # Floor 2.6, not the generic 2.4: unsloth/models/_utils.py raises at import for an XPU
+    # device below it, so a mirror serving an older +xpu wheel would install something that
+    # cannot run. Reached only through an explicit pin (no Intel autodetect on this side).
+    xpu)
+        TORCH_CONSTRAINT="torch>=2.6,<2.11.0"
+        TORCHVISION_CONSTRAINT="torchvision>=0.21,<0.26.0"
+        TORCHAUDIO_CONSTRAINT="torchaudio>=2.6,<2.11.0"
         ;;
 esac
 
@@ -3832,7 +3971,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7"
+            "unsloth>=2026.8.2" "unsloth-zoo>=2026.8.2"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -3849,7 +3988,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7" ${_MLX_LM_EXCLUDE_ARG:-}
+            "unsloth>=2026.8.2" "unsloth-zoo>=2026.8.2" ${_MLX_LM_EXCLUDE_ARG:-}
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -4083,7 +4222,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7"
+            "unsloth>=2026.8.2" "unsloth-zoo>=2026.8.2"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -4102,7 +4241,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "unsloth>=2026.7.6" "unsloth-zoo>=2026.7.7"
+            --upgrade-package unsloth "unsloth>=2026.8.2" "unsloth-zoo>=2026.8.2"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -4131,7 +4270,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.7.7" "unsloth>=2026.7.6" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.2" "unsloth>=2026.8.2" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -4161,7 +4300,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
     _expected_torch_tag=$(_expected_torch_flavor_tag "$TORCH_INDEX_URL")
     # Only act when a GPU build is expected (cuXXX / rocm); cpu and unknown skip.
     if [ -n "$_expected_torch_tag" ] && [ "$_expected_torch_tag" != "cpu" ]; then
-        _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
+        _installed_torch_ver=$(_installed_torch_version_for_tag "$_expected_torch_tag")
         _installed_torch_tag=""
         [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
         # Repair when flavor is wrong AND the index is plain --default-index reinstallable
@@ -4171,7 +4310,7 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "PyTorch flavor mismatch (installed $_installed_torch_tag, need $_expected_torch_tag) -- reinstalling correct build..."
             _install_torch_default_index \
                 --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio
-            _installed_torch_ver=$("$_VENV_PY" -c "import torch; print(torch.__version__)" 2>/dev/null || true)
+            _installed_torch_ver=$(_installed_torch_version_for_tag "$_expected_torch_tag")
             _installed_torch_tag=""
             [ -n "$_installed_torch_ver" ] && _installed_torch_tag=$(_torch_flavor_tag "$_installed_torch_ver")
         fi
@@ -4183,6 +4322,20 @@ if [ "$SKIP_TORCH" = false ] && [ -n "${TORCH_INDEX_URL:-}" ]; then
             substep "[WARN]   uv pip install --python \"$_VENV_PY\" \"$TORCH_CONSTRAINT\" \"$TORCHVISION_CONSTRAINT\" \"$TORCHAUDIO_CONSTRAINT\" --default-index $(_strip_index_url_credentials "$TORCH_INDEX_URL") --reinstall-package torch --reinstall-package torchvision --reinstall-package torchaudio" "$C_WARN"
         fi
     fi
+fi
+
+# ── Intel XPU: bitsandbytes with XPU kernels ──
+# manylinux 0.50.0 is the first with libbitsandbytes_xpu2025.so / _xpu2026.so, and nothing else
+# here touches bitsandbytes on this index (both ROCm passes are gated on that family), so a
+# migrated environment would keep a pre-XPU build and lose 4-bit QLoRA.
+# Out here rather than in the install branches above: those are mutually exclusive, so a copy in
+# the fresh arm never runs for a migrated env (which is how the ROCm passes ended up duplicated).
+# --no-deps: torch and numpy are already in. Best effort, like the Windows pass.
+if [ "$SKIP_TORCH" = false ] && [ "$(_torch_index_url_leaf "${TORCH_INDEX_URL:-}")" = "xpu" ]; then
+    substep "installing bitsandbytes with Intel XPU kernels..."
+    run_install_cmd "install bitsandbytes (xpu)" uv pip install --python "$_VENV_PY" \
+        --no-deps "$_BNB_XPU_SPEC" || \
+        substep "[WARN] could not install an XPU-capable bitsandbytes; 4-bit QLoRA may be unavailable." "$C_WARN"
 fi
 
 # ── CI only: overlay a source checkout over the package just installed ──

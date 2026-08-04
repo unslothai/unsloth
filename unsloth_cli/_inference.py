@@ -52,6 +52,78 @@ def urlopen_no_redirect(request, timeout):
     return _no_redirect_opener.open(request, timeout = timeout)
 
 
+# /api/inference/load and /unload pad their body so a proxy cannot time a slow load
+# out, committing the 200 before the work finishes. A failure found after that travels
+# only in-band under this key (studio/backend/routes/inference.py), so a client that
+# treats any 200 as success reports a failed load as a successful one.
+_DEFERRED_ERROR_KEY = "_deferred_error"
+
+
+def raise_for_deferred_error(url: str, body):
+    """Raise the late failure a padded 200 body carries; else return ``body``.
+
+    ``urllib.error.HTTPError`` specifically: it is the class every CLI caller already
+    handles for a plain HTTP failure, so existing ``except`` blocks, messages and exit
+    codes keep working, and ``.read()`` yields the same ``{"detail": ...}`` shape.
+    """
+    if not isinstance(body, dict):
+        return body
+    deferred = body.get(_DEFERRED_ERROR_KEY)
+    if not isinstance(deferred, dict):
+        return body
+
+    import email.message
+    import io
+    import urllib.error
+
+    status = deferred.get("status_code")
+    if not isinstance(status, int) or isinstance(status, bool):
+        status = 500
+    detail = deferred.get("detail")
+    if not isinstance(detail, str) or not detail:
+        detail = "unknown error" if detail is None else json.dumps(detail)
+    headers = email.message.Message()
+    headers["Content-Type"] = "application/json"
+    raise urllib.error.HTTPError(
+        url, status, detail, headers, io.BytesIO(json.dumps({"detail": detail}).encode())
+    )
+
+
+def require_completed_padded_body(url: str, body):
+    """Return ``body``, or raise if it is not the payload a padded route promised.
+
+    A proxy that gives up mid-pad leaves a 200 with an empty or truncated body, so
+    accepting it reports an unfinished load or unload as completed. Only the two padded
+    routes commit their status that early, so only they require a payload; ``{}`` is
+    rejected too, since that is what a blank body decodes to here. Mirrored by
+    ``assertCompletedPaddedBody`` in studio/frontend/src/features/chat/api/padded-response.ts.
+    """
+    if isinstance(body, dict) and body:
+        return body
+    raise RuntimeError(
+        f"{url} did not report completion: the connection closed before the "
+        "server's reply arrived. Check the model's status before retrying."
+    )
+
+
+def read_json_checking_deferred_error(url: str, response):
+    """Drain ``response``, then raise any deferred error its body carries.
+
+    Draining matters on its own: stopping at the headers of a padded /load leaves the
+    load running, so the caller resumes too early. An incomplete JSON payload is a
+    truncated padded reply, not a success (see ``require_completed_padded_body``).
+    """
+    try:
+        raw = response.read()
+    finally:
+        response.close()
+    try:
+        body = json.loads(raw.decode(errors = "replace") or "{}")
+    except ValueError:
+        body = None
+    return require_completed_padded_body(url, raise_for_deferred_error(url, body))
+
+
 def ensure_studio_backend_path() -> None:
     backend_dir = str(Path(__file__).resolve().parents[1] / "studio" / "backend")
     if backend_dir not in sys.path:
@@ -375,37 +447,35 @@ def _load_gguf_backend(
     llama_extra_args: Optional[List[str]] = None,
 ):
     ensure_studio_backend_path()
-    from core.inference.llama_cpp import LlamaCppBackend
+    from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
     from core.inference.tensor_fallback import load_with_tensor_fallback
 
     llama_backend = LlamaCppBackend()
     extra_args = _validate_llama_extra_args_or_exit(llama_extra_args)
-    common = dict(
+    intent_fields = dict(
         hf_variant = model_config.gguf_variant,
         model_identifier = model_config.identifier,
         is_vision = model_config.is_vision,
         n_ctx = max_seq_length,
     )
+    if model_config.gguf_hf_repo:
+        intent_fields.update(hf_repo = model_config.gguf_hf_repo, hf_token = hf_token)
+    else:
+        intent_fields.update(
+            gguf_path = model_config.gguf_file,
+            mmproj_path = model_config.gguf_mmproj_file,
+            mtp_draft_path = model_config.gguf_mtp_file,
+        )
 
     async def _attempt_gguf_load(
         requested_tensor_parallel: bool, attempt_extra_args: Optional[List[str]]
     ) -> bool:
-        attempt_common = dict(
-            common,
-            tensor_parallel = requested_tensor_parallel,
-            extra_args = attempt_extra_args,
-        )
-        if model_config.gguf_hf_repo:
-            return llama_backend.load_model(
-                hf_repo = model_config.gguf_hf_repo,
-                hf_token = hf_token,
-                **attempt_common,
-            )
         return llama_backend.load_model(
-            gguf_path = model_config.gguf_file,
-            mmproj_path = model_config.gguf_mmproj_file,
-            mtp_draft_path = model_config.gguf_mtp_file,
-            **attempt_common,
+            GgufLoadIntent(
+                **intent_fields,
+                tensor_parallel = requested_tensor_parallel,
+                extra_args = attempt_extra_args,
+            )
         )
 
     loaded = asyncio.run(
@@ -684,11 +754,13 @@ class HttpChatBackend:
         if llama_extra_args:
             payload["llama_extra_args"] = llama_extra_args
         try:
-            self._request(
-                "POST",
-                "/api/inference/load",
-                payload,
-            ).close()
+            # Read the body, don't close at the headers: a slow load commits its 200
+            # early and pads until done, so closing here would generate mid-load and
+            # discard the only report of a late failure.
+            read_json_checking_deferred_error(
+                self._base + "/api/inference/load",
+                self._request("POST", "/api/inference/load", payload),
+            )
         except Exception as exc:
             typer.echo(f"Model load failed: {exc}", err = True)
             raise typer.Exit(code = 1)
