@@ -1015,6 +1015,20 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+      # ── Windows: every executable in the bundle must be signed ──
+      # NSIS runs its plugin DLLs from $PLUGINSDIR, so the installer being signed
+      # says nothing about what it drops on disk.
+      - name: Verify every executable in the Windows bundles is signed
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
+        run: |
+          $paths = @($env:ARTIFACT_PATHS | ConvertFrom-Json) |
+                   Where-Object { $_ -like '*-setup.exe' }
+          if (-not $paths) { Write-Host '::error::no Windows installer to verify'; exit 1 }
+          .github/scripts/assert-bundle-signed.ps1 -Path $paths
+
       # ── Windows: assemble a Microsoft false-positive submission packet ──
       # The WDSI portal is a web form with no API, so this cannot be automated,
       # but pre-filling the lookups makes submitting a build take seconds.
