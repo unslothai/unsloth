@@ -58,13 +58,20 @@ def test_preference_writes_a_scale_not_the_root_font_size():
     assert "style.fontSize" not in STORE
 
 
-def test_default_ui_font_size_is_fifteen():
-    assert "UI_FONT_SIZE_RANGE = { min: 12, max: 20, default: 15 }" in STORE
-    assert "const UI_FONT_SIZE_CSS_BASE = 16;" in STORE
+def test_css_default_scale_matches_the_store_default():
+    """index.css carries the default as a scale, the store carries it as a px
+    size, and the applier only drops data-ui-font-size at the store's value.
+    Derive the scale so the two cannot drift: when they did, everything
+    rendered at one size while the preference control called it another."""
+    rng = re.search(r"UI_FONT_SIZE_RANGE = \{ min: (\d+), max: (\d+), default: (\d+) \}", STORE)
+    assert rng is not None
+    base = re.search(r"const UI_FONT_SIZE_CSS_BASE = (\d+);", STORE)
+    assert base is not None
     assert "c.uiFontSize ?? UI_FONT_SIZE_RANGE.default" in STORE
     assert "effectiveUiFontSize !== UI_FONT_SIZE_RANGE.default" in STORE
     assert "effectiveUiFontSize / UI_FONT_SIZE_CSS_BASE" in STORE
-    assert "--ui-font-scale: 0.9375;" in INDEX_CSS
+    scale = int(rng.group(3)) / int(base.group(1))
+    assert f"--ui-font-scale: {scale:g};" in INDEX_CSS
 
 
 def test_named_text_tokens_scale():

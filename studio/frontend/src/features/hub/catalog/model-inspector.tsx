@@ -846,7 +846,7 @@ export const ModelInspector = memo(function ModelInspector({
         />
       </div>
 
-      <div className="max-w-[860px] space-y-4 pt-4">
+      <div className="max-w-[var(--hub-readme-measure)] space-y-4 pt-4">
         {readmeReady && readmeRepoId && (
           <ModelReadme
             repoId={readmeRepoId}

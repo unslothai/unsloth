@@ -966,6 +966,7 @@ export const ptBR = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Atualização",
       help: "Ajuda",
       documentation: "Documentação",
