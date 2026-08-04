@@ -51,9 +51,14 @@ function getModalLayer(): boolean {
   return modalLayerUp;
 }
 
-/** Tap-to-pin is for touch, which has no hover. Read at click time so hybrid
- * devices answer for the pointer in use. */
-function isCoarsePointer(): boolean {
+/** Tap-to-pin is for touch, which has no hover. The click's own pointerType is
+ * the only thing that answers for the pointer actually used: the media query
+ * reports the primary device, so on a hybrid it mislabels every event from the
+ * other one. Keyboard activation reports "", which correctly does not pin. */
+function isTouchClick(event: React.MouseEvent): boolean {
+  const pointerType = (event.nativeEvent as Partial<PointerEvent>).pointerType;
+  if (typeof pointerType === "string") return pointerType === "touch";
+  // No PointerEvent (older WebViews): fall back to the device class.
   return (
     typeof window !== "undefined" &&
     typeof window.matchMedia === "function" &&
@@ -139,7 +144,8 @@ function Tooltip({
   }, [clickOpen]);
 
   return (
-    <TooltipToggleCtx.Provider value={toggle}>
+    // Controlled tooltips own their open state; pinning would never render.
+    <TooltipToggleCtx.Provider value={isControlled ? null : toggle}>
       <TooltipPrimitive.Root
         data-slot="tooltip"
         // false, not undefined: a hovered tooltip has to be forced shut when a
@@ -167,12 +173,13 @@ function TooltipTrigger({
       // action is skipped if the event is already default-prevented.
       onClick?.(e);
       // With a mouse, hover already shows it and pinning only strands it. Let
-      // Radix's own close-on-click run instead.
-      if (!isCoarsePointer()) return;
+      // Radix's own close-on-click run instead. `toggle` is absent when the
+      // consumer controls `open`, where a pin would be dead state anyway.
+      if (!toggle || !isTouchClick(e)) return;
       // preventDefault keeps Radix Tooltip's internal close-on-click from
       // undoing the tap-toggle below (its composed handler checks it).
       e.preventDefault();
-      toggle?.();
+      toggle();
     },
     [toggle, onClick],
   );
