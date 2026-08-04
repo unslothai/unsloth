@@ -3016,9 +3016,10 @@ class ModelConfig:
                     )
 
                     # Reject before the load path unloads the resident model.
-                    if not _gguf_files_for_variant(
-                        [v.filename for v in variants], variant
-                    ) and not _cached_variant_resolution(identifier, variant)[0]:
+                    if (
+                        not _gguf_files_for_variant([v.filename for v in variants], variant)
+                        and not _cached_variant_resolution(identifier, variant)[0]
+                    ):
                         available = ", ".join(v.quant for v in variants)
                         raise ValueError(
                             f"GGUF variant '{variant}' not found in {identifier}. "

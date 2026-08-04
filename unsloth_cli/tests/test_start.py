@@ -3432,7 +3432,14 @@ def test_resolve_model_same_quant_prints_no_switch_warning(monkeypatch, capsys):
 def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
 
-    def http_json(method, url, key, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        key,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         assert url.endswith("/v1/models"), url
@@ -3459,7 +3466,14 @@ def test_resolve_model_refused_load_reports_survivor(monkeypatch, capsys):
 def test_resolve_model_failed_load_stays_quiet_when_model_gone(monkeypatch, capsys):
     models = [{"id": "owner/model-GGUF", "loaded": True}]
 
-    def http_json(method, url, key, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        key,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         assert url.endswith("/v1/models"), url

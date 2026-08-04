@@ -10,12 +10,8 @@ from utils.models.model_config import GgufVariantInfo, ModelConfig
 REPO = "unsloth/Llama-3.2-1B-Instruct-GGUF"
 
 VARIANTS = [
-    GgufVariantInfo(
-        filename = "Llama-3.2-1B-Instruct-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 100
-    ),
-    GgufVariantInfo(
-        filename = "Llama-3.2-1B-Instruct-Q8_0.gguf", quant = "Q8_0", size_bytes = 200
-    ),
+    GgufVariantInfo(filename = "Llama-3.2-1B-Instruct-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 100),
+    GgufVariantInfo(filename = "Llama-3.2-1B-Instruct-Q8_0.gguf", quant = "Q8_0", size_bytes = 200),
 ]
 
 
