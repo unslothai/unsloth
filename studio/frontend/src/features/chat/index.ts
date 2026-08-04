@@ -161,6 +161,7 @@ export {
   fetchSttStatus,
   loadSttModel,
   startSttDownload,
+  sttEngineStatusFor,
   unloadSttModel,
   validateSttModel,
   type SttDownloadStatus,

@@ -51,6 +51,10 @@ import { DictationDictionaryView } from "../components/dictation-dictionary-view
 import { RecentDictationsView } from "../components/recent-dictations-view";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
+import {
+  isTrackingSttDownload,
+  trackSttDownload,
+} from "../lib/stt-download-mirror";
 import { requestSttDownload } from "../stores/stt-download-prompt-store";
 import {
   MTMD_STT_MODELS,
@@ -461,7 +465,6 @@ export function VoiceTab() {
     }
   }, []);
   const sttRepoId = getSttModelRepo(sttModel);
-  const hfToken = useHfTokenStore((state) => state.token);
   const [sttDownloadAvailability, setSttDownloadAvailability] = useState<{
     repoId: string;
     state: SttDownloadAvailability;
@@ -507,6 +510,11 @@ export function VoiceTab() {
               : "missing",
         });
         if (download.downloading) {
+          // Adopt a transfer that outlived the page that started it, so it
+          // still shows in the download panel.
+          if (download.model && !isTrackingSttDownload(download.model)) {
+            trackSttDownload(download.model);
+          }
           watchedDownloadRef.current = download.model;
           const bytes = download.bytes_done ?? 0;
           const sample = downloadRateSampleRef.current;

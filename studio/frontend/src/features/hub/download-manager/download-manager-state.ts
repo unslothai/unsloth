@@ -224,7 +224,8 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
     partialize: (state) => ({
       jobs: Object.fromEntries(
         Object.entries(state.jobs)
-          .filter(([, job]) => ACTIVE_STATES.has(job.state))
+          // External jobs have no hub job to resume into, so they are not saved.
+          .filter(([, job]) => !job.external && ACTIVE_STATES.has(job.state))
           .map(([key, job]) => [key, toPersistedJob(job)] as const),
       ),
       conflicts: {},

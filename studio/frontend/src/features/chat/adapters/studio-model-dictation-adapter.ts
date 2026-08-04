@@ -179,6 +179,19 @@ export async function fetchSttStatus(
   return (await response.json()) as SttStatus;
 }
 
+/** The engine block that owns `model`. A curated Whisper prefers whisper.cpp,
+ * but without whisper-server the backend serves it through Transformers, so
+ * that is the fallback. mtmd models run nowhere else. */
+export function sttEngineStatusFor(
+  status: SttStatus,
+  model: string,
+): SttEngineStatus | undefined {
+  const engine = sttEngineFor(model);
+  if (engine === "mtmd") return status.mtmd;
+  if (engine === "gguf" && status.gguf?.available) return status.gguf;
+  return status.transformers;
+}
+
 /** Verify a custom Hub repository is a Transformers Whisper checkpoint. */
 export async function validateSttModel(
   model: string,

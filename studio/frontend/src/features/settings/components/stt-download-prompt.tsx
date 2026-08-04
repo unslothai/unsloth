@@ -18,7 +18,7 @@ import { useT } from "@/i18n";
 import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
 import type { ReactNode } from "react";
-import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { trackSttDownload } from "../lib/stt-download-mirror";
 import { useSttDownloadPromptStore } from "../stores/stt-download-prompt-store";
 import {
   type SttModel,
@@ -52,19 +52,9 @@ export function SttDownloadPrompt() {
   const confirm = async (model: SttModel) => {
     try {
       await startSttDownload(model, hfApiToken(hfToken));
-      // The mic path shows no progress, so point at the place that does.
-      toast.success(
-        t("settings.voice.dictation.sttDownloadStarted", {
-          model: sttModelName(model),
-        }),
-        {
-          action: {
-            label: t("settings.voice.dictation.sttOpenVoiceSettings"),
-            onClick: () =>
-              useSettingsDialogStore.getState().openDialog("voice"),
-          },
-        },
-      );
+      // Progress goes to the shared download panel; the model loads itself
+      // when it lands.
+      trackSttDownload(model);
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
         description: error instanceof Error ? error.message : undefined,
@@ -83,7 +73,9 @@ export function SttDownloadPrompt() {
       <AlertDialogContent>
         <AlertDialogHeader>
           <AlertDialogMedia>
-            <MicIcon className="text-muted-foreground size-7" />
+            {/* The glyph fills its viewBox, so it needs to sit smaller than the
+                padded hugeicons the media circle is sized for. */}
+            <MicIcon className="text-muted-foreground size-5" />
           </AlertDialogMedia>
           <AlertDialogTitle>
             {t("settings.voice.dictation.sttDownloadConfirmTitle", {
