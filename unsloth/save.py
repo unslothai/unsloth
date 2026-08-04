@@ -2863,6 +2863,38 @@ def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag
     print("Successfully pushed to ollama")
 
 
+def _offloaded_parameter_hint(model):
+    """Sentence to append when a save failed on offloaded (meta) parameters.
+
+    Accelerate leaves offloaded parameters on the meta device, so saving dies
+    inside accelerate with "'NoneType' object is not subscriptable" or "Cannot
+    copy out of meta tensor", neither of which names the offload. Returns ""
+    when no meta parameter is present, so unrelated failures are not
+    mislabelled.
+    """
+    try:
+        meta = []
+        for name, tensor in model.named_parameters():
+            if getattr(tensor, "device", None) is not None and tensor.device.type == "meta":
+                meta.append(name)
+                # A 30B MoE has thousands; listing them would bury the error.
+                if len(meta) >= 3:
+                    break
+        if not meta:
+            return ""
+        return (
+            f" Unsloth: this model has parameters on the meta device "
+            f"(offloaded because it did not fit the GPU), for example "
+            f"{', '.join(meta)}. Saving needs the real weights, which the "
+            f"offload hooks do not expose here. Re-run on a GPU large enough "
+            f"to hold the model without offloading, or reload it with "
+            f"`device_map` pinned to a single device before saving."
+        )
+    except Exception:
+        # A diagnostic must never replace the real error with its own.
+        return ""
+
+
 @_normalize_tied_weights_keys_for_save
 def unsloth_save_pretrained_gguf(
     self,
@@ -3025,7 +3057,9 @@ def unsloth_save_pretrained_gguf(
             unsloth_generic_save(**arguments)
 
         except Exception as e:
-            raise RuntimeError(f"Failed to save/merge model: {e}")
+            raise RuntimeError(
+                f"Failed to save/merge model: {e}"
+                f"{_offloaded_parameter_hint(self)}")
     else:
         # Non-PEFT model: checkpoint files already exist; point save_to_gguf
         # at the original path instead of re-saving to a temp subdir.
@@ -3048,7 +3082,9 @@ def unsloth_save_pretrained_gguf(
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
             except Exception as e:
-                raise RuntimeError(f"Failed to save model: {e}")
+                raise RuntimeError(
+                    f"Failed to save model: {e}"
+                    f"{_offloaded_parameter_hint(self)}")
 
     if is_processor:
         tokenizer = tokenizer.tokenizer
@@ -3134,15 +3170,15 @@ def unsloth_save_pretrained_gguf(
             imatrix = imatrix_path,
         )
     except Exception as e:
-        if IS_KAGGLE_ENVIRONMENT:
+        if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(e, save_directory):
             raise RuntimeError(
                 f"Unsloth: GGUF conversion failed in Kaggle environment.\n"
                 f"This is likely due to the 20GB disk space limit.\n"
                 f"Try saving to /tmp directory or use a smaller model.\n"
                 f"Error: {e}"
-            )
+            ) from e
         else:
-            raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}")
+            raise RuntimeError(f"Unsloth: GGUF conversion failed: {e}") from e
 
     # Step 9: Create Ollama modelfile
     gguf_directory = f"{save_directory}_gguf"
@@ -3207,6 +3243,46 @@ def unsloth_save_pretrained_gguf(
         "is_vlm": is_vlm_update,
         "fix_bos_token": fix_bos_token,
     }
+
+
+# Errno 28 / ENOSPC and the wordings the various layers use for it.
+_DISK_FULL_PATTERNS = (
+    "no space left on device",
+    "not enough free space",
+    "disk quota exceeded",
+    "errno 28",
+    "insufficient disk",
+    "write failed: no space",
+)
+
+# Kaggle allows 20GB. Below this headroom a failed conversion is plausibly
+# about space; above it, blaming disk sends the user nowhere useful.
+_DISK_HEADROOM_BYTES = 2 * 1024 ** 3
+
+
+def _gguf_failure_looks_like_disk(exc, save_directory = None):
+    """Is this GGUF failure plausibly about running out of disk?
+
+    Two independent signals, either alone sufficient: each can be absent for a
+    good reason. The message may name ENOSPC after the directory was cleaned
+    up, and the disk may be genuinely full while a subprocess surfaced
+    something vaguer. Never raises; an unreadable path just means "not disk".
+    """
+    text = f"{type(exc).__name__}: {exc}".lower()
+    if any(p in text for p in _DISK_FULL_PATTERNS):
+        return True
+    if getattr(exc, "errno", None) == 28:
+        return True
+    for path in (save_directory, os.getcwd()):
+        if not path:
+            continue
+        try:
+            if shutil.disk_usage(path).free < _DISK_HEADROOM_BYTES:
+                return True
+        except OSError:
+            # Never let the diagnostic be the thing that raises.
+            continue
+    return False
 
 
 def unsloth_push_to_hub_gguf(
