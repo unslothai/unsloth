@@ -5879,21 +5879,54 @@ def test_hub_gguf_files_filters_root_big_endian_only(monkeypatch):
     assert start._hub_gguf_files("owner/be-pack") == ["quants/model-be.gguf", "model-belle.gguf"]
 
 
-def test_codex_preflight_skips_unverified_loopback_server(monkeypatch):
-    # 127.0.0.1 can be an SSH tunnel to a remote Unsloth; without a verified
-    # local identity the preflight must not reject a server-side path.
-    _fake_hub_listing(monkeypatch, {"models/qwen": []})
+def test_codex_preflight_defers_to_running_server(monkeypatch):
+    # With a server running, identifiers resolve against its cwd/cache/token;
+    # the attach check asks the server instead of guessing from here.
+    calls = _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
     monkeypatch.setattr(start, "find_studio_server", lambda: "http://127.0.0.1:8888")
-    monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
-    start._preflight_codex_gguf("models/qwen")
+    start._preflight_codex_gguf("mlx-community/Qwen3-0.6B-4bit")
+    assert calls == []
 
 
-def test_codex_preflight_rejects_on_verified_local_server(monkeypatch):
-    _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
-    monkeypatch.setattr(start, "find_studio_server", lambda: "http://127.0.0.1:8888")
-    monkeypatch.setattr(start, "verify_studio_identity", lambda base: True)
+def _fake_variants(monkeypatch, responses):
+    urls = []
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        urls.append(url)
+        if isinstance(responses, Exception):
+            raise responses
+        return responses
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    return urls
+
+
+def test_codex_attach_check_rejects_on_empty_variants(monkeypatch, capsys):
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
+    _fake_variants(monkeypatch, {"variants": [], "has_vision": False})
     with pytest.raises(typer.Exit):
-        start._preflight_codex_gguf("mlx-community/Qwen3-0.6B-4bit")
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "mlx-community/Qwen3-0.6B-4bit")
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
+
+
+def test_codex_attach_check_passes_on_variants(monkeypatch):
+    urls = _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M"}]})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "unsloth/Qwen3-0.6B-GGUF:Q4_K_M")
+    assert "repo_id=unsloth%2FQwen3-0.6B-GGUF" in urls[0]
+
+
+def test_codex_attach_check_defers_on_server_error(monkeypatch):
+    _fake_variants(
+        monkeypatch,
+        urllib.error.HTTPError(f"{BASE}/api/models/gguf-variants", 404, "nope", None, None),
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "mlx-community/Qwen3-0.6B-4bit")
+
+
+def test_codex_attach_check_skips_without_model(monkeypatch):
+    urls = _fake_variants(monkeypatch, {"variants": []})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", None)
+    assert urls == []
 
 
 @pytest.mark.parametrize("var", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
@@ -5926,3 +5959,29 @@ def test_codex_gguf_failure_skips_hint_probe_for_non_hub_ids(monkeypatch, capsys
     with pytest.raises(typer.Exit):
         start._fail_codex_needs_gguf("models/Llama/customer-model")
     assert "Try:" not in capsys.readouterr().err
+
+
+def test_codex_attach_rejects_before_load(fake_studio, monkeypatch):
+    inner = start._http_json
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        if "/api/models/gguf-variants" in url:
+            return {"variants": []}
+        if url.endswith("/api/inference/load"):
+            pytest.fail("rejected model must not be loaded")
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(
+        start.start_app, ["codex", "--model", "mlx-community/Qwen3-0.6B-4bit", "--no-launch"]
+    )
+    assert result.exit_code == 1
+    assert "Codex needs a GGUF model" in result.output
+
+
+@pytest.mark.parametrize("endpoint", ["", "huggingface.co", "not a url"])
+def test_hub_gguf_files_unknown_on_malformed_endpoint(monkeypatch, endpoint):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setenv("HF_ENDPOINT", endpoint)
+    assert start._hub_gguf_files("owner/model") is None

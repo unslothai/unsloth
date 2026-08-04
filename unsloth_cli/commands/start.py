@@ -1657,11 +1657,11 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
     if _hf_offline():
         return None
     endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
-    request = urllib.request.Request(
-        f"{endpoint}/api/models/{repo}",
-        headers = {"User-Agent": _USER_AGENT},
-    )
     try:
+        request = urllib.request.Request(
+            f"{endpoint}/api/models/{repo}",
+            headers = {"User-Agent": _USER_AGENT},
+        )
         with urllib.request.urlopen(request, timeout = 10) as response:
             info = json.loads(response.read().decode() or "{}")
     except Exception:
@@ -1697,28 +1697,21 @@ def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
 
 
 def _preflight_codex_gguf(model: Optional[str]) -> None:
-    # Only a complete listing with no .gguf files rejects; unknown defers to
-    # the post-connect check so an unreachable hub never blocks a launch.
-    # Skip remote targets: a server-side relative path there can look like a
-    # hub id, and only the loopback existence probe can tell them apart.
+    # Hub-listing preflight for the auto-start path only. With a server
+    # running, identifiers are resolved against its cwd/cache/token, which this
+    # process cannot mirror; _attach_gguf_check_for_codex asks the server
+    # instead. Only a complete listing with no .gguf files rejects; unknown
+    # defers to the post-connect check so an unreachable hub never blocks.
     if not model:
         return
     expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     if not is_loopback_url(expected):
         return
-    # A 127.0.0.1 URL can be an SSH tunnel to a remote Unsloth whose relative
-    # model paths are not visible here; only preflight against a running server
-    # proven to be this machine's. No running server means no tunnel to attach.
-    base = find_studio_server()
-    if base is not None and not verify_studio_identity(base):
+    if find_studio_server() is not None:
         return
     repo, _ = _split_repo_variant(model)
     if "/" not in repo and not _is_model_path(repo):
-        # The server canonicalizes owner-less shorthands to unsloth/<name>, but
-        # an attached server may instead resolve a bare name as a directory
-        # relative to its own cwd, which this process cannot see; defer those.
-        if base is not None:
-            return
+        # The server canonicalizes owner-less shorthands to unsloth/<name>.
         try:
             if Path(os.path.expanduser(repo)).exists():
                 return
@@ -1729,6 +1722,25 @@ def _preflight_codex_gguf(model: Optional[str]) -> None:
         return
     files = _hub_gguf_files(repo)
     if files is not None and not files:
+        _fail_codex_needs_gguf(repo)
+
+
+def _attach_gguf_check_for_codex(base: str, key: str, model: Optional[str]) -> None:
+    # Attach path: the server resolves the identifier with its own cwd, cache
+    # and token, so ask it for the GGUF variants before the load evicts the
+    # resident model. An empty list from a live answer is definitive; any
+    # error (including an older server without the endpoint) defers.
+    if not model:
+        return
+    repo, _ = _split_repo_variant(model)
+    try:
+        info = _http_json(
+            "GET", f"{base}/api/models/gguf-variants?{urlencode({'repo_id': repo})}", key
+        )
+    except Exception:
+        return
+    variants = info.get("variants") if isinstance(info, dict) else None
+    if isinstance(variants, list) and not variants:
         _fail_codex_needs_gguf(repo)
 
 
@@ -2832,6 +2844,7 @@ def _connect(
     serve: bool = False,
     launch: bool = True,
     server_options: ServerOptions = ServerOptions(),
+    preload_check = None,
 ) -> tuple:
     # `--model org/name:QUANT` is shorthand for `--model org/name --gguf-variant QUANT`.
     # Split it before we match/serve so the attach path resolves against the already-loaded
@@ -2848,6 +2861,10 @@ def _connect(
     )
     try:
         key = _agent_api_key(base, api_key, auto_started = server is not None)
+        # An auto-started server already loaded its model; only an attach can
+        # still trigger an evicting load, so the pre-load check runs there.
+        if preload_check is not None and server is None:
+            preload_check(base, key, model)
         # A server we just started has exactly the requested model loaded, so resolve to
         # whatever it is serving instead of re-matching the raw --model string.
         entry = _resolve_model(base, key, None if server is not None else model, load)
@@ -3616,6 +3633,7 @@ def codex(
         LoadOptions(gguf_variant, max_seq_length, load_in_4bit, tensor_parallel, gpu_memory_mode),
         serve = serve,
         launch = launch,
+        preload_check = _attach_gguf_check_for_codex,
         server_options = ServerOptions(
             enable_tools = enable_tools,
             tool_call_healing = tool_call_healing,
