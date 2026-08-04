@@ -999,6 +999,7 @@ export const hi = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "अपडेट",
       help: "सहायता",
       documentation: "दस्तावेज़",

@@ -1025,6 +1025,7 @@ export const es = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Actualización",
       help: "Ayuda",
       documentation: "Documentación",
