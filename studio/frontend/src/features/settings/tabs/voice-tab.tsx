@@ -28,6 +28,7 @@ import {
   fetchSttStatus,
   generateStudioTtsAudio,
   loadSttModel,
+  startSttDownload,
   unloadSttModel,
   validateSttModel,
 } from "@/features/chat";
@@ -55,7 +56,6 @@ import {
   isTrackingSttDownload,
   trackSttDownload,
 } from "../lib/stt-download-mirror";
-import { requestSttDownload } from "../stores/stt-download-prompt-store";
 import {
   MTMD_STT_MODELS,
   STT_MODELS,
@@ -465,6 +465,8 @@ export function VoiceTab() {
     }
   }, []);
   const sttRepoId = getSttModelRepo(sttModel);
+  const hfToken = useHfTokenStore((state) => state.token);
+  const [sttDownloadStarting, setSttDownloadStarting] = useState(false);
   const [sttDownloadAvailability, setSttDownloadAvailability] = useState<{
     repoId: string;
     state: SttDownloadAvailability;
@@ -643,9 +645,21 @@ export function VoiceTab() {
     }
   })();
 
-  // Every download path confirms first. The prompt owns the download, so the
-  // button and the mic start one the same way.
-  const beginSttDownload = () => requestSttDownload(sttModel);
+  // Pressing Download is the confirmation. The prompt is for the paths that
+  // never asked for one, like the mic finding nothing on disk.
+  const beginSttDownload = async () => {
+    setSttDownloadStarting(true);
+    try {
+      await startSttDownload(sttModel, hfApiToken(hfToken));
+      trackSttDownload(sttModel);
+    } catch (error) {
+      toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setSttDownloadStarting(false);
+    }
+  };
 
   const stopSttDownload = async () => {
     setSttDownloadCancelling(true);
@@ -956,10 +970,10 @@ export function VoiceTab() {
                         variant="ghost"
                         size="sm"
                         className="h-7 px-2 text-xs"
-                        disabled={downloadingThisModel}
+                        disabled={downloadingThisModel || sttDownloadStarting}
                         // Restart the download; the sidecar error is sticky until
                         // a new start(), so re-polling alone never clears it.
-                        onClick={beginSttDownload}
+                        onClick={() => void beginSttDownload()}
                       >
                         {t("settings.voice.dictation.sttRetry")}
                       </Button>
@@ -968,10 +982,10 @@ export function VoiceTab() {
                         variant="outline"
                         size="sm"
                         className="h-7 px-2.5 text-xs"
-                        disabled={downloadingThisModel}
-                        onClick={beginSttDownload}
+                        disabled={downloadingThisModel || sttDownloadStarting}
+                        onClick={() => void beginSttDownload()}
                       >
-                        {downloadingThisModel ? (
+                        {downloadingThisModel || sttDownloadStarting ? (
                           <Spinner className="mr-1.5" />
                         ) : null}
                         {t("settings.voice.dictation.sttDownload")}

@@ -19,11 +19,14 @@ import { MicIcon } from "@/lib/mic-icon";
 import { toast } from "@/lib/toast";
 import type { ReactNode } from "react";
 import { trackSttDownload } from "../lib/stt-download-mirror";
-import { useSttDownloadPromptStore } from "../stores/stt-download-prompt-store";
 import {
-  type SttModel,
+  type SttDownloadRequest,
+  useSttDownloadPromptStore,
+} from "../stores/stt-download-prompt-store";
+import {
   sttModelName,
   sttModelSize,
+  useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
 /** Emphasise the model name in translated copy; plain text if absent. */
@@ -45,16 +48,20 @@ function highlightModel(text: string, model: string): ReactNode {
  */
 export function SttDownloadPrompt() {
   const t = useT();
-  const pendingModel = useSttDownloadPromptStore((s) => s.pendingModel);
+  const pending = useSttDownloadPromptStore((s) => s.pending);
   const dismiss = useSttDownloadPromptStore((s) => s.dismiss);
   const hfToken = useHfTokenStore((state) => state.token);
 
-  const confirm = async (model: SttModel) => {
+  const confirm = async (request: SttDownloadRequest) => {
+    // Only on accept: a cancel must not leave the engine changed.
+    if (request.selectLocalEngine) {
+      useVoiceSettingsStore.getState().setDictationEngine("model");
+    }
     try {
-      await startSttDownload(model, hfApiToken(hfToken));
+      await startSttDownload(request.model, hfApiToken(hfToken));
       // Progress goes to the shared download panel; the model loads itself
       // when it lands.
-      trackSttDownload(model);
+      trackSttDownload(request.model);
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
         description: error instanceof Error ? error.message : undefined,
@@ -62,19 +69,20 @@ export function SttDownloadPrompt() {
     }
   };
 
+  const pendingModel = pending?.model ?? null;
   const size = pendingModel ? sttModelSize(pendingModel) : "";
   return (
     <AlertDialog
-      open={pendingModel !== null}
+      open={pending !== null}
       onOpenChange={(open) => {
         if (!open) dismiss();
       }}
     >
       <AlertDialogContent>
         <AlertDialogHeader>
-          <AlertDialogMedia>
-            {/* The glyph fills its viewBox, so it needs to sit smaller than the
-                padded hugeicons the media circle is sized for. */}
+          {/* The glyph fills its viewBox, unlike the padded hugeicons the
+              default circle is sized for, so both come down together. */}
+          <AlertDialogMedia className="size-12">
             <MicIcon className="text-muted-foreground size-5" />
           </AlertDialogMedia>
           <AlertDialogTitle>
@@ -101,9 +109,9 @@ export function SttDownloadPrompt() {
           <AlertDialogAction
             onClick={(event) => {
               event.preventDefault();
-              const model = pendingModel;
+              const request = pending;
               dismiss();
-              if (model) void confirm(model);
+              if (request) void confirm(request);
             }}
           >
             {t("settings.voice.dictation.sttDownload")}

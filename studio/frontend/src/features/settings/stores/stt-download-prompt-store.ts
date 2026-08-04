@@ -4,6 +4,13 @@
 import { create } from "zustand";
 import type { SttModel } from "./voice-settings-store";
 
+export interface SttDownloadRequest {
+  model: SttModel;
+  /** Also switch dictation to local on confirm, for a browser whose speech
+   * service cannot work at all. Left alone if the user cancels. */
+  selectLocalEngine?: boolean;
+}
+
 /**
  * The one pending "download this dictation model?" confirmation.
  *
@@ -11,21 +18,24 @@ import type { SttModel } from "./voice-settings-store";
  * settings being open.
  */
 interface SttDownloadPromptState {
-  /** Model awaiting a yes/no, or null when nothing is asked. */
-  pendingModel: SttModel | null;
-  requestDownload: (model: SttModel) => void;
+  /** Request awaiting a yes/no, or null when nothing is asked. */
+  pending: SttDownloadRequest | null;
+  requestDownload: (request: SttDownloadRequest) => void;
   dismiss: () => void;
 }
 
 export const useSttDownloadPromptStore = create<SttDownloadPromptState>(
   (set) => ({
-    pendingModel: null,
-    requestDownload: (pendingModel) => set({ pendingModel }),
-    dismiss: () => set({ pendingModel: null }),
+    pending: null,
+    requestDownload: (pending) => set({ pending }),
+    dismiss: () => set({ pending: null }),
   }),
 );
 
 /** Ask the user to download `model`. Safe to call from non-React code. */
-export function requestSttDownload(model: SttModel): void {
-  useSttDownloadPromptStore.getState().requestDownload(model);
+export function requestSttDownload(
+  model: SttModel,
+  options?: Omit<SttDownloadRequest, "model">,
+): void {
+  useSttDownloadPromptStore.getState().requestDownload({ model, ...options });
 }
