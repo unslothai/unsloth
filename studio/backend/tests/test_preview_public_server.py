@@ -825,12 +825,50 @@ def test_listener_lock_is_created_lazily_on_the_running_loop():
     assert lst._get_lock() is lock
 
 
-def test_gate_rechecks_the_kill_switch_before_forwarding(app, monkeypatch):
+def test_gate_rechecks_the_kill_switch_after_post_auth(monkeypatch):
     # During a disable the tunnel teardown lags the persisted setting; a
-    # still-valid signed link must 404 at the gate, before body parsing.
+    # still-valid signed link must not reach the app's body parsing. The check
+    # runs only after the capability verified, so unsigned traffic never
+    # becomes an unauthenticated settings read.
     import utils.preview_sharing_settings as sharing
 
     monkeypatch.setattr(sharing, "get_preview_sharing_enabled", lambda: False)
+    called = {"hit": False}
+
+    async def _app(scope, receive, send):
+        called["hit"] = True
+
+    sent = []
+
+    async def _send(message):
+        sent.append(message)
+
     token = preview_token.sign_preview_ref("demorun")
-    statuses = _serve_and_get(app, [f"/p/demorun?k={token}"])
-    assert statuses[f"/p/demorun?k={token}"] == 404
+    gate = pps.PreviewOnlyGate(_app)
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/p/demorun/v1/chat/completions",
+        "query_string": f"k={token}".encode(),
+        "headers": [],
+    }
+    asyncio.run(gate(scope, None, _send))
+    assert called["hit"] is False
+    assert sent[0]["status"] == 404
+
+
+def test_gate_leaves_get_ordering_to_the_route(app, monkeypatch):
+    # GETs carry no body to protect; the route verifies the (no-I/O) token
+    # first, so the gate must not add a pre-auth settings read for them.
+    import utils.preview_sharing_settings as sharing
+
+    reads = {"n": 0}
+
+    def _read():
+        reads["n"] += 1
+        return False
+
+    monkeypatch.setattr(sharing, "get_preview_sharing_enabled", _read)
+    statuses = _serve_and_get(app, ["/p/demorun"])
+    assert statuses["/p/demorun"] == 404
+    assert reads["n"] == 0

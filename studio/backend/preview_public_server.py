@@ -179,17 +179,20 @@ class PreviewOnlyGate:
         ):
             await _send_json(send, 404, _NOT_FOUND_BODY)
             return
-        if method == "POST" and not _post_chat_authorized(scope, path):
-            await _send_json(send, 404, _NOT_FOUND_BODY)
-            return
-        # Kill switch, rechecked at the gate: while a disable is tearing the
-        # tunnel down, a still-valid signed link must not reach the app, whose
-        # body parsing runs before the route's own sharing check.
-        from utils.preview_sharing_settings import get_preview_sharing_enabled
+        if method == "POST":
+            if not _post_chat_authorized(scope, path):
+                await _send_json(send, 404, _NOT_FOUND_BODY)
+                return
+            # Kill switch, rechecked only after the capability verified: while
+            # a disable tears the tunnel down, a still-valid signed link must
+            # not reach the app's body parsing, but an unsigned request must
+            # not become an unauthenticated settings-DB read either (GETs keep
+            # the route's token-first ordering).
+            from utils.preview_sharing_settings import get_preview_sharing_enabled
 
-        if not get_preview_sharing_enabled():
-            await _send_json(send, 404, _NOT_FOUND_BODY)
-            return
+            if not get_preview_sharing_enabled():
+                await _send_json(send, 404, _NOT_FOUND_BODY)
+                return
         await self.app(scope, receive, _mask_405(send))
 
 
