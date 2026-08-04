@@ -1313,6 +1313,9 @@ def fake_studio(tmp_path, monkeypatch):
     monkeypatch.setattr(start, "find_studio_server", lambda: BASE)
     # Identity handshake has its own tests; trust the loopback server here.
     monkeypatch.setattr(start, "verify_studio_identity", lambda base: True)
+    # Hub listing unavailable: the Codex preflight defers to the stubbed
+    # post-connect check instead of calling the live Hub from tests.
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     # _studio_token / api-keys are faked so the mint flow stays offline.
     monkeypatch.setattr(start, "_studio_token", lambda: "jwt-token")
     monkeypatch.setattr(start, "_http_json", http_json)
