@@ -1266,6 +1266,50 @@ def _is_mtp_drafter(path: str) -> bool:
     )
 
 
+_NON_GGUF_WEIGHT_BIN_PREFIXES = ("pytorch_model", "model", "adapter_model", "consolidated")
+
+
+def _is_non_gguf_weight(path: str) -> bool:
+    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.endswith(".safetensors"):
+        return True
+    return name.endswith(".bin") and name.startswith(_NON_GGUF_WEIGHT_BIN_PREFIXES)
+
+
+def _is_drafter_dir(path: str) -> bool:
+    p = path.replace("\\", "/").lower()
+    if not p.endswith(".gguf"):
+        return False
+    return any(kind in [s for s in p.split("/")[:-1] if s] for kind in _DRAFTER_DIR_KINDS)
+
+
+def _has_quant_token(path: str) -> bool:
+    """Whether *path* carries a real quant token, mirroring the match half of
+    hub.utils.gguf.extract_quant_token (which returns None where this is False)."""
+    stem = re.sub(r"-\d{3,}-of-\d{3,}", "", path.rsplit("/", 1)[-1].rsplit(".", 1)[0])
+    if _GGUF_KNOWN_QUANT_RE.search(stem):
+        return True
+    parents = path.rsplit("/", 1)[0] if "/" in path else ""
+    return any(_GGUF_KNOWN_QUANT_RE.search(seg) for seg in parents.split("/") if seg)
+
+
+def _drafter_paths_in(paths) -> frozenset:
+    """Mirrors hub.utils.gguf.drafter_paths_in: a prefix-named drafter with no
+    main weight beside it in the same listing is that listing's main weight."""
+    listing = list(paths)
+    drafters = {p for p in listing if p.lower().endswith(".gguf") and _is_mtp_drafter(p)}
+    has_main = any(
+        _is_non_gguf_weight(p)
+        or (p.lower().endswith(".gguf") and p not in drafters and not _is_mmproj(p))
+        for p in listing
+    )
+    if has_main:
+        return frozenset(drafters)
+    return frozenset(
+        p for p in drafters if _is_drafter_dir(p) or not _has_quant_token(p)
+    )
+
+
 # Family tokens for #5347's filename fallback. Lowercase; order irrelevant.
 _MODEL_FAMILY_TOKENS: tuple[str, ...] = (
     "qwen",
@@ -2385,6 +2429,7 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
         try:
             info = hf_model_info(repo_id, token = hf_token)
             repo_files = []
+            drafters = _drafter_paths_in(s.rfilename for s in info.siblings)
             for sibling in info.siblings:
                 fname = sibling.rfilename
                 if not fname.lower().endswith(".gguf"):
@@ -2392,7 +2437,7 @@ def detect_gguf_model_remote(repo_id: str, hf_token: Optional[str] = None) -> Op
                 quant = _extract_quant_label(fname)
                 if (
                     _is_mmproj(fname)
-                    or _is_mtp_drafter(fname)
+                    or fname in drafters
                     or _is_big_endian_gguf_path(fname, quant)
                 ):
                     continue

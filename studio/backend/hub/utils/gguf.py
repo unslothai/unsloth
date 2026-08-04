@@ -126,6 +126,19 @@ def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
 
+_NON_GGUF_WEIGHT_BIN_PREFIXES = ("pytorch_model", "model", "adapter_model", "consolidated")
+
+
+def is_non_gguf_weight_path(path: str) -> bool:
+    """True for a primary weight file in another format, which counts as a main
+    model when deciding whether a drafter has something to accompany. Mirrors
+    hub.services.models.common._is_model_directory, so ``tokenizer.bin`` is out."""
+    name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+    if name.endswith(".safetensors"):
+        return True
+    return name.endswith(".bin") and name.startswith(_NON_GGUF_WEIGHT_BIN_PREFIXES)
+
+
 def is_drafter_dir_path(path: str) -> bool:
     """True when *path* sits under a drafter directory, the half of the rule the
     publisher controls. Always a companion, unlike the basename prefix."""
@@ -148,11 +161,23 @@ def drafter_paths_in(paths: Iterable[str]) -> frozenset[str]:
     publisher laid it out as a companion, and a snapshot holding only that is a
     half-downloaded repo, not a model.
     """
-    listing = [path for path in paths if is_gguf_filename(path)]
-    drafters = {path for path in listing if is_mtp_drafter_path(path)}
-    if any(path not in drafters and not is_mmproj_filename(path) for path in listing):
+    listing = list(paths)
+    drafters = {path for path in listing if is_gguf_filename(path) and is_mtp_drafter_path(path)}
+    has_main = any(
+        is_non_gguf_weight_path(path)
+        or (is_gguf_filename(path) and path not in drafters and not is_mmproj_filename(path))
+        for path in listing
+    )
+    if has_main:
         return frozenset(drafters)
-    return frozenset(path for path in drafters if is_drafter_dir_path(path))
+    # A reprieved file has to look like a quant to be selectable as one, which
+    # also keeps the bare ``mtp-<model>.gguf`` drafter rejected: loading it as
+    # the model would pair it with itself (-m drafter --model-draft drafter).
+    return frozenset(
+        path
+        for path in drafters
+        if is_drafter_dir_path(path) or extract_quant_token(path) is None
+    )
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
@@ -637,15 +662,13 @@ def list_local_gguf_variants(
     quant_first_file: dict[str, str] = {}
     has_vision = False
 
-    # Same drafter-only reprieve as drafter_paths_in, but keyed on the local
-    # predicate, which also resolves paths against a registered model root.
+    # No drafter reprieve here: locally, a folder holding only a companion is a
+    # half-downloaded repo, and it is indistinguishable from a drafter-named one.
     scanned = [
         (file, file.relative_to(root).as_posix())
         for file in sorted(iter_gguf_files(root, recursive = True))
     ]
     drafters = {rel for file, rel in scanned if _is_local_mtp_drafter(file, custom_root, rel)}
-    if not any(rel not in drafters and not is_mmproj_filename(rel) for _file, rel in scanned):
-        drafters = {rel for rel in drafters if is_drafter_dir_path(rel)}
 
     for file, rel in scanned:
         if is_mmproj_filename(file.name):

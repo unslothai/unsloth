@@ -195,8 +195,29 @@ def test_a_repo_of_only_drafters_still_lists_them():
     ]
     assert set(build_gguf_variant_plans(mradermacher)) == {"q4_k_m", "q8_0"}
 
-    drafter_only = [_sib("dspark-drafter-Q2K-Q8.gguf", 6_900, "d1")]
-    assert set(build_gguf_variant_plans(drafter_only)) == {"dspark-drafter-q2k-q8"}
+    # A reprieved file still has to look like a quant, so a drafter whose name
+    # carries no quant token stays a companion.
+    assert build_gguf_variant_plans([_sib("dspark-drafter-blob.gguf", 6_900, "d1")]) == {}
+
+
+def test_a_drafter_beside_non_gguf_weights_is_still_a_companion():
+    # Weights in another format are still a main model, so the drafter has
+    # something to accompany and must not be advertised as a GGUF variant.
+    siblings = [
+        _sib("model-00001-of-00001.safetensors", 64_000, "st"),
+        _sib("mtp-model-Q8_0.gguf", 100, "d"),
+    ]
+    assert build_gguf_variant_plans(siblings) == {}
+
+
+def test_a_reprieved_root_drafter_is_not_also_a_companion():
+    # preferred_mtp_sibling would otherwise fold the same file in twice,
+    # doubling main_size_bytes and duplicating target_filenames.
+    plans = build_gguf_variant_plans([_sib("mtp-model-Q8_0.gguf", 1_000, "d")])
+    plan = plans["q8_0"]
+    assert plan.target_filenames == ("mtp-model-Q8_0.gguf",)
+    assert plan.main_size_bytes == 1_000
+    assert plan.download_size_bytes == 1_000
 
 
 def test_a_directory_named_drafter_is_never_reprieved():
