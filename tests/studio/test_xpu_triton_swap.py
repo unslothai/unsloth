@@ -483,7 +483,11 @@ class TestCpuRepairSeesAnXpuWheel:
     """
 
     @staticmethod
-    def _classify(ver, cuda = "", hip = ""):
+    def _classify(
+        ver,
+        cuda = "",
+        hip = "",
+    ):
         src = STACK.read_text(encoding = "utf-8")
         # The probe body is a concatenation of string literals inside the subprocess call.
         start = src.index("def _ensure_cpu_torch() -> None:")
@@ -492,7 +496,11 @@ class TestCpuRepairSeesAnXpuWheel:
         expr = line.strip().removeprefix('"gpu = ').removesuffix('; "')
         import re as _re
 
-        return "gpu" if eval(expr, {"re": _re, "hip": hip, "cuda": cuda, "ver": ver.lower()}) else "cpu"
+        return (
+            "gpu"
+            if eval(expr, {"re": _re, "hip": hip, "cuda": cuda, "ver": ver.lower()})
+            else "cpu"
+        )
 
     def test_xpu_wheel_is_a_gpu_build(self):
         assert self._classify("2.9.1+xpu") == "gpu"
