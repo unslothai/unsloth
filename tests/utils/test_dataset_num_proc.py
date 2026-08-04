@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -961,3 +962,42 @@ def test_agreeing_modules_are_left_alone(monkeypatch, dnp):
     trainer = type("t", (), {"train_dataset": _Split(dnp.ZOO_MIN_ROWS_FOR_MULTIPROC * 2)})()
     assert dnp.resolve_responses_only_num_proc(trainer, None) == dnp.AUTO_NUM_PROC_CAP
     assert dnp.resolve_responses_only_num_proc(trainer, 1) == 1
+
+
+def test_cgroup_usage_is_read_from_the_directory_that_set_the_limit(monkeypatch, dnp, tmp_path):
+    """Not from /sys/fs/cgroup/memory.current.
+
+    At the root that file is the whole machine's usage. Subtracting it from a
+    systemd unit's own MemoryMax would leave every run with nothing free and
+    silently serialise tokenization on ordinary hosts.
+    """
+    import types
+
+    inner = tmp_path / "user.slice" / "session.scope"
+    inner.mkdir(parents = True)
+    (inner / "memory.current").write_text("3221225472\n")     # 3 GB, this unit
+    (tmp_path / "memory.current").write_text("400000000000\n")  # 400 GB, the box
+
+    fake = types.ModuleType("unsloth_zoo.hf_xet_tuning")
+    fake._cgroup_v2_dirs = lambda: [inner, tmp_path]
+    fake._cgroup_v1_dirs = lambda controller: []
+    fake._read_first_line = lambda path: path.read_text() if path.is_file() else None
+    monkeypatch.setitem(sys.modules, "unsloth_zoo.hf_xet_tuning", fake)
+
+    assert dnp._cgroup_memory_used() == 3 * 1024**3
+
+
+def test_missing_cgroup_readers_fall_back_to_the_limit_alone(monkeypatch, dnp):
+    # An older unsloth_zoo has no such helpers. Subtracting nothing is never
+    # worse than not subtracting, so the limit still binds.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_hf_xet(name, *args, **kwargs):
+        if name == "unsloth_zoo.hf_xet_tuning":
+            raise ImportError("older unsloth_zoo")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_hf_xet)
+    assert dnp._cgroup_memory_used() is None

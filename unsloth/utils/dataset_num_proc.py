@@ -194,15 +194,31 @@ def _cgroup_limits() -> "tuple[Optional[int], Optional[float]]":
 def _cgroup_memory_used() -> Optional[int]:
     """Bytes this cgroup is already using, or None when that cannot be read.
 
-    Only the well-known roots: runc bind-mounts the container's own cgroup there,
-    which is the case this exists for. Without it the whole limit would look free
-    on a container that has already spent most of it.
+    Without it the whole limit looks free on a container that has spent most of
+    it, and the model is usually what spent it. Read from the same directories
+    the limit came from, innermost first, rather than from
+    ``/sys/fs/cgroup/memory.current``: at the root that file is the WHOLE
+    machine's usage, and subtracting it from a systemd unit's own MemoryMax would
+    leave every run with nothing free.
     """
-    for path in ("/sys/fs/cgroup/memory.current", "/sys/fs/cgroup/memory/memory.usage_in_bytes"):
+    try:
+        from unsloth_zoo.hf_xet_tuning import (
+            _cgroup_v1_dirs,
+            _cgroup_v2_dirs,
+            _read_first_line,
+        )
+    except Exception:
+        return None  # limit-only, which is never worse than not subtracting
+
+    candidates = [(d, "memory.current") for d in _cgroup_v2_dirs()]
+    candidates += [(d, "memory.usage_in_bytes") for d in _cgroup_v1_dirs("memory")]
+    for directory, name in candidates:
+        raw = _read_first_line(directory / name)
+        if not raw:
+            continue
         try:
-            with open(path, "r") as handle:
-                return int(handle.readline().strip())
-        except Exception:
+            return int(raw.strip())
+        except ValueError:
             continue
     return None
 
