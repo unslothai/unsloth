@@ -5846,3 +5846,23 @@ def test_hub_gguf_files_ignores_auxiliary_ggufs(monkeypatch):
         lambda request, timeout: io.BytesIO(json.dumps(payload).encode()),
     )
     assert start._hub_gguf_files("owner/mmproj-pack") == []
+
+
+def test_hub_gguf_files_filters_root_big_endian_only(monkeypatch):
+    payload = {
+        "siblings": [
+            {"rfilename": "model-Q4_K_M-be.gguf"},
+            {"rfilename": "model-Q4_K_M_be.gguf"},
+            {"rfilename": "quants/model-be.gguf"},
+            {"rfilename": "model-belle.gguf"},
+        ]
+    }
+    monkeypatch.setattr(
+        start.urllib.request,
+        "urlopen",
+        lambda request, timeout: io.BytesIO(json.dumps(payload).encode()),
+    )
+    assert start._hub_gguf_files("owner/be-pack") == [
+        "quants/model-be.gguf",
+        "model-belle.gguf",
+    ]

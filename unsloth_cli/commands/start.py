@@ -1663,11 +1663,17 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
 
 
 def _is_auxiliary_gguf(filename: str) -> bool:
-    # Vision projectors and MTP drafters are companions, not loadable weights;
-    # mirrors the server's detect_gguf_model_remote filtering.
+    # Vision projectors, MTP drafters and big-endian builds are not loadable
+    # weights; mirrors the server's detect_gguf_model_remote filtering. Only
+    # the root-level trailing -be form is filtered: the server's fuller
+    # big-endian check needs quant context the CLI does not mirror, and an
+    # over-broad copy here would reject repos the server can load.
     p = filename.lower()
     name = p.rsplit("/", 1)[-1]
-    return "mmproj" in p or name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    if "mmproj" in p or name.startswith("mtp-") or "/mtp/" in f"/{p}":
+        return True
+    stem = name.rsplit(".", 1)[0]
+    return "/" not in p and stem.endswith(("-be", "_be"))
 
 
 def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
