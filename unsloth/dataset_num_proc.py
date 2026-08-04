@@ -270,7 +270,9 @@ def _cgroup_free_bytes_unaided() -> Optional[int]:
                 break
         for directory in _cgroup_dirs(v1_root, rel):
             used = _cgroup_int(_cgroup_first_line(os.path.join(directory, "memory.usage_in_bytes")))
-            limit = _cgroup_limit(_cgroup_first_line(os.path.join(directory, "memory.limit_in_bytes")))
+            limit = _cgroup_limit(
+                _cgroup_first_line(os.path.join(directory, "memory.limit_in_bytes"))
+            )
             if limit is not None:
                 free.append(limit if used is None else limit - used)
 
