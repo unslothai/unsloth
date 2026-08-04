@@ -126,7 +126,7 @@ export function DictationDictionaryView({ onBack }: { onBack: () => void }) {
             onClick={handleAddEntry}
             disabled={!newEntry.trim()}
           >
-            <HugeiconsIcon icon={PlusSignIcon} className="me-1.5 size-3.5" />
+            <HugeiconsIcon icon={PlusSignIcon} className="mr-1.5 size-3.5" />
             {t("settings.voice.dictionary.addEntry")}
           </Button>
         </div>

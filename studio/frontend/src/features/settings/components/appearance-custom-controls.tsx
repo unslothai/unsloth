@@ -392,7 +392,7 @@ function FontSelect({
                         e.stopPropagation();
                         removeImportedFont(font.name);
                       }}
-                      className="ms-auto rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
+                      className="ml-auto rounded p-0.5 text-muted-foreground transition-colors hover:text-foreground"
                     >
                       <HugeiconsIcon icon={Cancel01Icon} className="size-3" />
                     </button>
@@ -875,7 +875,7 @@ export function ContrastSliderRow() {
         onValueChange={(values: number[]) => patch({ contrast: values[0] })}
         aria-label={t("settings.appearance.custom.contrast.label")}
       />
-      <span className="w-8 text-end text-xs tabular-nums text-muted-foreground">
+      <span className="w-8 text-right text-xs tabular-nums text-muted-foreground">
         {contrast}
       </span>
     </div>

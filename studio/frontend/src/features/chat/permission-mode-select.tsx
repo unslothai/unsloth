@@ -128,7 +128,7 @@ export function PermissionModeMenuItems({
             <HugeiconsIcon
               icon={Tick02Icon}
               strokeWidth={2}
-              className="ms-auto mt-0.5 size-4 shrink-0"
+              className="ml-auto mt-0.5 size-4 shrink-0"
             />
           ) : null}
         </DropdownMenuItem>
@@ -210,7 +210,7 @@ export function PermissionModeDropdown({
             aria-label="Permission level for tool calls"
           >
             <ActiveIcon className="size-3.5 shrink-0" strokeWidth={2} />
-            <span className="min-w-0 flex-1 truncate text-start">
+            <span className="min-w-0 flex-1 truncate text-left">
               {active.label}
             </span>
             <ChevronDown className="size-3.5 shrink-0 opacity-60" />

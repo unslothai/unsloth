@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useSyncExternalStore } from "react";
-import { LOCALES, type Locale, isSupportedLocale } from "./messages";
+import { isSupportedLocale, LOCALES, type Locale } from "./messages";
 
 export const DEFAULT_LOCALE: Locale = "en";
 export const AUTO_LOCALE = "auto";
@@ -71,9 +71,7 @@ function normalizePreference(value: unknown): LocalePreference {
   // Return a value re-derived from our own locale table rather than the raw
   // input, so only known language codes are ever persisted.
   const locales = Object.keys(LOCALES) as Locale[];
-  return (
-    locales.find((locale) => locale === value) ?? DEFAULT_LOCALE_PREFERENCE
-  );
+  return locales.find((locale) => locale === value) ?? DEFAULT_LOCALE_PREFERENCE;
 }
 
 function resolvePreference(preference: LocalePreference): Locale {
@@ -93,7 +91,8 @@ function writeStoredPreference(preference: LocalePreference): void {
   try {
     globalThis.localStorage?.setItem(LOCALE_STORAGE_KEY, preference);
   } catch {
-    // localStorage 可能被禁用；失败只影响持久化，不影响当前会话语言。
+    // localStorage can be disabled; a failure only costs persistence, not
+    // the language of the current session.
   }
 }
 

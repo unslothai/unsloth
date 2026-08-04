@@ -168,10 +168,7 @@ export function AboutTab() {
                   : t("settings.about.gpu")
               }
             >
-              <code
-                dir="ltr"
-                className="font-mono text-xs text-muted-foreground"
-              >
+              <code className="font-mono text-xs text-muted-foreground">
                 {gpu.name ?? "—"}
                 {gpu.vramTotalGb != null
                   ? ` · ${Math.round(gpu.vramTotalGb)} GiB`
@@ -185,10 +182,7 @@ export function AboutTab() {
                 hw.cuda ? t("settings.about.cuda") : t("settings.about.rocm")
               }
             >
-              <code
-                dir="ltr"
-                className="font-mono text-xs text-muted-foreground"
-              >
+              <code className="font-mono text-xs text-muted-foreground">
                 {hw.cuda ?? hw.rocm}
               </code>
             </SettingsRow>
@@ -205,7 +199,7 @@ export function AboutTab() {
             className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
           >
             <HugeiconsIcon icon={Book03Icon} className="size-3.5" />
-            <bdi dir="ltr">unsloth.ai/docs</bdi>
+            unsloth.ai/docs
             <HugeiconsIcon icon={ArrowUpRight01Icon} className="size-3" />
           </a>
         </SettingsRow>
@@ -282,7 +276,7 @@ export function AboutTab() {
               onClick={() => setShutdownOpen(true)}
               className="text-destructive hover:text-destructive hover:border-destructive/60"
             >
-              <HugeiconsIcon icon={Cancel01Icon} className="size-3.5 me-1.5" />
+              <HugeiconsIcon icon={Cancel01Icon} className="size-3.5 mr-1.5" />
               {t("settings.about.shutDown")}
             </Button>
           </SettingsRow>

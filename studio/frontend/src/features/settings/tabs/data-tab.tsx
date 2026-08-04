@@ -41,11 +41,11 @@ import {
 import { useT } from "@/i18n";
 
 import { isTauri } from "@/lib/api-base";
+import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
-import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
@@ -539,7 +539,7 @@ export function DataTab() {
             size="sm"
             onClick={() => setArchiveConfirmOpen(true)}
           >
-            <HugeiconsIcon icon={Archive02Icon} className="size-3.5 me-1.5" />
+            <HugeiconsIcon icon={Archive02Icon} className="size-3.5 mr-1.5" />
             {t("settings.data.archiveAllAction")}
           </Button>
         </SettingsRow>
@@ -564,7 +564,7 @@ export function DataTab() {
             onClick={handleExport}
             disabled={exporting || count === 0}
           >
-            <HugeiconsIcon icon={Download01Icon} className="size-3.5 me-1.5" />
+            <HugeiconsIcon icon={Download01Icon} className="size-3.5 mr-1.5" />
             {exporting
               ? t("settings.chat.exportingAction")
               : t("settings.chat.exportAction")}
@@ -580,7 +580,7 @@ export function DataTab() {
               <Button variant="outline" size="sm" disabled={count === 0}>
                 <HugeiconsIcon
                   icon={Download01Icon}
-                  className="size-3.5 me-1.5"
+                  className="size-3.5 mr-1.5"
                 />
                 {t("settings.chat.exportConversationsAction")}
               </Button>
@@ -596,7 +596,7 @@ export function DataTab() {
                   <DropdownMenuSubTrigger>
                     <HugeiconsIcon
                       icon={Download01Icon}
-                      className="size-3.5 me-1"
+                      className="size-3.5 mr-1"
                     />
                     {t(`settings.chat.${label}`)}
                   </DropdownMenuSubTrigger>
@@ -651,7 +651,7 @@ export function DataTab() {
             disabled={count === 0}
             className="text-destructive hover:text-destructive hover:border-destructive/60"
           >
-            <HugeiconsIcon icon={Delete02Icon} className="size-3.5 me-1.5" />
+            <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-1.5" />
             {t("settings.chat.clearChatsAction")}
           </Button>
         </SettingsRow>
@@ -665,7 +665,7 @@ export function DataTab() {
             size="sm"
             onClick={() => void handleImportClick()}
           >
-            <HugeiconsIcon icon={Upload01Icon} className="size-3.5 me-1.5" />
+            <HugeiconsIcon icon={Upload01Icon} className="size-3.5 mr-1.5" />
             {t("settings.chat.importChatsAction")}
           </Button>
           <input

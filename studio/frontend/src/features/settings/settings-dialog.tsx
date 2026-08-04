@@ -9,8 +9,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { type TranslationKey, useT } from "@/i18n";
-import { MicIcon } from "@/lib/mic-icon";
 import { cn } from "@/lib/utils";
+import { MicIcon } from "@/lib/mic-icon";
 import {
   BotIcon,
   Cancel01Icon,
@@ -273,7 +273,7 @@ export function SettingsDialog() {
             // Restore focus to the element that triggered openDialog(). Radix's
             // FocusScope races our rAF-scheduled tab focus and loses the
             // previous-focus reference, so restore it by hand.
-            if (opener?.isConnected) {
+            if (opener && opener.isConnected) {
               e.preventDefault();
               opener.focus({ preventScroll: true });
             }
@@ -299,12 +299,12 @@ export function SettingsDialog() {
           <div className="flex h-full min-h-0 min-w-0 w-full max-sm:flex-col">
             {/* Match the app shell: tabs on the sidebar fill, content on the
                 page fill, so both track the active palette. */}
-            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-e border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-e-0 max-sm:w-full max-sm:border-e-0 max-sm:border-b max-sm:border-sidebar-border">
+            <aside className="font-heading flex w-[248px] shrink-0 flex-col border-r border-sidebar-border bg-sidebar text-sidebar-foreground p-2 dark:border-r-0 max-sm:w-full max-sm:border-r-0 max-sm:border-b max-sm:border-sidebar-border">
               <div className="relative mx-1 mt-3 mb-2 max-sm:hidden">
                 <HugeiconsIcon
                   icon={Search01Icon}
                   strokeWidth={2}
-                  className="pointer-events-none absolute top-1/2 start-2.5 size-4 -translate-y-1/2 text-muted-foreground"
+                  className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground"
                 />
                 <input
                   value={query}
@@ -317,14 +317,14 @@ export function SettingsDialog() {
                   }}
                   placeholder={t("settings.dialog.searchPlaceholder")}
                   aria-label={t("settings.dialog.searchPlaceholder")}
-                  className="h-8 w-full rounded-full border border-border bg-background pe-8 ps-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06]"
+                  className="h-8 w-full rounded-full border border-border bg-background pr-8 pl-8 text-sm text-foreground outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring dark:focus-visible:border-transparent dark:focus-visible:bg-white/[0.12] dark:border-transparent dark:bg-white/[0.06]"
                 />
                 {query && (
                   <button
                     type="button"
                     onClick={() => setQuery("")}
                     aria-label={t("settings.dialog.closeAriaLabel")}
-                    className="absolute top-1/2 end-2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
+                    className="absolute top-1/2 right-2 flex size-5 -translate-y-1/2 items-center justify-center rounded-full text-muted-foreground hover:text-foreground"
                   >
                     <HugeiconsIcon icon={Cancel01Icon} className="size-3.5" />
                   </button>
@@ -342,7 +342,7 @@ export function SettingsDialog() {
                         <button
                           type="button"
                           onClick={() => openResult(tab.id)}
-                          className="flex h-[30px] items-center gap-2.5 rounded-full ps-3 pe-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                          className="flex h-[30px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-13p5 font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                         >
                           {tab.iconComponent ? (
                             <tab.iconComponent className="size-icon shrink-0" />
@@ -360,7 +360,7 @@ export function SettingsDialog() {
                             key={entry}
                             type="button"
                             onClick={() => openResult(tab.id, entry)}
-                            className="flex h-[30px] items-center rounded-full ps-10 pe-2.5 text-start text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
+                            className="flex h-[30px] items-center rounded-full pl-10 pr-2.5 text-left text-ui-14 text-sidebar-foreground transition-colors hover:bg-accent hover:text-accent-foreground"
                           >
                             <span className="min-w-0 truncate">{entry}</span>
                           </button>
@@ -372,7 +372,7 @@ export function SettingsDialog() {
               ) : null}
               <p
                 className={cn(
-                  "ps-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground max-sm:hidden",
+                  "pl-4 pt-3 pb-2.5 text-ui-13 font-medium text-muted-foreground max-sm:hidden",
                   results !== null && "hidden",
                 )}
               >
@@ -395,7 +395,7 @@ export function SettingsDialog() {
                       type="button"
                       onClick={() => setActiveTab(tab.id)}
                       className={cn(
-                        "relative flex h-[32px] items-center gap-2.5 rounded-full ps-3 pe-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
+                        "relative flex h-[32px] items-center gap-2.5 rounded-full pl-3 pr-2.5 text-ui-14p5 leading-ui-19 tracking-nav font-medium transition-colors",
                         "max-sm:shrink-0",
                         "focus-visible:outline-none",
                         // The active pill already marks the current tab, so
@@ -434,7 +434,7 @@ export function SettingsDialog() {
                         {t(tab.labelKey)}
                       </span>
                       {tab.badgeKey ? (
-                        <span className="relative z-10 ms-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
+                        <span className="relative z-10 ml-auto rounded-full bg-control-accent/10 px-2 py-1 text-ui-10 leading-none font-semibold text-control-accent">
                           {t(tab.badgeKey)}
                         </span>
                       ) : null}
@@ -448,7 +448,7 @@ export function SettingsDialog() {
               <button
                 type="button"
                 onClick={closeDialog}
-                className="absolute top-3 end-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                className="absolute top-3 right-3 z-10 flex size-7 items-center justify-center rounded-full text-[#383835] dark:text-[#c7c7c4] transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 aria-label={t("settings.dialog.closeAriaLabel")}
               >
                 <HugeiconsIcon icon={Cancel01Icon} className="size-4" />

@@ -153,7 +153,6 @@ export function ColorPickerSwatch({
     <Popover open={open} onOpenChange={setOpen} modal={true}>
       <PopoverTrigger asChild>
         <button
-          dir="ltr"
           type="button"
           aria-label={label}
           className={cn(
@@ -237,7 +236,6 @@ export function ColorPickerSwatch({
           />
           <div className="flex items-center gap-2">
             <input
-              dir="ltr"
               value={hexDraft.toUpperCase()}
               onChange={(e) => setHexDraft(e.target.value)}
               onBlur={commitHex}

@@ -392,7 +392,7 @@ function FloatingMonitorPanel({
         exit={{ opacity: 0 }}
         className={cn(
           "settings-surface pointer-events-auto absolute flex max-h-full w-64 max-w-full cursor-default select-none flex-col overflow-hidden rounded-xl border border-border/70 p-3 shadow-border ring-0 backdrop-blur-sm",
-          layout ? "top-0 left-0 resize" : "end-0 bottom-0",
+          layout ? "top-0 left-0 resize" : "right-0 bottom-0",
         )}
         data-testid="floating-monitor"
         style={
@@ -451,16 +451,12 @@ function FloatingMonitorPanel({
               <div className="flex justify-between text-ui-11 font-medium font-mono">
                 <span>{t("settings.resources.liveMonitor.ram")}</span>
                 <span
-                  dir="ltr"
                   className={cn("tabular-nums", usageTextClass(ramPercent))}
                 >
                   {Math.round(ramPercent)}%
                 </span>
               </div>
-              <div
-                dir="ltr"
-                className="text-xs text-muted-foreground font-mono tabular-nums"
-              >
+              <div className="text-xs text-muted-foreground font-mono tabular-nums">
                 {formatGiB(ramUsed)} / {formatGiB(ramTotal)}
               </div>
               <Progress
@@ -473,14 +469,13 @@ function FloatingMonitorPanel({
             {hasGpu && (
               <div className="space-y-1">
                 <div className="flex justify-between text-ui-11 font-medium font-mono">
-                  <span className="truncate flex-1 pe-2">
+                  <span className="truncate flex-1 pr-2">
                     {t("settings.resources.liveMonitor.vram")}{" "}
                     {devices.length > 1
                       ? `(${devices.length} GPUs)`
                       : `(${devices[0].name ?? "GPU"})`}
                   </span>
                   <span
-                    dir="ltr"
                     className={cn(
                       "shrink-0 tabular-nums",
                       vramUsageKnown
@@ -491,10 +486,7 @@ function FloatingMonitorPanel({
                     {vramUsageKnown ? `${Math.round(vramPercent)}%` : "--"}
                   </span>
                 </div>
-                <div
-                  dir="ltr"
-                  className="text-xs text-muted-foreground font-mono tabular-nums"
-                >
+                <div className="text-xs text-muted-foreground font-mono tabular-nums">
                   {vramUsageKnown ? formatGiB(vramUsed) : unknownLabel} /{" "}
                   {formatGiB(vramTotal)}
                 </div>
@@ -510,7 +502,7 @@ function FloatingMonitorPanel({
                 <span className="text-muted-foreground">
                   {t("settings.resources.gpu.ggufInference")}
                 </span>
-                <span dir="auto" className="uppercase text-foreground">
+                <span className="uppercase text-foreground">
                   {separateInferenceGpu.backend ?? "GPU"}
                   {separateInferenceGpu.available
                     ? inferenceVramTotal

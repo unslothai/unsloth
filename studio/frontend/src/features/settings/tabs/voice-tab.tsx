@@ -19,17 +19,17 @@ import { Slider } from "@/components/ui/slider";
 import { Spinner } from "@/components/ui/spinner";
 import { Switch } from "@/components/ui/switch";
 import {
-  type SttDownloadStatus,
   StudioModelDictationAdapter,
-  StudioSpeechSynthesisAdapter,
-  createConfiguredUtterance,
-  curateSystemVoices,
+  type SttDownloadStatus,
   fetchSttStatus,
-  generateStudioTtsAudio,
   loadSttModel,
   startSttDownload,
   unloadSttModel,
   validateSttModel,
+  StudioSpeechSynthesisAdapter,
+  createConfiguredUtterance,
+  curateSystemVoices,
+  generateStudioTtsAudio,
 } from "@/features/chat";
 import {
   DownloadProgressBar,
@@ -229,7 +229,7 @@ function SttModelPicker({
           <HugeiconsIcon
             icon={Search01Icon}
             strokeWidth={2}
-            className="text-muted-foreground pointer-events-none absolute top-[calc(50%+2px)] start-4 size-3.5 -translate-y-1/2"
+            className="text-muted-foreground pointer-events-none absolute top-[calc(50%+2px)] left-4 size-3.5 -translate-y-1/2"
           />
           <Input
             value={query}
@@ -237,7 +237,7 @@ function SttModelPicker({
             placeholder={t(
               "settings.voice.dictation.sttModelSearchPlaceholder",
             )}
-            className="h-8 ps-8 text-sm"
+            className="h-8 pl-8 text-sm"
             autoFocus={true}
             onKeyDown={(event) => {
               if (event.key === "Enter" && items.length > 0) {
@@ -274,7 +274,7 @@ function SttModelPicker({
                   type="button"
                   onClick={() => void selectModel(model)}
                   aria-selected={model === value}
-                  className={`flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-start transition-colors hover:bg-muted ${
+                  className={`flex w-full items-center justify-between gap-3 px-2.5 py-1.5 text-left transition-colors hover:bg-muted ${
                     twoLines ? "rounded-sm" : "rounded-full"
                   } ${model === value ? "bg-accent font-medium" : ""}`}
                 >
@@ -283,10 +283,7 @@ function SttModelPicker({
                       {sttModelName(model)}
                     </span>
                     {twoLines ? (
-                      <span
-                        dir="ltr"
-                        className="mt-0.5 block truncate font-mono text-ui-9 leading-tight text-muted-foreground"
-                      >
+                      <span className="mt-0.5 block truncate font-mono text-ui-9 leading-tight text-muted-foreground">
                         {sttModelSource(model)}
                       </span>
                     ) : null}
@@ -960,7 +957,7 @@ export function VoiceTab() {
                         onClick={beginSttDownload}
                       >
                         {sttDownloadStarting || downloadingThisModel ? (
-                          <Spinner className="me-1.5" />
+                          <Spinner className="mr-1.5" />
                         ) : null}
                         {t("settings.voice.dictation.sttDownload")}
                       </Button>
@@ -973,7 +970,7 @@ export function VoiceTab() {
                           disabled={sttUnloading}
                           onClick={releaseSttModel}
                         >
-                          {sttUnloading ? <Spinner className="me-1.5" /> : null}
+                          {sttUnloading ? <Spinner className="mr-1.5" /> : null}
                           {sttUnloading
                             ? t("settings.voice.dictation.sttUnloading")
                             : t("settings.voice.dictation.sttUnload")}
@@ -1059,7 +1056,7 @@ export function VoiceTab() {
             </Select>
           ) : (
             <Button variant="outline" size="sm" onClick={requestAccess}>
-              <MicIcon className="me-1.5 size-3.5" />
+              <MicIcon className="mr-1.5 size-3.5" />
               {t("settings.voice.dictation.allowMicrophone")}
             </Button>
           )}
@@ -1256,14 +1253,14 @@ export function VoiceTab() {
               >
                 {previewing ? (
                   <>
-                    <SquareIcon className="me-1.5 size-3 animate-pulse fill-current text-destructive" />
+                    <SquareIcon className="mr-1.5 size-3 animate-pulse fill-current text-destructive" />
                     {t("settings.voice.readAloud.stopAction")}
                   </>
                 ) : (
                   <>
                     <HugeiconsIcon
                       icon={VolumeHighIcon}
-                      className="me-1.5 size-3.5"
+                      className="mr-1.5 size-3.5"
                     />
                     {t("settings.voice.readAloud.previewAction")}
                   </>

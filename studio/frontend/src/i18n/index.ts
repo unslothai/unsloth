@@ -4,8 +4,8 @@
 import { useCallback } from "react";
 import { useLocale } from "./locale-store";
 import { translate } from "./messages";
-import type { TranslationKey } from "./messages";
 import type { InterpolationValues } from "./types";
+import type { TranslationKey } from "./messages";
 
 export {
   AUTO_LOCALE,

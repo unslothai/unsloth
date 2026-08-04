@@ -65,16 +65,10 @@ export function ApiKeyRow({
       />
       <div className="flex min-w-0 flex-1 flex-col gap-0.5">
         <div className="flex min-w-0 items-center justify-between gap-3">
-          <span
-            className="truncate text-sm font-medium text-foreground"
-            title={apiKey.name}
-          >
+          <span className="truncate text-sm font-medium text-foreground" title={apiKey.name}>
             {apiKey.name}
           </span>
-          <code
-            dir="ltr"
-            className="shrink-0 font-mono text-ui-11 text-muted-foreground"
-          >
+          <code className="shrink-0 font-mono text-ui-11 text-muted-foreground">
             {prefix}
           </code>
         </div>
@@ -99,7 +93,7 @@ export function ApiKeyRow({
         </div>
       </div>
       <DropdownMenu>
-        <DropdownMenuTrigger asChild={true}>
+        <DropdownMenuTrigger asChild>
           <Button
             variant="ghost"
             size="sm"
@@ -110,19 +104,15 @@ export function ApiKeyRow({
           </Button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          <DropdownMenuItem
-            onClick={async () => {
-              await copyToClipboard(prefix);
-            }}
-          >
-            <HugeiconsIcon icon={Copy01Icon} className="size-3.5 me-2" />
+          <DropdownMenuItem onClick={async () => { await copyToClipboard(prefix); }}>
+            <HugeiconsIcon icon={Copy01Icon} className="size-3.5 mr-2" />
             {t("settings.apiKeys.copyPrefix")}
           </DropdownMenuItem>
           <DropdownMenuItem
             onClick={() => onRevoke(apiKey)}
             className="text-destructive focus:text-destructive"
           >
-            <HugeiconsIcon icon={Delete02Icon} className="size-3.5 me-2" />
+            <HugeiconsIcon icon={Delete02Icon} className="size-3.5 mr-2" />
             {t("settings.apiKeys.revokeToken")}
           </DropdownMenuItem>
         </DropdownMenuContent>
