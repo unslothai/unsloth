@@ -3369,6 +3369,13 @@ def dataset_map_num_proc(
     map site turns it back into ``None``.
     """
     if sys.platform in ("win32", "darwin"):
+        # ``UNSLOTH_DATASET_NUM_PROC`` is an unvetoed escape hatch in the shared
+        # policy, so a user who has read the dead-worker message and accepted
+        # spawn workers must not be overruled here without a word. Only the
+        # hatch can produce a count on this platform; everything else falls
+        # through to the veto below.
+        if _num_proc_override_is_set():
+            return _bounded_by_the_shared_policy(desired, serial_as_none)
         # ``None`` is safe at either layer here: workers are unusable on a spawn
         # platform, so every auto-sizer that reads a config ``None`` vetoes too
         # and nothing can inflate it. A ``1`` would be worse -- only the SFT map
@@ -3382,8 +3389,10 @@ def dataset_map_num_proc(
             import torch
         except Exception:
             # No torch means no active XPU runtime, so CPU-side dataset
-            # parallelism is still safe.
-            return safe_num_proc(desired)
+            # parallelism is still safe -- but it is still bounded, or a
+            # torch-less container would be the one path that ignores the
+            # memory ceiling and the escape hatch.
+            return _bounded_by_the_shared_policy(desired, serial_as_none)
 
         xpu = getattr(torch, "xpu", None)
         is_initialized = getattr(xpu, "is_initialized", None)
@@ -3400,25 +3409,69 @@ def dataset_map_num_proc(
                 # pre-init CPU preprocessing can still parallelize.
                 logger.debug("torch.xpu.is_initialized() probe failed: %s", e)
 
-    return _bounded_by_the_shared_policy(safe_num_proc(desired), serial_as_none)
+    return _bounded_by_the_shared_policy(desired, serial_as_none)
 
 
-def _bounded_by_the_shared_policy(num_proc: int, serial_as_none: bool = True) -> Optional[int]:
-    """Apply the training-side num_proc policy to a Studio-computed count.
+def _shared_policy():
+    """The shared num_proc policy module, or None on an installation without it.
+
+    The Zoo owns it. ``unsloth.dataset_num_proc`` is a byte-identical fallback
+    for a Zoo that predates the module, but it is only used when the training
+    package is already imported: importing it here would make *hardware
+    detection* patch torch and load the model stack, and the callers that reach
+    this line (format conversion, chat templates, the trainer) all run in a
+    process that has imported unsloth already.
+    """
+    try:
+        import unsloth_zoo.dataset_num_proc as policy
+        return policy
+    except Exception:
+        pass
+    if "unsloth" in sys.modules:
+        try:
+            import unsloth.dataset_num_proc as policy
+            return policy
+        except Exception as e:
+            logger.debug("local dataset_num_proc fallback unavailable: %s", e)
+    return None
+
+
+def _num_proc_override_is_set() -> bool:
+    policy = _shared_policy()
+    if policy is None:
+        return False
+    return bool(os.environ.get(policy.NUM_PROC_ENV_VAR, "").strip())
+
+
+def _bounded_by_the_shared_policy(
+    desired: Optional[int], serial_as_none: bool = True
+) -> Optional[int]:
+    """Apply the training-side num_proc policy to a Studio request.
 
     ``format_conversion.py`` and ``chat_templates.py`` hand this straight to
     ``Dataset.map``, so without it a container with 2GB and eight cores still got
     eight tokenizer workers -- the OOM this policy exists to stop -- and
-    ``UNSLOTH_DATASET_NUM_PROC`` did nothing on those paths. The import is lazy
-    and guarded: hardware detection must not depend on the training package, and
-    an older unsloth_zoo keeps the previous behaviour.
+    ``UNSLOTH_DATASET_NUM_PROC`` did nothing on those paths.
+
+    ``desired`` is passed through as the caller wrote it. Materializing an auto
+    request with ``safe_num_proc`` first would hide it from the policy, whose
+    auto path reads this process's CPU affinity and cgroup quota while
+    ``safe_num_proc`` reads the host's ``os.cpu_count()``: a 2-core container on
+    a 64-core box asked for 21 workers and got them bounded only by memory.
+    Studio's own caps are then applied to whatever the policy chose, since the
+    multi-GPU fork-deadlock cap is knowledge the policy does not have -- except
+    over the escape hatch, which is uncapped by contract.
     """
+    policy = _shared_policy()
+    if policy is None:
+        return safe_num_proc(desired)  # the behaviour before the shared policy
+
     try:
-        from unsloth_zoo.dataset_num_proc import get_dataset_num_proc
-    except Exception:
-        return num_proc
-    try:
-        return get_dataset_num_proc(num_proc, serial_as_none = serial_as_none)
+        bounded = policy.get_dataset_num_proc(desired, serial_as_none = serial_as_none)
     except Exception as e:
         logger.debug("dataset_num_proc policy unavailable: %s", e)
-        return num_proc
+        return safe_num_proc(desired)
+
+    if isinstance(bounded, int) and bounded > 1 and not _num_proc_override_is_set():
+        bounded = safe_num_proc(bounded)
+    return bounded

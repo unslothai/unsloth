@@ -407,3 +407,124 @@ def test_the_trainer_config_asks_for_the_config_sentinel():
             "so a serial request will be read back as 'auto-size me': "
             f"{ast.unparse(call)}"
         )
+
+
+# ---------- the request reaches the policy as the caller wrote it ----------
+
+
+def _unexpected_auto_sizing(desired = None):
+    if desired is None:
+        raise AssertionError("the auto request was materialized before the policy saw it")
+    return desired
+
+
+def test_an_auto_request_is_sized_by_the_policy_not_by_the_host_cpu_count(monkeypatch):
+    """``safe_num_proc(None)`` reads ``os.cpu_count()``; the policy reads this process.
+
+    Materializing the auto request before the policy saw it hid the affinity
+    mask and the cgroup quota, so a 2-core container on a 64-core box asked for
+    ``cpu_count // 3`` workers and was bounded only by memory.
+    """
+    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+    monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
+    monkeypatch.setattr(policy, "_usable_cpus", lambda: 2)
+    monkeypatch.setattr(policy, "_affordable_workers", lambda: 64)
+    monkeypatch.setattr(hw, "safe_num_proc", _unexpected_auto_sizing)
+
+    # min(max(2 // 2, 2), cap) = 2, against os.cpu_count() // 3 on the host.
+    assert hw.dataset_map_num_proc() == 2
+
+
+def test_studio_caps_still_apply_to_a_policy_chosen_count(monkeypatch):
+    """The multi-GPU fork-deadlock cap is knowledge the policy does not have."""
+    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    _patch_device(monkeypatch, hw.DeviceType.CUDA, visible_gpus = 2)
+    monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
+    monkeypatch.setattr(policy, "_usable_cpus", lambda: 64)
+    monkeypatch.setattr(policy, "_affordable_workers", lambda: 64)
+    assert hw.dataset_map_num_proc() == 4
+
+
+# ---------- the escape hatch ----------
+
+
+@pytest.mark.parametrize("platform", ["win32", "darwin"])
+def test_the_override_is_honoured_on_spawn_platforms(monkeypatch, platform):
+    """The policy calls it unvetoed, so the platform veto must not swallow it.
+
+    A user who has read the dead-worker message and set this has accepted spawn
+    workers; silently ignoring it makes the documented remedy a no-op.
+    """
+    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy.reset_warning_state()
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", "2")
+    assert hw.dataset_map_num_proc(8) == 2
+
+    # Unset, the veto stands.
+    monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC")
+    assert hw.dataset_map_num_proc(8) is None
+
+
+def test_the_override_is_not_capped_by_the_studio_heuristics(monkeypatch):
+    """Uncapped by contract, including by the multi-GPU cap Studio adds after."""
+    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy.reset_warning_state()
+    _patch_device(monkeypatch, hw.DeviceType.CUDA, visible_gpus = 4)
+    monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", "16")
+    assert hw.dataset_map_num_proc(2) == 16
+
+
+# ---------- the local fallback copy ----------
+
+
+def test_an_older_zoo_falls_back_to_the_unsloth_copy(monkeypatch):
+    """unsloth.dataset_num_proc is the same policy; Studio should use it too.
+
+    Only when unsloth is already imported: importing it from here would make
+    hardware detection patch torch and pull in the model stack.
+    """
+    import builtins
+
+    calls = []
+    stub = types.ModuleType("unsloth.dataset_num_proc")
+    stub.NUM_PROC_ENV_VAR = "UNSLOTH_DATASET_NUM_PROC"
+    stub.get_dataset_num_proc = lambda desired = None, *, serial_as_none = True: (
+        calls.append((desired, serial_as_none)) or 3
+    )
+    package = types.ModuleType("unsloth")
+    package.dataset_num_proc = stub
+
+    monkeypatch.setitem(sys.modules, "unsloth", package)
+    monkeypatch.setitem(sys.modules, "unsloth.dataset_num_proc", stub)
+
+    real_import = builtins.__import__
+
+    def _no_zoo_policy(name, *args, **kwargs):
+        if name == "unsloth_zoo.dataset_num_proc":
+            raise ImportError("older unsloth_zoo")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_zoo_policy)
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+
+    assert hw.dataset_map_num_proc(8) == 3
+    assert calls == [(8, True)], calls
+
+
+def test_no_policy_anywhere_keeps_the_previous_behaviour(monkeypatch):
+    """Neither module importable: the pre-policy Studio count, not a crash."""
+    import builtins
+
+    monkeypatch.delitem(sys.modules, "unsloth", raising = False)
+    real_import = builtins.__import__
+
+    def _no_policy(name, *args, **kwargs):
+        if name.endswith("dataset_num_proc"):
+            raise ImportError("no policy here")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_policy)
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+    assert hw.dataset_map_num_proc(4) == 4
