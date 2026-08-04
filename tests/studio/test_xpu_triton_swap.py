@@ -533,7 +533,11 @@ class TestCpuPinSurvivesAWedgedImport:
         src = STACK.read_text(encoding = "utf-8")
         start = src.index(f"def {name}(")
         body = src[start : src.index("\n\ndef ", start)]
-        ns: dict = {"re": __import__("re"), "importlib": __import__("importlib.util", fromlist = ["util"]), "Path": Path}
+        ns: dict = {
+            "re": __import__("re"),
+            "importlib": __import__("importlib.util", fromlist = ["util"]),
+            "Path": Path,
+        }
         exec(compile(body, str(STACK), "exec"), ns)
         return ns[name]
 
