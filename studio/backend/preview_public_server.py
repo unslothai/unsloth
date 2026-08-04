@@ -212,17 +212,24 @@ async def _wait_for_bind(server, task) -> int:
 
 class PublicPreviewListener:
     def __init__(self):
-        self._lock = asyncio.Lock()
+        # Created on first use: on Python 3.9 an import-time asyncio.Lock binds
+        # the import loop, and contended waits on the serving loop then raise.
+        self._lock: Optional[asyncio.Lock] = None
         self._server = None
         self._task: Optional[asyncio.Task] = None
         self._port: Optional[int] = None
+
+    def _get_lock(self) -> asyncio.Lock:
+        if self._lock is None:
+            self._lock = asyncio.Lock()
+        return self._lock
 
     @property
     def port(self) -> Optional[int]:
         return self._port
 
     async def start(self, app) -> int:
-        async with self._lock:
+        async with self._get_lock():
             if self._port is not None:
                 return self._port
             import uvicorn
@@ -267,7 +274,7 @@ class PublicPreviewListener:
             return port
 
     async def stop(self) -> None:
-        async with self._lock:
+        async with self._get_lock():
             server, task = self._server, self._task
             self._server, self._task, self._port = None, None, None
             if server is None:

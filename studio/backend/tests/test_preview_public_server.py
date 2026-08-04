@@ -802,3 +802,24 @@ def test_ensure_unbinds_the_listener_when_the_tunnel_thread_raises(monkeypatch, 
         asyncio.run(link.ensure(_FakeApp()))
 
     assert fake.stopped == 1
+
+
+def test_listener_lock_is_created_lazily_on_the_running_loop():
+    # On Python 3.9 an asyncio.Lock made at import time binds the import loop;
+    # a contended acquire on the serving loop would then raise. The module-level
+    # listener is constructed at import, so its lock must be built on first use.
+    import asyncio
+
+    from preview_public_server import PublicPreviewListener
+
+    lst = PublicPreviewListener()
+    assert lst._lock is None
+
+    async def use():
+        async with lst._get_lock():
+            pass
+        return lst._lock
+
+    lock = asyncio.run(use())
+    assert lock is not None
+    assert lst._get_lock() is lock
