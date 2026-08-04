@@ -1327,6 +1327,8 @@ export function SharedComposer({
             upgrade: validation.transformers_upgrade,
             // No installable release: custom-code models may fall back to the trust_remote_code gate below.
             trustRemoteCodeFallback: validation.requires_trust_remote_code,
+            forceCancelActive:
+              compareStopDecision?.forceCancelActive ?? false,
           });
           // The install unloads the active model before the swap (even when the
           // swap then fails); if a later gate cancels or the load fails, the UI

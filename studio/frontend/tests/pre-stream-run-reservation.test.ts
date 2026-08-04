@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   adoptPreStreamRunReservation,
   cancelPreStreamRunReservations,
+  claimPreStreamRunReservation,
   findPreStreamRunReservation,
   hasPreStreamRunReservation,
   isPreStreamRunReservationCancelled,
@@ -110,11 +111,26 @@ test("local reservations can be snapshotted and cancelled before streaming", () 
   assert.deepEqual(listLocalPreStreamRunReservations(), [
     { token: local, threadIds: ["local-thread", "remote-thread"] },
   ]);
+  assert.equal(claimPreStreamRunReservation(local), true);
   assert.equal(cancelPreStreamRunReservations([local]), 1);
   assert.equal(cancelCount, 1);
   assert.equal(isPreStreamRunReservationCancelled(local), true);
+  assert.equal(hasPreStreamRunReservation(["local-thread"]), false);
+  assert.equal(adoptPreStreamRunReservation(local, ["late-alias"]), false);
   assert.deepEqual(listLocalPreStreamRunReservations(), []);
   assert.equal(cancelPreStreamRunReservations([local]), 0);
   assert.equal(releasePreStreamRunReservation(local), true);
   assert.equal(releasePreStreamRunReservation(external), true);
+});
+
+test("cancelling an unclaimed reservation releases it immediately", () => {
+  const token = reservePreStreamRun(["attachment-thread"], {
+    usesLocalModel: true,
+  });
+  assert.ok(token);
+
+  assert.equal(cancelPreStreamRunReservations([token]), 1);
+  assert.equal(hasPreStreamRunReservation(["attachment-thread"]), false);
+  assert.equal(isPreStreamRunReservationCancelled(token), false);
+  assert.equal(releasePreStreamRunReservation(token), false);
 });

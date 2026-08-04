@@ -415,6 +415,15 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         "run.items.splice(activeIndex, 1);"
     )
     assert "waitForPromptQueueTargetIdle(run);" in retained_failure
+    local_queue_stop = _between(
+        THREAD,
+        "function stopLocalPromptQueueRun(run: PromptQueueRun)",
+        "function stopLocalPromptQueueRunsForThreadIds(threadIds: string[])",
+    )
+    assert "if (plan.refreshTargetIdleWait)" in local_queue_stop
+    assert "refreshPromptQueueTargetIdleWait(run);" in local_queue_stop
+    assert "claimPreStreamRunReservation(reservationToken);" in RUNTIME_PROVIDER
+    assert "if (!reservation.claimed)" in PRE_STREAM_RESERVATION
     assert "loadedIsMultimodal: isMultimodalResponse(status)" in lifecycle
     assert "isAudio: status.is_audio ?? false" in lifecycle
     assert "hasAudioInput: status.has_audio_input ?? false" in lifecycle
@@ -453,6 +462,13 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "beginModelLoading()" in SHARED_COMPOSER
     assert "endModelLoading(compareLifecycleLease)" in SHARED_COMPOSER
     assert SHARED_COMPOSER.count("releaseCompareModelLifecycle();") >= 3
+    compare_upgrade = _between(
+        SHARED_COMPOSER,
+        "const upgraded = await confirmTransformersUpgradeIfNeeded({",
+        "});",
+    )
+    assert "forceCancelActive:" in compare_upgrade
+    assert "compareStopDecision?.forceCancelActive ?? false" in compare_upgrade
     compare_handle = _between(
         SHARED_COMPOSER,
         "export function RegisterCompareHandle(",

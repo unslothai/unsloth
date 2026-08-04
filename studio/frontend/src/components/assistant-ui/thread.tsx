@@ -1145,6 +1145,10 @@ function stopLocalPromptQueueRun(run: PromptQueueRun) {
     return;
   }
   syncPromptQueueUI();
+  if (plan.refreshTargetIdleWait) {
+    refreshPromptQueueTargetIdleWait(run);
+    return;
+  }
   if (plan.activeItemRemoved && run.index >= 0 && !run.waitingForTargetIdle) {
     requestPromptQueuePump(50);
   }

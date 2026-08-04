@@ -68,6 +68,7 @@ import {
 } from "./utils/prompt-queue-boundary";
 import {
   adoptPreStreamRunReservation,
+  claimPreStreamRunReservation,
   findPreStreamRunReservation,
   isPreStreamRunReservationCancelled,
   preStreamRunThreadIdsForRuntime,
@@ -996,6 +997,9 @@ function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter 
       );
       const reservationToken =
         findPreStreamRunReservation(reservationThreadIds);
+      if (reservationToken) {
+        claimPreStreamRunReservation(reservationToken);
+      }
       const throwIfReservationCancelled = () => {
         if (
           reservationToken &&

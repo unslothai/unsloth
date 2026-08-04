@@ -5,6 +5,7 @@ type PreStreamRunReservation = {
   usesLocalModel: boolean;
   cancel?: (threadIds: string[]) => void;
   cancelled: boolean;
+  claimed: boolean;
 };
 
 export interface LocalPreStreamRunReservation {
@@ -79,6 +80,7 @@ export function reservePreStreamRun(
     usesLocalModel: options.usesLocalModel,
     cancel: options.cancel,
     cancelled: false,
+    claimed: false,
   });
   for (const threadId of ids) {
     reservationByThreadId.set(threadId, token);
@@ -119,8 +121,26 @@ export function cancelPreStreamRunReservations(
     } catch {
       // The run may have ended between the confirmation snapshot and cancellation.
     }
+    reservation.cancel = undefined;
+    for (const threadId of reservation.threadIds) {
+      if (reservationByThreadId.get(threadId) === token) {
+        reservationByThreadId.delete(threadId);
+      }
+    }
+    if (!reservation.claimed) {
+      reservations.delete(token);
+    }
   }
   return cancelled;
+}
+
+export function claimPreStreamRunReservation(token: symbol): boolean {
+  const reservation = reservations.get(token);
+  if (!reservation || reservation.cancelled) {
+    return false;
+  }
+  reservation.claimed = true;
+  return true;
 }
 
 export function isPreStreamRunReservationCancelled(token: symbol): boolean {
@@ -132,7 +152,7 @@ export function adoptPreStreamRunReservation(
   threadIds: Iterable<string | null | undefined>,
 ): boolean {
   const reservation = reservations.get(token);
-  if (!reservation) {
+  if (!reservation || reservation.cancelled) {
     return false;
   }
   const ids = normalizedThreadIds(threadIds);

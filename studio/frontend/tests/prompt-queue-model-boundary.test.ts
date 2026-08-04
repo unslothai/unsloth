@@ -21,6 +21,7 @@ test("a local model stop preserves an active external item", () => {
     {
       cancelActiveItem: false,
       activeItemRemoved: false,
+      refreshTargetIdleWait: false,
       retainedItemIndexes: [0, 2],
     },
   );
@@ -38,6 +39,7 @@ test("a dispatched local item is cancelled without losing external follow-ups", 
     {
       cancelActiveItem: true,
       activeItemRemoved: true,
+      refreshTargetIdleWait: false,
       retainedItemIndexes: [1],
     },
   );
@@ -55,6 +57,7 @@ test("an undispatched local item is dropped without losing external follow-ups",
     {
       cancelActiveItem: false,
       activeItemRemoved: true,
+      refreshTargetIdleWait: true,
       retainedItemIndexes: [1],
     },
   );
@@ -74,6 +77,7 @@ test("completed queue history is preserved when pending local work is dropped", 
     {
       cancelActiveItem: false,
       activeItemRemoved: false,
+      refreshTargetIdleWait: false,
       retainedItemIndexes: [0, 1, 3],
     },
   );

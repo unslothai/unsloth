@@ -21,6 +21,7 @@ export type PromptQueueModelStopItem = {
 export type LocalPromptQueueStopPlan = {
   cancelActiveItem: boolean;
   activeItemRemoved: boolean;
+  refreshTargetIdleWait: boolean;
   retainedItemIndexes: number[];
 };
 
@@ -45,6 +46,11 @@ export function planLocalPromptQueueStop(
       activeItem?.usesLocalModel && activeItem.dispatched,
     ),
     activeItemRemoved: Boolean(activeItem?.usesLocalModel),
+    refreshTargetIdleWait: Boolean(
+      runIndex < 0 &&
+        activeItem?.usesLocalModel &&
+        retainedItemIndexes.length > 0,
+    ),
     retainedItemIndexes,
   };
 }
