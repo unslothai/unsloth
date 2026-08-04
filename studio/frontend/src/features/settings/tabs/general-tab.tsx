@@ -54,6 +54,10 @@ import {
   updateUploadLimitSettings,
 } from "../api/upload-limit";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
+import {
+  DesktopUpdateControl,
+  DesktopUpdateNote,
+} from "../components/desktop-update-control";
 import { EmbeddingModelCombobox } from "../components/embedding-model-combobox";
 import { LanguageSelect } from "../components/language-select";
 import { SettingsRow } from "../components/settings-row";
@@ -464,7 +468,12 @@ export function GeneralTab() {
         </p>
       </header>
 
-      <StudioVersionSection />
+      {/* Desktop-only, and self-gating: outside the desktop app both render
+          nothing and the section keeps just the version rows. */}
+      <StudioVersionSection>
+        <DesktopUpdateControl />
+        <DesktopUpdateNote />
+      </StudioVersionSection>
 
       <SettingsSection title={t("settings.general.account")}>
         <SettingsRow
