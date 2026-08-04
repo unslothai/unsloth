@@ -43,6 +43,8 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
+import { NegativePromptField } from "@/components/negative-prompt-field";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { VIDEO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import {
@@ -290,6 +292,7 @@ function SliderField({
 }) {
   return (
     <ParamSlider
+      inline={true}
       label={label}
       info={hint}
       value={value}
@@ -494,6 +497,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
     "a tiny ginger sloth surfing a wave at sunset, cinematic, smooth motion",
   );
   const [negativePrompt, setNegativePrompt] = useState("");
+  const [negativeOpen, setNegativeOpen] = useState(false);
   const [steps, setSteps] = useState(DEFAULT_GEN.steps);
   const [guidance, setGuidance] = useState(DEFAULT_GEN.guidance);
   const [seed, setSeed] = useState("");
@@ -532,6 +536,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const [status, setStatus] = useState<VideoStatus | null>(null);
   // Controlled so the body-portaled model selector force-closes when this page is mounted but off-tab.
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const {
+    attach: attachSettingsScroll,
+    onScroll: onSettingsScroll,
+    className: settingsFadeClass,
+  } = useScrollFades();
   // Records come from the backend (durable); srcById maps each id to its object URL.
   const [videos, setVideos] = useState<GalleryVideo[]>(() => galleryCache.videos);
   const [hasMore, setHasMore] = useState(() => galleryCache.hasMore);
@@ -831,7 +840,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   const restoreSettings = useCallback(
     (video: GalleryVideo) => {
       setPrompt(video.prompt);
-      setNegativePrompt(video.negative_prompt ?? "");
+      const restoredNegative = video.negative_prompt ?? "";
+      setNegativePrompt(restoredNegative);
+      if (restoredNegative) setNegativeOpen(true);
       setSteps(video.steps);
       setGuidance(video.guidance);
       setSeed(String(video.seed));
@@ -1534,9 +1545,16 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           Gutters match Images, so both pages' content starts at the same 40px. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
         {/* Widened by the pl-8 so the controls keep their old width. */}
-        <div className="flex w-[400px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
+        <div className="relative flex w-[400px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
-          <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-7">
+          <div
+            ref={attachSettingsScroll}
+            onScroll={onSettingsScroll}
+            className={cn(
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-20 pl-0.5 pr-7",
+              settingsFadeClass,
+            )}
+          >
           {/* Names the pane, as the Images column does. h-9 keeps both pages' headings level. */}
           <div className="grid gap-1">
             <h2 className="flex h-9 items-center font-heading text-base font-medium text-foreground">
@@ -1555,20 +1573,13 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             />
           </Field>
 
-          {/* A negative prompt only does anything with guidance on, so hide it at guidance 0 instead of showing a dead field. */}
-          {guidance > 0 && (
-            <Field
-              label="Negative prompt"
-              hint="What to steer the video away from. Only used when guidance is above 0."
-            >
-              <Textarea
-                rows={2}
-                placeholder="What to avoid (optional)"
-                value={negativePrompt}
-                onChange={(e) => setNegativePrompt(e.target.value)}
-              />
-            </Field>
-          )}
+          <NegativePromptField
+            value={negativePrompt}
+            onChange={setNegativePrompt}
+            open={negativeOpen}
+            onOpenChange={setNegativeOpen}
+            hint="What to steer the video away from. Only used when guidance is above 0."
+          />
 
           <Field
             label="Resolution"
@@ -1656,16 +1667,28 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             {advancedControls}
           </AdvancedDisclosure>
 
-          {busy === "generating" ? (
-            <Button variant="outline" onClick={handleCancelGenerate}>
-              <Spinner className="mr-2 size-4" />
-              Cancel
-            </Button>
-          ) : (
-            <Button onClick={handleGenerate} disabled={busy !== null || !status?.loaded}>
-              Generate
-            </Button>
-          )}
+          </div>
+          {/* Floats over the settings so it needs no bar of its own. */}
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-7">
+            {busy === "generating" ? (
+              <Button
+                // Opaque hover: this one floats over the settings too.
+                className="pointer-events-auto h-11 px-8 hover:bg-muted dark:hover:bg-muted"
+                variant="outline"
+                onClick={handleCancelGenerate}
+              >
+                <Spinner className="mr-2 size-4" />
+                Cancel
+              </Button>
+            ) : (
+              <Button
+                className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+                onClick={handleGenerate}
+                disabled={busy !== null || !status?.loaded}
+              >
+                Generate
+              </Button>
+            )}
           </div>
         </div>
 

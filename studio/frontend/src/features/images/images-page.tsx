@@ -4,6 +4,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeftRightIcon,
+  ArrowUpDownIcon,
   ArrowReloadHorizontalIcon,
   Delete02Icon,
   Download01Icon,
@@ -13,7 +14,7 @@ import {
   InformationCircleIcon,
   SparklesIcon,
 } from "@hugeicons/core-free-icons";
-import { HugeiconsIcon } from "@hugeicons/react";
+import { HugeiconsIcon, type IconSvgElement } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
 import { Button } from "@/components/ui/button";
@@ -46,6 +47,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
@@ -67,6 +69,8 @@ import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
+import { ChevronDown } from "lucide-react";
+import { NegativePromptField } from "@/components/negative-prompt-field";
 import { cn } from "@/lib/utils";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
@@ -171,6 +175,14 @@ const ASPECT_RATIOS: Record<string, [number, number]> = {
   "21:9": [21, 9],
 };
 const ASPECT_OPTIONS = ["custom", ...Object.keys(ASPECT_RATIOS)];
+// Names read faster than bare ratios; Flip covers the portrait side of each.
+const ASPECT_LABELS: Record<string, string> = {
+  "1:1": "Square",
+  "3:2": "Photo",
+  "4:3": "Landscape",
+  "16:9": "Widescreen",
+  "21:9": "Ultrawide",
+};
 
 // Friendly labels for ControlNet control types; unknown types fall back to a capitalized "(map)" label.
 const CONTROL_TYPE_LABELS: Record<string, string> = {
@@ -185,11 +197,93 @@ const MIN_DIM = 256;
 const MAX_DIM = 2048;
 // Convenient drag range for the Runs slider; the number box accepts higher typed values on purpose.
 const RUNS_SLIDER_MAX = 128;
+// Offered sizes; a locked ratio can derive one off-list, so the current value is added in.
+const DIM_OPTIONS = [
+  256, 320, 384, 448, 512, 576, 640, 704, 768, 832, 896, 960, 1024, 1152, 1280,
+  1408, 1536, 1664, 1792, 1920, 2048,
+];
+
 function snapDim(value: number): number {
   if (!Number.isFinite(value)) return 1024;
   return Math.min(MAX_DIM, Math.max(MIN_DIM, Math.round(value / 16) * 16));
 }
 
+/** Compact size control: type a value, or pick one of the usual sizes from the menu. */
+function DimensionSelect({
+  icon,
+  label,
+  value,
+  open,
+  onOpenChange,
+  onChange,
+}: {
+  icon: IconSvgElement;
+  label: string;
+  value: number;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onChange: (value: number) => void;
+}) {
+  // Typing is held in a draft so a half-entered number is not snapped mid-keystroke.
+  const [draft, setDraft] = useState(String(value));
+  const [lastValue, setLastValue] = useState(value);
+  if (value !== lastValue) {
+    setLastValue(value);
+    setDraft(String(value));
+  }
+  const commit = () => {
+    const typed = Number(draft);
+    const next = snapDim(Number.isFinite(typed) && typed > 0 ? typed : value);
+    setDraft(String(next));
+    setLastValue(next);
+    if (next !== value) onChange(next);
+  };
+  const pick = (n: number) => {
+    setDraft(String(n));
+    setLastValue(n);
+    onChange(n);
+  };
+  return (
+    <div className="flex h-9 flex-1 items-center gap-2 rounded-full border border-border bg-background px-3.5 transition-colors focus-within:border-ring dark:border-transparent dark:bg-white/[0.06] dark:focus-within:bg-white/[0.12]">
+      <HugeiconsIcon
+        icon={icon}
+        strokeWidth={1.75}
+        className="size-4 shrink-0 text-muted-foreground"
+      />
+      <input
+        aria-label={label}
+        inputMode="numeric"
+        value={draft}
+        onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, ""))}
+        onBlur={commit}
+        onKeyDown={(e) => {
+          if (e.key === "Enter") {
+            e.preventDefault();
+            commit();
+          }
+        }}
+        className="w-full min-w-0 bg-transparent text-sm tabular-nums outline-none"
+      />
+      <DropdownMenu open={open} onOpenChange={onOpenChange}>
+        <DropdownMenuTrigger
+          aria-label={`${label} presets`}
+          className="-mr-1 shrink-0 cursor-pointer rounded-full p-1 text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <ChevronDown className="size-4" />
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end" className="max-h-72 overflow-y-auto">
+          {DIM_OPTIONS.map((n) => (
+            <DropdownMenuItem key={n} onSelect={() => pick(n)}>
+              <span className="tabular-nums">{n}</span>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </div>
+  );
+}
+
+// Hidden until the row is hovered or focused, so a quiet control stays quiet.
 // The ratio key (compared long:short, so it survives orientation) matching width/height, plus whether portrait.
 function matchAspect(width: number, height: number): { key: string; portrait: boolean } {
   const target = Math.max(width, height) / Math.min(width, height);
@@ -398,7 +492,7 @@ const IDLE_PROGRESS: DiffusionLoadProgress = {
   error: null,
 };
 
-// Mirrors the Train page SliderRow: label + Slider + number input. The Images sliders are Chat ParamSlider, so both pages share one control.
+// One row: label, track, value. The Images sliders are Chat ParamSlider, so both pages share one control.
 function SliderField({
   label,
   hint,
@@ -418,6 +512,7 @@ function SliderField({
 }) {
   return (
     <ParamSlider
+      inline={true}
       label={label}
       info={hint}
       value={value}
@@ -964,6 +1059,14 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     "a tiny ginger sloth coding in a sunlit treehouse, photorealistic",
   );
   const [negativePrompt, setNegativePrompt] = useState("");
+  const [negativeOpen, setNegativeOpen] = useState(false);
+  const [widthOpen, setWidthOpen] = useState(false);
+  const [heightOpen, setHeightOpen] = useState(false);
+  const {
+    attach: attachSettingsScroll,
+    onScroll: onSettingsScroll,
+    className: settingsFadeClass,
+  } = useScrollFades();
   // width/height are the source of truth; `aspect` locks their proportion and `portrait` tracks orientation, so Flip keeps the lock.
   const [width, setWidth] = useState(1024);
   const [height, setHeight] = useState(1024);
@@ -1343,7 +1446,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const restoreSettings = useCallback((image: GalleryImage) => {
     setPrompt(image.prompt);
     // Negative prompt only applies when guidance>0; don't restore a hidden value.
-    setNegativePrompt(image.guidance > 0 ? (image.negative_prompt ?? "") : "");
+    const restoredNegative = image.guidance > 0 ? (image.negative_prompt ?? "") : "";
+    setNegativePrompt(restoredNegative);
+    if (restoredNegative) setNegativeOpen(true);
     setSteps(image.steps);
     setGuidance(image.guidance);
     // Restore from the BASE batch seed, not this image's derived seed, or replaying with batch_size would advance again.
@@ -2436,11 +2541,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       /* Settings column + preview canvas: both on the page background, split by a rule. Each pane pads its own content.
          Full width, so the canvas grows with the window; the settings column stays fixed.
          pl-8 puts its content 40px in, level with the model selector label above and
-         matching the pr-10 on the other side of the column. */
+         with pr-8 on the other side of the column. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
-        <div className="flex w-[408px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
+        <div className="relative flex w-[408px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
-          <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-10">
+          <div
+            ref={attachSettingsScroll}
+            onScroll={onSettingsScroll}
+            className={cn(
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-20 pl-0.5 pr-8",
+              settingsFadeClass,
+            )}
+          >
             {/* The sidebar submenu is the switcher, so name the active workflow over its controls. */}
             <div className="grid gap-1">
               {/* h-9 keeps this level with the Video page heading. */}
@@ -2695,6 +2807,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
+            <NegativePromptField
+              value={negativePrompt}
+              onChange={setNegativePrompt}
+              open={negativeOpen}
+              onOpenChange={setNegativeOpen}
+              hint="What to steer the image away from. Only used when guidance is above 0."
+            />
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Type a Hugging Face repo id or pick a discovered adapter; each carries a 0-2 weight. */}
             {loraCapable && (
               <Field
@@ -2828,24 +2947,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 </div>
               </Field>
             )}
-            {/* A negative prompt only does anything with guidance on, so hide it at guidance 0 instead of showing a dead field. */}
-            {guidance > 0 && (
-              <Field
-                label="Negative prompt"
-                hint="What to steer the image away from. Only used when guidance is above 0."
-              >
-                <Textarea
-                  rows={2}
-                  placeholder="What to avoid (optional)"
-                  value={negativePrompt}
-                  onChange={(e) => setNegativePrompt(e.target.value)}
-                />
-              </Field>
-            )}
-
             <Field
               label="Aspect ratio"
-              hint="Pick a ratio to lock the proportions, then set the size with the sliders. Flip swaps width and height. Sizes run from 256 to 2048 in steps of 16. Z-Image is trained around 1 megapixel, so much larger sizes can look worse."
+              hint="Pick a ratio to lock the proportions, then set the size below. Flip swaps width and height."
             >
               <div className="flex items-center gap-2">
                 <Select
@@ -2860,7 +2964,9 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                   <SelectContent>
                     {ASPECT_OPTIONS.map((key) => (
                       <SelectItem key={key} value={key}>
-                        {key === "custom" ? "Custom" : key}
+                        {key === "custom"
+                          ? "Custom"
+                          : `${ASPECT_LABELS[key]} (${key})`}
                       </SelectItem>
                     ))}
                   </SelectContent>
@@ -2890,18 +2996,42 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 </Tooltip>
               </div>
             </Field>
-            <SliderField label="Width" value={width} min={MIN_DIM} max={MAX_DIM} step={16} onChange={changeWidth} />
-            <SliderField label="Height" value={height} min={MIN_DIM} max={MAX_DIM} step={16} onChange={changeHeight} />
+            <Field
+              label="Resolution"
+              hint="Width and height in pixels. Sizes run from 256 to 2048 in steps of 16. Z-Image is trained around 1 megapixel, so much larger sizes can look worse."
+            >
+              <div className="flex items-center gap-2">
+                <DimensionSelect
+                  icon={ArrowLeftRightIcon}
+                  label="Width"
+                  value={width}
+                  open={active && widthOpen}
+                  onOpenChange={(o) => setWidthOpen(active && o)}
+                  onChange={changeWidth}
+                />
+                <DimensionSelect
+                  icon={ArrowUpDownIcon}
+                  label="Height"
+                  value={height}
+                  open={active && heightOpen}
+                  onOpenChange={(o) => setHeightOpen(active && o)}
+                  onChange={changeHeight}
+                />
+              </div>
+            </Field>
 
-            <SliderField
-              label="Steps"
-              hint="9 is the recommended setting for Z-Image-Turbo. More steps rarely help."
-              value={steps}
-              min={1}
-              max={50}
-              step={1}
-              onChange={setSteps}
-            />
+            {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
+            <div className="pt-2">
+              <SliderField
+                label="Steps"
+                hint="9 is the recommended setting for Z-Image-Turbo. More steps rarely help."
+                value={steps}
+                min={1}
+                max={50}
+                step={1}
+                onChange={setSteps}
+              />
+            </div>
             <SliderField
               label="Guidance"
               hint="Keep this at 0 for Z-Image-Turbo. Higher values make its output worse. Other models use guidance."
@@ -2946,13 +3076,19 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               {advancedControls}
             </AdvancedDisclosure>
 
-            <Button onClick={handleGenerate} disabled={busy !== null || !status?.loaded}>
+          </div>
+          {/* Floats over the settings so it needs no bar of its own. */}
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-8">
+            <Button
+              className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
+              onClick={handleGenerate}
+              disabled={busy !== null || !status?.loaded}
+            >
               {busy === "generating" ? <Spinner className="mr-2 size-4" /> : null}
               {busy === "generating" && genDone != null && count > 1
                 ? `Generating ${genDone}/${count}…`
                 : "Generate"}
             </Button>
-
           </div>
         </div>
 

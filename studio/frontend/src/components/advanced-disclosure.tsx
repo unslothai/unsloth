@@ -22,7 +22,8 @@ export function AdvancedDisclosure({
   children: ReactNode;
 }) {
   return (
-    <div className="flex flex-col gap-3 border-t border-border/60 pt-5 pb-4">
+    // mt-2 over pt-4 sits the rule between the field above and this row, not up against it.
+    <div className="mt-2 flex flex-col gap-3 border-t border-border/60 pt-4 pb-4">
       <button
         type="button"
         onClick={() => onOpenChange(!open)}
