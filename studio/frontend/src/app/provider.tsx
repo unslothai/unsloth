@@ -23,6 +23,7 @@ import {
   useAppearanceCustomStore,
   useTheme,
 } from "@/features/settings";
+import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
@@ -539,6 +540,7 @@ export function AppProvider({ children }: AppProviderProps) {
         <AppearanceCustomizationEffect />
         <DeepLinkHandler />
         <TauriWrapper>{children}</TauriWrapper>
+        <SttDownloadPrompt />
         <Toaster
           position="top-right"
           visibleToasts={2}

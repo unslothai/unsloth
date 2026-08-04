@@ -4,7 +4,9 @@
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
+import { requestSttDownload } from "@/features/settings/stores/stt-download-prompt-store";
 import {
+  MTMD_STT_MODELS,
   applyDictationDictionary,
   isCuratedSttModel,
   recordRecentDictation,
@@ -59,11 +61,14 @@ const stopStream = (stream: MediaStream | null) => {
   }
 };
 
-/** Backend STT engine, decided by the model: curated ids run GGML through
- * whisper.cpp; a custom HF repo is safetensors and runs through Transformers. */
-export type SttEngine = "transformers" | "gguf";
+/** Backend STT engine, decided by the model: Whisper ids run GGML through
+ * whisper.cpp, mtmd ids run through llama.cpp, and a custom HF repo is
+ * safetensors on Transformers. */
+export type SttEngine = "transformers" | "gguf" | "mtmd";
 
 export function sttEngineFor(model: string): SttEngine {
+  // whisper.cpp is Whisper-only, so the newer ASR models go to llama.cpp.
+  if (MTMD_STT_MODELS.has(model.trim())) return "mtmd";
   return isCuratedSttModel(model) ? "gguf" : "transformers";
 }
 
@@ -115,6 +120,8 @@ export interface SttDownloadStatus {
   downloading: boolean;
   model: string | null;
   error: string | null;
+  /** The last download was stopped by the user rather than failing. */
+  cancelled?: boolean;
   bytes_total: number | null;
   bytes_done: number | null;
 }
@@ -125,7 +132,7 @@ export interface SttEngineStatus {
   loading: boolean;
   device: string | null;
   keep_alive_seconds: number;
-  default_model: string;
+  default_model: string | null;
   models: string[];
   downloaded_models: string[];
   download: SttDownloadStatus;
@@ -142,6 +149,7 @@ export interface SttStatus {
   /** Per-engine state; absent on servers predating the engine split. */
   transformers?: SttEngineStatus;
   gguf?: SttEngineStatus;
+  mtmd?: SttEngineStatus;
 }
 
 // Keep load/unload requests ordered so a new recording cannot race an unload
@@ -192,6 +200,14 @@ export async function validateSttModel(
   }
 }
 
+/** The selected local model has not been downloaded yet. */
+export class SttModelNotDownloadedError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "SttModelNotDownloadedError";
+  }
+}
+
 /** Load a selected model that is already downloaded. */
 export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
@@ -205,7 +221,12 @@ export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
       const body = (await response.json().catch(() => null)) as {
         detail?: string;
       } | null;
-      throw new Error(body?.detail ?? `HTTP ${response.status}`);
+      const detail = body?.detail ?? `HTTP ${response.status}`;
+      // 409 also covers a load cancelled for training; the detail separates them.
+      if (response.status === 409 && /not downloaded/i.test(detail)) {
+        throw new SttModelNotDownloadedError(detail);
+      }
+      throw new Error(detail);
     }
   });
 }
@@ -221,6 +242,22 @@ export async function startSttDownload(
       "Content-Type": "application/json",
       ...hubTokenHeader(hfToken),
     },
+    body: JSON.stringify({ model, engine: sttEngineFor(model) }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as {
+      detail?: string;
+    } | null;
+    throw new Error(body?.detail ?? `HTTP ${response.status}`);
+  }
+}
+
+/** Stop an in-flight model download. Partial files stay cached, so starting the
+ * same download again resumes from where it stopped. */
+export async function cancelSttDownload(model: string): Promise<void> {
+  const response = await authFetch("/api/inference/audio/stt/download/cancel", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ model, engine: sttEngineFor(model) }),
   });
   if (!response.ok) {
@@ -336,11 +373,17 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     const reportTranscriptionError = (error: unknown) => {
       if (reportedTranscriptionError || cancelled || ended) return;
       reportedTranscriptionError = true;
+      console.error("STT transcription error:", error);
+      // An undownloaded model is the ordinary first-run state, not a failure.
+      // Point at the download; never start it here.
+      if (error instanceof SttModelNotDownloadedError) {
+        requestSttDownload(sessionModel);
+        return;
+      }
       const message =
         error instanceof Error && error.message
           ? error.message
           : "A recorded segment could not be transcribed.";
-      console.error("STT transcription error:", error);
       toast.error(message, {
         action: {
           label: "Open Voice settings",

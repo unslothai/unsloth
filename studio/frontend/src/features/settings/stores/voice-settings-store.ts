@@ -25,14 +25,23 @@ const MAX_RECENT_DICTATION_LENGTH = 2000;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
 
-/** Five curated Whisper choices, mirrored by the backend (stt_sidecar.py). */
+/** Curated dictation models, mirrored by the backend sidecars. */
 export const STT_MODELS = [
   "tiny",
   "base",
   "small",
   "large-v3-turbo",
   "large-v3",
+  "qwen3-asr-0.6b",
+  "qwen3-asr-1.7b",
 ] as const;
+
+/** Models served by llama.cpp mtmd rather than whisper.cpp, which is
+ * Whisper-only. Each is a GGUF plus an audio mmproj. */
+export const MTMD_STT_MODELS: ReadonlySet<SttModel> = new Set([
+  "qwen3-asr-0.6b",
+  "qwen3-asr-1.7b",
+]);
 export type DefaultSttModel = (typeof STT_MODELS)[number];
 /** A curated id or a user-selected Hugging Face `owner/model` repository. */
 export type SttModel = string;
@@ -43,8 +52,41 @@ export const STT_MODEL_REPOS: Record<DefaultSttModel, string> = {
   small: "unsloth/whisper-small",
   "large-v3-turbo": "unsloth/whisper-large-v3-turbo",
   "large-v3": "unsloth/whisper-large-v3",
+  "qwen3-asr-0.6b": "ggml-org/Qwen3-ASR-0.6B-GGUF",
+  "qwen3-asr-1.7b": "ggml-org/Qwen3-ASR-1.7B-GGUF",
 };
 export const DEFAULT_STT_MODEL: DefaultSttModel = "small";
+
+// Speech-recognition models, not voices. Name and size are separate so lists can
+// right-align the size; the download confirmation reads both.
+export const STT_MODEL_NAMES: Record<DefaultSttModel, string> = {
+  tiny: "Whisper Tiny",
+  base: "Whisper Base",
+  small: "Whisper Small",
+  "large-v3-turbo": "Whisper Large v3 Turbo",
+  "large-v3": "Whisper Large v3",
+  "qwen3-asr-0.6b": "Qwen3-ASR 0.6B",
+  "qwen3-asr-1.7b": "Qwen3-ASR 1.7B",
+};
+// Whisper sizes are f16 GGML for whisper.cpp; the mtmd entries cover the model
+// plus its mmproj, which is why they are larger than the weights alone.
+export const STT_MODEL_SIZES: Record<DefaultSttModel, string> = {
+  tiny: "78 MB",
+  base: "148 MB",
+  small: "488 MB",
+  "large-v3-turbo": "1.6 GB",
+  "large-v3": "3.1 GB",
+  "qwen3-asr-0.6b": "1.0 GB",
+  "qwen3-asr-1.7b": "2.4 GB",
+};
+
+export function sttModelName(model: SttModel): string {
+  return STT_MODEL_NAMES[model as DefaultSttModel] ?? model;
+}
+
+export function sttModelSize(model: SttModel): string {
+  return STT_MODEL_SIZES[model as DefaultSttModel] ?? "";
+}
 const HF_REPO_ID =
   /^[A-Za-z0-9][A-Za-z0-9._-]{0,95}\/[A-Za-z0-9][A-Za-z0-9._-]{0,95}$/;
 
@@ -91,8 +133,8 @@ export function isSttModelLanguageCompatible(
 export type DictationEngine = "browser" | "model";
 
 /**
- * Whether a model id is one of the five curated Whisper choices. Curated models
- * run GGML through whisper.cpp; custom repos are safetensors and run through
+ * Whether a model id is curated. Whisper ids run GGML through whisper.cpp,
+ * mtmd ids run through llama.cpp, and custom repos are safetensors on
  * Transformers.
  */
 export function isCuratedSttModel(model: SttModel): boolean {

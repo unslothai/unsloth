@@ -156,6 +156,8 @@ export {
 } from "./adapters/studio-dictation-adapter";
 export {
   StudioModelDictationAdapter,
+  SttModelNotDownloadedError,
+  cancelSttDownload,
   fetchSttStatus,
   loadSttModel,
   startSttDownload,

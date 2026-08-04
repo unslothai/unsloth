@@ -153,7 +153,7 @@ def test_gguf_unload_targets_transformers_fallback_without_whisper_server(monkey
     assert calls == ["transformers"]
 
 
-def test_unload_all_attempts_both_backends_even_when_one_fails(monkeypatch):
+def test_unload_all_attempts_every_backend_even_when_one_fails(monkeypatch):
     import routes.inference as ri
 
     attempted: list = []
@@ -173,8 +173,9 @@ def test_unload_all_attempts_both_backends_even_when_one_fails(monkeypatch):
         asyncio.run(ri.stt_unload(engine = None, current_subject = "tester"))
 
     assert excinfo.value.status_code == 500
-    # gguf is still attempted after the transformers unload raised.
-    assert attempted == ["transformers", "gguf"]
+    # The later engines are still attempted after transformers raised. mtmd is
+    # included so an Unload with no engine frees a resident llama-server too.
+    assert attempted == ["transformers", "gguf", "mtmd"]
 
 
 # 4. free_stt_model_for_training isolates the two backends -----------------------

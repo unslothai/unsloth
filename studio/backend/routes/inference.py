@@ -8057,9 +8057,11 @@ def _resolve_stt_engine(engine: Optional[str]) -> str:
         return "transformers"
     if normalized in ("gguf", "ggml", "whisper_cpp", "whisper.cpp"):
         return "gguf"
+    if normalized in ("mtmd", "llama_cpp", "llama.cpp"):
+        return "mtmd"
     raise HTTPException(
         status_code = 422,
-        detail = f"Unknown STT engine '{engine}'. Use 'transformers' or 'gguf'.",
+        detail = f"Unknown STT engine '{engine}'. Use 'transformers', 'gguf', or 'mtmd'.",
     )
 
 
@@ -8077,10 +8079,26 @@ def _resolve_serving_stt_engine(engine: Optional[str]) -> str:
         from core.inference import stt_ggml_sidecar
         if not stt_ggml_sidecar.is_available():
             return "transformers"
+    # mtmd models exist in no other engine, so there is nothing to fall back to.
     return resolved
 
 
+def _stt_download_module(engine: str):
+    """Module owning download/status for an engine."""
+    if engine == "mtmd":
+        from core.inference import stt_mtmd_sidecar
+        return stt_mtmd_sidecar
+    if engine == "gguf":
+        from core.inference import stt_ggml_sidecar
+        return stt_ggml_sidecar
+    from core.inference import stt_sidecar
+    return stt_sidecar
+
+
 def _stt_sidecar_for(engine: str):
+    if engine == "mtmd":
+        from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
+        return get_mtmd_stt_sidecar()
     if engine == "gguf":
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
         return get_ggml_stt_sidecar()
@@ -8097,7 +8115,7 @@ async def stt_status(
     ``model`` extends the Transformers ``downloaded_models`` check to a
     custom Hugging Face repository beyond the curated defaults.
     """
-    from core.inference import stt_ggml_sidecar, stt_sidecar
+    from core.inference import stt_ggml_sidecar, stt_mtmd_sidecar, stt_sidecar
     from core.inference.stt_sidecar import (
         DEFAULT_STT_MODEL,
         STT_MODELS,
@@ -8107,6 +8125,7 @@ async def stt_status(
 
     sidecar = get_stt_sidecar()
     ggml = stt_ggml_sidecar.get_ggml_stt_sidecar()
+    mtmd = stt_mtmd_sidecar.get_mtmd_stt_sidecar()
     transformers_downloaded = [
         model_id for model_id in STT_MODELS if stt_sidecar.is_model_downloaded(model_id)
     ]
@@ -8133,6 +8152,22 @@ async def stt_status(
                 "models": list(STT_MODELS.keys()),
                 "downloaded_models": transformers_downloaded,
                 "download": stt_sidecar.download_status(),
+            },
+            # llama.cpp (mtmd) engine: non-Whisper ASR models.
+            "mtmd": {
+                "available": stt_mtmd_sidecar.is_available(),
+                "loaded_model": mtmd.loaded_model,
+                "loading": mtmd.is_loading(),
+                "device": mtmd.device,
+                "keep_alive_seconds": mtmd.keep_alive_seconds,
+                "default_model": None,
+                "models": list(stt_mtmd_sidecar.MTMD_STT_MODELS),
+                "downloaded_models": [
+                    model_id
+                    for model_id in stt_mtmd_sidecar.MTMD_STT_MODELS
+                    if stt_mtmd_sidecar.is_model_downloaded(model_id)
+                ],
+                "download": stt_mtmd_sidecar.download_status(),
             },
             # whisper.cpp (GGUF) engine.
             "gguf": {
@@ -8174,13 +8209,13 @@ async def stt_download(
     )
 
     engine = _resolve_serving_stt_engine(payload.engine)
-    module = stt_ggml_sidecar if engine == "gguf" else stt_sidecar
+    module = _stt_download_module(engine)
     try:
         # Transformers accepts custom `owner/model` repos, so confirm the repo is
         # a Whisper checkpoint (metadata-only) before snapshot_download pulls a
         # possibly-large non-STT repo into the shared cache. Curated ids
-        # short-circuit; GGUF only accepts curated ids, so it needs no check.
-        if engine != "gguf":
+        # short-circuit; GGUF and mtmd accept curated ids only, so they skip it.
+        if engine == "transformers":
             validated = await asyncio.to_thread(validate_remote_model, payload.model, hf_token)
             # Pin the download to the commit that was just validated so the
             # repo cannot be swapped between validation and snapshot_download.
@@ -8197,6 +8232,23 @@ async def stt_download(
     except SttModelCompatibilityError as e:
         raise HTTPException(status_code = 422, detail = str(e))
     return JSONResponse(content = module.download_status())
+
+
+@studio_router.post("/audio/stt/download/cancel")
+async def stt_download_cancel(
+    payload: Optional[SttLoadRequest] = None, current_subject: str = Depends(get_current_subject)
+):
+    """Stop an in-flight dictation model download.
+
+    Partial files stay cached, so the same download resumes. Cancelling when
+    nothing is downloading is a no-op, so a double click cannot fail.
+    """
+    from core.inference import stt_ggml_sidecar, stt_sidecar
+
+    engine = _resolve_serving_stt_engine(payload.engine if payload else None)
+    module = _stt_download_module(engine)
+    cancelled = await asyncio.to_thread(module.cancel_model_download)
+    return JSONResponse(content = {"cancelled": cancelled, **module.download_status()})
 
 
 @studio_router.post("/audio/stt/load")
@@ -8260,7 +8312,7 @@ async def stt_unload(
     settings always frees whichever backend was resident.
     """
     if engine is None:
-        engines = ["transformers", "gguf"]
+        engines = ["transformers", "gguf", "mtmd"]
     else:
         # Use the serving resolver: a "gguf" pick without whisper-server is
         # actually served by the Transformers fallback, so unload must target
