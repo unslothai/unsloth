@@ -22,7 +22,6 @@ from hub.utils.gguf import (
     is_gguf_filename as _is_gguf_filename,
     is_mmproj_filename as _is_mmproj_filename,
     is_mtp_drafter_path as _is_mtp_drafter_path,
-    is_mtp_only_drafter_path as _is_mtp_only_drafter_path,
 )
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
 
