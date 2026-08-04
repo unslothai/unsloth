@@ -117,3 +117,23 @@ def test_hub_repo_id_never_reports_a_deleted_file(no_hub):
 
     assert error.status_code != 404
     assert no_hub, "the Hub branch is where a relative reference belongs"
+
+
+@pytest.mark.parametrize(
+    ("dataset_name", "expected"),
+    [
+        pytest.param("/etc/not-a-dataset.jsonl", "under a dataset root", id = "outside-roots"),
+        pytest.param("{uploads}/../escape.jsonl", "'..' segments", id = "traversal"),
+        pytest.param("uploads/nul\x00byte.jsonl", "null bytes", id = "null-byte"),
+    ],
+)
+def test_rejected_paths_are_client_errors(dataset_name, expected, no_hub):
+    """A path resolve_dataset_path refuses is the caller's mistake, not a server
+    fault, and must never reach the Hub. Matches the hub check-format twin."""
+    from utils.paths import dataset_uploads_root
+
+    error = _check(dataset_name.format(uploads = dataset_uploads_root()))
+
+    assert error.status_code == 400
+    assert expected in str(error.detail)
+    assert no_hub == []
