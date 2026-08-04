@@ -483,6 +483,7 @@ def _assert_base_repo_accessible(base_repo: str, hf_token: Optional[str]) -> Non
         classified errors fails open on exactly the case this probe exists to catch."""
         status = getattr(getattr(exc, "response", None), "status_code", None)
         return status in (401, 403)
+
     try:
         gated = getattr(HfApi().model_info(repo, token = hf_token), "gated", None)
     except GatedRepoError:  # a gated repo can also withhold its metadata
