@@ -2,13 +2,29 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import { createContext, useCallback, useContext, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useState,
+} from "react";
 import type * as React from "react";
 
 import { cn } from "@/lib/utils";
 
 type ToggleFn = () => void;
 const TooltipToggleCtx = createContext<ToggleFn | null>(null);
+
+/** Tap-to-pin is for touch, which has no hover. Read at click time so hybrid
+ * devices answer for the pointer in use. */
+function isCoarsePointer(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof window.matchMedia === "function" &&
+    window.matchMedia("(pointer: coarse)").matches
+  );
+}
 
 // Default to instant open (no hover delay). Most tooltips in the app —
 // chat-area icon labels, sidebar nav labels, the context/token
@@ -47,6 +63,36 @@ function Tooltip({
     setClickOpen((prev) => !prev);
   }, []);
 
+  // A pin must not outlive its interaction: once a dialog covers the trigger,
+  // pointerleave never fires and Radix can no longer close it. Presses on a
+  // trigger are skipped so tapping the same one still toggles it shut.
+  useEffect(() => {
+    if (!clickOpen) return;
+    const release = (event: Event) => {
+      const target = event.target as Element | null;
+      if (
+        target?.closest?.(
+          '[data-slot="tooltip-trigger"],[data-slot="tooltip-content"]',
+        )
+      ) {
+        return;
+      }
+      setClickOpen(false);
+    };
+    const releaseOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setClickOpen(false);
+    };
+    const releaseNow = () => setClickOpen(false);
+    document.addEventListener("pointerdown", release, true);
+    document.addEventListener("keydown", releaseOnEscape, true);
+    window.addEventListener("blur", releaseNow);
+    return () => {
+      document.removeEventListener("pointerdown", release, true);
+      document.removeEventListener("keydown", releaseOnEscape, true);
+      window.removeEventListener("blur", releaseNow);
+    };
+  }, [clickOpen]);
+
   return (
     <TooltipToggleCtx.Provider value={toggle}>
       <TooltipPrimitive.Root
@@ -71,6 +117,9 @@ function TooltipTrigger({
       // trigger (e.g. DialogTrigger around an attachment tile), that trigger's
       // action is skipped if the event is already default-prevented.
       onClick?.(e);
+      // With a mouse, hover already shows it and pinning only strands it. Let
+      // Radix's own close-on-click run instead.
+      if (!isCoarsePointer()) return;
       // preventDefault keeps Radix Tooltip's internal close-on-click from
       // undoing the tap-toggle below (its composed handler checks it).
       e.preventDefault();
