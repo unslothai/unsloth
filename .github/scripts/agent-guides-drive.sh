@@ -462,12 +462,9 @@ case "$MODE" in
     OUT1="$LOGS_DIR/${AGENT}-fileedit-turn1.txt"
     OUT2="$LOGS_DIR/${AGENT}-fileedit-turn2.txt"
     T1='Create a file named hello.py in the current directory whose entire contents are a single line: print("Hello"). Do not run it.'
-    # Keep T2 to one instruction. Asking for the output AND for it to be saved
-    # to ran.txt was meant to give a capped turn something verifiable to judge,
-    # but on a CPU-served 4B it degraded the agents instead: opencode answered
-    # the two-part version by narrating "[runs bash command `python hello.py >
-    # ran.txt`]" and "ran.txt created." while creating no such file, having run
-    # the one-part version for real in ~90s on every prior run.
+    # One instruction only. Also asking for a ran.txt copy (#7838) made opencode
+    # narrate the tool call and create no file, where the one-part prompt had run
+    # for real in ~90s every time.
     T2='Run hello.py with python and show me the exact output.'
 
     # The start.py recipe writers + crosscheck must see the repo; run them
@@ -549,13 +546,10 @@ case "$MODE" in
 
     # Turn 2: same cwd + session continuation; assert the agent's run output
     # contains Hello. Narration drift is WARN-only, missing output is a hard fail.
-    # Turn 2 gets NO cap waiver. Turn 1 earns one because the harness re-runs
-    # hello.py itself, but turn 1's assertions all ran before turn 2 started, so
-    # a capped turn 2 has only its transcript left -- and 'Hello' is hello.py's
-    # own source, the program's stdout, and a plausible narration of the answer
-    # all at once. Waiving it on text was unsound, and the artifact that would
-    # have made it sound cannot be asked for without breaking the turn (see T2).
-    # So a cap here is fatal, as it is for connection, resume and attribution-ab.
+    # No cap waiver here, unlike turn 1, whose side effect the harness re-runs
+    # itself: turn 1's assertions all ran before this started, so a cap leaves
+    # only the transcript, and 'Hello' is hello.py's source, its stdout and a
+    # narration of it alike. Fatal, as for connection, resume, attribution-ab.
     invoke_turn "$OUT2" continue "$T2"
     rc=$?
     [ "$rc" -eq 0 ] \
