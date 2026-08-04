@@ -79,6 +79,11 @@ def invalidate_hf_cache_scans() -> None:
         _hf_cache_scans_epoch += 1
 
 
+def hf_cache_scans_epoch() -> int:
+    with _hf_cache_scans_lock:
+        return _hf_cache_scans_epoch
+
+
 def all_hf_cache_scans() -> list:
     global _hf_cache_scans_flight, _hf_cache_scans_result, _hf_cache_scans_cached_at
 
@@ -1349,14 +1354,19 @@ def _manifest_partial(
     variant: Optional[str] = None,
     snapshot_dir: Optional[Path] = None,
     repo_cache_dir: Optional[Path] = None,
+    variant_state = None,
 ) -> bool:
     from hub.utils import download_manifest
 
-    manifest = download_manifest.read_manifest(
-        repo_type,
-        repo_id,
-        variant,
-        hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+    manifest = (
+        variant_state.manifest_for(variant)
+        if variant_state is not None and variant is not None
+        else download_manifest.read_manifest(
+            repo_type,
+            repo_id,
+            variant,
+            hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+        )
     )
     if manifest is None:
         return False
@@ -1747,6 +1757,7 @@ def is_variant_partial(
     variant_blob_hashes: Optional[frozenset[str]] = None,
     repo_cache_dir: Optional[Path] = None,
     repo_signal_applies: bool = True,
+    variant_state = None,
 ) -> bool:
     """Per-variant partial detection. Owns its manifest, owns its marker.
 
@@ -1759,11 +1770,15 @@ def is_variant_partial(
     from hub.utils import download_manifest
     return _compose_partial(
         lambda: repo_signal_applies
-        and download_manifest.has_cancel_marker(
-            "model",
-            repo_id,
-            variant,
-            hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+        and (
+            variant_state.has_marker(variant)
+            if variant_state is not None
+            else download_manifest.has_cancel_marker(
+                "model",
+                repo_id,
+                variant,
+                hub_cache = _hub_cache_for_repo_dir(repo_cache_dir),
+            )
         ),
         # blobs/ is repo-wide, so a retry's .incomplete belongs to the newest snapshot.
         lambda: repo_signal_applies
@@ -1779,6 +1794,7 @@ def is_variant_partial(
             variant,
             snapshot_dir,
             repo_cache_dir,
+            variant_state,
         ),
     )
 
@@ -1788,6 +1804,7 @@ def is_gguf_repo_partial(
     repo_cache_dir: Optional[Path] = None,
     *,
     snapshot_dir: Optional[Path] = None,
+    variant_state = None,
 ) -> bool:
     """Repo-row partial flag for a GGUF repo. The inventory shows ONE row per
     GGUF repo (requires_variant=True); per-variant detail lives in
@@ -1820,27 +1837,39 @@ def is_gguf_repo_partial(
     complete_here = _completed_gguf_variants(snapshot_dir)
     variants: set[str] = set(complete_here)
     hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
-    for variant, _path in download_manifest.iter_variant_manifests(
-        "model",
-        repo_id,
-        hub_cache = hub_cache,
-    ):
-        if (
-            download_manifest.read_manifest(
+    manifests = (
+        variant_state.iter_manifests()
+        if variant_state is not None
+        else download_manifest.iter_variant_manifests(
+            "model",
+            repo_id,
+            hub_cache = hub_cache,
+        )
+    )
+    for variant, _path in manifests:
+        manifest = (
+            variant_state.manifest_for(variant)
+            if variant_state is not None
+            else download_manifest.read_manifest(
                 "model",
                 repo_id,
                 variant,
                 hub_cache = hub_cache,
             )
-            is not None
-        ):
+        )
+        if manifest is not None:
             variants.add(variant)
-    for variant, _path in download_manifest.iter_variant_markers(
-        "model",
-        repo_id,
-        hub_cache = hub_cache,
-    ):
-        if download_manifest.has_cancel_marker(
+    markers = (
+        variant_state.iter_markers()
+        if variant_state is not None
+        else download_manifest.iter_variant_markers(
+            "model",
+            repo_id,
+            hub_cache = hub_cache,
+        )
+    )
+    for variant, _path in markers:
+        if variant_state is not None or download_manifest.has_cancel_marker(
             "model",
             repo_id,
             variant,
@@ -1862,6 +1891,7 @@ def is_gguf_repo_partial(
             repo_cache_dir = repo_cache_dir,
             # A quant whole in the pinned snapshot loads whatever a newer attempt says.
             repo_signal_applies = repo_signal_applies or variant not in complete_here,
+            variant_state = variant_state,
         ):
             has_broken = True
         else:

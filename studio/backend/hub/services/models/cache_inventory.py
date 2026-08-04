@@ -18,7 +18,7 @@ from loggers import get_logger
 
 from hub.schemas.inventory import ModelFormat
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils import download_registry
+from hub.utils import download_manifest, download_registry
 from hub.utils.hf_cache_state import snapshot_selection_key
 from hub.utils.snapshot_filters import (
     snapshot_download_blob_hashes,
@@ -57,6 +57,14 @@ _REPO_SIZE_POS_TTL = 60.0
 _REPO_SIZE_NEG_TTL = 60.0
 _MODEL_METADATA_TIMEOUT_SECONDS = 5.0
 _repo_size_cache_lock = threading.Lock()
+
+
+class _CachedGgufScanFlight(NamedTuple):
+    generation: tuple[int, Optional[str], tuple[str, ...]]
+    task: asyncio.Task[list[dict]]
+
+
+_cached_gguf_scan_flight: Optional[_CachedGgufScanFlight] = None
 
 # Identity for a cached file with no HF blob (Windows without Developer Mode: hf
 # moves the blob into snapshots/ and leaves blobs/ empty).
@@ -442,6 +450,20 @@ def _scan_cached_gguf() -> list[dict]:
     from utils.hf_cache_settings import get_hf_cache_paths
 
     active_hub_cache = get_hf_cache_paths().hub_cache
+    state_repositories = []
+    for hf_cache in cache_scans:
+        for repo_info in hf_cache.repos:
+            try:
+                if str(repo_info.repo_type) == "model":
+                    state_repositories.append(
+                        ("model", repo_info.repo_id, Path(repo_info.repo_path).parent)
+                    )
+            except Exception:
+                continue
+    variant_states = download_manifest.build_variant_state_index(
+        state_repositories,
+        active_hub_cache = active_hub_cache,
+    )
 
     seen_lower: dict[str, dict] = {}
     for hf_cache in cache_scans:
@@ -451,11 +473,17 @@ def _scan_cached_gguf() -> list[dict]:
                     continue
                 repo_id = repo_info.repo_id
                 repo_path = Path(repo_info.repo_path)
+                variant_state = variant_states.for_repo(
+                    "model",
+                    repo_id,
+                    hub_cache = repo_path.parent,
+                )
                 snapshot_path = _cached_model_snapshot_path(repo_path)
                 total_size = _repo_gguf_size_bytes(repo_info)
                 has_variant_state, variant_state_size = _gguf_variant_state_summary(
                     repo_id,
                     hub_cache = repo_path.parent,
+                    variant_state = variant_state,
                 )
                 is_hidden_infra = _is_hidden_infra_repo(
                     repo_id,
@@ -474,6 +502,7 @@ def _scan_cached_gguf() -> list[dict]:
                     repo_id,
                     repo_path,
                     snapshot_dir = gguf_snapshot,
+                    variant_state = variant_state,
                 )
                 if total_size == 0 and not partial:
                     continue
@@ -524,10 +553,36 @@ def _scan_cached_gguf() -> list[dict]:
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 
+async def _shared_cached_gguf_scan() -> list[dict]:
+    global _cached_gguf_scan_flight
+
+    mutations = download_manifest.variant_state_mutation_snapshot()
+    while mutations.in_progress:
+        await asyncio.sleep(0.01)
+        mutations = download_manifest.variant_state_mutation_snapshot()
+    generation = (
+        hf_cache_scan.hf_cache_scans_epoch(),
+        download_manifest.variant_state_generation(),
+        mutations.markers,
+    )
+    flight = _cached_gguf_scan_flight
+    if flight is None or flight.task.done() or flight.generation != generation:
+        flight = _CachedGgufScanFlight(
+            generation,
+            asyncio.create_task(asyncio.to_thread(_scan_cached_gguf)),
+        )
+        _cached_gguf_scan_flight = flight
+    try:
+        return await asyncio.shield(flight.task)
+    finally:
+        if flight.task.done() and _cached_gguf_scan_flight is flight:
+            _cached_gguf_scan_flight = None
+
+
 async def list_cached_gguf_response(hf_token: Optional[str] = None):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        cached = await asyncio.to_thread(_scan_cached_gguf)
+        cached = await _shared_cached_gguf_scan()
         return {"cached": cached}
     except Exception as e:
         logger.error(

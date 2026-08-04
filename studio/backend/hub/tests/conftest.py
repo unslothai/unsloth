@@ -110,6 +110,11 @@ import pytest
 
 
 @pytest.fixture(autouse = True)
+def _isolate_studio_home(tmp_path_factory, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path_factory.mktemp("studio_home")))
+
+
+@pytest.fixture(autouse = True)
 def _reset_optional_module_memo():
     """Forget the shim's memoised optional-module results between tests.
 

@@ -10,6 +10,7 @@ cache lifecycle. Two subdirectories:
     <studio cache>/hub-state/
         manifests/cache-<digest>/<key>.json   expected-files manifest
         cancelled/cache-<digest>/<key>.json   cancel marker
+        mutations/<pid>-<uuid>.json           in-flight state publication
 
 The cache digest isolates state for the same repo across selectable Hub caches.
 The ``<key>`` mirrors HF's cache dir naming while the resulting manifest,
@@ -20,11 +21,9 @@ limits. Very long repo IDs use a stable hash in the state key:
     models--<owner>--<name>--variant--<variant>   GGUF variant
     datasets--<owner>--<name>                     dataset snapshot
 
-All path accessors return ``Optional[Path]`` and yield ``None`` when
-the directory can't be created (read-only FS, permission error).
-Callers must treat ``None`` as "no state available" and fall through
-to existing on-disk-only behavior; this module never raises on a
-configuration failure.
+Path accessors are read-only by default. Writers pass ``create=True`` explicitly.
+All accessors return ``Optional[Path]`` and yield ``None`` when requested
+directory creation fails; callers fall through to existing on-disk-only behavior.
 """
 
 from __future__ import annotations
@@ -51,6 +50,8 @@ _HUB_STATE_DIRNAME = "hub-state"
 _MANIFESTS_SUBDIR = "manifests"
 _CANCELLED_SUBDIR = "cancelled"
 _WORKERS_SUBDIR = "workers"
+_VARIANT_STATE_MUTATIONS_SUBDIR = "mutations"
+_VARIANT_STATE_GENERATION_FILENAME = "variant-state-generation.json"
 _SAFE_VARIANT_FRAGMENT = re.compile(r"^[a-z0-9._-]{1,64}$")
 _MAX_STATE_BASENAME_BYTES = 255
 _STATE_EXTENSION = ".json"
@@ -60,9 +61,11 @@ _MAX_VARIANT_FRAGMENT_LENGTH = 64
 _CACHE_SCOPE_DIGEST_LENGTH = 32
 
 
-def state_root() -> Optional[Path]:
-    """Return the Hub state root, creating it if needed. ``None`` on failure."""
+def state_root(*, create: bool = False) -> Optional[Path]:
+    """Return the Hub state root, optionally creating it. ``None`` on failure."""
     root = cache_root() / _HUB_STATE_DIRNAME
+    if not create:
+        return root
     try:
         root.mkdir(parents = True, exist_ok = True)
     except OSError as exc:
@@ -71,17 +74,32 @@ def state_root() -> Optional[Path]:
     return root
 
 
-def _subdir(name: str) -> Optional[Path]:
-    root = state_root()
+def variant_state_generation_path(*, create: bool = False) -> Optional[Path]:
+    """Return the cross-process inventory-generation file without writing it."""
+    root = state_root(create = create)
+    if root is None:
+        return None
+    return root / _VARIANT_STATE_GENERATION_FILENAME
+
+
+def _subdir(name: str, *, create: bool = False) -> Optional[Path]:
+    root = state_root(create = create)
     if root is None:
         return None
     path = root / name
+    if not create:
+        return path
     try:
         path.mkdir(parents = True, exist_ok = True)
     except OSError as exc:
         logger.debug("Could not create hub state subdir %s: %s", path, exc)
         return None
     return path
+
+
+def variant_state_mutations_dir(*, create: bool = False) -> Optional[Path]:
+    """Return the per-writer inventory-publication directory."""
+    return _subdir(_VARIANT_STATE_MUTATIONS_SUBDIR, create = create)
 
 
 def repo_cache_basename(repo_type: RepoType, repo_id: str) -> str:
@@ -133,12 +151,23 @@ def _entry_key(repo_type: RepoType, repo_id: str, variant: Optional[str]) -> str
     return f"{variant_filename_prefix(repo_type, repo_id)}{variant_fragment}"
 
 
-def _cache_scope(parent: Path, hub_cache: Optional[str | Path]) -> Optional[Path]:
-    if hub_cache is None:
-        return parent
+def cache_scope_name(hub_cache: str | Path) -> str:
     normalized = os.path.normcase(str(Path(hub_cache).expanduser()))
     digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:_CACHE_SCOPE_DIGEST_LENGTH]
-    scoped = parent / f"cache-{digest}"
+    return f"cache-{digest}"
+
+
+def _cache_scope(
+    parent: Path,
+    hub_cache: Optional[str | Path],
+    *,
+    create: bool = False,
+) -> Optional[Path]:
+    if hub_cache is None:
+        return parent
+    scoped = parent / cache_scope_name(hub_cache)
+    if not create:
+        return scoped
     try:
         scoped.mkdir(parents = True, exist_ok = True)
     except OSError as exc:
@@ -153,12 +182,13 @@ def manifest_path(
     variant: Optional[str] = None,
     *,
     hub_cache: Optional[str | Path] = None,
+    create: bool = False,
 ) -> Optional[Path]:
     """Path to the manifest file for this triple. May or may not exist."""
-    parent = _subdir(_MANIFESTS_SUBDIR)
+    parent = _subdir(_MANIFESTS_SUBDIR, create = create)
     if parent is None:
         return None
-    parent = _cache_scope(parent, hub_cache)
+    parent = _cache_scope(parent, hub_cache, create = create)
     if parent is None:
         return None
     return parent / f"{_entry_key(repo_type, repo_id, variant)}.json"
@@ -170,31 +200,32 @@ def marker_path(
     variant: Optional[str] = None,
     *,
     hub_cache: Optional[str | Path] = None,
+    create: bool = False,
 ) -> Optional[Path]:
     """Path to the cancel-marker file for this triple. May or may not exist."""
-    parent = _subdir(_CANCELLED_SUBDIR)
+    parent = _subdir(_CANCELLED_SUBDIR, create = create)
     if parent is None:
         return None
-    parent = _cache_scope(parent, hub_cache)
+    parent = _cache_scope(parent, hub_cache, create = create)
     if parent is None:
         return None
     return parent / f"{_entry_key(repo_type, repo_id, variant)}.json"
 
 
-def manifests_dir() -> Optional[Path]:
+def manifests_dir(*, create: bool = False) -> Optional[Path]:
     """Manifests subdirectory, created on demand. ``None`` on failure.
 
     Exposed for iter_variant_manifests, which enumerates the directory to find
     every variant-keyed manifest for a repo (the path helpers above answer
     "where would key X go" but not "what keys exist")."""
-    return _subdir(_MANIFESTS_SUBDIR)
+    return _subdir(_MANIFESTS_SUBDIR, create = create)
 
 
-def cancelled_dir() -> Optional[Path]:
+def cancelled_dir(*, create: bool = False) -> Optional[Path]:
     """Cancel-marker subdirectory, created on demand. ``None`` on failure.
 
     See manifests_dir for why this iteration entry point is needed."""
-    return _subdir(_CANCELLED_SUBDIR)
+    return _subdir(_CANCELLED_SUBDIR, create = create)
 
 
 def workers_dir() -> Optional[Path]:
@@ -203,4 +234,4 @@ def workers_dir() -> Optional[Path]:
     Each live download worker drops one breadcrumb here so a backend that
     restarts after a hard crash can reap workers it can no longer reach through
     its in-memory registry."""
-    return _subdir(_WORKERS_SUBDIR)
+    return _subdir(_WORKERS_SUBDIR, create = True)

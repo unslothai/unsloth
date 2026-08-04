@@ -4,6 +4,7 @@
 import asyncio
 import json
 import sys
+from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -403,6 +404,222 @@ def test_inventory_scopes_cancel_markers_to_their_owning_cache(monkeypatch, tmp_
     assert inventory_scan.is_variant_partial(repo_id, "Q4_K_M", repo_cache_dir = repo_b) is False
 
 
+def test_read_only_download_state_lookup_does_not_create_directories(monkeypatch, tmp_path):
+    studio_cache = tmp_path / "studio-cache"
+    hub_cache = tmp_path / "hub-cache"
+    monkeypatch.setattr(state_dir, "cache_root", lambda: studio_cache)
+    state_key = ("model", "Org/Model", "Q4_K_M")
+
+    assert state_dir.manifest_path(*state_key, hub_cache = hub_cache) is not None
+    assert state_dir.marker_path(*state_key, hub_cache = hub_cache) is not None
+    assert download_manifest.read_manifest(*state_key, hub_cache = hub_cache) is None
+    assert not download_manifest.has_cancel_marker(*state_key, hub_cache = hub_cache)
+    assert download_manifest.variant_state_generation() is None
+    assert download_manifest.variant_state_mutation_snapshot() == ((), False)
+    for iterator in (
+        download_manifest.iter_variant_manifests,
+        download_manifest.iter_variant_markers,
+    ):
+        assert list(iterator("model", "Org/Model", hub_cache = hub_cache)) == []
+    assert not studio_cache.exists()
+
+
+def test_cached_gguf_inventory_enumerates_state_directories_once(monkeypatch, tmp_path):
+    studio_cache = tmp_path / "studio-cache"
+    hub_cache = tmp_path / "hub-cache"
+    monkeypatch.setattr(state_dir, "cache_root", lambda: studio_cache)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = hub_cache),
+    )
+    repos = []
+    for index in range(3):
+        repo_id = f"Org/Model-{index}"
+        repo_path = hub_cache / f"models--Org--Model-{index}"
+        snapshot = repo_path / "snapshots" / "revision"
+        snapshot.mkdir(parents = True)
+        (snapshot / "model-Q4_K_M.gguf").write_bytes(b"x")
+        repo = _repo(repo_id, [_file("model-Q4_K_M.gguf", 1)], repo_path)
+        repo.revisions[0].snapshot_path = snapshot
+        repos.append(repo)
+        assert download_manifest.write_manifest(
+            "model",
+            repo_id,
+            "Q4_K_M",
+            [download_manifest.ExpectedFile(path = "model-Q4_K_M.gguf", size = index + 1)],
+            "http",
+            hub_cache = hub_cache,
+        )
+        if index:
+            assert download_manifest.write_cancel_marker(
+                "model", repo_id, "Q4_K_M", "http", hub_cache = hub_cache
+            )
+
+    manifest_root = studio_cache / "hub-state" / "manifests"
+    marker_root = studio_cache / "hub-state" / "cancelled"
+    watched = {
+        manifest_root,
+        marker_root,
+        next(path for path in manifest_root.iterdir() if path.name.startswith("cache-")),
+        next(path for path in marker_root.iterdir() if path.name.startswith("cache-")),
+    }
+    calls = Counter()
+    real_iterdir = Path.iterdir
+
+    def counting_iterdir(path):
+        if path in watched:
+            calls[path] += 1
+        return real_iterdir(path)
+
+    monkeypatch.setattr(Path, "iterdir", counting_iterdir)
+    monkeypatch.setattr(
+        cache_inventory,
+        "all_hf_cache_scans",
+        lambda: [SimpleNamespace(repos = repos)],
+    )
+    rows = cache_inventory._scan_cached_gguf()
+    assert [(row["repo_id"], row["size_bytes"], row["partial"]) for row in rows] == [
+        (f"Org/Model-{index}", index + 1, bool(index)) for index in range(3)
+    ]
+    assert calls == Counter({path: 1 for path in watched})
+
+
+def test_concurrent_cached_gguf_requests_share_scan_after_waiter_disconnect(monkeypatch):
+    calls = 0
+    scan_started = asyncio.Event()
+    release_scan = asyncio.Event()
+    cached = [{"repo_id": "Org/Model"}]
+
+    async def fake_to_thread(_callable):
+        nonlocal calls
+        calls += 1
+        scan_started.set()
+        await release_scan.wait()
+        return cached
+
+    monkeypatch.setattr(cache_inventory.asyncio, "to_thread", fake_to_thread)
+
+    async def run_requests():
+        first = asyncio.create_task(cache_inventory.list_cached_gguf_response())
+        await scan_started.wait()
+        second = asyncio.create_task(cache_inventory.list_cached_gguf_response())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        first.cancel()
+        try:
+            await first
+        except asyncio.CancelledError:
+            pass
+        release_scan.set()
+        return await second
+
+    response = asyncio.run(run_requests())
+
+    assert response == {"cached": cached}
+    assert calls == 1
+
+
+@pytest.mark.parametrize("generation", ["hf_cache", "variant_state", "stale_marker"])
+def test_cached_gguf_generation_change_supersedes_in_flight_scan(monkeypatch, generation):
+    calls = 0
+    releases = [asyncio.Event(), asyncio.Event()]
+    cached = [[{"repo_id": "Org/Before"}], [{"repo_id": "Org/After"}]]
+    variant_generation = ["before"]
+    state_write_active = [False]
+
+    async def fake_to_thread(_callable):
+        nonlocal calls
+        index = calls
+        calls += 1
+        await releases[index].wait()
+        return cached[index]
+
+    monkeypatch.setattr(cache_inventory.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(
+        download_manifest,
+        "variant_state_generation",
+        lambda: "before" if generation == "stale_marker" else variant_generation[0],
+    )
+    monkeypatch.setattr(
+        download_manifest,
+        "variant_state_mutation_snapshot",
+        lambda: download_manifest.VariantStateMutationSnapshot(
+            ((f"{variant_generation[0]}.json",) if generation != "hf_cache" else ()),
+            state_write_active[0],
+        ),
+    )
+
+    async def run_requests():
+        first = asyncio.create_task(cache_inventory.list_cached_gguf_response())
+        while calls < 1:
+            await asyncio.sleep(0)
+        if generation == "hf_cache":
+            cache_inventory.invalidate_hf_cache_scans()
+        elif generation == "variant_state":
+            variant_generation[0] = "writing"
+            state_write_active[0] = True
+        else:
+            variant_generation[0] = "stale"
+        second = asyncio.create_task(cache_inventory.list_cached_gguf_response())
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        if generation == "variant_state":
+            assert calls == 1
+            state_write_active[0] = False
+            variant_generation[0] = "after"
+        for release in releases:
+            release.set()
+        return await asyncio.gather(first, second)
+
+    responses = asyncio.run(run_requests())
+
+    assert calls == 2
+    assert responses == [{"cached": cached[0]}, {"cached": cached[1]}]
+
+
+def test_variant_state_publication_tracks_overlapping_writers(monkeypatch, tmp_path):
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path)
+    now = [100.0]
+    monkeypatch.setattr(download_manifest.time, "time", lambda: now[0])
+    state_path = tmp_path / "state.json"
+    observed = []
+    previous_generation = [download_manifest.variant_state_generation()]
+    real_atomic_write = download_manifest._atomic_write_json
+    real_unlink = Path.unlink
+
+    def atomic_write(path, payload):
+        if path == state_path:
+            observed.append(download_manifest.variant_state_mutation_snapshot().in_progress)
+        return real_atomic_write(path, payload)
+
+    def unlink(path, *args, **kwargs):
+        if path.parent.name == "mutations":
+            generation = download_manifest.variant_state_generation()
+            observed.append(generation != previous_generation[0])
+            previous_generation[0] = generation
+        if path == state_path:
+            observed.append(download_manifest.variant_state_mutation_snapshot().in_progress)
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(download_manifest, "_atomic_write_json", atomic_write)
+    monkeypatch.setattr(Path, "unlink", unlink)
+    assert download_manifest._write_state_json(state_path, {})
+    assert download_manifest._unlink_state_paths([state_path])
+    first = download_manifest._begin_variant_state_mutation()
+    second = download_manifest._begin_variant_state_mutation()
+    assert first is not None and second is not None
+    download_manifest._finish_variant_state_mutation(first)
+    snapshot = download_manifest.variant_state_mutation_snapshot()
+    assert snapshot.in_progress and snapshot.markers == (second.name,)
+
+    now[0] += 31.0
+    snapshot = download_manifest.variant_state_mutation_snapshot()
+    assert not snapshot.in_progress and snapshot.markers == (second.name,)
+    download_manifest._finish_variant_state_mutation(second)
+    assert download_manifest.variant_state_mutation_snapshot().markers == ()
+    assert observed == [True] * 6
+
+
 def test_list_local_gguf_variants_skips_big_endian_sibling(tmp_path):
     (tmp_path / "model-Q4_K_M-be.gguf").write_bytes(b"x" * 100)
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"y" * 10)
@@ -510,12 +727,21 @@ def test_download_state_isolated_across_hub_cache_switches(monkeypatch, tmp_path
     monkeypatch.setattr(hf_cache_settings, "get_hf_cache_paths", lambda: selected)
     expected_a = [download_manifest.ExpectedFile(path = "a.gguf", size = 1)]
     expected_b = [download_manifest.ExpectedFile(path = "b.gguf", size = 2)]
-
     assert download_manifest.write_manifest("model", "Owner/Repo", "Q4_K_M", expected_a)
     assert download_manifest.write_cancel_marker("model", "Owner/Repo", "Q4_K_M", "http")
 
     selected.hub_cache = cache_b
     assert download_manifest.write_manifest("model", "Owner/Repo", "Q4_K_M", expected_b)
+    index = download_manifest.build_variant_state_index(
+        [("model", "Owner/Repo", cache_a), ("model", "Owner/Repo", cache_b)],
+        active_hub_cache = cache_b,
+    )
+    indexed_a = index.for_repo("model", "Owner/Repo", hub_cache = cache_a)
+    indexed_b = index.for_repo("model", "Owner/Repo", hub_cache = cache_b)
+    assert indexed_a.manifest_for("Q4_K_M").expected_files == tuple(expected_a)
+    assert indexed_b.manifest_for("Q4_K_M").expected_files == tuple(expected_b)
+    assert indexed_a.has_marker("Q4_K_M")
+    assert not indexed_b.has_marker("Q4_K_M")
 
     manifest_b = download_manifest.read_manifest("model", "Owner/Repo", "Q4_K_M")
     manifest_a = download_manifest.read_manifest(
@@ -548,6 +774,8 @@ def test_legacy_unscoped_download_state_falls_back_only_for_selected_cache(monke
     manifest = state_dir.manifest_path("model", "Owner/Repo", "Q4_K_M")
     marker = state_dir.marker_path("model", "Owner/Repo", "Q4_K_M")
     assert manifest is not None and marker is not None
+    manifest.parent.mkdir(parents = True)
+    marker.parent.mkdir(parents = True)
     manifest.write_text(
         json.dumps(
             {
@@ -564,6 +792,14 @@ def test_legacy_unscoped_download_state_falls_back_only_for_selected_cache(monke
         json.dumps({"version": 1, "repo_id": "Owner/Repo", "variant": "Q4_K_M"}),
         encoding = "utf-8",
     )
+    index = download_manifest.build_variant_state_index(
+        [("model", "Owner/Repo", cache_a), ("model", "Owner/Repo", cache_b)],
+        active_hub_cache = cache_a,
+    )
+    legacy_a = index.for_repo("model", "Owner/Repo", hub_cache = cache_a)
+    legacy_b = index.for_repo("model", "Owner/Repo", hub_cache = cache_b)
+    assert legacy_a.manifest_for("Q4_K_M") is not None and legacy_a.has_marker("Q4_K_M")
+    assert legacy_b.summary() == (False, 0)
 
     assert download_manifest.read_manifest("model", "Owner/Repo", "Q4_K_M") is not None
     assert download_manifest.has_cancel_marker("model", "Owner/Repo", "Q4_K_M")

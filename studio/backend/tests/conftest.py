@@ -30,6 +30,11 @@ os.environ.setdefault("UNSLOTH_ALLOW_CPU", "1")
 os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 
 
+@pytest.fixture(autouse = True)
+def _isolate_studio_home(tmp_path_factory, monkeypatch):
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path_factory.mktemp("studio_home")))
+
+
 # Pytest CLI options
 
 
@@ -78,6 +83,7 @@ def _isolate_xet_health_home(tmp_path_factory):
     from huggingface_hub import constants as hf_constants
 
     mp = MonkeyPatch()
+    mp.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path_factory.mktemp("studio_home_session")))
     # Pin these to what the hub resolved from the REAL environment before moving HF_HOME, which
     # also defaults HF_HUB_CACHE, HF_XET_CACHE and HF_TOKEN_PATH: moving it alone would send the
     # E2E server to an empty cache and token store, so a ~1.1GB GGUF redownload inside the 120s
