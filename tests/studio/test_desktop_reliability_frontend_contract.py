@@ -422,13 +422,11 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
 
     assert "windowFocused" not in navbar
     assert "bg-[#b8b8b8]" not in navbar
-    assert (
-        "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]"
-        in TITLEBAR.read_text(encoding = "utf-8")
+    assert "translate-y-[var(--studio-titlebar-navigation-offset-y,0px)]" in TITLEBAR.read_text(
+        encoding = "utf-8"
     )
-    assert (
-        '"--studio-titlebar-navigation-offset-y": "6px"'
-        in APP_PROVIDER.read_text(encoding = "utf-8")
+    assert '"--studio-titlebar-navigation-offset-y": "6px"' in APP_PROVIDER.read_text(
+        encoding = "utf-8"
     )
     assert "aria-hidden={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
     assert "inert={(hasPinMode && !pinned && collapseToZero) || undefined}" in primitive
