@@ -12,10 +12,17 @@ import {
 } from "react";
 import type * as React from "react";
 
+import { isTooltipLayerBlocked } from "@/components/ui/tooltip-modal-layer";
 import { cn } from "@/lib/utils";
 
 type ToggleFn = () => void;
 const TooltipToggleCtx = createContext<ToggleFn | null>(null);
+type TooltipContentElement = React.ComponentRef<
+  typeof TooltipPrimitive.Content
+>;
+const TooltipContentElementCtx = createContext<
+  (element: TooltipContentElement | null) => void
+>(() => undefined);
 
 // Radix sets body pointer-events to none while a modal layer is up. That is also
 // when a hovered trigger stops receiving pointerleave, so a tooltip already on
@@ -26,19 +33,37 @@ const modalLayerListeners = new Set<() => void>();
 let modalLayerObserver: MutationObserver | null = null;
 
 function readModalLayer(): void {
-  const next = document.body.style.pointerEvents === "none";
-  if (next === modalLayerUp) return;
-  modalLayerUp = next;
+  modalLayerUp = document.body.style.pointerEvents === "none";
   for (const listener of modalLayerListeners) listener();
+}
+
+function readPointerEvents(style: string | null): string {
+  return (
+    /(?:^|;)\s*pointer-events\s*:\s*([^;]+)/.exec(style ?? "")?.[1]?.trim() ??
+    ""
+  );
+}
+
+function readRelevantLayerMutations(records: MutationRecord[]): void {
+  const pointerEventsChanged = records.some(
+    (record) =>
+      readPointerEvents(record.oldValue) !==
+      readPointerEvents(
+        (record.target as Element).getAttribute?.("style") ?? null,
+      ),
+  );
+  if (pointerEventsChanged) readModalLayer();
 }
 
 function subscribeModalLayer(listener: () => void): () => void {
   modalLayerListeners.add(listener);
   if (!modalLayerObserver && typeof MutationObserver !== "undefined") {
-    modalLayerObserver = new MutationObserver(readModalLayer);
+    modalLayerObserver = new MutationObserver(readRelevantLayerMutations);
     modalLayerObserver.observe(document.body, {
       attributes: true,
       attributeFilter: ["style"],
+      attributeOldValue: true,
+      subtree: true,
     });
     readModalLayer();
   }
@@ -49,6 +74,67 @@ function subscribeModalLayer(listener: () => void): () => void {
 
 function getModalLayer(): boolean {
   return modalLayerUp;
+}
+
+function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null): void {
+  if (typeof ref === "function") {
+    ref(value);
+  } else if (ref) {
+    ref.current = value;
+  }
+}
+
+type ModalBlockStore = {
+  getSnapshot: () => boolean;
+  setContentElement: (element: TooltipContentElement | null) => void;
+  subscribe: (listener: () => void) => () => void;
+};
+
+function createModalBlockStore(releasePin: () => void): ModalBlockStore {
+  let contentElement: TooltipContentElement | null = null;
+  let blocked = false;
+  let unsubscribeModalLayer: (() => void) | null = null;
+  const listeners = new Set<() => void>();
+
+  const update = () => {
+    // Preserve `true` after forced closure unmounts the content. Releasing it
+    // here would hand control back to Radix's still-open hover state.
+    const next = !getModalLayer()
+      ? false
+      : contentElement
+        ? isTooltipLayerBlocked(contentElement)
+        : blocked;
+    if (next === blocked) return;
+    blocked = next;
+    if (blocked) releasePin();
+    for (const listener of listeners) listener();
+  };
+
+  return {
+    getSnapshot: () => blocked,
+    setContentElement: (element) => {
+      contentElement = element;
+      update();
+    },
+    subscribe: (listener) => {
+      listeners.add(listener);
+      if (listeners.size === 1) {
+        unsubscribeModalLayer = subscribeModalLayer(update);
+      }
+      update();
+      return () => {
+        listeners.delete(listener);
+        if (listeners.size === 0) {
+          unsubscribeModalLayer?.();
+          unsubscribeModalLayer = null;
+        }
+      };
+    },
+  };
+}
+
+function getServerModalBlock(): boolean {
+  return false;
 }
 
 /** Tap-to-pin is for touch, which has no hover. The click's own pointerType is
@@ -90,11 +176,15 @@ function Tooltip({
 }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
   const isControlled = controlledOpen !== undefined;
   const [clickOpen, setClickOpen] = useState(false);
-  const modalUp = useSyncExternalStore(
-    subscribeModalLayer,
-    getModalLayer,
-    () => false,
+  const [modalBlockStore] = useState(() =>
+    createModalBlockStore(() => setClickOpen(false)),
   );
+  const modalBlock = useSyncExternalStore(
+    modalBlockStore.subscribe,
+    modalBlockStore.getSnapshot,
+    getServerModalBlock,
+  );
+  const blockedByModal = !isControlled && modalBlock;
 
   const onOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -107,11 +197,6 @@ function Tooltip({
   const toggle = useCallback(() => {
     setClickOpen((prev) => !prev);
   }, []);
-
-  // Drop the pin too, so it does not reappear when the dialog closes.
-  useEffect(() => {
-    if (modalUp) setClickOpen(false);
-  }, [modalUp]);
 
   // A pin must not outlive its interaction: once a dialog covers the trigger,
   // pointerleave never fires and Radix can no longer close it. Presses on a
@@ -145,18 +230,26 @@ function Tooltip({
 
   return (
     // Controlled tooltips own their open state; pinning would never render.
-    <TooltipToggleCtx.Provider value={isControlled ? null : toggle}>
-      <TooltipPrimitive.Root
-        data-slot="tooltip"
-        // false, not undefined: a hovered tooltip has to be forced shut when a
-        // dialog opens, and stay shut until it closes.
-        open={
-          isControlled ? controlledOpen : modalUp ? false : clickOpen || undefined
-        }
-        onOpenChange={onOpenChange}
-        {...props}
-      />
-    </TooltipToggleCtx.Provider>
+    <TooltipContentElementCtx.Provider
+      value={modalBlockStore.setContentElement}
+    >
+      <TooltipToggleCtx.Provider value={isControlled ? null : toggle}>
+        <TooltipPrimitive.Root
+          data-slot="tooltip"
+          // false, not undefined: a hovered tooltip outside the active modal
+          // must stay shut until that modal closes.
+          open={
+            isControlled
+              ? controlledOpen
+              : blockedByModal
+                ? false
+                : clickOpen || undefined
+          }
+          onOpenChange={onOpenChange}
+          {...props}
+        />
+      </TooltipToggleCtx.Provider>
+    </TooltipContentElementCtx.Provider>
   );
 }
 
@@ -204,16 +297,20 @@ function TooltipContent({
   className,
   sideOffset = 0,
   children,
+  ref,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Content> & {
   variant?: TooltipVariant;
 }) {
+  const setContentElement = useContext(TooltipContentElementCtx);
   // Single-line compact tooltips render as a full pill; wrapped ones keep
   // the squarer corners so tall pills do not look like capsules. A ref
   // callback measures on mount: Radix mounts the portal content without
   // re-rendering this wrapper, so an effect here would never see the node.
-  const measureRef = useCallback(
-    (el: HTMLDivElement | null) => {
+  const contentRef = useCallback(
+    (el: TooltipContentElement | null) => {
+      assignRef(ref, el);
+      setContentElement(el);
       if (!el || variant !== "default") return;
       const cs = getComputedStyle(el);
       const lineHeight = Number.parseFloat(cs.lineHeight) || 16;
@@ -223,12 +320,12 @@ function TooltipContent({
         Number.parseFloat(cs.paddingBottom);
       el.classList.toggle("rounded-full!", innerHeight < lineHeight * 1.5);
     },
-    [variant],
+    [ref, setContentElement, variant],
   );
   return (
     <TooltipPrimitive.Portal>
       <TooltipPrimitive.Content
-        ref={measureRef}
+        ref={contentRef}
         data-slot="tooltip-content"
         sideOffset={sideOffset}
         className={cn(
