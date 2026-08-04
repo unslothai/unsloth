@@ -1495,7 +1495,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   return (
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {/* Top: the model selector, sitting clear of the sidebar and level with the controls column below. Load progress shows in a toast. */}
-      <div className="flex h-[48px] shrink-0 items-start justify-between pl-4 pr-2 pt-[11px]">
+      <div className="flex h-[48px] shrink-0 items-start justify-between pl-6 pr-2 pt-[11px]">
         <div className="flex items-center gap-3">
           <ModelSelector
             models={VIDEO_MODELS}
@@ -1531,10 +1531,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
 
       {/* Controls rail + preview canvas, as on the Images tabs: no cards, a rule the full page
           height. Full width, so the preview grows with the window.
-          Gutters match Images, so both pages' content starts at the same 32px. */}
+          Gutters match Images, so both pages' content starts at the same 40px. */}
       <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
-        {/* Widened by the new pl-6 so the controls keep their old width. */}
-        <div className="flex w-[392px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-6">
+        {/* Widened by the pl-8 so the controls keep their old width. */}
+        <div className="flex w-[400px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-7">
           {/* Names the pane, as the Images column does. h-9 keeps both pages' headings level. */}

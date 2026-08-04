@@ -3,7 +3,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  AiImageIcon,
   ArrowLeftRightIcon,
   ArrowReloadHorizontalIcon,
   Delete02Icon,
@@ -12,6 +11,7 @@ import {
   Image03Icon,
   ImageAdd02Icon,
   InformationCircleIcon,
+  SparklesIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
@@ -2351,7 +2351,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   return (
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
       {/* Top: the model selector, sitting clear of the sidebar and level with the settings column below. Load progress shows in a toast. */}
-      <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-4 pr-2 pt-[11px]">
+      <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-6 pr-2 pt-[11px]">
         <div className="flex items-center gap-2">
           {pageMode === "train" ? (
             <TrainBaseSelector
@@ -2394,7 +2394,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 value: "create",
                 label: "Create",
                 icon: (
-                  <HugeiconsIcon icon={AiImageIcon} className="size-3.5" />
+                  <HugeiconsIcon icon={SparklesIcon} className="size-3.5" />
                 ),
               },
               {
@@ -2435,9 +2435,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       ) : (
       /* Settings column + preview canvas: both on the page background, split by a rule. Each pane pads its own content.
          Full width, so the canvas grows with the window; the settings column stays fixed.
-         pl-6 puts its content at 32px, level with the model selector label above. */
+         pl-8 puts its content 40px in, level with the model selector label above and
+         matching the pr-10 on the other side of the column. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
-        <div className="flex w-[400px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-6">
+        <div className="flex w-[408px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div className="hover-scrollbar flex min-h-0 flex-col gap-4 overflow-y-auto pb-7 pl-0.5 pr-10">
             {/* The sidebar submenu is the switcher, so name the active workflow over its controls. */}

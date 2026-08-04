@@ -13,19 +13,19 @@ interface ImageWorkflowState {
   workflow: WorkflowId;
   pageMode: "create" | "train";
   supported: WorkflowId[] | null;
-  /** Whether the sidebar lists the workflows under the Images row. */
+  /** Off the Images page, whether the sidebar lists the workflows under the row. */
   navExpanded: boolean;
+  setNavExpanded: (expanded: boolean) => void;
   setWorkflow: (id: WorkflowId) => void;
   setPageMode: (mode: "create" | "train") => void;
   setSupported: (ids: WorkflowId[] | null) => void;
-  setNavExpanded: (expanded: boolean) => void;
 }
 
 export const useImageWorkflowStore = create<ImageWorkflowState>((set) => ({
   workflow: "create",
   pageMode: "create",
   supported: null,
-  navExpanded: true,
+  navExpanded: false,
   setNavExpanded: (navExpanded) => set({ navExpanded }),
   // Picking a workflow implies Create: workflows do not exist in Train.
   setWorkflow: (workflow) => set({ workflow, pageMode: "create" }),

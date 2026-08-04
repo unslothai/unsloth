@@ -2,12 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import {
-  AiImageIcon,
   ArrowExpand01Icon,
   Edit03Icon,
   ImageUpload01Icon,
   MagicWand01Icon,
   PaintBrush02Icon,
+  SparklesIcon,
   ZoomInAreaIcon,
 } from "@hugeicons/core-free-icons";
 import type { IconSvgElement } from "@hugeicons/react";
@@ -35,7 +35,7 @@ export const WORKFLOW_TABS: Array<{
     label: "Create",
     requires: null,
     // Not the pencil: that is the sidebar's New chat icon.
-    icon: AiImageIcon,
+    icon: SparklesIcon,
     hint: "Generate a new image from a prompt",
   },
   {

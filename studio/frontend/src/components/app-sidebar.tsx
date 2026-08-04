@@ -328,6 +328,7 @@ function NavItem({
   tooltip,
   onIntent,
   badge,
+  overlay,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -344,6 +345,8 @@ function NavItem({
   tooltip?: string;
   // Trailing "New" pill text.
   badge?: string;
+  // Absolutely-positioned extras over the row, e.g. a disclosure chevron.
+  overlay?: ReactNode;
 }) {
   return (
     <SidebarMenuItem className={className}>
@@ -374,6 +377,7 @@ function NavItem({
           // Collapsed (icon-only) rail: small spinner badge over the icon corner.
           <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
         )}
+        {overlay}
       </div>
       {children}
     </SidebarMenuItem>
@@ -419,144 +423,71 @@ function WorkflowChoice({
   );
 }
 
+/** Expands the workflow list on rows that do not list it outright, i.e. off the Images page. */
+function ImagesNavDisclosure() {
+  const expanded = useImageWorkflowStore((s) => s.navExpanded);
+  const setExpanded = useImageWorkflowStore((s) => s.setNavExpanded);
+  return (
+    // Row action, so it gets the shared hover circle. Shown on row hover, kept while open.
+    <button
+      type="button"
+      aria-label={expanded ? "Hide workflows" : "Show workflows"}
+      aria-expanded={expanded}
+      onClick={(e) => {
+        e.stopPropagation();
+        setExpanded(!expanded);
+      }}
+      className={cn(
+        "sidebar-row-action group-hover/images-item:opacity-100 group-hover/images-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto",
+        expanded && "is-disclosure-open",
+      )}
+    >
+      <span className="sidebar-row-action-glyph">
+        <ChevronDown
+          className={cn(
+            "size-3.5 transition-transform duration-200",
+            !expanded && "-rotate-90",
+          )}
+        />
+      </span>
+    </button>
+  );
+}
+
 /**
- * The Images row plus its workflows. Hovering the row peeks them in a flyout to the right, on the
- * same menu surface as "More"; standing on the Images page lists them under the row instead, so
- * the current workflow is visible without hovering. Collapsed rail keeps the flyout only.
+ * The Images workflows, listed under their nav row. Open by default on the Images page, since
+ * they are that page's switcher; elsewhere they stay folded until the row's chevron asks for
+ * them. The collapsed rail has no room either way, and the page's Train tab has none to list.
  */
-function ImagesNavSection({
+function ImagesWorkflowList({
   active,
   collapsed,
   onPick,
-  children,
 }: {
   active: boolean;
   collapsed: boolean;
   onPick: (id: WorkflowId) => void;
-  children: ReactNode;
 }) {
   const workflow = useImageWorkflowStore((s) => s.workflow);
   const supported = useImageWorkflowStore((s) => s.supported);
   const pageMode = useImageWorkflowStore((s) => s.pageMode);
   const expanded = useImageWorkflowStore((s) => s.navExpanded);
-  const setNavExpanded = useImageWorkflowStore((s) => s.setNavExpanded);
-  const [flyoutOpen, setFlyoutOpen] = useState(false);
-  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const openFlyout = useCallback(() => {
-    if (closeTimer.current) {
-      clearTimeout(closeTimer.current);
-      closeTimer.current = null;
-    }
-    setFlyoutOpen(true);
-  }, []);
-  // Delayed so the pointer can cross the gap to the panel, as the "More" row does.
-  const closeFlyoutSoon = useCallback(() => {
-    if (closeTimer.current) clearTimeout(closeTimer.current);
-    closeTimer.current = setTimeout(() => setFlyoutOpen(false), 180);
-  }, []);
-  useEffect(
-    () => () => {
-      if (closeTimer.current) clearTimeout(closeTimer.current);
-    },
-    [],
-  );
-
-  // Listed wherever there is room for them, so the disclosure is on the row everywhere. The one
-  // exception is the page's own Train tab, which has no workflows to list.
-  const canList = !collapsed && !(active && pageMode === "train");
-  const showInline = canList && expanded;
+  if (collapsed) return null;
+  if (active ? pageMode === "train" : !expanded) return null;
   // Nothing here is current unless the page is actually showing a workflow.
   const current = active && pageMode === "create" ? workflow : null;
-  const pick = (id: WorkflowId) => {
-    setFlyoutOpen(false);
-    onPick(id);
-  };
-
   return (
-    <>
-      {/* Open is gated on !showInline, so the flyout cannot duplicate the inline list. */}
-      <DropdownMenu
-        open={flyoutOpen && !showInline}
-        onOpenChange={setFlyoutOpen}
-        modal={false}
-      >
-        <DropdownMenuTrigger asChild={true}>
-          <div
-            className="group/images-item relative"
-            onPointerEnter={openFlyout}
-            onPointerLeave={closeFlyoutSoon}
-          >
-            {children}
-            {canList && (
-              // Row action, so it gets the shared hover circle. Shown on row hover and kept
-              // while the list is open. Stops its own events so the row neither navigates
-              // nor opens the flyout.
-              <button
-                type="button"
-                aria-label={expanded ? "Hide workflows" : "Show workflows"}
-                aria-expanded={expanded}
-                onPointerDown={(e) => e.stopPropagation()}
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setFlyoutOpen(false);
-                  setNavExpanded(!expanded);
-                }}
-                className={cn(
-                  "sidebar-row-action group-hover/images-item:opacity-100 group-hover/images-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto",
-                  expanded && "is-disclosure-open",
-                )}
-              >
-                <span className="sidebar-row-action-glyph">
-                  <ChevronDown
-                    className={cn(
-                      "size-3.5 transition-transform duration-200",
-                      !expanded && "-rotate-90",
-                    )}
-                  />
-                </span>
-              </button>
-            )}
-          </div>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          side="right"
-          align="start"
-          sideOffset={6}
-          onPointerEnter={openFlyout}
-          onPointerLeave={closeFlyoutSoon}
-          className="w-48 p-1"
-        >
-          {WORKFLOW_TABS.map((tab) => {
-            const enabled = isWorkflowEnabled(tab.id, supported);
-            return (
-              <DropdownMenuItem
-                key={tab.id}
-                disabled={!enabled}
-                title={enabled ? undefined : WORKFLOW_UNAVAILABLE}
-                onSelect={() => pick(tab.id)}
-                className={cn(current === tab.id && "bg-accent/60")}
-              >
-                <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} />
-                <span className="min-w-0 flex-1 truncate">{tab.label}</span>
-              </DropdownMenuItem>
-            );
-          })}
-        </DropdownMenuContent>
-      </DropdownMenu>
-      {showInline && (
-        <div className="mt-0.5 flex flex-col gap-px pl-5">
-          {WORKFLOW_TABS.map((tab) => (
-            <WorkflowChoice
-              key={tab.id}
-              tab={tab}
-              active={current === tab.id}
-              enabled={isWorkflowEnabled(tab.id, supported)}
-              onSelect={() => pick(tab.id)}
-            />
-          ))}
-        </div>
-      )}
-    </>
+    <div className="mt-0.5 flex flex-col gap-px pl-5">
+      {WORKFLOW_TABS.map((tab) => (
+        <WorkflowChoice
+          key={tab.id}
+          tab={tab}
+          active={current === tab.id}
+          enabled={isWorkflowEnabled(tab.id, supported)}
+          onSelect={() => onPick(tab.id)}
+        />
+      ))}
+    </div>
   );
 }
 
@@ -627,8 +558,6 @@ export function AppSidebar() {
   const navigate = useNavigate();
   const router = useRouter();
   const imagesPageMode = useImageWorkflowStore((s) => s.pageMode);
-  const imagesNavExpanded = useImageWorkflowStore((s) => s.navExpanded);
-  const setImagesNavExpanded = useImageWorkflowStore((s) => s.setNavExpanded);
 
   // Web update detection: `webUpdate` is non-null only when the installed
   // (PyPI) version is behind the latest release, so the card is hidden by
@@ -1047,20 +976,10 @@ export function AppSidebar() {
   const inlineNavIds = sidebarNav
     .filter((item) => item.pinned)
     .map((item) => item.id);
-  // Mirrors ImagesNavSection's own canList / showInline pair: together they decide which row
-  // owns the highlight, and whether the Images row acts as the list's toggle.
-  const imagesCanList =
+  // Mirrors ImagesWorkflowList's own test: it decides which row owns the highlight.
+  const imagesWorkflowsListed =
     sidebarState !== "collapsed" &&
     !(navRows.images.active && imagesPageMode === "train");
-  const imagesWorkflowsListed = imagesCanList && imagesNavExpanded;
-  // Already on Images, so the row has nowhere to navigate: it folds its list away instead.
-  const handleImagesClick = () => {
-    if (navRows.images.active && imagesCanList) {
-      setImagesNavExpanded(!imagesNavExpanded);
-      return;
-    }
-    navRows.images.onClick();
-  };
 
   const showSidebarBrand = !usesCustomTitlebar;
   const showCompactMacBrand = showSidebarBrand && usesNativeMacTitlebar;
@@ -1875,7 +1794,7 @@ export function AppSidebar() {
                   Sidebar navigation. */}
               {inlineNavIds.map((id) => {
                 const row = navRows[id];
-                const item = (
+                return (
                   <NavItem
                     key={id}
                     icon={row.icon}
@@ -1889,28 +1808,38 @@ export function AppSidebar() {
                     disabled={row.disabled}
                     tooltip={row.tooltip}
                     spinner={row.spinner}
-                    onClick={id === "images" ? handleImagesClick : row.onClick}
+                    onClick={row.onClick}
                     onIntent={row.onIntent}
-                    className={row.className}
+                    className={cn(
+                      row.className,
+                      id === "images" && "group/images-item",
+                    )}
+                    // Off the Images page the list is folded, so the row offers a way to open it.
+                    overlay={
+                      id === "images" &&
+                      !row.active &&
+                      sidebarState !== "collapsed" ? (
+                        <ImagesNavDisclosure />
+                      ) : undefined
+                    }
                   >
-                    {row.children}
+                    {/* Images carries its workflows as rows beneath it. */}
+                    {id === "images" ? (
+                      <ImagesWorkflowList
+                        active={row.active}
+                        collapsed={sidebarState === "collapsed"}
+                        onPick={(workflowId) => {
+                          useImageWorkflowStore
+                            .getState()
+                            .setWorkflow(workflowId);
+                          navigate({ to: "/images" });
+                          closeMobileIfOpen();
+                        }}
+                      />
+                    ) : (
+                      row.children
+                    )}
                   </NavItem>
-                );
-                // Images carries its workflows: a flyout on hover, listed inline on the page.
-                if (id !== "images") return item;
-                return (
-                  <ImagesNavSection
-                    key={id}
-                    active={row.active}
-                    collapsed={sidebarState === "collapsed"}
-                    onPick={(workflowId) => {
-                      useImageWorkflowStore.getState().setWorkflow(workflowId);
-                      navigate({ to: "/images" });
-                      closeMobileIfOpen();
-                    }}
-                  >
-                    {item}
-                  </ImagesNavSection>
                 );
               })}
               {/* Unpinned destinations, behind one row. */}

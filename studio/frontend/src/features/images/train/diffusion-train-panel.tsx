@@ -1097,12 +1097,14 @@ export function DiffusionTrainPanel({
   );
 
   return (
-    <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden px-5 pt-9 sm:px-8">
+    <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
       {/* Left: configure. No cards: both panes sit on the page background, split by a full-height rule. */}
-      <div className="flex w-[392px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60">
+      {/* Gutters match the Create tab: pl-8 puts the content 40px in, level with the model
+          selector above and with the pr-10 on the other side of the rule. */}
+      <div className="flex w-[416px] min-w-0 shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
         {/* pl-0.5 keeps focus rings off the scroll container's edge. pt-1.5
             matches the right pane's p-1.5, so both headings start on the same line. */}
-        <div className="hover-scrollbar flex min-h-0 flex-col gap-5 overflow-y-auto overflow-x-hidden pb-7 pl-0.5 pr-7 pt-1.5">
+        <div className="hover-scrollbar flex min-h-0 flex-col gap-5 overflow-y-auto overflow-x-hidden pb-7 pl-0.5 pr-10 pt-1.5">
           <div>
             {/* Matches "Training settings" across the rule, so the two headings read as one row. */}
             <h2 className="font-heading flex items-center gap-1.5 text-base font-medium">
