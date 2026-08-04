@@ -1558,7 +1558,7 @@ def _component_weights_complete(component: Path) -> bool:
     survives while the shards it names never arrive. Unioning would charge those absent shards to a
     complete safetensors set. The same reasoning covers unfetched ``fp16`` and other variants.
     """
-    saw_index = False
+    claimed: set[str] = set()
     for index in component.glob("*.index.json"):
         try:
             with index.open("r", encoding = "utf-8") as fh:
@@ -1571,14 +1571,22 @@ def _component_weights_complete(component: Path) -> bool:
         shards = {str(v) for v in weight_map.values() if v}
         if not shards:
             continue
-        saw_index = True
         # is_file() follows the snapshot symlink, so a dangling blob is correctly absent.
         if all((component / shard).is_file() for shard in shards):
             return True
-    if saw_index:
-        return False
+        claimed |= shards
+    # No whole shard set, so the only thing left that could load is a weight NO index claims: an
+    # unsharded default file sitting beside an index for a variant that was never fetched. Skipping
+    # the claimed names is what keeps this from re-accepting a half-landed shard set, whose files
+    # are exactly the ones an index named.
     for entry in component.rglob("*"):
-        if entry.is_file() and entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES):
+        if not entry.is_file() or not entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES):
+            continue
+        try:
+            relative = entry.relative_to(component).as_posix()
+        except ValueError:  # not under the component after symlink resolution
+            continue
+        if relative not in claimed and entry.name not in claimed:
             return True
     return False
 

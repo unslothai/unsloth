@@ -3270,6 +3270,43 @@ def test_neither_format_being_whole_is_still_torn(tmp_path):
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
 
 
+@pytest.mark.parametrize("orphan", ["bin", "fp16.safetensors"])
+def test_an_orphan_variant_index_does_not_veto_the_default_weight(orphan, tmp_path):
+    """An index no shard belongs to must not hide an unsharded default file sitting beside it.
+
+    The scoped plan drops a `.bin` whose directory also has a picked `.safetensors` while keeping
+    `.bin.index.json`, so the component can hold a loadable `diffusion_pytorch_model.safetensors`
+    next to an index whose shards never arrive. Vetoing on any unsatisfied index marked that
+    complete download partial."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
+            f"transformer/diffusion_pytorch_model.{orphan}.index.json": _dual_format_shard_index(
+                f".{orphan}"
+            ),
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_half_landed_shard_set_is_not_rescued_by_the_loose_scan(tmp_path):
+    """Why the loose fallback skips every name an index claimed: shard 1 of 2 IS a weight file, so
+    an unfiltered fallback would call the torn set complete and undo the check above it."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": (
+                _dual_format_shard_index(".safetensors")
+            ),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
 def test_an_unsharded_denoiser_still_passes_on_presence_alone(tmp_path):
     """No index, so there is nothing to be incomplete against and the plain presence test stands."""
     snapshot = _pipeline_snapshot(
