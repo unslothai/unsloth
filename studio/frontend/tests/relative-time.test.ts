@@ -27,6 +27,8 @@ const LOCALE_LIST = [
 // Callers produce minutes up to 59, hours up to 23, months up to 12, and
 // unbounded day and year counts. The sweep below checks values 1 through 60
 // for every unit, covering the bounded ranges and representative larger counts.
+const AR_PAST_MARKER = /^قبل/;
+
 const UNITS: Intl.RelativeTimeFormatUnit[] = [
   "minute",
   "hour",
@@ -56,9 +58,23 @@ test("Arabic past months keep the past marker", () => {
   for (const value of [1, 2, 3, 5, 10, 11, 12]) {
     assert.match(
       formatRelativeTime("ar", -value, "month"),
-      /^قبل/,
+      AR_PAST_MARKER,
       `ar -${value} month should read as past`,
     );
+  }
+});
+
+test("non-finite values return empty text instead of throwing", () => {
+  // An unparseable timestamp reaches the callers as NaN. format() answers
+  // non-finite input with a RangeError, which would unmount the tree.
+  for (const value of [
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  ]) {
+    for (const locale of LOCALE_LIST) {
+      assert.equal(formatRelativeTime(locale, value, "day"), "");
+    }
   }
 });
 

@@ -967,7 +967,7 @@ export const de = {
       loadError: "API-Zugriff konnte nicht geladen werden.",
       createError: "Zugriffstoken konnte nicht erstellt werden.",
       revokeError: "Zugriffstoken konnte nicht widerrufen werden.",
-      never: "nie",
+      never: "Nie",
       tokenNamePlaceholder: "Token-Name (z. B. production)",
       newAccessTokenName: "Name des neuen Zugriffstokens",
       createToken: "Token erstellen",

@@ -629,7 +629,7 @@ export const ptBR = {
         ram: "RAM",
         disk: "Disco",
         vram: "VRAM",
-        cpuCores: "{logical} núcleos lógicos / {physical} núcleos físicos",
+        cpuCores: "{logical} lógicos / {physical} físicos",
         currentLoad: "Carga atual",
         free: "{value} livres",
         noGpu: "Nenhuma GPU visível",

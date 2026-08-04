@@ -26,6 +26,12 @@ export function formatRelativeTime(
   value: number,
   unit: Intl.RelativeTimeFormatUnit,
 ): string {
+  // format() throws RangeError on non-finite input, and an unparseable
+  // timestamp reaches here as NaN. Callers render during a React commit, so a
+  // throw would unmount the tree; degrade to empty text instead.
+  if (!Number.isFinite(value)) {
+    return "";
+  }
   const short = getFormatter(locale, "short");
   const formatted = short.format(value, unit);
   // Some CLDR short patterns drop the past/future marker. Arabic months in the

@@ -627,7 +627,7 @@ export const ru = {
         ram: "RAM",
         disk: "Диск",
         vram: "VRAM",
-        cpuCores: "Логические ядра: {logical} / физические: {physical}",
+        cpuCores: "{logical} логич. / {physical} физич. ядер",
         currentLoad: "Текущая нагрузка",
         free: "{value} свободно",
         noGpu: "GPU не обнаружен",

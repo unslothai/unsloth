@@ -1029,6 +1029,7 @@ export const it = {
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Aggiornamento",
       help: "Aiuto",
       documentation: "Documentazione",
