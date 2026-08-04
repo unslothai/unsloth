@@ -28,8 +28,7 @@ ART = Path(os.environ.get("PW_ART_DIR", "logs/playwright_fontscale"))
 ART.mkdir(parents = True, exist_ok = True)
 
 SIZES = (12, 20)
-# UI_FONT_SIZE_RANGE in appearance-custom-store.ts: the store only drops
-# data-ui-font-size when the preference equals this default.
+# UI_FONT_SIZE_RANGE default (appearance-custom-store.ts); only here is data-ui-font-size dropped.
 DEFAULT = 15
 
 

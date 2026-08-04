@@ -1242,8 +1242,7 @@ with sync_playwright() as p:
             }""",
         )
 
-    # The unscaled size of the text-ui-15p5 token chat renders at (index.css:
-    # --text-ui-15p5: calc(0.96875rem * var(--ui-font-scale, 1))).
+    # text-ui-15p5 unscaled (index.css: calc(0.96875rem * var(--ui-font-scale, 1))).
     _TEXT_UI_15P5_PX = 15.5
 
     def assert_chat_typography(label, typography):
@@ -1273,10 +1272,8 @@ with sync_playwright() as p:
             if len(actual["fontSize"]) != 1:
                 fail(f"chat font size {label}/{role}: not uniform, got {actual['fontSize']!r}")
             font_size = float(actual["fontSize"][0].removesuffix("px"))
-            # Asserting the em leaves the size itself unchecked, which the old px literal
-            # caught implicitly. Pin the token, not a range: a range wide enough for every
-            # supported preference (12 to 20, so 11.625px to 19.375px) also admits the
-            # neighbouring tokens it was meant to catch.
+            # Pin the token, not a range: one spanning every preference (12 to 20, so
+            # 11.625px to 19.375px) also admits the neighbouring tokens.
             try:
                 ui_font_scale = float(typography.get("uiFontScale") or "1")
             except ValueError:
@@ -1291,8 +1288,7 @@ with sync_playwright() as p:
                     f"got {font_size}px"
                 )
             expected_spacing = expected_em * font_size
-            # "normal" is how a zero tracking is reported, and float() raises on it, which
-            # would surface as a test error rather than this check failing.
+            # float() raises on "normal", which is how zero tracking is reported.
             spacings = [
                 0.0 if v.strip() == "normal" else float(v.removesuffix("px"))
                 for v in actual["letterSpacing"]
