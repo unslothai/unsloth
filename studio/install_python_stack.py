@@ -3425,7 +3425,7 @@ def _install_eval_extra(*, package_name: str, local_repo: str) -> None:
         )
     if not ok:
         _safe_print(
-            '   unsloth[eval] skipped (no prebuilt wheels on this platform); '
+            "   unsloth[eval] skipped (no prebuilt wheels on this platform); "
             'run pip install "unsloth[eval]" to enable unsloth eval.'
         )
 
