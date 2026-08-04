@@ -2799,7 +2799,10 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
 
 
 def _write_cached_gguf(
-    hub_cache: Path, repo_id: str, filename: str, mtime: float | None = None
+    hub_cache: Path,
+    repo_id: str,
+    filename: str,
+    mtime: float | None = None,
 ) -> Path:
     """One real snapshot under *hub_cache*, so the production listers do the walking.
 
