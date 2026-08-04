@@ -360,9 +360,8 @@ def test_legacy_download_progress_heartbeats_not_suppressed(logs, monkeypatch):
 
 
 def test_generation_progress_polls_heartbeat(logs, monkeypatch):
-    # The Image/Video tabs poll generate-progress every 300ms, which outran the base
-    # dedup window, so a single clip filled the log. They heartbeat like the legacy
-    # download polls: first hit logs, the rest of the burst collapses.
+    # 300ms polls outran the base dedup window; now they heartbeat: first hit logs,
+    # the rest of the burst collapses.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
     for path in (
@@ -388,8 +387,7 @@ def test_generation_progress_errors_still_log(logs, monkeypatch):
 
 
 def test_image_video_load_progress_suppressed_errors_logged(logs):
-    # The per-engine load polls mirror /api/inference/load-progress: the 2xx is dropped
-    # (diffusion.loaded / video.loaded carry the phases), the failure is not.
+    # 2xx is dropped (diffusion.loaded / video.loaded carry the phases), the failure is not.
     for path in ("/api/inference/images/load-progress", "/api/inference/video/load-progress"):
         _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
     assert logs.events == []
