@@ -148,8 +148,9 @@ assert_reply() {
 #     which is exactly the class-(c) failure this script exists to catch.
 #   * a transcript was printed -> the CLI did the work and then failed to exit.
 #     opencode did this on 2026-08-03: it ran the tool, printed 'Hello', and sat
-#     there for the remaining 18 min with llama-server serving nothing, having
-#     completed the same two turns in 635s a week earlier.
+#     there for the remaining 18 min with llama-server serving nothing. It is
+#     intermittent, not a one-way regression -- the same two turns took 635s the
+#     week before and 633s the day after.
 # Blaming start.py for the second is wrong, so flag it and let the caller judge
 # the turn on its assertions. TIMED_OUT is global: callers with no assertion that
 # can rescue a partial turn (connection, resume) still treat it as fatal.
