@@ -8,16 +8,36 @@ through the MRO, and `None` overwrote it.
 
 Reproduced directly, so these run on transformers 4 as well -- the helper is
 plain Python and needs no config machinery, unlike the live tests next door.
+For the same reason import_fixes.py is loaded by file spec, as
+test_peft_symbol_backfill.py does: `import unsloth.import_fixes` would run
+unsloth/__init__.py first, which pulls _gpu_init and with it torch, numpy and
+unsloth_zoo, so a dependency-light run would fail before reaching the helper.
 """
 
+import importlib.util
+from pathlib import Path
+
 import pytest
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+IMPORT_FIXES = REPO_ROOT / "unsloth" / "import_fixes.py"
+
+
+def _load_module():
+    spec = importlib.util.spec_from_file_location(
+        "_unsloth_import_fixes_dataclass_under_test", IMPORT_FIXES)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+_backfill_dataclass_defaults = _load_module()._backfill_dataclass_defaults
 
 
 def test_an_inherited_default_is_not_shadowed():
     """A subclass may re-annotate an inherited field without assigning to it.
     The name is then absent from cls.__dict__ but present through the MRO, and
     writing None over it changes the config's value."""
-    from unsloth.import_fixes import _backfill_dataclass_defaults
 
     class Base:
         window: int = 7
@@ -31,7 +51,6 @@ def test_an_inherited_default_is_not_shadowed():
 
 def test_a_genuinely_new_field_is_still_backfilled():
     """The narrowing must not disarm the fix."""
-    from unsloth.import_fixes import _backfill_dataclass_defaults
 
     class Base:
         window: int = 7
@@ -46,7 +65,6 @@ def test_a_genuinely_new_field_is_still_backfilled():
 def test_an_inherited_method_of_the_same_name_counts_too():
     """dataclass reads defaults with getattr, so anything the MRO resolves is
     already a default, whatever it is."""
-    from unsloth.import_fixes import _backfill_dataclass_defaults
 
     class Base:
         def helper(self):
