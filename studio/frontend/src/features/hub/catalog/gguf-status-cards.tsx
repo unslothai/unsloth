@@ -10,6 +10,7 @@ import {
   DownloadActionButton,
   DownloadCard,
 } from "./download-card";
+import { downloadStopMode } from "./use-download-card-state";
 
 export function GgufDownloadStatusCard({
   job,
@@ -101,6 +102,7 @@ export function GgufDownloadingFallbackCard({
           downloading
           cancelling={cancelling}
           progressPercent={Math.round(Math.min(progress.fraction, 1) * 100)}
+          stopMode={downloadStopMode(job.transport)}
           disabled={cancelling}
           onClick={() => void job.cancelDownload(progress.variant)}
         />

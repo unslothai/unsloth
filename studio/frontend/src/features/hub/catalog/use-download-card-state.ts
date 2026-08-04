@@ -13,10 +13,16 @@ export function partialResumeLabel(transport: string | null | undefined): string
 
 /** Stopping an HTTP download leaves a partial to continue from, so it is a
  * pause. Xet has to start over, so it is a cancel. Unknown assumes the costlier
- * one rather than promising a resume that may not exist. */
+ * one rather than promising a resume that may not exist.
+ *
+ * Reads the running job's transport, not the partial's: a fresh HTTP download
+ * has no partial yet, and a restarted conflict switches transport, so the
+ * partial describes neither. */
 export function downloadStopMode(
-  transport: string | null | undefined,
+  activeTransport: string | null | undefined,
+  partialTransport?: string | null,
 ): DownloadStopMode {
+  const transport = activeTransport ?? partialTransport;
   return transport === "http" ? "pause" : "cancel";
 }
 
@@ -93,7 +99,7 @@ export function useDownloadCardState({
     starting,
     variant,
   ]);
-  const stopMode = downloadStopMode(partialTransport);
+  const stopMode = downloadStopMode(job.transport, partialTransport);
   return {
     downloading,
     cancelling,

@@ -31,12 +31,14 @@ import {
   type DownloadJob,
   type DownloadJobProgress,
 } from "../download-manager";
-import { DownloadStopIndicator } from "./download-cancel-indicator";
+import {
+  type DownloadStopMode,
+  DownloadStopIndicator,
+} from "./download-cancel-indicator";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
 import {
   downloadActionAriaLabel,
   downloadActionLabel,
-  downloadStopMode,
 } from "./use-download-card-state";
 
 /**
@@ -232,6 +234,7 @@ export function DownloadActionButton({
   loading = false,
   isPartial = false,
   partialTransport = null,
+  stopMode = "cancel",
   progressPercent = null,
   disabled,
   onClick,
@@ -242,12 +245,13 @@ export function DownloadActionButton({
   loading?: boolean;
   isPartial?: boolean;
   partialTransport?: string | null;
+  /** What stopping the running job costs; see downloadStopMode. */
+  stopMode?: DownloadStopMode;
   progressPercent?: number | null;
   disabled: boolean;
   onClick: () => void;
   className?: string;
 }) {
-  const stopMode = downloadStopMode(partialTransport);
   return (
     <button
       type="button"

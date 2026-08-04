@@ -672,6 +672,13 @@ export async function startJob(
     bytesPerSec: 0,
     error: null,
     startedAt: opts.adopt ? (existing?.startedAt ?? Date.now()) : Date.now(),
+    // An adopted job did not resolve a transport here, so it keeps whatever was
+    // already recorded rather than claiming this placeholder.
+    ...(opts.adopt
+      ? existing?.transport
+        ? { transport: existing.transport }
+        : {}
+      : { transport: mode }),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
       : {}),
