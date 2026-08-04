@@ -324,15 +324,17 @@ fn spawn_script(
 
     #[cfg(windows)]
     let mut cmd = Command::new("powershell.exe");
+    // No -WindowStyle Hidden, no -ExecutionPolicy Bypass: CREATE_NO_WINDOW below
+    // already suppresses the console, and NSIS writes resources without a
+    // mark-of-the-web so RemoteSigned loads the script. The pair changes nothing
+    // here and is the command line Microsoft ships as a detection test.
     #[cfg(windows)]
     cmd.args([
         "-NoLogo",
         "-NoProfile",
         "-NonInteractive",
-        "-WindowStyle",
-        "Hidden",
         "-ExecutionPolicy",
-        "Bypass",
+        "RemoteSigned",
         "-File",
     ])
     .arg(script)

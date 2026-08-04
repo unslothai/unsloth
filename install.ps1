@@ -20,9 +20,9 @@ function Install-UnslothStudio {
     $ErrorActionPreference = "Stop"
     $script:UnslothVerbose = ($env:UNSLOTH_VERBOSE -eq "1")
 
-    # Same fix as studio/setup.ps1, for the same reason. This script also runs
-    # astral's uv installer in-process (Invoke-Expression, below), and that
-    # installer calls Get-ExecutionPolicy out of Microsoft.PowerShell.Security.
+    # Same fix as studio/setup.ps1, for the same reason. This script also calls
+    # Expand-Archive (Microsoft.PowerShell.Archive) and Get-ExecutionPolicy
+    # (Microsoft.PowerShell.Security), both of which resolve via PSModulePath.
     # The desktop app reaches here as Tauri -> Rust -> powershell.exe
     # (studio/src-tauri/src/install.rs), and PowerShell only rewrites
     # PSModulePath for a direct pwsh -> powershell.exe hop, so the Rust process
@@ -1607,6 +1607,91 @@ exit 0
         }
     }
 
+    # Fallback for hosts without winget. Does what astral's install.ps1 does --
+    # same archive, destination and user-PATH prepend -- but the only thing
+    # fetched is a data file with a pinned SHA-256, never script text run
+    # in-process, which is what AMSI and cloud ML scanners score hardest.
+    # Bumping $UvPinnedVersion means bumping all three hashes with it:
+    #   curl -sL https://github.com/astral-sh/uv/releases/download/<ver>/uv-<arch>-pc-windows-msvc.zip.sha256
+    $UvPinnedVersion = "0.12.1"
+    $UvPinnedAssets = @{
+        "x86_64" = @{ Asset = "uv-x86_64-pc-windows-msvc.zip";  Sha256 = "8FCB0CB46E1229065E344758980924E569BEF5882EF45F46FADA8FB24E06B74A" }
+        "arm64"  = @{ Asset = "uv-aarch64-pc-windows-msvc.zip"; Sha256 = "9BC7C18E616230FA2DC6FB24BC3AFDE18A95C2B5C9433DE747E9502C66041568" }
+        "x86"    = @{ Asset = "uv-i686-pc-windows-msvc.zip";    Sha256 = "9B51C33D307A8AB9E9DFD88D4AE1491761F63DE0BFFA3CEC96BEC536491C9B97" }
+    }
+
+    function Install-UvFromRelease {
+        $arch = Get-HostMachineArch
+        if (-not $UvPinnedAssets.ContainsKey($arch)) {
+            substep "No uv build is published for this architecture ($arch)." "Yellow"
+            return $false
+        }
+        $asset  = $UvPinnedAssets[$arch].Asset
+        $wanted = $UvPinnedAssets[$arch].Sha256
+
+        # Same destination priority as astral's installer, so an existing uv is
+        # replaced in place and the PATH probe further below still finds it.
+        $destDir = $null
+        foreach ($candidate in @($env:UV_INSTALL_DIR, $env:UV_UNMANAGED_INSTALL, $env:XDG_BIN_HOME)) {
+            if ($candidate) { $destDir = $candidate; break }
+        }
+        if (-not $destDir -and $env:XDG_DATA_HOME) { $destDir = Join-Path $env:XDG_DATA_HOME "../bin" }
+        if (-not $destDir) {
+            $userHome = if ($env:USERPROFILE) { $env:USERPROFILE } else { $HOME }
+            if (-not $userHome) {
+                substep "Could not determine a home directory to install uv into." "Yellow"
+                return $false
+            }
+            $destDir = Join-Path $userHome ".local\bin"
+        }
+
+        $work = Join-Path ([System.IO.Path]::GetTempPath()) ("unsloth-uv-" + [guid]::NewGuid().ToString('N').Substring(0, 8))
+        $zip  = Join-Path $work $asset
+        try {
+            [System.IO.Directory]::CreateDirectory($work) | Out-Null
+            substep "downloading uv $UvPinnedVersion ($arch) from github.com/astral-sh/uv..." "Yellow"
+            try {
+                Invoke-WebRequest -UseBasicParsing -OutFile $zip `
+                    -Uri "https://github.com/astral-sh/uv/releases/download/$UvPinnedVersion/$asset"
+            } catch {
+                substep "uv download failed: $($_.Exception.Message)" "Yellow"
+                return $false
+            }
+
+            $actual = (Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash
+            if ($actual -ne $wanted) {
+                substep "uv download failed checksum verification -- discarding it." "Red"
+                substep "expected $wanted, got $actual" "Red"
+                return $false
+            }
+
+            # The Windows archives are flat: uv.exe, uvx.exe, uvw.exe at the root.
+            Expand-Archive -LiteralPath $zip -DestinationPath $work -Force
+            [System.IO.Directory]::CreateDirectory($destDir) | Out-Null
+            $haveUv = $false
+            foreach ($exe in @("uv.exe", "uvx.exe", "uvw.exe")) {
+                $src = Join-Path $work $exe
+                if (Test-Path -LiteralPath $src) {
+                    Copy-Item -LiteralPath $src -Destination (Join-Path $destDir $exe) -Force
+                    if ($exe -eq "uv.exe") { $haveUv = $true }
+                }
+            }
+            if (-not $haveUv) {
+                substep "uv.exe was not present in $asset." "Yellow"
+                return $false
+            }
+        } finally {
+            Remove-Item -LiteralPath $work -Recurse -Force -ErrorAction SilentlyContinue
+        }
+
+        # Same PATH treatment and opt-out variable astral's installer uses.
+        if (-not $env:UV_NO_MODIFY_PATH) {
+            Add-ToUserPath -Directory $destDir -Position Prepend | Out-Null
+        }
+        $env:PATH = "$destDir;$env:PATH"
+        return $true
+    }
+
     if (-not (Test-UvVersionOk)) {
         if (Get-Command uv -ErrorAction SilentlyContinue) {
             substep "updating uv package manager..."
@@ -1623,13 +1708,12 @@ exit 0
             $ErrorActionPreference = $prevEAP
             Refresh-SessionPath
         }
-        # Fallback: if winget is unavailable or didn't put uv on PATH,
-        # use Astral's official PowerShell installer. This is the only
-        # supported path on hosts without winget (Windows ARM64 runners,
-        # corporate machines without the Store, etc.).
+        # Fallback: if winget is unavailable or didn't put uv on PATH, install
+        # the pinned uv release directly. This is the only supported path on
+        # hosts without winget (Windows ARM64 runners, corporate machines
+        # without the Store, etc.).
         if (-not (Test-UvVersionOk)) {
-            substep "installing uv via https://astral.sh/uv/install.ps1..." "Yellow"
-            Invoke-Expression (Invoke-RestMethod -Uri "https://astral.sh/uv/install.ps1")
+            Install-UvFromRelease | Out-Null
             Refresh-SessionPath
         }
     }
