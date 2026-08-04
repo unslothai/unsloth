@@ -459,6 +459,10 @@ def _assert_base_repo_accessible(base_repo: str, hf_token: Optional[str]) -> Non
     # Only a remote 'org/name' can be gated; a local base is already on disk.
     if not repo or repo.count("/") != 1:
         return
+    # Blank to None, as load_pipeline does later. build_hf_headers sends any str verbatim, so ""
+    # becomes a literal "Bearer " that answers 401 invalid-credentials, and the 401 handling below
+    # would turn an open base into a hard access error. None means "use the cached login".
+    hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
     try:
         if Path(repo).expanduser().exists():
             return
@@ -784,7 +788,9 @@ class DiffusionBackend:
             # plan must not stage the base transformer/ shards either.
             if (
                 auto
-                and not kwargs.get("loras")
+                # Active weights, as load_pipeline reads them: an all-zero list is not a bake, and
+                # disagreeing here stages the base transformer/ shards for a load that runs the GGUF.
+                and not any(w != 0 for (_lid, w) in (kwargs.get("loras") or ()))
                 and _uncached_prequant_repo(
                     fam,
                     target,

@@ -3465,6 +3465,35 @@ def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp
     assert len(calls) == 1
 
 
+def test_the_plan_reads_zero_weight_loras_exactly_as_the_load_does(fake_runtime, monkeypatch):
+    # The plan and the load must agree on what a bake is. Gating the prefetch on the raw list while
+    # load_pipeline gates on active weights stages the base transformer/ shards for a load that
+    # will run the GGUF. The return value alone does not show it, so this asserts the decline
+    # happened on the cache verdict, BEFORE any candidate sizing, exactly as with no loras at all.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    fam = detect_family("unsloth/Z-Image-GGUF")
+    consulted: list = []
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: consulted.append(kw) or types.SimpleNamespace(prequant = True),
+    )
+    _stub_hosted_prequant(monkeypatch, cached = False)
+
+    for loras in ([("adapter", 0.0)], [("a", 0.0), ("b", 0.0)]):
+        consulted.clear()
+        assert backend._dense_quant_prefetch_needed(fam, {"loras": loras}) is False
+        assert consulted == []
+
+    # A real bake still sizes the dense build, so the fix did not disable the candidate path.
+    consulted.clear()
+    backend._dense_quant_prefetch_needed(fam, {"loras": [("adapter", 0.8)]})
+    assert consulted != []
+
+
 def test_dense_quant_prefetch_declines_with_the_load(fake_runtime, monkeypatch):
     # The plan must call it as the loader does: a declined prequant means the GGUF runs, so the
     # prefetch must not widen to the base transformer/ shards.

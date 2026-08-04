@@ -270,3 +270,21 @@ def test_a_server_error_still_fails_open(status, monkeypatch):
     """A 5xx or a rate limit is not an access verdict, so an offline-ish host still loads."""
     _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = _auth_error(status))
     _assert_base_repo_accessible(GATED_REPO, "token")
+
+
+@pytest.mark.parametrize("token", ["", "   ", None])
+def test_a_blank_token_is_not_sent_as_a_credential(token, monkeypatch):
+    """build_hf_headers sends any str verbatim, so "" becomes a literal "Bearer " that the Hub
+    answers 401 invalid-credentials. Left unnormalized, the 401 handling would turn an open base
+    into a hard access error, which is the opposite of what this preflight is for."""
+    seen: list = []
+
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            seen.append(token)
+            return _FakeInfo(False)
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    _assert_base_repo_accessible("some-org/open-model", token)
+
+    assert seen == [None]  # blank normalized away, so the cached login still applies
