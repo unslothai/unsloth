@@ -28,9 +28,9 @@ def test_both_failures_still_share_the_409_the_frontend_has_to_split():
     for name in ("SttModelNotDownloadedError", "SttLoadCancelledError"):
         handler = source.split(f"except {name} as e:", 1)
         assert len(handler) == 2, f"{name} no longer handled in stt_load"
-        assert "status_code = 409" in handler[1].split("except", 1)[0], (
-            f"{name} no longer maps to 409; revisit isUnrecoverableSttLoadError"
-        )
+        assert (
+            "status_code = 409" in handler[1].split("except", 1)[0]
+        ), f"{name} no longer maps to 409; revisit isUnrecoverableSttLoadError"
 
 
 def test_a_missing_model_says_it_is_not_downloaded():
