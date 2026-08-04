@@ -106,6 +106,18 @@ check "arm exists"               "$([ -n "$_arm" ] && echo yes || echo no)" "yes
 check "ranked after NVIDIA"      "$([ -n "$_arm" ] && [ -n "$_nv" ] && [ "$_arm" -gt "$_nv" ] && echo yes || echo no)" "yes"
 check "ranked after AMD"         "$([ -n "$_arm" ] && [ -n "$_amd" ] && [ "$_arm" -gt "$_amd" ] && echo yes || echo no)" "yes"
 check "ranked before the CPU arm" "$([ -n "$_arm" ] && [ -n "$_none" ] && [ "$_arm" -lt "$_none" ] && echo yes || echo no)" "yes"
+# The unavailable-runtime arm must not promise CPU training: with neither CUDA nor XPU
+# available, get_device_type() in unsloth/device_type.py raises NotImplementedError, so
+# importing unsloth fails outright rather than falling back.
+# Anchored on the ELIF at column 0 and skipping that line, then stopping at the next arm. A
+# plain awk range on the flag name matches the bitsandbytes `if` block instead, whose own
+# "4-bit QLoRA may be unavailable" warning makes the assertions below pass on any wording.
+# Comment lines dropped: the arm explains itself by quoting the wording it must NOT use.
+_warn_arm=$(awk '/^elif \[ "\$_setup_torch_is_xpu" = true \]; then$/{on=1;next} on && /^elif|^else/{exit} on' "$SETUP_SH" | grep -v '^[[:space:]]*#')
+check "warn arm was extracted" "$(printf '%s' "$_warn_arm" | grep -ci 'XPU runtime unavailable')" "1"
+check "no CPU-training promise" "$(printf '%s' "$_warn_arm" | grep -ci 'run on CPU\|runs on CPU')" "0"
+check "says training is unavailable" "$(printf '%s' "$_warn_arm" | grep -ci 'are unavailable')" "1"
+
 # The floor must run before the summary; the other order would report on a stale venv.
 _bnb=$(grep -n 'install bitsandbytes (xpu)' "$SETUP_SH" | head -1 | cut -d: -f1)
 check "floor precedes the summary" "$([ -n "$_bnb" ] && [ -n "$_none" ] && [ "$_bnb" -lt "$_none" ] && echo yes || echo no)" "yes"

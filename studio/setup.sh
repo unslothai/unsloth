@@ -1404,7 +1404,10 @@ elif [ "$_setup_torch_is_xpu" = true ]; then
     # owner their hardware is unsupported and hide the one thing that actually fixes it.
     step "gpu" "Intel GPU (XPU runtime unavailable)" "$C_WARN"
     substep "PyTorch has the XPU build but cannot initialise it -- update the Intel GPU compute driver."
-    substep "Training and GPU inference run on CPU until then."
+    # Not "runs on CPU": with neither CUDA nor XPU available, get_device_type() in
+    # unsloth/device_type.py raises NotImplementedError, so importing unsloth fails outright.
+    # llama.cpp is unaffected, which is what chat and GGUF actually run on.
+    substep "Until then training and GPU inference are unavailable; chat and GGUF still work."
 elif [ "$(uname -s 2>/dev/null)" = "Darwin" ] && [ "$(uname -m 2>/dev/null)" = "arm64" ]; then
     # Apple Silicon: llama.cpp builds with Metal over unified memory, so not a CPU-only host.
     step "gpu" "Apple Silicon (Metal, unified memory)"
