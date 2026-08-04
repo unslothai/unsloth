@@ -377,14 +377,13 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert "const status = await getInferenceStatus();" in lifecycle
     assert "options?.abortSignal?.throwIfAborted()" in CHAT_ADAPTER
     assert CHAT_ADAPTER.count("await persistResolvedQueuedModel(params.checkpoint)") >= 2
-    assert "notifyQueuedRunFailed();\n          throw error;" in CHAT_ADAPTER
+    assert "notifyQueuedRunFailed" not in CHAT_ADAPTER
     assert "pendingSettings.length === 1" not in QUEUED_SETTINGS
     assert "entry.threadIds.has(threadId)" in QUEUED_SETTINGS
     assert "return pendingSettings[index].settings" in QUEUED_SETTINGS
     assert "pendingSettings.splice(index, 1)[0].settings" not in QUEUED_SETTINGS
     assert "complete: discardOldestPendingSettings" in target
     assert "getActivePromptQueueItem(run)?.target.complete()" in THREAD
-    assert "notifyPromptQueueRunFailed(resolvedThreadId ?? null)" in CHAT_ADAPTER
     assert "adapterRunStartedSignals" not in CHAT_ADAPTER
     assert "pendingSettings.some((entry) => entry.threadIds.has(threadId))" in QUEUED_SETTINGS
     queued_run_failure = _between(
@@ -402,22 +401,20 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
         'if (typeof window !== "undefined")',
     )
     assert "if (failedRun)" in queue_failure_handler
+    assert "retainPendingPromptQueueItemsAfterFailure(failedRun)" in queue_failure_handler
     assert "deletePromptQueueRun(failedRun);" in queue_failure_handler
-    assert "promptQueueActiveRunIds.has(failedRun.id)" not in queue_failure_handler
+    retained_failure = _between(
+        THREAD,
+        "function retainPendingPromptQueueItemsAfterFailure(run: PromptQueueRun)",
+        "function cancelPendingPromptQueueFactoriesForStop<",
+    )
+    assert retained_failure.index("activeItem.target.complete();") < retained_failure.index(
+        "run.items.splice(activeIndex, 1);"
+    )
+    assert "waitForPromptQueueTargetIdle(run);" in retained_failure
     assert "loadedIsMultimodal: isMultimodalResponse(status)" in lifecycle
     assert "loadedIsMultimodal: state.loadedIsMultimodal" in CHAT_ADAPTER
     assert "queuedEmptyModelRuntime?.loadedIsMultimodal" in auto_load_merge
-    assert CHAT_ADAPTER.index("const notifyQueuedRunFailed = () =>") < CHAT_ADAPTER.index(
-        "if (\n        runtime.deepResearchEnabled"
-    )
-    image_gate = _between(
-        CHAT_ADAPTER,
-        "if (imageGateReason) {",
-        "// Clear pending audio from store after extracting",
-    )
-    assert image_gate.index("notifyQueuedRunFailed();") < image_gate.index(
-        "throw new Error(imageGateReason);"
-    )
     assert "usesLocalModel:" in target
     assert "usePromptQueueUI.getState().byThreadId" in CONFIRM_MODEL_SWAP
     assert "getLocalPromptQueueThreadIds" in CONFIRM_MODEL_SWAP
@@ -506,6 +503,7 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     )
     assert "planLocalPromptQueueStop(" in local_queue_stop
     assert "activeItem?.target.cancel();" in local_queue_stop
+    assert "waitForPromptQueueTargetIdle(run);" in local_queue_stop
     pending_factory_stop = _between(
         THREAD,
         "function cancelPendingPromptQueueFactoriesForStop<",

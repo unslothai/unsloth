@@ -1088,6 +1088,23 @@ function stopPromptQueueRunForThreadIds(threadIds: string[]) {
   stopPromptQueueRun(threadIds);
 }
 
+function waitForPromptQueueTargetIdle(run: PromptQueueRun) {
+  clearPromptQueueRetryTimer(run);
+  promptQueueActiveRunIds.delete(run.id);
+  run.waitingForTargetIdle = true;
+  run.prevStoreRunning = true;
+  syncPromptQueueUI();
+  ensurePromptQueueSubscription();
+}
+
+function refreshPromptQueueTargetIdleWait(run: PromptQueueRun) {
+  handlePromptQueueRunState(
+    run,
+    useChatRuntimeStore.getState().runningByThreadId,
+  );
+  schedulePromptQueueTargetStatePoll(run);
+}
+
 function stopLocalPromptQueueRun(run: PromptQueueRun) {
   const activeItem = getActivePromptQueueItem(run);
   const plan = planLocalPromptQueueStop(
@@ -1097,15 +1114,6 @@ function stopLocalPromptQueueRun(run: PromptQueueRun) {
     })),
     run.index,
   );
-  if (plan.stopEntireRun) {
-    deletePromptQueueRun(run);
-    try {
-      activeItem?.target.cancel();
-    } catch {
-      // The active local run may have already ended.
-    }
-    return;
-  }
   if (plan.retainedItemIndexes.length === run.items.length) {
     return;
   }
@@ -1113,10 +1121,28 @@ function stopLocalPromptQueueRun(run: PromptQueueRun) {
   run.items = plan.retainedItemIndexes.map((index) => run.items[index]);
   if (!getActivePromptQueueItem(run)) {
     deletePromptQueueRun(run);
+    if (!plan.cancelActiveItem) {
+      return;
+    }
+    try {
+      activeItem?.target.cancel();
+    } catch {
+      // The active local run may have already ended.
+    }
     return;
   }
   if (plan.activeItemRemoved) {
     clearPromptQueueRetryTimer(run);
+  }
+  if (plan.cancelActiveItem) {
+    waitForPromptQueueTargetIdle(run);
+    try {
+      activeItem?.target.cancel();
+    } catch {
+      // The active local run may have already ended.
+    }
+    refreshPromptQueueTargetIdleWait(run);
+    return;
   }
   syncPromptQueueUI();
   if (plan.activeItemRemoved && run.index >= 0 && !run.waitingForTargetIdle) {
@@ -1132,6 +1158,24 @@ function stopLocalPromptQueueRunsForThreadIds(threadIds: string[]) {
     stopLocalPromptQueueRun(run);
   }
   requestPromptQueuePumpIfReady();
+}
+
+function retainPendingPromptQueueItemsAfterFailure(run: PromptQueueRun) {
+  const activeIndex = Math.max(run.index, 0);
+  const activeItem = run.items[activeIndex];
+  if (run.index < 0 || !activeItem?.dispatched) {
+    return false;
+  }
+
+  activeItem.target.complete();
+  run.items.splice(activeIndex, 1);
+  if (!getActivePromptQueueItem(run)) {
+    deletePromptQueueRun(run);
+    return true;
+  }
+  waitForPromptQueueTargetIdle(run);
+  refreshPromptQueueTargetIdleWait(run);
+  return true;
 }
 
 function cancelPendingPromptQueueFactoriesForStop<
@@ -1183,13 +1227,17 @@ function stopAllPromptQueueRuns() {
 }
 
 function handlePromptQueueRunFailed(threadId?: string | null) {
-  discardQueuedChatRunSettingsForThread(threadId);
   if (threadId) {
     const failedRun = findPromptQueueRunByThreadIds([threadId]);
     if (failedRun) {
-      // A provider failure invalidates both an already-dispatched queue item
-      // and follow-ups still waiting for the direct run to become idle.
-      deletePromptQueueRun(failedRun);
+      if (!retainPendingPromptQueueItemsAfterFailure(failedRun)) {
+        // A direct-send preflight failure invalidates follow-ups that were
+        // waiting for that run to establish a usable thread.
+        discardQueuedChatRunSettingsForThread(threadId);
+        deletePromptQueueRun(failedRun);
+      }
+    } else {
+      discardQueuedChatRunSettingsForThread(threadId);
     }
   }
   // A queued adapter can fail validation before its running flag turns on.

@@ -73,8 +73,9 @@ test("a working Recents row clears the kebab on hover", async () => {
 
   const working = grab(
     source,
-    // Anchor on the ternary so only the branch under test can match.
-    /showWorkSpinner\s*\?[\s\S]{0,300}?"(group-hover\/recent-item:pr-[^"]*)"/,
+    // Anchor on the branch comment so nested spinner ternaries cannot redirect
+    // the match to a pinned or project row.
+    /A spinner glyph cannot truncate[\s\S]{0,120}?"(group-hover\/recent-item:pr-[^"]*)"/,
     "the showWorkSpinner padding branch",
   );
   // hover, menu-open and coarse-pointer all reveal the kebab, so all must clear it

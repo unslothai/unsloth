@@ -19,14 +19,14 @@ test("a local model stop preserves an active external item", () => {
       0,
     ),
     {
-      stopEntireRun: false,
+      cancelActiveItem: false,
       activeItemRemoved: false,
       retainedItemIndexes: [0, 2],
     },
   );
 });
 
-test("a dispatched local item stops its sequential run", () => {
+test("a dispatched local item is cancelled without losing external follow-ups", () => {
   assert.deepEqual(
     planLocalPromptQueueStop(
       [
@@ -36,9 +36,9 @@ test("a dispatched local item stops its sequential run", () => {
       0,
     ),
     {
-      stopEntireRun: true,
+      cancelActiveItem: true,
       activeItemRemoved: true,
-      retainedItemIndexes: [],
+      retainedItemIndexes: [1],
     },
   );
 });
@@ -53,7 +53,7 @@ test("an undispatched local item is dropped without losing external follow-ups",
       -1,
     ),
     {
-      stopEntireRun: false,
+      cancelActiveItem: false,
       activeItemRemoved: true,
       retainedItemIndexes: [1],
     },
@@ -72,7 +72,7 @@ test("completed queue history is preserved when pending local work is dropped", 
       1,
     ),
     {
-      stopEntireRun: false,
+      cancelActiveItem: false,
       activeItemRemoved: false,
       retainedItemIndexes: [0, 1, 3],
     },

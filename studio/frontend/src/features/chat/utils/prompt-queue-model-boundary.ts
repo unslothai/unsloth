@@ -19,7 +19,7 @@ export type PromptQueueModelStopItem = {
 };
 
 export type LocalPromptQueueStopPlan = {
-  stopEntireRun: boolean;
+  cancelActiveItem: boolean;
   activeItemRemoved: boolean;
   retainedItemIndexes: number[];
 };
@@ -27,9 +27,9 @@ export type LocalPromptQueueStopPlan = {
 /**
  * Preserve external-provider work when the singleton local model changes.
  *
- * A dispatched local item owns the sequential run, so cancelling it invalidates
- * every follow-up. Otherwise only undispatched local items depend on the
- * outgoing model and external items can continue safely.
+ * Only local items depend on the outgoing model. A dispatched local item must
+ * be cancelled, but external follow-ups remain valid and can resume once the
+ * thread runtime becomes idle.
  */
 export function planLocalPromptQueueStop(
   items: readonly PromptQueueModelStopItem[],
@@ -37,19 +37,13 @@ export function planLocalPromptQueueStop(
 ): LocalPromptQueueStopPlan {
   const activeIndex = Math.max(runIndex, 0);
   const activeItem = items[activeIndex];
-  if (activeItem?.usesLocalModel && activeItem.dispatched) {
-    return {
-      stopEntireRun: true,
-      activeItemRemoved: true,
-      retainedItemIndexes: [],
-    };
-  }
-
   const retainedItemIndexes = items.flatMap((item, index) =>
     index < activeIndex || !item.usesLocalModel ? [index] : [],
   );
   return {
-    stopEntireRun: false,
+    cancelActiveItem: Boolean(
+      activeItem?.usesLocalModel && activeItem.dispatched,
+    ),
     activeItemRemoved: Boolean(activeItem?.usesLocalModel),
     retainedItemIndexes,
   };

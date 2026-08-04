@@ -2756,13 +2756,6 @@ export function createOpenAIStreamAdapter(
       const queuedRunSettings =
         consumeQueuedChatRunSettings(resolvedThreadId);
       let queuedEmptyModelRuntime: QueuedResolvedModelRuntime | null = null;
-      const notifyQueuedRunFailed = () => {
-        // A queued dispatch can fail validation before runningByThreadId turns
-        // on. Remove only that chat's queue; unrelated queues keep running.
-        if (queuedRunSettings) {
-          notifyPromptQueueRunFailed(resolvedThreadId ?? null);
-        }
-      };
       const persistResolvedQueuedModel = async (modelId: string) => {
         if (
           !queuedRunSettings ||
@@ -2775,7 +2768,6 @@ export function createOpenAIStreamAdapter(
         try {
           await updateStoredChatThread(resolvedThreadId, { modelId });
         } catch (error) {
-          notifyQueuedRunFailed();
           throw error;
         }
       };
@@ -2804,7 +2796,6 @@ export function createOpenAIStreamAdapter(
           try {
             await waitForModelReady(abortSignal);
           } catch (error) {
-            notifyQueuedRunFailed();
             throw error;
           }
         }
@@ -2815,7 +2806,6 @@ export function createOpenAIStreamAdapter(
           try {
             resolution = await resolveQueuedEmptyLocalModel(abortSignal);
           } catch (error) {
-            notifyQueuedRunFailed();
             throw error;
           }
           queuedEmptyModelRuntime = resolution.modelRuntime;
@@ -2833,7 +2823,6 @@ export function createOpenAIStreamAdapter(
                 },
               );
             }
-            notifyQueuedRunFailed();
             throw new Error("Load a model first.");
           }
         }
@@ -3151,7 +3140,6 @@ export function createOpenAIStreamAdapter(
           await waitForModelReady(abortSignal);
         } catch (error) {
           clearSelectedImageEditReference();
-          notifyQueuedRunFailed();
           throw error;
         }
       }
@@ -3164,7 +3152,6 @@ export function createOpenAIStreamAdapter(
           resolution = await resolveQueuedEmptyLocalModel(abortSignal);
         } catch (error) {
           clearSelectedImageEditReference();
-          notifyQueuedRunFailed();
           throw error;
         }
         queuedEmptyModelRuntime = resolution.modelRuntime;
@@ -3183,7 +3170,6 @@ export function createOpenAIStreamAdapter(
             );
           }
           clearSelectedImageEditReference();
-          notifyQueuedRunFailed();
           throw new Error("Load a model first.");
         }
       }
@@ -3270,7 +3256,6 @@ export function createOpenAIStreamAdapter(
             "Turn on Enable connections in Settings → Connections to use hosted models.",
         });
         clearSelectedImageEditReference();
-        notifyQueuedRunFailed();
         throw new Error("Connections disabled.");
       }
       const externalProvider = isExternalRequest
@@ -3290,7 +3275,6 @@ export function createOpenAIStreamAdapter(
           description: "Open Settings → Connections and add it again.",
         });
         clearSelectedImageEditReference();
-        notifyQueuedRunFailed();
         throw new Error("Connection not found.");
       }
       // Local providers and custom Gemini bases allow an empty key.
@@ -3312,7 +3296,6 @@ export function createOpenAIStreamAdapter(
           description: "Open Settings → Connections and set the API key again.",
         });
         clearSelectedImageEditReference();
-        notifyQueuedRunFailed();
         throw new Error("Missing connection API key.");
       }
 
@@ -3373,7 +3356,6 @@ export function createOpenAIStreamAdapter(
           description:
             "Select an OpenAI image-generation model, then retry the edit.",
         });
-        notifyQueuedRunFailed();
         throw new Error("Image generation edit unavailable.");
       }
 
@@ -3409,7 +3391,6 @@ export function createOpenAIStreamAdapter(
             description:
               "The original image reference is missing. Generate the image again, then retry the edit.",
           });
-          notifyQueuedRunFailed();
           throw new Error("Generated image edit reference missing.");
         }
         let insertAt = outboundMessages.length;
@@ -3578,7 +3559,6 @@ export function createOpenAIStreamAdapter(
         });
         if (imageGateReason) {
           toast.error(imageGateReason);
-          notifyQueuedRunFailed();
           // Flip the per-thread running flag on→off so compare-mode
           // waitForRunEnd resolves instead of hanging: this gate fires
           // before the streaming path's setThreadRunning(true).
