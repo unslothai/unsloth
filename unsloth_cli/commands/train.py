@@ -219,9 +219,7 @@ def train(
         # export at the Studio outputs root instead.
         final_output = getattr(final, "output_dir", None)
         checkpoint_dir = (
-            Path(final_output)
-            if final_output
-            else resolve_output_dir(str(cfg.training.output_dir))
+            Path(final_output) if final_output else resolve_output_dir(str(cfg.training.output_dir))
         )
         out = (
             export_dir.expanduser().resolve() if export_dir is not None else checkpoint_dir / export
