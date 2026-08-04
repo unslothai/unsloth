@@ -8,6 +8,7 @@ import {
   useContext,
   useEffect,
   useState,
+  useSyncExternalStore,
 } from "react";
 import type * as React from "react";
 
@@ -15,6 +16,40 @@ import { cn } from "@/lib/utils";
 
 type ToggleFn = () => void;
 const TooltipToggleCtx = createContext<ToggleFn | null>(null);
+
+// Radix sets body pointer-events to none while a modal layer is up. That is also
+// when a hovered trigger stops receiving pointerleave, so a tooltip already on
+// screen hangs over the dialog with nothing able to close it. One observer
+// serves every tooltip.
+let modalLayerUp = false;
+const modalLayerListeners = new Set<() => void>();
+let modalLayerObserver: MutationObserver | null = null;
+
+function readModalLayer(): void {
+  const next = document.body.style.pointerEvents === "none";
+  if (next === modalLayerUp) return;
+  modalLayerUp = next;
+  for (const listener of modalLayerListeners) listener();
+}
+
+function subscribeModalLayer(listener: () => void): () => void {
+  modalLayerListeners.add(listener);
+  if (!modalLayerObserver && typeof MutationObserver !== "undefined") {
+    modalLayerObserver = new MutationObserver(readModalLayer);
+    modalLayerObserver.observe(document.body, {
+      attributes: true,
+      attributeFilter: ["style"],
+    });
+    readModalLayer();
+  }
+  return () => {
+    modalLayerListeners.delete(listener);
+  };
+}
+
+function getModalLayer(): boolean {
+  return modalLayerUp;
+}
 
 /** Tap-to-pin is for touch, which has no hover. Read at click time so hybrid
  * devices answer for the pointer in use. */
@@ -50,6 +85,11 @@ function Tooltip({
 }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
   const isControlled = controlledOpen !== undefined;
   const [clickOpen, setClickOpen] = useState(false);
+  const modalUp = useSyncExternalStore(
+    subscribeModalLayer,
+    getModalLayer,
+    () => false,
+  );
 
   const onOpenChange = useCallback(
     (nextOpen: boolean) => {
@@ -62,6 +102,11 @@ function Tooltip({
   const toggle = useCallback(() => {
     setClickOpen((prev) => !prev);
   }, []);
+
+  // Drop the pin too, so it does not reappear when the dialog closes.
+  useEffect(() => {
+    if (modalUp) setClickOpen(false);
+  }, [modalUp]);
 
   // A pin must not outlive its interaction: once a dialog covers the trigger,
   // pointerleave never fires and Radix can no longer close it. Presses on a
@@ -97,7 +142,11 @@ function Tooltip({
     <TooltipToggleCtx.Provider value={toggle}>
       <TooltipPrimitive.Root
         data-slot="tooltip"
-        open={isControlled ? controlledOpen : clickOpen || undefined}
+        // false, not undefined: a hovered tooltip has to be forced shut when a
+        // dialog opens, and stay shut until it closes.
+        open={
+          isControlled ? controlledOpen : modalUp ? false : clickOpen || undefined
+        }
         onOpenChange={onOpenChange}
         {...props}
       />
