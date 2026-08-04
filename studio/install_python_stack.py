@@ -1328,6 +1328,106 @@ def _install_bnb_windows_rocm() -> bool:
     return True
 
 
+def _nvidia_smi_path() -> "str | None":
+    """nvidia-smi from PATH, falling back to the canonical Linux install path a
+    stripped-down PATH (systemd units, cron) can miss."""
+    exe = shutil.which("nvidia-smi")
+    if not exe and os.path.isfile("/usr/bin/nvidia-smi"):
+        exe = "/usr/bin/nvidia-smi"
+    return exe
+
+
+def _nvidia_compute_sms(exe: str) -> "list[int] | None":
+    """Every GPU's sm_NN as nvidia-smi reports it, or None when the inventory is
+    unreadable. One unparseable row (an "N/A" capability on a vGPU, a driver too
+    old for --query-gpu=compute_cap) poisons the whole answer, so a partial
+    reading can never drive a wheel decision."""
+    try:
+        result = subprocess.run(
+            [exe, "--query-gpu=compute_cap", "--format=csv,noheader,nounits"],
+            stdout = subprocess.PIPE,
+            stderr = subprocess.DEVNULL,
+            text = True,
+            timeout = 10,
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    sms: list[int] = []
+    for line in result.stdout.splitlines():
+        value = line.strip()
+        if not value:
+            continue
+        match = re.fullmatch(r"(\d+)\.(\d+)", value)
+        if match is None:
+            return None
+        sms.append((int(match.group(1)) * 10) + int(match.group(2)))
+    return sms or None
+
+
+# PyTorch 2.11's cu126 spans sm_50-90 (Maxwell to Hopper) with no PTX above that. It is
+# the fallback family, so a Kepler or Blackwell card in the mix leaves the host uncovered.
+_CU126_SM_RANGE = (50, 90)
+
+
+def _cuda_family_sm_range(family: str, torch_release: str = "") -> "tuple[int, int] | None":
+    """Return the supported SM span for a CUDA wheel family.
+
+    cu128 and cu129 include sm_70 only for torch 2.8 through 2.10.
+    An empty release models a fresh torch 2.11 installation.
+    """
+    if not _is_cuda_family_leaf(family):
+        return None
+    number = int(family[len("cu") :])
+    if number < 124:
+        return (37, 90)
+    if number < 128:
+        return _CU126_SM_RANGE
+    if number < 130:
+        release = re.match(r"(\d+)\.(\d+)", torch_release)
+        if release and (2, 8) <= (int(release.group(1)), int(release.group(2))) < (2, 11):
+            return (70, 120)
+    return (75, 120)
+
+
+def _span_covers(span: "tuple[int, int]", sms: "list[int]") -> bool:
+    """Whether a wheel family's sm span holds every GPU on the host."""
+    return all(span[0] <= sm <= span[1] for sm in sms)
+
+
+def _cap_cuda_family_for_pre_turing(family: str, exe: "str | None") -> str:
+    """Use cu126 when it covers every physical GPU missed by the selected family.
+
+    CUDA_VISIBLE_DEVICES is intentionally ignored. Non-x86_64 hosts retain the
+    driver-derived family because their wheel matrices differ.
+    """
+    if platform.machine().lower() not in ("x86_64", "amd64"):
+        return family
+    span = _cuda_family_sm_range(family)
+    if span is None or exe is None:
+        return family
+    if span[0] <= _CU126_SM_RANGE[0]:
+        return family  # nothing lower to fall back to
+    floor = span[0]
+    sms = _nvidia_compute_sms(exe)
+    if not sms or all(sm >= floor for sm in sms):
+        return family  # no GPU here sits under the family's floor
+    if not _span_covers(_CU126_SM_RANGE, sms):
+        print(
+            f"   NVIDIA GPUs below sm_{floor} are present, but no PyTorch 2.11 CUDA "
+            f"family covers this mix -- keeping {family}, which cannot use "
+            + ",".join(f"sm_{sm}" for sm in sorted(set(sms)) if sm < floor)
+            + ". Set UNSLOTH_TORCH_INDEX_FAMILY=cu126 to choose the other way"
+        )
+        return family
+    print(
+        f"   NVIDIA GPUs below sm_{floor} are present -- selecting cu126, because "
+        f"PyTorch 2.11's {family} wheels ship no kernels for them"
+    )
+    return "cu126"
+
+
 def _detect_cuda_torch_index_url() -> str:
     """Return the pytorch.org CUDA wheel index URL for the host's NVIDIA driver.
 
@@ -1335,7 +1435,9 @@ def _detect_cuda_torch_index_url() -> str:
     to the same wheel family a fresh install would pick. Honours the explicit
     overrides first (UNSLOTH_TORCH_INDEX_URL / _FAMILY) so a headless / CI install
     never lets the host GPU decide. Otherwise probes nvidia-smi (parsing both "CUDA
-    Version:" and "CUDA UMD Version:"), defaulting to cu126 when unreadable.
+    Version:" and "CUDA UMD Version:"), defaulting to cu126 when unreadable. The
+    driver version is only an upper bound, so the GPU architectures can cap the
+    result at cu126 (see _cap_cuda_family_for_pre_turing).
     """
     _override_url = os.environ.get("UNSLOTH_TORCH_INDEX_URL", "").strip()
     if _override_url:
@@ -1343,9 +1445,7 @@ def _detect_cuda_torch_index_url() -> str:
     _override_family = os.environ.get("UNSLOTH_TORCH_INDEX_FAMILY", "").strip()
     if _override_family:
         return f"{_PYTORCH_WHL_BASE}/{_override_family.strip('/')}"
-    exe = shutil.which("nvidia-smi")
-    if not exe and os.path.isfile("/usr/bin/nvidia-smi"):
-        exe = "/usr/bin/nvidia-smi"
+    exe = _nvidia_smi_path()
     tag = "cu126"  # default when the driver CUDA version cannot be read
     if exe:
         try:
@@ -1374,6 +1474,7 @@ def _detect_cuda_torch_index_url() -> str:
                         tag = "cpu"  # ancient driver: no usable CUDA wheels
         except Exception:
             pass
+        tag = _cap_cuda_family_for_pre_turing(tag, exe)
     return f"{_PYTORCH_WHL_BASE}/{tag}"
 
 
@@ -1558,8 +1659,9 @@ def _ensure_cuda_torch() -> None:
     satisfies the version constraint and nothing force-reinstalls it. This
     detects that exact case and reinstalls CUDA torch.
 
-    Only repairs when torch actually links against HIP/ROCm. Healthy CUDA
-    torch and deliberate CPU-only torch are left untouched.
+    Also repairs a CUDA torch whose wheel family ships no kernels for the host's
+    GPUs (a pre-Turing box that the driver-only ladder sent to cu128/cu130).
+    Healthy CUDA torch and deliberate CPU-only torch are left untouched.
     """
     # Respect install.sh's backend: only "" (standalone update) or "cuda" force CUDA
     # wheels; "rocm"/"cpu"/unrecognised are deliberate.
@@ -1601,7 +1703,8 @@ def _ensure_cuda_torch() -> None:
                     "ver = getattr(torch, '__version__', '').lower(); "
                     "m = re.search(r'\\+(cu\\d+)', ver); "
                     "marker = 'hip' if (hip or 'rocm' in ver) else ('cuda' if cuda else 'cpu'); "
-                    "print(marker + '|' + (m.group(1) if m else ''))"
+                    "print('|'.join((marker, m.group(1) if m else '', ver.split('+', 1)[0], "
+                    "('cu' + cuda.replace('.', '')) if cuda else '')))"
                 ),
             ],
             stdout = subprocess.PIPE,
@@ -1640,13 +1743,19 @@ def _ensure_cuda_torch() -> None:
     ]
     if not _marker_lines:
         return
-    _marker, _, _installed_cu = _marker_lines[-1].partition("|")
-    # Reinstall CUDA torch on a ROCm build on an NVIDIA host (poisoning signature), or when a
-    # CUDA index is pinned but the venv has the wrong family (CPU or a different cuXXX). A
-    # healthy match, or a CPU wheel with no CUDA pin, is left alone.
+    # marker | +cuXXX local tag | release | family from torch.version.cuda. The last is the
+    # only CUDA clue an untagged wheel gives: PyPI forbids the local +cuXXX version.
+    _marker, _installed_cu, _installed_release, _runtime_cu = (
+        _marker_lines[-1].split("|") + ["", "", ""]
+    )[:4]
+    # Reinstall on a ROCm build on an NVIDIA host (poisoning signature), when a CUDA index
+    # is pinned but the venv has the wrong family (CPU or a different cuXXX), or when the
+    # installed family ships no kernels for this host's GPUs. A healthy match, or a CPU
+    # wheel with no CUDA pin, is left alone.
     _pin = _explicit_torch_index_url()
     _pin_leaf = _torch_index_leaf(_pin) if _pin else ""
     _pinned_cuda = _is_cuda_family_leaf(_pin_leaf)
+    index_url: "str | None" = None
     if _marker == "hip":
         _why = "torch is a ROCm build on an NVIDIA host"
     elif _marker == "cpu" and _pinned_cuda:
@@ -1656,10 +1765,33 @@ def _ensure_cuda_torch() -> None:
         # the family can't be confirmed, so reinstall to enforce it (idempotent).
         _installed_desc = _installed_cu if _installed_cu else "an untagged CUDA build"
         _why = f"torch is {_installed_desc} but the pinned CUDA index is {_pin_leaf}"
+    elif _marker == "cuda" and not _pinned_cuda:
+        # x86_64 only, like the cap: the spans below are the x86_64 build matrix.
+        if platform.machine().lower() not in ("x86_64", "amd64"):
+            return
+        _family = _installed_cu or _runtime_cu
+        _span = _cuda_family_sm_range(_family, _installed_release)
+        if _span is None:
+            return  # untagged or unrecognised build: not this check's business
+        _smi = _nvidia_smi_path()
+        _sms = _nvidia_compute_sms(_smi) if _smi else None
+        if not _sms or _span_covers(_span, _sms):
+            return  # healthy CUDA torch this host can use
+        # Never trade one partial family for another, or reinstall the same one forever.
+        index_url = _detect_cuda_torch_index_url()
+        _target = _torch_index_leaf(index_url)
+        _target_span = _cuda_family_sm_range(_target)
+        if _target_span is None or not _span_covers(_target_span, _sms):
+            return
+        _why = (
+            f"torch is {_family} but this host has GPUs outside its "
+            f"sm_{_span[0]}-{_span[1]} range"
+        )
     else:
         return  # healthy CUDA torch matching the pin, or a deliberate CPU wheel
 
-    index_url = _detect_cuda_torch_index_url()
+    if index_url is None:
+        index_url = _detect_cuda_torch_index_url()
     _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
     print(
         f"   {_why} -- reinstalling CUDA torch from {_strip_index_url_credentials(index_url)}\n"
