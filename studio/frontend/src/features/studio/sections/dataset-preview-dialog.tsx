@@ -14,7 +14,11 @@ import { DataTable } from "@/components/ui/data-table";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { useTrainingActions, useTrainingConfigStore } from "@/features/training";
-import { checkDatasetFormat } from "@/features/training/api/datasets-api";
+import {
+  checkDatasetFormat,
+  DatasetFormatError,
+} from "@/features/training/api/datasets-api";
+import { clearDeletedDataset } from "@/features/training/stores/training-config-store";
 import { isRawTextDatasetFormat } from "@/features/training/lib/training-methods";
 import type { CheckFormatResponse } from "@/features/training/types/datasets";
 import type { DatasetSource } from "@/types/training";
@@ -217,6 +221,10 @@ export function DatasetPreviewDialog({
         }
       })
       .catch((err) => {
+        // Preview is a third way to learn the file is gone, so clear here too.
+        if (err instanceof DatasetFormatError && err.status === 404) {
+          clearDeletedDataset(datasetName);
+        }
         if (!cancelled) setError(err.message || "Failed to load preview");
       })
       .finally(() => {

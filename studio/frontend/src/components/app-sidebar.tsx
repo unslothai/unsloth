@@ -50,6 +50,15 @@ import {
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
+// Deep imports on purpose: the Images index re-exports ImagesPage, so going through it would pull
+// the page into the shell bundle and undo its code split.
+/* eslint-disable no-restricted-imports */
+import {
+  isWorkflowEnabled,
+  useImageWorkflowStore,
+} from "@/features/images/stores/image-workflow-store";
+import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
+/* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
@@ -70,10 +79,13 @@ import {
   FolderAddIcon,
   FolderExportIcon,
   Folder01Icon,
+  FlimSlateIcon,
   Globe02Icon,
   HelpCircleIcon,
+  Image03Icon,
   Logout05Icon,
   Message01Icon,
+  MoreHorizontalIcon,
   MoreVerticalIcon,
   PaintBrush02Icon,
   Search01Icon,
@@ -85,10 +97,10 @@ import {
   LayoutAlignLeftIcon,
   Settings02Icon,
   Sun03Icon,
-  TestTube01Icon,
   UserIcon,
   ZapIcon,
 } from "@hugeicons/core-free-icons";
+import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 import {
   Tooltip,
   TooltipContent,
@@ -128,6 +140,7 @@ import {
   useAppearanceCustomStore,
   useSettingsDialogStore,
 } from "@/features/settings";
+import type { SidebarNavItemId } from "@/features/settings";
 import { useEffectiveProfile, UserAvatar } from "@/features/profile";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
 import { clearAuthTokens, logout } from "@/features/auth";
@@ -147,6 +160,7 @@ import type { TrainingRunSummary } from "@/features/training";
 import { useExportRuntimeStore } from "@/features/export";
 import {
   Fragment,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -201,13 +215,20 @@ const SETTINGS_TAB_MENU_ITEMS: Record<
   connections: { icon: CloudIcon, labelKey: "settings.tabs.connections" },
 };
 
-// TestTube01Icon's last 2 paths are interior bubbles; slice to the first
-// 3 (outline + cap + liquid line) to drop them. Original export untouched.
-const TestTubeOutlineIcon = TestTube01Icon.slice(
-  0,
-  3,
-) as typeof TestTube01Icon;
-
+// One navigable row, rendered as a NavItem or a MoreMenuItem depending on its pin state.
+type NavRowDef = {
+  icon: typeof ZapIcon;
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  tooltip?: string;
+  spinner?: boolean;
+  badge?: string;
+  onClick: () => void;
+  onIntent?: () => void;
+  className?: string;
+  children?: ReactNode;
+};
 
 type ConversationExportFormat = "raw-jsonl" | "csv" | "sharegpt-jsonl";
 
@@ -281,6 +302,20 @@ function preloadSilently(request: Promise<unknown>): void {
   void request.catch(() => undefined);
 }
 
+// "New" pill for recent tabs. Same recipe as the brand "beta" badge.
+function NavBadge({ label, className }: { label: string; className?: string }) {
+  return (
+    <span
+      className={cn(
+        "nav-badge inline-flex shrink-0 items-center justify-center rounded-full border border-nav-beta-border px-[5px] pt-[3px] pb-[2px] text-[calc(0.5rem*var(--ui-font-scale,1))] font-medium uppercase leading-none tracking-[0.04em] text-nav-fg-muted antialiased subpixel-antialiased shadow-[0_1px_2px_rgba(0,0,0,0.06)] dark:shadow-[0_1px_2px_rgba(0,0,0,0.35)]",
+        className,
+      )}
+    >
+      {label}
+    </span>
+  );
+}
+
 function NavItem({
   icon,
   label,
@@ -293,6 +328,8 @@ function NavItem({
   spinner,
   tooltip,
   onIntent,
+  badge,
+  overlay,
 }: {
   icon: typeof ZapIcon;
   label: string;
@@ -307,6 +344,10 @@ function NavItem({
   // Overrides the hover tooltip (defaults to `label`). Used to explain why a
   // disabled item (e.g. Train/Export on a chat-only host) is greyed out.
   tooltip?: string;
+  // Trailing "New" pill text.
+  badge?: string;
+  // Absolutely-positioned extras over the row, e.g. a disclosure chevron.
+  overlay?: ReactNode;
 }) {
   return (
     <SidebarMenuItem className={className}>
@@ -323,6 +364,12 @@ function NavItem({
         >
           <HugeiconsIcon icon={icon} strokeWidth={1.75} className="size-icon! shrink-0 translate-x-0.5 group-hover/menu-button:animate-icon-pop" />
           <span className="text-ui-14p5 leading-ui-19 tracking-nav">{label}</span>
+          {badge && (
+            <NavBadge
+              label={badge}
+              className="ml-auto group-data-[collapsible=icon]:hidden"
+            />
+          )}
           {spinner && (
             // mr-1.5 over the row's pr-2.5 = 16px, matching the chat rows'
             // pr-4 so nav and Recents spinners share one column.
@@ -333,9 +380,156 @@ function NavItem({
           // Collapsed (icon-only) rail: small spinner badge over the icon corner.
           <Spinner className="pointer-events-none absolute right-1 top-1 hidden size-2.5 text-muted-foreground group-data-[collapsible=icon]:block" />
         )}
+        {overlay}
       </div>
       {children}
     </SidebarMenuItem>
+  );
+}
+
+const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
+
+/** One workflow in the list under the Images row. */
+function WorkflowChoice({
+  tab,
+  active,
+  enabled,
+  onSelect,
+}: {
+  tab: (typeof WORKFLOW_TABS)[number];
+  active: boolean;
+  enabled: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={!enabled}
+      title={enabled ? undefined : WORKFLOW_UNAVAILABLE}
+      onClick={onSelect}
+      // Weight and colour come from the nav rows above; only the size sets a submenu apart.
+      className={cn(
+        "flex h-[29px] w-full items-center gap-2 rounded-full pl-3 pr-2.5 text-left font-medium text-nav-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        active ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60",
+        !enabled && "opacity-40 hover:bg-transparent",
+      )}
+    >
+      <HugeiconsIcon
+        icon={tab.icon}
+        strokeWidth={1.75}
+        className="size-4 shrink-0"
+      />
+      <span className="min-w-0 flex-1 truncate text-ui-13 tracking-nav">
+        {tab.label}
+      </span>
+    </button>
+  );
+}
+
+/** Expands the workflow list on rows that do not list it outright, i.e. off the Images page. */
+function ImagesNavDisclosure() {
+  const expanded = useImageWorkflowStore((s) => s.navExpanded);
+  const setExpanded = useImageWorkflowStore((s) => s.setNavExpanded);
+  return (
+    // Row action, so it gets the shared hover circle. Shown on row hover, kept while open.
+    <button
+      type="button"
+      aria-label={expanded ? "Hide workflows" : "Show workflows"}
+      aria-expanded={expanded}
+      onClick={(e) => {
+        e.stopPropagation();
+        setExpanded(!expanded);
+      }}
+      className={cn(
+        "sidebar-row-action group-hover/images-item:opacity-100 group-hover/images-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto",
+        expanded && "is-disclosure-open",
+      )}
+    >
+      <span className="sidebar-row-action-glyph">
+        <ChevronDown
+          className={cn(
+            "size-3.5 transition-transform duration-200",
+            !expanded && "-rotate-90",
+          )}
+        />
+      </span>
+    </button>
+  );
+}
+
+/**
+ * The Images workflows, listed under their nav row. Open by default on the Images page, since
+ * they are that page's switcher; elsewhere they stay folded until the row's chevron asks for
+ * them. The collapsed rail has no room either way, and the page's Train tab has none to list.
+ */
+function ImagesWorkflowList({
+  active,
+  collapsed,
+  onPick,
+}: {
+  active: boolean;
+  collapsed: boolean;
+  onPick: (id: WorkflowId) => void;
+}) {
+  const workflow = useImageWorkflowStore((s) => s.workflow);
+  const supported = useImageWorkflowStore((s) => s.supported);
+  const pageMode = useImageWorkflowStore((s) => s.pageMode);
+  const expanded = useImageWorkflowStore((s) => s.navExpanded);
+  if (collapsed) return null;
+  if (active ? pageMode === "train" : !expanded) return null;
+  // Nothing here is current unless the page is actually showing a workflow.
+  const current = active && pageMode === "create" ? workflow : null;
+  return (
+    <div className="mt-0.5 flex flex-col gap-px pl-5">
+      {WORKFLOW_TABS.map((tab) => (
+        <WorkflowChoice
+          key={tab.id}
+          tab={tab}
+          active={current === tab.id}
+          enabled={isWorkflowEnabled(tab.id, supported)}
+          onSelect={() => onPick(tab.id)}
+        />
+      ))}
+    </div>
+  );
+}
+
+// A NavItem's affordances in dropdown-item form, for the "More" flyout.
+function MoreMenuItem({
+  icon,
+  label,
+  active,
+  disabled,
+  tooltip,
+  badge,
+  spinner,
+  onSelect,
+  onIntent,
+}: {
+  icon: typeof ZapIcon;
+  label: string;
+  active: boolean;
+  disabled?: boolean;
+  tooltip?: string;
+  badge?: string;
+  spinner?: boolean;
+  onSelect: () => void;
+  onIntent?: () => void;
+}) {
+  return (
+    <DropdownMenuItem
+      disabled={disabled}
+      title={disabled ? tooltip : undefined}
+      onSelect={onSelect}
+      onPointerEnter={disabled ? undefined : onIntent}
+      onFocus={disabled ? undefined : onIntent}
+      className={cn(active && "bg-accent/60")}
+    >
+      <HugeiconsIcon icon={icon} strokeWidth={1.75} />
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {badge && <NavBadge label={badge} />}
+      {spinner && <Spinner className="size-3.5 shrink-0 text-muted-foreground" />}
+    </DropdownMenuItem>
   );
 }
 
@@ -344,6 +538,9 @@ export function AppSidebar() {
   const { isDark, toggleTheme, anchorRef } = useAnimatedThemeToggle();
   const sidebarMenu = useAppearanceCustomStore(
     (s) => s.customization.sidebarMenu,
+  );
+  const sidebarNav = useAppearanceCustomStore(
+    (s) => s.customization.sidebarNav,
   );
   const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
@@ -355,9 +552,16 @@ export function AppSidebar() {
       search: s.location.search as Record<string, string | undefined>,
     }),
   });
-  const { pinned, togglePinned, isMobile, setOpenMobile } = useSidebar();
+  const {
+    pinned,
+    togglePinned,
+    isMobile,
+    setOpenMobile,
+    state: sidebarState,
+  } = useSidebar();
   const navigate = useNavigate();
   const router = useRouter();
+  const imagesPageMode = useImageWorkflowStore((s) => s.pageMode);
 
   // Web update detection: `webUpdate` is non-null only when the installed
   // (PyPI) version is behind the latest release, so the card is hidden by
@@ -407,7 +611,26 @@ export function AppSidebar() {
   const isStudioRoute = pathname === "/studio" || pathname.startsWith("/studio/");
   const [chatOpen, setChatOpen] = useState(true);
 
-  const [trainOpen, setTrainOpen] = useState(true);
+  // "More" flyout. Opens on click or hover; close is delayed so the pointer can cross the gap to the panel.
+  const [moreOpen, setMoreOpen] = useState(false);
+  const moreCloseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openMore = useCallback(() => {
+    if (moreCloseTimer.current) {
+      clearTimeout(moreCloseTimer.current);
+      moreCloseTimer.current = null;
+    }
+    setMoreOpen(true);
+  }, []);
+  const closeMoreSoon = useCallback(() => {
+    if (moreCloseTimer.current) clearTimeout(moreCloseTimer.current);
+    moreCloseTimer.current = setTimeout(() => setMoreOpen(false), 180);
+  }, []);
+  useEffect(
+    () => () => {
+      if (moreCloseTimer.current) clearTimeout(moreCloseTimer.current);
+    },
+    [],
+  );
   const [runsOpen, setRunsOpen] = useState(true);
 
   useEffect(() => {
@@ -613,7 +836,6 @@ export function AppSidebar() {
     runItems.length,
     projects.length,
     chatOpen,
-    trainOpen,
     runsOpen,
     pinnedOpen,
     isStudioRoute,
@@ -621,6 +843,166 @@ export function AppSidebar() {
 
   const chatDisabled = trainingInProgress;
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
+
+
+  // One definition per row, so pinned rows and the flyout can't drift apart.
+  const navRows: Record<SidebarNavItemId, NavRowDef> = {
+    projects: {
+      icon: Folder01Icon,
+      label: t("shell.navigation.projects"),
+      active: pathname === "/projects" || pathname.startsWith("/projects/"),
+      onClick: () => {
+        navigate({ to: "/projects" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/projects" }));
+      },
+      className: "group/projects-item relative",
+      // The inline "new project" affordance only fits a real row.
+      children: (
+        <button
+          type="button"
+          aria-label="New project"
+          onClick={(e) => {
+            e.stopPropagation();
+            // NewProjectDialog owns its own name field, so opening it is just the move target plus the open flag.
+            setProjectCreateMoveTarget(null);
+            setCreatingProject(true);
+          }}
+          className="sidebar-row-action group-hover/projects-item:opacity-100 group-hover/projects-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+        >
+          <span className="sidebar-row-action-glyph">
+            <HugeiconsIcon
+              icon={PlusSignIcon}
+              strokeWidth={1.75}
+              className="size-4"
+            />
+          </span>
+        </button>
+      ),
+    },
+    hub: {
+      icon: DashboardCircleIcon,
+      label: t("shell.navigation.hub"),
+      active: pathname === "/hub" || pathname.startsWith("/hub/"),
+      onClick: () => {
+        navigate({ to: "/hub" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/hub" }));
+      },
+    },
+    images: {
+      icon: Image03Icon,
+      label: t("shell.navigation.images"),
+      // No "New" pill: the row's trailing slot holds the workflow disclosure instead.
+      active: pathname === "/images" || pathname.startsWith("/images/"),
+      onClick: () => {
+        navigate({ to: "/images" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/images" }));
+      },
+    },
+    train: {
+      icon: TestTubeOutlineIcon,
+      label: t("shell.navigation.train"),
+      active: pathname === "/studio" || pathname.startsWith("/studio/"),
+      disabled: chatOnly,
+      tooltip: trainDisabledHint,
+      spinner: trainingInProgress,
+      onClick: () => {
+        if (chatOnly) return;
+        navigate({ to: "/studio" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/studio" }));
+      },
+    },
+    // Video is diffusers-only, so a chat-only host cannot load it: disable with a hint instead of bouncing off the root guard.
+    video: {
+      icon: FlimSlateIcon,
+      label: t("shell.navigation.video"),
+      badge: t("shell.navigation.newBadge"),
+      active: pathname === "/video" || pathname.startsWith("/video/"),
+      disabled: chatOnly,
+      tooltip: chatOnly
+        ? "Video generation needs an NVIDIA or AMD GPU."
+        : undefined,
+      onClick: () => {
+        navigate({ to: "/video" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/video" }));
+      },
+    },
+    recipes: {
+      icon: ChefHatIcon,
+      label: t("shell.navigation.recipes"),
+      active: isRecipesRoute,
+      onClick: () => {
+        navigate({ to: "/data-recipes" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/data-recipes" }));
+        preloadSilently(
+          import("@/features/data-recipes").then((module) =>
+            module.preloadRecipes(),
+          ),
+        );
+      },
+    },
+    export: {
+      icon: DownloadSquare01Icon,
+      label: t("shell.navigation.export"),
+      active: pathname === "/export" || pathname.startsWith("/export/"),
+      spinner: exportInProgress,
+      onClick: () => {
+        navigate({ to: "/export" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/export" }));
+        preloadSilently(
+          import("@/features/export/export-navigation-cache").then((module) =>
+            module.preloadExportData(),
+          ),
+        );
+      },
+    },
+    // The monitor page, not the API keys dialog the profile menu opens.
+    api: {
+      icon: Globe02Icon,
+      label: t("shell.navigation.api"),
+      active: pathname === "/api-monitor" || pathname.startsWith("/api-monitor/"),
+      onClick: () => {
+        navigate({ to: "/api-monitor" });
+        closeMobileIfOpen();
+      },
+      onIntent: () => {
+        preloadSilently(router.preloadRoute({ to: "/api-monitor" }));
+      },
+    },
+  };
+  const unpinnedNavIds = sidebarNav
+    .filter((item) => !item.pinned)
+    .map((item) => item.id);
+  // More needs two or more rows to be worth a click; with exactly one unpinned, the menu and that row are both dropped.
+  const overflowNavIds = unpinnedNavIds.length > 1 ? unpinnedNavIds : [];
+  const inlineNavIds = sidebarNav
+    .filter((item) => item.pinned)
+    .map((item) => item.id);
+  // Mirrors ImagesWorkflowList's own test: it decides which row owns the highlight.
+  const imagesWorkflowsListed =
+    sidebarState !== "collapsed" &&
+    !(navRows.images.active && imagesPageMode === "train");
+
   const showSidebarBrand = true;
 
   function chatSearchForProject(projectId: string | null) {
@@ -1438,148 +1820,154 @@ export function AppSidebar() {
           scrolled && "is-scrolled",
         )}
       >
-        <SidebarGroup className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 py-0 shrink-0">
+        <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 py-0 shrink-0">
+
           <SidebarGroupContent>
             <SidebarMenu>
-              <NavItem
-                icon={DashboardCircleIcon}
-                label={t("shell.navigation.hub")}
-                active={pathname === "/hub" || pathname.startsWith("/hub/")}
-                onClick={() => {
-                  navigate({ to: "/hub" });
-                  closeMobileIfOpen();
-                }}
-                onIntent={() => {
-                  preloadSilently(router.preloadRoute({ to: "/hub" }));
-                }}
-              />
-              <NavItem
-                icon={Folder01Icon}
-                label={t("shell.navigation.projects")}
-                active={
-                  pathname === "/projects" || pathname.startsWith("/projects/")
-                }
-                onClick={() => {
-                  navigate({ to: "/projects" });
-                  closeMobileIfOpen();
-                }}
-                onIntent={() => {
-                  preloadSilently(router.preloadRoute({ to: "/projects" }));
-                }}
-                className="group/projects-item relative"
-              >
-                <button
-                  type="button"
-                  aria-label="New project"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    setProjectCreateMoveTarget(null);
-                    setCreatingProject(true);
-                  }}
-                  className="sidebar-row-action group-hover/projects-item:opacity-100 group-hover/projects-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto group-data-[collapsible=icon]:hidden"
+              {/* Order and pin state come from Settings -> Appearance ->
+                  Sidebar navigation. */}
+              {inlineNavIds.map((id) => {
+                const row = navRows[id];
+                return (
+                  <NavItem
+                    key={id}
+                    icon={row.icon}
+                    label={row.label}
+                    badge={row.badge}
+                    // While the workflows are listed, the current one carries the highlight,
+                    // so the Images row above them gives it up.
+                    active={
+                      id === "images" && imagesWorkflowsListed ? false : row.active
+                    }
+                    disabled={row.disabled}
+                    tooltip={row.tooltip}
+                    spinner={row.spinner}
+                    onClick={row.onClick}
+                    onIntent={row.onIntent}
+                    className={cn(
+                      row.className,
+                      id === "images" && "group/images-item",
+                    )}
+                    // Off the Images page the list is folded, so the row offers a way to open it.
+                    overlay={
+                      id === "images" &&
+                      !row.active &&
+                      sidebarState !== "collapsed" ? (
+                        <ImagesNavDisclosure />
+                      ) : undefined
+                    }
+                  >
+                    {/* Images carries its workflows as rows beneath it. */}
+                    {id === "images" ? (
+                      <ImagesWorkflowList
+                        active={row.active}
+                        collapsed={sidebarState === "collapsed"}
+                        onPick={(workflowId) => {
+                          useImageWorkflowStore
+                            .getState()
+                            .setWorkflow(workflowId);
+                          navigate({ to: "/images" });
+                          closeMobileIfOpen();
+                        }}
+                      />
+                    ) : (
+                      row.children
+                    )}
+                  </NavItem>
+                );
+              })}
+              {/* Unpinned destinations, behind one row. */}
+              {overflowNavIds.length > 0 && (
+                <SidebarMenuItem
+                  onPointerEnter={openMore}
+                  onPointerLeave={closeMoreSoon}
                 >
-                  <span className="sidebar-row-action-glyph">
-                    <HugeiconsIcon
-                      icon={PlusSignIcon}
-                      strokeWidth={1.75}
-                      className="size-4"
-                    />
-                  </span>
-                </button>
-              </NavItem>
-              {/* Train has a labelled section when expanded; plain icon here only when collapsed. */}
-              <NavItem
-                icon={TestTubeOutlineIcon}
-                label={t("shell.navigation.train")}
-                active={
-                  pathname === "/studio" || pathname.startsWith("/studio/")
-                }
-                disabled={chatOnly}
-                tooltip={trainDisabledHint}
-                spinner={trainingInProgress}
-                onClick={() => {
-                  if (chatOnly) return;
-                  navigate({ to: "/studio" });
-                  closeMobileIfOpen();
-                }}
-                onIntent={() => {
-                  preloadSilently(router.preloadRoute({ to: "/studio" }));
-                }}
-                className="hidden group-data-[collapsible=icon]:block"
-              />
+                  <DropdownMenu
+                    open={moreOpen}
+                    onOpenChange={setMoreOpen}
+                    modal={false}
+                  >
+                    {/* Tooltip wraps the trigger rather than using the button's `tooltip` prop: that returns a Tooltip root, so DropdownMenuTrigger asChild would miss the DOM node. */}
+                    <Tooltip>
+                      <TooltipPrimitive.Trigger asChild>
+                        <DropdownMenuTrigger asChild>
+                          <SidebarMenuButton
+                            // More is a container, not a destination: no active style just
+                            // because the current page lives inside it.
+                            // Keeps the row highlighted while the panel is open, after the pointer has left it. Not data-state: the tooltip and menu triggers both write that one.
+                            data-menu-open={moreOpen ? "true" : undefined}
+                            className="sidebar-nav-btn h-[33px] rounded-full gap-[8.5px] pl-3 pr-2.5 font-medium group-data-[collapsible=icon]:px-2.5 group-data-[collapsible=icon]:!w-[32px] group-data-[collapsible=icon]:mx-auto"
+                          >
+                            <HugeiconsIcon
+                              icon={MoreHorizontalIcon}
+                              strokeWidth={1.75}
+                              className="size-icon! shrink-0 group-hover/menu-button:animate-icon-pop"
+                            />
+                            <span className="text-ui-14p5 leading-ui-19 tracking-nav">
+                              {t("shell.navigation.more")}
+                            </span>
+                          </SidebarMenuButton>
+                        </DropdownMenuTrigger>
+                      </TooltipPrimitive.Trigger>
+                      {/* Collapsed rail only; expanded rows show their label. */}
+                      <TooltipContent
+                        side="right"
+                        align="center"
+                        className="tooltip-compact"
+                        hidden={isMobile || sidebarState !== "collapsed"}
+                      >
+                        {t("shell.navigation.more")}
+                      </TooltipContent>
+                    </Tooltip>
+                    <DropdownMenuContent
+                      side="right"
+                      align="start"
+                      sideOffset={6}
+                      onPointerEnter={openMore}
+                      onPointerLeave={closeMoreSoon}
+                      className="w-48 p-1"
+                    >
+                      {overflowNavIds.map((id) => {
+                        const row = navRows[id];
+                        return (
+                          <MoreMenuItem
+                            key={id}
+                            icon={row.icon}
+                            label={row.label}
+                            badge={row.badge}
+                            active={row.active}
+                            disabled={row.disabled}
+                            tooltip={row.tooltip}
+                            spinner={row.spinner}
+                            onSelect={row.onClick}
+                            onIntent={row.onIntent}
+                          />
+                        );
+                      })}
+                      {/* Way out of the flyout: jump straight to the control that
+                          decides what lives here vs. on the sidebar itself. */}
+                      <DropdownMenuSeparator className="mx-1! my-1.5! h-0! border-t border-border/70 bg-transparent!" />
+                      <DropdownMenuItem
+                        onSelect={() =>
+                          useSettingsDialogStore
+                            .getState()
+                            .openDialog("appearance", {
+                              scrollTarget: "appearance-sidebar-nav",
+                            })
+                        }
+                      >
+                        <HugeiconsIcon icon={Settings02Icon} strokeWidth={1.75} />
+                        <span className="min-w-0 flex-1 truncate">
+                          {t("shell.navigation.customizeSidebar")}
+                        </span>
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </SidebarMenuItem>
+              )}
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-
-        <Collapsible open={trainOpen} onOpenChange={setTrainOpen} asChild>
-          <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:hidden px-0 py-0">
-            <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
-              <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
-                {t("shell.navigation.train")}
-                <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
-              </CollapsibleTrigger>
-            </SidebarGroupLabel>
-            <CollapsibleContent>
-              <SidebarGroupContent className="pl-1.5 pr-1.75">
-                <SidebarMenu>
-                  <NavItem
-                    icon={TestTubeOutlineIcon}
-                    label={t("shell.navigation.train")}
-                    active={pathname === "/studio" || pathname.startsWith("/studio/")}
-                    disabled={chatOnly}
-                    tooltip={trainDisabledHint}
-                    spinner={trainingInProgress}
-                    onClick={() => {
-                      if (chatOnly) return;
-                      navigate({ to: "/studio" });
-                      closeMobileIfOpen();
-                    }}
-                    onIntent={() => {
-                      preloadSilently(router.preloadRoute({ to: "/studio" }));
-                    }}
-                  />
-                  <NavItem
-                    icon={ChefHatIcon}
-                    label={t("shell.navigation.recipes")}
-                    active={isRecipesRoute}
-                    onClick={() => {
-                      navigate({ to: "/data-recipes" });
-                      closeMobileIfOpen();
-                    }}
-                    onIntent={() => {
-                      preloadSilently(
-                        router.preloadRoute({ to: "/data-recipes" }),
-                      );
-                      preloadSilently(
-                        import("@/features/data-recipes").then((module) =>
-                          module.preloadRecipes(),
-                        ),
-                      );
-                    }}
-                  />
-                  <NavItem
-                    icon={DownloadSquare01Icon}
-                    label={t("shell.navigation.export")}
-                    active={pathname === "/export" || pathname.startsWith("/export/")}
-                    spinner={exportInProgress}
-                    onClick={() => {
-                      navigate({ to: "/export" });
-                      closeMobileIfOpen();
-                    }}
-                    onIntent={() => {
-                      preloadSilently(router.preloadRoute({ to: "/export" }));
-                      preloadSilently(
-                        import(
-                          "@/features/export/export-navigation-cache"
-                        ).then((module) => module.preloadExportData()),
-                      );
-                    }}
-                  />
-                </SidebarMenu>
-              </SidebarGroupContent>
-            </CollapsibleContent>
-          </SidebarGroup>
-        </Collapsible>
 
         {/* Pinned: pinned projects (with their chats) and pinned chats */}
         {!isStudioRoute &&

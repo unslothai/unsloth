@@ -1455,6 +1455,101 @@ def is_snapshot_partial(
     )
 
 
+def _current_revisions(repo_info):
+    """The revisions to judge a cached repo by: just the one the loader will actually open.
+
+    ``from_pretrained`` resolves the newest snapshot by mtime (:func:`latest_snapshot_dir`), so a
+    repo cached twice -- an older complete snapshot plus a newer companion-only scoped one -- must
+    be judged on the newer one. Scanning every revision let the old snapshot's denoiser satisfy the
+    completeness check, so the row read as complete while the snapshot the loader picks has no
+    transformer/unet: offline loads then fail and online loads silently pull the multi-GB weight.
+
+    Falls back to the newest revision by ``last_modified``, then to every revision, so a cache
+    layout this cannot resolve behaves as before rather than reporting nothing.
+    """
+    revisions = list(getattr(repo_info, "revisions", ()) or ())
+    if len(revisions) <= 1:
+        return revisions
+    repo_path = getattr(repo_info, "repo_path", None)
+    if repo_path is not None:
+        latest = latest_snapshot_dir(Path(repo_path))
+        if latest is not None:
+            scoped = [
+                rev
+                for rev in revisions
+                if getattr(rev, "snapshot_path", None) is not None
+                and Path(rev.snapshot_path) == latest
+            ]
+            if scoped:
+                return scoped
+    dated = [rev for rev in revisions if getattr(rev, "last_modified", None) is not None]
+    if dated:
+        return [max(dated, key = lambda rev: rev.last_modified)]
+    return revisions
+
+
+def repo_has_pipeline_index(repo_info) -> bool:
+    """Whether the cached snapshot carries a ROOT model_index.json, i.e. is loadable
+    as a full diffusers pipeline (from_pretrained reads only the repo root). A nested
+    subdir/model_index.json does not count: loading the repo root still fails, so the
+    row must keep its single_file flag. CachedFileInfo.file_name is the basename, so
+    a name match alone would also claim nested copies -- scope by file_path when the
+    scan provides it."""
+    try:
+        for rev in _current_revisions(repo_info):
+            snapshot = getattr(rev, "snapshot_path", None)
+            for f in rev.files:
+                name = str(getattr(f, "file_name", "") or "")
+                path = getattr(f, "file_path", None)
+                if path is not None and snapshot is not None:
+                    p = Path(path)
+                    if p.name == "model_index.json" and p.parent == Path(snapshot):
+                        return True
+                elif name == "model_index.json":
+                    return True
+    except Exception:
+        pass
+    return False
+
+
+def repo_pipeline_missing_denoiser(repo_info) -> bool:
+    """True for a diffusers-pipeline snapshot (root ``model_index.json``) whose denoiser component
+    (``transformer/`` or ``unet/``) carries NO weight file -- the shape of a companion-only prefetch
+    where a GGUF image load pulled the base repo's VAE / text-encoder / manifest but skipped the
+    multi-GB transformer (the GGUF supplies it). :func:`is_snapshot_partial` misses this (every
+    file the manifest expected did arrive), so callers OR the two signals together and mark such
+    rows partial. Best-effort: any scan error reports not-missing so a glitch never hides a
+    genuinely complete pipeline."""
+    if not repo_has_pipeline_index(repo_info):
+        return False
+    _DENOISER_DIRS = ("transformer", "unet")
+    _WEIGHT_SUFFIXES = (".safetensors", ".bin")
+    try:
+        for rev in _current_revisions(repo_info):
+            snapshot = getattr(rev, "snapshot_path", None)
+            for f in rev.files:
+                name = str(getattr(f, "file_name", "") or "")
+                path = getattr(f, "file_path", None)
+                parts: tuple[str, ...] = ()
+                if path is not None and snapshot is not None:
+                    try:
+                        parts = Path(path).relative_to(Path(snapshot)).parts
+                    except ValueError:
+                        parts = ()
+                if not parts:
+                    # No snapshot scoping: fall back to the recorded name, which may itself carry the component subdir.
+                    parts = Path(name).parts
+                if (
+                    len(parts) >= 2
+                    and parts[0].lower() in _DENOISER_DIRS
+                    and parts[-1].lower().endswith(_WEIGHT_SUFFIXES)
+                ):
+                    return False
+        return True
+    except Exception:
+        return False
+
+
 def is_variant_partial(
     repo_id: str,
     variant: str,

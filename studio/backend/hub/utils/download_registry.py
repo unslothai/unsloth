@@ -47,7 +47,7 @@ import time
 import weakref
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Callable, Iterator, Literal, Optional
+from typing import Callable, Iterator, Literal, Optional, Sequence
 
 from loggers import get_logger
 
@@ -809,6 +809,8 @@ class DownloadMetadata:
     completed_baseline_bytes: int = 0
     hub_cache: Optional[str] = None
     xet_cache: Optional[str] = None
+    # Scoped jobs only: the exact files to fetch, kept so the XET -> HTTP retry respawns the same scoped download.
+    scoped_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen = True)
@@ -1135,6 +1137,7 @@ class DownloadRegistry:
         cancel_marker_transport: Optional[str] = None,
         hub_cache: Optional[str] = None,
         xet_cache: Optional[str] = None,
+        scoped_files: Optional[Sequence[str]] = None,
     ) -> tuple[bool, str]:
         key = normalize_job_key(key)
         repo = _repo_of_key(key)
@@ -1187,6 +1190,15 @@ class DownloadRegistry:
                 return False, conflict_state
             current = self._jobs.get(key, DownloadState("idle")).state
             if current in _ACTIVE_STATES and not replace_active:
+                # A scope slot is shared by every file set that rides it (two quants of one repo both key as "@diffusion"), so adopting
+                # the live job would let the caller wait on files it never asked for. Reject instead, under the lock.
+                live = self._metadata.get(key)
+                if (
+                    scoped_files is not None
+                    and live is not None
+                    and sorted(set(live.scoped_files)) != sorted(set(scoped_files))
+                ):
+                    return False, "scope_file_mismatch"
                 return False, current
             if generation is None:
                 self._generation_seq += 1
@@ -1210,6 +1222,7 @@ class DownloadRegistry:
                     ),
                     hub_cache = hub_cache,
                     xet_cache = xet_cache,
+                    scoped_files = tuple(scoped_files or ()),
                 )
                 if cancel_marker_transport is not None:
                     self._cancel_marker_transports[key] = cancel_marker_transport
