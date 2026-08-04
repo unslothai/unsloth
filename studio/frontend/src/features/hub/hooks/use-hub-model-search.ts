@@ -20,7 +20,7 @@ import { EMBEDDING_TAGS, estimateSizeFromDtypes } from "../lib/hf-model-meta";
 import { detectBaseModel } from "../lib/model-capabilities";
 import { isGgufLike } from "../lib/model-identifiers";
 import { fetchWithTimeout } from "../lib/network";
-import { createHubTransport } from "../lib/hub-transport";
+import { createHubTransport, isProxyUrl } from "../lib/hub-transport";
 import { hubProxyFirst } from "../lib/hub-endpoint";
 import {
   type UnslothSupport,
@@ -167,9 +167,9 @@ function makeSortFetch(
         : input instanceof URL
           ? input.toString()
           : input.url;
-    // A relative next-page link means the transport is already proxying; the
-    // sort/direction were applied on the first request.
-    if (rawUrl.startsWith("/")) {
+    // A next-page link back into the proxy means the transport is already
+    // proxying; the sort/direction were applied on the first request.
+    if (isProxyUrl(rawUrl)) {
       return transport(rawUrl, signal ? { ...init, signal } : init);
     }
     const url = new URL(rawUrl);

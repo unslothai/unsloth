@@ -237,9 +237,9 @@ export function DiscoverList({
       ) : suppressEmptyState ? null : (
         <NetworkErrorState
           online={online}
-          // The classified failure supplies the wording. Falling back to a
-          // hardcoded "offline" line here is exactly what hid the real cause.
-          message={searchError ?? ""}
+          // The classified failure supplies the wording. The raw SDK error is
+          // not echoed: it appends the request URL, which carries the query.
+          message={searchFailure ? "" : (searchError ?? "")}
           failure={searchFailure}
           onRetry={onRetry}
           onSwitchDevice={onSwitchDevice}

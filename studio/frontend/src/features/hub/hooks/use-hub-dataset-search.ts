@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { fetchWithTimeout } from "../lib/network";
-import { createHubTransport } from "../lib/hub-transport";
+import { createHubTransport, isProxyUrl } from "../lib/hub-transport";
 import { hubProxyFirst } from "../lib/hub-endpoint";
 import type { HubModelType } from "../types";
 import { listDatasets } from "@huggingface/hub";
@@ -141,8 +141,8 @@ function makeDatasetSortFetch(
         : input instanceof URL
           ? input.toString()
           : input.url;
-    // A relative next-page link means the transport is already proxying.
-    if (rawUrl.startsWith("/")) {
+    // A next-page link back into the proxy means the transport is already proxying.
+    if (isProxyUrl(rawUrl)) {
       return transport(rawUrl, signal ? { ...init, signal } : init);
     }
     const url = new URL(rawUrl);

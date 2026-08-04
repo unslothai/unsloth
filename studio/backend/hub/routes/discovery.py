@@ -170,12 +170,20 @@ def parse_next_link(link_header: str) -> Optional[str]:
     return None
 
 
-def rewrite_next_link(resource: str, next_url: Optional[str]) -> Optional[str]:
+def rewrite_next_link(
+    resource: str,
+    next_url: Optional[str],
+    base_url: str = "",
+) -> Optional[str]:
     """Point the caller's next page back at this route.
 
     Handing the Hub's absolute next-page URL to the browser would bypass the
     proxy, and following a mirror's arbitrary URL would reintroduce SSRF. So the
     link is taken only if it stays on the configured endpoint, query revalidated.
+
+    ``base_url`` makes the emitted link absolute. @huggingface/hub's
+    parseLinkHeader only matches an ``<http(s)://...>`` target, so a relative one
+    yields no next URL and pagination silently stops after the first page.
     """
     if not next_url:
         return None
@@ -190,7 +198,8 @@ def rewrite_next_link(resource: str, next_url: Optional[str]) -> Optional[str]:
     except DiscoveryQueryError:
         return None
     query = urlencode(pairs)
-    return f"/api/hub/discovery/{resource}" + (f"?{query}" if query else "")
+    prefix = base_url.rstrip("/")
+    return f"{prefix}/api/hub/discovery/{resource}" + (f"?{query}" if query else "")
 
 
 class _QueryPairs:
@@ -298,7 +307,15 @@ async def discovery_search(
         )
 
     headers = {}
-    next_link = rewrite_next_link(resource, parse_next_link(link))
+    # Absolute, not relative: the Hub client's link parser only recognises an
+    # http(s) target. The browser never fetches this URL -- the Hub transport
+    # takes its query and re-issues it same-origin -- so only the path has to be
+    # right, which is why deriving the host from the request is safe here.
+    next_link = rewrite_next_link(
+        resource,
+        parse_next_link(link),
+        str(request.base_url),
+    )
     if next_link:
         # The Hub client paginates off this header; without it the proxy stops
         # after page one.

@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { fetchWithTimeout, isHubFetchError } from "./network";
+import {
+  fetchWithTimeout,
+  isHubFetchError,
+  markRemoteNetworkOnline,
+} from "./network";
 import { HUB_HF_TOKEN_HEADER } from "./hub-token-header";
 
 export type HubResource = "models" | "datasets";
@@ -12,7 +16,15 @@ export const DEFAULT_HUB_ENDPOINT = "https://huggingface.co";
 // Only transport failures justify a retry. A real HTTP status proves the direct
 // request reached the Hub, so re-sending it would just double the traffic;
 // those never reach here, since fetchWithTimeout resolves with the Response.
-const FALLBACK_KINDS = new Set(["network-opaque", "csp-blocked", "timeout"]);
+// browser-offline is included because navigator.onLine is advisory and reads
+// false on WSL2 and some Tauri/WebKitGTK webviews (see network.ts); letting it
+// veto the fallback would make the one untrusted signal authoritative.
+const FALLBACK_KINDS = new Set([
+  "network-opaque",
+  "csp-blocked",
+  "timeout",
+  "browser-offline",
+]);
 
 type FetchLike = (
   input: Parameters<typeof fetch>[0],
@@ -50,8 +62,31 @@ function urlOf(input: Parameters<typeof fetch>[0]): string {
       : input.url;
 }
 
+function hubUrlOf(raw: string): URL | null {
+  try {
+    return new URL(raw, DEFAULT_HUB_ENDPOINT);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The backend's next-page link is absolute, because @huggingface/hub's
+ * parseLinkHeader only matches an http(s) target, so match on the path rather
+ * than the whole string.
+ */
 export function isProxyUrl(raw: string): boolean {
-  return raw.startsWith(PROXY_PREFIX);
+  return hubUrlOf(raw)?.pathname.startsWith(PROXY_PREFIX) ?? false;
+}
+
+/**
+ * The proxy serves the listing endpoints and carries no path of its own, so a
+ * request that means something by its path (modelInfo's
+ * /api/models/{repo}/revision/HEAD) must never be retargeted at it: the SDK
+ * would parse a listing array as one repo and cache a model with no id.
+ */
+function isListingUrl(raw: string, resource: HubResource): boolean {
+  return hubUrlOf(raw)?.pathname === `/api/${resource}`;
 }
 
 /**
@@ -64,12 +99,7 @@ export function toProxyRequest(
   resource: HubResource,
   init: Parameters<typeof fetch>[1],
 ): { url: string; init: Parameters<typeof fetch>[1] } {
-  const queryAt = raw.indexOf("?");
-  const search = isProxyUrl(raw)
-    ? queryAt === -1
-      ? ""
-      : raw.slice(queryAt)
-    : new URL(raw, DEFAULT_HUB_ENDPOINT).search;
+  const search = hubUrlOf(raw)?.search ?? "";
 
   const headers = new Headers(init?.headers);
   const hfAuth = headers.get("Authorization");
@@ -103,19 +133,45 @@ export function createHubTransport(
   const proxyFirst = deps.proxyFirst ?? defaultProxyFirst;
   let useProxy = false;
 
+  // A page the backend served proves the Hub's content is reachable even though
+  // this browser could not fetch it. fetchWithTimeout has already recorded the
+  // direct failure, and nothing else clears it, so without this the catalog
+  // keeps calling the Hub unavailable while fallback results are on screen: it
+  // refuses to paginate and renders an empty result set as a connection error.
+  const viaBackend = async (
+    raw: string,
+    init: Parameters<typeof fetch>[1],
+  ): Promise<Response> => {
+    const req = toProxyRequest(raw, resource, init);
+    const response = await backend(req.url, req.init);
+    if (response.ok) {
+      // A proxy URL is same-origin; the origin it stands in for is the Hub's.
+      const origin = isProxyUrl(raw)
+        ? DEFAULT_HUB_ENDPOINT
+        : hubUrlOf(raw)?.origin;
+      if (origin) {
+        markRemoteNetworkOnline(origin);
+      }
+    }
+    return response;
+  };
+
   return async (input, init) => {
     const raw = urlOf(input);
 
-    // The backend hands back a relative next-page link, so a proxy URL here
-    // means the SDK is already paginating through the fallback.
+    // The backend hands back a next-page link pointing at itself, so a proxy
+    // URL here means the SDK is already paginating through the fallback.
     if (isProxyUrl(raw)) {
-      const req = toProxyRequest(raw, resource, init);
-      return backend(req.url, req.init);
+      return viaBackend(raw, init);
+    }
+
+    // Listing-only route: see isListingUrl.
+    if (!isListingUrl(raw, resource)) {
+      return direct(input, init);
     }
 
     if (useProxy || proxyFirst()) {
-      const req = toProxyRequest(raw, resource, init);
-      return backend(req.url, req.init);
+      return viaBackend(raw, init);
     }
 
     try {
@@ -127,8 +183,7 @@ export function createHubTransport(
       // Aborts and HTTP statuses are excluded above: the browser genuinely
       // could not make the request, but the server may still manage it.
       useProxy = true;
-      const req = toProxyRequest(raw, resource, init);
-      return backend(req.url, req.init);
+      return viaBackend(raw, init);
     }
   };
 }

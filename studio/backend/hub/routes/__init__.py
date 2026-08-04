@@ -14,3 +14,6 @@ __all__ = [
     "token_router",
     "discovery_router",
 ]
+
+# Bind the re-export so the import-hoist verifier counts it as used.
+_ = (discovery_router,)

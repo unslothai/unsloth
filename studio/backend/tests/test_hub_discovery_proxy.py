@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 
 import pytest
 from fastapi import HTTPException
@@ -25,8 +26,9 @@ class _Params:
 
 
 class _Request:
-    def __init__(self, items):
+    def __init__(self, items, base_url = "http://studio.local:1234/"):
         self.query_params = _Params(items)
+        self.base_url = base_url
 
 
 def _call(items, hf_token = None):
@@ -231,6 +233,32 @@ class TestPaginationLink:
         response = _call([("search", "gemma")])
         link = response.headers.get("link") or response.headers.get("Link")
         assert link is not None and "/api/hub/discovery/models" in link
+
+    def test_next_link_is_absolute_so_the_hub_sdk_can_parse_it(self, monkeypatch):
+        # @huggingface/hub's parseLinkHeader matches /<(https?:[/][/][^>]+)>;\s+rel="..."/
+        # only, so a relative target yields no next URL and pagination stops
+        # after the first upstream page.
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        monkeypatch.setattr(
+            discovery,
+            "_fetch_upstream",
+            lambda url, token: (
+                200,
+                b"[]",
+                '<https://huggingface.co/api/models?search=gemma&cursor=abc123>; rel="next"',
+            ),
+        )
+        response = _call([("search", "gemma")])
+        link = response.headers.get("link") or response.headers.get("Link")
+        assert link is not None
+        sdk_regex = re.compile(r'<(https?://[^>]+)>;\s+rel="([^"]+)"')
+        match = sdk_regex.search(link)
+        assert match is not None, f"the Hub SDK cannot parse {link!r}"
+        assert match.group(2) == "next"
+        target = match.group(1)
+        assert target.startswith("http://studio.local:1234/api/hub/discovery/models?"), target
+        assert "cursor=abc123" in target
+        assert "huggingface.co" not in target
 
     def test_no_upstream_link_means_no_header(self, monkeypatch):
         monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (200, b"[]", ""))
