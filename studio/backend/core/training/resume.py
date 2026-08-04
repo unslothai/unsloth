@@ -26,13 +26,32 @@ def _is_under_outputs(path: Path) -> bool:
         return False
 
 
-def current_training_backend() -> str:
-    """Backend a new run trains with on this host (worker.py's MLX fast-path)."""
-    from core.training.training import is_apple_silicon_training_platform
-    return "mlx" if is_apple_silicon_training_platform() else "pt"
+def current_training_backend() -> "str | None":
+    """Backend a new run trains with on this host, or None when it cannot train.
+
+    Mirrors worker.py's gate, including the detection fallback: Apple Silicon
+    with a broken/incomplete MLX stack is chat-only, so no checkpoint is
+    resumable there and the platform alone must not report "mlx"."""
+    from core.training.training import (
+        is_apple_silicon_training_platform,
+        should_use_mlx_training_backend,
+    )
+
+    if not is_apple_silicon_training_platform():
+        return "pt"
+    from utils.hardware import hardware as _hw
+
+    if _hw.DEVICE is None:
+        try:
+            _hw.detect_hardware()
+        except Exception:
+            return None
+    return "mlx" if should_use_mlx_training_backend(device = _hw.DEVICE) else None
 
 
 def has_resume_state(path_value: Optional[str]) -> bool:
+    if current_training_backend() is None:
+        return False
     if not path_value:
         return False
     # Backend-scoped: a bundle the other backend wrote cannot resume here, so it
@@ -189,7 +208,7 @@ def _checkpoint_written_at(path: Path) -> float:
         return -1.0
 
 
-def resume_step_cap(run_dir: Path) -> Optional[int]:
+def resume_step_cap(run_dir: Path, backend: Optional[str] = None) -> Optional[int]:
     """Highest step a plain resume may select, from a recorded rewind (None: no cap)."""
     try:
         marker = json.loads((run_dir / _REWIND_MARKER).read_text(encoding = "utf-8"))
@@ -207,9 +226,15 @@ def resume_step_cap(run_dir: Path) -> Optional[int]:
         return None
     # A checkpoint written after the rewind belongs to the new timeline and raises the
     # cap to itself; the abandoned siblings it did not reach stay out of selection.
+    # Only a checkpoint that validates counts: an interrupted post-rewind save must
+    # not raise the cap and let the scan fall back to an abandoned sibling below it.
     for checkpoint in run_dir.glob("checkpoint-*"):
         checkpoint_step = _checkpoint_step(checkpoint)
-        if checkpoint_step > step and _checkpoint_written_at(checkpoint) > recorded_at:
+        if (
+            checkpoint_step > step
+            and _checkpoint_written_at(checkpoint) > recorded_at
+            and is_resume_checkpoint_valid(checkpoint, backend = backend)
+        ):
             step = checkpoint_step
     return step
 
@@ -255,7 +280,7 @@ def get_resume_checkpoint_path(
     if is_resume_checkpoint_valid(path, expected_step, backend):
         return str(path)
 
-    step_cap = resume_step_cap(path)
+    step_cap = resume_step_cap(path, backend)
     checkpoints = sorted(path.glob("checkpoint-*"), key = _checkpoint_step, reverse = True)
     return next(
         (

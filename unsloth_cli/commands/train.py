@@ -42,7 +42,7 @@ def _external_resume_checkpoint(path: Path) -> "str | None":
     best_step, best = -1, None
     if path.is_dir():
         # Same rewind cap the outputs-root helper applies to its sibling scan.
-        step_cap = resume_step_cap(path)
+        step_cap = resume_step_cap(path, "mlx")
         for child in path.glob("checkpoint-*"):
             try:
                 step = int(child.name.rsplit("-", 1)[1])
@@ -178,12 +178,6 @@ def train(
                 )
             raise typer.Exit(code = 2)
 
-        if not dry_run:
-            # Rewinding onto an older checkpoint must outlive this run: without the
-            # record, a later resume would jump to the timeline it abandoned. A dry
-            # run resolves the target without starting one, so it records nothing.
-            record_resume_rewind(resume_checkpoint, backend = cli_backend)
-
         # New checkpoints continue in the run dir, not inside checkpoint-N/.
         cfg.training.output_dir = Path(resume_run_dir(resume_checkpoint))
 
@@ -219,6 +213,12 @@ def train(
             err = True,
         )
         raise typer.Exit(code = 2)
+
+    if resume_checkpoint:
+        # Rewinding onto an older checkpoint must outlive this run: without the
+        # record, a later resume would jump to the timeline it abandoned. Recorded
+        # only here, after every validation that could still reject the run.
+        record_resume_rewind(resume_checkpoint, backend = cli_backend)
 
     trainer = _create_cli_trainer(cfg.model, hf_token)
 

@@ -270,3 +270,12 @@ def test_pytorch_resume_rejects_mlx_only_checkpoints(outputs_home, monkeypatch):
         ["--dry-run", "--resume-from-checkpoint", "outputs/checkpoint-40"],
     )
     assert result.exit_code == 2, result.output
+
+
+def test_failed_start_records_no_rewind(outputs_home):
+    # Missing dataset rejects the run after checkpoint resolution; the marker
+    # must not survive a start that never happened.
+    _write_checkpoint(outputs_home / "outputs", 3)
+    result = CliRunner().invoke(_app(), ["--resume", "--model", "hf/tiny"])
+    assert result.exit_code == 2, result.output
+    assert not (outputs_home / "outputs" / "resume_rewind.json").exists()

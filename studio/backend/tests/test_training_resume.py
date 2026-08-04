@@ -773,3 +773,27 @@ def test_explicitly_resuming_the_newest_checkpoint_clears_the_rewind(monkeypatch
 
     assert (out / "resume_rewind.json").exists() is False
     assert resume.get_resume_checkpoint_path(str(out)) == str(newest)
+
+
+def test_invalid_post_rewind_checkpoint_does_not_lift_the_cap(monkeypatch, tmp_path):
+    # An interrupted save after a rewind writes trainer_state.json without model
+    # state; lifting the cap on it would re-admit the abandoned valid sibling.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    run = tmp_path / "outputs" / "run"
+    _write_checkpoint(run, 5)
+    _write_checkpoint(run, 10)
+    resume.record_resume_rewind(str(run / "checkpoint-5"), backend = "pt")
+    partial = run / "checkpoint-8"
+    partial.mkdir()
+    (partial / "trainer_state.json").write_text(json.dumps({"global_step": 8}))
+    assert resume.resume_step_cap(run, "pt") == 5
+    assert resume.get_resume_checkpoint_path(str(run), backend = "pt") == str(
+        run / "checkpoint-5"
+    )
+
+
+def test_has_resume_state_is_false_without_a_usable_backend(tmp_path, monkeypatch):
+    run = tmp_path / "run"
+    _write_checkpoint(run, 5)
+    monkeypatch.setattr(resume, "current_training_backend", lambda: None)
+    assert resume.has_resume_state(str(run)) is False

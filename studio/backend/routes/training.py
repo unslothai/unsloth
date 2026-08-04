@@ -280,6 +280,14 @@ async def start_training(
             # resume a PyTorch run (or the reverse), and that must fail here rather
             # than after model and dataset loading.
             resume_backend = current_training_backend()
+            if resume_backend is None:
+                # Chat-only host (e.g. Apple Silicon with a broken MLX stack):
+                # rejecting here keeps the source run unclaimed instead of
+                # spawning a continuation the worker is guaranteed to fail.
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Training is unavailable on this host, so the run cannot be resumed.",
+                )
             resume_checkpoint = get_resume_checkpoint_path(
                 resume_output_dir, backend = resume_backend
             )
@@ -289,9 +297,6 @@ async def start_training(
                     detail = "Resume checkpoint must include saved trainer state for this training backend.",
                 )
             request.resume_from_checkpoint = resume_checkpoint
-            # Rewinding onto an older checkpoint must outlive this run: without the
-            # record, a later resume would jump to the timeline it abandoned.
-            record_resume_rewind(resume_checkpoint, backend = resume_backend)
             # New files continue in the run dir even when a checkpoint-N was targeted.
             resume_output_dir = resume_run_dir(resume_checkpoint)
 
@@ -563,6 +568,13 @@ async def start_training(
             # teardown can take seconds), which would otherwise freeze every concurrent request. The diffusion admission is held ACROSS
             # the spawn so the decision is atomic: entering it re-tests the state under the service's own lock, and while held reserve() refuses.
             with _diffusion_gpu_admission():
+                if request.resume_from_checkpoint:
+                    # Rewinding onto an older checkpoint must outlive this run;
+                    # recorded only here, past every pre-start rejection, so a
+                    # refused start cannot cap future resumes.
+                    record_resume_rewind(
+                        request.resume_from_checkpoint, backend = current_training_backend()
+                    )
                 success = await asyncio.to_thread(
                     backend.start_training,
                     job_id = job_id,
