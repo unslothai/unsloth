@@ -3591,9 +3591,9 @@ def test_startup_failure_output_redacts_minted_key(monkeypatch, tmp_path, capsys
 
 
 def test_codex_preflight_failure_tears_down_auto_served(fake_studio, monkeypatch):
-    # The Codex GGUF preflight runs after _connect may have auto-started a server but
-    # before _run's teardown finally, so a preflight rejection must not leave the server
-    # holding the port/GPU (waiting on the atexit backstop).
+    # Listing unavailable: the check falls back to post-connect and must still
+    # tear down an auto-started server instead of leaving it to atexit.
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     monkeypatch.setattr(start, "find_studio_server", lambda: None)
     started = {}
     fake = SimpleNamespace(pid = 999, poll = lambda: None)
@@ -5722,3 +5722,84 @@ def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
     # Unsloth never auto-appends its own resume token when the user drives resume.
     assert captured["command"].count("--resume") == 1
     assert "--continue" not in captured["command"]
+
+
+def _fake_hub_listing(monkeypatch, files_by_repo):
+    calls = []
+
+    def fake(repo):
+        calls.append(repo)
+        return files_by_repo.get(repo)
+
+    monkeypatch.setattr(start, "_hub_gguf_files", fake)
+    return calls
+
+
+def test_codex_preflight_rejects_non_gguf_repo(monkeypatch, capsys):
+    _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
+    with pytest.raises(typer.Exit) as excinfo:
+        start._preflight_codex_gguf("mlx-community/Qwen3-0.6B-4bit")
+    assert excinfo.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "Codex needs a GGUF model" in err
+    assert "Try:" not in err
+
+
+def test_codex_preflight_passes_gguf_repo_and_splits_variant(monkeypatch):
+    calls = _fake_hub_listing(monkeypatch, {"unsloth/Qwen3-0.6B-GGUF": ["Qwen3-0.6B-Q4_K_M.gguf"]})
+    start._preflight_codex_gguf("unsloth/Qwen3-0.6B-GGUF:Q4_K_M")
+    assert calls == ["unsloth/Qwen3-0.6B-GGUF"]
+
+
+def test_codex_preflight_defers_when_listing_unavailable(monkeypatch):
+    _fake_hub_listing(monkeypatch, {})
+    start._preflight_codex_gguf("owner/private-model")
+
+
+def test_codex_preflight_skips_paths_and_empty_model(monkeypatch):
+    calls = _fake_hub_listing(monkeypatch, {})
+    start._preflight_codex_gguf("./models/foo.gguf")
+    start._preflight_codex_gguf(None)
+    assert calls == []
+
+
+def test_codex_gguf_failure_suggests_only_a_verified_sibling(monkeypatch, capsys):
+    _fake_hub_listing(monkeypatch, {"owner/model-GGUF": ["model-Q4_K_M.gguf"]})
+    with pytest.raises(typer.Exit):
+        start._fail_codex_needs_gguf("owner/model")
+    assert "Try: unsloth start codex --model owner/model-GGUF" in capsys.readouterr().err
+
+
+def test_hub_gguf_files_parses_listing(monkeypatch):
+    payload = {"siblings": [{"rfilename": "README.md"}, {"rfilename": "model-Q4_K_M.GGUF"}]}
+    monkeypatch.setattr(
+        start.urllib.request,
+        "urlopen",
+        lambda request, timeout: io.BytesIO(json.dumps(payload).encode()),
+    )
+    assert start._hub_gguf_files("owner/model") == ["model-Q4_K_M.GGUF"]
+
+
+def test_hub_gguf_files_unknown_on_error_or_empty_listing(monkeypatch):
+    def unauthorized(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 401, "unauthorized", None, None)
+
+    monkeypatch.setattr(start.urllib.request, "urlopen", unauthorized)
+    assert start._hub_gguf_files("owner/missing") is None
+    monkeypatch.setattr(
+        start.urllib.request, "urlopen", lambda request, timeout: io.BytesIO(b'{"siblings": []}')
+    )
+    assert start._hub_gguf_files("owner/empty") is None
+
+
+def test_codex_rejects_non_gguf_model_before_connect(monkeypatch):
+    monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: [])
+    monkeypatch.setattr(
+        start, "_connect", lambda *a, **k: pytest.fail("preflight must run before connect")
+    )
+    result = CliRunner().invoke(
+        start.start_app, ["codex", "--model", "mlx-community/Qwen3-0.6B-4bit"]
+    )
+    assert result.exit_code == 1
+    assert "Codex needs a GGUF model" in result.output

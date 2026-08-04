@@ -1643,6 +1643,45 @@ def _resolve_model(
     return resident
 
 
+def _hub_gguf_files(repo: str) -> Optional[list]:
+    endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
+    request = urllib.request.Request(
+        f"{endpoint}/api/models/{repo}",
+        headers = {"User-Agent": _USER_AGENT},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout = 10) as response:
+            info = json.loads(response.read().decode() or "{}")
+    except Exception:
+        return None
+    siblings = info.get("siblings")
+    if not isinstance(siblings, list) or not siblings:
+        return None
+    names = [s.get("rfilename") for s in siblings if isinstance(s, dict)]
+    return [n for n in names if isinstance(n, str) and n.lower().endswith(".gguf")]
+
+
+def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
+    message = f"Codex needs a GGUF model served by llama-server, but {model_id} is not one."
+    guess = f"{model_id}-GGUF"
+    if "gguf" not in model_id.lower() and _hub_gguf_files(guess):
+        message += f" Try: unsloth start codex --model {guess}"
+    _fail(message)
+
+
+def _preflight_codex_gguf(model: Optional[str]) -> None:
+    # Only a complete listing with no .gguf files rejects; unknown defers to
+    # the post-connect check so an unreachable hub never blocks a launch.
+    if not model:
+        return
+    repo, _ = _split_repo_variant(model)
+    if not _is_hub_model_id(repo):
+        return
+    files = _hub_gguf_files(repo)
+    if files is not None and not files:
+        _fail_codex_needs_gguf(repo)
+
+
 def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
     # Codex always streams, and Unsloth only streams /v1/responses from llama-server.
     try:
@@ -1653,11 +1692,7 @@ def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
         raise
     if status.get("is_gguf"):
         return
-    hint = model_id if "gguf" in model_id.lower() else f"{model_id}-GGUF"
-    _fail(
-        f"Codex needs a GGUF model served by llama-server, but {model_id} is on "
-        f"the transformers backend. Try: unsloth start codex --model {hint}"
-    )
+    _fail_codex_needs_gguf(model_id)
 
 
 _DYNAMIC_SECTIONS_FLAG = "--exclude-dynamic-system-prompt-sections"
@@ -3524,6 +3559,7 @@ def codex(
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     install_hint = _npm_install_hint("@openai/codex")
     _require_agent_for_launch("codex", install_hint, launch)
+    _preflight_codex_gguf(model)
     base, key, entry = _connect(
         api_key,
         model,
