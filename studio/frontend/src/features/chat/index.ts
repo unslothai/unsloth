@@ -99,6 +99,7 @@ export {
 } from "./utils/pre-stream-run-reservation";
 export {
   localPromptQueueModelBoundary,
+  planLocalPromptQueueStop,
   shouldAbortPendingQueueForModelBoundary,
   shouldAbortPendingQueueForSettingsChange,
 } from "./utils/prompt-queue-model-boundary";

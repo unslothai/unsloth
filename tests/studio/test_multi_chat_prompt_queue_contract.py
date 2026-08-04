@@ -497,6 +497,24 @@ def test_queued_settings_are_thread_scoped_without_cross_chat_fallback():
     assert ".slice(Math.max(run.index, 0))" in THREAD
     assert ".some((item) => item.target.usesLocalModel)" in THREAD
     assert "local: promptQueueRunUsesLocalModel(run)" in THREAD
+    assert "detail: { threadIds, localOnly: true }" in QUEUE_BOUNDARY
+    assert "stopLocalPromptQueueRunsForThreadIds(threadIds ?? [])" in THREAD
+    local_queue_stop = _between(
+        THREAD,
+        "function stopLocalPromptQueueRun(run: PromptQueueRun)",
+        "function stopLocalPromptQueueRunsForThreadIds(threadIds: string[])",
+    )
+    assert "planLocalPromptQueueStop(" in local_queue_stop
+    assert "activeItem?.target.cancel();" in local_queue_stop
+    pending_factory_stop = _between(
+        THREAD,
+        "function cancelPendingPromptQueueFactoriesForStop<",
+        "function stopAllPromptQueueRuns()",
+    )
+    assert pending_factory_stop.index("if (localOnly)") < pending_factory_stop.index(
+        "for (const [key, reservation]"
+    )
+    assert "cancelPendingPromptQueueFactoriesForStop(" in THREAD
     assert "temporary: incognitoAtQueueStart" in THREAD
     assert "temporary: promptQueueRunIsTemporary(run)" in THREAD
     assert "dispatched: Boolean(getActivePromptQueueItem(run)?.dispatched)" in THREAD

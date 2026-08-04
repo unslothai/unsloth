@@ -7,6 +7,7 @@ export const PROMPT_QUEUE_RUN_FAILED_EVENT = "unsloth:prompt-queue-run-failed";
 export type PromptQueueStopEventDetail = {
   threadIds?: string[];
   temporaryOnly?: boolean;
+  localOnly?: boolean;
 };
 
 export type PromptQueueRunFailedEventDetail = {
@@ -43,7 +44,14 @@ export function requestLocalPromptQueueStop(
         .map(([threadId]) => threadId),
     ]),
   ];
-  requestPromptQueueStop(threadIds);
+  if (typeof window === "undefined" || threadIds.length === 0) {
+    return;
+  }
+  window.dispatchEvent(
+    new CustomEvent<PromptQueueStopEventDetail>(PROMPT_QUEUE_STOP_EVENT, {
+      detail: { threadIds, localOnly: true },
+    }),
+  );
 }
 
 export function requestTemporaryPromptQueueStop() {

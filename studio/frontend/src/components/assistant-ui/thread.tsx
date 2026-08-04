@@ -112,6 +112,7 @@ import {
   hasPreStreamRunReservation,
   localPromptQueueModelBoundary,
   notifyPromptQueueRunFailed,
+  planLocalPromptQueueStop,
   registerQueuedChatRunSettings,
   releasePreStreamRunReservation,
   reservePreStreamRun,
@@ -1050,21 +1051,23 @@ function startPromptQueue(
   }
 }
 
-function stopPromptQueueRun(threadIds?: string[]) {
-  const runs: PromptQueueRun[] = [];
-  const addRun = (run: PromptQueueRun | null) => {
-    if (run && !runs.includes(run)) {
-      runs.push(run);
-    }
-  };
-  if (threadIds && threadIds.length > 0) {
-    for (const id of compactIds(threadIds)) {
-      addRun(findPromptQueueRunByThreadIds([id]));
-    }
-  } else {
-    runs.push(...promptQueueRuns.values());
+function getPromptQueueRunsForThreadIds(threadIds?: string[]) {
+  if (!threadIds || threadIds.length === 0) {
+    return Array.from(promptQueueRuns.values());
   }
-  for (const run of runs) {
+
+  const runs = new Set<PromptQueueRun>();
+  for (const id of compactIds(threadIds)) {
+    const run = findPromptQueueRunByThreadIds([id]);
+    if (run) {
+      runs.add(run);
+    }
+  }
+  return Array.from(runs);
+}
+
+function stopPromptQueueRun(threadIds?: string[]) {
+  for (const run of getPromptQueueRunsForThreadIds(threadIds)) {
     const activeItem = getActivePromptQueueItem(run);
     const activeTarget = activeItem?.target;
     const shouldCancelActiveRun = Boolean(activeItem?.dispatched);
@@ -1083,6 +1086,81 @@ function stopPromptQueueRun(threadIds?: string[]) {
 
 function stopPromptQueueRunForThreadIds(threadIds: string[]) {
   stopPromptQueueRun(threadIds);
+}
+
+function stopLocalPromptQueueRun(run: PromptQueueRun) {
+  const activeItem = getActivePromptQueueItem(run);
+  const plan = planLocalPromptQueueStop(
+    run.items.map((item) => ({
+      usesLocalModel: item.target.usesLocalModel,
+      dispatched: item.dispatched,
+    })),
+    run.index,
+  );
+  if (plan.stopEntireRun) {
+    deletePromptQueueRun(run);
+    try {
+      activeItem?.target.cancel();
+    } catch {
+      // The active local run may have already ended.
+    }
+    return;
+  }
+  if (plan.retainedItemIndexes.length === run.items.length) {
+    return;
+  }
+
+  run.items = plan.retainedItemIndexes.map((index) => run.items[index]);
+  if (!getActivePromptQueueItem(run)) {
+    deletePromptQueueRun(run);
+    return;
+  }
+  if (plan.activeItemRemoved) {
+    clearPromptQueueRetryTimer(run);
+  }
+  syncPromptQueueUI();
+  if (plan.activeItemRemoved && run.index >= 0 && !run.waitingForTargetIdle) {
+    requestPromptQueuePump(50);
+  }
+}
+
+function stopLocalPromptQueueRunsForThreadIds(threadIds: string[]) {
+  if (threadIds.length === 0) {
+    return;
+  }
+  for (const run of getPromptQueueRunsForThreadIds(threadIds)) {
+    stopLocalPromptQueueRun(run);
+  }
+  requestPromptQueuePumpIfReady();
+}
+
+function cancelPendingPromptQueueFactoriesForStop<
+  T extends { temporary: boolean; cancelled: boolean },
+>(
+  pendingFactories: Map<string, T>,
+  aliases: string[],
+  detail: PromptQueueStopEventDetail,
+) {
+  const { threadIds, temporaryOnly, localOnly } = detail;
+  if (localOnly) {
+    // Advancing the model boundary invalidates local factories once hydrated.
+    // External factories must remain intact.
+    return;
+  }
+  if (
+    threadIds &&
+    threadIds.length > 0 &&
+    !threadIds.some((threadId) => aliases.includes(threadId))
+  ) {
+    return;
+  }
+  for (const [key, reservation] of pendingFactories) {
+    if (temporaryOnly && !reservation.temporary) {
+      continue;
+    }
+    reservation.cancelled = true;
+    pendingFactories.delete(key);
+  }
 }
 
 function stopAllPromptQueueRuns() {
@@ -1121,8 +1199,12 @@ function handlePromptQueueRunFailed(threadId?: string | null) {
 
 if (typeof window !== "undefined") {
   window.addEventListener(PROMPT_QUEUE_STOP_EVENT, (event) => {
-    const { threadIds, temporaryOnly } =
+    const { threadIds, temporaryOnly, localOnly } =
       (event as CustomEvent<PromptQueueStopEventDetail>).detail ?? {};
+    if (localOnly) {
+      stopLocalPromptQueueRunsForThreadIds(threadIds ?? []);
+      return;
+    }
     if (threadIds && threadIds.length > 0) {
       stopPromptQueueRunForThreadIds(threadIds);
       return;
@@ -2140,29 +2222,15 @@ const Composer: FC<{
     };
   }, []);
   useEffect(() => {
-    const cancelPendingQueueFactories = (
-      event: Event,
-    ) => {
-      const { threadIds, temporaryOnly } =
+    const cancelPendingQueueFactories = (event: Event) => {
+      const detail =
         (event as CustomEvent<PromptQueueStopEventDetail>).detail ?? {};
-      if (threadIds && threadIds.length > 0) {
-        const state = aui.threadListItem().getState();
-        const aliases = compactIds([
-          state.id,
-          state.remoteId,
-          referenceThreadId,
-        ]);
-        if (!threadIds.some((threadId) => aliases.includes(threadId))) {
-          return;
-        }
-      }
-      for (const [key, reservation] of promptQueueStartPendingRef.current) {
-        if (temporaryOnly && !reservation.temporary) {
-          continue;
-        }
-        reservation.cancelled = true;
-        promptQueueStartPendingRef.current.delete(key);
-      }
+      const state = aui.threadListItem().getState();
+      cancelPendingPromptQueueFactoriesForStop(
+        promptQueueStartPendingRef.current,
+        compactIds([state.id, state.remoteId, referenceThreadId]),
+        detail,
+      );
     };
     window.addEventListener(
       PROMPT_QUEUE_STOP_EVENT,
