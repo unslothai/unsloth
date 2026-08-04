@@ -11,6 +11,7 @@ import io
 import re
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -208,6 +209,18 @@ def test_gate_success_applies_route_equivalent_change(monkeypatch):
 # ── ordering inside run_server (source-level, repo convention) ───────
 
 
+def test_cloudflare_controller_publication_updates_health_state(monkeypatch):
+    monkeypatch.setattr(run, "_cloudflare_url", None)
+    app_state = SimpleNamespace(cloudflare_url = None)
+    run._publish_cloudflare_url(app_state, "https://live.trycloudflare.com")
+    assert (run._cloudflare_url, app_state.cloudflare_url) == (
+        "https://live.trycloudflare.com",
+        "https://live.trycloudflare.com",
+    )
+    run._publish_cloudflare_url(app_state, None)
+    assert (run._cloudflare_url, app_state.cloudflare_url) == (None, None)
+
+
 def test_gate_runs_before_server_bind_in_source():
     # The gate must run before the uvicorn socket binds: on a wildcard bind
     # the served HTML injects the bootstrap credential for first login, so a
@@ -215,8 +228,10 @@ def test_gate_runs_before_server_bind_in_source():
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     gate_call = src.index("_pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(")
     thread_start = src.index("thread.start()")
-    tunnel_start = src.index("_cloudflare_url = start_studio_tunnel(port)")
-    assert gate_call < thread_start < tunnel_start
+    tunnel_start = src.index('start_studio_tunnel(port, managed_by = "launch")')
+    callback_bind = src.index("set_studio_tunnel_url_callback(")
+    assert gate_call < thread_start < callback_bind < tunnel_start
+    assert "_cloudflare_url = start_studio_tunnel" not in src
     # The fail-closed branch exits before any server exists.
     refusal = src[gate_call:thread_start]
     assert "sys.exit(1)" in refusal

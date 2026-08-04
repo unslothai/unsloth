@@ -1195,6 +1195,13 @@ _shutdown_event = None
 # None when there is no tunnel (loopback, disabled, or a silently-ignored failure).
 _cloudflare_url = None
 
+
+def _publish_cloudflare_url(app_state, cloudflare_url: "Optional[str]") -> None:
+    global _cloudflare_url
+    _cloudflare_url = cloudflare_url
+    app_state.cloudflare_url = cloudflare_url
+
+
 # Public reachability from the last _verify_global_reachability run, read by the
 # Cloudflare banner line. True when the public ip:port probe confirmed reachable,
 # False when it confirmed NOT reachable, None when the probe did not run or could
@@ -2086,10 +2093,11 @@ def run_server(
 
     if _cloudflare_enabled:
         try:  # best-effort: any failure must not block startup
+            from cloudflare_tunnel import set_studio_tunnel_url_callback
             from cloudflare_tunnel import start_studio_tunnel, stop_studio_tunnel
 
-            _cloudflare_url = start_studio_tunnel(port)
-            app.state.cloudflare_url = _cloudflare_url
+            set_studio_tunnel_url_callback(lambda url: _publish_cloudflare_url(app.state, url))
+            start_studio_tunnel(port, managed_by = "launch")
             # Backstop: tear the tunnel down even on an abnormal exit that bypasses
             # _graceful_shutdown (e.g. an exception after startup -> sys.exit). Idempotent.
             atexit.register(stop_studio_tunnel)
