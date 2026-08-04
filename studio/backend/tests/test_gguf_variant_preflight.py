@@ -37,7 +37,7 @@ def remote_gguf_repo(monkeypatch):
         "_find_llama_server_binary",
         staticmethod(lambda *, include_denied = False: "/fake/llama-server"),
     )
-    monkeypatch.setattr(llama_cpp, "_cached_variant_resolution", lambda repo, variant: (None, []))
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", lambda repo, variant, **kwargs: None)
 
 
 def test_unknown_variant_rejected_before_load(remote_gguf_repo):
@@ -61,15 +61,30 @@ def test_variant_match_is_case_insensitive(remote_gguf_repo):
     assert config.gguf_variant == "q4_k_m"
 
 
-def test_variant_only_in_local_cache_accepted(remote_gguf_repo, monkeypatch):
+def test_variant_only_in_verified_local_cache_accepted(remote_gguf_repo, monkeypatch):
     monkeypatch.setattr(
         llama_cpp,
-        "_cached_variant_resolution",
-        lambda repo, variant: ("Llama-3.2-1B-Instruct-OLD_Q2.gguf", []),
+        "cached_gguf_for_load",
+        lambda repo, variant, **kwargs: "/cache/Llama-3.2-1B-Instruct-OLD_Q2.gguf",
     )
     config = ModelConfig.from_identifier(REPO, gguf_variant = "OLD_Q2")
     assert config is not None
     assert config.gguf_variant == "OLD_Q2"
+
+
+def test_cache_escape_uses_size_verified_predicate(remote_gguf_repo, monkeypatch):
+    calls = {}
+
+    def fake_cached_gguf_for_load(repo, variant, **kwargs):
+        calls["repo"] = repo
+        calls["kwargs"] = kwargs
+        return None
+
+    monkeypatch.setattr(llama_cpp, "cached_gguf_for_load", fake_cached_gguf_for_load)
+    with pytest.raises(ValueError):
+        ModelConfig.from_identifier(REPO, gguf_variant = "OLD_Q2")
+    assert calls["repo"] == REPO
+    assert calls["kwargs"].get("verify_sizes") is True
 
 
 def test_variant_matching_uncollapsed_repo_file_accepted(remote_gguf_repo, monkeypatch):

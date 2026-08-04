@@ -3011,13 +3011,14 @@ class ModelConfig:
                 variant = gguf_variant
                 if variant:
                     from core.inference.llama_cpp import (
-                        _cached_variant_resolution,
                         _gguf_files_for_variant,
+                        cached_gguf_for_load,
                     )
 
                     # Reject before the load path unloads the resident model.
                     # Only a live, complete repo listing can prove the variant
-                    # absent; without one, let the load path resolve it.
+                    # absent; without one, let the load path resolve it. The
+                    # cache escape mirrors the load path's own reuse predicate.
                     try:
                         from huggingface_hub import list_repo_files
                         repo_files = list_repo_files(identifier, token = hf_token)
@@ -3026,7 +3027,9 @@ class ModelConfig:
                     if (
                         repo_files
                         and not _gguf_files_for_variant(repo_files, variant)
-                        and not _cached_variant_resolution(identifier, variant)[0]
+                        and not cached_gguf_for_load(
+                            identifier, variant, verify_sizes = True, hf_token = hf_token
+                        )
                     ):
                         available = ", ".join(v.quant for v in variants)
                         raise ValueError(

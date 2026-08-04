@@ -1434,7 +1434,7 @@ def _loaded_models(base: str, key: str) -> list:
 
 def _model_still_loaded(base: str, key: str, model_id: object) -> bool:
     try:
-        models = _http_json("GET", f"{base}/v1/models", key).get("data", [])
+        models = _http_json("GET", f"{base}/v1/models", key, timeout = 5).get("data", [])
     except Exception:
         return False
     return any(m.get("id") == model_id and m.get("loaded") is not False for m in models)
@@ -1609,9 +1609,10 @@ def _resolve_model(
                 payload["gpu_layers"] = -1
         try:
             loaded = _load_model_with_progress(base, key, requested, load, payload)
-        except BaseException:
+        except Exception:
             # The warning above promised an unload; if the server refused the
-            # load before evicting anything, say so.
+            # load before evicting anything, say so. Not BaseException: Ctrl+C
+            # must stay immediate, without a probe or a survivor claim.
             if announced_switch and _model_still_loaded(base, key, active_id):
                 typer.echo(f"Nothing was unloaded; {active_id} is still serving.", err = True)
             raise
