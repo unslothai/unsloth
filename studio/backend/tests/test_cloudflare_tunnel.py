@@ -1175,7 +1175,7 @@ def test_tunnel_dials_ipv4_loopback_origin():
     # The studio server and the preview listener bind 127.0.0.1; on hosts where
     # localhost resolves only to ::1, a localhost origin makes cloudflared dial
     # an address nothing listens on and every tunnel probe fails.
-    t = ct.CloudflareTunnel(binary="cloudflared", port=4321)
+    t = ct.CloudflareTunnel(binary = "cloudflared", port = 4321)
     captured = {}
 
     class _P:
