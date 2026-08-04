@@ -162,23 +162,25 @@ def usable_prequant_source(
     return src
 
 
-def prequant_checkpoint_cached(source: Any, *, cache_dir: Optional[str] = None) -> bool:
-    """True when a hosted (``kind == "repo"``) checkpoint is ALREADY in the local Hub cache.
+def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> Optional[str]:
+    """The path of a hosted (``kind == "repo"``) checkpoint ALREADY in the local Hub cache.
 
     A pure cache lookup -- a refs read plus a stat, no network -- so memory planning can ask it on
     every pick. Both names ``_resolve_checkpoint_path`` would fetch count, and both cache roots are
-    searched: the loader pins the LIVE cache setting while ``hf_hub_download`` falls back to
-    huggingface_hub's import-time constant, so the file can legitimately sit under either.
+    searched: Studio pins the LIVE cache setting while an unpinned ``hf_hub_download`` falls back
+    to huggingface_hub's import-time constant, so the file can legitimately sit under either. The
+    loader resolves through this same helper, so a hit found here is the file it loads -- never a
+    second multi-GB download into the other root.
 
-    Never raises: an answer it cannot give is False, i.e. "this would have to download"."""
+    Never raises: an answer it cannot give is None, i.e. "this would have to download"."""
     if source is None or getattr(source, "kind", None) != "repo":
-        return False
+        return None
     try:
         import os
 
         from huggingface_hub import try_to_load_from_cache
     except Exception:  # noqa: BLE001 — no cache API to ask: treat as not cached
-        return False
+        return None
     for root in (cache_dir, None) if cache_dir else (None,):
         for name in (source.filename, source.fallback_filename):
             if not name:
@@ -189,8 +191,13 @@ def prequant_checkpoint_cached(source: Any, *, cache_dir: Optional[str] = None) 
                 continue
             # A str is the cached path; a miss is None and a known-absent file is a sentinel object.
             if isinstance(hit, str) and os.path.isfile(hit):
-                return True
-    return False
+                return hit
+    return None
+
+
+def prequant_checkpoint_cached(source: Any, *, cache_dir: Optional[str] = None) -> bool:
+    """True when ``source`` resolves from the cache, i.e. enabling prequant costs no download."""
+    return cached_checkpoint_path(source, cache_dir = cache_dir) is not None
 
 
 def _pin_kernel_preference(state_dict: Any, logger: Any = None) -> int:
@@ -237,9 +244,14 @@ def load_prequantized_transformer(
     scheme: str,
     min_features: Optional[int] = None,
     fast_accum: Optional[bool] = None,
+    cache_dir: Optional[str] = None,
     logger: Any = None,
 ) -> Optional[Any]:
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
+
+    ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
+    lands under huggingface_hub's import-time constant, which a mid-session cache change does not
+    update, so the checkpoint would download again into a root Studio is no longer reading.
 
     Returns the placed transformer, or None on any problem (missing / mismatched /
     unreadable checkpoint, or unsupported meta-init) so the caller falls back to
@@ -259,7 +271,7 @@ def load_prequantized_transformer(
             )
             return None
 
-        path = _resolve_checkpoint_path(source, hf_token)
+        path = _resolve_checkpoint_path(source, hf_token, cache_dir)
         if path is None:
             return None
 
@@ -309,7 +321,9 @@ def load_prequantized_transformer(
         return None
 
 
-def _resolve_checkpoint_path(source: PrequantSource, hf_token: Optional[str]) -> Optional[str]:
+def _resolve_checkpoint_path(
+    source: PrequantSource, hf_token: Optional[str], cache_dir: Optional[str] = None
+) -> Optional[str]:
     """The local file path for ``source``, downloading from the Hub if needed; None if absent."""
     if source.kind == "path":
         import os
@@ -326,15 +340,28 @@ def _resolve_checkpoint_path(source: PrequantSource, hf_token: Optional[str]) ->
             class EntryNotFoundError(Exception):  # type: ignore[no-redef]
                 pass
 
+        # Reuse the exact hit the caller cleared this load on: it declined the download only
+        # because a copy exists, and it searched the live cache root as well as huggingface_hub's
+        # import-time one. Without this an unpinned download re-fetches the multi-GB checkpoint
+        # into whichever root the constant names, which is not the one Studio just looked in.
+        cached = cached_checkpoint_path(source, cache_dir = cache_dir)
+        if cached is not None:
+            return cached
         try:
             return hf_hub_download(
-                repo_id = source.location, filename = source.filename, token = hf_token
+                repo_id = source.location,
+                filename = source.filename,
+                token = hf_token,
+                cache_dir = cache_dir,
             )
         except EntryNotFoundError:
             if not source.fallback_filename or source.fallback_filename == source.filename:
                 raise
             return hf_hub_download(
-                repo_id = source.location, filename = source.fallback_filename, token = hf_token
+                repo_id = source.location,
+                filename = source.fallback_filename,
+                token = hf_token,
+                cache_dir = cache_dir,
             )
     return None
 

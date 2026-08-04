@@ -458,8 +458,8 @@ def _assert_base_repo_accessible(base_repo: str, hf_token: Optional[str]) -> Non
 
     The Hub enforces gating on the BYTE endpoint only: ``model_info`` answers anonymously for
     every gated FLUX / Krea / Ideogram repo, so nothing earlier in the pick sees a problem. The
-    probe is the pipeline manifest the load fetches anyway, and runs ONLY when ``gated`` is set
-    ("auto"/"manual", a truthy STRING, never True), so an open repo costs one metadata call.
+    probe is a HEAD on the pipeline manifest the load fetches anyway, and runs ONLY when ``gated``
+    is set ("auto"/"manual", a truthy STRING, never True), so an open repo costs one metadata call.
 
     Fail-open on any non-access error: offline/transient must not block a load."""
     repo = (base_repo or "").strip()
@@ -472,7 +472,7 @@ def _assert_base_repo_accessible(base_repo: str, hf_token: Optional[str]) -> Non
     except OSError:  # invalid path characters -> a remote id, not a local path
         pass
     try:
-        from huggingface_hub import HfApi, hf_hub_download
+        from huggingface_hub import HfApi, get_hf_file_metadata, hf_hub_url
         from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError
     except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
         return
@@ -489,7 +489,11 @@ def _assert_base_repo_accessible(base_repo: str, hf_token: Optional[str]) -> Non
     if not gated:
         return
     try:
-        hf_hub_download(repo, "model_index.json", token = hf_token, cache_dir = hub_cache_dir())
+        # A metadata HEAD, never hf_hub_download: when the manifest is already cached the download
+        # answers from disk instead of the Hub (a 401 HEAD is stored as head_call_error and the
+        # cached pointer is returned), so a removed or expired token would pass this probe and 401
+        # again mid-prefetch. The HEAD hits the same /resolve/ byte URL the shards do.
+        get_hf_file_metadata(hf_hub_url(repo, "model_index.json"), token = hf_token)
     except GatedRepoError:
         raise ValueError(_repo_access_message(repo, gated = True)) from None
     except Exception:  # noqa: BLE001 — no manifest / offline / transient is not an access verdict
@@ -2261,6 +2265,9 @@ class DiffusionBackend:
                     min_features = DEFAULT_MIN_LINEAR_FEATURES,
                     # Only enforced when the caller forces fp8 fast-accum; a checkpoint that baked the other choice falls to the dense path.
                     fast_accum = fast_accum,
+                    # The same root _uncached_prequant_repo cleared this load against, so a hit it
+                    # found is reused instead of re-downloaded under the import-time constant.
+                    cache_dir = hub_cache_dir(),
                     logger = logger,
                 )
                 if transformer is not None:

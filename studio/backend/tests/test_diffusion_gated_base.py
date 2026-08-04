@@ -5,9 +5,9 @@
 
 Hugging Face enforces gating on the BYTE endpoint only, so ``model_info`` answers anonymously
 for FLUX / Krea / Ideogram and the download plan is built from a full file list before anything
-401s. These stub ``HfApi`` / ``hf_hub_download`` to pin both halves of that asymmetry: the plan
-must fail up front naming the repo and its licence page, and every non-access failure must fall
-through so an offline or flaky host can still load.
+401s. These stub ``HfApi`` / ``get_hf_file_metadata`` to pin both halves of that asymmetry: the
+plan must fail up front naming the repo and its licence page, and every non-access failure must
+fall through so an offline or flaky host can still load.
 """
 
 from __future__ import annotations
@@ -49,7 +49,7 @@ def _stub_hub(
     model_info_error = None,
     download_error = None,
 ):
-    """Point HfApi.model_info / hf_hub_download at canned outcomes; returns the probe log."""
+    """Point HfApi.model_info / the byte-URL HEAD at canned outcomes; returns the probe log."""
     probed: list = []
 
     class _Api:
@@ -63,20 +63,23 @@ def _stub_hub(
                 raise model_info_error
             return info
 
-    def _download(
-        repo_id,
-        filename,
+    def _metadata(
+        url,
         token = None,
-        cache_dir = None,
         **kwargs,
     ):
-        probed.append((repo_id, filename))
+        probed.append(url)
         if download_error is not None:
             raise download_error
-        return "/cache/model_index.json"
+        return types.SimpleNamespace(etag = "abc", size = 1000)
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
-    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+    monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", _metadata)
+    # The probe must never route through the download API: a cached manifest answers it from disk.
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download",
+        lambda *a, **k: pytest.fail("the access probe must not be satisfiable from the cache"),
+    )
     return probed
 
 
@@ -97,7 +100,7 @@ def test_a_gated_base_fails_at_plan_time_naming_the_repo_and_its_licence(monkeyp
     assert f"https://huggingface.co/{GATED_REPO}" in detail
     assert "licence" in detail.lower() and "token" in detail.lower()
     # Probed the pipeline manifest the load fetches anyway, not a multi-GB shard.
-    assert probed == [(GATED_REPO, "model_index.json")]
+    assert probed == [f"https://huggingface.co/{GATED_REPO}/resolve/main/model_index.json"]
 
 
 def test_an_open_base_is_never_probed(monkeypatch):
@@ -141,6 +144,29 @@ def test_unreadable_metadata_is_named_too(monkeypatch):
     with pytest.raises(ValueError) as gated:
         _assert_base_repo_accessible(GATED_REPO, None)
     assert "licence" in str(gated.value).lower()
+
+
+def test_a_cached_manifest_cannot_satisfy_the_probe(monkeypatch, tmp_path):
+    # hf_hub_download keeps a 401 HEAD as head_call_error and then returns the cached pointer
+    # (huggingface_hub file_download._hf_hub_download_to_cache_dir), so a manifest already on disk
+    # would clear the preflight for a removed or expired token and 401 again mid-prefetch. Only a
+    # bare HEAD verifies current access, so _stub_hub fails the test on any download call.
+    root = tmp_path / "hub"
+    folder = root / f"models--{GATED_REPO.replace('/', '--')}"
+    commit = "c" * 40
+    (folder / "refs").mkdir(parents = True)
+    (folder / "refs" / "main").write_text(commit)
+    (folder / "snapshots" / commit).mkdir(parents = True)
+    (folder / "snapshots" / commit / "model_index.json").write_text("{}")
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(root))
+
+    probed = _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = _gated_error())
+
+    with pytest.raises(ValueError) as excinfo:
+        _assert_base_repo_accessible(GATED_REPO, None)
+
+    assert GATED_REPO in str(excinfo.value)
+    assert probed == [f"https://huggingface.co/{GATED_REPO}/resolve/main/model_index.json"]
 
 
 def test_local_and_non_repo_bases_are_skipped(monkeypatch, tmp_path):

@@ -500,8 +500,14 @@ def test_load_repo_source_allowed_without_optin(monkeypatch, tmp_path):
 
     downloaded = tmp_path / "transformer_fp8.pt"
     downloaded.write_bytes(b"x")
+    roots: list = []
+
+    def _dl(repo_id, filename, token = None, cache_dir = None):
+        roots.append(cache_dir)
+        return str(downloaded)
+
     hub = types.ModuleType("huggingface_hub")
-    hub.hf_hub_download = lambda repo_id, filename, token = None: str(downloaded)
+    hub.hf_hub_download = _dl
     monkeypatch.setitem(sys.modules, "huggingface_hub", hub)
 
     source = PrequantSource(kind = "repo", location = "org/hosted-fp8", filename = "transformer_fp8.pt")
@@ -513,9 +519,12 @@ def test_load_repo_source_allowed_without_optin(monkeypatch, tmp_path):
         dtype = "bfloat16",
         hf_token = None,
         scheme = "fp8",
+        cache_dir = "/live-hub",
         logger = None,
     )
     assert result is not None
+    # The loader pins the caller's live cache root, so the fetch cannot split across two roots.
+    assert roots == ["/live-hub"]
 
 
 def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
@@ -538,6 +547,7 @@ def test_load_repo_source_falls_back_to_legacy_filename(monkeypatch, tmp_path):
         repo_id,
         filename,
         token = None,
+        cache_dir = None,
     ):
         requested.append(filename)
         if filename != "transformer_fp8.pt":
@@ -761,6 +771,61 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     # Neither name cached -> this pick would have to download.
     legacy.unlink()
     assert prequant_checkpoint_cached(source) is False
+
+
+def test_the_loader_reuses_the_hit_the_cache_probe_found(monkeypatch, tmp_path):
+    # The probe searches Studio's LIVE cache root, hf_hub_download falls back to huggingface_hub's
+    # import-time constant, and a mid-session cache change moves only the first. Resolving must
+    # therefore reuse the matched file, else "already cached" still costs the multi-GB download.
+    live = tmp_path / "live-hub"
+    live.mkdir()
+    ckpt = live / "Z-Image-Turbo-FP8.pt"
+    ckpt.write_bytes(b"weights")
+    source = PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
+    )
+
+    def _cache(repo_id, filename, cache_dir = None):
+        # Only the live root holds it; the import-time default (cache_dir None) is a miss.
+        path = live / filename
+        return str(path) if cache_dir == str(live) and path.is_file() else None
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download",
+        lambda *a, **k: pytest.fail("the cached checkpoint must not be downloaded again"),
+    )
+
+    assert pq.prequant_checkpoint_cached(source, cache_dir = str(live)) is True
+    assert pq._resolve_checkpoint_path(source, None, str(live)) == str(ckpt)
+
+
+def test_an_uncached_checkpoint_downloads_into_the_live_root(monkeypatch):
+    # The other half: a real fetch must land where Studio is reading, not under the stale constant.
+    asked: list = []
+    source = PrequantSource(
+        kind = "repo", location = "unsloth/Z-Image-Turbo-FP8", filename = "Z-Image-Turbo-FP8.pt"
+    )
+
+    def _dl(**kwargs):
+        asked.append(kwargs)
+        return "/live-hub/blobs/abc"
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _dl)
+
+    assert pq._resolve_checkpoint_path(source, "tok", "/live-hub") == "/live-hub/blobs/abc"
+    assert asked == [
+        {
+            "repo_id": "unsloth/Z-Image-Turbo-FP8",
+            "filename": "Z-Image-Turbo-FP8.pt",
+            "token": "tok",
+            "cache_dir": "/live-hub",
+        }
+    ]
 
 
 def test_prequant_checkpoint_cached_never_raises(monkeypatch):
