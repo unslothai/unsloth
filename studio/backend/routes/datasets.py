@@ -535,7 +535,12 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
 
         logger.info(f"Checking format for dataset: {request.dataset_name}")
 
-        dataset_path = resolve_dataset_path(request.dataset_name)
+        try:
+            dataset_path = resolve_dataset_path(request.dataset_name)
+        except ValueError as e:
+            # Malformed path (null bytes, '..', outside roots) is a client error:
+            # surface 400 rather than the generic 500 below.
+            raise HTTPException(status_code = 400, detail = str(e)) from e
         total_rows = None
 
         # Uploads and recipes always arrive as absolute paths, so a missing one is a
