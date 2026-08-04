@@ -85,3 +85,23 @@ def test_put_preview_sharing_rejects_non_bool(client):
     c, _ = client
     r = c.put("/preview-sharing", json = {"enabled": "maybe"})
     assert r.status_code == 422
+
+
+def test_share_link_lock_is_created_lazily_on_the_running_loop():
+    # On Python 3.9 an asyncio.Lock made at import time binds the import loop;
+    # a contended acquire on the serving loop would then raise.
+    import asyncio
+
+    from preview_share_link import PreviewShareLink
+
+    link = PreviewShareLink()
+    assert link._lock is None
+
+    async def use():
+        async with link._get_lock():
+            pass
+        return link._lock
+
+    lock = asyncio.run(use())
+    assert isinstance(lock, asyncio.Lock)
+    assert link._get_lock() is lock
