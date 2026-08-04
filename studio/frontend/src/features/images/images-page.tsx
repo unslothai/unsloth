@@ -15,10 +15,8 @@ import {
   ImageUpload01Icon,
   InformationCircleIcon,
   MagicWand01Icon,
-  LayoutAlignRightIcon,
   PaintBrush02Icon,
   PencilEdit02Icon,
-  Settings02Icon,
   ZoomInAreaIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -68,7 +66,9 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "@/features/model-picker/components/model-selector/types";
+import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { MediaPageLink } from "@/components/media-page-link";
+import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { ParamSlider } from "@/features/chat";
 import { ModelLoadDescription } from "@/features/chat/components/model-load-status";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
@@ -1155,7 +1155,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const [controlStrength, setControlStrength] = useState(0.7);
   const [availableControlNets, setAvailableControlNets] = useState<DiffusionControlNetInfo[]>([]);
   // Advanced options live in a right-docked panel, closed by default; one fixed top-bar toggle opens it.
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Sits inline under Seed; the open state is remembered across visits.
+  const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
+    "unsloth_images_advanced_open",
+  );
   // Advanced (load-time) options; "auto"/"off"/"none" map to the backend defaults. Changing them while loaded shows "Reapply".
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
   const [transformerQuant, setTransformerQuant] = useState<
@@ -2539,28 +2542,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           />
         </div>
         <div className="flex items-center gap-2">
-          {/* Single fixed toggle for the right-docked Advanced panel (same icon in both states so it never moves). Hidden while training. */}
-          {pageMode === "create" && (
-            <Tooltip>
-              <TooltipTrigger asChild={true}>
-                <button
-                  type="button"
-                  onClick={() => setAdvancedOpen((o) => !o)}
-                  aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
-                  aria-pressed={advancedOpen}
-                  className={cn(
-                    "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                    advancedOpen
-                      ? "bg-muted text-foreground"
-                      : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                  )}
-                >
-                  <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>Advanced options</TooltipContent>
-            </Tooltip>
-          )}
           {/* Video is a separate page, so it sits out here rather than in the mode strip. */}
           <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
         </div>
@@ -3088,6 +3069,10 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               />
             </Field>
 
+            <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
+              {advancedControls}
+            </AdvancedDisclosure>
+
             <Button onClick={handleGenerate} disabled={busy !== null || !status?.loaded}>
               {busy === "generating" ? <Spinner className="mr-2 size-4" /> : null}
               {busy === "generating" && genDone != null && count > 1
@@ -3246,23 +3231,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           )}
         </div>
 
-        {/* Right-docked Advanced panel (mirrors Chat's settings panel): closed by default, opened by the fixed top-bar toggle above, so the optimisation controls are discoverable without being docked open. */}
-        {advancedOpen && (
-          <div className="ml-4 flex w-[300px] shrink-0 flex-col overflow-hidden border-l border-border/60 pl-4">
-            <div className="flex h-[52px] shrink-0 items-center border-b border-border/60">
-              <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-                <HugeiconsIcon icon={Settings02Icon} className="size-4" />
-                Advanced
-              </span>
-            </div>
-            <div className="hover-scrollbar flex flex-col gap-3 overflow-y-auto py-4 pr-2">
-              <p className="text-xs text-muted-foreground">
-                Load-time tuning. Changes apply on the next load; Reapply reloads the current model.
-              </p>
-              {advancedControls}
-            </div>
-          </div>
-        )}
       </div>
       )}
     </div>

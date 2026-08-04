@@ -908,7 +908,11 @@ export function DiffusionTrainPanel({
             setDurationUnit(v as "steps" | "epochs");
           }}
         >
-          <SelectTrigger className="h-8 w-24 text-xs" aria-label="Run length unit">
+          {/* Tighter than the default trigger: it holds one short word, not a model id. */}
+          <SelectTrigger
+            className="h-8 w-24 pr-2.5 text-xs [&_svg]:size-3.5"
+            aria-label="Run length unit"
+          >
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

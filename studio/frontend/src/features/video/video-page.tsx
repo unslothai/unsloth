@@ -8,13 +8,13 @@ import {
   FlimSlateIcon,
   Image03Icon,
   InformationCircleIcon,
-  LayoutAlignRightIcon,
-  Settings02Icon,
   VolumeHighIcon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 
+import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { MediaPageLink } from "@/components/media-page-link";
+import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -500,7 +500,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   // The chosen frame count (must lie on the family's temporal lattice: k*frame_step+1).
   const [numFrames, setNumFrames] = useState(FALLBACK_FRAME_STEP * 3 + 1);
   // Advanced options live in a right-docked panel, closed by default; a single fixed top-bar toggle opens it.
-  const [advancedOpen, setAdvancedOpen] = useState(false);
+  // Sits inline under Seed; the open state is remembered across visits.
+  const [advancedOpen, setAdvancedOpen] = usePersistedToggle(
+    "unsloth_video_advanced_open",
+  );
   // Advanced (load-time) options; "auto"/"off" map to the backend defaults. "Reapply" reloads with new values.
   const [memoryMode, setMemoryMode] = useState<"auto" | "fast" | "balanced" | "low_vram">("auto");
   const [speedMode, setSpeedMode] = useState<"auto" | "off" | "eager" | "default" | "max">("auto");
@@ -1519,26 +1522,6 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           )}
         </div>
         <div className="flex items-center gap-2">
-          {/* Single fixed toggle for the right-docked Advanced panel (same icon in both states so it never moves). Highlighted when open. */}
-          <Tooltip>
-            <TooltipTrigger asChild={true}>
-              <button
-                type="button"
-                onClick={() => setAdvancedOpen((o) => !o)}
-                aria-label={advancedOpen ? "Hide advanced options" : "Show advanced options"}
-                aria-pressed={advancedOpen}
-                className={cn(
-                  "flex h-[34px] w-[34px] items-center justify-center rounded-full transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
-                  advancedOpen
-                    ? "bg-muted text-foreground"
-                    : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                )}
-              >
-                <HugeiconsIcon icon={LayoutAlignRightIcon} className="size-4" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent>Advanced options</TooltipContent>
-          </Tooltip>
           {/* Images is a separate page, so it sits out here, not in this page's controls. */}
           <MediaPageLink to="/images" label="Images" icon={Image03Icon} />
         </div>
@@ -1648,6 +1631,15 @@ export function VideoPage({ active = true }: { active?: boolean }) {
               onChange={(e) => setSeed(e.target.value)}
             />
           </Field>
+
+          {/* Prominent here: offload and memory decide whether a video model fits at all. */}
+          <AdvancedDisclosure
+            open={advancedOpen}
+            onOpenChange={setAdvancedOpen}
+            prominent={true}
+          >
+            {advancedControls}
+          </AdvancedDisclosure>
 
           {busy === "generating" ? (
             <Button variant="outline" onClick={handleCancelGenerate}>
@@ -1863,23 +1855,6 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           )}
         </div>
 
-        {/* Right-docked Advanced panel (mirrors Chat's settings panel): closed by default, opened by the fixed top-bar toggle. */}
-        {advancedOpen && (
-          <div className="ml-4 flex w-[300px] shrink-0 flex-col overflow-hidden border-l border-border/60 pl-4">
-            <div className="flex h-[52px] shrink-0 items-center border-b border-border/60">
-              <span className="flex items-center gap-1.5 text-sm font-semibold text-foreground">
-                <HugeiconsIcon icon={Settings02Icon} className="size-4" />
-                Advanced
-              </span>
-            </div>
-            <div className="hover-scrollbar flex flex-col gap-3 overflow-y-auto py-4 pr-2">
-              <p className="text-xs text-muted-foreground">
-                Load-time tuning. Changes apply on the next load; Reapply reloads the current model.
-              </p>
-              {advancedControls}
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );
