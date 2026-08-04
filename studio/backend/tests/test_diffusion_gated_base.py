@@ -280,7 +280,12 @@ def test_a_blank_token_is_not_sent_as_a_credential(token, monkeypatch):
     seen: list = []
 
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             seen.append(token)
             return _FakeInfo(False)
 
