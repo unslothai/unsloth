@@ -1827,6 +1827,48 @@ def get_executable(executables):
     return None
 
 
+# Larger than any real checkpoint, so the splitter never fires.
+_GGUF_NO_SHARDING = "100000GB"
+
+# llama.cpp's --split-max-size takes a whole number plus a K/M/G unit
+# (unsloth-zoo strips the trailing "B" before passing it on). A decimal such as
+# "1.5GB" clears zoo's float-based check but then dies in the converter's int()
+# parse, inside a subprocess, after the expensive 16-bit merge; a bare number is
+# silently read as *bytes*. Require the unit and reject both here instead.
+_GGUF_SHARD_SIZE_RE = re.compile(r"^(\d+)\s*([KMG])B?$", re.IGNORECASE)
+
+
+def _resolve_gguf_shard_size(gguf_shard_size: Optional[str]) -> str:
+    """
+    Resolve a user-supplied gguf_shard_size value to the string passed to
+    convert_to_gguf's max_shard_size argument.
+
+    - None                    → "50GB" (the historical default)
+    - "", "none", "0", "0MB"  → no sharding: one file regardless of size
+    - "512MB", "4GB", ...     → normalized to "<n><K|M|G>B"
+
+    Raises ValueError for anything else, so a typo fails before the merge rather
+    than deep inside the converter subprocess.
+    """
+    if gguf_shard_size is None:
+        return "50GB"
+    cleaned = gguf_shard_size.strip()
+    if cleaned.lower() in ("", "none", "0"):
+        return _GGUF_NO_SHARDING
+    match = _GGUF_SHARD_SIZE_RE.match(cleaned)
+    if match is None:
+        raise ValueError(
+            f"Unsloth: `gguf_shard_size={gguf_shard_size!r}` is not a valid shard size. "
+            "Use a whole number with a KB/MB/GB unit, for example '512MB' or '4GB'. "
+            "Decimals such as '1.5GB' are not supported by llama.cpp's splitter, and a "
+            "bare number would be read as bytes. Pass '0' or None for a single file."
+        )
+    magnitude, unit = int(match.group(1)), match.group(2).upper()
+    if magnitude == 0:
+        return _GGUF_NO_SHARDING
+    return f"{magnitude}{unit}B"
+
+
 # Output types convert_hf_to_gguf.py can emit directly via --outtype.
 _DIRECT_CONVERT_OUTTYPES = ("f32", "f16", "bf16", "q8_0")
 
@@ -1864,6 +1906,7 @@ def save_to_gguf(
     first_conversion: str = None,
     is_vlm: bool = False,
     is_gpt_oss: bool = False,
+    gguf_shard_size: Optional[str] = None,
     imatrix = None,
 ):
     """
@@ -1871,6 +1914,10 @@ def save_to_gguf(
     Handles installation, conversion, and quantization.
     `imatrix` is a local importance-matrix path (already resolved); it is forwarded to
     llama-quantize and is required for the IQ low-bit quant types.
+    `gguf_shard_size` caps the size of each file the converter writes ("512MB", "4GB");
+    None keeps the historical 50GB, "0"/"none" forces a single file. It applies to
+    whatever the converter emits directly, so a k-quant splits its full-precision base
+    but is itself written by the later llama-quantize pass as one file.
     """
     # print_output True only if UNSLOTH_ENABLE_LOGGING=1
     if os.environ.get("UNSLOTH_ENABLE_LOGGING", "0") == "1":
@@ -2018,7 +2065,7 @@ def save_to_gguf(
             supported_vision_archs = supported_vision_archs,
             is_vlm = is_vlm,
             is_gpt_oss = is_gpt_oss,
-            max_shard_size = "50GB",
+            max_shard_size = _resolve_gguf_shard_size(gguf_shard_size),
             print_output = print_output,
         )
     # update is_vlm switch
@@ -2883,6 +2930,7 @@ def unsloth_save_pretrained_gguf(
     tags: List[str] = None,
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
+    gguf_shard_size: Optional[str] = None,
     save_method: str = None,
     imatrix_file = None,
 ):
@@ -3002,6 +3050,10 @@ def unsloth_save_pretrained_gguf(
     del arguments["model_name"]
     del arguments["base_model_name"]
     del arguments["is_processor"]
+    # gguf_shard_size is consumed later by save_to_gguf (the GGUF conversion),
+    # not by the intermediate 16-bit merge below; drop it so unsloth_generic_save
+    # doesn't choke on the unknown kwarg.
+    del arguments["gguf_shard_size"]
     del arguments["imatrix_file"]  # only used by the gguf quantize step, not the 16bit merge
 
     # Step 3: Fix tokenizer BOS token if needed
@@ -3014,6 +3066,12 @@ def unsloth_save_pretrained_gguf(
     # front, so a bad path or an unavailable upstream imatrix fails before the expensive 16-bit
     # merge, and a failed auto-resolution never reaches the IQ-quant gate.
     imatrix_path = _resolve_imatrix_file(self, imatrix_file, token, save_directory)
+
+    # Resolve the shard size here for the same reason: save_to_gguf only resolves it
+    # once the conversion starts, which is after the merge below, so a typo would
+    # cost a full 16-bit merge before failing. Resolution is idempotent, so
+    # save_to_gguf re-resolving the normalized value is free.
+    gguf_shard_size = _resolve_gguf_shard_size(gguf_shard_size)
 
     # Step 4: Save/merge model to 16-bit format
     is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
@@ -3131,6 +3189,7 @@ def unsloth_save_pretrained_gguf(
             first_conversion = first_conversion,
             is_vlm = is_vlm,  # Pass VLM flag
             is_gpt_oss = is_gpt_oss,  # Pass gpt_oss Flag
+            gguf_shard_size = gguf_shard_size,
             imatrix = imatrix_path,
         )
     except Exception as e:
@@ -3228,6 +3287,7 @@ def unsloth_push_to_hub_gguf(
     temporary_location: str = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage: float = 0.85,
     datasets: Optional[List[str]] = None,
+    gguf_shard_size: Optional[str] = None,
     save_method: str = None,
     imatrix_file = None,
     is_main_process: bool = True,
@@ -3326,6 +3386,7 @@ def unsloth_push_to_hub_gguf(
             safe_serialization = safe_serialization,
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
+            gguf_shard_size = gguf_shard_size,
             imatrix_file = imatrix_file,
         )
 

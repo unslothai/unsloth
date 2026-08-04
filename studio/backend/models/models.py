@@ -197,6 +197,12 @@ class LocalModelInfo(BaseModel):
         description = "Detected weights format ('gguf' when known). Lets the UI "
         "classify scanned folders whose name lacks a -GGUF suffix.",
     )
+    shard_count: int = Field(
+        0,
+        description = "Number of parts the GGUF model declares as a llama.cpp split "
+        "(the 13 in -00001-of-00013.gguf); 0 for a whole file, so the UI can "
+        "label the row.",
+    )
     updated_at: Optional[float] = Field(
         None,
         description = "Unix timestamp of latest observed update",

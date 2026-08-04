@@ -185,35 +185,30 @@ class ExportBaseModelRequest(ExportCommonOptions):
     # Uses fields from ExportCommonOptions only
 
 
-class ExportGGUFRequest(BaseModel):
+class ExportGGUFRequest(ExportCommonOptions):
     """Request for exporting the current model to GGUF format."""
 
-    save_directory: str = Field(
-        ...,
-        description = "Directory where GGUF files will be saved",
-    )
-
-    @field_validator("save_directory", mode = "before")
-    @classmethod
-    def _check_save_directory(cls, v):
-        return _validate_save_directory(v)
+    # save_directory (and its validator), push_to_hub, repo_id, hf_token,
+    # private and base_model_id all come from ExportCommonOptions.
 
     quantization_method: Union[str, List[str]] = Field(
         "Q4_K_M",
         description = 'GGUF quantization method(s). A single method (e.g. "Q4_K_M") or a list '
         '(e.g. ["Q4_K_M", "Q8_0"]) to produce multiple GGUFs from one model load.',
     )
-    push_to_hub: bool = Field(
-        False,
-        description = "If True, also push GGUF artifacts to the Hugging Face Hub",
-    )
-    repo_id: Optional[str] = Field(
+    gguf_shard_size: Optional[str] = Field(
         None,
-        description = "Hugging Face Hub repository ID for GGUF upload",
-    )
-    hf_token: Optional[str] = Field(
-        None,
-        description = "Hugging Face token for GGUF upload",
+        description = (
+            "Maximum size of each GGUF file produced by the HF -> GGUF conversion, "
+            "as a whole number plus a KB/MB/GB unit ('512MB', '4GB'). Decimals and "
+            "bare numbers are rejected: llama.cpp's splitter takes neither. "
+            "Pass None or '' for the default (50GB, one file for most models), or "
+            "'0'/'none' to force a single file regardless of size. "
+            "Note: this applies to whatever the converter emits directly, so a "
+            "k-quant (Q4_K_M etc.) splits its full-precision base but is itself "
+            "written by a second llama-quantize pass and stays one file. A lone "
+            "f32/f16/bf16/q8_0 request converts directly and does split."
+        ),
     )
     imatrix: bool = Field(
         False,

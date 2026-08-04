@@ -22,6 +22,7 @@ from hub.utils.gguf import (
     is_gguf_filename as _is_gguf_filename,
     is_mmproj_filename as _is_mmproj_filename,
     is_mtp_drafter_path as _is_mtp_drafter_path,
+    gguf_split_part_count as _gguf_split_part_count,
 )
 from hub.utils.paths import is_valid_repo_id as _is_valid_repo_id
 
@@ -392,6 +393,13 @@ def _main_gguf_files(path: Path, *, include_symlinks: bool = False) -> list[Path
     ]
 
 
+def _gguf_shard_count(gguf_files: list[Path]) -> int:
+    """Number of parts the given main GGUF files declare as a split, or 0 when
+    they are whole files. Used to label the row ("13 parts") and to tell a split
+    export apart from a folder of several independent GGUFs."""
+    return max((_gguf_split_part_count(entry.name) for entry in gguf_files), default = 0)
+
+
 def _format_label(model_format: ModelFormat) -> str:
     if model_format == "gguf":
         return "GGUF"
@@ -465,6 +473,7 @@ def _local_model_info(
     base_model_source: Optional[str] = None,
     adapter_type: Optional[str] = None,
     training_method: Optional[str] = None,
+    shard_count: int = 0,
     active_cache: Optional[bool] = None,
 ) -> LocalModelInfo:
     load_id = (
@@ -497,6 +506,7 @@ def _local_model_info(
         model_format = model_format,
         runtime = _runtime_for_format(model_format),
         format_variant = format_variant,
+        shard_count = shard_count,
         capabilities = _capabilities_for_format(
             model_format,
             source,
@@ -552,6 +562,7 @@ def _classify_local_path(
                 requires_variant = scan_path.is_dir(),
                 format_variant = variant,
                 size_bytes = gguf_size_bytes,
+                shard_count = _gguf_shard_count(gguf_files),
                 active_cache = active_cache,
             )
         )

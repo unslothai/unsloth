@@ -51,9 +51,17 @@ _capabilities_for_format = model_common._capabilities_for_format
 _apply_format_aware_partial = model_common._apply_format_aware_partial
 _classify_local_path = model_common._classify_local_path
 _is_main_gguf_filename = model_common._is_main_gguf_filename
+_main_gguf_files = model_common._main_gguf_files
+_gguf_shard_count = model_common._gguf_shard_count
 _is_transformers_bin_weight_file = model_common._is_transformers_bin_weight_file
 _prefer_complete_larger = model_common._prefer_complete_larger
 _gguf_variant_state_summary = model_common._gguf_variant_state_summary
+
+
+def _dir_is_sharded_gguf(path: Path) -> bool:
+    """True when a folder's main GGUF weights are a multi-part ``-NNN-of-NNN``
+    split, which makes the folder one model rather than a publisher of many."""
+    return _gguf_shard_count(_main_gguf_files(path)) > 0
 
 
 def _is_immediate_model_weight_file(path: Path) -> bool:
@@ -119,10 +127,13 @@ def _scan_models_dir(
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
+    # _scan_custom_folder runs this and _scan_lmstudio_dir over the same path, so
+    # a split export registered directly as a scan folder has to collapse here
+    # too, or the standalone-.gguf pass fans it out into a row per shard.
     _is_self_model = _is_model_directory_for_scan(
         models_dir,
         entry_limit = entry_limit,
-    )
+    ) or _dir_is_sharded_gguf(models_dir)
 
     if _is_self_model:
         try:
@@ -338,9 +349,11 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
-    # If the dir is itself a model dir (config + weights), it's not an LM Studio
-    # publisher structure -- return it as a single entry rather than descend.
-    if _is_model_directory(lm_dir):
+    # If the dir is itself a model dir (config + weights) or a config-less split
+    # export registered directly as a scan folder, it's not an LM Studio
+    # publisher structure -- return it as a single entry rather than descend and
+    # fan its shards out into one row per file.
+    if _is_model_directory(lm_dir) or _dir_is_sharded_gguf(lm_dir):
         try:
             updated_at = lm_dir.stat().st_mtime
         except OSError:
@@ -384,7 +397,12 @@ def _scan_lmstudio_dir(lm_dir: Path, *, entry_limit: int | None = None) -> List[
                 continue
 
             # Child is itself a model dir: surface it directly, not as a publisher.
-            if _is_model_directory(child):
+            # A config-less split export (many ``-NNN-of-NNN.gguf`` parts, no
+            # config.json) is one model too: _classify_local_path collapses the
+            # split into a single row, so surface it here rather than descending
+            # and fanning the shards out into an entry per file. A publisher of
+            # ordinary whole GGUFs is not a split and still descends below.
+            if _is_model_directory(child) or _dir_is_sharded_gguf(child):
                 try:
                     updated_at = child.stat().st_mtime
                 except OSError:

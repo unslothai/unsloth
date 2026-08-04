@@ -1712,6 +1712,15 @@ function localModelIsGguf(m: LocalModelInfo): boolean {
   );
 }
 
+/** Meta string for a local model row: the format pill, plus the part count when
+ * the GGUF is a llama.cpp split (a split export is one model spread over many
+ * files, so the count is what distinguishes it from a plain GGUF). */
+function localModelRowMeta(m: LocalModelInfo, isGguf: boolean): string {
+  if (!isGguf) return "Local";
+  const parts = m.shard_count ?? 0;
+  return parts > 1 ? `GGUF · ${parts} parts` : "GGUF";
+}
+
 function localPathTooltip(name: string, path: string): ReactNode {
   return (
     <>
@@ -4147,7 +4156,7 @@ export function HubModelPicker({
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
-                                  meta={isGguf ? "GGUF" : "Local"}
+                                  meta={localModelRowMeta(m, isGguf)}
                                   tooltipText={localPathTooltip(
                                     m.model_id ?? m.display_name,
                                     m.path,
@@ -4278,7 +4287,7 @@ export function HubModelPicker({
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
-                                  meta={isGguf ? "GGUF" : "Local"}
+                                  meta={localModelRowMeta(m, isGguf)}
                                   tooltipText={localPathTooltip(
                                     m.model_id ?? m.display_name,
                                     m.path,
@@ -4401,7 +4410,7 @@ export function HubModelPicker({
                               <div className="min-w-0 flex-1">
                                 <ModelRow
                                   label={m.model_id ?? m.display_name}
-                                  meta={isGguf ? "GGUF" : "Local"}
+                                  meta={localModelRowMeta(m, isGguf)}
                                   tooltipText={localPathTooltip(
                                     m.model_id ?? m.display_name,
                                     m.path,

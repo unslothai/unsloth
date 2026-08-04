@@ -87,6 +87,14 @@ class LocalModelInfo(BaseModel):
     format_variant: Optional[str] = Field(
         None, description = "Format variant label, for example a GGUF quant"
     )
+    shard_count: int = Field(
+        0,
+        description = (
+            "Number of parts this GGUF model declares as a llama.cpp split "
+            "(the 13 in ``-00001-of-00013.gguf``); 0 for a whole file. The UI "
+            "labels the row with it."
+        ),
+    )
     capabilities: LocalModelCapabilities = Field(
         default_factory = LocalModelCapabilities,
         description = "Declared capabilities for this inventory row",

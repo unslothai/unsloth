@@ -168,6 +168,19 @@ def _supports_kwarg(fn, name):
     return name in params or any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
+# "", "0" and "none" all mean "do not split"; see unsloth.save._resolve_gguf_shard_size.
+_GGUF_NO_SPLIT_SENTINELS = frozenset(("", "0", "none"))
+
+
+def _wants_gguf_split(gguf_shard_size) -> bool:
+    """True when the caller asked for an actual shard size rather than the
+    no-split default. The UI always sends a value ("0" for single file), so this
+    is what separates a real request from a default one."""
+    if gguf_shard_size is None:
+        return False
+    return str(gguf_shard_size).strip().lower() not in _GGUF_NO_SPLIT_SENTINELS
+
+
 def _compressed_export_supported():
     """True if the installed unsloth build can do FP8/NVFP4 compressed-tensors export."""
     try:
@@ -959,6 +972,8 @@ class ExportBackend:
         push_to_hub: bool = False,
         repo_id: Optional[str] = None,
         hf_token: Optional[str] = None,
+        private: bool = False,
+        gguf_shard_size: Optional[str] = None,
         imatrix_file = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """
@@ -993,6 +1008,27 @@ class ExportBackend:
                 None,
             )
         imatrix_kw = {"imatrix_file": imatrix_file} if imatrix_file is not None else {}
+
+        # Same story for gguf_shard_size, except the UI sends a value on *every*
+        # GGUF export ("0" = single file), so passing it unconditionally would
+        # break every export against a build that predates the kwarg. An explicit
+        # split request on such a build is a hard error -- silently writing one
+        # huge file would look like the setting was ignored -- while a "single
+        # file" request just drops the kwarg and takes that build's own default.
+        shard_kw: dict = {}
+        if gguf_shard_size is not None:
+            hooks = [self.current_model.save_pretrained_gguf]
+            if push_to_hub:
+                hooks.append(self.current_model.push_to_hub_gguf)
+            if all(_supports_kwarg(fn, "gguf_shard_size") for fn in hooks):
+                shard_kw = {"gguf_shard_size": gguf_shard_size}
+            elif _wants_gguf_split(gguf_shard_size):
+                return (
+                    False,
+                    "This Unsloth build does not support GGUF shard sizing. "
+                    "Upgrade unsloth and unsloth_zoo, or choose 'Single file'.",
+                    None,
+                )
 
         output_path: Optional[str] = None
         model_tmp_to_cleanup: Optional[str] = None
@@ -1049,10 +1085,14 @@ class ExportBackend:
 
                 _model_tmp = os.path.join(abs_save_dir, f"_tmp_model_{uuid.uuid4().hex[:8]}")
                 model_tmp_to_cleanup = _model_tmp
+
+                # unsloth saves intermediate HF model files into _model_tmp.
+                # unsloth-zoo's check_llama_cpp() uses ~/.unsloth/llama.cpp by default.
                 self.current_model.save_pretrained_gguf(
                     _model_tmp,
                     self.current_tokenizer,
                     quantization_method = quant_method,
+                    **shard_kw,
                     **imatrix_kw,
                 )
 
@@ -1120,6 +1160,8 @@ class ExportBackend:
                     self.current_tokenizer,
                     quantization_method = quant_method,
                     token = hf_token,
+                    private = private,
+                    **shard_kw,
                     **imatrix_kw,
                 )
                 logger.info(f"GGUF model pushed successfully to {repo_id}")

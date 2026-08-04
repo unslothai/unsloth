@@ -115,6 +115,7 @@ if str(backend_path) not in sys.path:
 
 from auth.authentication import get_current_subject
 from hub.dependencies import get_hf_token
+from hub.utils.gguf import gguf_split_part_count
 
 try:
     from utils.models import (
@@ -311,7 +312,12 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
     if not models_dir.exists() or not models_dir.is_dir():
         return []
 
-    _is_self_model = _is_model_directory(models_dir)
+    # models_dir may itself be the model: a normal model directory, or a
+    # config-less split export registered directly as a scan folder. The custom
+    # scan runs this alongside _scan_lmstudio_dir on the same path, so it needs
+    # the same collapse, otherwise the standalone-.gguf pass below fans a split
+    # out into a row per shard and lets the user pick a non-first part.
+    _is_self_model = _is_model_directory(models_dir) or _dir_gguf_shard_count(models_dir) > 0
 
     if _is_self_model:
         try:
@@ -325,6 +331,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 path = str(models_dir),
                 source = "models_dir",
                 model_format = _dir_model_format(models_dir),
+                shard_count = _dir_gguf_shard_count(models_dir),
                 updated_at = updated_at,
             ),
         ]
@@ -366,6 +373,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
                 path = str(child),
                 source = "models_dir",
                 model_format = model_format,
+                shard_count = _dir_gguf_shard_count(child) if has_gguf else 0,
                 updated_at = updated_at,
             ),
         )
@@ -480,6 +488,41 @@ def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
         return None
 
 
+def _dir_gguf_shard_count(path: Path) -> int:
+    """Parts declared by a folder's main GGUF weights when they are a llama.cpp
+    split (the 13 in ``-00001-of-00013.gguf``), else 0. Labels the row, and marks
+    the folder as one model rather than a publisher of many. mmproj/drafter
+    companions don't count, the same way ``_dir_model_format`` ignores them."""
+    try:
+        return max(
+            (
+                gguf_split_part_count(p.name)
+                for p in path.glob("*.gguf")
+                if _is_main_gguf_filename(p.name)
+            ),
+            default = 0,
+        )
+    except OSError:
+        return 0
+
+
+def _lmstudio_dir_row(path: Path) -> LocalModelInfo:
+    """One inventory row for a model folder found under an LM Studio scan root."""
+    try:
+        updated_at = path.stat().st_mtime
+    except OSError:
+        updated_at = None
+    return LocalModelInfo(
+        id = str(path),
+        display_name = path.name,
+        path = str(path),
+        source = "lmstudio",
+        model_format = _dir_model_format(path),
+        shard_count = _dir_gguf_shard_count(path),
+        updated_at = updated_at,
+    )
+
+
 def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     """Scan an LM Studio models directory for model files.
 
@@ -489,23 +532,14 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     if not lm_dir.exists() or not lm_dir.is_dir():
         return []
 
-    # If lm_dir is itself a model directory (not a publisher structure),
-    # return it as a single entry rather than skipping it silently.
-    if _is_model_directory(lm_dir):
-        try:
-            updated_at = lm_dir.stat().st_mtime
-        except OSError:
-            updated_at = None
-        return [
-            LocalModelInfo(
-                id = str(lm_dir),
-                display_name = lm_dir.name,
-                path = str(lm_dir),
-                source = "lmstudio",
-                model_format = _dir_model_format(lm_dir),
-                updated_at = updated_at,
-            ),
-        ]
+    # lm_dir may itself be the model rather than a publisher root: either a
+    # normal model directory, or a config-less split export the user registered
+    # directly as a scan folder. Return it as one row rather than skipping it
+    # silently or fanning its shards out into a row per file below. Loose
+    # standalone GGUFs at the root stay one model each, so only a *split*
+    # collapses here.
+    if _is_model_directory(lm_dir) or _dir_gguf_shard_count(lm_dir) > 0:
+        return [_lmstudio_dir_row(lm_dir)]
 
     found: List[LocalModelInfo] = []
     for child in lm_dir.iterdir():
@@ -528,23 +562,13 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                     )
                 continue
 
-            # Surface a model-directory child directly instead of
-            # descending into it as a publisher.
-            if _is_model_directory(child):
-                try:
-                    updated_at = child.stat().st_mtime
-                except OSError:
-                    updated_at = None
-                found.append(
-                    LocalModelInfo(
-                        id = str(child),
-                        display_name = child.name,
-                        path = str(child),
-                        source = "lmstudio",
-                        model_format = _dir_model_format(child),
-                        updated_at = updated_at,
-                    ),
-                )
+            # Surface a model-directory child directly instead of descending
+            # into it as a publisher. A config-less split export (many
+            # -NNN-of-NNN.gguf parts, no config.json) is one model too, so it
+            # collapses to a single row instead of a row per shard. A publisher
+            # holding ordinary whole GGUFs is not a split, and still descends.
+            if _is_model_directory(child) or _dir_gguf_shard_count(child) > 0:
+                found.append(_lmstudio_dir_row(child))
                 continue
 
             # child is a publisher directory; scan its subdirectories.

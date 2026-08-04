@@ -4,6 +4,13 @@
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   InputGroup,
   InputGroupAddon,
   InputGroupInput,
@@ -17,6 +24,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { FolderBrowser } from "@/features/model-picker";
+import { cn } from "@/lib/utils";
 import {
   AlertCircleIcon,
   ArrowRight01Icon,
@@ -93,6 +101,38 @@ function waitingMessage(phase: string, stage: string | null): string {
   return "Starting...";
 }
 
+// Preset shard sizes offered in the dropdown. unsloth only accepts a whole
+// number followed by KB/MB/GB (unsloth/save.py:_resolve_gguf_shard_size), so
+// every preset is a pre-validated string. "__custom__" reveals a free-text field.
+const SHARD_SIZE_PRESETS = [
+  "128MB",
+  "256MB",
+  "512MB",
+  "1GB",
+  "2GB",
+  "4GB",
+  "8GB",
+  "16GB",
+] as const;
+const SHARD_SIZE_CUSTOM = "__custom__";
+const SHARD_SIZE_DEFAULT = "2GB";
+// Mirrors unsloth/save.py:_GGUF_SHARD_SIZE_RE so a typo is caught here rather
+// than an hour in, after the 16-bit merge, inside the converter subprocess.
+const SHARD_SIZE_RE = /^\d+\s*[KMG]B?$/i;
+
+/** The payload sentinels for "don't split" — these serialize to null. */
+function isUnsetShardSize(value: string): boolean {
+  const size = value.trim();
+  return !size || size === "0" || size.toLowerCase() === "none";
+}
+
+/** True when the resolved shard size is safe to send. "0" (single file) and the
+ * presets always are; only free-text custom input can be wrong. */
+function isValidShardSize(value: string): boolean {
+  if (isUnsetShardSize(value)) return true;
+  return SHARD_SIZE_RE.test(value.trim());
+}
+
 export interface ExportRunPanelProps {
   exportMethod: ExportMethod | null;
   quantLevels: string[];
@@ -113,6 +153,9 @@ export interface ExportRunPanelProps {
   onHfTokenChange: (v: string) => void;
   privateRepo: boolean;
   onPrivateRepoChange: (v: boolean) => void;
+  /** Custom GGUF shard size (e.g. "2GB"); blank keeps unsloth's default. */
+  ggufShardSize: string;
+  onGgufShardSizeChange: (v: string) => void;
   /** Kick off the export (the page assembles params and calls the store). */
   onStart: () => void;
   /** Collapse the panel; only offered before a run or after a terminal one. */
@@ -140,9 +183,34 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
     onHfTokenChange,
     privateRepo,
     onPrivateRepoChange,
+    ggufShardSize,
+    onGgufShardSizeChange,
     onStart,
     onClose,
   } = props;
+
+  // View-only state for the GGUF split toggle. The resolved value lives in the
+  // page as `ggufShardSize`: "0" = single file (no split), else a size string.
+  const [splitMode, setSplitMode] = useState<"single" | "split">(
+    ggufShardSize.trim() && ggufShardSize.trim() !== "0" ? "split" : "single",
+  );
+  // True when the user picked "Custom…" so the free-text size field is shown
+  // (also inferred on mount when the size isn't one of the presets).
+  const [customSize, setCustomSize] = useState(
+    splitMode === "split" &&
+      !SHARD_SIZE_PRESETS.includes(
+        ggufShardSize.trim() as (typeof SHARD_SIZE_PRESETS)[number],
+      ),
+  );
+  // Blank is only meaningful in single-file mode. Left empty under "Split into
+  // shards" it would serialize to null, quietly land on the converter's 50GB
+  // default, and write shards into a folder whose name says single file, so
+  // require an actual size there.
+  const shardSizeMissing =
+    splitMode === "split" && isUnsetShardSize(ggufShardSize);
+  const shardSizeValid =
+    exportMethod !== "gguf" ||
+    (isValidShardSize(ggufShardSize) && !shardSizeMissing);
 
   const run = useExportRuntimeStore(
     useShallow((s) => ({
@@ -313,6 +381,123 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
                   </>
                 )}
               </p>
+            </div>
+          )}
+
+          {exportMethod === "gguf" && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-xs font-medium text-muted-foreground">
+                GGUF file splitting
+              </label>
+              <div className="flex gap-2">
+                <Button
+                  variant={splitMode === "single" ? "dark" : "outline"}
+                  onClick={() => {
+                    setSplitMode("single");
+                    setCustomSize(false);
+                    onGgufShardSizeChange("0");
+                  }}
+                  className="flex-1"
+                >
+                  Single file
+                </Button>
+                <Button
+                  variant={splitMode === "split" ? "dark" : "outline"}
+                  onClick={() => {
+                    setSplitMode("split");
+                    // Seed a sensible preset when leaving the no-split state.
+                    if (!ggufShardSize.trim() || ggufShardSize.trim() === "0") {
+                      setCustomSize(false);
+                      onGgufShardSizeChange(SHARD_SIZE_DEFAULT);
+                    }
+                  }}
+                  className="flex-1"
+                >
+                  Split into shards
+                </Button>
+              </div>
+              {splitMode === "split" ? (
+                <>
+                  <Select
+                    value={
+                      customSize ? SHARD_SIZE_CUSTOM : ggufShardSize.trim()
+                    }
+                    onValueChange={(value) => {
+                      if (value === SHARD_SIZE_CUSTOM) {
+                        setCustomSize(true);
+                        return;
+                      }
+                      setCustomSize(false);
+                      onGgufShardSizeChange(value);
+                    }}
+                  >
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Choose a shard size" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SHARD_SIZE_PRESETS.map((preset) => (
+                        <SelectItem key={preset} value={preset}>
+                          {preset.replace("GB", " GB").replace("MB", " MB")}
+                        </SelectItem>
+                      ))}
+                      <SelectItem value={SHARD_SIZE_CUSTOM}>Custom…</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {customSize && (
+                    <Input
+                      className={cn(
+                        "font-mono text-[12px]",
+                        !shardSizeValid &&
+                          "border-destructive focus-visible:ring-destructive",
+                      )}
+                      value={ggufShardSize === "0" ? "" : ggufShardSize}
+                      onChange={(e) => onGgufShardSizeChange(e.target.value)}
+                      spellCheck={false}
+                      aria-invalid={!shardSizeValid}
+                      placeholder="e.g. 512MB, 6GB"
+                    />
+                  )}
+                  <p
+                    className={cn(
+                      "text-[11px]",
+                      shardSizeValid
+                        ? "text-muted-foreground/70"
+                        : "text-destructive",
+                    )}
+                  >
+                    {shardSizeValid ? (
+                      customSize ? (
+                        <>
+                          Whole number + <code className="font-mono">KB</code>,{" "}
+                          <code className="font-mono">MB</code> or{" "}
+                          <code className="font-mono">GB</code> (e.g.{" "}
+                          <code className="font-mono">512MB</code>).
+                        </>
+                      ) : (
+                        "Each file will be at most this size. A k-quant (Q4_K_M etc.) splits its full-precision base but is written as one file itself; a lone F16/BF16/Q8_0 export splits directly."
+                      )
+                    ) : shardSizeMissing ? (
+                      <>
+                        Enter a shard size, or switch to{" "}
+                        <span className="font-medium">Single file</span>.
+                      </>
+                    ) : (
+                      <>
+                        Not a valid size. Use a whole number plus{" "}
+                        <code className="font-mono">KB</code>/
+                        <code className="font-mono">MB</code>/
+                        <code className="font-mono">GB</code>, e.g.{" "}
+                        <code className="font-mono">512MB</code>. llama.cpp's
+                        splitter takes neither decimals nor bare numbers.
+                      </>
+                    )}
+                  </p>
+                </>
+              ) : (
+                <p className="text-[11px] text-muted-foreground/70">
+                  One GGUF file, no splitting regardless of size.
+                </p>
+              )}
             </div>
           )}
 
@@ -605,7 +790,9 @@ export function ExportRunPanel(props: ExportRunPanelProps) {
             <Button variant="outline" onClick={onClose}>
               Cancel
             </Button>
-            <Button onClick={onStart}>Start Export</Button>
+            <Button onClick={onStart} disabled={!shardSizeValid}>
+              Start Export
+            </Button>
           </>
         )}
         {isExporting && (

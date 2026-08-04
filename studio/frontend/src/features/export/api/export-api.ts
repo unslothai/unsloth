@@ -165,6 +165,8 @@ export async function exportGGUF(params: {
   push_to_hub?: boolean;
   repo_id?: string | null;
   hf_token?: string | null;
+  private?: boolean;
+  gguf_shard_size?: string | null;
   imatrix?: boolean;
   imatrix_path?: string | null;
 }): Promise<ExportOperationResponse> {

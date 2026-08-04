@@ -119,19 +119,33 @@ function safePathSegment(
   return safe || fallback;
 }
 
+/** Folder-name suffix for a split GGUF export ("-split-256MB"), empty for a
+ * single file. A split export and a single-file one of the same model would
+ * otherwise share the default folder, and a folder holding both a whole GGUF
+ * and a set of shards is ambiguous to the scanner and to llama.cpp. */
+function shardDirSuffix(ggufShardSize: string): string {
+  const size = ggufShardSize.trim();
+  if (!size || size === "0" || size.toLowerCase() === "none") return "";
+  // Match the backend's normalization ("512 mb" -> "512MB") so the folder name
+  // reads like the size the export actually used.
+  const normalized = size.replace(/\s+/g, "").toUpperCase();
+  return `-split-${safePathSegment(normalized, "custom", 16)}`;
+}
+
 function buildRelativeSaveDirectory(
   exportMethod: ExportMethod | null,
   sourceMode: SourceMode,
   sourceBaseModelName: string,
   selectedModelIdx: string | null,
   checkpoint: string | null,
+  ggufShardSize: string,
 ): string {
   if (exportMethod === "gguf") {
     const rawName =
       sourceMode === "checkpoint"
         ? (checkpoint ?? selectedModelIdx ?? sourceBaseModelName)
         : sourceBaseModelName;
-    return `${safePathSegment(rawName)}-GGUF`;
+    return `${safePathSegment(rawName)}-GGUF${shardDirSuffix(ggufShardSize)}`;
   }
   // Merged / LoRA: a checkpoint keeps the "<run>/<checkpoint>" layout under outputs.
   if (sourceMode === "checkpoint" && selectedModelIdx && checkpoint) {
@@ -145,13 +159,17 @@ function buildRelativeSaveDirectory(
   return `${safePathSegment(rawName)}-${exportMethod === "lora" ? "adapter" : "merged"}`;
 }
 
-function siblingGgufDirectory(sourcePath: string): string | null {
+function siblingGgufDirectory(
+  sourcePath: string,
+  shardSuffix = "",
+): string | null {
   const trimmed = sourcePath.trim().replace(/[\\/]+$/, "");
   if (!trimmed) return null;
   const slash = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
   // Lowercase `_gguf` matches the backend's intermediate dir (core/export/export.py);
-  // `_GGUF` would relocate+delete that sibling.
-  if (slash < 0) return `${trimmed}_gguf`;
+  // `_GGUF` would relocate+delete that sibling. A split export appends its size,
+  // so it lands beside the single-file one instead of mixing into it.
+  if (slash < 0) return `${trimmed}_gguf${shardSuffix}`;
   const parent =
     slash === 0 || (slash === 2 && /^[A-Za-z]:/.test(trimmed))
       ? trimmed.slice(0, slash + 1)
@@ -164,7 +182,7 @@ function siblingGgufDirectory(sourcePath: string): string | null {
       : trimmed.includes("\\")
         ? "\\"
         : "/";
-  return `${parent}${sep}${name}_gguf`;
+  return `${parent}${sep}${name}_gguf${shardSuffix}`;
 }
 
 export function ExportPage() {
@@ -285,6 +303,10 @@ export function ExportPage() {
   const [hfUsername, setHfUsername] = useState("");
   const [modelName, setModelName] = useState("");
   const [privateRepo, setPrivateRepo] = useState(false);
+
+  // GGUF shard size string sent to the backend. "0" = single file (no split,
+  // the default); a size like "2GB" splits the base conversion into shards.
+  const [ggufShardSize, setGgufShardSize] = useState("0");
 
   // Export run state lives in the global runtime store so it keeps running and
   // streaming in the background, in parallel with training and inference.
@@ -600,6 +622,7 @@ export function ExportPage() {
       sourceBaseModelName,
       selectedModelIdx,
       checkpoint,
+      ggufShardSize,
     );
     if (
       exportMethod === "gguf" &&
@@ -612,13 +635,19 @@ export function ExportPage() {
         localModel &&
         (localModel.source === "models_dir" || localModel.source === "custom")
       ) {
-        return siblingGgufDirectory(localModel.path) ?? relative;
+        return (
+          siblingGgufDirectory(
+            localModel.path,
+            shardDirSuffix(ggufShardSize),
+          ) ?? relative
+        );
       }
     }
     return relative;
   }, [
     checkpoint,
     exportMethod,
+    ggufShardSize,
     localMetaById,
     modelSource,
     selectedModelIdx,
@@ -800,6 +829,7 @@ export function ExportPage() {
       loraGguf: emitLoraGguf,
       loraGgufOuttype,
       saveDirectory,
+      ggufShardSize,
       destination,
       repoId,
       token,
@@ -842,6 +872,7 @@ export function ExportPage() {
     privateRepo,
     modelSource,
     runExport,
+    ggufShardSize,
   ]);
 
   // Open the inline panel into a fresh config state. Clears any previous
@@ -1722,6 +1753,8 @@ export function ExportPage() {
                   onHfTokenChange={setHfToken}
                   privateRepo={privateRepo}
                   onPrivateRepoChange={setPrivateRepo}
+                  ggufShardSize={ggufShardSize}
+                  onGgufShardSizeChange={setGgufShardSize}
                   onStart={handleStart}
                   onClose={handleClosePanel}
                 />

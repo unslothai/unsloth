@@ -151,6 +151,7 @@ def _save_pretrained_gguf(
     max_shard_size = "5GB",
     temporary_location = "_unsloth_temporary_saved_buffers",
     maximum_memory_usage = 0.85,
+    gguf_shard_size = None,
     **kwargs,
 ):
     """
@@ -200,6 +201,7 @@ def _save_pretrained_gguf(
         max_shard_size = max_shard_size,
         temporary_location = temporary_location,
         maximum_memory_usage = maximum_memory_usage,
+        gguf_shard_size = gguf_shard_size,
     )
 
     # 5. Move GGUF files from the subdirectory (0_Transformer) to the root save_directory
@@ -286,6 +288,7 @@ def _push_to_hub_gguf(
     create_pr = False,
     revision = None,
     tags = None,
+    gguf_shard_size = None,
     **kwargs,
 ):
     """
@@ -326,6 +329,8 @@ def _push_to_hub_gguf(
         commit_message (str): Commit message for the upload.
         commit_description (str): Commit description for the upload.
         max_shard_size (str): Maximum shard size for saving.
+        gguf_shard_size (str, optional): Maximum shard size for the GGUF conversion itself,
+            e.g. "2GB". None/"0" keeps the GGUF as a single file.
         temporary_location (str): Temp directory for intermediate files.
         maximum_memory_usage (float): Max fraction of memory to use.
         create_pr (bool): Whether to create a pull request instead of pushing directly.
@@ -377,6 +382,7 @@ def _push_to_hub_gguf(
             max_shard_size = max_shard_size,
             temporary_location = temporary_location,
             maximum_memory_usage = maximum_memory_usage,
+            gguf_shard_size = gguf_shard_size,
         )
 
         gguf_files = result.get("gguf_files", [])

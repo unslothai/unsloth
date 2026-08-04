@@ -65,7 +65,8 @@ GGUF_QUANT_PREFERENCE = [
     "F32",
 ]
 
-_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-\d{3,}", re.IGNORECASE)
+# llama.cpp split naming: ``model-00001-of-00013.gguf``. Group 1 is the total.
+_GGUF_SPLIT_SUFFIX_RE = re.compile(r"-\d{3,}-of-(\d{3,})", re.IGNORECASE)
 _GGUF_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -77,6 +78,14 @@ _GGUF_QUANT_RE = re.compile(
     r"|BF16|F16|F32)",
     re.IGNORECASE,
 )
+
+
+def gguf_split_part_count(filename: str) -> int:
+    """Total parts a split filename declares (the 13 in ``-00001-of-00013.gguf``),
+    or 0 when the name is not part of a split. Read from the name rather than by
+    counting files, so a half-copied export still reports the intended total."""
+    match = _GGUF_SPLIT_SUFFIX_RE.search(filename)
+    return int(match.group(1)) if match else 0
 
 
 def is_mmproj_filename(filename: str) -> bool:

@@ -108,6 +108,73 @@ def test_scan_lmstudio_dir_skips_mmproj_under_publisher(tmp_path):
     assert names == {"model-Q4_K_M"}
 
 
+def _touch_split(
+    folder: Path,
+    stem: str,
+    parts: int = 3,
+) -> Path:
+    """A llama.cpp split export: ``<stem>-00001-of-000NN.gguf`` and no config."""
+    for part in range(1, parts + 1):
+        _touch(folder / f"{stem}-{part:05d}-of-{parts:05d}.gguf")
+    return folder
+
+
+def test_scan_lmstudio_dir_collapses_split_export_child(tmp_path):
+    # A split export under the scan root is one model, not a publisher: without
+    # this it fans out into a row per shard.
+    _touch_split(tmp_path / "Qwen3.5-2B-GGUF", "Qwen3.5-2B.BF16")
+    rows = models_route._scan_lmstudio_dir(tmp_path)
+    assert [m.display_name for m in rows] == ["Qwen3.5-2B-GGUF"]
+    assert rows[0].shard_count == 3
+    assert rows[0].model_format == "gguf"
+
+
+def test_scan_lmstudio_dir_collapses_split_export_as_scan_root(tmp_path):
+    # Same when the split export folder is registered directly as a scan folder,
+    # so it never reaches the publisher loop below.
+    _touch_split(tmp_path, "Qwen3.5-2B.BF16")
+    rows = models_route._scan_lmstudio_dir(tmp_path)
+    assert [m.display_name for m in rows] == [tmp_path.name]
+    assert rows[0].shard_count == 3
+
+
+def test_scan_models_dir_collapses_split_export_as_scan_root(tmp_path):
+    # A custom folder is scanned by _scan_models_dir *and* _scan_lmstudio_dir, so
+    # the split root has to collapse in both. Otherwise this scanner's standalone
+    # -.gguf pass emits a row per shard and the picker offers a non-first part.
+    _touch_split(tmp_path, "Qwen3.5-2B.BF16")
+    rows = models_route._scan_models_dir(tmp_path)
+    assert [m.display_name for m in rows] == [tmp_path.name]
+    assert rows[0].shard_count == 3
+    assert rows[0].model_format == "gguf"
+
+
+def test_scan_models_dir_standalone_ggufs_at_root_stay_separate(tmp_path):
+    # The collapse is keyed on a split, not on "root holds GGUFs": loose whole
+    # GGUFs at a scan root are still one model each.
+    _touch(tmp_path / "model-Q4_K_M.gguf")
+    _touch(tmp_path / "other-Q8_0.gguf")
+    names = {m.display_name for m in models_route._scan_models_dir(tmp_path)}
+    assert names == {"model-Q4_K_M", "other-Q8_0"}
+
+
+def test_scan_lmstudio_dir_publisher_of_whole_ggufs_still_descends(tmp_path):
+    # Only a *split* collapses. A publisher holding several whole GGUFs keeps
+    # yielding one row per model.
+    _touch(tmp_path / "Publisher" / "model-Q4_K_M.gguf")
+    _touch(tmp_path / "Publisher" / "other-Q8_0.gguf")
+    names = {m.display_name for m in models_route._scan_lmstudio_dir(tmp_path)}
+    assert names == {"model-Q4_K_M", "other-Q8_0"}
+
+
+def test_dir_gguf_shard_count_ignores_split_mmproj_only(tmp_path):
+    # A split mmproj companion alongside a whole main GGUF is not a sharded model.
+    _touch(tmp_path / "model.BF16.gguf")
+    _touch(tmp_path / "model.BF16-mmproj-00001-of-00002.gguf")
+    _touch(tmp_path / "model.BF16-mmproj-00002-of-00002.gguf")
+    assert models_route._dir_gguf_shard_count(tmp_path) == 0
+
+
 def test_dir_model_format_gguf_with_config_is_still_gguf(tmp_path):
     # A config.json alongside the .gguf must not flip it to non-GGUF.
     d = tmp_path / "model"
