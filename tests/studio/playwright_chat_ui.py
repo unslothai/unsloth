@@ -1241,12 +1241,10 @@ with sync_playwright() as p:
         if typography["actualRenderLinux"] != typography["isDesktopLinux"]:
             fail(f"desktop Linux detection mismatch: {typography!r}")
         is_dark = typography["isDark"]
-        # The authored tracking is in em (thread.tsx tracking-[0.01em] / dark:tracking-
-        # -[0.02em], and index.css letter-spacing: 0.023em for the dark Linux instance), so
-        # the computed px depends on the element's font size. Asserting px literals pinned
-        # this to a 15.5px message body, and #7359 moved the UI size onto --ui-font-scale,
-        # which resolves --text-ui-15p5 to 14.53125px instead. Every literal went stale at
-        # once, so derive the expectation from the font size the element actually has.
+        # The tracking is authored in em (thread.tsx, and index.css for the dark Linux
+        # instance), so the computed px follows the font size. Pinning px literals assumed a
+        # 15.5px body; #7359 moved the UI size onto --ui-font-scale, resolving
+        # --text-ui-15p5 to 14.53125px and staling every literal at once.
         spacing_em = 0.02 if is_dark else 0.01
         if typography["isDesktopLinux"] and not typography["usesBaselineTypography"]:
             expected_weight = "350" if is_dark else "390"
@@ -1278,10 +1276,9 @@ with sync_playwright() as p:
             if len(sizes) != 1 or _px(sizes[0]) is None:
                 fail(f"chat font size {label}/{role}: expected one px value, got {sizes!r}")
             font_px = _px(sizes[0])
-            # Deriving the tracking from the measured size would otherwise hide a font-size
-            # regression entirely, so bound the size itself. Wide enough that a deliberate
-            # scale change does not trip it, tight enough to catch chat text rendering at a
-            # heading or caption size.
+            # Deriving the tracking from the size would otherwise hide a font-size
+            # regression, so bound the size: loose enough to survive a deliberate scale
+            # change, tight enough to catch chat text at heading or caption size.
             if not 12.0 <= font_px <= 18.0:
                 fail(f"chat font size {label}/{role}: {font_px}px is outside 12-18px")
             expected_spacing = spacing_em * font_px
