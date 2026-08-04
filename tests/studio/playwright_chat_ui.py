@@ -1273,11 +1273,10 @@ with sync_playwright() as p:
             if len(actual["fontSize"]) != 1:
                 fail(f"chat font size {label}/{role}: not uniform, got {actual['fontSize']!r}")
             font_size = float(actual["fontSize"][0].removesuffix("px"))
-            # Asserting the em means the size itself is no longer checked, where the old px
-            # literal caught it implicitly. Assert the token rather than a range: chat is
-            # text-ui-15p5, which is 15.5px scaled by --ui-font-scale, so this holds at
-            # every supported preference (12 to 20, i.e. 11.625px to 19.375px) while still
-            # catching a swap to a neighbouring token that a range would admit.
+            # Asserting the em leaves the size itself unchecked, which the old px literal
+            # caught implicitly. Pin the token, not a range: a range wide enough for every
+            # supported preference (12 to 20, so 11.625px to 19.375px) also admits the
+            # neighbouring tokens it was meant to catch.
             try:
                 ui_font_scale = float(typography.get("uiFontScale") or "1")
             except ValueError:
