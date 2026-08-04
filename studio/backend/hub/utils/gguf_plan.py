@@ -4,10 +4,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Sequence
+from typing import Collection, Optional, Sequence
 
 from hub.utils.download_manifest import ExpectedFile
 from hub.utils.gguf import (
+    drafter_paths_in,
     extract_quant_label,
     is_big_endian_gguf_path,
     is_gguf_filename,
@@ -61,17 +62,23 @@ def expected_file_from_sibling(sibling) -> Optional[ExpectedFile]:
     )
 
 
-def is_companion_gguf_path(path: str) -> bool:
+def is_companion_gguf_path(path: str, drafters: Optional[Collection[str]] = None) -> bool:
     """Companion (non-main) GGUF downloaded alongside a variant: the vision
-    mmproj or the separate MTP drafter (Gemma 4)."""
-    return is_gguf_filename(path) and (is_mmproj_filename(path) or is_mtp_drafter_path(path))
+    mmproj or a separate drafter. Pass *drafters* from ``drafter_paths_in`` when
+    the whole listing is known, so a drafter-only repo is not left with none."""
+    if not is_gguf_filename(path):
+        return False
+    is_drafter = path in drafters if drafters is not None else is_mtp_drafter_path(path)
+    return is_mmproj_filename(path) or is_drafter
 
 
-def is_main_gguf_variant_path(path: str, variant: str) -> bool:
+def is_main_gguf_variant_path(
+    path: str, variant: str, drafters: Optional[Collection[str]] = None
+) -> bool:
     return (
         is_gguf_filename(path)
         and not is_mmproj_filename(path)
-        and not is_mtp_drafter_path(path)
+        and not (path in drafters if drafters is not None else is_mtp_drafter_path(path))
         and not is_big_endian_gguf_path(path, variant)
         and extract_quant_label(path).lower() == variant.lower()
     )
@@ -136,6 +143,10 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         file for file in (companion_expected, mtp_expected) if file is not None
     )
 
+    drafters = drafter_paths_in(
+        name for s in siblings if isinstance(name := getattr(s, "rfilename", None), str)
+    )
+
     for sibling in siblings:
         name = _gguf_rfilename(sibling)
         if name is None:
@@ -143,7 +154,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
         # Companions are folded into every plan below; keep them out of the
         # quant grouping so a drafter never lands in a variant's main files
         # (the root mtp-*.gguf carries a quant label, e.g. Q8_0).
-        if is_mmproj_filename(name) or is_mtp_drafter_path(name):
+        if is_mmproj_filename(name) or name in drafters:
             continue
         quant = extract_quant_label(name).lower()
         if is_big_endian_gguf_path(name, quant):
@@ -163,6 +174,7 @@ def build_gguf_variant_plans(siblings: Sequence) -> dict[str, GgufVariantPlan]:
             expected_files,
             all_mmproj_filenames = all_mmproj_filenames,
             all_mmproj_hashes = all_mmproj_hashes,
+            drafters = drafters,
         )
     return plans
 
@@ -173,10 +185,17 @@ def plan_from_expected_files(
     *,
     all_mmproj_filenames: frozenset[str] | None = None,
     all_mmproj_hashes: frozenset[str] | None = None,
+    drafters: Optional[Collection[str]] = None,
 ) -> GgufVariantPlan:
     expected = tuple(expected_files)
-    main_files = tuple(file for file in expected if is_main_gguf_variant_path(file.path, variant))
-    companion_files = tuple(file for file in expected if is_companion_gguf_path(file.path))
+    if drafters is None:
+        drafters = drafter_paths_in(file.path for file in expected)
+    main_files = tuple(
+        file for file in expected if is_main_gguf_variant_path(file.path, variant, drafters)
+    )
+    companion_files = tuple(
+        file for file in expected if is_companion_gguf_path(file.path, drafters)
+    )
     # Manifest-resume fallback for the mmproj fields below: companion_files
     # also holds the MTP drafter, so keep an mmproj-only view.
     mmproj_files = tuple(file for file in companion_files if is_mmproj_filename(file.path))

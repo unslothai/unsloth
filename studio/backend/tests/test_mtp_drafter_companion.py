@@ -184,6 +184,43 @@ def test_dspark_drafters_are_not_quants_and_are_not_auto_fetched():
     assert q4.download_size_bytes == 17_000
 
 
+def test_a_repo_of_only_drafters_still_lists_them():
+    # A companion needs something to accompany. mradermacher puts the repo name
+    # on every file, so all 11 quants of DFlash-Qwen3.5-27B-Uncensored-GGUF
+    # carry the dflash- prefix; filtering them would empty a real 27B model.
+    mradermacher = [
+        _sib("DFlash-Qwen3.5-27B-Uncensored.Q4_K_M.gguf", 16_000, "q4"),
+        _sib("DFlash-Qwen3.5-27B-Uncensored.Q8_0.gguf", 28_000, "q8"),
+        _sib("DFlash-Qwen3.5-27B-Uncensored.mmproj-f16.gguf", 900, "mmproj"),
+    ]
+    assert set(build_gguf_variant_plans(mradermacher)) == {"q4_k_m", "q8_0"}
+
+    drafter_only = [_sib("dspark-drafter-Q2K-Q8.gguf", 6_900, "d1")]
+    assert set(build_gguf_variant_plans(drafter_only)) == {"dspark-drafter-q2k-q8"}
+
+
+def test_a_directory_named_drafter_is_never_reprieved():
+    # A snapshot holding only MTP/ or dspark/ is a half-downloaded repo, not a
+    # drafter-only one, so the publisher's layout still wins.
+    assert build_gguf_variant_plans([_sib("MTP/mtp-gemma-4-12b-it.gguf", 100, "d")]) == {}
+    assert build_gguf_variant_plans([_sib("dspark/dspark-model-BF16.gguf", 100, "d")]) == {}
+
+
+def test_drafters_beside_a_main_model_are_still_excluded():
+    # ggml-org/Qwen3.6-27B-GGUF: the guard must not fire here, or the 3 GB
+    # dflash BF16 merges into the real 54 GB one.
+    ggml_org = [
+        _sib("Qwen3.6-27B-BF16.gguf", 53_810, "bf16"),
+        _sib("Qwen3.6-27B-Q8_0.gguf", 28_600, "q8"),
+        _sib("dflash-Qwen3.6-27B-BF16.gguf", 3_470, "dflash-bf16"),
+        _sib("mtp-Qwen3.6-27B-Q8_0.gguf", 3_160, "mtp-q8"),
+    ]
+    plans = build_gguf_variant_plans(ggml_org)
+    assert set(plans) == {"bf16", "q8_0"}
+    assert plans["bf16"].main_filenames == frozenset({"Qwen3.6-27B-BF16.gguf"})
+    assert plans["bf16"].main_size_bytes == 53_810
+
+
 def test_dspark_only_repo_has_no_preferred_drafter_to_download():
     # preferred_mtp_sibling picks what is fetched with every variant, and a
     # DSpark repo ships no launchable drafter.

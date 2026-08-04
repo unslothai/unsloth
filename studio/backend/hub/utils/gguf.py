@@ -9,7 +9,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional
 
 from loggers import get_logger
 
@@ -126,6 +126,35 @@ def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
 
+def is_drafter_dir_path(path: str) -> bool:
+    """True when *path* sits under a drafter directory, the half of the rule the
+    publisher controls. Always a companion, unlike the basename prefix."""
+    p = path.replace("\\", "/").lower()
+    if not p.endswith(".gguf"):
+        return False
+    return any(kind in [s for s in p.split("/")[:-1] if s] for kind in _DRAFTER_DIR_KINDS)
+
+
+def drafter_paths_in(paths: Iterable[str]) -> frozenset[str]:
+    """The drafter GGUFs among *paths*. A companion is only a companion when it
+    has something to accompany, so a PREFIX-named drafter with no main model
+    beside it is kept: a repo can be named after the drafter family and carry
+    the prefix on every real quant (mradermacher/DFlash-Qwen3.5-27B-Uncensored-
+    GGUF), and drafter-only repos exist. Where a main model IS present the
+    prefix still wins, or ggml-org/Qwen3.6-27B-GGUF's 3 GB
+    ``dflash-Qwen3.6-27B-BF16.gguf`` would merge into the real 54 GB one.
+
+    A DIRECTORY-named drafter (``mtp/``, ``dspark/``) is never reprieved: the
+    publisher laid it out as a companion, and a snapshot holding only that is a
+    half-downloaded repo, not a model.
+    """
+    listing = [path for path in paths if is_gguf_filename(path)]
+    drafters = {path for path in listing if is_mtp_drafter_path(path)}
+    if any(path not in drafters and not is_mmproj_filename(path) for path in listing):
+        return frozenset(drafters)
+    return frozenset(path for path in drafters if is_drafter_dir_path(path))
+
+
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
 
 
@@ -184,12 +213,13 @@ def iter_gguf_files(directory: Path, recursive: bool = False):
 
 
 def pick_best_gguf(filenames: list[str]) -> Optional[str]:
+    drafters = drafter_paths_in(filenames)
     gguf_files = [
         name
         for name in filenames
         if is_gguf_filename(name)
         and not is_mmproj_filename(name)
-        and not is_mtp_drafter_path(name)
+        and name not in drafters
         and not is_big_endian_gguf_path(name, extract_quant_label(name))
     ]
     if not gguf_files:
@@ -422,10 +452,11 @@ def list_partial_gguf_variants_from_state(
         size_bytes = 0
         companion_bytes = 0
         if manifest is not None:
+            drafters = drafter_paths_in(file.path for file in manifest.expected_files)
             for expected in manifest.expected_files:
                 if not is_gguf_filename(expected.path):
                     continue
-                if is_mtp_drafter_path(expected.path):
+                if expected.path in drafters:
                     # Downloaded with every variant (like mmproj) but not a
                     # selectable quant; count it so the shown download size
                     # matches what is fetched.
@@ -538,12 +569,15 @@ def list_gguf_variants(
     has_vision = False
     quant_totals: dict[str, int] = {}
     quant_first_file: dict[str, str] = {}
+    drafters = drafter_paths_in(
+        name for s in info.siblings if isinstance(name := getattr(s, "rfilename", None), str)
+    )
 
     for sibling in info.siblings:
         filename = getattr(sibling, "rfilename", None)
         if not isinstance(filename, str) or not is_gguf_filename(filename):
             continue
-        if is_mtp_drafter_path(filename):
+        if filename in drafters:
             continue
         if is_mmproj_filename(filename):
             has_vision = True
@@ -603,7 +637,17 @@ def list_local_gguf_variants(
     quant_first_file: dict[str, str] = {}
     has_vision = False
 
-    for file in sorted(iter_gguf_files(root, recursive = True)):
+    # Same drafter-only reprieve as drafter_paths_in, but keyed on the local
+    # predicate, which also resolves paths against a registered model root.
+    scanned = [
+        (file, file.relative_to(root).as_posix())
+        for file in sorted(iter_gguf_files(root, recursive = True))
+    ]
+    drafters = {rel for file, rel in scanned if _is_local_mtp_drafter(file, custom_root, rel)}
+    if not any(rel not in drafters and not is_mmproj_filename(rel) for _file, rel in scanned):
+        drafters = {rel for rel in drafters if is_drafter_dir_path(rel)}
+
+    for file, rel in scanned:
         if is_mmproj_filename(file.name):
             # A projector llama.cpp cannot open is not vision support.
             try:
@@ -615,8 +659,7 @@ def list_local_gguf_variants(
             size = file.stat().st_size
         except OSError:
             size = 0
-        rel = file.relative_to(root).as_posix()
-        if _is_local_mtp_drafter(file, custom_root, rel):
+        if rel in drafters:
             continue
         quant = extract_quant_label(rel)
         if is_big_endian_gguf_path(rel, quant):
