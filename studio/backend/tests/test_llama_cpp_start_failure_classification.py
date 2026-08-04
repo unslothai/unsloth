@@ -220,6 +220,21 @@ class TestMissingSharedLibrary:
         assert "GGUF file is valid" not in msg
         assert "enough memory" not in msg.lower()
 
+    def test_exit_127_on_a_pinned_binary_does_not_send_it_to_the_updater(
+        self, monkeypatch
+    ):
+        # A wrapper whose exec target is gone exits 127 with no loader line, and
+        # the updater refuses to touch a LLAMA_SERVER_PATH pin, so the managed
+        # remedy is a dead end there too.
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+        msg = _classify("", "/models/x.gguf", "local/x", 127, "/opt/custom/llama-server")
+        assert "unsloth studio update" not in msg
+        assert "custom llama.cpp" in msg
+
+    def test_exit_127_on_a_managed_binary_still_points_at_the_updater(self):
+        msg = _classify("", "/models/x.gguf", "local/x", 127)
+        assert "unsloth studio update" in msg
+
     def test_wrapper_exec_failure_is_not_called_a_system_library(self):
         # write_exec_wrapper's entrypoint: /bin/sh reports a missing exec
         # target as "not found" and exits 127.

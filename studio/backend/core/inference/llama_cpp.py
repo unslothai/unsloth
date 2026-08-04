@@ -7481,12 +7481,18 @@ class LlamaCppBackend:
         # runtime exits with. Name both causes instead of blaming a distro
         # package -- but still keep it off the GGUF and off memory.
         if returncode == 127:
+            # Same provenance split as the library branches: the updater cannot
+            # touch a pinned binary, so do not send its owner there.
+            _remedy = (
+                "run `unsloth studio update` to reinstall the llama.cpp runtime"
+                if LlamaCppBackend._is_unsloth_managed_binary(binary)
+                else "reinstall or rebuild that custom llama.cpp"
+            )
             return (
                 "llama-server exited immediately (status 127): either the "
                 "llama-server executable could not be found or run, or one of "
-                "the shared libraries it needs could not be loaded. Check the "
-                "llama-server log, and run `unsloth studio update` to "
-                "reinstall the llama.cpp runtime."
+                f"the shared libraries it needs could not be loaded. Check the "
+                f"llama-server log, and {_remedy}."
             )
 
         # SIGKILL with no diagnostic output is the OOM killer (e.g. a model too
