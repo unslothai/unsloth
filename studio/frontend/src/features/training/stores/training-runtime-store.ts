@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { create } from "zustand";
+import { isTrainingProgressForJob } from "../lib/training-stream-scope.ts";
 import type {
   TrainingMetricsResponse,
   TrainingPhase,
@@ -47,6 +48,7 @@ const initialState: TrainingRuntimeState = {
   isHydrating: false,
   hasHydrated: false,
   isStarting: false,
+  startRequestId: null,
   startError: null,
   startModelName: null,
   startDatasetName: null,
@@ -81,16 +83,16 @@ function sortSeries(points: TrainingSeriesPoint[]): TrainingSeriesPoint[] {
 }
 
 function toSeries(steps: number[], values: number[]): TrainingSeriesPoint[] {
-  const points: TrainingSeriesPoint[] = [];
+  const points = new Map<number, number>();
   for (let i = 0; i < steps.length; i += 1) {
     const step = steps[i];
     const value = values[i];
     if (!Number.isFinite(step) || !Number.isFinite(value)) {
       continue;
     }
-    points.push({ step, value });
+    points.set(step, value);
   }
-  return sortSeries(points);
+  return sortSeries(Array.from(points, ([step, value]) => ({ step, value })));
 }
 
 function toFiniteNumber(value: unknown): number | null {
@@ -112,6 +114,16 @@ function normalizeWarnings(value: unknown): string[] | null {
   return warnings;
 }
 
+function preserveEqualStrings(current: string[], incoming: string[]): string[] {
+  if (
+    current.length === incoming.length &&
+    current.every((value, index) => value === incoming[index])
+  ) {
+    return current;
+  }
+  return incoming;
+}
+
 function upsertPoint(
   points: TrainingSeriesPoint[],
   step: number,
@@ -120,11 +132,58 @@ function upsertPoint(
   const next = points.slice();
   const index = next.findIndex((point) => point.step === step);
   if (index >= 0) {
+    if (next[index].value === value) {
+      return points;
+    }
     next[index] = { step, value };
     return next;
   }
   next.push({ step, value });
   return sortSeries(next);
+}
+
+function mergeSeries(
+  current: TrainingSeriesPoint[],
+  incoming: TrainingSeriesPoint[],
+): TrainingSeriesPoint[] {
+  if (incoming.length === 0) {
+    return current;
+  }
+  if (current.length === 0) {
+    return incoming;
+  }
+
+  const merged: TrainingSeriesPoint[] = [];
+  let currentIndex = 0;
+  let incomingIndex = 0;
+  let added = false;
+
+  while (currentIndex < current.length && incomingIndex < incoming.length) {
+    const currentPoint = current[currentIndex];
+    const incomingPoint = incoming[incomingIndex];
+    if (currentPoint.step === incomingPoint.step) {
+      merged.push(currentPoint);
+      currentIndex += 1;
+      incomingIndex += 1;
+    } else if (currentPoint.step < incomingPoint.step) {
+      merged.push(currentPoint);
+      currentIndex += 1;
+    } else {
+      merged.push(incomingPoint);
+      incomingIndex += 1;
+      added = true;
+    }
+  }
+
+  if (currentIndex < current.length) {
+    merged.push(...current.slice(currentIndex));
+  }
+  if (incomingIndex < incoming.length) {
+    merged.push(...incoming.slice(incomingIndex));
+    added = true;
+  }
+
+  return added ? merged : current;
 }
 
 function applyMetricHistoryFromStatus(payload: TrainingStatusResponse): {
@@ -166,6 +225,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
       set((state) => ({
         stopRequested: value,
         isStarting: value ? false : state.isStarting,
+        startRequestId: value ? null : state.startRequestId,
         resetGeneration:
           value && !state.stopRequested
             ? state.resetGeneration + 1
@@ -173,18 +233,26 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
       })),
     setHydrating: (value) => set({ isHydrating: value }),
     setHasHydrated: (value) => set({ hasHydrated: value }),
-    tryBeginStarting: () => {
+    tryBeginStarting: (startRequestId) => {
       let acquired = false;
       set((state) => {
-        if (isTrainingStartPending(state) || state.stopRequested) {
+        if (
+          !startRequestId ||
+          isTrainingStartPending(state) ||
+          state.stopRequested
+        ) {
           return state;
         }
         acquired = true;
-        return { isStarting: true };
+        return { isStarting: true, startRequestId };
       });
       return acquired;
     },
-    setStarting: (value) => set({ isStarting: value }),
+    setStarting: (value) =>
+      set((state) => ({
+        isStarting: value,
+        startRequestId: value ? state.startRequestId : null,
+      })),
     setStartError: (value) => set({ startError: value }),
     setStartResources: (
       startModelName,
@@ -212,45 +280,57 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
         resetGeneration: state.resetGeneration + 1,
       })),
 
-    setStartPending: (jobId, message) =>
-      set((state) => ({
-        ...state,
-        jobId,
-        message,
-        error: null,
-        warnings: [],
-        startError: null,
-        phase: "configuring",
-        isStarting: false,
-        sseConnected: false,
-        firstStepReceived: false,
-        lastEventId: null,
-        currentStep: 0,
-        totalSteps: 0,
-        currentEpoch: 0,
-        currentLoss: 0,
-        currentLearningRate: 0,
-        progressPercent: 0,
-        elapsedSeconds: null,
-        etaSeconds: null,
-        currentGradNorm: null,
-        currentNumTokens: null,
-        outputDir: null,
-        lossHistory: [],
-        lrHistory: [],
-        gradNormHistory: [],
-        evalLossHistory: [],
-        resetGeneration: state.resetGeneration + 1,
-      })),
+    setStartPending: (jobId, message, startRequestId = null) =>
+      set((state) => {
+        if (jobId !== null && state.jobId === jobId) {
+          return {
+            isStarting: false,
+            startRequestId,
+            startError: null,
+          };
+        }
+        return {
+          ...state,
+          jobId,
+          message,
+          error: null,
+          warnings: [],
+          startError: null,
+          phase: "configuring",
+          isStarting: false,
+          startRequestId,
+          sseConnected: false,
+          firstStepReceived: false,
+          lastEventId: null,
+          currentStep: 0,
+          totalSteps: 0,
+          currentEpoch: 0,
+          currentLoss: 0,
+          currentLearningRate: 0,
+          progressPercent: 0,
+          elapsedSeconds: null,
+          etaSeconds: null,
+          currentGradNorm: null,
+          currentNumTokens: null,
+          outputDir: null,
+          lossHistory: [],
+          lrHistory: [],
+          gradNormHistory: [],
+          evalLossHistory: [],
+          resetGeneration: state.resetGeneration + 1,
+        };
+      }),
 
     setRuntimeError: (message) =>
-      set({
+      set((state) => ({
         error: message,
         phase: "error",
         isStarting: false,
+        startRequestId: null,
         startError: null,
         sseConnected: false,
-      }),
+        resetGeneration: state.resetGeneration + 1,
+      })),
 
     setSelectedHistoryRunId: (selectedHistoryRunId) =>
       set({ selectedHistoryRunId }),
@@ -260,56 +340,130 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
 
     applyStatus: (payload) =>
       set((state) => {
+        const nextJobId = payload.job_id || state.jobId;
+        const changedJob =
+          payload.job_id.length > 0 && payload.job_id !== state.jobId;
+        const localStartStatus =
+          state.startRequestId !== null &&
+          payload.start_request_id === state.startRequestId;
+        const nextStartRequestId = state.isStarting
+          ? state.startRequestId
+          : localStartStatus && payload.start_request_state === "pending"
+            ? state.startRequestId
+            : null;
+        const runtimeState = changedJob
+          ? {
+              ...state,
+              jobId: payload.job_id,
+              warnings: [],
+              isStarting: state.isStarting,
+              startModelName: localStartStatus ? state.startModelName : null,
+              startDatasetName: localStartStatus
+                ? state.startDatasetName
+                : null,
+              startProjectName: localStartStatus
+                ? state.startProjectName
+                : null,
+              startFromResume: localStartStatus ? state.startFromResume : false,
+              sseConnected: false,
+              firstStepReceived: false,
+              lastEventId: null,
+              currentStep: 0,
+              totalSteps: 0,
+              currentEpoch: 0,
+              currentLoss: 0,
+              currentLearningRate: 0,
+              progressPercent: 0,
+              elapsedSeconds: null,
+              etaSeconds: null,
+              currentGradNorm: null,
+              currentNumTokens: null,
+              outputDir: null,
+              lossHistory: [],
+              lrHistory: [],
+              gradNormHistory: [],
+              evalLossHistory: [],
+              resetGeneration: state.resetGeneration + 1,
+              stopRequested: false,
+            }
+          : state;
         const metricHistory = applyMetricHistoryFromStatus(payload);
         const warnings = normalizeWarnings(payload.warnings);
-        const detailStep = payload.details?.step;
-        const detailTotal = payload.details?.total_steps;
-        const detailLoss = payload.details?.loss;
-        const detailLr = payload.details?.learning_rate;
-        const detailEpoch = payload.details?.epoch;
+        const nextWarnings = warnings
+          ? preserveEqualStrings(runtimeState.warnings, warnings)
+          : runtimeState.warnings;
+        const detailStep = toFiniteNumber(payload.details?.step);
+        const detailTotal = toFiniteNumber(payload.details?.total_steps);
+        const detailLoss = toFiniteNumber(payload.details?.loss);
+        const detailLr = toFiniteNumber(payload.details?.learning_rate);
+        const detailEpoch = toFiniteNumber(payload.details?.epoch);
+        const canApplyDetailMetrics =
+          detailStep !== null && detailStep >= runtimeState.currentStep;
         const stopRequested = payload.is_training_running
-          ? state.stopRequested
+          ? runtimeState.stopRequested
           : false;
 
         return {
-          ...state,
-          jobId: payload.job_id || state.jobId,
+          ...runtimeState,
+          jobId: nextJobId,
+          startRequestId: nextStartRequestId,
           phase: payload.phase,
           isTrainingRunning: payload.is_training_running,
           stopRequested,
-          evalEnabled: payload.eval_enabled ?? state.evalEnabled,
+          evalEnabled: payload.eval_enabled ?? runtimeState.evalEnabled,
           message: payload.message,
           error: payload.error,
-          warnings: warnings ?? state.warnings,
+          warnings: nextWarnings,
           currentStep:
-            typeof detailStep === "number"
-              ? Math.max(detailStep, 0)
-              : state.currentStep,
+            detailStep !== null
+              ? Math.max(detailStep, runtimeState.currentStep, 0)
+              : runtimeState.currentStep,
           totalSteps:
-            typeof detailTotal === "number" && detailTotal > 0
-              ? detailTotal
-              : state.totalSteps,
+            detailTotal !== null && detailTotal > 0
+              ? Math.max(detailTotal, runtimeState.totalSteps)
+              : runtimeState.totalSteps,
           currentLoss:
-            typeof detailLoss === "number" ? detailLoss : state.currentLoss,
+            canApplyDetailMetrics && detailLoss !== null
+              ? detailLoss
+              : runtimeState.currentLoss,
           currentLearningRate:
-            typeof detailLr === "number" ? detailLr : state.currentLearningRate,
+            canApplyDetailMetrics && detailLr !== null
+              ? detailLr
+              : runtimeState.currentLearningRate,
           currentEpoch:
-            typeof detailEpoch === "number" ? detailEpoch : state.currentEpoch,
+            canApplyDetailMetrics && detailEpoch !== null
+              ? Math.max(detailEpoch, runtimeState.currentEpoch)
+              : runtimeState.currentEpoch,
           outputDir:
             payload.details?.output_dir !== undefined
               ? payload.details.output_dir
-              : state.outputDir,
-          lossHistory: metricHistory.lossHistory ?? state.lossHistory,
-          lrHistory: metricHistory.lrHistory ?? state.lrHistory,
-          gradNormHistory:
-            metricHistory.gradNormHistory ?? state.gradNormHistory,
-          evalLossHistory:
-            metricHistory.evalLossHistory ?? state.evalLossHistory,
+              : runtimeState.outputDir,
+          lossHistory: metricHistory.lossHistory
+            ? mergeSeries(runtimeState.lossHistory, metricHistory.lossHistory)
+            : runtimeState.lossHistory,
+          lrHistory: metricHistory.lrHistory
+            ? mergeSeries(runtimeState.lrHistory, metricHistory.lrHistory)
+            : runtimeState.lrHistory,
+          gradNormHistory: metricHistory.gradNormHistory
+            ? mergeSeries(
+                runtimeState.gradNormHistory,
+                metricHistory.gradNormHistory,
+              )
+            : runtimeState.gradNormHistory,
+          evalLossHistory: metricHistory.evalLossHistory
+            ? mergeSeries(
+                runtimeState.evalLossHistory,
+                metricHistory.evalLossHistory,
+              )
+            : runtimeState.evalLossHistory,
         };
       }),
 
     applyMetrics: (payload: TrainingMetricsResponse) =>
       set((state) => {
+        if (!isTrainingProgressForJob(state.jobId, payload.job_id)) {
+          return state;
+        }
         const lossHistory = toSeries(
           payload.step_history,
           payload.loss_history,
@@ -324,45 +478,64 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           (payload.step_history.length > 0
             ? payload.step_history[payload.step_history.length - 1]
             : null);
+        const normalizedLatestStep = toFiniteNumber(latestStep);
+        const latestLoss = toFiniteNumber(payload.current_loss);
+        const latestLearningRate = toFiniteNumber(payload.current_lr);
+        const canApplyCurrentMetrics =
+          normalizedLatestStep !== null &&
+          normalizedLatestStep >= state.currentStep;
 
         return {
           ...state,
-          lossHistory: lossHistory.length > 0 ? lossHistory : state.lossHistory,
-          lrHistory: lrHistory.length > 0 ? lrHistory : state.lrHistory,
-          gradNormHistory:
-            gradNormHistory.length > 0
-              ? gradNormHistory
-              : state.gradNormHistory,
+          lossHistory: mergeSeries(state.lossHistory, lossHistory),
+          lrHistory: mergeSeries(state.lrHistory, lrHistory),
+          gradNormHistory: mergeSeries(state.gradNormHistory, gradNormHistory),
           currentStep:
-            typeof latestStep === "number"
-              ? Math.max(latestStep, state.currentStep)
+            normalizedLatestStep !== null
+              ? Math.max(normalizedLatestStep, state.currentStep)
               : state.currentStep,
           currentLoss:
-            typeof payload.current_loss === "number"
-              ? payload.current_loss
+            canApplyCurrentMetrics && latestLoss !== null
+              ? latestLoss
               : state.currentLoss,
           currentLearningRate:
-            typeof payload.current_lr === "number"
-              ? payload.current_lr
+            canApplyCurrentMetrics && latestLearningRate !== null
+              ? latestLearningRate
               : state.currentLearningRate,
         };
       }),
 
     applyProgress: (payload: TrainingProgressPayload, eventId?: number) =>
       set((state) => {
-        const step = Math.max(payload.step, 0);
+        if (!isTrainingProgressForJob(state.jobId, payload.job_id)) {
+          return state;
+        }
+        const payloadStep = toFiniteNumber(payload.step);
+        const normalizedEventId = toFiniteNumber(eventId);
+        if (
+          payloadStep === null ||
+          payloadStep < state.currentStep ||
+          (normalizedEventId !== null &&
+            state.lastEventId !== null &&
+            normalizedEventId < state.lastEventId)
+        ) {
+          return state;
+        }
+        const step = Math.max(payloadStep, 0);
         const currentLoss = toFiniteNumber(payload.loss);
         const currentLearningRate = toFiniteNumber(payload.learning_rate);
         const currentGradNorm = toFiniteNumber(payload.grad_norm);
         const evalLoss = toFiniteNumber(payload.eval_loss);
+        const totalSteps = toFiniteNumber(payload.total_steps);
+        const progressPercent = toFiniteNumber(payload.progress_percent);
+        const currentEpoch = toFiniteNumber(payload.epoch);
 
         return {
           ...state,
-          jobId: payload.job_id || state.jobId,
           currentStep: step,
           totalSteps:
-            typeof payload.total_steps === "number" && payload.total_steps > 0
-              ? payload.total_steps
+            totalSteps !== null && totalSteps > 0
+              ? Math.max(totalSteps, state.totalSteps)
               : state.totalSteps,
           // A null loss at a new step means the backend reported a non-finite
           // loss; clear the display instead of keeping the stale value.
@@ -370,15 +543,29 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
             currentLoss ??
             (step > state.currentStep ? null : state.currentLoss),
           currentLearningRate: currentLearningRate ?? state.currentLearningRate,
-          progressPercent: payload.progress_percent,
-          currentEpoch: payload.epoch ?? state.currentEpoch,
+          progressPercent:
+            progressPercent !== null
+              ? Math.max(
+                  state.progressPercent,
+                  Math.min(Math.max(progressPercent, 0), 100),
+                )
+              : state.progressPercent,
+          currentEpoch:
+            currentEpoch !== null
+              ? Math.max(currentEpoch, state.currentEpoch)
+              : state.currentEpoch,
           elapsedSeconds: payload.elapsed_seconds,
           etaSeconds: payload.eta_seconds,
           currentGradNorm,
           currentNumTokens: payload.num_tokens,
           firstStepReceived: state.firstStepReceived || step > 0,
           lastEventId:
-            typeof eventId === "number" ? eventId : state.lastEventId,
+            normalizedEventId !== null
+              ? Math.max(
+                  normalizedEventId,
+                  state.lastEventId ?? normalizedEventId,
+                )
+              : state.lastEventId,
           lossHistory:
             step > 0 && currentLoss !== null
               ? upsertPoint(state.lossHistory, step, currentLoss)

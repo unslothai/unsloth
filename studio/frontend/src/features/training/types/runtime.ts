@@ -44,6 +44,7 @@ export interface TrainingStatusResponse {
 }
 
 export interface TrainingMetricsResponse {
+  job_id: string;
   loss_history: number[];
   lr_history: number[];
   step_history: number[];
@@ -85,6 +86,7 @@ export interface TrainingRuntimeState {
   isHydrating: boolean;
   hasHydrated: boolean;
   isStarting: boolean;
+  startRequestId: string | null;
   startError: string | null;
   startModelName: string | null;
   startDatasetName: string | null;
@@ -121,7 +123,7 @@ export interface TrainingRuntimeActions {
   setStopRequested: (value: boolean) => void;
   setHydrating: (value: boolean) => void;
   setHasHydrated: (value: boolean) => void;
-  tryBeginStarting: () => boolean;
+  tryBeginStarting: (startRequestId: string) => boolean;
   setStarting: (value: boolean) => void;
   setStartError: (value: string | null) => void;
   setStartResources: (
@@ -136,7 +138,11 @@ export interface TrainingRuntimeActions {
   applyStatus: (payload: TrainingStatusResponse) => void;
   applyMetrics: (payload: TrainingMetricsResponse) => void;
   applyProgress: (payload: TrainingProgressPayload, eventId?: number) => void;
-  setStartPending: (jobId: string | null, message: string) => void;
+  setStartPending: (
+    jobId: string | null,
+    message: string,
+    startRequestId?: string | null,
+  ) => void;
   setRuntimeError: (message: string) => void;
   setSelectedHistoryRunId: (id: string | null) => void;
   setCurrentRunViewActive: (value: boolean) => void;

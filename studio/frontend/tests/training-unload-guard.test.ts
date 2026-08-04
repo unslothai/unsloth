@@ -24,7 +24,10 @@ test("desktop activity mirrors pending starts through active phases", () => {
 
   try {
     assert.deepEqual(published, [false]);
-    assert.equal(useTrainingRuntimeStore.getState().tryBeginStarting(), true);
+    assert.equal(
+      useTrainingRuntimeStore.getState().tryBeginStarting("start-unload"),
+      true,
+    );
     assert.deepEqual(published, [false, true]);
 
     useTrainingRuntimeStore

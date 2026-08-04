@@ -4,6 +4,11 @@
 import { useEffect } from "react";
 
 import { getTrainingStatus } from "../api/train-api";
+import { createSingleFlightRequest } from "../lib/single-flight-request";
+import {
+  isTrainingStatusRequestCurrent,
+  trainingStatusRequestKey,
+} from "../lib/training-status-request";
 import {
   isTrainingStartPending,
   useTrainingRuntimeStore,
@@ -23,19 +28,24 @@ export function useTrainingCompletionWatch(): void {
   const active = useTrainingRuntimeStore(isTrainingStartPending);
 
   useEffect(() => {
-    if (!active) return;
+    if (!active) {
+      return;
+    }
     let cancelled = false;
 
-    const tick = async () => {
+    const tick = createSingleFlightRequest(async () => {
+      const initial = useTrainingRuntimeStore.getState();
+      const requestKey = trainingStatusRequestKey(initial);
       try {
-        const status = await getTrainingStatus();
-        if (!cancelled) {
-          useTrainingRuntimeStore.getState().applyStatus(status);
+        const status = await getTrainingStatus(requestKey);
+        const runtime = useTrainingRuntimeStore.getState();
+        if (!cancelled && isTrainingStatusRequestCurrent(requestKey, runtime)) {
+          runtime.applyStatus(status);
         }
       } catch {
         // Transient network/auth hiccup; the next tick retries.
       }
-    };
+    });
 
     const id = window.setInterval(tick, WATCH_INTERVAL_MS);
     return () => {

@@ -3,6 +3,11 @@
 
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
+import { createScopedSingleFlightRequest } from "../lib/single-flight-request";
+import {
+  type ParsedTrainingProgressEvent,
+  consumeTrainingProgressStream,
+} from "../lib/training-sse-stream";
 import type {
   TrainingResetResponse,
   TrainingStartRequest,
@@ -12,16 +17,75 @@ import type {
 } from "../types/api";
 import type {
   TrainingMetricsResponse,
-  TrainingProgressPayload,
   TrainingStatusResponse,
 } from "../types/runtime";
-import { takeSseFrame } from "./sse-framing";
 
 function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "name" in error &&
+    error.name === "AbortError"
+  );
 }
 
 const readError = (r: Response): Promise<string> => readFastApiError(r);
+const TRAINING_START_TIMEOUT_MS = 60_000;
+const TRAINING_STATUS_TIMEOUT_MS = 15_000;
+
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = "AbortError";
+  return error;
+}
+
+async function runRequestWithTimeout<TResult>(
+  timeoutMs: number,
+  timeoutMessage: string,
+  request: (signal: AbortSignal) => Promise<TResult>,
+  parentSignal?: AbortSignal,
+): Promise<TResult> {
+  const controller = new AbortController();
+  let abortReason = createAbortError(timeoutMessage);
+  const abort = (reason: Error) => {
+    if (controller.signal.aborted) {
+      return;
+    }
+    abortReason = reason;
+    controller.abort();
+  };
+  const onParentAbort = () => abort(createAbortError("Request was superseded"));
+  if (parentSignal?.aborted) {
+    onParentAbort();
+    throw abortReason;
+  }
+  parentSignal?.addEventListener("abort", onParentAbort, { once: true });
+  const timeoutId = setTimeout(
+    () => abort(createAbortError(timeoutMessage)),
+    timeoutMs,
+  );
+  let rejectAborted: ((reason: Error) => void) | null = null;
+  const onRequestAbort = () => {
+    rejectAborted?.(abortReason);
+  };
+  const aborted = new Promise<never>((_, reject) => {
+    rejectAborted = reject;
+    if (controller.signal.aborted) {
+      reject(abortReason);
+      return;
+    }
+    controller.signal.addEventListener("abort", onRequestAbort, { once: true });
+  });
+
+  try {
+    const result = Promise.resolve().then(() => request(controller.signal));
+    return await Promise.race([result, aborted]);
+  } finally {
+    clearTimeout(timeoutId);
+    controller.signal.removeEventListener("abort", onRequestAbort);
+    parentSignal?.removeEventListener("abort", onParentAbort);
+  }
+}
 
 class TrainingStartOutcomeUnknownError extends Error {
   constructor(error: unknown) {
@@ -85,40 +149,45 @@ export async function startTraining(
   payload: TrainingStartRequest,
   startRequestId: string,
 ): Promise<TrainingStartResponse> {
-  let response: Response;
-  try {
-    response = await authFetch(
-      "/api/train/start",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...payload, start_request_id: startRequestId }),
-      },
-      { retryNetworkErrors: false },
-    );
-  } catch (error) {
-    throw new TrainingStartOutcomeUnknownError(error);
-  }
-  if (!response.ok) {
-    const error = await readTrainingStartError(response);
-    await acknowledgeTrainingStartRequest(startRequestId).catch(
-      () => undefined,
-    );
-    throw error;
-  }
   let result: TrainingStartResponse;
   try {
-    result = (await response.json()) as TrainingStartResponse;
+    result = await runRequestWithTimeout(
+      TRAINING_START_TIMEOUT_MS,
+      "Training start request timed out",
+      async (signal) => {
+        const response = await authFetch(
+          "/api/train/start",
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ...payload,
+              start_request_id: startRequestId,
+            }),
+            signal,
+          },
+          { retryNetworkErrors: false },
+        );
+        if (!response.ok) {
+          throw await readTrainingStartError(response);
+        }
+        return (await response.json()) as TrainingStartResponse;
+      },
+    );
   } catch (error) {
+    if (error instanceof TrainingStartError) {
+      void acknowledgeTrainingStartRequest(startRequestId).catch(
+        () => undefined,
+      );
+      throw error;
+    }
     throw new TrainingStartOutcomeUnknownError(error);
   }
   if (result.status === "pending") {
     throw new TrainingStartOutcomeUnknownError(new Error(result.message));
   }
   if (result.status === "error") {
-    await acknowledgeTrainingStartRequest(startRequestId).catch(
-      () => undefined,
-    );
+    void acknowledgeTrainingStartRequest(startRequestId).catch(() => undefined);
   }
   return result;
 }
@@ -126,25 +195,40 @@ export async function startTraining(
 export async function getTrainingStartRequestStatus(
   startRequestId: string,
 ): Promise<TrainingStartRequestStatusResponse | null> {
-  const response = await authFetch(
-    `/api/train/start-requests/${encodeURIComponent(startRequestId)}`,
+  return runRequestWithTimeout(
+    TRAINING_STATUS_TIMEOUT_MS,
+    "Training start status request timed out",
+    async (signal) => {
+      const response = await authFetch(
+        `/api/train/start-requests/${encodeURIComponent(startRequestId)}`,
+        { signal },
+        { retryNetworkErrors: false },
+      );
+      if (response.status === 404) {
+        return null;
+      }
+      return parseJson<TrainingStartRequestStatusResponse>(response);
+    },
   );
-  if (response.status === 404) {
-    return null;
-  }
-  return parseJson<TrainingStartRequestStatusResponse>(response);
 }
 
 export async function acknowledgeTrainingStartRequest(
   startRequestId: string,
 ): Promise<void> {
-  const response = await authFetch(
-    `/api/train/start-requests/${encodeURIComponent(startRequestId)}/acknowledge`,
-    { method: "POST" },
+  return runRequestWithTimeout(
+    TRAINING_STATUS_TIMEOUT_MS,
+    "Training start acknowledgement timed out",
+    async (signal) => {
+      const response = await authFetch(
+        `/api/train/start-requests/${encodeURIComponent(startRequestId)}/acknowledge`,
+        { method: "POST", signal },
+        { retryNetworkErrors: false },
+      );
+      if (!response.ok) {
+        throw new Error(await readError(response));
+      }
+    },
   );
-  if (!response.ok) {
-    throw new Error(await readError(response));
-  }
 }
 
 interface TrainingJobScope {
@@ -191,80 +275,87 @@ export async function resetTraining(
   return parseJson<TrainingResetResponse>(response);
 }
 
-export async function getTrainingStatus(): Promise<TrainingStatusResponse> {
-  const response = await authFetch("/api/train/status");
-  return parseJson<TrainingStatusResponse>(response);
+const requestTrainingStatus = createScopedSingleFlightRequest<
+  undefined,
+  TrainingStatusResponse
+>(async (_scope, _input, signal) =>
+  runRequestWithTimeout(
+    TRAINING_STATUS_TIMEOUT_MS,
+    "Training status request timed out",
+    async (requestSignal) => {
+      const response = await authFetch(
+        "/api/train/status",
+        { signal: requestSignal },
+        { retryNetworkErrors: false },
+      );
+      return parseJson<TrainingStatusResponse>(response);
+    },
+    signal,
+  ),
+);
+
+export function getTrainingStatus(
+  requestKey: string,
+  options?: { fresh?: boolean },
+): Promise<TrainingStatusResponse> {
+  return options?.fresh
+    ? requestTrainingStatus.refresh(requestKey, undefined)
+    : requestTrainingStatus.run(requestKey, undefined);
 }
 
-export async function getTrainingMetrics(): Promise<TrainingMetricsResponse> {
-  const response = await authFetch("/api/train/metrics");
-  return parseJson<TrainingMetricsResponse>(response);
-}
+const requestTrainingMetrics = createScopedSingleFlightRequest<
+  string,
+  TrainingMetricsResponse
+>(async (_scope, expectedJobId, signal) =>
+  runRequestWithTimeout(
+    TRAINING_STATUS_TIMEOUT_MS,
+    "Training metrics request timed out",
+    async (requestSignal) => {
+      const jobId = encodeURIComponent(expectedJobId);
+      const response = await authFetch(
+        `/api/train/metrics?expected_job_id=${jobId}`,
+        { signal: requestSignal },
+        { retryNetworkErrors: false },
+      );
+      return parseJson<TrainingMetricsResponse>(response);
+    },
+    signal,
+  ),
+);
 
-type ProgressEventName = "progress" | "heartbeat" | "complete" | "error";
-
-interface ParsedSseEvent {
-  event: ProgressEventName;
-  payload: TrainingProgressPayload;
-  id: number | null;
-}
-
-function parseSseEvent(rawEvent: string): ParsedSseEvent | null {
-  const lines = rawEvent.split(/\r?\n/);
-  let eventName: ProgressEventName = "progress";
-  let id: number | null = null;
-  const dataLines: string[] = [];
-
-  for (const line of lines) {
-    if (!line) {
-      continue;
-    }
-    if (line.startsWith("event:")) {
-      const value = line.slice(6).trim();
-      if (
-        value === "progress" ||
-        value === "heartbeat" ||
-        value === "complete" ||
-        value === "error"
-      ) {
-        eventName = value;
-      }
-      continue;
-    }
-    if (line.startsWith("id:")) {
-      const value = Number(line.slice(3).trim());
-      id = Number.isFinite(value) ? value : null;
-      continue;
-    }
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).trimStart());
-    }
-  }
-
-  if (dataLines.length === 0) {
-    return null;
-  }
-
-  const parsed = JSON.parse(dataLines.join("\n")) as TrainingProgressPayload;
-  return { event: eventName, payload: parsed, id };
+export function getTrainingMetrics(
+  expectedJobId: string,
+  requestKey: string,
+  options?: { fresh?: boolean },
+): Promise<TrainingMetricsResponse> {
+  const scope = JSON.stringify([requestKey, expectedJobId]);
+  return options?.fresh
+    ? requestTrainingMetrics.refresh(scope, expectedJobId)
+    : requestTrainingMetrics.run(scope, expectedJobId);
 }
 
 export async function streamTrainingProgress(options: {
   signal: AbortSignal;
+  expectedJobId: string;
   lastEventId?: number | null;
   onOpen?: () => void;
-  onEvent: (event: ParsedSseEvent) => void;
+  onEvent: (event: ParsedTrainingProgressEvent) => void;
 }): Promise<void> {
   const headers = new Headers();
   if (typeof options.lastEventId === "number") {
     headers.set("Last-Event-ID", String(options.lastEventId));
   }
 
-  const response = await authFetch("/api/train/progress", {
-    method: "GET",
-    headers,
-    signal: options.signal,
-  });
+  const expectedJobId = encodeURIComponent(options.expectedJobId);
+  const response = await authFetch(
+    `/api/train/progress?expected_job_id=${expectedJobId}`,
+    {
+      method: "GET",
+      headers,
+      signal: options.signal,
+    },
+    { retryNetworkErrors: false },
+  );
 
   if (!response.ok) {
     throw new Error(await readError(response));
@@ -274,53 +365,15 @@ export async function streamTrainingProgress(options: {
     throw new Error("Progress stream unavailable");
   }
 
-  options.onOpen?.();
-
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  try {
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) {
-        break;
-      }
-
-      buffer += decoder.decode(value, { stream: true });
-
-      let frame = takeSseFrame(buffer);
-      while (frame) {
-        const rawEvent = frame.event;
-        buffer = frame.remainder;
-
-        if (rawEvent.startsWith("retry:")) {
-          frame = takeSseFrame(buffer);
-          continue;
-        }
-
-        try {
-          const event = parseSseEvent(rawEvent);
-          if (event) {
-            options.onEvent(event);
-          }
-        } catch (error) {
-          if (!isAbortError(error)) {
-            throw error;
-          }
-        }
-
-        frame = takeSseFrame(buffer);
-      }
-    }
-  } finally {
-    // Release the stream lock now instead of leaking the reader until GC.
-    try {
-      await reader.cancel();
-    } catch {
-      // already closed
-    }
+  if (options.signal.aborted) {
+    return;
   }
+  options.onOpen?.();
+  await consumeTrainingProgressStream({
+    body: response.body,
+    signal: options.signal,
+    onEvent: options.onEvent,
+  });
 }
 
 export { isAbortError };

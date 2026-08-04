@@ -17,12 +17,15 @@ import {
   statusConfirmsActiveTrainingStart,
 } from "./training-start-reconciliation";
 import { createTrainingStartRequestId } from "./training-start-request-id";
+import {
+  isTrainingStatusRequestCurrent,
+  trainingStatusRequestKey,
+} from "./training-status-request";
 
 export const TRAINING_SETUP_CHANGED_ERROR =
   "studio.training.setupChanged" satisfies TranslationKey;
 
 export interface TrainingStartLease {
-  resetGeneration: number;
   startRequestId: string;
 }
 
@@ -43,19 +46,16 @@ function wait(ms: number): Promise<void> {
 export function tryAcquireTrainingStart(): TrainingStartLease | null {
   const startRequestId = createTrainingStartRequestId();
   const runtime = useTrainingRuntimeStore.getState();
-  if (!runtime.tryBeginStarting()) {
+  if (!runtime.tryBeginStarting(startRequestId)) {
     return null;
   }
-  return {
-    resetGeneration: useTrainingRuntimeStore.getState().resetGeneration,
-    startRequestId,
-  };
+  return { startRequestId };
 }
 
 export function isTrainingStartLeaseActive(lease: TrainingStartLease): boolean {
   const runtime = useTrainingRuntimeStore.getState();
   return (
-    runtime.resetGeneration === lease.resetGeneration &&
+    runtime.startRequestId === lease.startRequestId &&
     runtime.isStarting &&
     !runtime.stopRequested
   );
@@ -91,6 +91,10 @@ async function cancelSupersededTrainingStart(jobId: string): Promise<void> {
   emitTrainingRunsChanged();
 }
 
+function adoptAcceptedTrainingStart(jobId: string, message: string): void {
+  useTrainingRuntimeStore.getState().setStartPending(jobId, message);
+}
+
 export async function settleAcceptedTrainingStart(
   lease: TrainingStartLease,
   jobId: string,
@@ -100,7 +104,7 @@ export async function settleAcceptedTrainingStart(
     await cancelSupersededTrainingStart(jobId);
     return false;
   }
-  useTrainingRuntimeStore.getState().setStartPending(jobId, message);
+  adoptAcceptedTrainingStart(jobId, message);
   await Promise.allSettled([
     Promise.resolve().then(emitTrainingRunsChanged),
     syncTrainingRuntimeFromBackend(),
@@ -115,7 +119,9 @@ export function settleUnconfirmedTrainingStart(
   if (!isTrainingStartLeaseActive(lease)) {
     return false;
   }
-  useTrainingRuntimeStore.getState().setStartPending(null, message);
+  useTrainingRuntimeStore
+    .getState()
+    .setStartPending(null, message, lease.startRequestId);
   return true;
 }
 
@@ -164,9 +170,7 @@ export async function reconcileTrainingStartTransportFailure(
       return { kind: "unknown" };
     }
 
-    useTrainingRuntimeStore
-      .getState()
-      .setStartPending(outcome.jobId, outcome.message);
+    adoptAcceptedTrainingStart(outcome.jobId, outcome.message);
     await Promise.allSettled([
       Promise.resolve().then(emitTrainingRunsChanged),
       syncTrainingRuntimeFromBackend(),
@@ -174,24 +178,25 @@ export async function reconcileTrainingStartTransportFailure(
     return { kind: "recovered" };
   }
   if (pending && isTrainingStartLeaseActive(lease)) {
-    useTrainingRuntimeStore
-      .getState()
-      .setStartPending(pending.jobId, pending.message);
+    adoptAcceptedTrainingStart(pending.jobId, pending.message);
     await Promise.allSettled([
       Promise.resolve().then(emitTrainingRunsChanged),
       syncTrainingRuntimeFromBackend(),
     ]);
     return { kind: "recovered" };
   }
-  const status = await getTrainingStatus().catch(() => null);
+  let statusRuntime = useTrainingRuntimeStore.getState();
+  const requestKey = trainingStatusRequestKey(statusRuntime);
+  const status = await getTrainingStatus(requestKey).catch(() => null);
+  statusRuntime = useTrainingRuntimeStore.getState();
   if (
     status &&
+    isTrainingStatusRequestCurrent(requestKey, statusRuntime) &&
     isTrainingStartLeaseActive(lease) &&
     statusConfirmsActiveTrainingStart(status, lease.startRequestId)
   ) {
-    const runtime = useTrainingRuntimeStore.getState();
-    runtime.applyStatus(status);
-    runtime.setStarting(false);
+    statusRuntime.applyStatus(status);
+    useTrainingRuntimeStore.getState().setStarting(false);
     emitTrainingRunsChanged();
     return { kind: "recovered" };
   }

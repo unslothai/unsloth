@@ -22,11 +22,12 @@ import threading
 import time
 import traceback
 import structlog
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from loggers import get_logger
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING, Literal
+from typing import Optional, Tuple, Any, Callable, Union, TYPE_CHECKING, Literal, Iterator
 
 if TYPE_CHECKING:
     import matplotlib.pyplot as plt
@@ -74,6 +75,16 @@ class TrainingStartRequestRecord:
     message: str
     error: Optional[str] = None
     error_code: Optional[str] = None
+
+
+@dataclass(frozen = True)
+class TrainingStatusIdentitySnapshot:
+    current_job_id: str
+    current_start_request_id: Optional[str]
+    current_start_request: Optional[TrainingStartRequestRecord]
+    status_start_request: Optional[TrainingStartRequestRecord]
+    new_job_spawn_id: Optional[str]
+    spawn_in_progress: bool
 
 
 def _load_pyplot():
@@ -1014,6 +1025,7 @@ class TrainingBackend:
         # True from the sidecar-swap handshake until the worker is recorded, so
         # installs and STT loads treat the startup window as active.
         self._spawn_in_progress: bool = False
+        self._new_job_spawn_id: Optional[str] = None
         self._event_queue: Any = None
         self._stop_queue: Any = None
         self._pump_thread: Optional[threading.Thread] = None
@@ -1156,6 +1168,43 @@ class TrainingBackend:
                 return None
             return self._start_requests.get(self._status_start_request_id)
 
+    def training_status_identity(self) -> TrainingStatusIdentitySnapshot:
+        with self._lock:
+            current_start_request = (
+                self._start_requests.get(self.current_start_request_id)
+                if self.current_start_request_id is not None
+                else None
+            )
+            status_start_request = (
+                self._start_requests.get(self._status_start_request_id)
+                if self._status_start_request_id is not None
+                else None
+            )
+            return TrainingStatusIdentitySnapshot(
+                current_job_id = self.current_job_id or "",
+                current_start_request_id = self.current_start_request_id,
+                current_start_request = current_start_request,
+                status_start_request = status_start_request,
+                new_job_spawn_id = self._new_job_spawn_id,
+                spawn_in_progress = self._spawn_in_progress,
+            )
+
+    @contextmanager
+    def _new_job_spawn_reservation(self, job_id: str) -> Iterator[bool]:
+        with self._lock:
+            reserved = not self._spawn_in_progress and self._new_job_spawn_id is None
+            if reserved:
+                self._new_job_spawn_id = job_id
+                self._spawn_in_progress = True
+        try:
+            yield reserved
+        finally:
+            if reserved:
+                with self._lock:
+                    if self._new_job_spawn_id == job_id:
+                        self._spawn_in_progress = False
+                        self._new_job_spawn_id = None
+
     def acknowledge_start_request(self, start_request_id: str) -> bool:
         with self._lock:
             record = self._start_requests.get(start_request_id)
@@ -1289,19 +1338,17 @@ class TrainingBackend:
         # sees this flag (or the recorded proc) and refuses.
         from utils.transformers_version import sidecar_swap_in_progress
 
-        self._spawn_in_progress = True
-        if sidecar_swap_in_progress():
-            self._spawn_in_progress = False
-            from utils.transformers_version import SidecarSwapInProgress
-            raise SidecarSwapInProgress(
-                "A transformers installation is replacing the latest sidecar; "
-                "retry when it completes."
-            )
+        with self._new_job_spawn_reservation(job_id) as spawn_reserved:
+            if not spawn_reserved:
+                logger.warning("Training subprocess already running")
+                return False
+            if sidecar_swap_in_progress():
+                from utils.transformers_version import SidecarSwapInProgress
+                raise SidecarSwapInProgress(
+                    "A transformers installation is replacing the latest sidecar; "
+                    "retry when it completes."
+                )
 
-        # Any exception between the handshake above and the flag reset below would
-        # otherwise leave _spawn_in_progress latched, wedging is_training_active
-        # (and the install route) until restart.
-        try:
             if (
                 config.get("require_exact_resume_resources")
                 or config.get("require_exact_model_resource")
@@ -1322,14 +1369,9 @@ class TrainingBackend:
                     logger.warning("before_spawn hook failed; continuing", exc_info = True)
 
             if defer_auto_selection:
-                try:
-                    resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
-                        None, **gpu_selection_kwargs
-                    )
-                except Exception:
-                    # Flag is already set; a failed GPU selection must not leave is_training_active stuck True.
-                    self._spawn_in_progress = False
-                    raise
+                resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
+                    None, **gpu_selection_kwargs
+                )
                 config["resolved_gpu_ids"] = resolved_gpu_ids
                 config["gpu_selection"] = gpu_selection
 
@@ -1361,7 +1403,6 @@ class TrainingBackend:
                     adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
             except Exception:
                 logger.error("Failed to start training subprocess", exc_info = True)
-                self._spawn_in_progress = False
                 return False
 
             logger.info("Training subprocess started (pid=%s)", proc.pid)
@@ -1419,7 +1460,6 @@ class TrainingBackend:
                     proc.join(timeout = 2.0)
                 self._progress.is_training = False
                 self._progress.error = "Resume checkpoint is no longer available."
-                self._spawn_in_progress = False
                 return False
 
             # Assign handles and start the pump together under the lock so a concurrent
@@ -1432,7 +1472,9 @@ class TrainingBackend:
                 self._proc = proc
                 self._pump_thread = new_pump
                 new_pump.start()
-                self._spawn_in_progress = False
+                if self._new_job_spawn_id == job_id:
+                    self._spawn_in_progress = False
+                    self._new_job_spawn_id = None
 
             if start_request_id is not None:
                 self.resolve_start_request(
@@ -1441,10 +1483,6 @@ class TrainingBackend:
                     message = "Training job queued and starting in subprocess",
                 )
             return True
-
-        except Exception:
-            self._spawn_in_progress = False
-            raise
 
     def stop_training(
         self,
@@ -2053,7 +2091,9 @@ class TrainingBackend:
         """Check if training is currently active."""
         # A spawn past its sidecar-swap recheck counts as active even before _proc is recorded,
         # so an install cannot slip in mid-spawn.
-        if getattr(self, "_spawn_in_progress", False):
+        if getattr(self, "_new_job_spawn_id", None) is not None or getattr(
+            self, "_spawn_in_progress", False
+        ):
             return True
         # Self-heal a crashed pump first: a dead pump must never leave the worker
         # training invisibly behind a frozen UI. Cheap enough for per-second polls.

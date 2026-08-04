@@ -27,6 +27,7 @@ if str(backend_path) not in sys.path:
 
 try:
     from core.training import get_training_backend
+    from core.training.training import TrainingStatusIdentitySnapshot
     from core.training.resume import (
         can_resume_run,
         get_resume_checkpoint_path,
@@ -42,6 +43,7 @@ except ImportError:
     if str(parent_backend) not in sys.path:
         sys.path.insert(0, str(parent_backend))
     from core.training import get_training_backend
+    from core.training.training import TrainingStatusIdentitySnapshot
     from core.training.resume import (
         can_resume_run,
         get_resume_checkpoint_path,
@@ -1499,6 +1501,154 @@ async def reset_training(
         )
 
 
+def _training_status_identity(backend) -> TrainingStatusIdentitySnapshot:
+    snapshot = getattr(backend, "training_status_identity", None)
+    if callable(snapshot):
+        return snapshot()
+    current_start_request_id = getattr(backend, "current_start_request_id", None)
+    current_start_request = (
+        backend.get_start_request(current_start_request_id)
+        if current_start_request_id is not None
+        else None
+    )
+    return TrainingStatusIdentitySnapshot(
+        current_job_id = getattr(backend, "current_job_id", "") or "",
+        current_start_request_id = current_start_request_id,
+        current_start_request = current_start_request,
+        status_start_request = backend.status_start_request(),
+        new_job_spawn_id = getattr(backend, "_new_job_spawn_id", None),
+        spawn_in_progress = getattr(backend, "_spawn_in_progress", False),
+    )
+
+
+def _build_training_status(
+    backend, identity: TrainingStatusIdentitySnapshot, is_active: bool
+) -> TrainingStatus:
+    owner_job_id = identity.current_job_id
+    job_id = owner_job_id
+    start_request_id = identity.current_start_request_id
+    start_request = identity.current_start_request
+    status_start_request = identity.status_start_request
+    new_job_spawn_id = identity.new_job_spawn_id
+
+    if new_job_spawn_id is not None:
+        job_id = new_job_spawn_id
+        start_request = next(
+            (
+                request
+                for request in (status_start_request, identity.current_start_request)
+                if request is not None and request.job_id == new_job_spawn_id
+            ),
+            None,
+        )
+        start_request_id = start_request.start_request_id if start_request is not None else None
+    elif is_active:
+        start_request = identity.current_start_request
+        start_request_id = identity.current_start_request_id
+    elif status_start_request is not None and status_start_request.state in {
+        "pending",
+        "rejected",
+    }:
+        start_request = status_start_request
+        job_id = "" if start_request.state == "rejected" else start_request.job_id
+        start_request_id = start_request.start_request_id
+    elif start_request is None and (
+        status_start_request is not None and status_start_request.job_id == owner_job_id
+    ):
+        start_request = status_start_request
+        start_request_id = status_start_request.start_request_id
+
+    start_request_state = start_request.state if start_request is not None else None
+    exposes_owner_state = (
+        job_id == owner_job_id
+        and start_request_state not in {"pending", "rejected"}
+        and new_job_spawn_id is None
+    )
+    progress = None
+    if exposes_owner_state:
+        try:
+            progress = backend.trainer.get_training_progress()
+        except Exception:
+            progress = None
+
+    status_message = (
+        getattr(progress, "status_message", None) if progress else None
+    ) or "Ready to train"
+    error_message = getattr(progress, "error", None) if progress else None
+    warnings = list(getattr(progress, "warnings", ()) or ()) if progress else []
+    if start_request is not None and start_request.state == "pending":
+        status_message = start_request.message
+        error_message = None
+        warnings = []
+    elif start_request is not None and start_request.state == "rejected":
+        status_message = start_request.message
+        error_message = start_request.error or start_request.message
+        warnings = []
+    elif new_job_spawn_id is not None:
+        status_message = "Training job is starting"
+
+    trainer_stopped = getattr(backend, "_should_stop", False)
+    if start_request_state == "pending":
+        phase = "configuring"
+    elif start_request_state == "rejected":
+        phase = "error"
+    elif new_job_spawn_id is not None:
+        phase = "configuring"
+    elif error_message:
+        phase = "error"
+    elif is_active:
+        msg_lower = status_message.lower()
+        if "loading" in msg_lower or "importing" in msg_lower:
+            phase = "loading_model"
+        elif any(k in msg_lower for k in ["preparing", "initializing", "configuring"]):
+            phase = "configuring"
+        else:
+            phase = "training"
+    elif trainer_stopped:
+        phase = "stopped"
+    elif progress and getattr(progress, "is_completed", False):
+        phase = "completed"
+    else:
+        phase = "idle"
+
+    details = None
+    if progress:
+        details = {
+            "epoch": getattr(progress, "epoch", 0),
+            "step": getattr(progress, "step", 0),
+            "total_steps": getattr(progress, "total_steps", 0),
+            "loss": getattr(progress, "loss", None),
+            "learning_rate": getattr(progress, "learning_rate", None),
+            "output_dir": getattr(backend, "_output_dir", None) or None,
+        }
+
+    metric_history = None
+    if exposes_owner_state and backend.step_history:
+        metric_history = {
+            "steps": list(backend.step_history),
+            "loss": list(backend.loss_history),
+            "lr": list(backend.lr_history),
+            "grad_norm": list(getattr(backend, "grad_norm_history", [])),
+            "grad_norm_steps": list(getattr(backend, "grad_norm_step_history", [])),
+            "eval_loss": list(backend.eval_loss_history),
+            "eval_steps": list(backend.eval_step_history),
+        }
+
+    return TrainingStatus(
+        job_id = job_id,
+        start_request_id = start_request_id,
+        start_request_state = start_request_state,
+        phase = phase,
+        is_training_running = is_active,
+        eval_enabled = backend.eval_enabled if exposes_owner_state else False,
+        message = status_message,
+        error = error_message,
+        warnings = warnings,
+        details = details,
+        metric_history = metric_history,
+    )
+
+
 @router.get("/status")
 async def get_training_status(current_subject: str = Depends(get_current_subject)):
     """
@@ -1506,106 +1656,18 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
     """
     try:
         backend = get_training_backend()
-        job_id: str = getattr(backend, "current_job_id", "") or ""
-        start_request_id: Optional[str] = getattr(backend, "current_start_request_id", None)
-        start_request = backend.status_start_request()
-        start_request_state = start_request.state if start_request is not None else None
-        if start_request is not None and start_request.state in {"pending", "rejected"}:
-            job_id = "" if start_request.state == "rejected" else start_request.job_id
-            start_request_id = start_request.start_request_id
-
-        is_active = await asyncio.to_thread(backend.is_training_active)
-        if is_active and backend.current_start_request_id:
-            active_start_request = backend.get_start_request(backend.current_start_request_id)
-            if active_start_request is not None:
-                start_request = active_start_request
-                start_request_state = active_start_request.state
-                job_id = active_start_request.job_id
-                start_request_id = active_start_request.start_request_id
-
-        try:
-            progress = backend.trainer.get_training_progress()
-        except Exception:
-            progress = None
-
-        status_message = (
-            getattr(progress, "status_message", None) if progress else None
-        ) or "Ready to train"
-        error_message = getattr(progress, "error", None) if progress else None
-        warnings = list(getattr(progress, "warnings", ()) or ()) if progress else []
-        if start_request is not None and start_request.state == "pending":
-            status_message = start_request.message
-            error_message = None
-            warnings = []
-        elif start_request is not None and start_request.state == "rejected":
-            status_message = start_request.message
-            error_message = start_request.error or start_request.message
-            warnings = []
-
-        trainer_stopped = getattr(backend, "_should_stop", False)
-
-        # Derive high-level phase
-        if start_request_state == "pending":
-            phase = "configuring"
-        elif start_request_state == "rejected":
-            phase = "error"
-        elif error_message:
-            phase = "error"
-        elif is_active:
-            msg_lower = status_message.lower()
-            if "loading" in msg_lower or "importing" in msg_lower:
-                phase = "loading_model"
-            elif any(k in msg_lower for k in ["preparing", "initializing", "configuring"]):
-                phase = "configuring"
-            else:
-                phase = "training"
-        elif trainer_stopped:
-            phase = "stopped"
-        elif progress and getattr(progress, "is_completed", False):
-            phase = "completed"
-        else:
-            phase = "idle"
-
-        details = None
-        if progress:
-            details = {
-                "epoch": getattr(progress, "epoch", 0),
-                "step": getattr(progress, "step", 0),
-                "total_steps": getattr(progress, "total_steps", 0),
-                "loss": getattr(progress, "loss", None),
-                "learning_rate": getattr(progress, "learning_rate", None),
-            }
-            # Always present: an explicit null tells the client to drop a cached
-            # path (stop without save clears the run's output_dir).
-            details["output_dir"] = getattr(backend, "_output_dir", None) or None
-
-        # Metric history for chart recovery after SSE reconnection.
-        metric_history = None
-        if backend.step_history:
-            metric_history = {
-                "steps": list(backend.step_history),
-                "loss": list(backend.loss_history),
-                "lr": list(backend.lr_history),
-                "grad_norm": list(getattr(backend, "grad_norm_history", [])),
-                "grad_norm_steps": list(getattr(backend, "grad_norm_step_history", [])),
-                "eval_loss": list(backend.eval_loss_history),
-                "eval_steps": list(backend.eval_step_history),
-            }
-
-        return TrainingStatus(
-            job_id = job_id,
-            start_request_id = start_request_id,
-            start_request_state = start_request_state,
-            phase = phase,
-            is_training_running = is_active,
-            eval_enabled = backend.eval_enabled,
-            message = status_message,
-            error = error_message,
-            warnings = warnings,
-            details = details,
-            metric_history = metric_history,
-        )
-
+        for _ in range(3):
+            identity_before = _training_status_identity(backend)
+            is_active = await asyncio.to_thread(backend.is_training_active)
+            identity = _training_status_identity(backend)
+            if identity != identity_before:
+                continue
+            status = _build_training_status(backend, identity, is_active)
+            if _training_status_identity(backend) == identity:
+                return status
+        raise HTTPException(status_code = 409, detail = "Training state changed during status read")
+    except HTTPException:
+        raise
     except Exception as e:
         raise log_and_http_error(
             e,
@@ -1617,24 +1679,38 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
 
 
 @router.get("/metrics", response_model = TrainingMetricsResponse)
-async def get_training_metrics(current_subject: str = Depends(get_current_subject)):
+async def get_training_metrics(
+    expected_job_id: Optional[str] = None, current_subject: str = Depends(get_current_subject)
+):
     """
     Get training metrics (loss, learning rate, steps).
     """
     try:
         backend = get_training_backend()
+        job_id = getattr(backend, "current_job_id", "") or ""
+        if getattr(backend, "_new_job_spawn_id", None) is not None or (
+            expected_job_id is not None and expected_job_id != job_id
+        ):
+            raise HTTPException(status_code = 409, detail = "Training job was superseded")
 
-        loss_history = backend.loss_history
-        lr_history = backend.lr_history
-        step_history = backend.step_history
-        grad_norm_history = getattr(backend, "grad_norm_history", [])
-        grad_norm_step_history = getattr(backend, "grad_norm_step_history", [])
+        loss_history = list(backend.loss_history)
+        lr_history = list(backend.lr_history)
+        step_history = list(backend.step_history)
+        grad_norm_history = list(getattr(backend, "grad_norm_history", []))
+        grad_norm_step_history = list(getattr(backend, "grad_norm_step_history", []))
+
+        if (
+            getattr(backend, "_new_job_spawn_id", None) is not None
+            or (getattr(backend, "current_job_id", "") or "") != job_id
+        ):
+            raise HTTPException(status_code = 409, detail = "Training job was superseded")
 
         current_loss = loss_history[-1] if loss_history else None
         current_lr = lr_history[-1] if lr_history else None
         current_step = step_history[-1] if step_history else None
 
         return TrainingMetricsResponse(
+            job_id = job_id,
             loss_history = loss_history,
             lr_history = lr_history,
             step_history = step_history,
@@ -1645,6 +1721,8 @@ async def get_training_metrics(current_subject: str = Depends(get_current_subjec
             current_step = current_step,
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         raise log_and_http_error(
             e,
@@ -1657,7 +1735,9 @@ async def get_training_metrics(current_subject: str = Depends(get_current_subjec
 
 @router.get("/progress")
 async def stream_training_progress(
-    request: Request, current_subject: str = Depends(get_current_subject)
+    request: Request,
+    expected_job_id: Optional[str] = None,
+    current_subject: str = Depends(get_current_subject),
 ):
     """
     Stream training progress via Server-Sent Events (SSE).
@@ -1682,7 +1762,14 @@ async def stream_training_progress(
 
     async def event_generator():
         backend = get_training_backend()
-        job_id: str = getattr(backend, "current_job_id", "") or ""
+        backend_job_id = getattr(backend, "current_job_id", "") or ""
+        job_id = expected_job_id if expected_job_id is not None else backend_job_id
+
+        def is_current_job() -> bool:
+            return (
+                getattr(backend, "_new_job_spawn_id", None) is None
+                and (getattr(backend, "current_job_id", "") or "") == job_id
+            )
 
         # ── Helpers ──────────────────────────────────────────────
         def build_progress(
@@ -1742,11 +1829,16 @@ async def stream_training_progress(
             lines.append("")  # double newline terminates the event
             return "\n".join(lines)
 
+        if not is_current_job():
+            return
+
         # ── Retry directive ──────────────────────────────────────
         # Reconnect after 3 seconds if the connection drops.
         yield "retry: 3000\n\n"
 
         # ── Replay missed steps on reconnect ─────────────────────
+        if not is_current_job():
+            return
         if resume_from_step is not None and backend.step_history:
             replayed = 0
             grad_norm_by_step = {
@@ -1757,6 +1849,8 @@ async def stream_training_progress(
                 )
             }
             for i, step_val in enumerate(backend.step_history):
+                if not is_current_job():
+                    return
                 if step_val > resume_from_step:
                     loss_val = backend.loss_history[i] if i < len(backend.loss_history) else None
                     lr_val = backend.lr_history[i] if i < len(backend.lr_history) else None
@@ -1776,6 +1870,8 @@ async def stream_training_progress(
                         progress = tp_replay,
                         grad_norm_override = grad_norm_by_step.get(step_val),
                     )
+                    if not is_current_job():
+                        return
                     yield format_sse(payload.model_dump_json(), event = "progress", event_id = step_val)
                     replayed += 1
             if replayed:
@@ -1783,7 +1879,11 @@ async def stream_training_progress(
 
         # ── Initial status (only on fresh connections) ───────────
         if resume_from_step is None:
+            if not is_current_job():
+                return
             is_active = await asyncio.to_thread(backend.is_training_active)
+            if not is_current_job():
+                return
             tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
             initial_total_steps = getattr(tp, "total_steps", 0) if tp else 0
             initial_epoch = getattr(tp, "epoch", None) if tp else None
@@ -1796,6 +1896,8 @@ async def stream_training_progress(
                 epoch = initial_epoch,
                 progress = tp,
             )
+            if not is_current_job():
+                return
             yield format_sse(initial_progress.model_dump_json(), event = "progress", event_id = 0)
 
             # If not active, send final state and exit
@@ -1821,12 +1923,17 @@ async def stream_training_progress(
                         final_epoch,
                         progress = tp,
                     )
+                    if not is_current_job():
+                        return
                     yield format_sse(
                         payload.model_dump_json(), event = "complete", event_id = final_step
                     )
                 else:
+                    payload = build_progress(-1, None, None, 0, progress = tp)
+                    if not is_current_job():
+                        return
                     yield format_sse(
-                        build_progress(-1, None, None, 0, progress = tp).model_dump_json(),
+                        payload.model_dump_json(),
                         event = "complete",
                         event_id = 0,
                     )
@@ -1843,11 +1950,20 @@ async def stream_training_progress(
             backend.step_history
         )
 
-        while await asyncio.to_thread(backend.is_training_active):
+        while True:
+            if not is_current_job():
+                return
+            is_active = await asyncio.to_thread(backend.is_training_active)
+            if not is_current_job():
+                return
+            if not is_active:
+                break
             # Client gone: end the generator without falling through to the final
             # "complete" frame, which a buffered/proxy consumer could otherwise read
             # as a finished run while training is still active.
             if await request.is_disconnected():
+                return
+            if not is_current_job():
                 return
             try:
                 tp_inner = getattr(getattr(backend, "trainer", None), "training_progress", None)
@@ -1877,6 +1993,8 @@ async def stream_training_progress(
                             current_epoch,
                             progress = tp_inner,
                         )
+                        if not is_current_job():
+                            return
                         yield format_sse(
                             progress_payload.model_dump_json(),
                             event = "progress",
@@ -1897,6 +2015,8 @@ async def stream_training_progress(
                                 current_epoch,
                                 progress = tp_inner,
                             )
+                            if not is_current_job():
+                                return
                             yield format_sse(
                                 heartbeat_payload.model_dump_json(),
                                 event = "heartbeat",
@@ -1921,6 +2041,8 @@ async def stream_training_progress(
                             prep_total,
                             progress = tp_prep,
                         )
+                        if not is_current_job():
+                            return
                         yield format_sse(
                             preparing_payload.model_dump_json(),
                             event = "heartbeat",
@@ -1935,27 +2057,35 @@ async def stream_training_progress(
                         getattr(backend, "trainer", None), "training_progress", None
                     )
                     timeout_payload = build_progress(last_step, None, None, 0, progress = tp_timeout)
+                    if not is_current_job():
+                        return
                     yield format_sse(
                         timeout_payload.model_dump_json(),
                         event = "error",
                         event_id = last_step if last_step >= 0 else 0,
                     )
-                    break
+                    return
 
                 await asyncio.sleep(1)  # Poll every second
 
             except Exception as e:
+                if not is_current_job():
+                    return
                 logger.error(f"Error in progress stream: {e}", exc_info = True)
                 tp_error = getattr(getattr(backend, "trainer", None), "training_progress", None)
                 error_payload = build_progress(0, None, None, 0, progress = tp_error)
+                if not is_current_job():
+                    return
                 yield format_sse(
                     error_payload.model_dump_json(),
                     event = "error",
                     event_id = last_step if last_step >= 0 else 0,
                 )
-                break
+                return
 
         # ── Final "complete" event ───────────────────────────────
+        if not is_current_job():
+            return
         final_step = backend.step_history[-1] if backend.step_history else last_step
         final_loss = backend.loss_history[-1] if backend.loss_history else None
         final_lr = backend.lr_history[-1] if backend.lr_history else None
@@ -1977,6 +2107,8 @@ async def stream_training_progress(
             final_epoch,
             progress = final_tp,
         )
+        if not is_current_job():
+            return
         yield format_sse(
             final_payload.model_dump_json(),
             event = "complete",
