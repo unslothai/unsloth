@@ -606,3 +606,58 @@ def test_successful_map_is_not_disturbed(dnp):
     with dnp.map_failure_diagnostics(4):
         result = "tokenized"
     assert result == "tokenized"
+
+
+def test_studio_num_proc_cap_has_not_drifted(dnp):
+    """Studio duplicates AUTO_NUM_PROC_CAP; the two must stay equal.
+
+    hardware.py cannot import this module -- that would pull in unsloth's whole
+    __init__ during hardware detection -- so it carries its own copy, the same
+    arrangement ZOO_MIN_ROWS_FOR_MULTIPROC uses in the other direction. Read it
+    out of the source rather than importing studio, which needs a backend
+    environment this suite does not have.
+    """
+    hardware = REPO_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+    if not hardware.is_file():
+        pytest.skip("studio backend not present")
+
+    tree = ast.parse(hardware.read_text(encoding = "utf-8"))
+    found = [
+        node.value.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(getattr(t, "id", "") == "_STUDIO_NUM_PROC_CAP" for t in node.targets)
+        and isinstance(node.value, ast.Constant)
+    ]
+    assert len(found) == 1, "expected exactly one _STUDIO_NUM_PROC_CAP assignment"
+    assert found[0] == dnp.AUTO_NUM_PROC_CAP, (
+        f"studio caps dataset workers at {found[0]} while this module caps the "
+        f"auto path at {dnp.AUTO_NUM_PROC_CAP}; they must agree"
+    )
+
+
+def test_studio_bounds_its_own_computed_worker_count(dnp):
+    """A backend heuristic must not outrank the cap.
+
+    trainer.py asks for cpu_count // 4 and safe_num_proc's auto path is
+    cpu_count // 3, so a 64-core host produced 16 workers and a 192-core one 48.
+    Those are explicit ints by the time this module sees them, so it treated
+    them as deliberate and only clamped them by free memory -- meaning a large
+    machine with RAM to spare kept all 48. Nothing about that is user intent.
+    """
+    hardware = REPO_ROOT / "studio" / "backend" / "utils" / "hardware" / "hardware.py"
+    if not hardware.is_file():
+        pytest.skip("studio backend not present")
+    source = hardware.read_text(encoding = "utf-8")
+
+    tree = ast.parse(source)
+    safe = next(
+        (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "safe_num_proc"),
+        None,
+    )
+    assert safe is not None, "safe_num_proc is where every studio map() count is decided"
+    body = ast.dump(safe)
+    assert "_STUDIO_NUM_PROC_CAP" in body, (
+        "safe_num_proc no longer bounds its result; studio would send "
+        "cpu_count // 3 workers straight to Dataset.map"
+    )

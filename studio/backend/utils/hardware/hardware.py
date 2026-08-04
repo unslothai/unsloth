@@ -3255,6 +3255,14 @@ def get_torch_device_str() -> str:
     return "cpu"
 
 
+# Mirrors AUTO_NUM_PROC_CAP in unsloth.utils.dataset_num_proc. Duplicated rather
+# than imported because that import pulls in unsloth's whole __init__, and this
+# module is loaded during hardware detection long before any of it is needed;
+# tests/utils/test_dataset_num_proc.py carries a canary that fails if the two
+# ever drift, the same arrangement the Zoo's row threshold already uses.
+_STUDIO_NUM_PROC_CAP = 8
+
+
 def safe_num_proc(desired: Optional[int] = None) -> int:
     """
     Return a safe ``num_proc`` for ``dataset.map()`` calls.
@@ -3282,6 +3290,23 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
 
     if desired is None or not isinstance(desired, int):
         desired = max(1, (os.cpu_count() or 1) // 3)
+
+    # Bound it. Every number reaching here is a backend heuristic, not something
+    # a user typed: the line above is cpu_count // 3 and trainer.py asks for
+    # cpu_count // 4, so a 64-core host produces 16 and a 192-core one 48.
+    # unsloth.utils.dataset_num_proc reads an explicit int as a deliberate
+    # request and only clamps it by free memory, so on a large machine with RAM
+    # to spare those counts survive all the way to Dataset.map -- which is the
+    # shape of issue #2693, and slower besides: 32 workers measured 14.2s
+    # against 6.3s in-process, at ~1GB each. UNSLOTH_DATASET_NUM_PROC still
+    # overrides, since it is read downstream and bypasses this entirely.
+    if desired > _STUDIO_NUM_PROC_CAP:
+        logger.info(
+            f"num_proc {desired} -> {_STUDIO_NUM_PROC_CAP}: tokenization stops "
+            f"scaling well before this and each worker holds its own tokenizer "
+            f"copy. Set UNSLOTH_DATASET_NUM_PROC to override."
+        )
+        desired = _STUDIO_NUM_PROC_CAP
 
     visible = get_visible_gpu_count()
     if visible > 1:
