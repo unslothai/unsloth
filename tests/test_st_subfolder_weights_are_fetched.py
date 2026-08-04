@@ -14,6 +14,7 @@ eventually reports a bug that is not there.
 
 import json
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -116,7 +117,7 @@ def test_the_taxonomy_is_shared_with_unsloth_zoo_not_restated():
 
 # ---- the behaviour that actually changed ---------------------------------
 
-def _ignores(model_name, monkeypatch, **kw):
+def _ignores(model_name, monkeypatch, siblings = None, **kw):
     """The ignore_patterns `maybe_prefetch_hf_snapshot` actually sends.
 
     Driven through the real function with the downloader stubbed, not through
@@ -136,6 +137,18 @@ def _ignores(model_name, monkeypatch, **kw):
 
     import unsloth_zoo.hf_xet_fallback as XF
     monkeypatch.setattr(XF, "snapshot_download_with_xet_fallback", fake_download)
+    # The auto format branch calls model_info; unstubbed that is a live request for a real repo.
+    import huggingface_hub
+
+    class _Api:
+        def model_info(self, *a, **k):
+            if siblings is None:
+                raise RuntimeError("no network in test")
+            return types.SimpleNamespace(
+                siblings=[types.SimpleNamespace(rfilename=f) for f in siblings]
+            )
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
     U.maybe_prefetch_hf_snapshot(model_name, weights_at_root=True, **kw)
     assert seen, "the downloader was never reached; the call bailed out early"
     return list(seen.get("ignore_patterns") or [])
@@ -229,3 +242,59 @@ def test_a_hub_failure_keeps_the_patterns(monkeypatch):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ---- mixed weight formats: root safetensors, subfolder .bin ---------------
+
+BIN_DENSE_FILES = [
+    "config.json", "modules.json", "model.safetensors", "pytorch_model.bin",
+    "1_Pooling/config.json", "2_Dense/config.json", "2_Dense/pytorch_model.bin",
+]
+
+
+def _kept(files, patterns):
+    """What snapshot_download would actually fetch, using its own matcher."""
+    import fnmatch
+    return [f for f in files if not any(fnmatch.fnmatch(f, p) for p in patterns)]
+
+
+def test_a_bin_only_dense_module_keeps_its_only_weight(modules_json, monkeypatch):
+    """Root model.safetensors plus 2_Dense/pytorch_model.bin, the legacy ST head shape. The redundant
+    format prune adds a bare "*.bin", and "*" spans "/" in the Hub's fnmatch, so the glob would strip
+    the Dense module's only weight: the same unsatisfiable request, one branch further along."""
+    modules_json(EMBEDDINGGEMMA)
+    patterns = _ignores("org/st-bin-dense", monkeypatch, siblings = BIN_DENSE_FILES)
+    kept = _kept(BIN_DENSE_FILES, patterns)
+    assert "2_Dense/pytorch_model.bin" in kept, patterns
+    assert "pytorch_model.bin" not in kept, (
+        "the redundant ROOT .bin must still be pruned", patterns)
+    assert "model.safetensors" in kept, patterns
+
+
+def test_the_bin_prune_is_untouched_without_st_modules(modules_json, monkeypatch):
+    """A plain repo still gets the cheap glob, not an enumeration."""
+    modules_json(None)
+    patterns = _ignores("org/plain", monkeypatch, siblings = BIN_DENSE_FILES)
+    assert "*.bin" in patterns
+    assert "pytorch_model.bin" not in _kept(BIN_DENSE_FILES, patterns)
+
+
+def test_an_explicit_format_request_keeps_both_for_such_a_repo(modules_json, monkeypatch):
+    """use_safetensors fetches no repo listing, so the glob cannot be scoped and pruning it would
+    drop the module weight. Keeping both formats is the trade the multi-component case already makes."""
+    modules_json(EMBEDDINGGEMMA)
+    patterns = _ignores("org/st-bin-dense", monkeypatch, use_safetensors = True)
+    assert "*.bin" not in patterns
+    modules_json(None)
+    assert "*.bin" in _ignores("org/plain", monkeypatch, use_safetensors = True)
+
+
+def test_a_module_path_is_not_read_as_a_glob(modules_json, monkeypatch):
+    """Repo filenames go into ignore_patterns verbatim, so a "[" in a name would silently become a
+    character class and stop matching itself."""
+    modules_json(EMBEDDINGGEMMA)
+    files = ["model.safetensors", "weird[1].bin", "2_Dense/pytorch_model.bin"]
+    patterns = _ignores("org/st-bin-dense", monkeypatch, siblings = files)
+    kept = _kept(files, patterns)
+    assert "weird[1].bin" not in kept, patterns
+    assert "2_Dense/pytorch_model.bin" in kept, patterns

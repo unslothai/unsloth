@@ -1113,14 +1113,16 @@ def _adapter_repo_has_safetensors(
         return False
 
 
-def _repo_has_weighted_st_subfolders(
+def _st_weighted_subfolder_paths(
     model_name,
     *,
     token = None,
     revision = None,
+    cache_dir = None,
 ):
-    """Best-effort: does this sentence-transformers repo keep weights in subfolder modules as well as at
-    the root? Any failure returns False, which keeps the previous behaviour.
+    """Best-effort: which subfolder modules of this sentence-transformers repo hold weights the load
+    reads? Returns their declared paths, or () for anything that is not such a repo. Any failure returns
+    (), which keeps the previous behaviour.
 
     weights_at_root is a two-way split, root weights or per-subfolder weights, and an ST model can be
     both: unsloth/embeddinggemma-300m ships a root model.safetensors plus 2_Dense/model.safetensors and
@@ -1138,11 +1140,13 @@ def _repo_has_weighted_st_subfolders(
 
         path = hf_hub_download(
             model_name, "modules.json", token = token, revision = revision,
+            cache_dir = cache_dir,
         )
         with open(path, "r", encoding = "utf-8") as f:
             modules = _json.load(f)
         if not isinstance(modules, list):
-            return False
+            return ()
+        paths = []
         for module in modules:
             if not isinstance(module, dict):
                 continue
@@ -1153,10 +1157,46 @@ def _repo_has_weighted_st_subfolders(
             module_type = module.get("type")
             leaf = module_type.rsplit(".", 1)[-1].lower() if isinstance(module_type, str) else ""
             if leaf in _ST_WEIGHTED_MODULE_TYPES:
-                return True
-        return False
+                paths.append(module_path.strip().strip("/").replace("\\", "/"))
+        return tuple(paths)
     except Exception:
-        return False
+        return ()
+
+
+def _repo_has_weighted_st_subfolders(
+    model_name,
+    *,
+    token = None,
+    revision = None,
+    cache_dir = None,
+):
+    """Does this repo declare at least one weight-bearing module subfolder?"""
+    return bool(
+        _st_weighted_subfolder_paths(
+            model_name, token = token, revision = revision, cache_dir = cache_dir,
+        )
+    )
+
+
+def _weight_format_ignore_patterns(extensions, st_module_paths, siblings):
+    """ignore_patterns dropping *extensions*, scoped away from declared ST module subfolders.
+
+    A bare "*.bin" spans "/" under the Hub's fnmatch matcher, so on a repo with a root
+    model.safetensors AND a 2_Dense/pytorch_model.bin it strips that module's only weight and the
+    snapshot is unsatisfiable again. With module paths known, the glob is replaced by the concrete
+    repo files outside them: the redundant root weight is still pruned, nothing new is fetched."""
+    if not st_module_paths:
+        return tuple(f"*{extension}" for extension in extensions)
+    from glob import escape as _glob_escape
+
+    prefixes = tuple(f"{path}/" for path in st_module_paths)
+    return tuple(
+        _glob_escape(name)
+        for name in (
+            sibling.rfilename.replace("\\", "/") for sibling in (siblings or [])
+        )
+        if name.endswith(extensions) and not name.startswith(prefixes)
+    )
 
 
 def _prefetch_ignore_patterns(
@@ -1170,6 +1210,7 @@ def _prefetch_ignore_patterns(
     from_flax = False,
     variant = None,
     weights_at_root = False,
+    st_module_paths = (),
 ):
     """ignore_patterns for the prewarm snapshot: the static skip list, minus the checkpoint guard when
     loading from a checkpoint-* subfolder, minus the weight format the load will not read. use_safetensors
@@ -1199,6 +1240,11 @@ def _prefetch_ignore_patterns(
         isinstance(subfolder, str) and subfolder.strip("/")
     )
     if whole_multi_component:
+        pass
+    elif st_module_paths and (from_tf or from_flax or use_safetensors is not None):
+        # An explicit format request cannot be scoped: no repo listing is fetched on these branches, and
+        # the globs span "/", so they would prune a declared ST module's only weight. Keep both formats,
+        # the same trade whole_multi_component already makes.
         pass
     elif from_tf or from_flax:
         # TF / Flax loads never read the PyTorch formats; drop safetensors and .bin.
@@ -1244,7 +1290,11 @@ def _prefetch_ignore_patterns(
                 for sibling in siblings
             )
             if has_safetensors:
-                ignore_patterns.extend(("*.bin", "*.bin.index.json"))
+                ignore_patterns.extend(
+                    _weight_format_ignore_patterns(
+                        (".bin", ".bin.index.json"), st_module_paths, siblings,
+                    )
+                )
         except Exception:
             pass
     return ignore_patterns
@@ -1311,6 +1361,18 @@ def maybe_prefetch_hf_snapshot(
     if fast_inference:  # vLLM has its own download path
         return False
 
+    # A sentence-transformers repo can hold weights at the root AND in declared module subfolders
+    # (2_Dense/...). Probed once here and shared, since both the subdir prune below and the redundant
+    # format prune span "/" and would drop those weights.
+    st_module_paths = ()
+    if (
+        weights_at_root
+        and not (tokenizer_only or adapter_only or gguf_file)
+        and not (isinstance(subfolder, str) and subfolder.strip("/"))
+    ):
+        st_module_paths = _st_weighted_subfolder_paths(
+            model_name, token = token, revision = revision, cache_dir = cache_dir,
+        )
     # tokenizer-only / adapter-only warms allow-list exact files below, so the weight-format ignore
     # list (and its auto-branch model_info call) is skipped.
     ignore_patterns = (
@@ -1326,6 +1388,7 @@ def maybe_prefetch_hf_snapshot(
             from_flax = from_flax,
             variant = variant,
             weights_at_root = weights_at_root,
+            st_module_paths = st_module_paths,
         )
     )
     # Narrow the warm to what the load reads (skip extra checkpoints/precisions); every branch still warms
@@ -1367,10 +1430,8 @@ def maybe_prefetch_hf_snapshot(
         #
         # Except when the repo is both: a sentence-transformers model with a root weight AND weighted
         # module subfolders (2_Dense/...), which the ST load reads too. Dropping those turned a
-        # satisfiable request into one that could never succeed. See _repo_has_weighted_st_subfolders.
-        if not _repo_has_weighted_st_subfolders(
-            model_name, token = token, revision = revision
-        ):
+        # satisfiable request into one that could never succeed. See _st_weighted_subfolder_paths.
+        if not st_module_paths:
             ignore_patterns = [*(ignore_patterns or []), *_SUBDIR_WEIGHT_IGNORE_PATTERNS]
     try:
         snapshot_download_with_xet_fallback(

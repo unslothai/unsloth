@@ -74,6 +74,14 @@ def capture(monkeypatch):
 
     monkeypatch.setattr(huggingface_hub, "HfApi", _NoNetworkApi)
 
+    # Same for the modules.json probe: unstubbed it reaches out for the fake repo, so every
+    # weights_at_root case in this no-network file made a live request. The probe is best-effort, so
+    # raising here is exactly its "not a sentence-transformers repo" answer.
+    def _no_network_download(*a, **k):
+        raise RuntimeError("no network in test")
+
+    monkeypatch.setattr(huggingface_hub, "hf_hub_download", _no_network_download)
+
     def run(**call_kwargs):
         state.clear()
         ok = U.maybe_prefetch_hf_snapshot("some-org/some-repo", **call_kwargs)
