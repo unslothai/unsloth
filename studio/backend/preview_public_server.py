@@ -189,7 +189,6 @@ class PreviewOnlyGate:
             # not become an unauthenticated settings-DB read either (GETs keep
             # the route's token-first ordering).
             from utils.preview_sharing_settings import get_preview_sharing_enabled
-
             if not get_preview_sharing_enabled():
                 await _send_json(send, 404, _NOT_FOUND_BODY)
                 return
