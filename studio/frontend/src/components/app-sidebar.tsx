@@ -1234,7 +1234,7 @@ export function AppSidebar() {
               className={cn(
                 "relative z-10 flex items-center gap-[8.5px] group-data-[collapsible=icon]:hidden",
                 usesDesktopTitlebar
-                  ? "justify-between px-3"
+                  ? "justify-between pl-4 pr-3"
                   : "justify-between",
               )}
             >
