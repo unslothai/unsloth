@@ -1217,6 +1217,7 @@ with sync_playwright() as p:
                     return {
                         fontWeight: [...new Set(styles.map((style) => style.fontWeight))],
                         letterSpacing: [...new Set(styles.map((style) => style.letterSpacing))],
+                        fontSize: [...new Set(styles.map((style) => style.fontSize))],
                     };
                 };
                 return {
@@ -1240,13 +1241,32 @@ with sync_playwright() as p:
         if typography["actualRenderLinux"] != typography["isDesktopLinux"]:
             fail(f"desktop Linux detection mismatch: {typography!r}")
         is_dark = typography["isDark"]
-        expected_spacing = "0.31px" if is_dark else "0.155px"
+        # The authored tracking is in em (thread.tsx tracking-[0.01em] / dark:tracking-
+        # -[0.02em], and index.css letter-spacing: 0.023em for the dark Linux instance), so
+        # the computed px depends on the element's font size. Asserting px literals pinned
+        # this to a 15.5px message body, and #7359 moved the UI size onto --ui-font-scale,
+        # which resolves --text-ui-15p5 to 14.53125px instead. Every literal went stale at
+        # once, so derive the expectation from the font size the element actually has.
+        spacing_em = 0.02 if is_dark else 0.01
         if typography["isDesktopLinux"] and not typography["usesBaselineTypography"]:
             expected_weight = "350" if is_dark else "390"
             if is_dark:
-                expected_spacing = "0.3565px"
+                spacing_em = 0.023
         else:
             expected_weight = "410"
+
+        def _px(value):
+            """Computed px as a float; "normal" is the zero-tracking spelling."""
+            text = (value or "").strip()
+            if text == "normal":
+                return 0.0
+            if not text.endswith("px"):
+                return None
+            try:
+                return float(text[:-2])
+            except ValueError:
+                return None
+
         for role in ("assistant", "user"):
             actual = typography[role]
             if actual["fontWeight"] != [expected_weight]:
@@ -1254,9 +1274,26 @@ with sync_playwright() as p:
                     f"chat font weight {label}/{role}: expected {expected_weight}, "
                     f"got {actual['fontWeight']!r}"
                 )
-            if actual["letterSpacing"] != [expected_spacing]:
+            sizes = actual.get("fontSize") or []
+            if len(sizes) != 1 or _px(sizes[0]) is None:
+                fail(f"chat font size {label}/{role}: expected one px value, got {sizes!r}")
+            font_px = _px(sizes[0])
+            # Deriving the tracking from the measured size would otherwise hide a font-size
+            # regression entirely, so bound the size itself. Wide enough that a deliberate
+            # scale change does not trip it, tight enough to catch chat text rendering at a
+            # heading or caption size.
+            if not 12.0 <= font_px <= 18.0:
+                fail(f"chat font size {label}/{role}: {font_px}px is outside 12-18px")
+            expected_spacing = spacing_em * font_px
+            spacings = [_px(value) for value in actual["letterSpacing"]]
+            # Tolerance, not equality: the browser reports the computed value rounded to a
+            # few decimals, so 0.023em of 14.53125px comes back as "0.334219px".
+            if len(spacings) != 1 or spacings[0] is None or (
+                abs(spacings[0] - expected_spacing) > 0.002
+            ):
                 fail(
-                    f"chat letter spacing {label}/{role}: expected {expected_spacing}, "
+                    f"chat letter spacing {label}/{role}: expected "
+                    f"{expected_spacing:.6g}px ({spacing_em}em of {sizes[0]}), "
                     f"got {actual['letterSpacing']!r}"
                 )
 
