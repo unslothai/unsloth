@@ -54,14 +54,14 @@ class MtmdSttModel:
 
 MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
     "qwen3-asr-0.6b": MtmdSttModel(
-        repo = "ggml-org/Qwen3-ASR-0.6B-GGUF",
+        repo = "unslothai/Qwen3-ASR-0.6B-GGUF",
         model_file = "Qwen3-ASR-0.6B-Q8_0.gguf",
         mmproj_file = "mmproj-Qwen3-ASR-0.6B-Q8_0.gguf",
         label = "Qwen3-ASR 0.6B",
         transcript_marker = "<asr_text>",
     ),
     "qwen3-asr-1.7b": MtmdSttModel(
-        repo = "ggml-org/Qwen3-ASR-1.7B-GGUF",
+        repo = "unslothai/Qwen3-ASR-1.7B-GGUF",
         model_file = "Qwen3-ASR-1.7B-Q8_0.gguf",
         mmproj_file = "mmproj-Qwen3-ASR-1.7B-Q8_0.gguf",
         label = "Qwen3-ASR 1.7B",

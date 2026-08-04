@@ -168,6 +168,7 @@ export const en = {
         sttCancelDownloadFailed: "Could not cancel the download",
         sttDownloadComplete: "Speech recognition model downloaded",
         sttModelReady: "{model} is ready for dictation",
+        sttRecommended: "Recommended",
         sttDownloadFailed: "Could not download the speech recognition model",
         sttLoad: "Load",
         sttUnload: "Unload",

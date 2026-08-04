@@ -25,16 +25,24 @@ const MAX_RECENT_DICTATION_LENGTH = 2000;
 const MAX_DICTIONARY_ENTRIES = 100;
 const MAX_DICTIONARY_ENTRY_LENGTH = 120;
 
-/** Curated dictation models, mirrored by the backend sidecars. */
+/** Curated dictation models, mirrored by the backend sidecars. Listed in the
+ * order the picker shows them: the recommended models lead. */
 export const STT_MODELS = [
+  "qwen3-asr-0.6b",
+  "qwen3-asr-1.7b",
   "tiny",
   "base",
   "small",
   "large-v3-turbo",
   "large-v3",
+] as const;
+
+/** Models the picker marks as recommended. Qwen3-ASR is more accurate than
+ * Whisper at a comparable size and covers more languages. */
+export const RECOMMENDED_STT_MODELS: ReadonlySet<SttModel> = new Set([
   "qwen3-asr-0.6b",
   "qwen3-asr-1.7b",
-] as const;
+]);
 
 /** Models served by llama.cpp mtmd rather than whisper.cpp, which is
  * Whisper-only. Each is a GGUF plus an audio mmproj. */
@@ -52,10 +60,10 @@ export const STT_MODEL_REPOS: Record<DefaultSttModel, string> = {
   small: "unsloth/whisper-small",
   "large-v3-turbo": "unsloth/whisper-large-v3-turbo",
   "large-v3": "unsloth/whisper-large-v3",
-  "qwen3-asr-0.6b": "ggml-org/Qwen3-ASR-0.6B-GGUF",
-  "qwen3-asr-1.7b": "ggml-org/Qwen3-ASR-1.7B-GGUF",
+  "qwen3-asr-0.6b": "unslothai/Qwen3-ASR-0.6B-GGUF",
+  "qwen3-asr-1.7b": "unslothai/Qwen3-ASR-1.7B-GGUF",
 };
-export const DEFAULT_STT_MODEL: DefaultSttModel = "small";
+export const DEFAULT_STT_MODEL: DefaultSttModel = "qwen3-asr-0.6b";
 
 // Speech-recognition models, not voices. Name and size are separate so lists can
 // right-align the size; the download confirmation reads both.
@@ -77,7 +85,7 @@ export const STT_MODEL_SIZES: Record<DefaultSttModel, string> = {
   "large-v3-turbo": "1.6 GB",
   "large-v3": "3.1 GB",
   "qwen3-asr-0.6b": "1.0 GB",
-  "qwen3-asr-1.7b": "2.4 GB",
+  "qwen3-asr-1.7b": "2.5 GB",
 };
 
 export function sttModelName(model: SttModel): string {

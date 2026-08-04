@@ -58,6 +58,7 @@ import {
 } from "../lib/stt-download-mirror";
 import {
   MTMD_STT_MODELS,
+  RECOMMENDED_STT_MODELS,
   STT_MODELS,
   type SttModel,
   getSttModelRepo,
@@ -265,8 +266,13 @@ function SttModelPicker({
                   } ${model === value ? "bg-accent font-medium" : ""}`}
                 >
                   <span className="min-w-0 flex-1 truncate">
-                    <span className="block truncate text-xs">
-                      {sttModelName(model)}
+                    <span className="flex items-center gap-1.5 truncate text-xs">
+                      <span className="truncate">{sttModelName(model)}</span>
+                      {RECOMMENDED_STT_MODELS.has(model) ? (
+                        <span className="shrink-0 rounded-full bg-emerald-500/12 px-1.5 py-px text-ui-9 font-medium text-emerald-600 dark:bg-emerald-400/15 dark:text-emerald-400">
+                          {t("settings.voice.dictation.sttRecommended")}
+                        </span>
+                      ) : null}
                     </span>
                     {twoLines ? (
                       <span className="mt-0.5 block truncate font-mono text-ui-9 leading-tight text-muted-foreground">
