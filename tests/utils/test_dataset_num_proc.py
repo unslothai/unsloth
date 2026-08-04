@@ -992,7 +992,11 @@ def test_agreeing_modules_are_left_alone(monkeypatch, dnp):
     assert dnp.resolve_responses_only_num_proc(trainer, 1) == 1
 
 
-def _fake_cgroup_module(monkeypatch, v2_dirs = (), v1_dirs = ()):
+def _fake_cgroup_module(
+    monkeypatch,
+    v2_dirs = (),
+    v1_dirs = (),
+):
     import types
 
     def _read_first_line(path):
@@ -1147,13 +1151,14 @@ def test_the_fallback_does_not_sit_behind_a_torch_import():
     under that package would raise on the torch-free host it exists to serve, so
     it lives at the top level and every reference to it has to stay there.
     """
-    assert MODULE_PATH.parent.name == "unsloth", (
-        "the fallback moved back under a package whose __init__ imports torch"
-    )
+    assert (
+        MODULE_PATH.parent.name == "unsloth"
+    ), "the fallback moved back under a package whose __init__ imports torch"
 
     utils_init = REPO_ROOT / "unsloth" / "utils" / "__init__.py"
     reached = {
-        node.module.split(".")[0] if isinstance(node, ast.ImportFrom) and node.level == 0
+        node.module.split(".")[0]
+        if isinstance(node, ast.ImportFrom) and node.level == 0
         else (node.module or "").lstrip(".")
         for node in ast.parse(utils_init.read_text(encoding = "utf-8")).body
         if isinstance(node, ast.ImportFrom)
@@ -1166,5 +1171,7 @@ def test_the_fallback_does_not_sit_behind_a_torch_import():
         REPO_ROOT / "unsloth" / "models" / "rl_replacements.py",
     ):
         source = path.read_text(encoding = "utf-8")
-        assert "unsloth.utils.dataset_num_proc" not in source, f"{path.name} reaches it via unsloth.utils"
+        assert (
+            "unsloth.utils.dataset_num_proc" not in source
+        ), f"{path.name} reaches it via unsloth.utils"
         assert ".utils.dataset_num_proc" not in source, f"{path.name} reaches it via unsloth.utils"

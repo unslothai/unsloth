@@ -303,6 +303,6 @@ def test_the_cap_no_longer_advertises_an_override_it_cannot_honour():
         if isinstance(node, ast.Call) and ast.unparse(node.func).startswith("logger.")
     ]
     assert logged, "the cap stopped logging; re-check what this is guarding"
-    assert not any("UNSLOTH_DATASET_NUM_PROC" in line for line in logged), (
-        "safe_num_proc tells the user to set an override it never reads"
-    )
+    assert not any(
+        "UNSLOTH_DATASET_NUM_PROC" in line for line in logged
+    ), "safe_num_proc tells the user to set an override it never reads"
