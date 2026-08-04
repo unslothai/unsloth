@@ -47,6 +47,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { InfoHint } from "@/components/ui/info-hint";
+import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { IMAGE_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
@@ -69,6 +70,7 @@ import { ModelLoadDescription } from "@/features/chat/components/model-load-stat
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { formatBytes, formatEta } from "@/features/hub/lib/format";
 import { ChevronDown } from "lucide-react";
+import { NegativePromptField } from "@/components/negative-prompt-field";
 import { cn } from "@/lib/utils";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { diffusionRoutePick } from "@/lib/diffusion-route-pick";
@@ -282,9 +284,6 @@ function DimensionSelect({
 }
 
 // Hidden until the row is hovered or focused, so a quiet control stays quiet.
-const REVEAL_ON_ROW_HOVER =
-  "pointer-events-none inline-flex opacity-0 transition-opacity group-hover/negative:pointer-events-auto group-hover/negative:opacity-100 group-focus-within/negative:pointer-events-auto group-focus-within/negative:opacity-100";
-
 // The ratio key (compared long:short, so it survives orientation) matching width/height, plus whether portrait.
 function matchAspect(width: number, height: number): { key: string; portrait: boolean } {
   const target = Math.max(width, height) / Math.min(width, height);
@@ -493,7 +492,7 @@ const IDLE_PROGRESS: DiffusionLoadProgress = {
   error: null,
 };
 
-// Mirrors the Train page SliderRow: label + Slider + number input. The Images sliders are Chat ParamSlider, so both pages share one control.
+// One row: label, track, value. The Images sliders are Chat ParamSlider, so both pages share one control.
 function SliderField({
   label,
   hint,
@@ -513,6 +512,7 @@ function SliderField({
 }) {
   return (
     <ParamSlider
+      inline={true}
       label={label}
       info={hint}
       value={value}
@@ -1062,6 +1062,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   const [negativeOpen, setNegativeOpen] = useState(false);
   const [widthOpen, setWidthOpen] = useState(false);
   const [heightOpen, setHeightOpen] = useState(false);
+  const {
+    attach: attachSettingsScroll,
+    onScroll: onSettingsScroll,
+    className: settingsFadeClass,
+  } = useScrollFades();
   // width/height are the source of truth; `aspect` locks their proportion and `portrait` tracks orientation, so Flip keeps the lock.
   const [width, setWidth] = useState(1024);
   const [height, setHeight] = useState(1024);
@@ -2536,11 +2541,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       /* Settings column + preview canvas: both on the page background, split by a rule. Each pane pads its own content.
          Full width, so the canvas grows with the window; the settings column stays fixed.
          pl-8 puts its content 40px in, level with the model selector label above and
-         matching the pr-10 on the other side of the column. */
+         with pr-8 on the other side of the column. */
       <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
         <div className="relative flex w-[408px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
-          <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-20 pl-0.5 pr-10">
+          <div
+            ref={attachSettingsScroll}
+            onScroll={onSettingsScroll}
+            className={cn(
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-20 pl-0.5 pr-8",
+              settingsFadeClass,
+            )}
+          >
             {/* The sidebar submenu is the switcher, so name the active workflow over its controls. */}
             <div className="grid gap-1">
               {/* h-9 keeps this level with the Video page heading. */}
@@ -2795,50 +2807,13 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 onChange={(e) => setPrompt(e.target.value)}
               />
             </Field>
-            {/* Quiet by design: wanted often enough to offer, not often enough to sit open. */}
-            <div className="group/negative -mt-1 flex flex-col gap-1.5 pb-2">
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={() => setNegativeOpen(!negativeOpen)}
-                  aria-expanded={negativeOpen}
-                  className="text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  Negative prompt
-                </button>
-                {/* The hint follows the shared hover rule; the chevron matches it. */}
-                <InfoHint>
-                  What to steer the image away from. Only used when guidance is
-                  above 0.
-                </InfoHint>
-                <button
-                  type="button"
-                  // The labelled button above is the accessible toggle; this is decoration.
-                  aria-hidden={true}
-                  tabIndex={-1}
-                  onClick={() => setNegativeOpen(!negativeOpen)}
-                  className={cn(
-                    REVEAL_ON_ROW_HOVER,
-                    negativeOpen && "pointer-events-auto opacity-100",
-                  )}
-                >
-                  <ChevronDown
-                    className={cn(
-                      "size-3 text-muted-foreground transition-transform",
-                      negativeOpen && "rotate-180",
-                    )}
-                  />
-                </button>
-              </div>
-              {negativeOpen && (
-                <Textarea
-                  rows={2}
-                  placeholder="What to avoid (optional)"
-                  value={negativePrompt}
-                  onChange={(e) => setNegativePrompt(e.target.value)}
-                />
-              )}
-            </div>
+            <NegativePromptField
+              value={negativePrompt}
+              onChange={setNegativePrompt}
+              open={negativeOpen}
+              onOpenChange={setNegativeOpen}
+              hint="What to steer the image away from. Only used when guidance is above 0."
+            />
             {/* LoRA adapters: shown whenever the loaded model + quant can apply them. Type a Hugging Face repo id or pick a discovered adapter; each carries a 0-2 weight. */}
             {loraCapable && (
               <Field
@@ -3045,15 +3020,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
               </div>
             </Field>
 
-            <SliderField
-              label="Steps"
-              hint="9 is the recommended setting for Z-Image-Turbo. More steps rarely help."
-              value={steps}
-              min={1}
-              max={50}
-              step={1}
-              onChange={setSteps}
-            />
+            {/* First of the one-line sliders, so it takes a bigger break than the gap gives. */}
+            <div className="pt-2">
+              <SliderField
+                label="Steps"
+                hint="9 is the recommended setting for Z-Image-Turbo. More steps rarely help."
+                value={steps}
+                min={1}
+                max={50}
+                step={1}
+                onChange={setSteps}
+              />
+            </div>
             <SliderField
               label="Guidance"
               hint="Keep this at 0 for Z-Image-Turbo. Higher values make its output worse. Other models use guidance."
@@ -3100,7 +3078,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
 
           </div>
           {/* Floats over the settings so it needs no bar of its own. */}
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-10">
+          <div className="pointer-events-none absolute inset-x-0 bottom-0 flex justify-center pb-7 pl-8 pr-8">
             <Button
               className="btn-float-action pointer-events-auto h-11 px-8 disabled:bg-muted disabled:text-muted-foreground disabled:opacity-100"
               onClick={handleGenerate}

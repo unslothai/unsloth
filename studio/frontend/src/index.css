@@ -1223,6 +1223,37 @@ html[data-chat-font] .aui-root {
 		--input: #e9e9e9;
 	}
 
+	/* Settings columns on Images and Video: content dissolves at whichever edge it runs
+	   past, rather than being cut off. Same masks as the model picker list. */
+	.panel-scroll-fade.is-scrolled {
+		-webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+		mask-image: linear-gradient(to bottom, transparent 0, #000 16px);
+	}
+	.panel-scroll-fade.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			#000 calc(100% - 20px),
+			transparent
+		);
+		mask-image: linear-gradient(to bottom, #000 calc(100% - 20px), transparent);
+	}
+	.panel-scroll-fade.is-scrolled.is-bottom-faded {
+		-webkit-mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 16px,
+			#000 calc(100% - 20px),
+			transparent
+		);
+		mask-image: linear-gradient(
+			to bottom,
+			transparent 0,
+			#000 16px,
+			#000 calc(100% - 20px),
+			transparent
+		);
+	}
+
 	/* Images and Video: a field's "i" only appears with the row it belongs to. Matched on the
 	   InfoHint itself so every field style is covered, including the shared chat slider.
 	   Two levels up is the field container; higher ancestors deliberately do not match. */
