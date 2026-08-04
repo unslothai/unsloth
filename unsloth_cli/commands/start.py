@@ -1432,6 +1432,14 @@ def _loaded_models(base: str, key: str) -> list:
     return _http_json("GET", f"{base}/v1/models", key, error = "Couldn't list models").get("data", [])
 
 
+def _model_still_loaded(base: str, key: str, model_id: object) -> bool:
+    try:
+        models = _http_json("GET", f"{base}/v1/models", key).get("data", [])
+    except Exception:
+        return False
+    return any(m.get("id") == model_id and m.get("loaded") is not False for m in models)
+
+
 _HF_REPO_ID_SEGMENT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -1560,6 +1568,7 @@ def _resolve_model(
         load_requested = True
         active = next((m for m in models if m.get("loaded") is not False), None)
         active_id = active.get("id") if active else None
+        announced_switch = False
         if active_id and not _model_id_matches(
             active_id,
             requested,
@@ -1567,6 +1576,7 @@ def _resolve_model(
         ):
             typer.echo(f"Switching the Unsloth server from {active_id} to {requested}.")
             typer.echo("This unloads the current model for every attached session.")
+            announced_switch = True
         elif active_id and load.gguf_variant:
             # Same repo id but an explicit quant still replaces the resident
             # weights; /v1/models has no variant, so ask the status endpoint.
@@ -1581,6 +1591,7 @@ def _resolve_model(
                     f"to {requested}:{load.gguf_variant}."
                 )
                 typer.echo("This unloads the current model for every attached session.")
+                announced_switch = True
         # Mirror `unsloth run`'s load knobs; keep the default payload as just
         # model_path so a bare `--model` load is unchanged.
         payload = {"model_path": requested}
@@ -1596,7 +1607,14 @@ def _resolve_model(
             payload["gpu_memory_mode"] = load.gpu_memory_mode
             if load.gpu_memory_mode == "manual":
                 payload["gpu_layers"] = -1
-        loaded = _load_model_with_progress(base, key, requested, load, payload)
+        try:
+            loaded = _load_model_with_progress(base, key, requested, load, payload)
+        except BaseException:
+            # The warning above promised an unload; if the server refused the
+            # load before evicting anything, say so.
+            if announced_switch and _model_still_loaded(base, key, active_id):
+                typer.echo(f"Nothing was unloaded; {active_id} is still serving.", err = True)
+            raise
         if loaded.get("status") == "already_loaded":
             typer.echo(f"Reusing loaded model: {_display_model_spec(requested, load.gguf_variant)}")
         # Unsloth registers the model under a canonical id (resolved identifier,
