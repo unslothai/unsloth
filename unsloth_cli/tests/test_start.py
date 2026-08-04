@@ -5725,6 +5725,7 @@ def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
 
 
 def _fake_hub_listing(monkeypatch, files_by_repo):
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
     calls = []
 
     def fake(repo):
@@ -5763,6 +5764,15 @@ def test_codex_preflight_skips_paths_and_empty_model(monkeypatch):
     assert calls == []
 
 
+def test_codex_preflight_skips_remote_studio(monkeypatch):
+    # A one-slash server-side path on a remote Unsloth can look like a hub id;
+    # the preflight must not reject it from the local machine.
+    calls = _fake_hub_listing(monkeypatch, {"models/qwen-finetune": []})
+    monkeypatch.setenv("UNSLOTH_STUDIO_URL", "http://studio.example:8888")
+    start._preflight_codex_gguf("models/qwen-finetune")
+    assert calls == []
+
+
 def test_codex_gguf_failure_suggests_only_a_verified_sibling(monkeypatch, capsys):
     _fake_hub_listing(monkeypatch, {"owner/model-GGUF": ["model-Q4_K_M.gguf"]})
     with pytest.raises(typer.Exit):
@@ -5793,6 +5803,7 @@ def test_hub_gguf_files_unknown_on_error_or_empty_listing(monkeypatch):
 
 
 def test_codex_rejects_non_gguf_model_before_connect(monkeypatch):
+    monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: [])
     monkeypatch.setattr(

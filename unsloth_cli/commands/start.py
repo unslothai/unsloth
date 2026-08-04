@@ -1672,7 +1672,12 @@ def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
 def _preflight_codex_gguf(model: Optional[str]) -> None:
     # Only a complete listing with no .gguf files rejects; unknown defers to
     # the post-connect check so an unreachable hub never blocks a launch.
+    # Skip remote targets: a server-side relative path there can look like a
+    # hub id, and only the loopback existence probe can tell them apart.
     if not model:
+        return
+    expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
+    if not is_loopback_url(expected):
         return
     repo, _ = _split_repo_variant(model)
     if not _is_hub_model_id(repo):
