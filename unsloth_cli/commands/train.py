@@ -169,7 +169,9 @@ def train(
 
         trainer.cleanup()
         checkpoint_dir = resolve_output_dir(str(cfg.training.output_dir))
-        out = export_dir.resolve() if export_dir is not None else checkpoint_dir / export
+        out = (
+            export_dir.expanduser().resolve() if export_dir is not None else checkpoint_dir / export
+        )
         export_checkpoint(
             checkpoint = checkpoint_dir,
             output_dir = out,

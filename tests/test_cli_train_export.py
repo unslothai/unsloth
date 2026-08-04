@@ -123,6 +123,24 @@ def test_train_export_dir_override(cli_app, runner: CliRunner, tmp_path: Path) -
     assert calls[0]["output_dir"] == dest.resolve()
 
 
+def test_train_export_dir_expands_tilde(
+    cli_app, runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A quoted ~ must expand to $HOME, not become a literal './~' directory."""
+    app, calls, _ = cli_app
+    workdir = tmp_path / "cwd"
+    workdir.mkdir()
+    monkeypatch.chdir(workdir)
+
+    result = runner.invoke(
+        app,
+        ["--model", "hf/tiny", "--dataset", "d", "--export", "gguf", "--export-dir", "~/out"],
+    )
+
+    assert result.exit_code == 0, f"{result.output}\n{result.exception!r}"
+    assert calls[0]["output_dir"] == Path("~/out").expanduser().resolve()
+
+
 def test_train_without_export_skips_export(cli_app, runner: CliRunner) -> None:
     """No --export -> export_checkpoint is never called (current behavior preserved)."""
     app, calls, _ = cli_app
