@@ -523,6 +523,19 @@ case "$MODE" in
     [ "$rc" -eq 0 ] || [ "${TIMED_OUT:-0}" = 1 ] \
       || { echo "[$AGENT] turn-2 transcript:"; tail -60 "$OUT2" 2>/dev/null || true; \
       guide_fail "turn 2 (run hello.py) exited non-zero (rc=$rc)"; }
+    # Turn 1's side effects were asserted before turn 2 started, so on a waived
+    # cap the grep below is the only thing judging this turn -- and hello.py's
+    # own source contains the string, so an agent that merely read the file back
+    # and then blocked would satisfy it. Demand the bare line that running it
+    # produces (CSI-stripped: agents colorize, and this is line-anchored).
+    if [ "${TIMED_OUT:-0}" = 1 ]; then
+      _esc=$(printf '\033')
+      sed -E "s/${_esc}\[[0-9;]*[a-zA-Z]//g" "$OUT2" > "$OUT2.plain" 2>/dev/null || cp "$OUT2" "$OUT2.plain"
+      grep -qE '^[[:space:]]*Hello[[:space:]]*$' "$OUT2.plain" || {
+        echo "[$AGENT] turn-2 transcript:"; tail -60 "$OUT2" 2>/dev/null || true
+        guide_fail "turn 2 timed out and its transcript never shows hello.py's output on a line of its own (reading the file back does not count)"
+      }
+    fi
     if grep -q 'Hello' "$OUT2"; then
       echo "[$AGENT] turn 2 OK (run output contains 'Hello')"
     else
@@ -546,12 +559,22 @@ case "$MODE" in
     crosscheck_contract
     PROMPT='Reply with exactly the single word: pong'
 
+    # The four invokes below never check rc, so run_timed's cap was their only
+    # hang guard. Nothing here can adjudicate a partial turn either -- the
+    # verdict is a llama-server log slice -- so a cap stays fatal, as it does
+    # for connection and resume.
+    ab_invoke() {
+      invoke_via_connect "$@"
+      [ "${TIMED_OUT:-0}" = 1 ] && guide_fail "attribution-ab invoke timed out after ${TIMEOUT}s; the A/B cannot be judged from a partial turn"
+      return 0
+    }
+
     # Phase A: the suppression start.py ships (CLAUDE_CODE_ATTRIBUTION_HEADER=0 +
     # --exclude-dynamic-system-prompt-sections + --settings overlay) -> expect a
     # HIT on the continued turn, since the system-prompt prefix is stable.
-    invoke_via_connect "$LOGS_DIR/claude-ab-hit-1.txt" -p "$PROMPT"        # turn 1 primes
+    ab_invoke "$LOGS_DIR/claude-ab-hit-1.txt" -p "$PROMPT"        # turn 1 primes
     FROM_HIT="$(bash "$CACHE_HELPER" mark)"                                # offset before turn 2
-    invoke_via_connect "$LOGS_DIR/claude-ab-hit-2.txt" -p --continue "$PROMPT again"
+    ab_invoke "$LOGS_DIR/claude-ab-hit-2.txt" -p --continue "$PROMPT again"
     CACHE_LOG_FROM="$FROM_HIT" bash "$CACHE_HELPER" log HIT
 
     # Phase B: vanilla Claude with the header ENABLED -> expect a MISS. We flip
@@ -562,9 +585,9 @@ case "$MODE" in
     CONNECT_ENV_EXTRA='export CLAUDE_CODE_ATTRIBUTION_HEADER=1'
     CONNECT_CMD_OVERRIDE="$(printf '%s' "$CONNECT_CMD" \
       | sed -E "s/ --exclude-dynamic-system-prompt-sections//; s/ --settings '[^']*'//")"
-    invoke_via_connect "$LOGS_DIR/claude-ab-miss-1.txt" -p "$PROMPT"
+    ab_invoke "$LOGS_DIR/claude-ab-miss-1.txt" -p "$PROMPT"
     FROM_MISS="$(bash "$CACHE_HELPER" mark)"
-    invoke_via_connect "$LOGS_DIR/claude-ab-miss-2.txt" -p --continue "$PROMPT again"
+    ab_invoke "$LOGS_DIR/claude-ab-miss-2.txt" -p --continue "$PROMPT again"
     CACHE_LOG_FROM="$FROM_MISS" bash "$CACHE_HELPER" log MISS
     unset CONNECT_ENV_EXTRA CONNECT_CMD_OVERRIDE
     echo "[claude] attribution A/B OK (suppressed HIT, header=1 MISS)"

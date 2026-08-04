@@ -123,17 +123,42 @@ echo "6. only the file-edit turns rescue a soft timeout"
 # Both file-edit turns judge the turn on real side effects (hello.py exists,
 # contains Hello, and the run output contains Hello). connection and resume have
 # no such assertion, so a cap stays fatal for them.
-RESCUERS="$(grep -c 'TIMED_OUT:-0}" = 1 \] \\$' "$DRIVE_SH" || true)"
-assert_eq "exactly the 2 file-edit turns"  "$RESCUERS" 2
+# Count every waiver regardless of how the statement is wrapped: an escape
+# rewritten onto one line must still be counted, or this guard checks nothing.
+RESCUERS="$(grep -c 'TIMED_OUT:-0}" = 1 \]' "$DRIVE_SH" || true)"
+# 2 file-edit turns + the turn-2 bare-line check + resume + attribution-ab.
+assert_eq "exactly the expected TIMED_OUT sites" "$RESCUERS" 5
 assert_eq "resume keeps a hang fatal" \
     "$(grep -c 'a resume pass cannot be judged from a partial turn' "$DRIVE_SH" || true)" 1
+assert_eq "attribution-ab keeps a hang fatal" \
+    "$(grep -c 'the A/B cannot be judged from a partial turn' "$DRIVE_SH" || true)" 1
+assert_eq "and all four of its invokes go through that guard" \
+    "$(grep -c 'ab_invoke "\$LOGS_DIR/claude-ab-' "$DRIVE_SH" || true)" 4
+
 # The connection guard must stay a bare rc test: assert_reply cannot tell a
-# completed reply from a startup banner, so it cannot adjudicate a cap.
-assert_eq "connection guard has no TIMED_OUT escape" \
-    "$(grep -c 'documented launch command exited non-zero (rc=$rc) -- see the transcript above' "$DRIVE_SH" || true)" 1
+# completed reply from a startup banner, so it cannot adjudicate a cap. Read the
+# whole statement, not one line of it -- a one-line rewrite is the easy mistake.
 CONN_LINE="$(grep -n 'documented launch command exited non-zero' "$DRIVE_SH" | cut -d: -f1)"
-assert_eq "and no TIMED_OUT on the line above it" \
-    "$(sed -n "$((CONN_LINE - 1))p" "$DRIVE_SH" | grep -c 'TIMED_OUT' || true)" 0
+CONN_STMT="$(sed -n "$((CONN_LINE - 2)),${CONN_LINE}p" "$DRIVE_SH")"
+assert_eq "connection guard has no TIMED_OUT escape" \
+    "$(echo "$CONN_STMT" | grep -c 'TIMED_OUT' || true)" 0
+assert_eq "connection guard still fails on a bare rc" \
+    "$(echo "$CONN_STMT" | grep -c '\[ "\$rc" -eq 0 \] || guide_fail' || true)" 1
+
+echo "7. a waived file-edit turn 2 is not satisfied by hello.py's own source"
+# `print("Hello")` contains the string, so an agent that read the file back and
+# then blocked would pass a bare `grep -q Hello`. The waived path must demand
+# the bare line that actually running it produces.
+printf '$ cat hello.py\nprint("Hello")\n(waiting for approval)\n' > "$WORK/read_back.txt"
+printf '\033[0m$ python hello.py\nHello\n\033[0m\n' > "$WORK/really_ran.txt"
+bare_line() {  # mirrors the check in the script, CSI-stripped
+    _esc=$(printf '\033')
+    sed -E "s/${_esc}\[[0-9;]*[a-zA-Z]//g" "$1" | grep -cE '^[[:space:]]*Hello[[:space:]]*$' || true
+}
+assert_eq "reading the file back does not count" "$(bare_line "$WORK/read_back.txt")" 0
+assert_eq "actually running it does"             "$(bare_line "$WORK/really_ran.txt")" 1
+assert_eq "and the script applies that check"    \
+    "$(grep -c "grep -qE '\^\[\[:space:\]\]\*Hello\[\[:space:\]\]\*\\\$'" "$DRIVE_SH" || true)" 1
 
 echo
 echo "PASS=$PASS FAIL=$FAIL"
