@@ -407,7 +407,7 @@ class TestStreamDeadline:
         assert (
             discovery.rewrite_next_link(
                 "models",
-                discovery.parse_next_link(f"<{target}>; rel=\"next\""),
+                discovery.parse_next_link(f'<{target}>; rel="next"'),
                 "http://127.0.0.1:8888/",
             )
             is None
