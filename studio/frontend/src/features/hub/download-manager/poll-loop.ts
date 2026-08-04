@@ -38,6 +38,7 @@ import {
   type DownloadKind,
   type ResolvedTransport,
   type TransportMode,
+  isResolvedTransport,
 } from "./constants";
 import {
   apiCancel,
@@ -587,6 +588,7 @@ export async function startJob(
     useXet?: boolean;
     generation?: number;
     state?: DownloadJobState;
+    transport?: ResolvedTransport;
   } = {},
 ): Promise<void> {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
@@ -654,6 +656,9 @@ export async function startJob(
       ? opts.generation
       : existing?.serverGeneration
     : undefined;
+  const activeTransport = opts.adopt
+    ? (opts.transport ?? existing?.transport)
+    : mode;
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     teardownRuntime(key);
     return;
@@ -672,13 +677,9 @@ export async function startJob(
     bytesPerSec: 0,
     error: null,
     startedAt: opts.adopt ? (existing?.startedAt ?? Date.now()) : Date.now(),
-    // An adopted job did not resolve a transport here, so it keeps whatever was
-    // already recorded rather than claiming this placeholder.
-    ...(opts.adopt
-      ? existing?.transport
-        ? { transport: existing.transport }
-        : {}
-      : { transport: mode }),
+    // An adopted job prefers the backend's live transport, then a persisted
+    // value. It never claims the HTTP placeholder used to skip resolution.
+    ...(activeTransport ? { transport: activeTransport } : {}),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
       : {}),
@@ -897,10 +898,21 @@ export function adoptJob(
   req: DownloadRequest,
   generation?: number,
   state?: DownloadJobState,
+  transport?: ResolvedTransport,
 ): void {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
-  if (runtimeRegistry.runtimes.get(key)?.pollingStarted) return;
-  void startJob(req, { adopt: true, generation, state });
+  if (runtimeRegistry.runtimes.get(key)?.pollingStarted) {
+    // Persistence hydration and the backend-active probe run concurrently. A
+    // late backend response must still replace a missing or stale stored value.
+    if (transport) patchJob(key, { transport });
+    return;
+  }
+  void startJob(req, {
+    adopt: true,
+    generation,
+    state,
+    ...(transport ? { transport } : {}),
+  });
 }
 
 type ProbeAndAdoptOptions = {
@@ -940,6 +952,7 @@ export async function probeAndAdopt(
           },
           active.generation,
           active.state,
+          isResolvedTransport(active.transport) ? active.transport : undefined,
         );
       }
       return;

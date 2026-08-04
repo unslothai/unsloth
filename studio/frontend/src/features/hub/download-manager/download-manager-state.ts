@@ -12,6 +12,7 @@ import {
   DOWNLOAD_KIND,
   type DownloadKind,
   isDownloadKind,
+  isResolvedTransport,
 } from "./constants";
 import {
   ACTIVE_STATES,
@@ -75,6 +76,9 @@ function sanitizePersistedJob(value: unknown): ManagedDownload | null {
     value.scopedFiles.every((f) => typeof f === "string")
       ? { scopedFiles: value.scopedFiles as string[] }
       : {}),
+    ...(isResolvedTransport(value.transport)
+      ? { transport: value.transport }
+      : {}),
   };
 }
 
@@ -114,6 +118,7 @@ function toPersistedJob(
       ? { serverGeneration: job.serverGeneration }
       : {}),
     ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
+    ...(job.transport !== undefined ? { transport: job.transport } : {}),
   };
 }
 

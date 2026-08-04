@@ -7,7 +7,7 @@ import {
   getAllActiveModelDownloads,
   type DownloadJobState,
 } from "./api";
-import { DOWNLOAD_KIND } from "./constants";
+import { DOWNLOAD_KIND, isResolvedTransport } from "./constants";
 import { ACTIVE_STATES, POLL_REQUEST_TIMEOUT_MS } from "./download-manager-config";
 import {
   apiGetProgress,
@@ -97,6 +97,7 @@ async function adoptActiveModelDownloads(): Promise<void> {
       },
       safeGeneration(download.generation),
       download.state,
+      isResolvedTransport(download.transport) ? download.transport : undefined,
     );
   }
 }
@@ -118,6 +119,7 @@ async function adoptActiveDatasetDownloads(): Promise<void> {
       },
       safeGeneration(download.generation),
       download.state,
+      isResolvedTransport(download.transport) ? download.transport : undefined,
     );
   }
 }

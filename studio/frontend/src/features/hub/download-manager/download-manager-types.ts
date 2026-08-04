@@ -29,8 +29,8 @@ export interface ManagedDownload {
   /** Files a scoped job is fetching, when known. Every file set of one repo rides the same scope slot (see `scopedVariant`), so this separates "my transfer is already running" from "a different quant of this repo is running": adopting the latter would report ready for files nobody fetched. Unknown stays adoptable only for an UNSCOPED job. */
   scopedFiles?: string[];
   // The transport this run resolved to, so a surface can say whether stopping
-  // keeps a resumable partial. Absent for an adopted job, whose transport the
-  // frontend never chose.
+  // keeps a resumable partial. Absent only when neither the backend nor
+  // persisted state identifies an adopted job's transport.
   transport?: ResolvedTransport;
 }
 
