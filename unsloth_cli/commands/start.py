@@ -1696,16 +1696,18 @@ def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
     _fail(message)
 
 
-def _preflight_codex_gguf(model: Optional[str]) -> None:
+def _preflight_codex_gguf(model: Optional[str], *, serve: bool = True, launch: bool = True) -> None:
     # Hub-listing preflight for the auto-start path only. With a server
     # running, identifiers are resolved against its cwd/cache/token, which this
     # process cannot mirror; _attach_gguf_check_for_codex asks the server
     # instead. Only a complete listing with no .gguf files rejects; unknown
     # defers to the post-connect check so an unreachable hub never blocks.
-    if not model:
+    # Mirror _require_studio's auto-start condition: when no start can happen,
+    # its "no running server" error should come first, without a hub probe.
+    if not (serve and launch and model):
         return
     expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
-    if not is_loopback_url(expected):
+    if not is_loopback_url(expected) or urlparse(expected).scheme != "http":
         return
     if find_studio_server() is not None:
         return
@@ -1738,15 +1740,25 @@ def _attach_gguf_check_for_codex(base: str, key: str, model: Optional[str]) -> N
     # answer there would wrongly reject a loadable file.
     if repo.lower().endswith(".gguf"):
         return
-    try:
-        info = _http_json(
-            "GET", f"{base}/api/models/gguf-variants?{urlencode({'repo_id': repo})}", key
-        )
-    except Exception:
-        return
-    variants = info.get("variants") if isinstance(info, dict) else None
-    if isinstance(variants, list) and not variants:
-        _fail_codex_needs_gguf(repo)
+    # Mirror the load path's shorthand precedence: the raw name first (it may
+    # be a directory relative to the server's cwd), then the unsloth/<name>
+    # canonical form the load would fall back to. Reject only when the final
+    # interpretation gets a live empty answer.
+    candidates = [repo]
+    if "/" not in repo and not _is_model_path(repo):
+        candidates.append(f"unsloth/{repo}")
+    for candidate in candidates:
+        try:
+            info = _http_json(
+                "GET", f"{base}/api/models/gguf-variants?{urlencode({'repo_id': candidate})}", key
+            )
+        except Exception:
+            continue
+        variants = info.get("variants") if isinstance(info, dict) else None
+        if isinstance(variants, list) and variants:
+            return
+        if candidate == candidates[-1] and isinstance(variants, list):
+            _fail_codex_needs_gguf(candidate)
 
 
 def _require_gguf_for_codex(base: str, key: str, model_id: str) -> None:
@@ -3631,7 +3643,7 @@ def codex(
     model, ctx.args[:] = _consume_positional_model(model, ctx.args)
     install_hint = _npm_install_hint("@openai/codex")
     _require_agent_for_launch("codex", install_hint, launch)
-    _preflight_codex_gguf(model)
+    _preflight_codex_gguf(model, serve = serve, launch = launch)
     base, key, entry = _connect(
         api_key,
         model,

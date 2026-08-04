@@ -6009,3 +6009,48 @@ def test_codex_attach_check_skips_direct_gguf_files(monkeypatch):
     )
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf")
     start._attach_gguf_check_for_codex(BASE, "sk-test", "./local/model.GGUF")
+
+
+@pytest.mark.parametrize("kwargs", [{"serve": False}, {"launch": False}])
+def test_codex_preflight_skips_when_autostart_impossible(monkeypatch, kwargs):
+    calls = _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
+    start._preflight_codex_gguf("mlx-community/Qwen3-0.6B-4bit", **kwargs)
+    assert calls == []
+
+
+def test_codex_attach_check_normalizes_shorthand_after_raw_probe(monkeypatch, capsys):
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
+    urls = []
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        urls.append(url)
+        if "repo_id=Qwen3-0.6B" in url and "unsloth" not in url:
+            raise urllib.error.HTTPError(url, 400, "invalid repo_id", None, None)
+        return {"variants": []}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "Qwen3-0.6B")
+    assert len(urls) == 2
+    assert "repo_id=unsloth%2FQwen3-0.6B" in urls[1]
+    assert "unsloth/Qwen3-0.6B" in capsys.readouterr().err
+
+
+def test_codex_attach_check_trusts_raw_server_dir_answer(monkeypatch):
+    urls = []
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        urls.append(url)
+        return {"variants": [{"quant": "Q4_K_M"}]}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "local-gguf-dir")
+    assert len(urls) == 1
+
+
+def test_codex_attach_check_defers_shorthand_when_canonical_probe_errors(monkeypatch):
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        raise urllib.error.HTTPError(url, 404, "nope", None, None)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "Qwen3-0.6B")
