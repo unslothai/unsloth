@@ -5726,6 +5726,7 @@ def test_native_resume_flag_passes_through_unchanged(fake_studio, monkeypatch):
 
 def _fake_hub_listing(monkeypatch, files_by_repo):
     monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
     calls = []
 
     def fake(repo):
@@ -5781,6 +5782,8 @@ def test_codex_gguf_failure_suggests_only_a_verified_sibling(monkeypatch, capsys
 
 
 def test_hub_gguf_files_parses_listing(monkeypatch):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     payload = {"siblings": [{"rfilename": "README.md"}, {"rfilename": "model-Q4_K_M.GGUF"}]}
     monkeypatch.setattr(
         start.urllib.request,
@@ -5791,6 +5794,8 @@ def test_hub_gguf_files_parses_listing(monkeypatch):
 
 
 def test_hub_gguf_files_unknown_on_error_or_empty_listing(monkeypatch):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     def unauthorized(request, timeout):
         raise urllib.error.HTTPError(request.full_url, 401, "unauthorized", None, None)
 
@@ -5804,6 +5809,7 @@ def test_hub_gguf_files_unknown_on_error_or_empty_listing(monkeypatch):
 
 def test_codex_rejects_non_gguf_model_before_connect(monkeypatch):
     monkeypatch.delenv("UNSLOTH_STUDIO_URL", raising = False)
+    monkeypatch.setattr(start, "find_studio_server", lambda: None)
     monkeypatch.setattr(start.shutil, "which", lambda _: "/usr/local/bin/codex")
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: [])
     monkeypatch.setattr(
@@ -5832,6 +5838,8 @@ def test_codex_preflight_shorthand_skips_existing_local_dir(monkeypatch, tmp_pat
 
 
 def test_hub_gguf_files_ignores_auxiliary_ggufs(monkeypatch):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     payload = {
         "siblings": [
             {"rfilename": "mmproj-F16.gguf"},
@@ -5849,6 +5857,8 @@ def test_hub_gguf_files_ignores_auxiliary_ggufs(monkeypatch):
 
 
 def test_hub_gguf_files_filters_root_big_endian_only(monkeypatch):
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     payload = {
         "siblings": [
             {"rfilename": "model-Q4_K_M-be.gguf"},
@@ -5863,3 +5873,31 @@ def test_hub_gguf_files_filters_root_big_endian_only(monkeypatch):
         lambda request, timeout: io.BytesIO(json.dumps(payload).encode()),
     )
     assert start._hub_gguf_files("owner/be-pack") == ["quants/model-be.gguf", "model-belle.gguf"]
+
+
+def test_codex_preflight_skips_unverified_loopback_server(monkeypatch):
+    # 127.0.0.1 can be an SSH tunnel to a remote Unsloth; without a verified
+    # local identity the preflight must not reject a server-side path.
+    _fake_hub_listing(monkeypatch, {"models/qwen": []})
+    monkeypatch.setattr(start, "find_studio_server", lambda: "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base: False)
+    start._preflight_codex_gguf("models/qwen")
+
+
+def test_codex_preflight_rejects_on_verified_local_server(monkeypatch):
+    _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})
+    monkeypatch.setattr(start, "find_studio_server", lambda: "http://127.0.0.1:8888")
+    monkeypatch.setattr(start, "verify_studio_identity", lambda base: True)
+    with pytest.raises(typer.Exit):
+        start._preflight_codex_gguf("mlx-community/Qwen3-0.6B-4bit")
+
+
+@pytest.mark.parametrize("var", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+def test_hub_gguf_files_skips_hub_when_offline(monkeypatch, var):
+    monkeypatch.setenv(var, "1")
+    monkeypatch.setattr(
+        start.urllib.request,
+        "urlopen",
+        lambda request, timeout: pytest.fail("offline mode must not call the hub"),
+    )
+    assert start._hub_gguf_files("owner/model") is None

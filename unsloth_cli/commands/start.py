@@ -1643,7 +1643,19 @@ def _resolve_model(
     return resident
 
 
+_HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
+
+
+def _hf_offline() -> bool:
+    return any(
+        os.environ.get(var, "").strip().lower() in _HF_OFFLINE_TRUE_VALUES
+        for var in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
+
+
 def _hub_gguf_files(repo: str) -> Optional[list]:
+    if _hf_offline():
+        return None
     endpoint = os.environ.get("HF_ENDPOINT", "https://huggingface.co").rstrip("/")
     request = urllib.request.Request(
         f"{endpoint}/api/models/{repo}",
@@ -1693,6 +1705,12 @@ def _preflight_codex_gguf(model: Optional[str]) -> None:
         return
     expected = os.environ.get("UNSLOTH_STUDIO_URL", "http://127.0.0.1:8888").rstrip("/")
     if not is_loopback_url(expected):
+        return
+    # A 127.0.0.1 URL can be an SSH tunnel to a remote Unsloth whose relative
+    # model paths are not visible here; only preflight against a running server
+    # proven to be this machine's. No running server means no tunnel to attach.
+    base = find_studio_server()
+    if base is not None and not verify_studio_identity(base):
         return
     repo, _ = _split_repo_variant(model)
     if "/" not in repo and not _is_model_path(repo):
