@@ -305,6 +305,12 @@
 	   18px), so icons read slightly smaller than enlarged text. */
 	--ui-icon-size: min(calc(1rem * var(--ui-font-scale, 1)), calc(0.5rem + 0.5rem * var(--ui-font-scale, 1)));
 	--icon-size: var(--ui-icon-size);
+	/* Model picker header controls. Their labels come from scaled text tokens
+	   while --spacing stays pinned, so a fixed box clips "Trending" at the
+	   large setting and swims around it at the small one. Same values as the
+	   h-9 / w-[110px] they replace at the 16px default. */
+	--picker-control-h: calc(2.25rem * var(--ui-font-scale, 1));
+	--picker-control-w: calc(6.875rem * var(--ui-font-scale, 1));
 	/* Inset of a centered .size-icon glyph within a 2rem (size-8) action
 	   button — i.e. (32px − icon-size) / 2. Use as a negative margin on a
 	   chat-message action bar so the leftmost icon's visual edge aligns
