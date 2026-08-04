@@ -1264,8 +1264,19 @@ with sync_playwright() as p:
             if len(actual["fontSize"]) != 1:
                 fail(f"chat font size {label}/{role}: not uniform, got {actual['fontSize']!r}")
             font_size = float(actual["fontSize"][0].removesuffix("px"))
+            # Asserting the em means the size itself is no longer checked, where the old px
+            # literal caught it implicitly. Bound it: loose enough that a deliberate scale
+            # change or a font-size preference passes, tight enough that chat text rendering
+            # at a heading or caption size does not.
+            if not 12.0 <= font_size <= 18.0:
+                fail(f"chat font size {label}/{role}: {font_size}px is outside 12-18px")
             expected_spacing = expected_em * font_size
-            spacings = [float(v.removesuffix("px")) for v in actual["letterSpacing"]]
+            # "normal" is how a zero tracking is reported, and float() raises on it, which
+            # would surface as a test error rather than this check failing.
+            spacings = [
+                0.0 if v.strip() == "normal" else float(v.removesuffix("px"))
+                for v in actual["letterSpacing"]
+            ]
             # Sub-pixel tolerance only: the browser reports the exact product, so anything larger
             # would stop the check from noticing a changed tracking value.
             if len(spacings) != 1 or abs(spacings[0] - expected_spacing) > 0.005:
