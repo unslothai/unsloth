@@ -61,11 +61,12 @@ else:
         # min(max(cpu_count + 4, 2), 64) heuristic (issue #2693) and is a
         # separate package, so bound the count on the way in. See
         # resolve_responses_only_num_proc; the local copy is only the fallback
-        # for a zoo predating it.
+        # for a zoo predating it. Top level, not under unsloth.utils, whose
+        # __init__ imports torch: this path has to stay MLX-safe.
         try:
             from unsloth_zoo.dataset_num_proc import resolve_responses_only_num_proc
         except ImportError:
-            from .utils.dataset_num_proc import resolve_responses_only_num_proc
+            from .dataset_num_proc import resolve_responses_only_num_proc
 
         try:
             bound = _ZOO_RESPONSES_ONLY_SIGNATURE.bind_partial(*args, **kwargs)

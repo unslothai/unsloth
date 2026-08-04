@@ -3295,10 +3295,13 @@ def safe_num_proc(desired: Optional[int] = None) -> int:
     # Dataset.map -- the shape of issue #2693, and slower besides (32 workers
     # measured 14.2s against 6.3s in-process, ~1GB each).
     if desired > _STUDIO_NUM_PROC_CAP:
+        # No mention of UNSLOTH_DATASET_NUM_PROC here: this function returns an
+        # int >= 1 and cannot express the in-process the hatch promises. The
+        # hatch is read in dataset_map_num_proc, which is the path whose value
+        # reaches Dataset.map.
         logger.info(
             f"num_proc {desired} -> {_STUDIO_NUM_PROC_CAP}: tokenization stops "
-            f"scaling well before this and each worker holds its own tokenizer "
-            f"copy. Set UNSLOTH_DATASET_NUM_PROC to override."
+            f"scaling well before this and each worker holds its own tokenizer copy."
         )
         desired = _STUDIO_NUM_PROC_CAP
 
@@ -3376,4 +3379,25 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
                 # pre-init CPU preprocessing can still parallelize.
                 logger.debug("torch.xpu.is_initialized() probe failed: %s", e)
 
-    return safe_num_proc(desired)
+    return _bounded_by_the_shared_policy(safe_num_proc(desired))
+
+
+def _bounded_by_the_shared_policy(num_proc: int) -> Optional[int]:
+    """Apply the training-side num_proc policy to a Studio-computed count.
+
+    ``format_conversion.py`` and ``chat_templates.py`` hand this straight to
+    ``Dataset.map``, so without it a container with 2GB and eight cores still got
+    eight tokenizer workers -- the OOM this policy exists to stop -- and
+    ``UNSLOTH_DATASET_NUM_PROC`` did nothing on those paths. The import is lazy
+    and guarded: hardware detection must not depend on the training package, and
+    an older unsloth_zoo keeps the previous behaviour.
+    """
+    try:
+        from unsloth_zoo.dataset_num_proc import get_dataset_num_proc
+    except Exception:
+        return num_proc
+    try:
+        return get_dataset_num_proc(num_proc)
+    except Exception as e:
+        logger.debug("dataset_num_proc policy unavailable: %s", e)
+        return num_proc

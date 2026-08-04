@@ -231,3 +231,78 @@ def test_num_proc_one_is_not_a_disable_sentinel():
         )
     else:
         assert built_for_one == 0
+
+
+# ---------- the value that reaches Dataset.map is bounded like any other ----------
+
+
+def test_a_low_memory_host_gets_no_workers(monkeypatch):
+    """format_conversion.py and chat_templates.py call this directly.
+
+    Without the shared policy a 2GB container with eight cores still handed eight
+    tokenizer workers to Dataset.map, which is the OOM the policy exists to stop.
+    """
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    monkeypatch.setattr(policy, "_affordable_workers", lambda: 0)
+    monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
+    assert hw.dataset_map_num_proc(8) is None
+
+
+def test_the_memory_clamp_reduces_rather_than_refuses(monkeypatch):
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    monkeypatch.setattr(policy, "_affordable_workers", lambda: 3)
+    monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
+    assert hw.dataset_map_num_proc(8) == 3
+
+
+def test_the_env_override_reaches_these_callers(monkeypatch):
+    # The cap's log line used to advertise this on a path that never read it.
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
+    policy.reset_warning_state()
+
+    monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", "2")
+    assert hw.dataset_map_num_proc(8) == 2
+
+    monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", "0")
+    assert hw.dataset_map_num_proc(8) is None
+
+
+def test_an_older_unsloth_zoo_keeps_the_previous_behaviour(monkeypatch):
+    # The policy is a lazy, guarded import: hardware detection must not start
+    # depending on the training package.
+    import builtins
+
+    real_import = builtins.__import__
+
+    def _no_policy(name, *args, **kwargs):
+        if name == "unsloth_zoo.dataset_num_proc":
+            raise ImportError("older unsloth_zoo")
+        return real_import(name, *args, **kwargs)
+
+    _patch_device(monkeypatch, hw.DeviceType.CPU)
+    monkeypatch.setattr(builtins, "__import__", _no_policy)
+    assert hw.dataset_map_num_proc(4) == 4
+
+
+def test_the_cap_no_longer_advertises_an_override_it_cannot_honour():
+    """safe_num_proc returns an int >= 1, so it cannot express in-process.
+
+    Naming the variable there told users to set something that path never read.
+    """
+    import ast
+    import inspect
+
+    tree = ast.parse(inspect.getsource(hw.safe_num_proc))
+    logged = [
+        ast.unparse(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and ast.unparse(node.func).startswith("logger.")
+    ]
+    assert logged, "the cap stopped logging; re-check what this is guarding"
+    assert not any("UNSLOTH_DATASET_NUM_PROC" in line for line in logged), (
+        "safe_num_proc tells the user to set an override it never reads"
+    )

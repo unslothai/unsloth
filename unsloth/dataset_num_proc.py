@@ -176,51 +176,71 @@ def _workers_unusable_reason() -> Optional[str]:
     return None
 
 
-def _cgroup_limits() -> "tuple[Optional[int], Optional[float]]":
-    """This process's cgroup memory ceiling in bytes and CPU ceiling in cores.
+def _cgroup_cpu_quota() -> Optional[float]:
+    """This process's cgroup CPU ceiling in cores, or None outside one.
 
-    ``(None, None)`` off Linux or outside a container. Reuses the readers in
-    ``hf_xet_tuning`` rather than parsing ``/sys/fs/cgroup`` again: they already
-    handle v1 against v2, the ``/proc/self/cgroup`` path walk and the "unlimited"
-    sentinels. Imported lazily, so this module still loads on its own.
+    Reuses the reader in ``hf_xet_tuning`` rather than parsing ``/sys/fs/cgroup``
+    again: it already handles v1 against v2, the ``/proc/self/cgroup`` path walk
+    and the "unlimited" sentinels. Imported lazily, so this module still loads on
+    its own.
     """
     try:
-        from unsloth_zoo.hf_xet_tuning import cgroup_cpu_limit, cgroup_memory_limit
-        return cgroup_memory_limit(), cgroup_cpu_limit()
+        from unsloth_zoo.hf_xet_tuning import cgroup_cpu_limit
+        return cgroup_cpu_limit()
     except Exception:
-        return None, None
+        return None
 
 
-def _cgroup_memory_used() -> Optional[int]:
-    """Bytes this cgroup is already using, or None when that cannot be read.
+def _cgroup_free_bytes() -> Optional[int]:
+    """Bytes free under the binding cgroup memory limit, or None outside one.
 
-    Without it the whole limit looks free on a container that has spent most of
-    it, and the model is usually what spent it. Read from the same directories
-    the limit came from, innermost first, rather than from
-    ``/sys/fs/cgroup/memory.current``: at the root that file is the WHOLE
-    machine's usage, and subtracting it from a systemd unit's own MemoryMax would
-    leave every run with nothing free.
+    Each limit is paired with the usage of the directory that set it. The binding
+    limit is often an ancestor's -- a systemd slice, a Slurm job step -- and that
+    ancestor's usage counts siblings this process cannot see from its own leaf,
+    so pairing a leaf's usage with an ancestor's limit would report memory that
+    is already spent as free. The reverse pairing is worse still: the root
+    ``memory.current`` is the whole machine, and subtracting it from a unit's own
+    MemoryMax leaves every run with nothing.
     """
     try:
         from unsloth_zoo.hf_xet_tuning import (
             _cgroup_v1_dirs,
             _cgroup_v2_dirs,
+            _parse_limit,
             _read_first_line,
         )
     except Exception:
-        return None  # limit-only, which is never worse than not subtracting
+        # An older unsloth_zoo. Fall back to the limit alone, which can only
+        # overstate what is free, never understate it.
+        try:
+            from unsloth_zoo.hf_xet_tuning import cgroup_memory_limit
+            return cgroup_memory_limit()
+        except Exception:
+            return None
 
-    candidates = [(d, "memory.current") for d in _cgroup_v2_dirs()]
-    candidates += [(d, "memory.usage_in_bytes") for d in _cgroup_v1_dirs("memory")]
-    for directory, name in candidates:
-        raw = _read_first_line(directory / name)
+    def _used(path):
+        raw = _read_first_line(path)
         if not raw:
-            continue
+            return None
         try:
             return int(raw.strip())
         except ValueError:
-            continue
-    return None
+            return None
+
+    free = []
+    for directory in _cgroup_v2_dirs():
+        used = _used(directory / "memory.current")
+        for name in ("memory.max", "memory.high"):
+            limit = _parse_limit(_read_first_line(directory / name))
+            if limit is not None:
+                free.append(limit if used is None else limit - used)
+    for directory in _cgroup_v1_dirs("memory"):
+        used = _used(directory / "memory.usage_in_bytes")
+        limit = _parse_limit(_read_first_line(directory / "memory.limit_in_bytes"))
+        if limit is not None:
+            free.append(limit if used is None else limit - used)
+
+    return max(min(free), 0) if free else None
 
 
 def _available_memory_gb() -> Optional[float]:
@@ -236,11 +256,9 @@ def _available_memory_gb() -> Optional[float]:
     except Exception:
         return None
 
-    limit, _ = _cgroup_limits()
-    if limit is not None:
-        used = _cgroup_memory_used()
-        free = limit - used if used is not None else limit
-        available_gb = min(available_gb, max(free, 0) / (1024**3))
+    free = _cgroup_free_bytes()
+    if free is not None:
+        available_gb = min(available_gb, free / (1024**3))
     return available_gb
 
 
@@ -264,7 +282,7 @@ def _usable_cpus() -> Optional[int]:
     except (AttributeError, OSError):
         pass  # not Linux, or the call is unavailable: the host count stands
 
-    _, quota = _cgroup_limits()
+    quota = _cgroup_cpu_quota()
     if quota is not None and quota > 0:
         # A fractional quota still binds: Kubernetes "cpu: 500m" is 0.5 cores.
         cpus = min(cpus, max(1, int(quota)))
@@ -572,13 +590,21 @@ def resolve_responses_only_num_proc(trainer, num_proc):
     # Mirror that helper's own test, so "explicit" means the same on both sides
     # (it treats bools as auto, since type(True) is not int).
     was_auto = num_proc is None or type(num_proc) is not int
+    rows = _largest_split_rows(trainer)
+    small = rows is None or rows < ZOO_MIN_ROWS_FOR_MULTIPROC
 
     if not was_auto:
-        # Explicit counts already bypass the small-split guard.
-        return _serial_for_the_zoo(get_dataset_num_proc(num_proc, serial_as_none = False))
+        resolved = get_dataset_num_proc(num_proc, serial_as_none = False)
+        if resolved == 1 and small:
+            # Serial, and every split is under the threshold, so the helper's own
+            # guard runs each of them in-process -- which is more serial than the
+            # 1 expressible here, and the only place a serial request can be met
+            # exactly. Reaching this with UNSLOTH_DATASET_NUM_PROC=0 and a config
+            # sentinel of 1 was the escape hatch still building a Pool(1).
+            return None
+        return _serial_for_the_zoo(resolved)
 
-    rows = _largest_split_rows(trainer)
-    if rows is None or rows < ZOO_MIN_ROWS_FOR_MULTIPROC:
+    if small:
         # The escape hatch must win here too.
         env_set, env_value = _from_environment()
         if env_set and env_value is not None:

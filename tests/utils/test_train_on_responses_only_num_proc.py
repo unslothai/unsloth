@@ -31,7 +31,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 def _load_helper():
     spec = importlib.util.spec_from_file_location(
-        "_unsloth_dnp", REPO_ROOT / "unsloth" / "utils" / "dataset_num_proc.py"
+        "_unsloth_dnp", REPO_ROOT / "unsloth" / "dataset_num_proc.py"
     )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)

@@ -1434,22 +1434,29 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
     # method `datasets` takes from `multiprocess`, and `1` used as the serial
     # sentinel when datasets >= 4.1 builds a Pool(1) for it). The zoo rather than
     # unsloth, so generated source never imports back into its generator;
-    # unsloth.utils.dataset_num_proc is the fallback for an older zoo, and the
+    # unsloth.dataset_num_proc is the fallback for an older zoo, and the
     # ladder is guarded so a stale generated file degrades to the caller's value.
-    # serial_as_none = False since this writes to the *config*, where
-    # unsloth_zoo.sft_prepare_dataset reads `None` as "auto-size me"; the map()
-    # call site (rl_replacements.py) is what makes it safe.
+    # serial_as_none depends on who reads the value back. Only SFT has a
+    # downstream auto-sizer: unsloth_zoo.sft_prepare_dataset reads a config
+    # `None` as "auto-size me", so serial has to be written as `1` there and the
+    # map() call site (rl_replacements.py) turns it back into None. DPO, KTO,
+    # CPO, ORPO, Reward and PRM hand args.dataset_num_proc straight to
+    # Dataset.map, where nothing can inflate a None but a `1` is a Pool(1) on
+    # datasets >= 4.1 -- one worker with its own tokenizer copy, on a host the
+    # memory clamp had just declared too small for workers.
     if "dataset_num_proc" in call_args:
+        _serial_as_none = "False" if trainer_file == "sft_trainer" else "True"
         num_proc_check = (
             "try:\n"
             "    from unsloth_zoo.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc\n"
             "except Exception:\n"
             "    try:\n"
-            "        from unsloth.utils.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc\n"
+            "        from unsloth.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc\n"
             "    except Exception:\n"
             "        _unsloth_get_dataset_num_proc = None\n"
             "if _unsloth_get_dataset_num_proc is not None:\n"
-            "    dataset_num_proc = _unsloth_get_dataset_num_proc(dataset_num_proc, serial_as_none = False)\n"
+            "    dataset_num_proc = _unsloth_get_dataset_num_proc("
+            f"dataset_num_proc, serial_as_none = {_serial_as_none})\n"
         )
         extra_args += num_proc_check
 

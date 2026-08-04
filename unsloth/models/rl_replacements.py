@@ -559,7 +559,7 @@ def sft_trainer_prepare_dataset(function_name, function):
             # datasets >= 4.1. The shared helper caps a config None instead of
             # the Zoo's uncapped `cpu_count + 4 -> 64`. Imported from the Zoo so
             # generated source never imports back into its generator;
-            # unsloth.utils.dataset_num_proc is only the fallback for an older Zoo.
+            # unsloth.dataset_num_proc is only the fallback for an older Zoo.
             function = _require_replace(
                 function,
                 """if not isinstance(dataset, IterableDataset):
@@ -581,7 +581,7 @@ def sft_trainer_prepare_dataset(function_name, function):
             try:
                 from unsloth_zoo.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc
             except ImportError:
-                from unsloth.utils.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc
+                from unsloth.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc
             map_kwargs["num_proc"] = _unsloth_get_dataset_num_proc(
                 getattr(args, "dataset_num_proc", None)
             )""",
@@ -606,11 +606,17 @@ def sft_trainer_prepare_dataset(function_name, function):
                 """            try:
                 from unsloth_zoo.dataset_num_proc import map_failure_diagnostics as _unsloth_map_diagnostics
             except ImportError:
-                from unsloth.utils.dataset_num_proc import map_failure_diagnostics as _unsloth_map_diagnostics
+                from unsloth.dataset_num_proc import map_failure_diagnostics as _unsloth_map_diagnostics
             with _w.catch_warnings(), _unsloth_map_diagnostics(map_kwargs.get("num_proc")):
                 _w.filterwarnings("ignore", message=".*couldn't be hashed properly.*")""",
                 count = 2,
                 where = "sft_prepare_dataset tokenizing map() calls",
+                # required = False, like the selection above: this only improves the
+                # message a dead worker produces, and a diagnostic must not be able
+                # to fail a training run because a Zoo release moved the line it
+                # anchors on. test_zoo_sft_prepare_dataset_anchor_has_not_drifted is
+                # what notices, in CI rather than in someone's run.
+                required = False,
             )
             function = function.split("\n")
             function = "\n".join(" " * 4 + x for x in function)
