@@ -43,6 +43,7 @@ const initialState: TrainingRuntimeState = {
   evalEnabled: false,
   message: "Ready to train",
   error: null,
+  warnings: [],
   isHydrating: false,
   hasHydrated: false,
   isStarting: false,
@@ -95,6 +96,20 @@ function toSeries(steps: number[], values: number[]): TrainingSeriesPoint[] {
 function toFiniteNumber(value: unknown): number | null {
   if (typeof value !== "number") return null;
   return Number.isFinite(value) ? value : null;
+}
+
+function normalizeWarnings(value: unknown): string[] | null {
+  if (!Array.isArray(value)) return null;
+  const warnings: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of value) {
+    if (typeof candidate !== "string") continue;
+    const warning = candidate.trim();
+    if (!warning || seen.has(warning)) continue;
+    seen.add(warning);
+    warnings.push(warning);
+  }
+  return warnings;
 }
 
 function upsertPoint(
@@ -203,6 +218,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
         jobId,
         message,
         error: null,
+        warnings: [],
         startError: null,
         phase: "configuring",
         isStarting: false,
@@ -245,6 +261,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
     applyStatus: (payload) =>
       set((state) => {
         const metricHistory = applyMetricHistoryFromStatus(payload);
+        const warnings = normalizeWarnings(payload.warnings);
         const detailStep = payload.details?.step;
         const detailTotal = payload.details?.total_steps;
         const detailLoss = payload.details?.loss;
@@ -263,6 +280,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
           evalEnabled: payload.eval_enabled ?? state.evalEnabled,
           message: payload.message,
           error: payload.error,
+          warnings: warnings ?? state.warnings,
           currentStep:
             typeof detailStep === "number"
               ? Math.max(detailStep, 0)

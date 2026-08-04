@@ -552,6 +552,7 @@ class TrainingProgress:
     is_training: bool = False
     is_completed: bool = False
     error: Optional[str] = None
+    warnings: list[str] = field(default_factory = list)
     status_message: str = "Ready to train"
     elapsed_seconds: Optional[float] = None
     eta_seconds: Optional[float] = None
@@ -913,6 +914,16 @@ class _MLXTrainerAdapter:
             self._update_progress(
                 status_message = event.get("status_message") or event.get("message") or ""
             )
+            return
+        if etype == "warning":
+            message = event.get("message")
+            if isinstance(message, str):
+                message = message.strip()
+                if message:
+                    with self._lock:
+                        if message not in self.training_progress.warnings:
+                            self.training_progress.warnings.append(message)
+                            logger.warning(message)
             return
         if etype == "progress":
             self._update_progress(
@@ -2505,6 +2516,14 @@ class TrainingBackend:
             elif etype == "status":
                 self._progress.status_message = event.get("message", "")
                 self._progress.is_training = True
+
+            elif etype == "warning":
+                message = event.get("message")
+                if isinstance(message, str):
+                    message = message.strip()
+                    if message and message not in self._progress.warnings:
+                        self._progress.warnings.append(message)
+                        logger.warning("Training warning: %s", message)
 
             elif etype == "complete":
                 msg = event.get("status_message", "Training completed")

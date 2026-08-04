@@ -271,10 +271,41 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
     return True
 
 
+def _validate_training_worker_config(config: dict, event_queue: Any) -> bool:
+    if not _verify_config_pins(config, event_queue):
+        return False
+    format_error = _untrainable_model_format_error(config)
+    if format_error:
+        event_queue.put(
+            {
+                "type": "error",
+                "error": format_error,
+                "stack": "",
+                "ts": time.time(),
+            }
+        )
+        return False
+    return True
+
+
+def _cached_dataset_row_limit(config: dict) -> int | None:
+    slice_end = config.get("dataset_slice_end")
+    slice_start = config.get("dataset_slice_start")
+    if isinstance(slice_end, bool) or not isinstance(slice_end, int) or slice_end < 0:
+        return None
+    if slice_start is None:
+        slice_start = 0
+    if isinstance(slice_start, bool) or not isinstance(slice_start, int):
+        return None
+    return slice_end + 1 if slice_end >= max(slice_start, 0) else None
+
+
 def _load_cached_dataset_for_config(
     config: dict,
     split: str | None,
     token: str | None = None,
+    *,
+    row_limit: int | None = None,
 ):
     hf_dataset = config.get("hf_dataset")
     local_path = config.get("dataset_snapshot_path")
@@ -282,26 +313,48 @@ def _load_cached_dataset_for_config(
         return None
     from hub.utils.dataset_cache import load_cached_hf_dataset
 
-    return load_cached_hf_dataset(
-        hf_dataset,
-        local_path,
-        subset = config.get("subset"),
-        split = split or "train",
-        token = token,
-    )
+    kwargs = {
+        "subset": config.get("subset"),
+        "split": split or "train",
+        "token": token,
+    }
+    if row_limit is not None:
+        kwargs["row_limit"] = row_limit
+    return load_cached_hf_dataset(hf_dataset, local_path, **kwargs)
 
 
 def _load_hf_train_and_eval_datasets(
-    config: dict, token: str | None, load_dataset: Callable, status_callback: Callable[[str], None]
+    config: dict,
+    token: str | None,
+    load_dataset: Callable,
+    status_callback: Callable[[str], None],
+    warning_callback: Callable[[str], None] | None = None,
 ):
+    from core.training.eval_dataset import (
+        EVAL_SPLIT_CANDIDATES,
+        MIN_EVAL_ROWS,
+        evaluation_enabled,
+    )
+
     hf_dataset = config["hf_dataset"]
     subset = config.get("subset")
     train_split = config.get("train_split", "train") or "train"
     eval_split = config.get("eval_split")
     revision = config.get("dataset_revision")
+    eval_enabled = evaluation_enabled(config.get("eval_steps"))
+    require_exact = bool(
+        config.get("require_exact_resume_resources")
+        or config.get("require_exact_dataset_resource")
+    )
     dataset = None
     loaded_from_cache = False
     config["_dataset_loaded_from_exact_snapshot"] = False
+
+    def warn(message: str) -> None:
+        if warning_callback is not None:
+            warning_callback(message)
+        else:
+            logger.warning(message)
 
     def load_remote(split: str):
         kwargs = {"split": split, "token": token}
@@ -314,7 +367,16 @@ def _load_hf_train_and_eval_datasets(
     if _dataset_local_files_only(config):
         status_callback(f"Loading cached dataset: {hf_dataset}")
         try:
-            dataset = _load_cached_dataset_for_config(config, train_split, token)
+            row_limit = _cached_dataset_row_limit(config)
+            if row_limit is None:
+                dataset = _load_cached_dataset_for_config(config, train_split, token)
+            else:
+                dataset = _load_cached_dataset_for_config(
+                    config,
+                    train_split,
+                    token,
+                    row_limit = row_limit,
+                )
             dataset = _require_strict_cached_dataset(config, dataset, train_split)
             loaded_from_cache = dataset is not None
         except Exception as error:
@@ -326,36 +388,88 @@ def _load_hf_train_and_eval_datasets(
         dataset = load_remote(train_split)
 
     eval_dataset = None
-    if eval_split:
+    explicit_separate_eval = bool(eval_split and eval_split != train_split)
+    if eval_enabled and explicit_separate_eval:
+        if loaded_from_cache:
+            try:
+                eval_dataset = _load_cached_dataset_for_config(config, eval_split, token)
+                eval_dataset = _require_strict_cached_dataset(
+                    config,
+                    eval_dataset,
+                    eval_split,
+                )
+            except Exception as error:
+                if not _cache_artifact_fallback_allowed(config, error, "dataset"):
+                    raise
+                status_callback(
+                    "Cached eval split unavailable; reloading train and eval from the Hub..."
+                )
+                remote_train = load_remote(train_split)
+                remote_eval = load_remote(eval_split)
+                dataset = remote_train
+                eval_dataset = remote_eval
+                loaded_from_cache = False
+        else:
+            eval_dataset = load_remote(eval_split)
+    elif eval_enabled and not eval_split:
+        auto_errors: list[tuple[str, Exception]] = []
         try:
+            split_info = getattr(getattr(dataset, "info", None), "splits", None)
             if loaded_from_cache:
-                try:
-                    eval_dataset = _load_cached_dataset_for_config(config, eval_split, token)
-                    eval_dataset = _require_strict_cached_dataset(
-                        config,
-                        eval_dataset,
-                        eval_split,
-                    )
-                except Exception as error:
-                    if not _cache_artifact_fallback_allowed(config, error, "dataset"):
-                        raise
-                    status_callback(
-                        "Cached eval split unavailable; reloading train and eval from the Hub..."
-                    )
-                    remote_train = load_remote(train_split)
-                    remote_eval = load_remote(eval_split)
-                    dataset = remote_train
-                    eval_dataset = remote_eval
-                    loaded_from_cache = False
+                available_splits = list(split_info or ())
             else:
-                eval_dataset = load_remote(eval_split)
+                from datasets import get_dataset_split_names
+
+                split_kwargs = {"path": hf_dataset}
+                if subset:
+                    split_kwargs["config_name"] = subset
+                if revision:
+                    split_kwargs["revision"] = revision
+                if token:
+                    split_kwargs["token"] = token
+                available_splits = get_dataset_split_names(**split_kwargs)
+
+            excluded_split = train_split.partition("[")[0].strip()
+            for candidate in EVAL_SPLIT_CANDIDATES:
+                if candidate not in available_splits or candidate == excluded_split:
+                    continue
+                try:
+                    if loaded_from_cache:
+                        candidate_dataset = _load_cached_dataset_for_config(
+                            config,
+                            candidate,
+                            token,
+                        )
+                        candidate_dataset = _require_strict_cached_dataset(
+                            config,
+                            candidate_dataset,
+                            candidate,
+                        )
+                    else:
+                        candidate_dataset = load_remote(candidate)
+                except Exception as error:
+                    if require_exact:
+                        raise
+                    auto_errors.append((candidate, error))
+                    continue
+                if len(candidate_dataset) >= MIN_EVAL_ROWS:
+                    eval_dataset = candidate_dataset
+                    break
         except Exception as error:
-            if config.get("require_exact_resume_resources") or config.get(
-                "require_exact_dataset_resource"
-            ):
+            if require_exact:
                 raise
-            status_callback(f"Eval split load failed: {error}")
-            eval_dataset = None
+            warn(
+                "Automatic eval split detection failed; a held-out split will be created "
+                f"from the training data when enough rows are available: {error}"
+            )
+        else:
+            if eval_dataset is None and auto_errors:
+                candidate, error = auto_errors[0]
+                warn(
+                    f"Automatic eval split '{candidate}' could not be loaded; a held-out "
+                    "split will be created from the training data when enough rows are "
+                    f"available: {error}"
+                )
 
     from core.training.provenance import (
         attest_loaded_dataset,
@@ -392,11 +506,20 @@ def _load_embedding_hf_dataset(
     if _dataset_local_files_only(config):
         status_callback(f"Loading cached dataset: {hf_dataset}")
         try:
-            dataset = _load_cached_dataset_for_config(
-                config,
-                train_split,
-                token,
-            )
+            row_limit = _cached_dataset_row_limit(config)
+            if row_limit is None:
+                dataset = _load_cached_dataset_for_config(
+                    config,
+                    train_split,
+                    token,
+                )
+            else:
+                dataset = _load_cached_dataset_for_config(
+                    config,
+                    train_split,
+                    token,
+                    row_limit = row_limit,
+                )
             dataset = _require_strict_cached_dataset(
                 config,
                 dataset,
@@ -2146,6 +2269,19 @@ def _run_mlx_training(event_queue, stop_queue, config):
             random_state = model_random_state,
         )
 
+    from utils.models.model_identity import restore_hf_cache_repo_identity
+
+    restored_repo_id = restore_hf_cache_repo_identity(
+        model,
+        model_load_name,
+        expected_repo_id = config.get("actual_model_repo_id") or model_name,
+    )
+    if restored_repo_id:
+        logger.info(
+            "Restored Hub model identity for saved MLX adapter metadata: %s",
+            restored_repo_id,
+        )
+
     loaded_model_for_provenance = model
     is_vlm = bool(is_dataset_image and getattr(model, "_is_vlm_model", False))
     model._is_vlm_model = is_vlm
@@ -2250,6 +2386,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             hf_token,
             load_dataset,
             lambda message: _send("status", status_message = message),
+            lambda message: _send("warning", message = message),
         )
         dataset = _slice(dataset)
     elif config.get("local_datasets"):
@@ -2288,7 +2425,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
     )
 
     # Eval dataset (separate split or local file)
-    if not hf_dataset and config.get("local_eval_datasets"):
+    from core.training.eval_dataset import evaluation_enabled
+
+    eval_enabled = evaluation_enabled(config.get("eval_steps"))
+    if eval_enabled and not hf_dataset and config.get("local_eval_datasets"):
         eval_dataset = _load_local(config["local_eval_datasets"])
 
     # ── 3b. Format dataset (VLM or text) ──
@@ -2378,6 +2518,25 @@ def _run_mlx_training(event_queue, stop_queue, config):
     except ImportError:
         _send("status", status_message = "Format helper unavailable, using raw dataset")
 
+    if eval_enabled and eval_dataset is None:
+        from core.training.eval_dataset import (
+            MIN_TOTAL_ROWS_FOR_EVAL,
+            split_dataset_for_evaluation,
+        )
+
+        split_result = split_dataset_for_evaluation(dataset)
+        if split_result is None:
+            _send(
+                "warning",
+                message = (
+                    f"Evaluation is enabled, but the training dataset has only {len(dataset)} "
+                    f"rows; at least {MIN_TOTAL_ROWS_FOR_EVAL} are required to create a "
+                    "held-out eval split. Training will continue without evaluation."
+                ),
+            )
+        else:
+            dataset, eval_dataset = split_result
+
     # ── 4. Resolve training steps ──
     max_steps = config.get("max_steps", 0) or 0
     num_epochs = config.get("num_epochs", 3)
@@ -2416,11 +2575,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
     _emit_output_dir(event_queue, output_dir)
 
     # ── 6. Create trainer ──
-    eval_steps_val = config.get("eval_steps", 0) or 0
-    if isinstance(eval_steps_val, float) and 0 < eval_steps_val < 1:
-        eval_steps_val = max(1, int(eval_steps_val * max_steps))
+    raw_eval_steps = config.get("eval_steps", 0)
+    if evaluation_enabled(raw_eval_steps):
+        eval_steps_value = float(raw_eval_steps)
     else:
-        eval_steps_val = int(eval_steps_val)
+        eval_steps_value = 0.0
+    if 0 < eval_steps_value < 1:
+        eval_steps_val = max(1, int(eval_steps_value * max_steps))
+    else:
+        eval_steps_val = int(eval_steps_value)
 
     # Per-element clipping only; trainer owns the None default. Re-validate
     # for direct worker callers (training.py normalizes the main path).
@@ -2730,10 +2893,9 @@ def run_mlx_training_process(
     stop_queue: Any,
     config: dict,
     transformers_activated: bool = False,
+    config_prevalidated: bool = False,
 ) -> None:
     """MLX worker entrypoint shared by Unsloth subprocesses and the CLI adapter."""
-    model_load_target = _resolve_cached_model_load_name(config)
-
     backend_path = str(Path(__file__).resolve().parent.parent.parent)
     if backend_path not in sys.path:
         sys.path.insert(0, backend_path)
@@ -2743,6 +2905,10 @@ def run_mlx_training_process(
     if child_should_disable_xet(config):
         os.environ["HF_HUB_DISABLE_XET"] = "1"
         os.environ["HF_HUB_ENABLE_HF_TRANSFER"] = "0"
+
+    if not config_prevalidated and not _validate_training_worker_config(config, event_queue):
+        return
+    model_load_target = _resolve_cached_model_load_name(config)
 
     if not transformers_activated:
         # Must precede detect_hardware(): its MLX stack check imports mlx_lm, hence transformers.
@@ -2918,23 +3084,11 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
 
     apply_gpu_ids(config.get("resolved_gpu_ids"), backend = config.get("device_backend"))
 
-    if not _verify_config_pins(config, event_queue):
+    if not _validate_training_worker_config(config, event_queue):
         return
 
     model_name = config["model_name"]
     model_load_target = _resolve_cached_model_load_name(config)
-
-    format_error = _untrainable_model_format_error(config)
-    if format_error:
-        event_queue.put(
-            {
-                "type": "error",
-                "error": format_error,
-                "stack": "",
-                "ts": time.time(),
-            }
-        )
-        return
 
     # ── 0. MLX FAST-PATH (must run before any torch/transformers imports) ──
     # Apple Silicon uses MLXTrainer directly -- skip torch imports / installs.
@@ -2964,6 +3118,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             stop_queue = stop_queue,
             config = config,
             transformers_activated = mlx_transformers_activated,
+            config_prevalidated = True,
         )
         return
 
@@ -3623,6 +3778,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 gpu_ids = config.get("resolved_gpu_ids"),
                 model_load_name = model_load_name,
                 local_files_only = model_local_only,
+                actual_model_repo_id = config.get("actual_model_repo_id"),
             )
             if (
                 not success
@@ -3674,6 +3830,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         gpu_ids = config.get("resolved_gpu_ids"),
                         model_load_name = model_load_name,
                         local_files_only = model_local_only,
+                        actual_model_repo_id = config.get("actual_model_repo_id"),
                     )
         finally:
             _load_watchdog_stop.set()
@@ -4036,6 +4193,8 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
     trainer reports on every log leaves the parent's last real status standing.
     """
 
+    sent_warnings: set[str] = set()
+
     def _on_progress(progress: TrainingProgress) -> None:
         has_train_loss = progress.step > 0 and progress.loss is not None
         has_eval_loss = progress.eval_loss is not None
@@ -4059,6 +4218,10 @@ def _create_trainer_progress_callback(event_queue: Any) -> Callable[[TrainingPro
             )
         if progress.status_message:
             _send_status(event_queue, progress.status_message)
+        for message in progress.warnings:
+            if message not in sent_warnings:
+                sent_warnings.add(message)
+                event_queue.put({"type": "warning", "message": message, "ts": time.time()})
 
     return _on_progress
 

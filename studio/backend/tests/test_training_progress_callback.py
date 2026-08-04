@@ -64,7 +64,7 @@ if not _TRAINER_PRE_IMPORTED:
         _stub_if_missing(_name, _attrs)
 
 from core.training.trainer import UnslothTrainer  # noqa: E402
-from core.training.training import TrainingBackend  # noqa: E402
+from core.training.training import TrainingBackend, _MLXTrainerAdapter  # noqa: E402
 from core.training.worker import (  # noqa: E402
     _create_embedding_progress_callback,
     _create_trainer_progress_callback,
@@ -173,6 +173,38 @@ def test_parent_status_advances_over_the_whole_chain():
     assert backend._progress.status_message == ACTIVE
     assert backend._progress.step == 3
     assert backend._progress.is_training is True
+
+
+def test_training_warning_is_emitted_once_and_survives_later_status_updates():
+    owner = _make_owner()
+    backend = TrainingBackend()
+    event_queue = _FakeQueue()
+    owner.add_progress_callback(_create_trainer_progress_callback(event_queue))
+
+    owner._record_warning("Evaluation fell back to a held-out training split.")
+    owner._record_warning("Evaluation fell back to a held-out training split.")
+    owner._update_progress(status_message = ACTIVE)
+    for event in event_queue.events:
+        backend._handle_event(event)
+
+    warning_events = [event for event in event_queue.events if event["type"] == "warning"]
+    assert [event["message"] for event in warning_events] == [
+        "Evaluation fell back to a held-out training split."
+    ]
+    assert backend._progress.warnings == [
+        "Evaluation fell back to a held-out training split."
+    ]
+    assert backend._progress.status_message == ACTIVE
+
+
+def test_mlx_adapter_deduplicates_warning_events():
+    adapter = _MLXTrainerAdapter()
+
+    adapter._handle_event({"type": "warning", "message": "Evaluation was disabled."})
+    adapter._handle_event({"type": "warning", "message": "Evaluation was disabled."})
+    adapter._handle_event({"type": "warning", "message": "  "})
+
+    assert adapter.training_progress.warnings == ["Evaluation was disabled."]
 
 
 @pytest.mark.parametrize(

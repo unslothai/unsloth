@@ -22,6 +22,7 @@ export interface TrainingStatusResponse {
   eval_enabled: boolean;
   message: string;
   error: string | null;
+  warnings?: string[];
   details?: {
     epoch?: number;
     step?: number;
@@ -80,6 +81,7 @@ export interface TrainingRuntimeState {
   evalEnabled: boolean;
   message: string;
   error: string | null;
+  warnings: string[];
   isHydrating: boolean;
   hasHydrated: boolean;
   isStarting: boolean;
@@ -163,6 +165,7 @@ export interface TrainingViewData {
   evalEnabled: boolean;
   message: string;
   error: string | null;
+  warnings: string[];
   isTrainingRunning: boolean;
 
   // Config summary

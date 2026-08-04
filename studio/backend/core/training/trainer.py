@@ -258,6 +258,21 @@ class UnslothTrainer:
                 except Exception as e:
                     logger.error(f"Error in progress callback: {e}")
 
+    def _record_warning(self, message: str) -> None:
+        message = str(message).strip()
+        if not message:
+            return
+        with self._lock:
+            if message in self.training_progress.warnings:
+                return
+            self.training_progress.warnings.append(message)
+            logger.warning(message)
+            for callback in self.progress_callbacks:
+                try:
+                    callback(self.training_progress)
+                except Exception as e:
+                    logger.error(f"Error in progress callback: {e}")
+
     def _create_progress_callback(self):
         """Create a TrainerCallback for progress tracking. Reused by all training branches."""
         from transformers import TrainerCallback
@@ -524,6 +539,7 @@ class UnslothTrainer:
         gpu_ids: Optional[list[int]] = None,
         model_load_name: Optional[str] = None,
         local_files_only: bool = False,
+        actual_model_repo_id: Optional[str] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit  # For training_meta.json
@@ -836,7 +852,7 @@ class UnslothTrainer:
             restored_repo_id = restore_hf_cache_repo_identity(
                 self.model,
                 lookup_name,
-                expected_repo_id = model_name,
+                expected_repo_id = actual_model_repo_id or model_name,
             )
             if restored_repo_id:
                 logger.info(
@@ -876,6 +892,7 @@ class UnslothTrainer:
                     gpu_ids = gpu_ids,
                     model_load_name = model_load_name,
                     local_files_only = local_files_only,
+                    actual_model_repo_id = actual_model_repo_id,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()
@@ -2327,16 +2344,21 @@ class UnslothTrainer:
             raw_text_mode = is_cpt or format_type == "raw"
             dataset_loaded_from_cache = False
 
-            def _load_selected_cached_dataset(split_name: Optional[str]):
+            def _load_selected_cached_dataset(
+                split_name: Optional[str],
+                *,
+                row_limit: Optional[int] = None,
+            ):
                 if not dataset_source or not dataset_local_path:
                     return None
                 from hub.utils.dataset_cache import load_cached_hf_dataset
-                return load_cached_hf_dataset(
-                    dataset_source,
-                    dataset_local_path,
-                    subset = subset,
-                    split = split_name or "train",
-                )
+                kwargs = {
+                    "subset": subset,
+                    "split": split_name or "train",
+                }
+                if row_limit is not None:
+                    kwargs["row_limit"] = row_limit
+                return load_cached_hf_dataset(dataset_source, dataset_local_path, **kwargs)
 
             def _raw_mode_label() -> str:
                 return "CPT" if is_cpt else "raw text"
@@ -2477,7 +2499,18 @@ class UnslothTrainer:
                             status_message = f"Loading cached dataset: {dataset_source}..."
                         )
                         try:
-                            dataset = _load_selected_cached_dataset(split_name)
+                            cached_row_limit = None
+                            if (
+                                not _split_has_slice
+                                and dataset_slice_end is not None
+                                and dataset_slice_end >= 0
+                                and dataset_slice_end >= _slice_start
+                            ):
+                                cached_row_limit = dataset_slice_end + 1
+                            dataset = _load_selected_cached_dataset(
+                                split_name,
+                                row_limit = cached_row_limit,
+                            )
                             if require_exact_resume_resources and dataset is None:
                                 raise FileNotFoundError(
                                     f"The exact cached dataset split '{split_name}' "
@@ -2916,8 +2949,9 @@ class UnslothTrainer:
                 raise ValueError("Cached split names and loader must be provided together")
             logger.info(f"Available splits: {available_splits}\n")
 
-            # Check for common eval split names
-            for candidate in ["eval", "validation", "valid", "val", "test"]:
+            from core.training.eval_dataset import EVAL_SPLIT_CANDIDATES, MIN_EVAL_ROWS
+
+            for candidate in EVAL_SPLIT_CANDIDATES:
                 if candidate in available_splits and candidate != excluded_split:
                     if split_loader is not None:
                         candidate_ds = split_loader(candidate)
@@ -2928,20 +2962,24 @@ class UnslothTrainer:
                         if revision:
                             eval_load_kwargs["revision"] = revision
                         candidate_ds = load_dataset(**eval_load_kwargs)
-                    if len(candidate_ds) >= 16:
+                    if len(candidate_ds) >= MIN_EVAL_ROWS:
                         logger.info(
                             f"Auto-detected eval split '{candidate}' with {len(candidate_ds)} rows\n"
                         )
                         return candidate_ds
                     else:
                         logger.info(
-                            f"Found eval split '{candidate}' but only {len(candidate_ds)} rows (< 16), skipping\n"
+                            f"Found eval split '{candidate}' but only {len(candidate_ds)} rows "
+                            f"(< {MIN_EVAL_ROWS}), skipping\n"
                         )
 
         except Exception as e:
             if strict_split_loading and split_loader is not None:
                 raise
-            logger.warning(f"Could not check dataset splits: {e}")
+            self._record_warning(
+                "Automatic eval split detection failed; a held-out split will be created "
+                f"from the training data when enough rows are available: {e}"
+            )
 
         # No separate HF eval split — caller handles programmatic splitting
         return None
@@ -2951,24 +2989,31 @@ class UnslothTrainer:
 
         Returns (train_dataset, eval_dataset), or None if too small.
         """
-        MIN_EVAL_ROWS = 16
-        MIN_TOTAL_ROWS = 32  # Need at least 16 train + 16 eval
+        from core.training.eval_dataset import (
+            MIN_TOTAL_ROWS_FOR_EVAL,
+            split_dataset_for_evaluation,
+        )
 
         n = len(dataset)
-        if n < MIN_TOTAL_ROWS:
-            logger.info(f"Dataset too small ({n} rows) for eval split, skipping eval\n")
+        split_result = split_dataset_for_evaluation(dataset)
+        if split_result is None:
+            self._record_warning(
+                f"Evaluation is enabled, but the training dataset has only {n} rows; "
+                f"at least {MIN_TOTAL_ROWS_FOR_EVAL} are required to create a held-out "
+                "eval split. Training will continue without evaluation."
+            )
             return None
 
-        eval_size = max(MIN_EVAL_ROWS, min(128, int(0.05 * n)))
-        # Don't take more than half the dataset
-        eval_size = min(eval_size, n // 2)
-
-        logger.info(f"Auto-splitting: {eval_size} rows for eval from {n} total\n")
-        split_result = dataset.train_test_split(test_size = eval_size, seed = 3407)
+        train_dataset, eval_dataset = split_result
+        eval_size = len(eval_dataset)
         logger.info(
-            f"Split complete: {len(split_result['train'])} train, {len(split_result['test'])} eval\n"
+            f"Auto-splitting: {eval_size} rows for eval from {n} total "
+            f"(minimum total: {MIN_TOTAL_ROWS_FOR_EVAL})\n"
         )
-        return (split_result["train"], split_result["test"])
+        logger.info(
+            f"Split complete: {len(train_dataset)} train, {len(eval_dataset)} eval\n"
+        )
+        return train_dataset, eval_dataset
 
     def start_training(
         self,

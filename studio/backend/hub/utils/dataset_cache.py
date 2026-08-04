@@ -5,6 +5,7 @@ import errno
 import json
 import os
 import re
+import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Any, Optional
 
@@ -24,6 +25,10 @@ from hub.utils.hf_cache_state import (
 TRAINING_DATA_EXTS = (".parquet", ".json", ".jsonl", ".csv")
 
 _RESERVED_SPLIT_TOKENS = frozenset({"train", "test", "validation", "valid", "val", "eval"})
+_BARE_SPLIT_RE = re.compile(r"^\w+(?:\.\w+)*$")
+_UNKNOWN_SPLIT_ERROR_RE = re.compile(
+    r'^Unknown split "[^"\r\n]+"\. Should be one of \[[^\]\r\n]*\]\.$'
+)
 
 
 def _canonical_path(path: Any) -> Optional[Path]:
@@ -398,6 +403,19 @@ def is_cache_artifact_error(error: BaseException | None) -> bool:
     return False
 
 
+def _is_unknown_dataset_split_error(error: BaseException | None) -> bool:
+    seen: set[int] = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, ValueError) and _UNKNOWN_SPLIT_ERROR_RE.fullmatch(
+            str(current).strip()
+        ):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def dataset_cache_fallback_allowed(
     error: BaseException | None, *, require_exact: bool, revision: Optional[str]
 ) -> bool:
@@ -409,7 +427,7 @@ def dataset_cache_fallback_allowed(
     )
     if revision and offline:
         return False
-    return is_cache_artifact_error(error)
+    return is_cache_artifact_error(error) or _is_unknown_dataset_split_error(error)
 
 
 def load_cached_hf_dataset(
@@ -419,7 +437,12 @@ def load_cached_hf_dataset(
     subset: Optional[str],
     split: str,
     token: Optional[str] = None,
+    row_limit: Optional[int] = None,
 ) -> Any:
+    if row_limit is not None and (
+        isinstance(row_limit, bool) or not isinstance(row_limit, int) or row_limit <= 0
+    ):
+        raise ValueError("row_limit must be a positive integer")
     processed = processed_dataset_cache_path(local_path, repo_id)
     snapshot = (
         None if processed is not None else dataset_snapshot_from_cache_path(local_path, repo_id)
@@ -434,8 +457,15 @@ def load_cached_hf_dataset(
     else:
         from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
+    stream_limited_snapshot = (
+        snapshot is not None
+        and row_limit is not None
+        and _BARE_SPLIT_RE.fullmatch(split) is not None
+    )
     app_cache = (
-        prepare_app_processed_dataset_cache(repo_id, snapshot) if snapshot is not None else None
+        prepare_app_processed_dataset_cache(repo_id, snapshot)
+        if snapshot is not None and not stream_limited_snapshot
+        else None
     )
     kwargs: dict[str, Any] = {
         "path": repo_id if processed is not None else str(snapshot),
@@ -450,6 +480,45 @@ def load_cached_hf_dataset(
         kwargs["name"] = subset
     if token:
         kwargs["token"] = token
+    if stream_limited_snapshot:
+        kwargs["streaming"] = True
+        with tempfile.TemporaryDirectory(prefix = "unsloth-dataset-slice-") as cache_dir:
+            kwargs["cache_dir"] = cache_dir
+            requested_split = kwargs.pop("split")
+            streams = load_dataset(**kwargs)
+            available_splits = list(streams)
+            if requested_split not in streams:
+                raise ValueError(
+                    f'Unknown split "{requested_split}". Should be one of {available_splits}.'
+                )
+            stream = streams[requested_split]
+            features = getattr(stream, "features", None)
+            info = getattr(stream, "info", None)
+            if info is not None:
+                info = info.copy()
+                if not info.splits:
+                    from datasets import SplitDict, SplitInfo
+                    info.splits = SplitDict(
+                        {name: SplitInfo(name = name) for name in available_splits}
+                    )
+            split_identity = getattr(stream, "split", None)
+            rows = list(stream.take(row_limit))
+            del stream, streams
+        from datasets import Dataset
+        schema = features or getattr(info, "features", None)
+        if not rows and schema is not None:
+            return Dataset.from_dict(
+                {name: [] for name in schema},
+                features = features,
+                info = info,
+                split = split_identity,
+            )
+        return Dataset.from_list(
+            rows,
+            features = features,
+            info = info,
+            split = split_identity,
+        )
     dataset = load_dataset(**kwargs)
     if app_cache is not None:
         mark_app_processed_dataset_cache_complete(app_cache)

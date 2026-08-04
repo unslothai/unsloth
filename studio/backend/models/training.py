@@ -678,6 +678,10 @@ class TrainingStatus(BaseModel):
     )
     message: str = Field(..., description = "Human-readable status message")
     error: Optional[str] = Field(None, description = "Error details if phase is 'error'")
+    warnings: List[str] = Field(
+        default_factory = list,
+        description = "Non-fatal warnings retained for the current training run",
+    )
     details: Optional[dict] = Field(
         None, description = "Phase-specific info, e.g. {'model_size': '8B'}"
     )

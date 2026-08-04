@@ -81,6 +81,7 @@ def restore_hf_cache_repo_identity(
         "_name_or_path",
         repo_id,
     )
+    changed = _set_standard_identity(model, "_hf_repo", repo_id) or changed
 
     peft_config = getattr(model, "peft_config", None)
     if isinstance(peft_config, Mapping):

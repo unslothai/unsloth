@@ -505,7 +505,14 @@ def test_training_status_exposes_the_current_start_request_id():
         status_start_request = lambda: start_record,
         get_start_request = lambda request_id: start_record,
         is_training_active = lambda: True,
-        trainer = SimpleNamespace(get_training_progress = lambda: None),
+        trainer = SimpleNamespace(
+            get_training_progress = lambda: SimpleNamespace(
+                status_message = "Training",
+                error = None,
+                warnings = ["Evaluation was disabled."],
+                is_completed = False,
+            )
+        ),
         eval_enabled = False,
         step_history = [],
     )
@@ -515,6 +522,7 @@ def test_training_status_exposes_the_current_start_request_id():
 
     assert status.job_id == "job_test"
     assert status.start_request_id == "start-request-123"
+    assert status.warnings == ["Evaluation was disabled."]
 
 
 # streaming rejects HF slice syntax in train_split / eval_split

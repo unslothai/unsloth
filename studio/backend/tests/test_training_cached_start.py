@@ -2299,7 +2299,97 @@ def test_worker_cached_dataset_load_requires_verified_path():
     )
 
 
-def test_worker_cached_eval_failure_reloads_remote_pair():
+def test_worker_cached_dataset_loader_forwards_row_limit():
+    from core.training import worker
+
+    with patch(
+        "hub.utils.dataset_cache.load_cached_hf_dataset",
+        return_value = {"loaded": True},
+    ) as load_cached:
+        result = worker._load_cached_dataset_for_config(
+            {
+                "hf_dataset": "org/dataset",
+                "dataset_snapshot_path": "/verified/cache",
+            },
+            "train",
+            row_limit = 33,
+        )
+
+    assert result == {"loaded": True}
+    load_cached.assert_called_once_with(
+        "org/dataset",
+        "/verified/cache",
+        subset = None,
+        split = "train",
+        token = None,
+        row_limit = 33,
+    )
+
+
+def test_shared_hf_loader_bounds_cached_train_slice():
+    from core.training import worker
+
+    cached = object()
+    config = {
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": "/verified/cache",
+        "train_split": "train",
+        "dataset_slice_start": 8,
+        "dataset_slice_end": 32,
+    }
+
+    with patch.object(
+        worker,
+        "_load_cached_dataset_for_config",
+        return_value = cached,
+    ) as load_cached:
+        dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
+            config,
+            None,
+            lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
+            lambda _message: None,
+        )
+
+    assert dataset is cached
+    assert eval_dataset is None
+    load_cached.assert_called_once_with(config, "train", None, row_limit = 33)
+
+
+def test_embedding_hf_loader_bounds_cached_train_slice():
+    from core.training import worker
+
+    cached = object()
+    config = {
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": "/verified/cache",
+        "train_split": "train",
+        "dataset_slice_start": 8,
+        "dataset_slice_end": 32,
+    }
+
+    with patch.object(
+        worker,
+        "_load_cached_dataset_for_config",
+        return_value = cached,
+    ) as load_cached:
+        dataset = worker._load_embedding_hf_dataset(
+            config,
+            lambda *_args, **_kwargs: pytest.fail("remote load must not run"),
+            lambda _message: None,
+        )
+
+    assert dataset is cached
+    load_cached.assert_called_once_with(config, "train", None, row_limit = 33)
+
+
+@pytest.mark.parametrize(
+    "cached_eval_error",
+    [
+        FileNotFoundError("validation"),
+        ValueError('Unknown split "validation". Should be one of [\'train\'].'),
+    ],
+)
+def test_worker_cached_eval_failure_reloads_remote_pair(cached_eval_error):
     from core.training import worker
 
     cached_train = object()
@@ -2313,13 +2403,14 @@ def test_worker_cached_eval_failure_reloads_remote_pair():
         "dataset_snapshot_path": "/verified/cache",
         "train_split": "train",
         "eval_split": "validation",
+        "eval_steps": 0.1,
         "subset": "english",
     }
 
     def load_cached(request_config, split, token):
         cached_calls.append(split)
         if split == "validation":
-            raise FileNotFoundError(split)
+            raise cached_eval_error
         return cached_train
 
     def load_remote(repo_id, **kwargs):
@@ -2340,6 +2431,165 @@ def test_worker_cached_eval_failure_reloads_remote_pair():
     assert remote_calls == ["train", "validation"]
     assert any("reloading train and eval" in status for status in statuses)
     assert config["_dataset_loaded_from_exact_snapshot"] is False
+
+
+def test_worker_explicit_eval_failure_is_fatal():
+    from core.training import worker
+
+    calls: list[str] = []
+    config = {
+        "hf_dataset": "org/dataset",
+        "train_split": "train",
+        "eval_split": "validation",
+        "eval_steps": 0.1,
+    }
+
+    def load_remote(_repo_id, **kwargs):
+        split = kwargs["split"]
+        calls.append(split)
+        if split == "validation":
+            raise ValueError("validation is unavailable")
+        return object()
+
+    with pytest.raises(ValueError, match = "validation is unavailable"):
+        worker._load_hf_train_and_eval_datasets(
+            config,
+            None,
+            load_remote,
+            lambda _message: None,
+        )
+
+    assert calls == ["train", "validation"]
+
+
+def test_worker_does_not_load_explicit_eval_when_evaluation_is_disabled():
+    from core.training import worker
+
+    train = object()
+    calls: list[str] = []
+    config = {
+        "hf_dataset": "org/dataset",
+        "train_split": "train",
+        "eval_split": "validation",
+        "eval_steps": 0,
+    }
+
+    def load_remote(_repo_id, **kwargs):
+        calls.append(kwargs["split"])
+        return train
+
+    dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
+        config,
+        None,
+        load_remote,
+        lambda _message: None,
+    )
+
+    assert dataset is train
+    assert eval_dataset is None
+    assert calls == ["train"]
+
+
+def test_worker_same_train_and_eval_split_defers_to_held_out_split():
+    from core.training import worker
+
+    train = object()
+    calls: list[str] = []
+    config = {
+        "hf_dataset": "org/dataset",
+        "train_split": "train",
+        "eval_split": "train",
+        "eval_steps": 0.1,
+    }
+
+    def load_remote(_repo_id, **kwargs):
+        calls.append(kwargs["split"])
+        return train
+
+    dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
+        config,
+        None,
+        load_remote,
+        lambda _message: None,
+    )
+
+    assert dataset is train
+    assert eval_dataset is None
+    assert calls == ["train"]
+
+
+def test_worker_auto_eval_load_failure_warns_and_falls_back(monkeypatch):
+    from core.training import worker
+
+    train = SimpleNamespace(info = SimpleNamespace(splits = None))
+    warnings: list[str] = []
+    config = {
+        "hf_dataset": "org/dataset",
+        "train_split": "train",
+        "eval_split": None,
+        "eval_steps": 0.1,
+    }
+    monkeypatch.setattr(
+        "datasets.get_dataset_split_names",
+        lambda **_kwargs: ["train", "validation"],
+    )
+
+    def load_remote(_repo_id, **kwargs):
+        if kwargs["split"] == "validation":
+            raise OSError("eval download failed")
+        return train
+
+    dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
+        config,
+        None,
+        load_remote,
+        lambda _message: None,
+        warnings.append,
+    )
+
+    assert dataset is train
+    assert eval_dataset is None
+    assert len(warnings) == 1
+    assert "held-out split" in warnings[0]
+    assert "eval download failed" in warnings[0]
+
+
+def test_worker_cached_auto_eval_without_split_metadata_stays_offline(monkeypatch):
+    from core.training import worker
+
+    train = SimpleNamespace(info = SimpleNamespace(splits = None))
+    cache_calls: list[str] = []
+    warnings: list[str] = []
+    config = {
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": "/verified/cache",
+        "train_split": "train",
+        "eval_split": None,
+        "eval_steps": 0.1,
+    }
+
+    def load_cached(_config, split, _token, **_kwargs):
+        cache_calls.append(split)
+        return train
+
+    monkeypatch.setattr(worker, "_load_cached_dataset_for_config", load_cached)
+    monkeypatch.setattr(
+        "datasets.get_dataset_split_names",
+        lambda **_kwargs: pytest.fail("cached auto eval must not probe the Hub"),
+    )
+
+    dataset, eval_dataset = worker._load_hf_train_and_eval_datasets(
+        config,
+        None,
+        lambda *_args, **_kwargs: pytest.fail("cached auto eval must not load remotely"),
+        lambda _message: None,
+        warnings.append,
+    )
+
+    assert dataset is train
+    assert eval_dataset is None
+    assert cache_calls == ["train"]
+    assert warnings == []
 
 
 def test_worker_model_retry_refreshes_tokenizer_before_dataset():

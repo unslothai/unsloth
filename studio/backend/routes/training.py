@@ -1532,12 +1532,15 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
             getattr(progress, "status_message", None) if progress else None
         ) or "Ready to train"
         error_message = getattr(progress, "error", None) if progress else None
+        warnings = list(getattr(progress, "warnings", ()) or ()) if progress else []
         if start_request is not None and start_request.state == "pending":
             status_message = start_request.message
             error_message = None
+            warnings = []
         elif start_request is not None and start_request.state == "rejected":
             status_message = start_request.message
             error_message = start_request.error or start_request.message
+            warnings = []
 
         trainer_stopped = getattr(backend, "_should_stop", False)
 
@@ -1598,6 +1601,7 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
             eval_enabled = backend.eval_enabled,
             message = status_message,
             error = error_message,
+            warnings = warnings,
             details = details,
             metric_history = metric_history,
         )

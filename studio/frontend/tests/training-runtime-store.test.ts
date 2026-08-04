@@ -83,3 +83,37 @@ test("requesting a stop invalidates an in-flight start lease", () => {
 
   stopped.setStopRequested(false);
 });
+
+test("training warnings survive subsequent status updates and reset for a new run", () => {
+  const runtime = useTrainingRuntimeStore.getState();
+  runtime.resetRuntime();
+
+  runtime.applyStatus({
+    job_id: "job-1",
+    phase: "training",
+    is_training_running: true,
+    eval_enabled: false,
+    message: "Training",
+    error: null,
+    warnings: [
+      " Evaluation was disabled. ",
+      "Evaluation was disabled.",
+      "",
+    ],
+  });
+  runtime.applyStatus({
+    job_id: "job-1",
+    phase: "training",
+    is_training_running: true,
+    eval_enabled: false,
+    message: "Step 2",
+    error: null,
+  });
+
+  assert.deepEqual(useTrainingRuntimeStore.getState().warnings, [
+    "Evaluation was disabled.",
+  ]);
+
+  useTrainingRuntimeStore.getState().setStartPending("job-2", "Starting");
+  assert.deepEqual(useTrainingRuntimeStore.getState().warnings, []);
+});

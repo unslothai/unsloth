@@ -308,6 +308,192 @@ def test_4bit_attestation_accepts_verified_runtime_quantization(tmp_path):
     assert resource_provenance_allows_resume({**config, **updates}) is True
 
 
+def test_mlx_native_metadata_attests_unpinned_hub_load(tmp_path):
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    model = SimpleNamespace(
+        _hf_repo = "org/model",
+        _unsloth_base_commit_hash = "model-commit",
+    )
+    config = {
+        "model_name": "org/model",
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": False,
+    }
+
+    event = build_worker_provenance_event(
+        config,
+        model,
+        model_load_target = "org/model",
+        model_load_in_4bit = False,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+    updates = normalize_worker_provenance_event(event, config)
+
+    assert event["model"]["load_mode"] == "unquantized"
+    assert updates["model_snapshot_path"] == str(model_snapshot)
+    assert resource_provenance_allows_resume({**config, **updates}) is True
+
+
+def test_mlx_runtime_4bit_metadata_attests_unpinned_hub_load(tmp_path):
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    model = SimpleNamespace(
+        _hf_repo = "org/model",
+        _unsloth_base_commit_hash = "model-commit",
+        _unsloth_quantized_source = "runtime",
+        _unsloth_quantization_policy = {"enabled": True, "bits": 4},
+    )
+    config = {
+        "model_name": "org/model",
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": True,
+    }
+
+    event = build_worker_provenance_event(
+        config,
+        model,
+        model_load_target = "org/model",
+        model_load_in_4bit = True,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+    updates = normalize_worker_provenance_event(event, config)
+
+    assert event["model"]["load_mode"] == "runtime_4bit"
+    assert updates["model_snapshot_path"] == str(model_snapshot)
+    assert resource_provenance_allows_resume({**config, **updates}) is True
+
+
+@pytest.mark.parametrize(
+    ("source", "policy"),
+    [
+        ("mlx_config", {"enabled": True, "bits": 4}),
+        ("runtime", {"enabled": False, "bits": 4}),
+        ("runtime", {"enabled": True, "bits": 8}),
+        ("runtime_dense_nf4", {"enabled": True, "bits": 4}),
+    ],
+)
+def test_mlx_runtime_4bit_attestation_requires_exact_runtime_policy(
+    tmp_path,
+    source,
+    policy,
+):
+    _model_snapshot(tmp_path, "org/model", "model-commit")
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    model = SimpleNamespace(
+        _hf_repo = "org/model",
+        _unsloth_base_commit_hash = "model-commit",
+        _unsloth_quantized_source = source,
+        _unsloth_quantization_policy = policy,
+    )
+    config = {
+        "model_name": "org/model",
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": True,
+    }
+
+    event = build_worker_provenance_event(
+        config,
+        model,
+        model_load_target = "org/model",
+        model_load_in_4bit = True,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+
+    assert event["model"]["status"] == "incomplete"
+
+
+def test_mlx_top_level_quantization_attests_prequantized_snapshot(tmp_path):
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 4, "group_size": 64}}),
+        encoding = "utf-8",
+    )
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model_snapshot),
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": True,
+    }
+
+    event = build_worker_provenance_event(
+        config,
+        SimpleNamespace(),
+        model_load_target = str(model_snapshot),
+        model_load_in_4bit = True,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+    updates = normalize_worker_provenance_event(event, config)
+
+    assert event["model"]["load_mode"] == "prequantized_4bit"
+    assert resource_provenance_allows_resume({**config, **updates}) is True
+
+
+def test_mlx_top_level_8bit_quantization_does_not_attest_as_4bit(tmp_path):
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps({"quantization": {"bits": 8, "group_size": 64}}),
+        encoding = "utf-8",
+    )
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model_snapshot),
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": True,
+    }
+
+    event = build_worker_provenance_event(
+        config,
+        SimpleNamespace(),
+        model_load_target = str(model_snapshot),
+        model_load_in_4bit = True,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+
+    assert event["model"]["status"] == "incomplete"
+
+
+def test_mlx_conflicting_quantization_widths_do_not_attest_as_4bit(tmp_path):
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    (model_snapshot / "config.json").write_text(
+        json.dumps(
+            {
+                "quantization": {
+                    "bits": 8,
+                    "group_size": 64,
+                    "overrides": {"decoder.layers.0": {"bits": 4}},
+                }
+            }
+        ),
+        encoding = "utf-8",
+    )
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": str(model_snapshot),
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": True,
+    }
+
+    event = build_worker_provenance_event(
+        config,
+        SimpleNamespace(),
+        model_load_target = str(model_snapshot),
+        model_load_in_4bit = True,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+
+    assert event["model"]["status"] == "incomplete"
+
+
 def test_config_only_snapshot_cannot_attest_model_weights(tmp_path):
     _model_snapshot(tmp_path, "org/model", "config-only", weights = False)
     dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")

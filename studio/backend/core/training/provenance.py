@@ -134,7 +134,32 @@ def _snapshot_declares_quantization(snapshot: Path) -> bool:
         parsed = json.loads((snapshot / "config.json").read_text(encoding = "utf-8"))
     except (OSError, ValueError):
         return False
-    return isinstance(parsed, dict) and bool(parsed.get("quantization_config"))
+    if not isinstance(parsed, dict):
+        return False
+    queue = [parsed.get("quantization_config"), parsed.get("quantization")]
+    found_4bit = False
+    conflicting_width = False
+    while queue:
+        current = queue.pop()
+        if isinstance(current, dict):
+            if current.get("load_in_4bit") is True:
+                found_4bit = True
+            if current.get("load_in_8bit") is True:
+                conflicting_width = True
+            for key in ("bits", "nbits", "q_bits"):
+                width = current.get(key)
+                if isinstance(width, str) and width.strip().isdigit():
+                    width = int(width.strip())
+                if isinstance(width, bool) or not isinstance(width, int):
+                    continue
+                if width == 4:
+                    found_4bit = True
+                else:
+                    conflicting_width = True
+            queue.extend(current.values())
+        elif isinstance(current, (list, tuple)):
+            queue.extend(current)
+    return found_4bit and not conflicting_width
 
 
 def _resolved_model_snapshot_file(snapshot: Path, path: Path) -> Optional[Path]:
@@ -509,20 +534,36 @@ def _loaded_model_is_4bit(model: Any) -> bool:
                 return True
         elif _object_value(quantization, "load_in_4bit") is True:
             return True
+        if _object_value(current, "_unsloth_quantized_source") == "runtime":
+            policy = _object_value(current, "_unsloth_quantization_policy")
+            if (
+                _object_value(policy, "enabled") is True
+                and _object_value(policy, "bits") == 4
+            ):
+                return True
     return False
 
 
 def _loaded_model_refs(model: Any) -> set[tuple[str, str]]:
     refs: set[tuple[str, str]] = set()
     for current in _loaded_model_objects(model):
-        repo_id = _normalized_repo_id(
-            _object_value(current, "_name_or_path") or _object_value(current, "name_or_path")
+        candidates = (
+            (
+                _object_value(current, "_hf_repo"),
+                _object_value(current, "_unsloth_base_commit_hash"),
+            ),
+            (
+                _object_value(current, "_name_or_path")
+                or _object_value(current, "name_or_path"),
+                _object_value(current, "_commit_hash")
+                or _object_value(current, "commit_hash"),
+            ),
         )
-        commit = _normalized_commit(
-            _object_value(current, "_commit_hash") or _object_value(current, "commit_hash")
-        )
-        if repo_id is not None and commit is not None:
-            refs.add((repo_id, commit))
+        for repo_value, commit_value in candidates:
+            repo_id = _normalized_repo_id(repo_value)
+            commit = _normalized_commit(commit_value)
+            if repo_id is not None and commit is not None:
+                refs.add((repo_id, commit))
     return refs
 
 

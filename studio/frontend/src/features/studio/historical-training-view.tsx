@@ -92,6 +92,7 @@ function mapToViewData(
             ? t("studio.history.message.running")
             : (run.error_message ?? t("studio.history.message.errored")),
     error: run.status === "error" ? run.error_message : null,
+    warnings: [],
     isTrainingRunning: false,
     modelName: run.display_name ?? run.model_name,
     projectName: run.project_name,

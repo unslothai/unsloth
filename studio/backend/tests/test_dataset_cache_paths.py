@@ -170,7 +170,231 @@ def test_cached_snapshot_load_preserves_hf_subset_and_split(monkeypatch, tmp_pat
     assert calls[0]["cache_dir"].startswith(
         str(tmp_path / "app-cache" / "hf-datasets" / "snapshot-loads")
     )
+    assert "streaming" not in calls[0]
     assert "data_files" not in calls[0]
+
+
+def test_cached_snapshot_row_limit_streams_without_processed_cache(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    repo_root, snapshot = _dataset_repo(tmp_path, repo_id)
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    calls: list[dict] = []
+    take_limits: list[int] = []
+    materialized: list[tuple[list[dict], object, object, object]] = []
+    features = object()
+    split_identity = object()
+
+    class SplitInfo:
+        def __init__(self, *, name):
+            self.name = name
+
+    class SplitDict(dict):
+        pass
+
+    copied_info = types.SimpleNamespace(splits = None)
+
+    class DownloadConfig:
+        def __init__(self, *, local_files_only):
+            self.local_files_only = local_files_only
+
+    class Stream:
+        def __init__(self):
+            self.features = features
+            self.info = types.SimpleNamespace(copy = lambda: copied_info)
+            self.split = split_identity
+
+        def take(self, limit):
+            take_limits.append(limit)
+            return iter([{"text": "one"}, {"text": "two"}, {"text": "three"}][:limit])
+
+    class Dataset:
+        @classmethod
+        def from_list(
+            cls,
+            rows,
+            *,
+            features = None,
+            info = None,
+            split = None,
+        ):
+            materialized.append((rows, features, info, split))
+            return {"rows": rows}
+
+    def load_dataset(**kwargs):
+        assert Path(kwargs["cache_dir"]).is_dir()
+        calls.append(kwargs)
+        return {"train": Stream(), "validation": object()}
+
+    module = types.ModuleType("datasets")
+    module.Dataset = Dataset
+    module.DownloadConfig = DownloadConfig
+    module.SplitDict = SplitDict
+    module.SplitInfo = SplitInfo
+    module.load_dataset = load_dataset
+    monkeypatch.setitem(sys.modules, "datasets", module)
+    monkeypatch.setattr(
+        dataset_cache,
+        "prepare_app_processed_dataset_cache",
+        lambda *_args, **_kwargs: pytest.fail(
+            "bounded snapshot loads must not prepare Arrow cache"
+        ),
+    )
+
+    result = dataset_cache.load_cached_hf_dataset(
+        repo_id,
+        str(repo_root),
+        subset = "english",
+        split = "train",
+        token = "hf_test",
+        row_limit = 2,
+    )
+
+    assert result == {"rows": [{"text": "one"}, {"text": "two"}]}
+    assert take_limits == [2]
+    assert materialized == [
+        ([{"text": "one"}, {"text": "two"}], features, copied_info, split_identity)
+    ]
+    assert calls[0]["path"] == str(snapshot.resolve())
+    assert calls[0]["name"] == "english"
+    assert "split" not in calls[0]
+    assert calls[0]["token"] == "hf_test"
+    assert calls[0]["streaming"] is True
+    assert calls[0]["download_config"].local_files_only is True
+    assert not Path(calls[0]["cache_dir"]).exists()
+    assert list(copied_info.splits) == ["train", "validation"]
+    assert copied_info.splits["train"].name == "train"
+    assert not (tmp_path / "app-cache").exists()
+
+
+def test_cached_snapshot_row_limit_preserves_empty_stream_schema(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    repo_root, snapshot = _dataset_repo(tmp_path, repo_id)
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    features = {"text": object(), "score": object()}
+    materialized: list[dict] = []
+
+    class DownloadConfig:
+        def __init__(self, *, local_files_only):
+            self.local_files_only = local_files_only
+
+    class Stream:
+        info = None
+        split = "train"
+
+        def __init__(self):
+            self.features = features
+
+        def take(self, limit):
+            return iter(())
+
+    class Dataset:
+        @classmethod
+        def from_dict(cls, mapping, **kwargs):
+            materialized.append({"mapping": mapping, **kwargs})
+            return {"rows": []}
+
+        @classmethod
+        def from_list(cls, rows, **kwargs):
+            pytest.fail("empty typed streams must use Dataset.from_dict")
+
+    module = types.ModuleType("datasets")
+    module.Dataset = Dataset
+    module.DownloadConfig = DownloadConfig
+    module.load_dataset = lambda **kwargs: {"train": Stream()}
+    monkeypatch.setitem(sys.modules, "datasets", module)
+
+    result = dataset_cache.load_cached_hf_dataset(
+        repo_id,
+        str(repo_root),
+        subset = None,
+        split = "train",
+        row_limit = 2,
+    )
+
+    assert result == {"rows": []}
+    assert materialized == [
+        {
+            "mapping": {"text": [], "score": []},
+            "features": features,
+            "info": None,
+            "split": "train",
+        }
+    ]
+
+
+def test_cached_snapshot_row_limit_keeps_bracketed_split_eager(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    repo_root, _ = _dataset_repo(tmp_path, repo_id)
+    calls = _fake_datasets(monkeypatch)
+
+    result = dataset_cache.load_cached_hf_dataset(
+        repo_id,
+        str(repo_root),
+        subset = None,
+        split = "train[:2]",
+        row_limit = 2,
+    )
+
+    assert result == {"loaded": True}
+    assert "streaming" not in calls[0]
+    assert calls[0]["cache_dir"].startswith(
+        str(tmp_path / "app-cache" / "hf-datasets" / "snapshot-loads")
+    )
+
+
+def test_cached_snapshot_row_limit_reports_missing_split_for_hub_fallback(
+    monkeypatch,
+    tmp_path,
+):
+    repo_id = "Org/Data"
+    repo_root, snapshot = _dataset_repo(tmp_path, repo_id)
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    calls: list[dict] = []
+
+    class DownloadConfig:
+        def __init__(self, *, local_files_only):
+            self.local_files_only = local_files_only
+
+    def load_dataset(**kwargs):
+        calls.append(kwargs)
+        return {"train": object()}
+
+    module = types.ModuleType("datasets")
+    module.DownloadConfig = DownloadConfig
+    module.load_dataset = load_dataset
+    monkeypatch.setitem(sys.modules, "datasets", module)
+
+    with pytest.raises(ValueError) as raised:
+        dataset_cache.load_cached_hf_dataset(
+            repo_id,
+            str(repo_root),
+            subset = None,
+            split = "validation",
+            row_limit = 2,
+        )
+
+    assert str(raised.value) == 'Unknown split "validation". Should be one of [\'train\'].'
+    assert (
+        dataset_cache.dataset_cache_fallback_allowed(
+            raised.value,
+            require_exact = False,
+            revision = "dataset-commit",
+        )
+        is True
+    )
+    assert not Path(calls[0]["cache_dir"]).exists()
+
+
+@pytest.mark.parametrize("row_limit", [0, -1, True])
+def test_cached_dataset_row_limit_must_be_positive_integer(row_limit):
+    with pytest.raises(ValueError, match = "row_limit must be a positive integer"):
+        dataset_cache.load_cached_hf_dataset(
+            "Org/Data",
+            None,
+            subset = None,
+            split = "train",
+            row_limit = row_limit,
+        )
 
 
 def _metadata_manifest(
@@ -798,6 +1022,7 @@ def test_processed_cache_load_uses_selected_cache_root(monkeypatch, tmp_path):
         str(resolved),
         subset = None,
         split = "train",
+        row_limit = 2,
     )
 
     assert resolved == processed.resolve()
@@ -806,6 +1031,7 @@ def test_processed_cache_load_uses_selected_cache_root(monkeypatch, tmp_path):
     assert calls[0]["split"] == "train"
     assert calls[0]["cache_dir"] == str(processed_root.resolve())
     assert calls[0]["download_config"].local_files_only is True
+    assert "streaming" not in calls[0]
 
 
 def test_processed_cache_is_discovered_without_selected_path(monkeypatch, tmp_path):
@@ -862,3 +1088,73 @@ def test_cache_artifact_errors_are_retryable(error):
 )
 def test_non_cache_failures_are_not_retryable(error):
     assert dataset_cache.is_cache_artifact_error(error) is False
+
+
+def test_unknown_dataset_split_error_is_dataset_fallback_only_through_exception_chain():
+    missing_split = ValueError("Unknown split \"validation\". Should be one of ['train'].")
+    wrapped = RuntimeError("cached dataset load failed")
+    wrapped.__cause__ = missing_split
+
+    assert dataset_cache.is_cache_artifact_error(wrapped) is False
+    assert (
+        dataset_cache.dataset_cache_fallback_allowed(
+            wrapped,
+            require_exact = False,
+            revision = None,
+        )
+        is True
+    )
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        'Unknown split "validation".',
+        'Unknown split "validation". Should be one of train.',
+        "Unknown split 'validation'. Should be one of ['train'].",
+    ],
+)
+def test_unknown_dataset_split_lookalikes_are_not_retryable(message):
+    error = ValueError(message)
+    assert dataset_cache.is_cache_artifact_error(error) is False
+    assert (
+        dataset_cache.dataset_cache_fallback_allowed(
+            error,
+            require_exact = False,
+            revision = None,
+        )
+        is False
+    )
+
+
+def test_unknown_dataset_split_fallback_preserves_exact_and_offline_gates(monkeypatch):
+    error = ValueError("Unknown split \"validation\". Should be one of ['train'].")
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("HF_DATASETS_OFFLINE", raising = False)
+
+    assert (
+        dataset_cache.dataset_cache_fallback_allowed(
+            error,
+            require_exact = False,
+            revision = "dataset-commit",
+        )
+        is True
+    )
+    assert (
+        dataset_cache.dataset_cache_fallback_allowed(
+            error,
+            require_exact = True,
+            revision = None,
+        )
+        is False
+    )
+
+    monkeypatch.setenv("HF_DATASETS_OFFLINE", "true")
+    assert (
+        dataset_cache.dataset_cache_fallback_allowed(
+            error,
+            require_exact = False,
+            revision = "dataset-commit",
+        )
+        is False
+    )
