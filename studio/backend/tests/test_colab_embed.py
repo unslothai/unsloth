@@ -602,9 +602,9 @@ def test_start_cloudflare_tunnel_arms_the_pending_flag(monkeypatch):
     # The preview share link waits on cloudflare_tunnel_pending; without it a
     # concurrent preview-link request steals the shared tunnel slot and stops
     # the in-flight Colab tunnel.
-    state = SimpleNamespace(cloudflare_tunnel_pending=False, cloudflare_url=None)
+    state = SimpleNamespace(cloudflare_tunnel_pending = False, cloudflare_url = None)
     main_stub = types.ModuleType("main")
-    main_stub.app = SimpleNamespace(state=state)
+    main_stub.app = SimpleNamespace(state = state)
     monkeypatch.setitem(sys.modules, "main", main_stub)
 
     seen = {}
@@ -626,9 +626,9 @@ def test_start_cloudflare_tunnel_arms_the_pending_flag(monkeypatch):
 
 
 def test_start_cloudflare_tunnel_settles_the_flag_on_failure(monkeypatch):
-    state = SimpleNamespace(cloudflare_tunnel_pending=False, cloudflare_url=None)
+    state = SimpleNamespace(cloudflare_tunnel_pending = False, cloudflare_url = None)
     main_stub = types.ModuleType("main")
-    main_stub.app = SimpleNamespace(state=state)
+    main_stub.app = SimpleNamespace(state = state)
     monkeypatch.setitem(sys.modules, "main", main_stub)
 
     def _fake_start(port):
