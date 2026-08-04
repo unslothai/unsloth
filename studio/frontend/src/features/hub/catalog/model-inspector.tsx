@@ -187,9 +187,7 @@ function StatGrid({ children }: { children: React.ReactNode }) {
 }
 
 function InspectorDownloadSlot({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="max-w-[var(--hub-download-measure)] pt-3">{children}</div>
-  );
+  return <div className="max-w-[680px] pt-3">{children}</div>;
 }
 
 function StatusChip({

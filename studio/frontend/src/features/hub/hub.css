@@ -59,10 +59,8 @@
     --hub-measure: clamp(1100px, 94%, 1760px);
     /* Split mode's detail pane: tighter, the master list takes the left. */
     --hub-measure-compact: clamp(860px, 94%, 1180px);
-    /* Model card body. Both fill the column and cap out, keeping prose lines
-       readable and the single-row download card from stretching. */
+    /* Model card readme. Fills the column, capped so prose stays readable. */
     --hub-readme-measure: 1400px;
-    --hub-download-measure: 1100px;
   }
 
   /* Filled-control surface — Hub search, Hub filter triggers, picker
