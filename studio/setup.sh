@@ -1149,14 +1149,34 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # shadowing the XPU one forever. Read the dist-info name off disk -- "triton-<ver>"
         # is the generic one; the XPU builds are pytorch_triton_xpu-* / triton_xpu-*, which
         # this glob does not match.
-        # A pin the shared classifiers actually recognise as a non-XPU family. Digit-gated like
-        # them, so a custom verbatim leaf (rocm-current, cu-private) stays UNKNOWN: those get no
-        # repair helper, so escaping on one would mean a full dependency pass every update that
-        # changes nothing.
+        # A pin the shared classifiers actually recognise as a non-XPU family. EXACT families,
+        # mirroring install.sh _is_pip_rocm_family_leaf and install_python_stack
+        # _is_cuda_family_leaf: cpu, cu<digits>, rocm<digits>[.<digits>], gfx<digit>... A merely
+        # prefixed leaf (cu128-private, rocm7.2-private) is a custom verbatim pin they call
+        # UNKNOWN and never repair, so escaping on one would mean a full dependency pass every
+        # update that changes nothing.
+        _setup_known_nonxpu_leaf() {
+            case "$1" in
+                cpu|gfx[0-9]*) return 0 ;;
+                cu[0-9]*) case "${1#cu}" in *[!0-9]*) return 1 ;; esac ;;
+                rocm[0-9]*)
+                    # Both parts non-empty all-digits: rocm7., rocm7.2.1 are custom pins.
+                    _setup_rocm_rest="${1#rocm}"
+                    case "$_setup_rocm_rest" in
+                        *.*.*) return 1 ;;
+                        *.*)
+                            case "${_setup_rocm_rest%%.*}" in *[!0-9]*) return 1 ;; esac
+                            case "${_setup_rocm_rest#*.}" in "" | *[!0-9]*) return 1 ;; esac
+                            ;;
+                        *[!0-9]*) return 1 ;;
+                    esac
+                    ;;
+                *) return 1 ;;
+            esac
+            return 0
+        }
         _setup_pin_known_nonxpu=false
-        case "$_setup_pin_leaf" in
-            cpu|cu[0-9]*|rocm[0-9]*|gfx[0-9]*) _setup_pin_known_nonxpu=true ;;
-        esac
+        _setup_known_nonxpu_leaf "$_setup_pin_leaf" && _setup_pin_known_nonxpu=true
         _setup_generic_triton=false
         if [ "$_setup_pin_is_xpu" = true ] || [ "$_setup_pin_leaf" = "xpu" ]; then
             for _setup_tri in "$VENV_DIR"/lib/python*/site-packages/triton-*.dist-info; do

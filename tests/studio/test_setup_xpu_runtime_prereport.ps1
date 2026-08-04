@@ -136,6 +136,58 @@ Check "no torch installed"      (-not (Invoke-IsXpu "C:\v" $XPU -Missing))
 Check "unreadable file"         (-not (Invoke-IsXpu "C:\v" $XPU -Throws))
 Check "no venv path"            (-not (Invoke-IsXpu "" $XPU))
 
+# --- Test-VenvTorchIsXpuSupported ------------------------------------------------------------
+# The manifest fast path asks this one, and it must answer about the WHEEL only: a supported
+# +xpu wheel on an old or wedged compute driver fails torch.xpu.is_available(), and no
+# dependency pass can repair a driver -- keying the escape on readiness re-ran a full resolution
+# on every single `studio update` and installed nothing.
+$isXpuSupFn = Get-FunctionText $setup "Test-VenvTorchIsXpuSupported"
+Check "extraction kept the range" ($isXpuSupFn -match '11')
+function Invoke-IsXpuSupported {
+    param([string] $VenvPath, [string] $VersionPyBody, [switch] $Missing, [switch] $Throws)
+    $sb = [scriptblock]::Create(@"
+param(`$Body, `$Missing, `$Throws)
+function Join-Path {
+    [CmdletBinding()] param([Parameter(Position=0)] [string] `$Path, [Parameter(Position=1)] [string] `$ChildPath)
+    if (-not `$ChildPath) { return `$Path }
+    return (`$Path.TrimEnd('\', '/') + '\' + `$ChildPath.TrimStart('\', '/'))
+}
+function Test-Path {
+    [CmdletBinding()] param([string] `$LiteralPath, [Parameter(ValueFromRemainingArguments = `$true)] `$Rest)
+    return (-not `$Missing)
+}
+function Get-Content {
+    [CmdletBinding()] param([string] `$LiteralPath, [Parameter(ValueFromRemainingArguments = `$true)] `$Rest)
+    if (`$Throws) { throw "access denied" }
+    return (`$Body -split "``n")
+}
+$isXpuSupFn
+Test-VenvTorchIsXpuSupported -VenvPath '$VenvPath'
+"@)
+    return (& $sb $VersionPyBody ([bool]$Missing) ([bool]$Throws))
+}
+
+Write-Host "flavour AND range, both off disk"
+Check "2.9.1+xpu supported"  (Invoke-IsXpuSupported "C:\v" $XPU)
+Check "2.6.0+xpu is the floor" (Invoke-IsXpuSupported "C:\v" "__version__ = '2.6.0+xpu'")
+Check "2.10.0+xpu supported" (Invoke-IsXpuSupported "C:\v" "__version__ = '2.10.0+xpu'")
+# unsloth/models/_utils.py raises at import for an XPU device below 2.6, and 2.11 is the
+# ceiling the trio is pinned under -- both are repairable by the dependency pass.
+Check "2.5.1+xpu below floor" (-not (Invoke-IsXpuSupported "C:\v" "__version__ = '2.5.1+xpu'"))
+Check "2.11.0+xpu at ceiling" (-not (Invoke-IsXpuSupported "C:\v" "__version__ = '2.11.0+xpu'"))
+Check "3.0.0+xpu above range" (-not (Invoke-IsXpuSupported "C:\v" "__version__ = '3.0.0+xpu'"))
+Check "cuda wheel"           (-not (Invoke-IsXpuSupported "C:\v" $CU))
+Check "untagged wheel"       (-not (Invoke-IsXpuSupported "C:\v" $BARE))
+Check "xpu attr but cuda wheel" (-not (Invoke-IsXpuSupported "C:\v" ($CU + "`nxpu: Optional[str] = None")))
+# A nightly is judged on its release base, exactly as setup.sh does; an unparseable label is not
+# judged at all.
+Check "dev label reads its base" (Invoke-IsXpuSupported "C:\v" "__version__ = '2.9.0.dev20260101+xpu'")
+Check "junk label"           (-not (Invoke-IsXpuSupported "C:\v" "__version__ = 'unknown'"))
+Check "no version line"      (-not (Invoke-IsXpuSupported "C:\v" "debug = False"))
+Check "no torch installed"   (-not (Invoke-IsXpuSupported "C:\v" $XPU -Missing))
+Check "unreadable file"      (-not (Invoke-IsXpuSupported "C:\v" $XPU -Throws))
+Check "no venv path"         (-not (Invoke-IsXpuSupported "" $XPU))
+
 # --- wiring ---------------------------------------------------------------------------------
 $setupText = Get-Content -Raw $setup
 Write-Host "the scan asks before the report, and only when it has to"
@@ -150,6 +202,22 @@ Check "disk read gates the probe" ($setupText -match '(?s)if \(Test-VenvTorchIsX
 $_scanLine = ($setupText -split "`n" | Select-String -Pattern '\$_probeVenv = Get-ProbableStudioVenvDir' | Select-Object -First 1).LineNumber
 $_reportLine = ($setupText -split "`n" | Select-String -Pattern 'none \(chat-only / GGUF\)' | Select-Object -First 1).LineNumber
 Check "promotion precedes the hardware report" ($_scanLine -and $_reportLine -and $_scanLine -lt $_reportLine)
+
+Write-Host "the fast-path escape judges the wheel, never the driver"
+# Anchored on the escape's own if-chain, so an edit inside it cannot move the window off the
+# code. A driver-only failure must leave the fast path intact: the pass ahead force-reinstalls
+# nothing when the flavour already matches, so clearing it costs a full resolution every update
+# and only reaches the warning Assert-XpuRuntimeReady prints anyway.
+$_fast = if ($setupText -match '(?s)(if \(\$script:IsIntelXpu -and \$SkipPythonDeps -and \$_xpuIsReachable\) \{.*?\n        \}\n)') { $Matches[1] } else { "" }
+Check "the escape was found"           ($_fast -ne "")
+Check "it reads the installed wheel"   ($_fast -match 'Test-VenvTorchIsXpuSupported -VenvPath \$VenvDir')
+Check "it clears the fast path"        ($_fast -match '\$SkipPythonDeps = \$false')
+Check "readiness does not decide it"   (-not ($_fast -match 'Test-TorchXpuAvailable'))
+# ...and no interpreter is launched here at all: the host most likely to fail this is an Arc box
+# whose compute driver stalled, where `import torch` is exactly what hangs.
+Check "it launches no interpreter"     (-not ($_fast -match 'Invoke-BoundedPythonProbe|& python'))
+# The driver warning still has to exist, on the runtime check, after the install.
+Check "the driver warning is elsewhere" ($setupText -match '(?s)function Assert-XpuRuntimeReady \{.*?Test-TorchXpuAvailable')
 
 Write-Host "a timed-out probe must not destroy a working XPU venv"
 # Bounding the flavour probe turned a hang into "rebuild", and the host most likely to time out

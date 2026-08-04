@@ -650,19 +650,6 @@ function Test-TorchXpuAvailable {
     return ($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
 }
 
-# True only when the installed torch is a +xpu wheel inside the supported range. Separate from
-# Test-TorchXpuAvailable: that answers "the runtime works", which a 2.5+xpu build can also do
-# while unsloth/models/_utils.py still raises at import. Bounded like every probe here.
-function Test-TorchXpuVersionSupported {
-    param([string]$PythonExe)
-    if (-not $PythonExe) { return $false }
-    $code = "import torch; v = getattr(torch, '__version__', '').lower(); r = v.split('+')[0].split('.'); " +
-        "n = tuple(int(x) for x in r[:2] if x.isdigit()); " +
-        "print('+xpu' in v and len(n) == 2 and (2, 6) <= n < (2, 11))"
-    $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code $code
-    return ($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
-}
-
 # Post-install XPU runtime check. A WMI name match says the part is XPU-capable, not that the
 # compute runtime works: on an old Intel driver the wheel installs fine, never initializes, and
 # unsloth/device_type.py raises NotImplementedError at import -- a hard crash, not a chat-only
@@ -778,6 +765,26 @@ function Test-VenvTorchIsXpu {
         $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
         if (-not (Test-Path -LiteralPath $verPy)) { return $false }
         return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "__version__\s*=\s*'[^']*\+xpu")
+    } catch { return $false }
+}
+
+# Same free disk read, plus the supported range: unsloth/models/_utils.py raises at import for
+# an XPU device on torch < 2.6, so flavour alone would call a 2.5+xpu venv fine, and 2.11 is the
+# ceiling the trio is pinned under. Flavour and range ONLY -- whether the runtime can reach the
+# GPU is a driver question, and no dependency pass can answer it.
+function Test-VenvTorchIsXpuSupported {
+    param([string]$VenvPath)
+    if (-not $VenvPath) { return $false }
+    try {
+        $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
+        if (-not (Test-Path -LiteralPath $verPy)) { return $false }
+        $line = @(Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop |
+            Where-Object { $_ -match "^__version__\s*=\s*'[^']*'" })[0]
+        if (-not $line -or $line -notmatch "^__version__\s*=\s*'([^']*)'") { return $false }
+        $label = $Matches[1].ToLowerInvariant()
+        if ($label -notmatch '\+xpu') { return $false }
+        if ($label -notmatch '^(\d+)\.(\d+)\b') { return $false }
+        return ([int]$Matches[1] -eq 2 -and [int]$Matches[2] -ge 6 -and [int]$Matches[2] -lt 11)
     } catch { return $false }
 }
 
@@ -3494,8 +3501,7 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         # ...and the same for an Intel Arc / Data Center GPU: without this the fast path never
         # reaches the XPU install below, so an up-to-date package on a CPU wheel stays on CPU
         # torch forever. $SkipPythonDeps is re-tested so an escape already taken above (AMD,
-        # anyio, incomplete install) does not probe twice. The probe is bounded, and a timeout
-        # reads as "not XPU" -- that costs one dependency pass, never a silent CPU venv.
+        # anyio, incomplete install) does not read twice.
         # Both escapes below exist to reach the XPU install and its two remediations, and all
         # three are gated on $XpuIndexUrl, which is only set when the resolved index leaf is
         # xpu. Where an explicit pin sends this host elsewhere, or no-torch mode means there is
@@ -3505,12 +3511,13 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
         $_pinLeafNow = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
         $_xpuIsReachable = (-not $NoTorchMode) -and ((-not $_pinLeafNow) -or ($_pinLeafNow -eq "xpu"))
         if ($script:IsIntelXpu -and $SkipPythonDeps -and $_xpuIsReachable) {
-            # Availability is not enough: unsloth/models/_utils.py raises at import for an XPU
-            # device on torch < 2.6, so a 2.5+xpu venv answers True here and is still broken.
-            # Range as well as flavour, matching the trio installed below.
-            $_torchIsXpu = (Test-TorchXpuAvailable -PythonExe "python") -and (Test-TorchXpuVersionSupported -PythonExe "python")
-            if (-not $_torchIsXpu) {
-                substep "Intel GPU detected but PyTorch XPU is unavailable -- reinstalling XPU PyTorch" "Cyan"
+            # The WHEEL, not the runtime. torch.xpu.is_available() is also false for a supported
+            # +xpu wheel on an old or wedged compute driver, and the dependency pass cannot
+            # repair a driver: it force-reinstalls nothing when the flavour already matches, so
+            # keying on it re-runs the probes and a full resolution on every single update just
+            # to reach the warning Assert-XpuRuntimeReady already prints.
+            if (-not (Test-VenvTorchIsXpuSupported -VenvPath $VenvDir)) {
+                substep "Intel GPU detected but installed PyTorch is not a supported XPU build -- reinstalling XPU PyTorch" "Cyan"
                 $SkipPythonDeps = $false
             }
         }
