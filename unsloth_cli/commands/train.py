@@ -214,7 +214,15 @@ def train(
         cleanup = getattr(trainer, "cleanup", None)
         if cleanup:
             cleanup()
-        checkpoint_dir = resolve_output_dir(str(cfg.training.output_dir))
+        # The MLX worker absolutizes output_dir against the cwd and reports the
+        # dir it actually saved to; recomputing from the config would point the
+        # export at the Studio outputs root instead.
+        final_output = getattr(final, "output_dir", None)
+        checkpoint_dir = (
+            Path(final_output)
+            if final_output
+            else resolve_output_dir(str(cfg.training.output_dir))
+        )
         out = (
             export_dir.expanduser().resolve() if export_dir is not None else checkpoint_dir / export
         )

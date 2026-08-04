@@ -179,3 +179,31 @@ def test_train_rejects_bad_export_format(cli_app, runner: CliRunner) -> None:
     assert result.exit_code == 2
     assert "Invalid --export format" in result.output
     assert calls == []
+
+
+def test_train_export_prefers_the_workers_output_dir(
+    cli_app, runner: CliRunner, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The MLX worker saves to a cwd-absolutized dir and reports it via the
+    final progress; the export must load that dir, not a recomputed one."""
+    app, calls, outputs_root = cli_app
+
+    from unsloth_cli.commands import train as train_cmd
+
+    worker_dir = tmp_path / "cwd" / "outputs"
+
+    class _MLXProgress:
+        error = None
+        output_dir = str(worker_dir)
+
+    class _MLXTrainer(_FakeTrainer):
+        def get_training_progress(self):
+            return _MLXProgress()
+
+    monkeypatch.setattr(train_cmd, "_create_cli_trainer", lambda model, token: _MLXTrainer())
+
+    result = runner.invoke(app, ["--model", "hf/tiny", "--dataset", "d", "--export", "gguf"])
+
+    assert result.exit_code == 0, f"{result.output}\n{result.exception!r}"
+    assert calls[0]["checkpoint"] == worker_dir
+    assert calls[0]["output_dir"] == worker_dir / "gguf"
