@@ -27,6 +27,11 @@ import {
 import { useTransferStats } from "@/features/chat/hooks/use-transfer-stats";
 import { formatEta, formatRate } from "@/features/chat/utils/format-transfer";
 import {
+  EMPTY_DOWNLOAD_STATE,
+  coerceCachedStateReady,
+  type DownloadState,
+} from "@/features/studio/download-state";
+import {
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
@@ -55,36 +60,6 @@ function formatCachePath(path: string): string {
   return path
     .replace(/^\/(?:home|Users)\/[^/]+/, "~")
     .replace(/^[A-Za-z]:[/\\]Users[/\\][^/\\]+/, "~");
-}
-
-type DownloadState = {
-  downloadedBytes: number;
-  totalBytes: number;
-  percent: number;
-  cachePath: string | null;
-};
-
-const EMPTY_DOWNLOAD_STATE: DownloadState = {
-  downloadedBytes: 0,
-  totalBytes: 0,
-  percent: 0,
-  cachePath: null,
-};
-
-function coerceCachedStateReady(state: DownloadState): DownloadState {
-  if (!state.cachePath) return state;
-  if (state.downloadedBytes > 0 && state.percent < 100) return state;
-  const totalBytes =
-    state.totalBytes > 0 ? state.totalBytes : state.downloadedBytes;
-  if (totalBytes <= 0) {
-    return { ...state, percent: 100 };
-  }
-  return {
-    ...state,
-    downloadedBytes: totalBytes,
-    totalBytes,
-    percent: 100,
-  };
 }
 
 type Fetcher = (repoId: string) => Promise<DownloadProgressResponse>;
@@ -133,6 +108,7 @@ function useHfDownloadProgress(
           total > 0 ? Math.min(100, Math.round(ratio * 100)) : 0;
         setState({
           downloadedBytes: downloaded,
+          completedBytes: prog.completed_bytes ?? 0,
           totalBytes: total,
           percent: pct,
           cachePath: prog.cache_path ?? null,
