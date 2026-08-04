@@ -328,3 +328,42 @@ def test_the_hook_does_not_disturb_ordinary_startup(staged):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ---- the in-process fix must not disable this one -------------------------
+
+def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp_path):
+    """_gpu_init.py calls fix_torchao_torch_symbol_skew() immediately before
+    propagate_torchao_fix_to_subprocesses(). The first installs a placeholder
+    for every missing symbol and registers the aten schema, so a gate that
+    only asked `hasattr` would read a healthy torch and stage nothing, in
+    exactly the environments vLLM's inspector child needs it."""
+    import torch.nn.functional as F
+    if all(hasattr(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS):
+        pytest.skip("this torch provides every symbol; nothing to place")
+
+    monkeypatch.setattr(IF, "importlib_version",
+                        lambda name: "0.18.0" if name == "torchao" else "0")
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    monkeypatch.delenv("PYTHONPATH", raising = False)
+    try:
+        assert IF.fix_torchao_torch_symbol_skew() is True   # the _gpu_init order
+        directory = IF.propagate_torchao_fix_to_subprocesses()
+        assert directory is not None, (
+            "staged nothing: the in-process placeholders defeated the gate")
+        assert os.path.isfile(os.path.join(directory, "sitecustomize.py"))
+        assert directory in os.environ["PYTHONPATH"].split(os.pathsep)
+    finally:
+        for name in IF._TORCHAO_TORCH_SYMBOLS:
+            if getattr(getattr(F, name, None), "__unsloth_placeholder__", False):
+                delattr(F, name)
+
+
+def test_a_placeholder_does_not_count_as_a_real_torch_symbol():
+    """The distinction the gate above turns on."""
+    import torch.nn.functional as F
+    placeholder = IF._make_torch_symbol_placeholder("ScalingType", "detail")
+    assert IF._torch_really_has(F, "scaled_dot_product_attention") is True
+    assert IF._torch_really_has(
+        type("_F", (), {"ScalingType": placeholder}), "ScalingType") is False
+    assert IF._torch_really_has(type("_F", (), {}), "ScalingType") is False

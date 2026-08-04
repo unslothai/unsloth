@@ -3648,6 +3648,20 @@ except Exception:
 '''
 
 
+def _torch_really_has(F, name):
+    """Does torch itself provide `name`, or is it a placeholder we installed?
+
+    `_gpu_init` calls `fix_torchao_torch_symbol_skew()` immediately before the
+    function below, and that call adds a placeholder for every symbol torch is
+    missing. A plain `hasattr` would therefore read as healthy in exactly the
+    environments the child fix exists for.
+    """
+    symbol = getattr(F, name, None)
+    if symbol is None:
+        return False
+    return not getattr(symbol, "__unsloth_placeholder__", False)
+
+
 def propagate_torchao_fix_to_subprocesses():
     """Make the torchao fix apply to child processes too.
 
@@ -3682,7 +3696,10 @@ def propagate_torchao_fix_to_subprocesses():
         # do. Today a torch missing the operator is also missing the functional
         # symbols (2.8 vs 2.10), so the second check never fires on its own; it
         # keeps the gate correct if that ordering ever stops holding.
-        if (all(hasattr(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
+        # Our own patches do not count as torch being new enough: the in-process
+        # fix runs first and would otherwise make this look healthy every time.
+        if (all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
+                and _aten_grouped_mm_library is None
                 and not _torch_op_is_missing("aten", "_grouped_mm")):
             return None          # this torch is new enough; nothing to do
     except Exception:
@@ -3739,18 +3756,33 @@ _TORCHAO_NF4_SENTINEL = "__unsloth_torchao_nf4_alias__"
 
 
 class _TorchaoNF4AliasLoader(importlib.abc.Loader):
-    __slots__ = ("module_name",)
+    __slots__ = ("module_name", "real_spec")
 
     def __init__(self, module_name):
         self.module_name = module_name
+        self.real_spec = None
 
     def create_module(self, spec):
         # Return the RELOCATED module itself rather than a stub with a
         # hand-copied surface. Whatever torchtune reaches for is then whatever
         # torchao actually ships, and this cannot rot as symbols are added.
-        return importlib.import_module(_TORCHAO_NF4_NEW)
+        module = importlib.import_module(_TORCHAO_NF4_NEW)
+        # module_from_spec is about to overwrite this shared object's __spec__
+        # with the old-name one (importlib/_bootstrap.py assigns __spec__
+        # unconditionally, unlike every other attribute), which would leave
+        # find_spec reporting the old name for the new module and make reload
+        # run the no-op exec_module below instead of the file.
+        self.real_spec = getattr(module, "__spec__", None)
+        return module
 
     def exec_module(self, module):
+        # Already imported, so nothing to execute. Put back the specification
+        # module_from_spec just clobbered.
+        if self.real_spec is not None:
+            try:
+                module.__spec__ = self.real_spec
+            except Exception:
+                pass
         return None
 
 

@@ -189,8 +189,11 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
     import torch.nn.functional as F
     import unsloth.import_fixes as IF
 
-    if any(hasattr(F, n) for n in _TORCHAO_TORCH_SYMBOLS):
-        pytest.skip("this torch already provides the symbols")
+    # Gate on the two symbols the line below actually imports. `any` over the
+    # whole tuple is always true, since scaled_dot_product_attention exists on
+    # every supported torch, so this test used to skip on every machine.
+    if all(hasattr(F, n) for n in ("ScalingType", "SwizzleType")):
+        pytest.skip("this torch already provides ScalingType/SwizzleType")
 
     # the line as torchao 0.18 ships it
     line = "from torch.nn.functional import ScalingType, SwizzleType"

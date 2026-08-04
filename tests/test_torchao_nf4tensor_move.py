@@ -199,3 +199,41 @@ def test_the_real_environment_is_left_alone():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_the_relocated_module_keeps_its_own_specification(tmp_path):
+    """create_module() returns the module torchao actually ships, and
+    module_from_spec then overwrites that shared object's __spec__ with the
+    alias's (importlib/_bootstrap.py assigns __spec__ unconditionally). Left
+    alone, find_spec reports the old name for the new module and reload runs
+    the alias loader's no-op exec_module instead of the file."""
+    _make_torchao(tmp_path, old = False, new = True)
+    r = _run(tmp_path, """
+        import importlib.util
+        NEW = "torchao.quantization.quantize_.workflows.nf4.nf4_tensor"
+        _if.fix_torchao_nf4tensor_move()
+        import torchao.dtypes.nf4tensor as m
+        print("SPEC", m.__spec__.name)
+        print("FINDSPEC", importlib.util.find_spec(NEW).name)
+        print("SAME", sys.modules[NEW] is m)
+    """)
+    new = "torchao.quantization.quantize_.workflows.nf4.nf4_tensor"
+    assert f"SPEC {new}" in r.stdout, (r.stdout, r.stderr[-2000:])
+    assert f"FINDSPEC {new}" in r.stdout, (r.stdout, r.stderr[-2000:])
+    assert "SAME True" in r.stdout, (r.stdout, r.stderr[-2000:])
+
+
+def test_the_mlx_branch_installs_the_alias_too():
+    """_gpu_init.py is the only other caller and the MLX branch never reaches
+    it, so on Apple Silicon xcodec2 would still die on the old path. Source
+    level, because the branch only runs when mlx is importable."""
+    import ast
+    src = (ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")
+    branch = [n for n in ast.walk(ast.parse(src))
+              if isinstance(n, ast.If)
+              and any(getattr(x, "id", None) == "_IS_MLX"
+                      for x in ast.walk(n.test))]
+    assert branch, "the _IS_MLX branch moved; this test needs updating"
+    body = ast.get_source_segment(src, branch[0])
+    assert "fix_torchao_nf4tensor_move" in body
+    assert "fix_torchao_torch_symbol_skew" in body

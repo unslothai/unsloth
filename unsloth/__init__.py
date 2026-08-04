@@ -94,6 +94,14 @@ if _IS_MLX:
     except Exception:
         pass
     try:
+        # Same reason: xcodec2 imports torchtune, which still imports the old
+        # torchao.dtypes.nf4tensor, and MLX audio work reaches both.
+        from .import_fixes import fix_torchao_nf4tensor_move as _fix_nf4
+        _fix_nf4()
+        del _fix_nf4
+    except Exception:
+        pass
+    try:
         import unsloth_zoo
     except ImportError as _e:
         raise ImportError(
