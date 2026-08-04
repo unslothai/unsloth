@@ -31,11 +31,12 @@ import {
   type DownloadJob,
   type DownloadJobProgress,
 } from "../download-manager";
-import { DownloadCancelIndicator } from "./download-cancel-indicator";
+import { DownloadStopIndicator } from "./download-cancel-indicator";
 import { TransportConflictDialog } from "./transport-conflict-dialog";
 import {
   downloadActionAriaLabel,
   downloadActionLabel,
+  downloadStopMode,
 } from "./use-download-card-state";
 
 /**
@@ -246,12 +247,13 @@ export function DownloadActionButton({
   onClick: () => void;
   className?: string;
 }) {
+  const stopMode = downloadStopMode(partialTransport);
   return (
     <button
       type="button"
       disabled={disabled}
       onClick={onClick}
-      aria-label={downloadActionAriaLabel(downloading, cancelling)}
+      aria-label={downloadActionAriaLabel(downloading, cancelling, stopMode)}
       className={cn(
         "hub-action-btn w-28",
         (loading || cancelling) && "opacity-70",
@@ -268,7 +270,7 @@ export function DownloadActionButton({
         </span>
       ) : downloading ? (
         <>
-          <DownloadCancelIndicator />
+          <DownloadStopIndicator mode={stopMode} />
           {progressPercent != null ? `${progressPercent}%` : null}
         </>
       ) : loading ? (

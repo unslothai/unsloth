@@ -73,7 +73,7 @@ import {
 } from "../lib/model-identity";
 import { useHfTokenStore } from "../stores/hf-token-store";
 import { DotTag } from "./dot-tag";
-import { DownloadCancelIndicator } from "./download-cancel-indicator";
+import { DownloadStopIndicator } from "./download-cancel-indicator";
 import {
   CardDivider,
   DeleteConfirmDialog,
@@ -1121,7 +1121,7 @@ export function GgufDownloadCard({
             </span>
           ) : downloadingThisVariant ? (
             <span className="inline-flex items-center gap-2">
-              <DownloadCancelIndicator />
+              <DownloadStopIndicator mode={downloadAction.stopMode} />
               {downloadAction.progressPercent != null
                 ? `${downloadAction.progressPercent}%`
                 : null}

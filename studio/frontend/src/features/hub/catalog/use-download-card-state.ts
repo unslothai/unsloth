@@ -3,6 +3,7 @@
 
 import type { DownloadJob } from "../download-manager";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { DownloadStopMode } from "./download-cancel-indicator";
 
 export function partialResumeLabel(transport: string | null | undefined): string {
   if (transport === "xet") return "Redownload";
@@ -10,11 +11,23 @@ export function partialResumeLabel(transport: string | null | undefined): string
   return "Retry";
 }
 
+/** Stopping an HTTP download leaves a partial to continue from, so it is a
+ * pause. Xet has to start over, so it is a cancel. Unknown assumes the costlier
+ * one rather than promising a resume that may not exist. */
+export function downloadStopMode(
+  transport: string | null | undefined,
+): DownloadStopMode {
+  return transport === "http" ? "pause" : "cancel";
+}
+
 export function downloadActionAriaLabel(
   downloading: boolean,
   cancelling: boolean,
+  stopMode: DownloadStopMode = "cancel",
 ): string | undefined {
-  return cancelling ? "Cancelling…" : downloading ? "Cancel download" : undefined;
+  if (cancelling) return "Cancelling…";
+  if (!downloading) return undefined;
+  return stopMode === "pause" ? "Pause download" : "Cancel download";
 }
 
 export function downloadActionLabel(
@@ -80,6 +93,7 @@ export function useDownloadCardState({
     starting,
     variant,
   ]);
+  const stopMode = downloadStopMode(partialTransport);
   return {
     downloading,
     cancelling,
@@ -87,8 +101,9 @@ export function useDownloadCardState({
     isPartial,
     partialTransport,
     progressPercent,
+    stopMode,
     disabled: effectiveDisabled,
-    ariaLabel: downloadActionAriaLabel(downloading, cancelling),
+    ariaLabel: downloadActionAriaLabel(downloading, cancelling, stopMode),
     downloadLabel: downloadActionLabel(isPartial, partialTransport),
     onClick,
   };
