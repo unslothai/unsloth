@@ -356,6 +356,7 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
         in source
     )
 
+
 def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     titlebar = TITLEBAR.read_text(encoding = "utf-8")
     sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
@@ -367,9 +368,7 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     assert "window.history.back()" in titlebar
     assert "window.history.forward()" in titlebar
     assert 'src="/circle-logo-small.png"' in header
-    assert header.index("<DesktopTitlebarNavigation") < header.index(
-        'src="/circle-logo-small.png"'
-    )
+    assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
 
 
 def test_visible_mac_sidebar_header_is_a_drag_region():
