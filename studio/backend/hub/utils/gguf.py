@@ -83,26 +83,53 @@ def is_mmproj_filename(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
+# Separate-file drafter kinds. dspark and dflash are the same DeepSeek V4 Flash
+# drafter: the folder it ships in and the architecture it reports.
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+
+# Directories only: mtp/ and dspark/ are always a publisher's companion folder,
+# while dflash/ is a family name a user picks for real weights.
+_DRAFTER_DIR_KINDS = ("mtp", "dspark")
+
+
 def is_mtp_drafter_path(path: str) -> bool:
-    """True for a separate-file MTP drafter (speculative head), a companion to
-    the main model rather than a selectable quant.
+    """True for a separate-file drafter, a companion to the main model rather than
+    a selectable quant: the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships
+    for llama.cpp ``-hf`` auto-discovery), the ``MTP/`` subdir copies (Gemma 4)
+    and the ``dspark/`` drafters (DeepSeek V4 Flash). Repos that bake the head
+    into the main GGUF (Qwen) have no such file, so this is False for them. Must
+    be excluded from main-model selection everywhere mmproj is.
 
-    Covers the repo-root ``mtp-*.gguf`` (the Q8_0 copy unsloth ships for
-    llama.cpp ``-hf`` auto-discovery) and the ``MTP/`` subdir copies (Gemma 4).
-    Repos that bake the head into the main GGUF (Qwen) have no such file, so
-    this is False for them. Must be excluded from main-model selection
-    everywhere mmproj is.
+    Matched by basename prefix, or by an exact parent dir for
+    ``_DRAFTER_DIR_KINDS``; never a substring, since the kind names double as
+    family names, so ``Qwen3.6-27B-MTP-Q4_K_M.gguf`` and
+    ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` ARE the model.
 
-    CANONICAL COPY. Layering keeps two mirrors that must change in lockstep:
-    utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import
-    hub) and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core
-    avoids hub imports; bundles the mmproj check).
+    CANONICAL COPY. Two mirrors must change in lockstep:
+    utils/models/model_config.py ``_is_mtp_drafter`` (utils cannot import hub)
+    and core/inference/llama_cpp.py ``_is_companion_gguf_path`` (core avoids hub
+    imports; bundles the mmproj check).
     """
-    p = path.lower()
+    p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
-    name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    parts = [segment for segment in p.split("/") if segment]
+    name, parents = parts[-1], parts[:-1]
+    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS) or any(
+        kind in parents for kind in _DRAFTER_DIR_KINDS
+    )
+
+
+def is_mtp_only_drafter_path(path: str) -> bool:
+    """MTP drafters only, for the delete path rather than selection. Studio fetches
+    the root ``mtp-*.gguf`` with every variant, so a variant delete may reclaim it.
+    DSpark and DFlash are opt-in and in no variant plan, so sweeping them up would
+    destroy a file Studio never downloaded."""
+    p = path.replace("\\", "/").lower()
+    if not p.endswith(".gguf"):
+        return False
+    parts = [segment for segment in p.split("/") if segment]
+    return parts[-1].startswith("mtp-") or "mtp" in parts[:-1]
 
 
 def is_gguf_filename(filename: str) -> bool:

@@ -9,7 +9,7 @@ import { Switch } from "@/components/ui/switch";
 import { useApiMonitorOverlayStore } from "@/features/api-monitor/overlay-store";
 import { getApiMonitor } from "@/features/chat/api/chat-api";
 import type { ApiMonitorResponse } from "@/features/chat/types/api";
-import { cn } from "@/lib/utils";
+import { useLocale, useT } from "@/i18n";
 import { ActivityIcon, ArrowRight02Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useNavigate } from "@tanstack/react-router";
@@ -18,6 +18,8 @@ import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 export function MonitorLink(): ReactElement {
   const navigate = useNavigate();
+  const locale = useLocale();
+  const t = useT();
   const [data, setData] = useState<ApiMonitorResponse | null>(null);
   const autoOpen = useApiMonitorOverlayStore((s) => s.autoOpen);
   const setAutoOpen = useApiMonitorOverlayStore((s) => s.setAutoOpen);
@@ -60,20 +62,24 @@ export function MonitorLink(): ReactElement {
         </span>
         <span className="flex min-w-0 flex-col">
           <span className="text-sm font-semibold text-foreground">
-            API monitor
+            {t("settings.resources.liveMonitor.apiTitle")}
           </span>
           <span className="truncate text-xs text-muted-foreground">
             {data == null
-              ? "Live requests, errors and token usage"
-              : `${active.toLocaleString()} active · ${recent.toLocaleString()} recent · ${
-                  data.active_model ?? "no model loaded"
-                }`}
+              ? t("settings.resources.liveMonitor.summary")
+              : t("settings.resources.liveMonitor.status", {
+                  active: active.toLocaleString(locale),
+                  recent: recent.toLocaleString(locale),
+                  model:
+                    data.active_model ??
+                    t("settings.resources.liveMonitor.noModelLoaded"),
+                })}
           </span>
         </span>
         <HugeiconsIcon
           icon={ArrowRight02Icon}
           strokeWidth={1.75}
-          className={cn("ml-auto size-4 shrink-0 text-muted-foreground")}
+          className="ml-auto size-4 shrink-0 text-muted-foreground"
         />
       </button>
 
@@ -81,16 +87,16 @@ export function MonitorLink(): ReactElement {
       <div className="flex items-center justify-between gap-3 rounded-lg px-1 py-1">
         <span className="flex min-w-0 flex-col">
           <span className="text-sm text-foreground">
-            Show the floating monitor automatically
+            {t("settings.resources.liveMonitor.autoOpen")}
           </span>
           <span className="text-xs text-muted-foreground">
-            Opens a small panel when API traffic arrives.
+            {t("settings.resources.liveMonitor.autoOpenDescription")}
           </span>
         </span>
         <Switch
           checked={autoOpen}
           onCheckedChange={setAutoOpen}
-          aria-label="Show the floating API monitor automatically"
+          aria-label={t("settings.resources.liveMonitor.autoOpen")}
         />
       </div>
     </div>
