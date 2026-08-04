@@ -63,9 +63,7 @@ class TestQueryAllowlist:
 
     def test_duplicate_scalars_are_rejected(self):
         with pytest.raises(discovery.DiscoveryQueryError):
-            discovery.build_discovery_query(
-                _Params([("search", "a"), ("search", "b")])
-            )
+            discovery.build_discovery_query(_Params([("search", "a"), ("search", "b")]))
 
     def test_repeated_filters_are_bounded(self):
         items = [("filter", f"tag-{i}") for i in range(discovery._MAX_REPEATED_VALUES + 1)]
@@ -113,9 +111,7 @@ class TestDestinationIsServerControlled:
 
 class TestUpstreamFailureMapping:
     def test_upstream_401_is_not_surfaced_as_401(self, monkeypatch):
-        monkeypatch.setattr(
-            discovery, "_fetch_upstream", lambda url, token: (401, b"", "")
-        )
+        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (401, b"", ""))
         with pytest.raises(HTTPException) as excinfo:
             _call([("search", "gemma")])
         assert excinfo.value.status_code != 401, (
@@ -125,34 +121,26 @@ class TestUpstreamFailureMapping:
         assert excinfo.value.status_code == discovery._UPSTREAM_AUTH_STATUS
 
     def test_upstream_403_is_not_surfaced_as_403(self, monkeypatch):
-        monkeypatch.setattr(
-            discovery, "_fetch_upstream", lambda url, token: (403, b"", "")
-        )
+        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (403, b"", ""))
         with pytest.raises(HTTPException) as excinfo:
             _call([("search", "gemma")])
         assert excinfo.value.status_code == discovery._UPSTREAM_AUTH_STATUS
 
     def test_redirects_are_refused_not_followed(self, monkeypatch):
-        monkeypatch.setattr(
-            discovery, "_fetch_upstream", lambda url, token: (302, b"", "")
-        )
+        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (302, b"", ""))
         with pytest.raises(HTTPException) as excinfo:
             _call([("search", "gemma")])
         assert excinfo.value.status_code == 502
         assert "redirect" in str(excinfo.value.detail).lower()
 
     def test_upstream_5xx_becomes_502(self, monkeypatch):
-        monkeypatch.setattr(
-            discovery, "_fetch_upstream", lambda url, token: (503, b"", "")
-        )
+        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (503, b"", ""))
         with pytest.raises(HTTPException) as excinfo:
             _call([("search", "gemma")])
         assert excinfo.value.status_code == 502
 
     def test_malformed_json_becomes_502(self, monkeypatch):
-        monkeypatch.setattr(
-            discovery, "_fetch_upstream", lambda url, token: (200, b"not json", "")
-        )
+        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (200, b"not json", ""))
         with pytest.raises(HTTPException) as excinfo:
             _call([("search", "gemma")])
         assert excinfo.value.status_code == 502
@@ -178,7 +166,7 @@ class TestTokenHandling:
     def test_token_is_never_echoed_in_a_success(self, monkeypatch):
         secret = "hf_averysecrettokenvalue"
         monkeypatch.setattr(
-            discovery, "_fetch_upstream", lambda url, token: (200, b'[{"id":"a"}]', '')
+            discovery, "_fetch_upstream", lambda url, token: (200, b'[{"id":"a"}]', "")
         )
         response = _call([("search", "gemma")], hf_token = secret)
         assert secret not in response.body.decode("utf-8")
@@ -212,9 +200,7 @@ class TestPaginationLink:
     def test_next_link_is_rewritten_onto_this_route(self, monkeypatch):
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
         header = '<https://huggingface.co/api/models?search=gemma&limit=100>; rel="next"'
-        rewritten = discovery.rewrite_next_link(
-            "models", discovery.parse_next_link(header)
-        )
+        rewritten = discovery.rewrite_next_link("models", discovery.parse_next_link(header))
         assert rewritten is not None
         assert rewritten.startswith("/api/hub/discovery/models?")
         assert "huggingface.co" not in rewritten
@@ -223,17 +209,13 @@ class TestPaginationLink:
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
         header = '<https://evil.example/api/models?search=x>; rel="next"'
         assert (
-            discovery.rewrite_next_link("models", discovery.parse_next_link(header))
-            is None
+            discovery.rewrite_next_link("models", discovery.parse_next_link(header)) is None
         ), "an off-endpoint next link must never be followed or handed onward"
 
     def test_next_link_with_a_rejected_param_is_dropped(self, monkeypatch):
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
         header = '<https://huggingface.co/api/models?url=http://127.0.0.1>; rel="next"'
-        assert (
-            discovery.rewrite_next_link("models", discovery.parse_next_link(header))
-            is None
-        )
+        assert discovery.rewrite_next_link("models", discovery.parse_next_link(header)) is None
 
     def test_response_carries_the_rewritten_link(self, monkeypatch):
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
@@ -251,9 +233,6 @@ class TestPaginationLink:
         assert link is not None and "/api/hub/discovery/models" in link
 
     def test_no_upstream_link_means_no_header(self, monkeypatch):
-        monkeypatch.setattr(
-            discovery, "_fetch_upstream", lambda url, token: (200, b"[]", "")
-        )
+        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (200, b"[]", ""))
         response = _call([("search", "gemma")])
         assert (response.headers.get("link") or response.headers.get("Link")) is None
-
