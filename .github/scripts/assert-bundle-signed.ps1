@@ -1,6 +1,5 @@
-# Fail if any executable inside a Windows bundle is unsigned, reporting every
-# offender: NSIS extracts its plugin DLLs to $PLUGINSDIR and runs them there, so
-# signing the installer says nothing about what it drops on disk.
+# Fail if any executable inside a Windows bundle is unsigned. NSIS runs its
+# plugin DLLs from $PLUGINSDIR, so a signed installer proves nothing about them.
 
 param(
     # Bundles to unpack; every PE inside is verified.
@@ -12,10 +11,8 @@ param(
 )
 
 $ErrorActionPreference = 'Continue'
-# .ps1/.psm1 are here on purpose: install.ps1 ships as a bundle resource and is
-# what the app executes on first run, so it is as much "what the installer drops
-# on disk" as any DLL. Authenticode covers scripts and Smart App Control checks
-# them.
+# .ps1/.psm1 included: install.ps1 ships as a bundle resource and runs on first
+# launch. Authenticode covers scripts, and Smart App Control checks them.
 $exeExtensions = @('.exe', '.dll', '.sys', '.ocx', '.cpl', '.scr', '.ps1', '.psm1')
 
 $unsigned = @()
@@ -54,8 +51,7 @@ foreach ($bundle in $Path) {
 
     $inner = Get-ChildItem $dest -Recurse -File |
         Where-Object { $exeExtensions -contains $_.Extension.ToLower() }
-    # No hits means 7-Zip dumped PE sections instead of the payload, not that
-    # the payload is clean.
+    # No hits means 7-Zip dumped PE sections, not that the payload is clean.
     if (-not $inner) {
         Write-Host "::error::no executable payload found inside $name; contents not verified"
         exit 1
@@ -69,8 +65,7 @@ foreach ($bundle in $Path) {
         } elseif ($Allow -contains $f.Name) {
             Write-Host ("  ALLOWED   {0}  ({1}) - explicitly accepted as unsigned" -f $f.Name, $s.Status)
         } else {
-            # "no signature" and "chain not built" both report UnknownError;
-            # only StatusMessage tells them apart.
+            # UnknownError = no signature or unbuilt chain; StatusMessage tells which.
             Write-Host ("  UNSIGNED  {0}  ({1})  {2}" -f $f.Name, $s.Status, $s.StatusMessage)
             $unsigned += [pscustomobject]@{ Bundle = $name; File = $f.Name; Status = [string]$s.Status }
         }

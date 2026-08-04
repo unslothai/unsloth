@@ -23,12 +23,10 @@ ManifestDPIAwareness PerMonitorV2
   SetCompressor /SOLID "{{compression}}"
 !endif
 
-; Signed NSIS plugins. tauri-bundler signs a copy of the plugins and exports its
-; path as NSISPLUGINS, but no template consumes it, so only nsis_tauri_utils.dll
-; (via ADDITIONALPLUGINSPATH) ships signed while NSISdl/System/StartMenu/nsDialogs
-; do not, and unsigned DLLs run from $PLUGINSDIR trigger AV false positives.
-; Must precede any plugin use, else the copy conflicts with an already packed
-; default. A missing directory is a silent no-op, so unsigned builds still work.
+; Signed NSIS plugins. tauri-bundler signs a copy and exports NSISPLUGINS, but no
+; template consumes it, so only nsis_tauri_utils.dll ships signed and the rest
+; (NSISdl/System/StartMenu/nsDialogs) run unsigned from $PLUGINSDIR, tripping AV.
+; Must precede any plugin use; a missing directory is a silent no-op.
 !addplugindir "$%NSISPLUGINS%\x86-unicode"
 
 !include MUI2.nsh

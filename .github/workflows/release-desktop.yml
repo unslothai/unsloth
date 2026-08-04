@@ -814,10 +814,9 @@ jobs:
             "$dmg_path"
 
       # ── Windows: build + sign ──
-      # install.ps1 is a bundle resource, so the bundler never signs it, yet it
-      # is the first thing the app runs after install. Sign it before the build
-      # packs it in. The signature is an appended comment block, so the repo copy
-      # served for `irm ... | iex` is unaffected.
+      # install.ps1 is a bundle resource the bundler never signs, yet the app
+      # runs it first. Sign before the build packs it in; the signature is an
+      # appended comment block, so the repo copy for `irm ... | iex` is unaffected.
       - name: Sign the bundled install script
         if: matrix.platform == 'windows-latest'
         shell: pwsh
@@ -1051,8 +1050,7 @@ jobs:
           retention-days: 7
 
       # ── Windows: every executable in the bundle must be signed ──
-      # NSIS runs its plugin DLLs from $PLUGINSDIR, which a signed installer
-      # says nothing about.
+      # NSIS runs its plugin DLLs from $PLUGINSDIR; signing the installer misses them.
       - name: Verify every executable in the Windows bundles is signed
         if: matrix.platform == 'windows-latest'
         shell: pwsh
