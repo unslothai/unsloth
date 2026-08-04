@@ -5862,7 +5862,4 @@ def test_hub_gguf_files_filters_root_big_endian_only(monkeypatch):
         "urlopen",
         lambda request, timeout: io.BytesIO(json.dumps(payload).encode()),
     )
-    assert start._hub_gguf_files("owner/be-pack") == [
-        "quants/model-be.gguf",
-        "model-belle.gguf",
-    ]
+    assert start._hub_gguf_files("owner/be-pack") == ["quants/model-be.gguf", "model-belle.gguf"]
