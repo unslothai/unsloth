@@ -32,7 +32,13 @@ export async function cancelExternalJob(key: string): Promise<void> {
   const job = externalJobs.get(key);
   if (!job) return;
   patchJob(key, { state: "cancelling" });
-  await job.cancel();
+  try {
+    await job.cancel();
+  } catch {
+    // The transfer is still running and progress updates do not reset state,
+    // so put the row back rather than leaving it stuck on "cancelling".
+    if (externalJobs.has(key)) patchJob(key, { state: "running" });
+  }
 }
 
 /** Register a job and show it in the panel. Re-registering keeps the row. */

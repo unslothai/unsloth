@@ -427,8 +427,10 @@ class MtmdSttSidecar:
                 # down next to a loaded chat model.
                 "--parallel",
                 "1",
+                # Keep off the accelerator during training (as whisper.cpp does)
+                # so a dictation load cannot reclaim VRAM training just freed.
                 "-ngl",
-                "99",
+                "0" if _training_active() else "99",
             ]
             sock.close()
             process = subprocess.Popen(
@@ -496,14 +498,17 @@ class MtmdSttSidecar:
         self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio)
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
+        self.load(model_id)
         with self._lock:
-            try:
-                self.load(model_id)
-                port = self._port
-                if port is None:
-                    raise SttUnavailableError("The dictation server is not running.")
-                text = self._post_transcribe(port, model_id, wav_bytes)
-            finally:
+            port = self._port
+        if port is None:
+            raise SttUnavailableError("The dictation server is not running.")
+        try:
+            # Outside the lock: a held lock would block unload, including the
+            # one a training run performs, for the whole request timeout.
+            text = self._post_transcribe(port, model_id, wav_bytes)
+        finally:
+            with self._lock:
                 self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
         return {

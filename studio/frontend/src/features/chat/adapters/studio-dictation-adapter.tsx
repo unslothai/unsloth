@@ -132,9 +132,17 @@ async function offerLocalDictation(): Promise<void> {
   const { sttModel, setDictationEngine } = useVoiceSettingsStore.getState();
   try {
     const status = await fetchSttStatus(undefined, sttModel);
-    if (
-      sttEngineStatusFor(status, sttModel)?.downloaded_models.includes(sttModel)
-    ) {
+    const engine = sttEngineStatusFor(status, sttModel);
+    // An engine with no runtime installed cannot load what it downloads, so
+    // say what is missing rather than asking for gigabytes first.
+    if (engine && !engine.available) {
+      toast.error("Local transcription isn't installed on this server.", {
+        description:
+          "Run `unsloth studio update` to install it, then choose a model in Voice settings.",
+      });
+      return;
+    }
+    if (engine?.downloaded_models.includes(sttModel)) {
       setDictationEngine("model");
       toast.success("Switched to local transcription.", {
         description:

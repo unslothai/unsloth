@@ -18,6 +18,7 @@ import {
   type SttModel,
   getSttModelRepo,
   sttModelName,
+  useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
 
 /**
@@ -66,7 +67,17 @@ function settle(
 ): void {
   finishExternalJob(jobKey(model), outcome, error);
   stop();
-  if (outcome === "complete") void loadAndAnnounce(model);
+  // Only warm what the user is still pointed at. Selecting another model, or
+  // leaving local dictation, during the download means this one is not wanted
+  // and loading it would undo the unload that switch performed.
+  const { sttModel, dictationEngine } = useVoiceSettingsStore.getState();
+  if (
+    outcome === "complete" &&
+    dictationEngine === "model" &&
+    sttModel === model
+  ) {
+    void loadAndAnnounce(model);
+  }
 }
 
 async function poll(model: SttModel, startedAt: number): Promise<void> {
@@ -138,6 +149,9 @@ export function trackSttDownload(model: SttModel): void {
           translate("settings.voice.dictation.sttCancelDownloadFailed"),
           { description: error instanceof Error ? error.message : undefined },
         );
+        // The row is already showing "cancelling" and progress updates never
+        // reset state, so put it back or it stays there for the whole transfer.
+        throw error;
       }
     },
   });
