@@ -2387,6 +2387,13 @@ def _install_worker_sigint_guard() -> None:
         signal.signal(signal.SIGINT, _on_sigint)
     except (ValueError, OSError):
         pass
+    # Some Windows terminals deliver Ctrl+C/Ctrl+Break as SIGBREAK (run.py
+    # handles it in the parent); the worker must survive that first one too.
+    if hasattr(signal, "SIGBREAK"):
+        try:
+            signal.signal(signal.SIGBREAK, _on_sigint)
+        except (ValueError, OSError):
+            pass
 
 
 def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> None:

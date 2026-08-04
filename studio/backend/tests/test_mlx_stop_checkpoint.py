@@ -154,3 +154,18 @@ def test_worker_sigint_guard_survives_first_interrupt_only(monkeypatch):
 
     handler(signal_mod.SIGINT, None)
     assert exits == [130]
+
+
+def test_worker_guard_covers_sigbreak_when_present(monkeypatch):
+    # Windows terminals can deliver Ctrl+C/Ctrl+Break as SIGBREAK; the first
+    # one must leave the worker alive for the parent's stop-and-save.
+    import signal as signal_mod
+
+    installed = {}
+    monkeypatch.setattr(signal_mod, "signal", lambda s, h: installed.setdefault(s, h))
+    monkeypatch.setattr(signal_mod, "SIGBREAK", 21, raising = False)
+    monkeypatch.setattr(worker.os, "_exit", lambda code: (_ for _ in ()).throw(SystemExit(code)))
+
+    worker._install_worker_sigint_guard()
+    assert 21 in installed
+    assert installed[21] is installed[signal_mod.SIGINT]

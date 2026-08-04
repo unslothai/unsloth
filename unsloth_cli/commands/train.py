@@ -143,10 +143,13 @@ def train(
             # The MLX CLI adapter writes to a cwd-absolutized output_dir
             # (allow_external_output_dir), which the outputs-root helpers cannot
             # see; accept such a dir directly when it holds a valid checkpoint.
-            external = Path(resume_target).expanduser()
-            if not external.is_absolute():
-                external = Path.cwd() / external
-            resume_checkpoint = _external_resume_checkpoint(external)
+            # Only the MLX adapter writes outside the outputs root; the HF
+            # trainer would reject an external output_dir at training time.
+            if _should_use_mlx_backend_for_cli():
+                external = Path(resume_target).expanduser()
+                if not external.is_absolute():
+                    external = Path.cwd() / external
+                resume_checkpoint = _external_resume_checkpoint(external)
         if not resume_checkpoint:
             if root_error is not None:
                 typer.echo(

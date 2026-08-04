@@ -107,9 +107,12 @@ def test_resume_from_explicit_checkpoint_path(outputs_home):
     assert "checkpoint-10" in result.output
 
 
-def test_resume_from_external_mlx_output_dir(outputs_home, tmp_path_factory):
+def test_resume_from_external_mlx_output_dir(outputs_home, tmp_path_factory, monkeypatch):
     # The MLX CLI adapter writes checkpoints under a cwd-absolutized dir the
     # outputs-root helpers cannot see; a valid checkpoint there must resume.
+    from unsloth_cli.commands import train as train_cmd
+
+    monkeypatch.setattr(train_cmd, "_should_use_mlx_backend_for_cli", lambda: True)
     external = tmp_path_factory.mktemp("mlx_run")
     _write_checkpoint(external, 25)
     result = CliRunner().invoke(
@@ -118,3 +121,19 @@ def test_resume_from_external_mlx_output_dir(outputs_home, tmp_path_factory):
     )
     assert result.exit_code == 0, result.output
     assert "checkpoint-25" in result.output
+
+
+def test_external_fallback_is_mlx_only(outputs_home, tmp_path_factory, monkeypatch):
+    # On the PyTorch path the trainer rejects external output dirs at training
+    # time, so a dry run must not accept them either.
+    from unsloth_cli.commands import train as train_cmd
+
+    monkeypatch.setattr(train_cmd, "_should_use_mlx_backend_for_cli", lambda: False)
+    external = tmp_path_factory.mktemp("mlx_run2")
+    _write_checkpoint(external, 30)
+    result = CliRunner().invoke(
+        _app(),
+        ["--dry-run", "--resume-from-checkpoint", str(external)],
+    )
+    assert result.exit_code == 2, result.output
+    assert "write checkpoints under" in result.output
