@@ -8092,6 +8092,7 @@ def _stt_download_module(engine: str):
         from core.inference import stt_ggml_sidecar
         return stt_ggml_sidecar
     from core.inference import stt_sidecar
+
     return stt_sidecar
 
 
@@ -8103,6 +8104,7 @@ def _stt_sidecar_for(engine: str):
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
         return get_ggml_stt_sidecar()
     from core.inference.stt_sidecar import get_stt_sidecar
+
     return get_stt_sidecar()
 
 

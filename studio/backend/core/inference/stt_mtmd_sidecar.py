@@ -94,7 +94,6 @@ def is_mtmd_model(model: Optional[str]) -> bool:
 
 def find_llama_server_binary() -> Optional[str]:
     from core.inference.llama_cpp import LlamaCppBackend
-
     return LlamaCppBackend._find_llama_server_binary()
 
 
@@ -115,7 +114,6 @@ def ensure_engine_available() -> str:
 
 def _cached_file(model_id: str, filename: str) -> Optional[str]:
     from huggingface_hub import hf_hub_download
-
     try:
         return hf_hub_download(
             repo_id = MTMD_STT_MODELS[model_id].repo,
@@ -191,7 +189,11 @@ class _MtmdDownloadState:
         except Exception:
             return None
 
-    def start(self, model_id: str, hf_token: Optional[str] = None) -> None:
+    def start(
+        self,
+        model_id: str,
+        hf_token: Optional[str] = None,
+    ) -> None:
         model_id = resolve_mtmd_model_id(model_id)
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
@@ -206,9 +208,7 @@ class _MtmdDownloadState:
             self._total_bytes = None
             self._cancelled = False
             self._process = None
-            thread = threading.Thread(
-                target = self._run, args = (model_id, hf_token), daemon = True
-            )
+            thread = threading.Thread(target = self._run, args = (model_id, hf_token), daemon = True)
             self._thread = thread
             thread.start()
 
@@ -319,9 +319,7 @@ class MtmdSttSidecar:
         if self._keep_alive_seconds <= 0:
             return
         generation = self._generation
-        timer = threading.Timer(
-            self._keep_alive_seconds, self._idle_unload, args = (generation,)
-        )
+        timer = threading.Timer(self._keep_alive_seconds, self._idle_unload, args = (generation,))
         timer.daemon = True
         self._idle_timer = timer
         timer.start()
@@ -383,27 +381,29 @@ class MtmdSttSidecar:
             sock, port = self._reserve_free_port()
             cmd = [
                 binary,
-                "-m", model_path,
-                "--mmproj", mmproj_path,
-                "--host", "127.0.0.1",
-                "--port", str(port),
+                "-m",
+                model_path,
+                "--mmproj",
+                mmproj_path,
+                "--host",
+                "127.0.0.1",
+                "--port",
+                str(port),
                 # One short request at a time, so one slot keeps the footprint
                 # down next to a loaded chat model.
-                "--parallel", "1",
-                "-ngl", "99",
+                "--parallel",
+                "1",
+                "-ngl",
+                "99",
             ]
             sock.close()
-            process = subprocess.Popen(
-                cmd, stdout = subprocess.DEVNULL, stderr = subprocess.PIPE
-            )
+            process = subprocess.Popen(cmd, stdout = subprocess.DEVNULL, stderr = subprocess.PIPE)
             if not self._wait_for_server(process, port):
                 try:
                     process.terminate()
                 except Exception:
                     pass
-                raise SttUnavailableError(
-                    f"llama-server did not become ready for '{model_id}'."
-                )
+                raise SttUnavailableError(f"llama-server did not become ready for '{model_id}'.")
             with self._lock:
                 self._process = process
                 self._port = port
@@ -444,9 +444,7 @@ class MtmdSttSidecar:
         ensure_engine_available()
         model_id = resolve_mtmd_model_id(model)
         if _training_active():
-            raise SttUnavailableError(
-                "Dictation is paused while a training run is using the GPU."
-            )
+            raise SttUnavailableError("Dictation is paused while a training run is using the GPU.")
         # Reject a missing model before decoding, matching the other sidecars.
         self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio)
