@@ -144,19 +144,46 @@ def _tuning_available() -> bool:
     not _tuning_available(),
     reason = "the installed unsloth_zoo predates hf_xet_tuning, so there are no caps to apply",
 )
-def test_xet_worker_gets_ram_caps(monkeypatch):
+def test_xet_worker_is_sized_from_the_machine(monkeypatch):
+    """The budget scales with the host, so pin the invariant rather than a number: what hf_xet can
+    hold (buffer + files * per-file) must fit the limit the same call set."""
     env = _spawn_env(monkeypatch, use_xet = True)
     limit = int(env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_LIMIT"])
-    # Stock hf_xet allows 8GB here (64GB under high-performance mode).
-    assert 0 < limit <= 4_000_000_000
+    worst = int(env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_SIZE"]) + int(
+        env["HF_XET_DATA_MAX_CONCURRENT_FILE_DOWNLOADS"]
+    ) * int(env["HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE"])
+    assert 0 < worst <= limit
     assert env["HF_HUB_DISABLE_XET"] == "0"
 
 
-def test_high_performance_is_cleared_not_merely_defaulted(monkeypatch):
-    """xet-core applies the high-performance preset AFTER reading the environment, so an inherited
-    "1" would discard every cap above rather than compete with it. setdefault is not enough."""
-    env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
-    assert env["HF_XET_HIGH_PERFORMANCE"] == "0"
+def test_the_zoo_decides_and_studio_does_not_second_guess_it(monkeypatch):
+    """Studio used to force the flag off here. Two copies of one rule drifted, and on a 2TB host the
+    worker ended up with a 24GB laptop's buffer, 3.4x slower than the machine's own setting."""
+    import utils.hf_xet_fallback as shim
+
+    seen = {}
+
+    def _apply(env, cache_dir = None):
+        seen.update(env)
+        seen["cache_dir"] = cache_dir
+        env["HF_XET_SENTINEL"] = "sized-by-the-zoo"
+        return {"HF_XET_SENTINEL": "sized-by-the-zoo"}
+
+    monkeypatch.setattr(shim, "apply_xet_env", _apply)
+    env = _spawn_env(
+        monkeypatch,
+        use_xet = True,
+        parent_env = {
+            "HF_XET_HIGH_PERFORMANCE": "1",
+            "HF_HUB_CACHE": "/moved/volume/hub",
+        },
+    )
+    assert env["HF_XET_SENTINEL"] == "sized-by-the-zoo"
+    # The worker's own env is what gets sized, and the flag is left exactly as the zoo left it.
+    assert seen["HF_HUB_DISABLE_XET"] == "0"
+    # Sized against the cache the worker will write to, not whichever one this process started with.
+    assert seen["cache_dir"] == "/moved/volume/hub"
+    assert env["HF_XET_HIGH_PERFORMANCE"] == "1"
 
 
 def test_high_performance_is_cleared_even_without_the_tuning_module(monkeypatch):
@@ -165,13 +192,18 @@ def test_high_performance_is_cleared_even_without_the_tuning_module(monkeypatch)
     would hand the worker a 64GB buffer ceiling on the installs Studio alone cannot fix."""
     import utils.hf_xet_fallback as shim
 
-    monkeypatch.setattr(shim, "xet_env_overrides", lambda *a, **k: {})
+    monkeypatch.setattr(shim, "apply_xet_env", lambda *a, **k: None)
     env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
     assert env["HF_XET_HIGH_PERFORMANCE"] == "0"
     assert env["HF_XET_HP"] == "0"
 
 
-def test_user_can_opt_back_into_high_performance(monkeypatch):
+def test_the_legacy_opt_in_still_works_without_the_tuning_module(monkeypatch):
+    """Newer zoos honour the flag on their own, but this is the escape hatch on installs that
+    cannot, so it has to keep working there."""
+    import utils.hf_xet_fallback as shim
+
+    monkeypatch.setattr(shim, "apply_xet_env", lambda *a, **k: None)
     monkeypatch.setenv("UNSLOTH_XET_ALLOW_HIGH_PERFORMANCE", "1")
     env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
     assert env["HF_XET_HIGH_PERFORMANCE"] == "1"
@@ -486,3 +518,14 @@ def test_both_loaders_share_one_env_lock():
         assert (
             "with _load_lock:" in source
         ), f"{fn.__name__} mutates the GPU-init override outside the shared _load_lock"
+
+
+def test_the_worker_never_gets_the_flag_and_our_caps_together(monkeypatch):
+    """End to end against whichever unsloth_zoo is installed, with nothing stubbed. Which of the
+    two the zoo picks is its call and changes with the version; what must never happen either way
+    is both at once, because xet-core applies the preset after reading the environment, so it
+    voids the limit while still honouring the smaller per-file and concurrency numbers."""
+    env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
+    flag_on = env.get("HF_XET_HIGH_PERFORMANCE", "0").strip().lower() in ("1", "true", "yes", "on")
+    sized = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE" in env
+    assert not (flag_on and sized), f"worst of both: flag on with our sizing still applied ({env})"
