@@ -1159,6 +1159,46 @@ def _is_companion_gguf_path(path: str) -> bool:
     return _drafter_path_kind(path) is not None
 
 
+_NON_GGUF_WEIGHT_BIN_PREFIXES = ("pytorch_model", "model", "adapter_model", "consolidated")
+
+
+def _drafter_paths_in(paths) -> frozenset:
+    """Mirrors hub.utils.gguf.drafter_paths_in: a prefix-named drafter with no
+    main weight beside it in the same repo listing is that repo's main weight."""
+    listing = list(paths)
+    drafters = {p for p in listing if _drafter_path_kind(p) is not None}
+
+    def _is_weight(path: str) -> bool:
+        name = path.replace("\\", "/").rsplit("/", 1)[-1].lower()
+        if name.endswith(".safetensors"):
+            return True
+        if name.endswith(".bin"):
+            return name.startswith(_NON_GGUF_WEIGHT_BIN_PREFIXES)
+        return (
+            name.endswith(".gguf") and path not in drafters and "mmproj" not in name
+        )
+
+    if any(_is_weight(p) for p in listing):
+        return frozenset(drafters)
+    return frozenset(
+        p
+        for p in drafters
+        if _drafter_dir_kind(p) or _GGUF_KNOWN_QUANT_RE.search(_gguf_stem_for_quant(p)) is None
+    )
+
+
+def _drafter_dir_kind(path: str) -> bool:
+    p = path.replace("\\", "/").lower()
+    if not p.endswith(".gguf"):
+        return False
+    return any(kind in [s for s in p.split("/")[:-1] if s] for kind in _DRAFTER_DIR_KINDS)
+
+
+def _gguf_stem_for_quant(path: str) -> str:
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    return re.sub(r"-\d{3,}-of-\d{3,}", "", name.rsplit(".", 1)[0])
+
+
 def _is_mtp_only_drafter_path(path: str) -> bool:
     """MTP only, the one kind Studio launches today (``--spec-type draft-mtp``).
     DSpark needs ``draft-dspark`` plus ``--fit off``, so drafter discovery must
@@ -1639,11 +1679,14 @@ def _gguf_files_for_variant(files: Iterable[str], variant: str) -> list[str]:
     for ``stories260K`` does not resolve to ``stories260K-be.gguf``.
     """
     variant_key = variant.strip().lower()
+    files = list(files)
+    drafters = _drafter_paths_in(files)
     main_files = [
         f
         for f in files
         if f.lower().endswith(".gguf")
-        and not _is_companion_gguf_path(f)
+        and f not in drafters
+        and "mmproj" not in f.lower()
         and not _is_big_endian_gguf_path(f, variant_key)
     ]
     if not variant_key:

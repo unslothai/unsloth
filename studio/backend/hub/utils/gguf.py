@@ -402,7 +402,7 @@ def list_gguf_variants_from_hf_cache(
     # Pick the snapshot the inventory row does: newest holding a whole quant, else first non-empty.
     fallback: Optional[tuple[list[GgufVariantInfo], bool, set]] = None
     for snapshot in snapshots:
-        variants, has_vision = list_local_gguf_variants(str(snapshot))
+        variants, has_vision = list_local_gguf_variants(str(snapshot), whole_repo = True)
         complete = complete_snapshot_variants(str(snapshot)) if variants else set()
         if variants:
             # Selection only: an unlabelled quant cannot be judged, so it counts as usable.
@@ -537,7 +537,7 @@ def resolve_local_gguf_path(repo_id: str, gguf_variant: Optional[str]) -> Option
     if it is already downloaded in the HF cache, else ``None``. Read-only — never
     triggers a download. Lets callers read header metadata before a load."""
     for snapshot in iter_snapshots_preferring_whole(repo_id, gguf_variant):
-        variants, _ = list_local_gguf_variants(str(snapshot))
+        variants, _ = list_local_gguf_variants(str(snapshot), whole_repo = True)
         for variant in variants:
             if gguf_variant is None or variant.quant == gguf_variant:
                 candidate = snapshot / variant.filename
@@ -640,8 +640,10 @@ def _resolve_gguf_dir(path: Path) -> Optional[Path]:
 
 
 def list_local_gguf_variants(
-    directory: str, model_root: Optional[str] = None
+    directory: str, model_root: Optional[str] = None, *, whole_repo: bool = False
 ) -> tuple[list[GgufVariantInfo], bool]:
+    """*whole_repo* marks *directory* as one repo's full contents (an HF cache
+    snapshot), which is the only local case where the drafter reprieve applies."""
     root = _resolve_gguf_dir(Path(directory))
     if root is None:
         return [], False
@@ -660,13 +662,17 @@ def list_local_gguf_variants(
     quant_first_file: dict[str, str] = {}
     has_vision = False
 
-    # No drafter reprieve here: locally, a folder holding only a companion is a
-    # half-downloaded repo, and it is indistinguishable from a drafter-named one.
+    # An arbitrary folder gets no reprieve: one holding only a companion is a
+    # half-downloaded repo, indistinguishable from a drafter-named one. A whole
+    # snapshot is the same listing the remote path sees, so it does.
     scanned = [
         (file, file.relative_to(root).as_posix())
         for file in sorted(iter_gguf_files(root, recursive = True))
     ]
     drafters = {rel for file, rel in scanned if _is_local_mtp_drafter(file, custom_root, rel)}
+    if whole_repo and drafters:
+        reprieved = drafters - drafter_paths_in(rel for _file, rel in scanned)
+        drafters -= reprieved
 
     for file, rel in scanned:
         if is_mmproj_filename(file.name):

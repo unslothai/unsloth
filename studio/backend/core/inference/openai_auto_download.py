@@ -236,15 +236,18 @@ def _gguf_variants(siblings) -> dict[str, int]:
     """
     from hub.utils.gguf import extract_quant_label as canonical_quant_label
     from hub.utils.gguf_plan import build_gguf_variant_plans
+    from hub.utils.gguf import drafter_paths_in
     from utils.models.model_config import (
         _extract_quant_label,
         _is_big_endian_gguf_path,
         _is_mmproj,
-        _is_mtp_drafter,
     )
 
     siblings = list(siblings or [])
     plans = build_gguf_variant_plans(siblings)
+    # Same listing-aware set the plans used, or a drafter-named repo is skipped
+    # sibling by sibling and cached as not servable.
+    drafters = drafter_paths_in(getattr(s, "rfilename", "") or "" for s in siblings)
     sizes: dict[str, int] = {}
     for sibling in siblings:
         name = getattr(sibling, "rfilename", "") or ""
@@ -256,7 +259,7 @@ def _gguf_variants(siblings) -> dict[str, int]:
             # the last hyphenated segment ("7b" of llama-7b) while the plan and worker
             # key the whole stem, so advertising ours dispatches an unresolvable variant.
             quant = canonical_quant_label(name) or quant
-        if _is_mmproj(name) or _is_mtp_drafter(name) or _is_big_endian_gguf_path(name, quant):
+        if _is_mmproj(name) or name in drafters or _is_big_endian_gguf_path(name, quant):
             continue
         plan = plans.get(quant.lower())
         if plan is not None:

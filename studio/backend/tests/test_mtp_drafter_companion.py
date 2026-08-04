@@ -220,6 +220,43 @@ def test_a_reprieved_root_drafter_is_not_also_a_companion():
     assert plan.download_size_bytes == 1_000
 
 
+MRADERMACHER = [
+    "DFlash-Qwen3.5-27B-Uncensored.Q4_K_M.gguf",
+    "DFlash-Qwen3.5-27B-Uncensored.Q8_0.gguf",
+]
+GGML_ORG = [
+    "Qwen3.6-27B-BF16.gguf",
+    "Qwen3.6-27B-Q8_0.gguf",
+    "dflash-Qwen3.6-27B-BF16.gguf",
+    "mtp-Qwen3.6-27B-Q8_0.gguf",
+]
+
+
+def test_every_whole_repo_consumer_agrees_on_a_reprieved_repo():
+    # The reprieve is only useful if the loader and the auto-download admission
+    # resolve what the picker advertises.
+    from core.inference.llama_cpp import _gguf_files_for_variant
+    from core.inference.openai_auto_download import _gguf_variants
+
+    assert _gguf_files_for_variant(MRADERMACHER, "Q4_K_M") == [MRADERMACHER[0]]
+    assert sorted(_gguf_variants(_sib(n, 1_000, n) for n in MRADERMACHER)) == ["Q4_K_M", "Q8_0"]
+
+    # ...and a repo that does have main weights still hides its drafters.
+    assert _gguf_files_for_variant(GGML_ORG, "BF16") == ["Qwen3.6-27B-BF16.gguf"]
+    assert sorted(_gguf_variants(_sib(n, 1_000, n) for n in GGML_ORG)) == ["BF16", "Q8_0"]
+
+
+def test_only_a_whole_snapshot_gets_the_reprieve_locally(tmp_path):
+    # An HF cache snapshot is the same listing the remote path sees; an
+    # arbitrary folder is not, so it keeps the stricter per-path filter.
+    for name in MRADERMACHER:
+        (tmp_path / name).write_bytes(b"x" * 16)
+
+    whole = list_hub_local_gguf_variants(str(tmp_path), whole_repo = True)[0]
+    assert sorted(v.quant for v in whole) == ["Q4_K_M", "Q8_0"]
+    assert list_hub_local_gguf_variants(str(tmp_path))[0] == []
+
+
 def test_a_directory_named_drafter_is_never_reprieved():
     # A snapshot holding only MTP/ or dspark/ is a half-downloaded repo, not a
     # drafter-only one, so the publisher's layout still wins.

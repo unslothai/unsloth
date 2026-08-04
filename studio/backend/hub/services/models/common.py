@@ -8,7 +8,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Collection, List, Literal, Optional
+from typing import List, Literal, Optional
 from urllib.parse import quote
 
 from hub.schemas.inventory import (
@@ -18,7 +18,6 @@ from hub.schemas.inventory import (
     ModelRuntime,
 )
 from hub.utils.gguf import (
-    drafter_paths_in as _drafter_paths_in,
     extract_quant_label,
     is_gguf_filename as _is_gguf_filename,
     is_mmproj_filename as _is_mmproj_filename,
@@ -73,7 +72,7 @@ def _is_model_directory(d: Path) -> bool:
         if suffix == ".safetensors":
             return True
         if suffix == ".gguf":
-            return _is_main_gguf_filename(f.name, gguf_names)
+            return "mmproj" not in f.name.lower() and not _is_mtp_drafter_path(f.name)
         if suffix == ".bin":
             name = f.name.lower()
             return (
@@ -88,9 +87,7 @@ def _is_model_directory(d: Path) -> bool:
         has_config = (d / "config.json").exists() or (d / "adapter_config.json").exists()
         if not has_config:
             return False
-        entries = [f for f in d.iterdir() if f.is_file()]
-        gguf_names = [f.name for f in entries]
-        return any(_is_weight_file(f) for f in entries)
+        return any(_is_weight_file(f) for f in d.iterdir() if f.is_file())
     except OSError:
         return False
 
@@ -312,14 +309,10 @@ def _classify_non_gguf_model_format(
     return None
 
 
-def _is_main_gguf_filename(name: str, siblings: Optional[Collection[str]] = None) -> bool:
-    """Pass *siblings* (the whole listing) where it is known: a repo of nothing
-    but drafters has no companion to be, so its files are its main weights."""
-    if not _is_gguf_filename(name) or _is_mmproj_filename(name):
-        return False
-    if siblings is not None:
-        return name not in _drafter_paths_in(siblings)
-    return not _is_mtp_drafter_path(name)
+def _is_main_gguf_filename(name: str) -> bool:
+    return (
+        _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter_path(name)
+    )
 
 
 def _iter_gguf_paths(root: Path):
@@ -359,9 +352,8 @@ def _iter_hf_cache_model_files(path: Path) -> list[Path]:
     files = _iter_immediate_files(path, include_symlinks = True)
     if not path.is_dir():
         return files
-    names = [entry.name for entry in files]
     if any(
-        _is_main_gguf_filename(entry.name, names)
+        _is_main_gguf_filename(entry.name)
         or _is_transformers_safetensors_weight_file(entry)
         or _is_checkpoint_weight_file(entry)
         for entry in files
@@ -393,9 +385,11 @@ def _sum_file_sizes(paths) -> int:
 
 
 def _main_gguf_files(path: Path, *, include_symlinks: bool = False) -> list[Path]:
-    entries = _iter_immediate_files(path, include_symlinks = include_symlinks)
-    names = [entry.name for entry in entries]
-    return [entry for entry in entries if _is_main_gguf_filename(entry.name, names)]
+    return [
+        entry
+        for entry in _iter_immediate_files(path, include_symlinks = include_symlinks)
+        if _is_main_gguf_filename(entry.name)
+    ]
 
 
 def _format_label(model_format: ModelFormat) -> str:
