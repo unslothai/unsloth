@@ -3177,9 +3177,7 @@ def _cached_repo_file_name(file_obj) -> str:
     return impl(file_obj)
 
 
-def _main_variant_gguf_label(
-    rel_path: str, main_names: Optional[set[str]] = None
-) -> Optional[str]:
+def _main_variant_gguf_label(rel_path: str, main_names: Optional[set[str]] = None) -> Optional[str]:
     """*main_names* comes from a whole-repo listing (a snapshot or a revision), so
     the drafter reprieve applies; None keeps the context-free per-path rule."""
     if main_names is not None:

@@ -230,9 +230,7 @@ def _iter_ggufs(dir_path: Path, whole_repo: bool = False) -> list[Path]:
         return []
     root = str(dir_path)
     found: list[Path] = []
-    drafters = (
-        drafter_paths_in(repo_listing_in(dir_path)) if whole_repo else None
-    )
+    drafters = drafter_paths_in(repo_listing_in(dir_path)) if whole_repo else None
     for current, dirs, files in os.walk(root, followlinks = False):
         rel = os.path.relpath(current, root)
         depth = 0 if rel == os.curdir else rel.count(os.sep) + 1
@@ -279,7 +277,9 @@ def _is_nonfirst_gguf_split(path: Path) -> bool:
 
 
 def _find_gguf_in_dir(
-    dir_path: Path, gguf_variant: Optional[str], whole_repo: bool = False
+    dir_path: Path,
+    gguf_variant: Optional[str],
+    whole_repo: bool = False,
 ) -> Optional[Path]:
     try:
         ggufs = sorted(_iter_ggufs(dir_path, whole_repo))

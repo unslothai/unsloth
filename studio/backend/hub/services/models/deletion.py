@@ -223,8 +223,7 @@ def _delete_gguf_variant_from_repos(
                 # variant, so the last variant's delete reclaims them. Anything
                 # in main_names is a real quant, even when it is prefix-named
                 # (a reprieved repo names every quant after the drafter family).
-                lambda name, main_names: _is_gguf_filename(name)
-                and name not in main_names,
+                lambda name, main_names: _is_gguf_filename(name) and name not in main_names,
             )
             for snap, _blob, name in companion_matches:
                 try:

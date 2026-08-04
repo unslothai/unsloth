@@ -354,9 +354,7 @@ def _local_main_gguf_blobs_by_quant(
             # One repo's whole listing, so the reprieve applies: without it every
             # quant of a drafter-named repo lands in companion_blobs and the
             # variant map comes out empty.
-            repo_drafters = drafter_paths_in(
-                str(path).replace("\\", "/") for path in blob_map
-            )
+            repo_drafters = drafter_paths_in(str(path).replace("\\", "/") for path in blob_map)
             for path, hashes in blob_map.items():
                 normalized = str(path).replace("\\", "/")
                 if not hashes:

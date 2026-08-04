@@ -1397,9 +1397,9 @@ def test_runtime_remote_lister_reprieves_a_drafter_named_repo(monkeypatch):
         lambda *_a, **_k: SimpleNamespace(siblings = siblings),
         raising = False,
     )
-    monkeypatch.setattr("huggingface_hub.model_info", lambda *_a, **_k: SimpleNamespace(
-        siblings = siblings
-    ))
+    monkeypatch.setattr(
+        "huggingface_hub.model_info", lambda *_a, **_k: SimpleNamespace(siblings = siblings)
+    )
 
     variants, _has_vision = model_config.list_gguf_variants("mradermacher/DFlash-GGUF")
     assert sorted(v.quant for v in variants) == ["Q4_K_M", "Q8_0"]
@@ -1440,11 +1440,13 @@ def test_cached_variant_label_uses_the_listing(tmp_path):
     # Without the listing the same file is read as a companion.
     assert _main_variant_gguf_label(MRADERMACHER[0]) is None
     # A genuine companion stays skipped either way.
-    assert _main_variant_gguf_label(
-        "dspark/dspark-model-Q8_0.gguf", _snapshot_main_gguf_names(
-            ["dspark/dspark-model-Q8_0.gguf", "model-Q4_K_M.gguf"]
+    assert (
+        _main_variant_gguf_label(
+            "dspark/dspark-model-Q8_0.gguf",
+            _snapshot_main_gguf_names(["dspark/dspark-model-Q8_0.gguf", "model-Q4_K_M.gguf"]),
         )
-    ) is None
+        is None
+    )
 
 
 # 8. Deleting one quant of a reprieved repo must not reclaim the others.
