@@ -3170,6 +3170,16 @@ def unsloth_save_pretrained_gguf(
             imatrix = imatrix_path,
         )
     except Exception as e:
+        if _gguf_child_was_oom_killed(e):
+            raise RuntimeError(
+                f"Unsloth: GGUF conversion was killed by the operating system "
+                f"(SIGKILL), which almost always means the machine ran out of "
+                f"host RAM. The converter holds tensors in RAM, so this is "
+                f"about system memory rather than GPU memory or disk.\n"
+                f"Try a smaller quantization, a machine with more RAM, or "
+                f"convert from a saved 16bit checkpoint on a larger host.\n"
+                f"Error: {e}"
+            ) from e
         if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(e, save_directory):
             raise RuntimeError(
                 f"Unsloth: GGUF conversion failed in Kaggle environment.\n"
@@ -3258,6 +3268,27 @@ _DISK_FULL_PATTERNS = (
 # Kaggle allows 20GB. Below this headroom a failed conversion is plausibly
 # about space; above it, blaming disk sends the user nowhere useful.
 _DISK_HEADROOM_BYTES = 2 * 1024 ** 3
+
+
+def _gguf_child_was_oom_killed(exc):
+    """Was the converter killed by the kernel rather than failing on its own?
+
+    llama.cpp's converter loads tensors in host RAM, and a large model exceeds
+    what a free Colab or Kaggle VM has. The kernel OOM-killer takes the process
+    and subprocess reports only
+
+        Command '[...]' died with <Signals.SIGKILL: 9>
+
+    which says nothing about memory. Gemma3N_(4B)-Audio hits this on both the
+    plain and the high-RAM T4, having trained, inferred and merged cleanly.
+
+    SIGKILL alone is the signal: a converter that fails on its own raises and
+    exits non-zero, so a kill is either the OOM-killer or someone stopping the
+    run by hand, and both are worth naming.
+    """
+    if getattr(exc, "returncode", None) in (-9, 137):
+        return True
+    return "signals.sigkill" in f"{exc}".lower() or "sigkill" in f"{exc}".lower()
 
 
 def _gguf_failure_looks_like_disk(exc, save_directory = None):

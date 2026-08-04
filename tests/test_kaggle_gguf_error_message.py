@@ -103,3 +103,65 @@ def test_the_real_error_survives_either_way():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+# ---- a converter killed by the OOM-killer ---------------------------------
+
+def test_sigkill_is_recognised_from_the_message():
+    """subprocess renders it as text, which is all Unsloth re-raises."""
+    from unsloth.save import _gguf_child_was_oom_killed
+    exc = RuntimeError("Command '[...]' died with <Signals.SIGKILL: 9>.")
+    assert _gguf_child_was_oom_killed(exc)
+
+
+@pytest.mark.parametrize("code", [-9, 137])
+def test_sigkill_is_recognised_from_the_returncode(code):
+    """CalledProcessError uses -9; a shell wrapper reports 137."""
+    from unsloth.save import _gguf_child_was_oom_killed
+
+    class _Called(Exception):
+        returncode = code
+
+    assert _gguf_child_was_oom_killed(_Called())
+
+
+def test_an_ordinary_converter_failure_is_not_called_an_oom():
+    """A converter that fails on its own must keep its own message."""
+    from unsloth.save import _gguf_child_was_oom_killed
+    exc = RuntimeError("NotImplementedError: Unknown tensor name audio_tower.x")
+    assert not _gguf_child_was_oom_killed(exc)
+
+
+def test_a_disk_failure_is_not_called_an_oom():
+    from unsloth.save import _gguf_child_was_oom_killed
+    assert not _gguf_child_was_oom_killed(OSError("No space left on device"))
+
+
+def test_the_oom_branch_runs_before_the_kaggle_disk_branch():
+    """A SIGKILL on Kaggle with a full-ish disk would otherwise be reported as
+    a disk problem, which is the wrong advice."""
+    import inspect
+    from unsloth import save as _s
+    src = inspect.getsource(_s.unsloth_save_pretrained_gguf)
+    assert src.index("_gguf_child_was_oom_killed(e)") < src.index(
+        "IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk")
+
+
+def test_the_message_says_host_ram_not_gpu_or_disk():
+    """The whole point: SIGKILL names no resource, and the user's first guess
+    is usually VRAM."""
+    import inspect
+    from unsloth import save as _s
+    src = inspect.getsource(_s.unsloth_save_pretrained_gguf)
+    i = src.index("_gguf_child_was_oom_killed(e)")
+    body = src[i:i + 900]
+    assert "host RAM" in body
+    assert "rather than GPU memory or disk" in body
+
+
+def test_it_chains_the_original():
+    import inspect
+    from unsloth import save as _s
+    src = inspect.getsource(_s.unsloth_save_pretrained_gguf)
+    i = src.index("_gguf_child_was_oom_killed(e)")
+    assert "from e" in src[i:i + 900]
