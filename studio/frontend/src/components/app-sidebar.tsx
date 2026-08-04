@@ -1946,7 +1946,7 @@ export function AppSidebar() {
                       })}
                       {/* Way out of the flyout: jump straight to the control that
                           decides what lives here vs. on the sidebar itself. */}
-                      <DropdownMenuSeparator className="mx-1! my-1.5! h-0! border-t border-border/70 bg-transparent!" />
+                      <DropdownMenuSeparator className="mx-1! my-1.5! h-0! border-t border-border/70 bg-transparent! dark:border-white/15" />
                       <DropdownMenuItem
                         onSelect={() =>
                           useSettingsDialogStore
@@ -2439,7 +2439,7 @@ export function AppSidebar() {
                     );
                   })}
                 </DropdownMenuGroup>
-                <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent!" />
+                <DropdownMenuSeparator className="mx-1! my-2.5! h-0! border-t border-border/70 bg-transparent! dark:border-white/15" />
                 <DropdownMenuItem
                   onSelect={() => useSettingsDialogStore.getState().openDialog("about")}
                 >
