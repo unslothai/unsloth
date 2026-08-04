@@ -40,12 +40,23 @@ def test_the_template_form_is_guarded(template: str) -> None:
     assert guard < template.index(TEMPLATE_FORM) < template.index("{{/if}}", guard)
 
 
-def test_signed_plugin_dirs_precede_every_plugin_use(template: str) -> None:
+def _line_of(template: str, needle: str) -> int:
+    lines = template.splitlines()
+    return next(i for i, line in enumerate(lines) if line.strip() == needle)
+
+
+def _signed_dir_lines(template: str) -> dict[str, int]:
+    # Each form is checked on its own. Only one resolves per bundler version, so
+    # taking the earliest would let the other drift below an include unnoticed.
+    return {"env var": _line_of(template, ENV_FORM), "template var": _line_of(template, TEMPLATE_FORM)}
+
+
+@pytest.mark.parametrize("form", ["env var", "template var"])
+def test_signed_plugin_dir_precedes_every_plugin_use(template: str, form: str) -> None:
     # !addplugindir after a plugin call raises "conflicts with a plugin in
     # another directory" at compile time, or silently loses to an already
     # packed default.
     lines = template.splitlines()
-    first_dir = min(i for i, l in enumerate(lines) if l.strip().startswith("!addplugindir"))
     plugin_calls = [
         i
         for i, l in enumerate(lines)
@@ -57,11 +68,10 @@ def test_signed_plugin_dirs_precede_every_plugin_use(template: str) -> None:
         )
     ]
     assert plugin_calls, "expected the template to call NSIS plugins"
-    assert first_dir < min(plugin_calls)
+    assert _signed_dir_lines(template)[form] < min(plugin_calls)
 
 
-def test_includes_come_after_the_signed_plugin_dirs(template: str) -> None:
-    lines = template.splitlines()
-    first_dir = min(i for i, l in enumerate(lines) if l.strip().startswith("!addplugindir"))
-    mui = next(i for i, l in enumerate(lines) if l.strip().startswith("!include MUI2.nsh"))
-    assert first_dir < mui
+@pytest.mark.parametrize("form", ["env var", "template var"])
+def test_includes_come_after_the_signed_plugin_dir(template: str, form: str) -> None:
+    mui = _line_of(template, "!include MUI2.nsh")
+    assert _signed_dir_lines(template)[form] < mui
