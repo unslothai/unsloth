@@ -817,6 +817,164 @@ jobs:
           tauriScript: npx --prefix . tauri
           args: -v ${{ matrix.args }}
 
+      # ── Windows: scan the signed bundles with Defender before publishing ──
+      # 0.1.512-beta shipped and users hit "Trojan:Win32/Wacatac.B!ml" on first
+      # download. That build was clean, but nothing here looked, so it took two
+      # days to say so. Three things this has to get right: the runner image
+      # disables Defender and excludes both drive roots, so restore it and check
+      # the restore took; "!ml" is a cloud verdict, so MAPS must be on; and
+      # MpCmdRun exit codes are ambiguous, so read the output text.
+      - name: Scan Windows bundles with Defender
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
+        run: |
+          $ErrorActionPreference = 'Continue'
+
+          $atp = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows Advanced Threat Protection'
+          if (Test-Path $atp) { Remove-ItemProperty -Path $atp -Name 'ForceDefenderPassiveMode' -ErrorAction SilentlyContinue }
+          Start-Service -Name WinDefend -ErrorAction SilentlyContinue
+
+          foreach ($x in @((Get-MpPreference).ExclusionPath)) {
+            if ($x) { Remove-MpPreference -ExclusionPath $x -ErrorAction SilentlyContinue }
+          }
+          Set-MpPreference `
+            -DisableRealtimeMonitoring $false -DisableIOAVProtection $false `
+            -DisableScriptScanning $false -DisableBehaviorMonitoring $false `
+            -DisableArchiveScanning $false -MAPSReporting Advanced `
+            -SubmitSamplesConsent SendAllSamples -CloudBlockLevel High `
+            -CloudExtendedTimeout 50 -DisableBlockAtFirstSeen $false -ErrorAction Continue
+
+          $mp = "$env:ProgramFiles\Windows Defender\MpCmdRun.exe"
+          $plat = Get-ChildItem 'C:\ProgramData\Microsoft\Windows Defender\Platform' -Directory -ErrorAction SilentlyContinue |
+                  Sort-Object Name -Descending | Select-Object -First 1
+          if ($plat -and (Test-Path "$($plat.FullName)\MpCmdRun.exe")) { $mp = "$($plat.FullName)\MpCmdRun.exe" }
+          Update-MpSignature -UpdateSource MicrosoftUpdateServer -ErrorAction Continue
+          & $mp -SignatureUpdate 2>&1 | Write-Host
+
+          $status = Get-MpComputerStatus
+          $pref = Get-MpPreference
+          Write-Host "engine $($status.AMEngineVersion), signatures $($status.AntivirusSignatureVersion) ($($status.AntivirusSignatureLastUpdated))"
+
+          # Set-MpPreference can return cleanly and still be ignored, so verify.
+          $degraded = @()
+          if (-not $status.RealTimeProtectionEnabled) { $degraded += "RealTimeProtectionEnabled=false (AMRunningMode=$($status.AMRunningMode))" }
+          if ([int]$pref.MAPSReporting -ne 2)         { $degraded += "MAPSReporting=$($pref.MAPSReporting), expected 2 (Advanced)" }
+          if ($pref.ExclusionPath)                    { $degraded += "exclusions remain: $($pref.ExclusionPath -join ',')" }
+
+          # Positive control, or "clean" and "scanner broken" look identical.
+          # Assembled from fragments so this file is not itself a sample.
+          $eicarPath = Join-Path $env:RUNNER_TEMP 'defender-selftest.com'
+          [System.IO.File]::WriteAllText(
+            $eicarPath,
+            'X5O!P%@AP[4\PZX54(P^)7CC)7}' + '$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!' + '$H+H*')
+          $controlPassed = $true
+          if (Test-Path $eicarPath) {
+            $controlOut = (& $mp -Scan -ScanType 3 -File $eicarPath -DisableRemediation 2>&1 | Out-String)
+            $controlPassed = [bool](($controlOut -match 'found\s+\d+\s+threat') -or ($controlOut -match 'EICAR'))
+            Remove-Item $eicarPath -Force -ErrorAction SilentlyContinue
+          }
+          if (-not $controlPassed) { $degraded += 'EICAR positive control did not fire' }
+
+          if ($degraded) {
+            Write-Host "::warning::Defender is degraded on this runner ($($degraded -join '; ')). Scanning anyway, but a clean result below is not authoritative."
+          }
+
+          # Fatal, not a warning: an earlier draft exited 0 here and a self-test
+          # caught it passing a release it had never scanned.
+          if ([string]::IsNullOrWhiteSpace($env:ARTIFACT_PATHS)) {
+            Write-Host '::error::tauri-action produced no artifactPaths output; refusing to publish unscanned bundles'
+            exit 1
+          }
+          try {
+            $paths = @($env:ARTIFACT_PATHS | ConvertFrom-Json)
+          } catch {
+            Write-Host "::error::could not parse artifactPaths ($($_.Exception.Message)); refusing to publish unscanned bundles"
+            exit 1
+          }
+          $missing = @($paths | Where-Object { $_ -and -not (Test-Path $_ -PathType Leaf) })
+          if ($missing) {
+            Write-Host "::error::artifactPaths lists files that do not exist: $($missing -join ', ')"
+            exit 1
+          }
+          $paths = @($paths | Where-Object { $_ })
+          if (-not $paths) {
+            Write-Host '::error::artifactPaths resolved to an empty list; refusing to publish unscanned bundles'
+            exit 1
+          }
+          Write-Host "scanning $($paths.Count) Windows bundle(s)"
+
+          $detected = @()
+          foreach ($f in $paths) {
+            # Block-at-first-sight only consults the cloud for internet-zone
+            # files, so stamp mark-of-the-web or this is not the user path.
+            "[ZoneTransfer]`nZoneId=3" | Set-Content -Path $f -Stream Zone.Identifier -Encoding Ascii -ErrorAction SilentlyContinue
+
+            $out = & $mp -Scan -ScanType 3 -File $f -DisableRemediation 2>&1
+            $text = ($out | Out-String)
+            $out | ForEach-Object { Write-Host "  $_" }
+
+            # Exit codes are ambiguous; read the output text.
+            if ($text -match 'found\s+\d+\s+threat') {
+              $names = [regex]::Matches($text, '((?:Trojan|Virus|Worm|Backdoor|Ransom|HackTool|PUA|Behavior|Program|Misleading)[:\w\./!\-]+)') |
+                       ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique
+              Write-Host "::error::Defender flagged $(Split-Path $f -Leaf): $($names -join ', ')"
+              $detected += "$(Split-Path $f -Leaf) [$($names -join ', ')]"
+            } else {
+              Write-Host "clean: $(Split-Path $f -Leaf)"
+            }
+          }
+
+          if ($detected) {
+            Write-Host "::error::Refusing to publish a Windows bundle Defender flags: $($detected -join '; ')"
+            Write-Host 'If this is a false positive, submit it at https://www.microsoft.com/en-us/wdsi/filesubmission (Software developer -> incorrectly detected) and re-run once cleared.'
+            exit 1
+          }
+          Write-Host "All $($paths.Count) Windows bundle(s) scanned clean."
+
+      # ── Windows: assemble a Microsoft false-positive submission packet ──
+      # There is no submission API; the WDSI portal is a web form. This cannot be
+      # automated, but it can remove the lookup work so pre-submitting a build
+      # before announcing it takes seconds.
+      - name: Prepare Microsoft submission packet
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        env:
+          ARTIFACT_PATHS: ${{ steps.build_windows.outputs.artifactPaths }}
+        run: |
+          $paths = @($env:ARTIFACT_PATHS | ConvertFrom-Json) |
+                   Where-Object { $_ -like '*-setup.exe' }
+          $md = @(
+            '## Microsoft submission packet',
+            '',
+            'Submit at <https://www.microsoft.com/en-us/wdsi/filesubmission> before announcing this release.',
+            'Choose **Software developer** -> **Incorrectly detected as malware/malicious**.',
+            'The 50 MB upload cap applies; if a bundle exceeds it, submit the extracted main binary instead.',
+            ''
+          )
+          foreach ($f in $paths) {
+            $item = Get-Item $f
+            $sig = Get-AuthenticodeSignature $f
+            $md += "### $($item.Name)"
+            $md += ''
+            $md += '| field | value |'
+            $md += '|---|---|'
+            $md += "| SHA-256 | ``$((Get-FileHash -Algorithm SHA256 $f).Hash)`` |"
+            $md += "| SHA-1 | ``$((Get-FileHash -Algorithm SHA1 $f).Hash)`` |"
+            $md += "| Size | $($item.Length) bytes |"
+            $md += "| Signature | $($sig.Status) |"
+            $md += "| Signer | $($sig.SignerCertificate.Subject) |"
+            $md += "| Product | $($env:APP_VERSION) |"
+            $md += ''
+          }
+          $md += '> Clearance is per hash. It fixes the release you submit and nothing after it,'
+          $md += '> so this is a complement to signing, not a substitute.'
+          $out = "$env:RUNNER_TEMP\ms-submission-packet.md"
+          $md -join "`n" | Out-File $out -Encoding utf8
+          $md -join "`n" | Out-File $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          Write-Host ($md -join "`n")
+
       - name: Stage release assets
         shell: bash
         env:
