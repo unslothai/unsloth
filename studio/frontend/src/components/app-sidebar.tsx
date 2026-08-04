@@ -49,6 +49,15 @@ import {
   shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
+// Deep imports on purpose: the Images index re-exports ImagesPage, so going through it would pull
+// the page into the shell bundle and undo its code split.
+/* eslint-disable no-restricted-imports */
+import {
+  isWorkflowEnabled,
+  useImageWorkflowStore,
+} from "@/features/images/stores/image-workflow-store";
+import { WORKFLOW_TABS, type WorkflowId } from "@/features/images/workflows";
+/* eslint-enable no-restricted-imports */
 import { cn } from "@/lib/utils";
 import { isTauri } from "@/lib/api-base";
 import { useWebUpdateCheck } from "@/hooks/use-web-update-check";
@@ -371,6 +380,186 @@ function NavItem({
   );
 }
 
+const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
+
+/** One workflow in the list under the Images row. */
+function WorkflowChoice({
+  tab,
+  active,
+  enabled,
+  onSelect,
+}: {
+  tab: (typeof WORKFLOW_TABS)[number];
+  active: boolean;
+  enabled: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={!enabled}
+      title={enabled ? undefined : WORKFLOW_UNAVAILABLE}
+      onClick={onSelect}
+      // Weight and colour come from the nav rows above; only the size sets a submenu apart.
+      className={cn(
+        "flex h-[29px] w-full items-center gap-2 rounded-full pl-3 pr-2.5 text-left font-medium text-nav-fg transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        active ? "bg-sidebar-accent" : "hover:bg-sidebar-accent/60",
+        !enabled && "opacity-40 hover:bg-transparent",
+      )}
+    >
+      <HugeiconsIcon
+        icon={tab.icon}
+        strokeWidth={1.75}
+        className="size-4 shrink-0"
+      />
+      <span className="min-w-0 flex-1 truncate text-ui-13 tracking-nav">
+        {tab.label}
+      </span>
+    </button>
+  );
+}
+
+/**
+ * The Images row plus its workflows. Hovering the row peeks them in a flyout to the right, on the
+ * same menu surface as "More"; standing on the Images page lists them under the row instead, so
+ * the current workflow is visible without hovering. Collapsed rail keeps the flyout only.
+ */
+function ImagesNavSection({
+  active,
+  collapsed,
+  onPick,
+  children,
+}: {
+  active: boolean;
+  collapsed: boolean;
+  onPick: (id: WorkflowId) => void;
+  children: ReactNode;
+}) {
+  const workflow = useImageWorkflowStore((s) => s.workflow);
+  const supported = useImageWorkflowStore((s) => s.supported);
+  const pageMode = useImageWorkflowStore((s) => s.pageMode);
+  const expanded = useImageWorkflowStore((s) => s.navExpanded);
+  const setNavExpanded = useImageWorkflowStore((s) => s.setNavExpanded);
+  const [flyoutOpen, setFlyoutOpen] = useState(false);
+  const closeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const openFlyout = useCallback(() => {
+    if (closeTimer.current) {
+      clearTimeout(closeTimer.current);
+      closeTimer.current = null;
+    }
+    setFlyoutOpen(true);
+  }, []);
+  // Delayed so the pointer can cross the gap to the panel, as the "More" row does.
+  const closeFlyoutSoon = useCallback(() => {
+    if (closeTimer.current) clearTimeout(closeTimer.current);
+    closeTimer.current = setTimeout(() => setFlyoutOpen(false), 180);
+  }, []);
+  useEffect(
+    () => () => {
+      if (closeTimer.current) clearTimeout(closeTimer.current);
+    },
+    [],
+  );
+
+  // Listed wherever there is room for them, so the disclosure is on the row everywhere. The one
+  // exception is the page's own Train tab, which has no workflows to list.
+  const canList = !collapsed && !(active && pageMode === "train");
+  const showInline = canList && expanded;
+  // Nothing here is current unless the page is actually showing a workflow.
+  const current = active && pageMode === "create" ? workflow : null;
+  const pick = (id: WorkflowId) => {
+    setFlyoutOpen(false);
+    onPick(id);
+  };
+
+  return (
+    <>
+      {/* Open is gated on !showInline, so the flyout cannot duplicate the inline list. */}
+      <DropdownMenu
+        open={flyoutOpen && !showInline}
+        onOpenChange={setFlyoutOpen}
+        modal={false}
+      >
+        <DropdownMenuTrigger asChild={true}>
+          <div
+            className="group/images-item relative"
+            onPointerEnter={openFlyout}
+            onPointerLeave={closeFlyoutSoon}
+          >
+            {children}
+            {canList && (
+              // Row action, so it gets the shared hover circle. Shown on row hover and kept
+              // while the list is open. Stops its own events so the row neither navigates
+              // nor opens the flyout.
+              <button
+                type="button"
+                aria-label={expanded ? "Hide workflows" : "Show workflows"}
+                aria-expanded={expanded}
+                onPointerDown={(e) => e.stopPropagation()}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setFlyoutOpen(false);
+                  setNavExpanded(!expanded);
+                }}
+                className={cn(
+                  "sidebar-row-action group-hover/images-item:opacity-100 group-hover/images-item:pointer-events-auto focus-visible:opacity-100 focus-visible:pointer-events-auto",
+                  expanded && "is-disclosure-open",
+                )}
+              >
+                <span className="sidebar-row-action-glyph">
+                  <ChevronDown
+                    className={cn(
+                      "size-3.5 transition-transform duration-200",
+                      !expanded && "-rotate-90",
+                    )}
+                  />
+                </span>
+              </button>
+            )}
+          </div>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          side="right"
+          align="start"
+          sideOffset={6}
+          onPointerEnter={openFlyout}
+          onPointerLeave={closeFlyoutSoon}
+          className="w-48 p-1"
+        >
+          {WORKFLOW_TABS.map((tab) => {
+            const enabled = isWorkflowEnabled(tab.id, supported);
+            return (
+              <DropdownMenuItem
+                key={tab.id}
+                disabled={!enabled}
+                title={enabled ? undefined : WORKFLOW_UNAVAILABLE}
+                onSelect={() => pick(tab.id)}
+                className={cn(current === tab.id && "bg-accent/60")}
+              >
+                <HugeiconsIcon icon={tab.icon} strokeWidth={1.75} />
+                <span className="min-w-0 flex-1 truncate">{tab.label}</span>
+              </DropdownMenuItem>
+            );
+          })}
+        </DropdownMenuContent>
+      </DropdownMenu>
+      {showInline && (
+        <div className="mt-0.5 flex flex-col gap-px pl-5">
+          {WORKFLOW_TABS.map((tab) => (
+            <WorkflowChoice
+              key={tab.id}
+              tab={tab}
+              active={current === tab.id}
+              enabled={isWorkflowEnabled(tab.id, supported)}
+              onSelect={() => pick(tab.id)}
+            />
+          ))}
+        </div>
+      )}
+    </>
+  );
+}
+
 // A NavItem's affordances in dropdown-item form, for the "More" flyout.
 function MoreMenuItem({
   icon,
@@ -437,6 +626,9 @@ export function AppSidebar() {
   } = useSidebar();
   const navigate = useNavigate();
   const router = useRouter();
+  const imagesPageMode = useImageWorkflowStore((s) => s.pageMode);
+  const imagesNavExpanded = useImageWorkflowStore((s) => s.navExpanded);
+  const setImagesNavExpanded = useImageWorkflowStore((s) => s.setNavExpanded);
 
   // Web update detection: `webUpdate` is non-null only when the installed
   // (PyPI) version is behind the latest release, so the card is hidden by
@@ -767,7 +959,7 @@ export function AppSidebar() {
     images: {
       icon: Image03Icon,
       label: t("shell.navigation.images"),
-      badge: t("shell.navigation.newBadge"),
+      // No "New" pill: the row's trailing slot holds the workflow disclosure instead.
       active: pathname === "/images" || pathname.startsWith("/images/"),
       onClick: () => {
         navigate({ to: "/images" });
@@ -855,6 +1047,20 @@ export function AppSidebar() {
   const inlineNavIds = sidebarNav
     .filter((item) => item.pinned)
     .map((item) => item.id);
+  // Mirrors ImagesNavSection's own canList / showInline pair: together they decide which row
+  // owns the highlight, and whether the Images row acts as the list's toggle.
+  const imagesCanList =
+    sidebarState !== "collapsed" &&
+    !(navRows.images.active && imagesPageMode === "train");
+  const imagesWorkflowsListed = imagesCanList && imagesNavExpanded;
+  // Already on Images, so the row has nowhere to navigate: it folds its list away instead.
+  const handleImagesClick = () => {
+    if (navRows.images.active && imagesCanList) {
+      setImagesNavExpanded(!imagesNavExpanded);
+      return;
+    }
+    navRows.images.onClick();
+  };
 
   const showSidebarBrand = !usesCustomTitlebar;
   const showCompactMacBrand = showSidebarBrand && usesNativeMacTitlebar;
@@ -1669,22 +1875,42 @@ export function AppSidebar() {
                   Sidebar navigation. */}
               {inlineNavIds.map((id) => {
                 const row = navRows[id];
-                return (
+                const item = (
                   <NavItem
                     key={id}
                     icon={row.icon}
                     label={row.label}
                     badge={row.badge}
-                    active={row.active}
+                    // While the workflows are listed, the current one carries the highlight,
+                    // so the Images row above them gives it up.
+                    active={
+                      id === "images" && imagesWorkflowsListed ? false : row.active
+                    }
                     disabled={row.disabled}
                     tooltip={row.tooltip}
                     spinner={row.spinner}
-                    onClick={row.onClick}
+                    onClick={id === "images" ? handleImagesClick : row.onClick}
                     onIntent={row.onIntent}
                     className={row.className}
                   >
                     {row.children}
                   </NavItem>
+                );
+                // Images carries its workflows: a flyout on hover, listed inline on the page.
+                if (id !== "images") return item;
+                return (
+                  <ImagesNavSection
+                    key={id}
+                    active={row.active}
+                    collapsed={sidebarState === "collapsed"}
+                    onPick={(workflowId) => {
+                      useImageWorkflowStore.getState().setWorkflow(workflowId);
+                      navigate({ to: "/images" });
+                      closeMobileIfOpen();
+                    }}
+                  >
+                    {item}
+                  </ImagesNavSection>
                 );
               })}
               {/* Unpinned destinations, behind one row. */}

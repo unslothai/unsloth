@@ -88,8 +88,9 @@ export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
 
 /** Sidebar NAVIGATION rows the user can pin and reorder, distinct from the profile-menu entries above. Array order is render order. Unpinned rows go to the "More" flyout, except a lone one, which is hidden. */
 export const SIDEBAR_NAV_ITEM_IDS = [
-  "projects",
+  // Model hub leads: picking a model comes before the work that uses one.
   "hub",
+  "projects",
   "images",
   // Video sits directly under Images: the two media tabs read as one pair.
   "video",
@@ -108,8 +109,8 @@ export type SidebarNavItemPref = {
 
 // Matches the shipped layout, so an untouched install looks unchanged.
 export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
-  projects: true,
   hub: true,
+  projects: true,
   images: true,
   video: true,
   train: true,
@@ -117,16 +118,27 @@ export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
   export: false,
 };
 
-/** The pre-v3 shipped layout, so the migration can tell an untouched install from
- *  one the user arranged themselves. */
-const SIDEBAR_NAV_V2_DEFAULT: SidebarNavItemPref[] = [
-  { id: "projects", pinned: true },
-  { id: "hub", pinned: true },
-  { id: "images", pinned: true },
-  { id: "train", pinned: true },
-  { id: "video", pinned: false },
-  { id: "recipes", pinned: false },
-  { id: "export", pinned: false },
+/** Every previously shipped layout, so a migration can tell an untouched install from one the
+ *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects. */
+const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
+  [
+    { id: "projects", pinned: true },
+    { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "train", pinned: true },
+    { id: "video", pinned: false },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "projects", pinned: true },
+    { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
 ];
 
 export const MAX_IMPORTED_FONTS = 3;
@@ -426,19 +438,21 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 3,
+      version: 4,
       storage: createJSONStorage(() => guardedLocalStorage),
       migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
         const customization = sanitizeCustomization(state.customization);
-        // v3 pinned Video under Images. Only adopt it where the stored layout is
-        // still the old default, so a user's own arrangement survives.
-        if (
-          version < 3 &&
-          JSON.stringify(customization.sidebarNav) ===
-            JSON.stringify(SIDEBAR_NAV_V2_DEFAULT)
-        ) {
-          customization.sidebarNav = [...DEFAULT_CUSTOMIZATION.sidebarNav];
+        // Adopt the new layout only where the stored one is still a shipped
+        // default, so a user's own arrangement survives.
+        if (version < 4) {
+          const stored = JSON.stringify(customization.sidebarNav);
+          const untouched = SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
+            (layout) => JSON.stringify(layout) === stored,
+          );
+          if (untouched) {
+            customization.sidebarNav = [...DEFAULT_CUSTOMIZATION.sidebarNav];
+          }
         }
         return { customization } as AppearanceCustomState;
       },
