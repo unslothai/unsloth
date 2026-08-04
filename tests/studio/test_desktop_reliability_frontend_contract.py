@@ -342,7 +342,9 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     source = TITLEBAR.read_text(encoding = "utf-8")
 
-    assert 'pinned ? "pl-3" : "justify-center"' in source
+    assert 'showSidebarSurface && !pinned ? "7rem" : sidebarWidth' in source
+    assert 'style={{ width: titlebarNavigationWidth }}' in source
+    assert 'left: titlebarNavigationWidth' in source
     assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
@@ -373,6 +375,35 @@ def test_desktop_titlebar_separates_navigation_from_sidebar_brand():
     assert header.index("<DesktopTitlebarNavigation") < header.index('src="/circle-logo-small.png"')
 
 
+
+def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker():
+    titlebar = TITLEBAR.read_text(encoding = "utf-8")
+    chat_page = CHAT_PAGE.read_text(encoding = "utf-8")
+    navigation = titlebar.split("export function DesktopTitlebarNavigation", 1)[1].split(
+        "export function WindowTitlebar", 1
+    )[0]
+
+    assert "{expanded && (" not in navigation
+    assert navigation.count('aria-label="Go back"') == 1
+    assert navigation.count('aria-label="Go forward"') == 1
+
+    assert navigation.count("onDoubleClick={stopTitlebarDrag}") == 3
+    assert "maximized" not in navigation
+    assert "const maximizeRefreshSequence = useRef(0);" in titlebar
+    assert "const scheduleMaximizedRefresh = useCallback" in titlebar
+    assert "window.setTimeout(() =>" in titlebar
+    assert "scheduleMaximizedRefresh();" in titlebar
+
+    assert '"pl-3"' in titlebar
+    assert 'isTauri && !isMobile && !pinned && view.mode !== "compare"' in chat_page
+
+    assert 'pl-[max(0.75rem,calc(var(--studio-mac-traffic-light-inset,0px)+0.375rem))]' in chat_page
+    assert 'className="!size-8 rounded-[10px] text-muted-foreground"' in chat_page
+    assert 'aria-label="New chat"' in chat_page
+    new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
+    assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
+
+
 def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
     app_sidebar = APP_SIDEBAR.read_text(encoding = "utf-8")
     primitive = SIDEBAR_PRIMITIVE.read_text(encoding = "utf-8")
@@ -400,7 +431,7 @@ def test_mac_chat_header_controls_share_the_titlebar_row():
 
     assert "shouldUseNativeMacWindowTitlebar" not in source
     assert "[--studio-content-top-inset:var(--studio-mac-titlebar-height" not in source
-    assert source.count("var(--studio-mac-traffic-light-inset") == 2
+    assert source.count("var(--studio-mac-traffic-light-inset") == 3
     assert '"--studio-chat-header-padding-top": "7px"' in provider
     assert "pt-[var(--studio-content-top-inset,0px)] md:flex-row" in source
     assert "absolute top-[var(--studio-content-top-inset,0px)]" in source
