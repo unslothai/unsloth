@@ -1221,7 +1221,7 @@ export function AppSidebar() {
             {usesNativeMacTitlebar && !isMobile && (
               <div
                 data-tauri-drag-region
-                className="absolute inset-x-0 top-0 z-10 flex h-[var(--studio-desktop-titlebar-height,34px)] items-center pl-[calc(var(--studio-mac-traffic-light-inset,78px)+6px)] select-none group-data-[collapsible=icon]:hidden"
+                className="absolute inset-x-0 top-0 z-10 flex h-[var(--studio-desktop-titlebar-height,34px)] items-start pt-px pl-[calc(var(--studio-mac-traffic-light-inset,78px)+6px)] select-none group-data-[collapsible=icon]:hidden"
               >
                 <DesktopTitlebarNavigation
                   expanded={pinned}
