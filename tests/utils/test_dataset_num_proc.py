@@ -54,6 +54,12 @@ def dnp(monkeypatch):
     module = _load_module()
     module.reset_warning_state()
     monkeypatch.delenv(module.NUM_PROC_ENV_VAR, raising = False)
+    # Pin the platform. macOS is refused by policy whatever the start method
+    # says, so every assertion below that expects a worker count is really an
+    # assertion about a forking platform; without this they pass on the Linux
+    # runner and fail on the macOS one. Tests about the platform itself set
+    # their own value afterwards, which wins.
+    monkeypatch.setattr(module.sys, "platform", "linux")
     return module
 
 
@@ -339,6 +345,10 @@ def test_start_method_probe_prefers_multiprocess_and_has_no_side_effects(dnp):
 
     method = dnp.multiprocessing_start_method()
 
+    # Must name a method this host actually offers. Windows offers only spawn,
+    # and the private default-context chain the probe reads has been seen to
+    # answer "fork" there; taking that at face value would read Windows as
+    # forkable and let workers through.
     assert method in multiprocess.get_all_start_methods()
     assert multiprocess.get_start_method(allow_none = True) == before_mp
     assert multiprocessing.get_start_method(allow_none = True) == before_std
@@ -717,3 +727,32 @@ def test_the_advice_matches_what_the_resolver_actually_returns(dnp, monkeypatch)
     )
     assert over == 1, "over the threshold the best expressible request is one worker"
     assert under is None, "under it the Zoo's own guard already goes in-process"
+
+
+def test_probe_rejects_a_start_method_the_host_does_not_offer(monkeypatch, dnp):
+    """The private default-context chain is not trustworthy on its own.
+
+    On a Windows runner it answered "fork" while get_all_start_methods() was
+    ["spawn"]. A start method the platform does not offer cannot be the one in
+    use, and believing it read Windows as forkable: _workers_unusable_reason()
+    returned None and workers were allowed through, which is the spawn
+    re-import loop of #3211 / #3397 that this module exists to prevent.
+    """
+    import sys as _sys
+    import types
+
+    fake = types.ModuleType("multiprocess")
+    fake.get_start_method = lambda allow_none = False: None
+    fake.get_all_start_methods = lambda: ["spawn"]
+    context = types.ModuleType("multiprocess.context")
+    context._default_context = types.SimpleNamespace(
+        _default_context = types.SimpleNamespace(_name = "fork"),
+    )
+    fake.context = context
+    monkeypatch.setitem(_sys.modules, "multiprocess", fake)
+
+    assert dnp.multiprocessing_start_method() == "spawn"
+
+    monkeypatch.setattr(dnp.sys, "platform", "win32")
+    assert dnp.get_dataset_num_proc(8) is None
+    assert dnp.get_dataset_num_proc(8, serial_as_none = False) is None

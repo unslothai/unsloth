@@ -128,12 +128,22 @@ def _unpinned_default_start_method(module) -> Optional[str]:
     caller depends on. Private attributes, hence the fallback.
     """
     try:
+        methods = module.get_all_start_methods()
+    except Exception:
+        methods = []
+
+    try:
         name = module.context._default_context._default_context._name
-        if isinstance(name, str) and name:
+        # Only if it is actually available here. These are private attributes and
+        # they are not consistent across builds: on a Windows runner this chain
+        # answered 'fork' while get_all_start_methods() was ['spawn'], and a
+        # start method the platform does not offer cannot be the one in use.
+        # Believing it would have read Windows as forkable and let workers
+        # through, which is the spawn re-import loop of #3211 / #3397.
+        if isinstance(name, str) and name and (not methods or name in methods):
             return name
     except Exception:
         pass
-    methods = module.get_all_start_methods()
     return methods[0] if methods else None
 
 

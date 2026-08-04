@@ -38,6 +38,20 @@ def _fork_platform(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
 
 
+def _require_fork(multiprocess):
+    """Skip when this host cannot fork.
+
+    The two tests below build real worker processes to observe whether
+    ``datasets`` takes its pool branch. That is a claim about the num_proc
+    guard, not about any particular start method, and under spawn inside pytest
+    the pool itself fails for unrelated reasons (WinError 10038 closing a
+    handle, os.WNOHANG missing). The version split they assert is checked
+    without processes in tests/utils/test_dataset_num_proc.py.
+    """
+    if "fork" not in multiprocess.get_all_start_methods():
+        pytest.skip("needs fork to build a real worker pool")
+
+
 def _patch_device(
     monkeypatch,
     device,
@@ -148,7 +162,8 @@ def test_none_builds_no_pool_but_a_count_does(monkeypatch):
     installed ``datasets`` rather than trusting the docstring.
     """
     datasets = pytest.importorskip("datasets")
-    import multiprocess
+    multiprocess = pytest.importorskip("multiprocess")
+    _require_fork(multiprocess)
 
     pools_built = []
     real_pool = multiprocess.Pool
@@ -181,7 +196,8 @@ def test_num_proc_one_is_not_a_disable_sentinel():
     installed version rather than picking one and hard-coding it.
     """
     datasets = pytest.importorskip("datasets")
-    import multiprocess  # noqa: F401
+    multiprocess = pytest.importorskip("multiprocess")
+    _require_fork(multiprocess)
     from packaging.version import Version
 
     pools_built = []
