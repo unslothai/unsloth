@@ -183,9 +183,9 @@ def test_refresh_all_is_atomic(oracle, tmp_path, monkeypatch):
     )
     assert rc == 2
     for upstream_name, snapshot_name in nv.COLAB_ORACLE_FILES.items():
-        assert (snapshot_dir / snapshot_name).read_text(encoding = "utf-8") == UPSTREAM[upstream_name], (
-            f"{snapshot_name} was overwritten even though the refresh failed"
-        )
+        assert (snapshot_dir / snapshot_name).read_text(encoding = "utf-8") == UPSTREAM[
+            upstream_name
+        ], f"{snapshot_name} was overwritten even though the refresh failed"
 
 
 def test_refresh_all_writes_nothing_into_a_fresh_dir_on_failure(oracle, tmp_path, monkeypatch):
@@ -198,9 +198,7 @@ def test_refresh_all_writes_nothing_into_a_fresh_dir_on_failure(oracle, tmp_path
 
     monkeypatch.setattr(nv.urllib.request, "urlopen", dead)
     dest = tmp_path / "never_created"
-    assert nv.cmd_refresh_colab(
-        argparse.Namespace(all = True, snapshot_dir = str(dest), out = None)
-    ) == 2
+    assert nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(dest), out = None)) == 2
     assert not dest.exists()
 
 
@@ -223,6 +221,6 @@ def test_cron_lint_survives_a_strict_drift_failure():
         # Match the directive on a line of its own: the step's own comment
         # explains `if: always()` in prose, and a substring test would happily
         # pass on that after the directive itself had been deleted.
-        assert re.search(r"^\s*if: always\(\)\s*$", blk, re.M), (
-            f"{step} would be skipped when strict drift fires"
-        )
+        assert re.search(
+            r"^\s*if: always\(\)\s*$", blk, re.M
+        ), f"{step} would be skipped when strict drift fires"
