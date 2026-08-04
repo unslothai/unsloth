@@ -644,9 +644,11 @@ def sd_cpp_text_encoders_for(
 # detection on this same tensor, and GGUF metadata cannot help: our files and leejet's carry no kv
 # pairs at all, and city96/orabazes write general.architecture = "flux" for FLUX.1 and FLUX.2 alike.
 _FLUX2_PROBE_TENSOR = "double_stream_modulation_img.lin.weight"
-_FLUX2_INNER_DIMS = {3072: "FLUX.2-klein-4B / klein-base-4B",
-                     4096: "FLUX.2-klein-9B / klein-base-9B",
-                     6144: "FLUX.2-dev"}
+_FLUX2_INNER_DIMS = {
+    3072: "FLUX.2-klein-4B / klein-base-4B",
+    4096: "FLUX.2-klein-9B / klein-base-9B",
+    6144: "FLUX.2-dev",
+}
 _FLUX2_BASE_INNER_DIM = {
     "black-forest-labs/flux.2-klein-4b": 3072,
     "black-forest-labs/flux.2-klein-base-4b": 3072,
@@ -660,7 +662,6 @@ def gguf_flux2_inner_dim(path) -> Optional[int]:
     """``inner_dim`` of a FLUX.2 GGUF, read from its header, or None if it cannot be determined."""
     try:
         from gguf import GGUFReader
-
         for t in GGUFReader(str(path)).tensors:
             if t.name == _FLUX2_PROBE_TENSOR or t.name.endswith("." + _FLUX2_PROBE_TENSOR):
                 # GGUF stores dims reversed relative to torch, so the input dim leads.

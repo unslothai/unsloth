@@ -303,6 +303,7 @@ def test_video_resolution_presets_are_upstream_sanctioned():
     for 480p, 960 for 720p); Wan2.2 TI2V-5B must offer only the two shapes upstream's
     SUPPORTED_SIZES asserts on.
     """
+
     def buckets(base_size, patch_size = 16):
         num_patches = round((base_size / patch_size) ** 2)
         out, wp, hp = [], num_patches, 1
