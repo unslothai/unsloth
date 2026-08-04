@@ -4,6 +4,7 @@
 "use client";
 
 import { getAuthToken } from "@/features/auth/session";
+import { apiUrl } from "@/lib/api-base";
 import type { ToolCallMessagePartComponent } from "@assistant-ui/react";
 import { useToolArgsStatus } from "@assistant-ui/react";
 import { CodeIcon } from "lucide-react";
@@ -142,7 +143,7 @@ const PythonToolUIImpl: ToolCallMessagePartComponent = ({
               {images.map((filename) => (
                 <img
                   key={filename}
-                  src={`/api/inference/sandbox/${encodeURIComponent(sessionId)}/${encodeURIComponent(filename)}${authToken ? `?token=${encodeURIComponent(authToken)}` : ""}`}
+                  src={apiUrl(`/api/inference/sandbox/${encodeURIComponent(sessionId)}/${encodeURIComponent(filename)}${authToken ? `?token=${encodeURIComponent(authToken)}` : ""}`)}
                   alt={filename}
                   loading="lazy"
                   className="max-w-full rounded border border-border"
