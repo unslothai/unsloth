@@ -1,6 +1,7 @@
 """An explicit --gguf-variant that exists nowhere must be rejected by
 ModelConfig.from_identifier, before the load path unloads the resident model."""
 
+import huggingface_hub
 import pytest
 
 import core.inference.llama_cpp as llama_cpp
@@ -8,6 +9,11 @@ import utils.models.model_config as mc
 from utils.models.model_config import GgufVariantInfo, ModelConfig
 
 REPO = "unsloth/Llama-3.2-1B-Instruct-GGUF"
+
+REPO_FILES = [
+    "Llama-3.2-1B-Instruct-Q4_K_M.gguf",
+    "Llama-3.2-1B-Instruct-Q8_0.gguf",
+]
 
 VARIANTS = [
     GgufVariantInfo(filename = "Llama-3.2-1B-Instruct-Q4_K_M.gguf", quant = "Q4_K_M", size_bytes = 100),
@@ -22,6 +28,9 @@ def remote_gguf_repo(monkeypatch):
     )
     monkeypatch.setattr(
         mc, "list_gguf_variants", lambda identifier, hf_token = None: (list(VARIANTS), False)
+    )
+    monkeypatch.setattr(
+        huggingface_hub, "list_repo_files", lambda repo_id, token = None: list(REPO_FILES)
     )
     monkeypatch.setattr(
         llama_cpp.LlamaCppBackend,
@@ -63,8 +72,27 @@ def test_variant_only_in_local_cache_accepted(remote_gguf_repo, monkeypatch):
     assert config.gguf_variant == "OLD_Q2"
 
 
-def test_empty_variant_listing_skips_check(remote_gguf_repo, monkeypatch):
-    monkeypatch.setattr(mc, "list_gguf_variants", lambda identifier, hf_token = None: ([], False))
+def test_variant_matching_uncollapsed_repo_file_accepted(remote_gguf_repo, monkeypatch):
+    # Same quant label across shards collapses to one GgufVariantInfo; the
+    # preflight must still match against every repo file, like the load path.
+    monkeypatch.setattr(
+        huggingface_hub,
+        "list_repo_files",
+        lambda repo_id, token = None: [
+            "Llama-3.2-1B-Instruct-Q4_K_M-00001-of-00002.gguf",
+            "Llama-3.2-1B-Instruct-Q4_K_M-00002-of-00002.gguf",
+        ],
+    )
+    config = ModelConfig.from_identifier(REPO, gguf_variant = "00002-of-00002")
+    assert config is not None
+    assert config.gguf_variant == "00002-of-00002"
+
+
+def test_listing_unavailable_skips_check(remote_gguf_repo, monkeypatch):
+    def boom(repo_id, token = None):
+        raise ConnectionError("hub unreachable")
+
+    monkeypatch.setattr(huggingface_hub, "list_repo_files", boom)
     config = ModelConfig.from_identifier(REPO, gguf_variant = "NOPE_Q9")
     assert config is not None
     assert config.gguf_variant == "NOPE_Q9"

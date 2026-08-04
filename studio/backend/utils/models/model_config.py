@@ -3009,15 +3009,23 @@ class ModelConfig:
                 # list_gguf_variants() detects vision & resolves the variant
                 variants, has_vision = list_gguf_variants(identifier, hf_token = hf_token)
                 variant = gguf_variant
-                if variant and variants:
+                if variant:
                     from core.inference.llama_cpp import (
                         _cached_variant_resolution,
                         _gguf_files_for_variant,
                     )
 
                     # Reject before the load path unloads the resident model.
+                    # Only a live, complete repo listing can prove the variant
+                    # absent; without one, let the load path resolve it.
+                    try:
+                        from huggingface_hub import list_repo_files
+                        repo_files = list_repo_files(identifier, token = hf_token)
+                    except Exception:
+                        repo_files = None
                     if (
-                        not _gguf_files_for_variant([v.filename for v in variants], variant)
+                        repo_files
+                        and not _gguf_files_for_variant(repo_files, variant)
                         and not _cached_variant_resolution(identifier, variant)[0]
                     ):
                         available = ", ".join(v.quant for v in variants)
