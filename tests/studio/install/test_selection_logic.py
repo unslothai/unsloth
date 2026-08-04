@@ -62,8 +62,8 @@ resolve_simple_install_release_plans = INSTALL_LLAMA_PREBUILT.resolve_simple_ins
 
 @pytest.fixture(autouse = True)
 def _reset_uncovered_cuda_warnings(monkeypatch):
-    # The warning dedupe is module-level state, so without this a test's verdict
-    # would depend on which earlier test happened to log the same reason first.
+    # The warning dedupe is module-level state: without this reset, a test's verdict
+    # depends on which earlier test logged the same reason first.
     monkeypatch.setattr(INSTALL_LLAMA_PREBUILT, "_UNCOVERED_CUDA_HOST_WARNINGS", set())
 
 
@@ -1185,10 +1185,10 @@ class TestLinuxCudaChoiceFromRelease:
         assert result.primary.runtime_line == "cuda13"
 
     def test_volta_host_needs_the_cuda12_line(self, monkeypatch, capsys):
-        # Issue #7765: CUDA 13 dropped sm_70, so a V100 whose only runtime line is
-        # cuda13 (torch installed from the cu130 index) gets no bundle at all and
-        # GGUF inference silently moves to the CPU. The reason has to reach the
-        # user, because the selection log is only printed when an attempt survives.
+        # Issue #7765: CUDA 13 dropped sm_70, so a V100 whose only runtime line is cuda13
+        # (torch from the cu130 index) gets no bundle and GGUF inference silently moves to
+        # the CPU. The selection log only prints when an attempt survives, so the reason
+        # has to reach the user another way.
         mock_linux_runtime(monkeypatch, ["cuda13"])
         host = make_host(driver_cuda_version = (13, 0), compute_caps = ["70"])
         art12 = make_artifact(
@@ -1204,8 +1204,8 @@ class TestLinuxCudaChoiceFromRelease:
         assert linux_cuda_choice_from_release(host, release) is None
         warning = capsys.readouterr().err
         assert "sm_70" in warning
-        # The pin, not a promise about what a re-run would pick: these GPUs are the
-        # masked view, while the installer weighs every physical GPU.
+        # The pin, not a promise about what a re-run picks: these GPUs are the masked
+        # view, while the installer weighs every physical GPU.
         assert "UNSLOTH_TORCH_INDEX_FAMILY=cu126" in warning
 
         # The same host with a CUDA 12 runtime in the venv reaches its bundle.
@@ -1215,9 +1215,8 @@ class TestLinuxCudaChoiceFromRelease:
         assert result.primary.name == "bundle-cuda12-older.tar.gz"
 
     def test_cu126_advice_reaches_a_mixed_host_cu126_can_serve(self, monkeypatch, capsys):
-        # A Volta beside an Ampere is exactly the case cu126 exists for, and the
-        # cuda12 portable bundle covers both. Withholding the remedy here would
-        # contradict what the installer does for the same host.
+        # A Volta beside an Ampere is what cu126 exists for, and the cuda12 portable
+        # bundle covers both. Withholding the remedy would contradict the installer.
         mock_linux_runtime(monkeypatch, ["cuda13"])
         host = make_host(driver_cuda_version = (13, 0), compute_caps = ["70", "86"])
         release = make_release(
@@ -1250,7 +1249,7 @@ class TestLinuxCudaChoiceFromRelease:
             ),
             # Driver too old to run a CUDA 12 runtime at all.
             ("old_driver", (11, 4), ["70"], [("cuda12", ["70", "75"], 70, 89)]),
-            # arm64 publishes no cuda12 bundle, and no aarch64 CUDA wheel goes below sm_80.
+            # arm64 publishes no cuda12 bundle, and no aarch64 CUDA wheel goes under sm_80.
             ("arm64", (13, 0), ["72"], [("cuda13", ["90", "121"], 90, 121)]),
         ],
     )

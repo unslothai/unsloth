@@ -563,11 +563,10 @@ function Get-NvccMaxArch {
     return $null
 }
 
-# Classify the physical NVIDIA inventory for a cu126 fallback:
-# "cu126" when it covers every GPU, "uncovered" for an incompatible mix,
-# and empty when no fallback is needed or the inventory is unreadable.
-# CUDA_VISIBLE_DEVICES is ignored because the wheel must support the host.
-# Mirrors _nvidia_cu126_verdict in install.sh.
+# Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
+# every GPU, "uncovered" for an incompatible mix, empty when no fallback is needed or the
+# inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because the wheel must support
+# the host. Mirrors _nvidia_cu126_verdict in install.sh.
 function Get-NvidiaCu126Verdict {
     # Floor is per-release, not fixed: only 2.11 dropped sm_70 from cu128.
     param([string]$SmiExe, [int]$LegacyFloorSm = 75)
@@ -1622,8 +1621,8 @@ function Invoke-NvidiaSmiBounded {
         [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
         [Parameter(Position = 1)][string[]]$SmiArgs = @(),
         [int]$TimeoutSec = 10,
-        # Machine-readable --query-gpu output must not be polluted by driver
-        # warnings; the default merge is kept for the human-readable probes.
+        # Driver warnings on stderr would corrupt machine-readable --query-gpu
+        # output; the human-readable probes keep the default merge.
         [switch]$StdoutOnly
     )
     try {
@@ -3506,9 +3505,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $script:PinChangedForceReinstall = $true
         $shouldRebuild = $false
     }
-    # Same for an unpinned cu* -> cu* move: the capability cap can change the expected
-    # family on an otherwise healthy venv, and only install.ps1 creates venvs, so wiping
-    # here strands a direct `studio update`. CPU/ROCm/XPU drift still rebuilds.
+    # Same for an unpinned cu* -> cu* move: the cap can change the expected family on a
+    # healthy venv, and only install.ps1 creates venvs, so wiping here strands a direct
+    # `studio update`. CPU/ROCm/XPU drift still rebuilds.
     if ($shouldRebuild -and -not $_pinnedIdx -and $installedTorchTag -and
         (Test-CudaFamilyLeaf $installedTorchTag) -and (Test-CudaFamilyLeaf $expectedTorchTag)) {
         substep "CUDA family $installedTorchTag does not cover this host -- reinstalling $expectedTorchTag in place." "Cyan"

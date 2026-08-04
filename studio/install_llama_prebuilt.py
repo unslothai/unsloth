@@ -295,10 +295,10 @@ FORCE_COMPILE_DEFAULT_REF = os.environ.get("UNSLOTH_LLAMA_FORCE_COMPILE_REF", "m
 _MIN_CUDA_MAJOR = 12
 _MAX_PROBE_CUDA_MAJOR = 19
 
-# Turing floor is sm_75: CUDA 13 dropped every target below it, so no cuda13
-# bundle can serve a Maxwell, Pascal or Volta card (issue #7765).
+# CUDA 13 dropped every target below sm_75, so no cuda13 bundle can serve a
+# Maxwell, Pascal or Volta card (issue #7765).
 _TURING_MIN_SM = 75
-# The span of PyTorch's cu126 wheels, the CUDA 12 build the remedy below points at.
+# Span of PyTorch's cu126 wheels, the build the remedy below points at.
 # Mirrors _CU126_SM_RANGE in install_python_stack.py.
 _CU126_SM_RANGE = (50, 90)
 
@@ -1538,9 +1538,8 @@ def _warn_uncovered_cuda_host(
     path. The explicit pin remains valid when llama.cpp visibility differs from
     the installer's physical inventory.
     """
-    # Decided before the dedupe: the host facts are release invariant but `artifacts`
-    # is not, and the release walk-back would let an unhelpful release swallow the
-    # remedy. aarch64 is excluded because the cap itself is x86_64 only.
+    # Decided before the dedupe: `artifacts` varies per release, so the release walk-back
+    # could let an unhelpful release swallow the remedy. The cap is x86_64 only.
     advise_cu126 = (
         not is_arm64
         and any(int(sm) < _TURING_MIN_SM for sm in host_sms)

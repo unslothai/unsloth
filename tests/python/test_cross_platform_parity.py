@@ -76,9 +76,8 @@ class TestPreTuringCapParity:
     a llama.cpp GGUF bundle. Four scripts pick the family; none may be left behind.
     """
 
-    # (file, how the cap is invoked, the selection function that must invoke it, its
-    # end marker). The invocation spelling carries its first argument, so a mention in
-    # prose or a docstring cannot satisfy the assertion.
+    # (file, call spelling, selection function that must invoke it, its end marker). The
+    # spelling carries the first argument, so a prose mention cannot satisfy the assertion.
     _SITES = (
         (INSTALL_SH, '_cap_cuda_family_for_pre_turing "', "get_torch_index_url() {", "\n}"),
         (
@@ -97,10 +96,8 @@ class TestPreTuringCapParity:
     )
 
     def test_cu126_span_agrees_across_the_python_modules(self):
-        # install_python_stack decides the wheel family and install_llama_prebuilt
-        # decides whether to recommend it. Neither imports the other (the installer
-        # runs before dependencies exist), so the shared span is asserted here
-        # instead of drifting silently.
+        # Neither module imports the other (the installer runs before dependencies
+        # exist), so assert the shared span here rather than let it drift silently.
         span = "_CU126_SM_RANGE = (50, 90)"
         for path in (STACK_PY, REPO_ROOT / "studio" / "install_llama_prebuilt.py"):
             assert span in path.read_text(encoding = "utf-8"), f"{path.name} lost {span}"
@@ -113,9 +110,8 @@ class TestPreTuringCapParity:
         assert call in body, f"{path.name}'s selection function never applies {call!r}"
 
 
-# The ladder rungs name their family either as an index-URL suffix ("$base/cu128")
-# or as the family a later step can still cap ("_cuda_tag=cu128" / '$family = "cu128"'),
-# so accept both spellings rather than pinning one branch's phrasing.
+# A ladder rung names its family either as an index-URL suffix ("$base/cu128") or as a
+# variable a later step can still cap ("_cuda_tag=cu128"), so accept both spellings.
 _CUDA_LEAF_RE = r"""[/=]\s*["']?(cu\d+|cpu)"""
 
 

@@ -4,9 +4,7 @@
 # Behavioural test for the pre-Turing cu126 cap (Get-NvidiaCu126Verdict,
 # Get-CudaFamilyCappedForPreTuring) in install.ps1 and studio/setup.ps1.
 # test_cross_platform_parity.py only greps for the call spelling, so a selector that
-# computes the verdict and throws it away still passes there. This runs both copies,
-# including -StdoutOnly: without it a stderr driver warning poisons the CSV and a
-# Volta silently keeps cu130.
+# computes the verdict and discards it still passes there. This runs both copies.
 # Run: pwsh -NoProfile -File tests/studio/test_pre_turing_cap.ps1
 
 $ErrorActionPreference = "Stop"
@@ -19,8 +17,7 @@ function Check($name, $cond) {
 }
 
 # Returns the source text of each named function. The caller Invoke-Expression's it at
-# script scope: doing that inside a function would define the helpers in that function's
-# scope and lose them on return.
+# script scope; doing that inside a function would lose the helpers on return.
 function Get-HelperSources($path, $names) {
     $tokens = $null; $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors)
@@ -36,18 +33,18 @@ function Get-HelperSources($path, $names) {
     return $out
 }
 
-# substep is the installers' printer; both use Write-Host, so it cannot pollute a
-# function's return value. Stub it so this file does not depend on the ANSI helpers.
+# Stubs for the installers' printers, so this file does not depend on the ANSI helpers.
+# Both use Write-Host, so neither can pollute a function's return value.
 function substep { param([string]$Message, [string]$Color = "DarkGray") }
 function Write-StudioStdoutMirror { param([string]$Line) }
 
-# Drives Get-NvidiaCu126Verdict without spawning a process: $script:FakeSmiStdout is
-# what a -StdoutOnly probe would return, $script:FakeSmiRc its exit code.
+# Drives Get-NvidiaCu126Verdict without spawning a process: $script:FakeSmiStdout is what
+# a -StdoutOnly probe returns, $script:FakeSmiRc its exit code.
 function Invoke-NvidiaSmiBounded {
     param([string]$Exe, [string[]]$SmiArgs = @(), [int]$TimeoutSec = 10, [switch]$StdoutOnly)
     $global:LASTEXITCODE = $script:FakeSmiRc
-    # Without -StdoutOnly the real helper appends stderr to stdout. Reproducing that
-    # here is the whole point: the caller MUST pass the switch.
+    # The real helper appends stderr to stdout without -StdoutOnly. Reproducing that is
+    # the point: the caller MUST pass the switch.
     if ($StdoutOnly) { return $script:FakeSmiStdout }
     return ($script:FakeSmiStdout + "`n" + $script:FakeSmiStderr)
 }
@@ -92,9 +89,9 @@ foreach ($file in @("install.ps1", "studio/setup.ps1")) {
     $script:FakeSmiRc = 0
 
     # --- -StdoutOnly is load-bearing ------------------------------------------
-    # A driver warning on stderr is ordinary (corrupted infoROM, ECC pending). Without
-    # the switch it lands in the CSV and the whole inventory reads as unparseable, so a
-    # V100 silently keeps cu130 -- issue #7765 all over again.
+    # A driver warning on stderr is ordinary (corrupted infoROM, ECC pending). Without the
+    # switch it lands in the CSV, the inventory reads as unparseable, and a V100 silently
+    # keeps cu130 -- issue #7765 all over again.
     $script:FakeSmiStdout = "7.0"
     $script:FakeSmiStderr = "WARNING: infoROM is corrupted at gpu 0000:00:04.0"
     Check "stderr noise does not reach the CSV parse" ((Get-NvidiaCu126Verdict "nvidia-smi" 75) -eq 'cu126')

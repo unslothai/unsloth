@@ -1366,9 +1366,8 @@ def _nvidia_compute_sms(exe: str) -> "list[int] | None":
     return sms or None
 
 
-# PyTorch 2.11's cu126 wheels span sm_50 to sm_90, Maxwell through Hopper, and carry
-# no PTX above that. It is the fallback for GPUs the driver-derived family cannot
-# reach, so a Kepler or Blackwell card in the mix leaves no family covering the host.
+# PyTorch 2.11's cu126 spans sm_50-90 (Maxwell to Hopper) with no PTX above that. It is
+# the fallback family, so a Kepler or Blackwell card in the mix leaves the host uncovered.
 _CU126_SM_RANGE = (50, 90)
 
 
@@ -1744,16 +1743,15 @@ def _ensure_cuda_torch() -> None:
     ]
     if not _marker_lines:
         return
-    # marker | +cuXXX local tag | release | family implied by torch.version.cuda. The
-    # last one is the only clue an untagged wheel gives: PyPI forbids local versions,
-    # so a torch pulled from PyPI names its CUDA major nowhere else.
+    # marker | +cuXXX local tag | release | family from torch.version.cuda. The last is the
+    # only CUDA clue an untagged wheel gives: PyPI forbids the local +cuXXX version.
     _marker, _installed_cu, _installed_release, _runtime_cu = (
         _marker_lines[-1].split("|") + ["", "", ""]
     )[:4]
-    # Reinstall CUDA torch on a ROCm build on an NVIDIA host (poisoning signature), when a
-    # CUDA index is pinned but the venv has the wrong family (CPU or a different cuXXX), or
-    # when the installed family ships no kernels for this host's GPUs. A healthy match, or a
-    # CPU wheel with no CUDA pin, is left alone.
+    # Reinstall on a ROCm build on an NVIDIA host (poisoning signature), when a CUDA index
+    # is pinned but the venv has the wrong family (CPU or a different cuXXX), or when the
+    # installed family ships no kernels for this host's GPUs. A healthy match, or a CPU
+    # wheel with no CUDA pin, is left alone.
     _pin = _explicit_torch_index_url()
     _pin_leaf = _torch_index_leaf(_pin) if _pin else ""
     _pinned_cuda = _is_cuda_family_leaf(_pin_leaf)
@@ -1771,7 +1769,6 @@ def _ensure_cuda_torch() -> None:
         # x86_64 only, like the cap: the spans below are the x86_64 build matrix.
         if platform.machine().lower() not in ("x86_64", "amd64"):
             return
-        # Check both ends of the installed family's SM span.
         _family = _installed_cu or _runtime_cu
         _span = _cuda_family_sm_range(_family, _installed_release)
         if _span is None:
@@ -1780,8 +1777,7 @@ def _ensure_cuda_torch() -> None:
         _sms = _nvidia_compute_sms(_smi) if _smi else None
         if not _sms or _span_covers(_span, _sms):
             return  # healthy CUDA torch this host can use
-        # Never trade one partial family for another or repeatedly reinstall the
-        # same unsupported family.
+        # Never trade one partial family for another, or reinstall the same one forever.
         index_url = _detect_cuda_torch_index_url()
         _target = _torch_index_leaf(index_url)
         _target_span = _cuda_family_sm_range(_target)

@@ -2101,8 +2101,8 @@ exit 0
             [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
             [Parameter(Position = 1)][string[]]$SmiArgs = @(),
             [int]$TimeoutSec = 10,
-            # Machine-readable --query-gpu output must not be polluted by driver
-            # warnings; the default merge is kept for the human-readable probes.
+            # Driver warnings on stderr would corrupt machine-readable --query-gpu
+            # output; the human-readable probes keep the default merge.
             [switch]$StdoutOnly
         )
         try {
@@ -2692,11 +2692,10 @@ exit 0
         return ((($Url -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1]).ToLowerInvariant()
     }
 
-    # Classify the physical NVIDIA inventory for a cu126 fallback:
-    # "cu126" when it covers every GPU, "uncovered" for an incompatible mix,
-    # and empty when no fallback is needed or the inventory is unreadable.
-    # CUDA_VISIBLE_DEVICES is ignored because the wheel must support the host.
-    # Mirrors _nvidia_cu126_verdict in install.sh.
+    # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it
+    # covers every GPU, "uncovered" for an incompatible mix, empty when no fallback is
+    # needed or the inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because
+    # the wheel must support the host. Mirrors _nvidia_cu126_verdict in install.sh.
     function Get-NvidiaCu126Verdict {
         # Floor is per-release, not fixed: only 2.11 dropped sm_70 from cu128.
         param([string]$SmiExe, [int]$LegacyFloorSm = 75)

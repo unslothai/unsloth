@@ -72,11 +72,10 @@ assert_eq() {
     fi
 }
 
-# Helper: create a mock nvidia-smi that prints a given CUDA version string.
-# Handles the default output (version header), -L (GPU listing) so that
-# _has_usable_nvidia_gpu sees a valid GPU, and --query-gpu=compute_cap so the
-# pre-Turing probe can read an inventory. $2 is a space-separated capability list
-# (default one Ampere card); $3 is the compute_cap query's exit code.
+# Helper: create a mock nvidia-smi answering the version header, -L (so
+# _has_usable_nvidia_gpu sees a GPU) and --query-gpu=compute_cap. $1 is the CUDA version,
+# $2 a space-separated capability list (default one Ampere card), $3 the compute_cap
+# query's exit code.
 make_mock_smi() {
     _dir=$(mktemp -d)
     _caps="${2-8.6}"
@@ -168,8 +167,8 @@ run_func() {
     else
         _cvd_setup="unset CUDA_VISIBLE_DEVICES"
     fi
-    # Pin the arch too: the cu126 cap is x86_64-only, so on an aarch64 runner
-    # every cap assertion below would otherwise silently expect the wrong family.
+    # Pin the arch: the cap is x86_64-only, so an aarch64 runner would silently
+    # expect the wrong family in every cap assertion below.
     _cvd_setup="$_cvd_setup; _ARCH=x86_64"
     if [ "$_mock_dir" = "none" ]; then
         # Minimal PATH with only basic tools, no nvidia-smi anywhere
@@ -388,8 +387,8 @@ assert_eq "CUDA Version 13.7 -> cu130" "https://download.pytorch.org/whl/cu130" 
 rm -rf "$_dir"
 
 # ── Pre-Turing hosts cap at cu126 (issue #7765) ──
-# PyTorch 2.11's cu128/cu130 wheels start at sm_75, and their CUDA 13 runtime
-# also costs these GPUs their llama.cpp GGUF bundle.
+# PyTorch 2.11's cu128/cu130 start at sm_75, and their CUDA 13 runtime also costs
+# these GPUs their llama.cpp GGUF bundle.
 _dir=$(make_mock_smi "13.0" "7.0")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + Volta -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
@@ -408,14 +407,13 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + two Voltas -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_dir"
 
-# Turing is the floor of the cu128/cu130 wheels, so it keeps the driver family.
+# Turing is the floor of cu128/cu130, so it keeps the driver family.
 _dir=$(make_mock_smi "13.0" "7.5")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + Turing -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# cu126 spans sm_50-90, so a mixed host is served whole as long as its newest
-# card is Hopper or older.
+# cu126 spans sm_50-90, so a mixed host is served whole while its newest card is Hopper.
 _dir=$(make_mock_smi "13.0" "7.0 8.6")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + Volta and Ampere -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
@@ -426,8 +424,8 @@ _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + Pascal and Hopper -> cu126" "https://download.pytorch.org/whl/cu126" "$_result"
 rm -rf "$_dir"
 
-# Blackwell is past cu126's ceiling and Kepler is under its floor, so neither mix
-# has a family that covers the whole host. The newer card keeps its wheels.
+# Blackwell is past cu126's ceiling and Kepler is under its floor, so no family covers
+# either mix whole. The newer card keeps its wheels.
 _dir=$(make_mock_smi "13.0" "7.0 12.0")
 _result=$(run_func "$_dir")
 assert_eq "CUDA 13.0 + Volta and Blackwell -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
@@ -460,7 +458,7 @@ _result=$(run_func "$_dir")
 assert_eq "empty capability inventory -> cu130" "https://download.pytorch.org/whl/cu130" "$_result"
 rm -rf "$_dir"
 
-# aarch64 CUDA wheels have no sm_<80 kernels in any family, so cu126 cannot help.
+# No aarch64 CUDA family ships sm_<80 kernels, so cu126 cannot help there.
 _dir=$(make_mock_smi "13.0" "7.0")
 _result=$(PATH="$_dir:$_TOOLS_DIR" bash -c \
     "_ARCH=aarch64; . '$_FUNC_FILE'; _cap_cuda_family_for_pre_turing cu130 nvidia-smi" 2>/dev/null)

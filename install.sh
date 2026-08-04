@@ -2686,11 +2686,10 @@ _probe_amd_gfx_arch() {
     printf '%s\n' "$_pg"
 }
 
-# Classify the physical NVIDIA inventory for a cu126 fallback:
-# "cu126" when it covers every GPU, "uncovered" for an incompatible mix,
-# and empty when no fallback is needed or the inventory is unreadable.
-# CUDA_VISIBLE_DEVICES is ignored because the wheel must support the host.
-# Shared decision with install.ps1 / setup.ps1 / install_python_stack.py.
+# Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
+# every GPU, "uncovered" for an incompatible mix, empty when no fallback is needed or the
+# inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because the wheel must support
+# the host. Shared decision with install.ps1 / setup.ps1 / install_python_stack.py.
 _nvidia_cu126_verdict() {
     [ -n "$1" ] || return 0
     _ncv_caps=$(_run_bounded "$1" --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null) || return 0
@@ -2712,9 +2711,8 @@ _nvidia_cu126_verdict() {
     '
 }
 
-# Cap cu128/cu130 at cu126 when it covers every physical GPU.
-# PyTorch 2.11 cu128/cu130 start at sm_75; cu126 spans sm_50 through sm_90.
-# Non-x86_64 hosts retain driver-only selection.
+# Cap cu128/cu130 at cu126 when it covers every physical GPU: PyTorch 2.11's cu128/cu130
+# start at sm_75, cu126 spans sm_50-90. Non-x86_64 keeps driver-only selection.
 _cap_cuda_family_for_pre_turing() {
     case "$_ARCH" in
         x86_64|amd64) ;;
