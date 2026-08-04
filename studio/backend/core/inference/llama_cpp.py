@@ -7345,13 +7345,9 @@ class LlamaCppBackend:
             # failures ("...shared libraries: cannot create search path array"),
             # so the first word is prose, not a library. Report it unnamed.
             if not (
-                "/" in _lib
-                or "\\" in _lib
-                or any(_e in _lib for _e in (".so", ".dylib", ".dll"))
+                "/" in _lib or "\\" in _lib or any(_e in _lib for _e in (".so", ".dylib", ".dll"))
             ):
-                return LlamaCppBackend._unloadable_library_message(
-                    "", f"{_lib} {_reason}".strip()
-                )
+                return LlamaCppBackend._unloadable_library_message("", f"{_lib} {_reason}".strip())
             # Only "cannot open shared object file" means absent; the same line
             # reports corrupt/incompatible libraries too, which are present.
             if "cannot open" in _reason.lower() or not _reason:
