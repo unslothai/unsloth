@@ -3042,7 +3042,7 @@ export function HubModelPicker({
   // and stay visible while searching. Fixed width matches the Search Hub button
   // so it and the format dropdown line up. Trigger label clips; the menu shows full.
   const sortTriggerClassName =
-    "w-[110px] shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
+    "h-(--picker-control-h) w-(--picker-control-w) shrink-0 justify-between pr-2.5 !border-0 text-xs [&>span]:!text-clip";
   // Tighter menu (less padding, text-xs) matching the trigger. Keep the option's
   // right padding so the selected-item checkmark never overlaps the label.
   const sortMenuContentClassName =
@@ -3560,7 +3560,7 @@ export function HubModelPicker({
           <div className="relative flex-1">
             <HugeiconsIcon
               icon={Search01Icon}
-              className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
+              className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
             />
             <Input
               value={query}
@@ -3571,10 +3571,10 @@ export function HubModelPicker({
                   : "Search Unsloth models"
               }
               data-model-picker-search-input={true}
-              className="field-soft h-9 border-0 pl-8 pr-8"
+              className="field-soft h-(--picker-control-h) border-0 pl-8 pr-8"
             />
             {isLoading && (
-              <Spinner className="pointer-events-none absolute right-2.5 top-2.5 size-4 text-muted-foreground" />
+              <Spinner className="pointer-events-none absolute right-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
             )}
           </div>
           {onBrowseHub ? (
@@ -3584,7 +3584,7 @@ export function HubModelPicker({
                   type="button"
                   onClick={onBrowseHub}
                   aria-label="Search more models on the Hub"
-                  className="hub-tab-toggle-pill flex h-9 w-[110px] shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
+                  className="hub-tab-toggle-pill flex h-(--picker-control-h) w-(--picker-control-w) shrink-0 items-center justify-center gap-[5px] rounded-full border-0 text-xs text-foreground transition-colors"
                 >
                   <HugeiconsIcon
                     icon={DashboardCircleIcon}

@@ -760,6 +760,182 @@ function Get-RocmPinStaleTags {
     }
 }
 
+# Bounded "ask python a question" probe, shared by every torch probe below: a wedged torch import
+# or a hanging Intel driver init would block a bare `& python -c ...` forever. ProcessStartInfo,
+# not &, so stderr cannot trip $ErrorActionPreference; BOTH streams drain async so a noisy import
+# cannot deadlock on a full pipe; WaitForExit bounds the wait and kills the child. Every failure
+# reads as .Ok = $false. Mirrors install.ps1's copy.
+function Invoke-BoundedPythonProbe {
+    param([string]$PythonExe, [string]$Code, [int]$TimeoutSec = 30)
+    $result = [pscustomobject]@{ Ok = $false; Output = "" }
+    if (-not $PythonExe -or -not $Code) { return $result }
+    try {
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $PythonExe
+        $psi.Arguments = "-c `"$Code`""
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $psi.UseShellExecute = $false
+        $psi.CreateNoWindow = $true
+        $proc = [System.Diagnostics.Process]::Start($psi)
+        $outTask = $proc.StandardOutput.ReadToEndAsync()
+        $errTask = $proc.StandardError.ReadToEndAsync()
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            try { $proc.Kill() } catch {}
+            return $result
+        }
+        $result.Output = $outTask.GetAwaiter().GetResult()
+        [void]$errTask.GetAwaiter().GetResult()
+        $result.Ok = ($proc.ExitCode -eq 0)
+        return $result
+    } catch { return $result }
+}
+
+# True when $PythonExe's torch can actually drive an Intel GPU. Quiet on purpose: the three
+# callers read a False differently. Only an XPU build can answer True, so a CPU build never
+# vetoes a migration.
+function Test-TorchXpuAvailable {
+    param([string]$PythonExe)
+    if (-not $PythonExe) { return $false }
+    # Line-anchored so a stdout banner cannot hide the answer; a timeout reads as "no XPU".
+    $probe = Invoke-BoundedPythonProbe -PythonExe $PythonExe -Code 'import torch; print(torch.xpu.is_available())'
+    return ($probe.Ok -and $probe.Output -match '(?m)^\s*True\s*$')
+}
+
+# Post-install XPU runtime check. A WMI name match says the part is XPU-capable, not that the
+# compute runtime works: on an old Intel driver the wheel installs fine, never initializes, and
+# unsloth/device_type.py raises NotImplementedError at import -- a hard crash, not a chat-only
+# downgrade. Warn only: the wheel is correct and a driver update fixes it.
+function Assert-XpuRuntimeReady {
+    param([string]$PythonExe)
+    if (Test-TorchXpuAvailable -PythonExe $PythonExe) { return $true }
+    substep "[WARN] PyTorch XPU is installed but torch.xpu.is_available() is False." "Yellow"
+    substep "       The Intel GPU driver is most likely too old -- PyTorch XPU on Windows" "Yellow"
+    substep "       needs Intel Graphics Driver 32.0.101.6739 (WHQL) or newer." "Yellow"
+    substep "       Update the driver, then re-run. See:" "Yellow"
+    substep "       https://unsloth.ai/docs/get-started/install/intel" "Yellow"
+    return $false
+}
+
+# Bounded Win32_VideoController scan: the query can block forever on a degraded WMI repository,
+# -ErrorAction only suppresses reported errors, and -OperationTimeoutSec is not enforced for the
+# local COM session this uses, so out of process with a wall-clock kill is the only bound that
+# holds. Ok = $false on an empty answer too, since a Windows host always has an adapter.
+# Mirrors install.ps1's copy.
+function Invoke-BoundedVideoControllerScan {
+    param([int]$TimeoutSec = 15)
+    $result = [pscustomobject]@{ Ok = $false; Names = @() }
+    $job = $null
+    try {
+        $job = Start-Job -ScriptBlock {
+            Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty Name
+        }
+        if (Wait-Job -Job $job -Timeout $TimeoutSec) {
+            $names = @(Receive-Job -Job $job -ErrorAction SilentlyContinue)
+            $result.Names = @($names | Where-Object { $_ })
+            $result.Ok = ($result.Names.Count -gt 0)
+        } else {
+            Stop-Job -Job $job -ErrorAction SilentlyContinue
+        }
+    } catch {
+    } finally {
+        if ($job) { Remove-Job -Job $job -Force -ErrorAction SilentlyContinue }
+    }
+    return $result
+}
+
+# Registry fallback for the scan above, mirroring install_llama_prebuilt.py's
+# windows_intel_gpu_in_registry(): the display-adapter class key, one NNNN subkey per driver
+# config. Weaker than WMI (a config can outlive removed hardware), so it is the fallback here
+# while that function is registry-first -- there a false positive only picks a different
+# llama.cpp bundle, here it would install XPU torch on a host with no Arc. Mirrors install.ps1.
+function Get-IntelRegistryAdapterNames {
+    $names = @()
+    $classKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}"
+    try {
+        $subs = @(Get-ChildItem -LiteralPath $classKey -ErrorAction SilentlyContinue)
+    } catch { return @() }
+    foreach ($sub in $subs) {
+        # Guarded per subkey, not around the loop: one unreadable entry must not discard the
+        # adapters found after it. Matches windows_intel_gpu_in_registry()'s per-key skip.
+        try {
+            # Numeric subkeys only: "Properties" is ACL-restricted and not an adapter.
+            if ("$($sub.PSChildName)" -match '^\d+$') {
+                $props = Get-ItemProperty -LiteralPath $sub.PSPath -ErrorAction SilentlyContinue
+                if ($props) {
+                    $desc = "$($props.DriverDesc)"
+                    # Callers re-filter on "Intel", so a vendor-ID hit with a localized or
+                    # OEM-branded DriverDesc would be found here and dropped there. Tag it
+                    # instead; still only XPU-capable if the name says Arc / Data Center GPU.
+                    if ("$($props.MatchingDeviceId)" -match '(?i)ven_8086') {
+                        $names += if ($desc -match '(?i)intel') { $desc }
+                                  elseif ($desc) { "Intel $desc" }
+                                  else { "Intel Graphics" }
+                    } elseif ($desc -match '(?i)intel') {
+                        $names += $desc
+                    }
+                }
+            }
+        } catch { }
+    }
+    return $names
+}
+
+# The studio venv directory, guessed from the environment alone. The canonical $VenvDir is
+# resolved ~1100 lines below, far past the hardware report, so the Intel scan needs its own
+# read-only guess. Returns $null when there is nothing to look at; never creates or validates.
+function Get-ProbableStudioVenvDir {
+    $root = if (-not [string]::IsNullOrWhiteSpace($env:UNSLOTH_STUDIO_HOME)) { $env:UNSLOTH_STUDIO_HOME.Trim() }
+            elseif (-not [string]::IsNullOrWhiteSpace($env:STUDIO_HOME)) { $env:STUDIO_HOME.Trim() }
+            else { $null }
+    # Expand a leading ~ like the canonical resolver; without it the path stays cwd-relative.
+    if ($root -and ($root -eq "~" -or $root -like "~/*" -or $root -like "~\*")) {
+        if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
+        $rest = $root.Substring(1).TrimStart('/', '\')
+        $root = if ($rest) { Join-Path $env:USERPROFILE $rest } else { $env:USERPROFILE }
+    }
+    if (-not $root) {
+        if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }
+        $root = Join-Path $env:USERPROFILE ".unsloth\studio"
+    }
+    $venv = Join-Path $root "unsloth_studio"
+    if (Test-Path -LiteralPath $venv -PathType Container) { return $venv }
+    return $null
+}
+
+# Is this venv's torch an XPU wheel? Read off disk, not through the interpreter: version.py
+# carries the full local label ("2.9.1+xpu") and costs nothing, so a CPU-only host never pays for
+# an `import torch`. The dist-info name is NOT usable -- pip normalises the local label out of it.
+function Test-VenvTorchIsXpu {
+    param([string]$VenvPath)
+    if (-not $VenvPath) { return $false }
+    try {
+        $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
+        if (-not (Test-Path -LiteralPath $verPy)) { return $false }
+        return [bool]((Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop) -match "__version__\s*=\s*'[^']*\+xpu")
+    } catch { return $false }
+}
+
+# Same free disk read, plus the supported range: unsloth/models/_utils.py raises at import for an
+# XPU device on torch < 2.6, so flavour alone would call a 2.5+xpu venv fine; 2.11 is the trio's
+# ceiling. Flavour and range ONLY -- whether the runtime reaches the GPU is a driver question.
+function Test-VenvTorchIsXpuSupported {
+    param([string]$VenvPath)
+    if (-not $VenvPath) { return $false }
+    try {
+        $verPy = Join-Path $VenvPath "Lib\site-packages\torch\version.py"
+        if (-not (Test-Path -LiteralPath $verPy)) { return $false }
+        $line = @(Get-Content -LiteralPath $verPy -TotalCount 40 -ErrorAction Stop |
+            Where-Object { $_ -match "^__version__\s*=\s*'[^']*'" })[0]
+        if (-not $line -or $line -notmatch "^__version__\s*=\s*'([^']*)'") { return $false }
+        $label = $Matches[1].ToLowerInvariant()
+        if ($label -notmatch '\+xpu') { return $false }
+        if ($label -notmatch '^(\d+)\.(\d+)\b') { return $false }
+        return ([int]$Matches[1] -eq 2 -and [int]$Matches[2] -ge 6 -and [int]$Matches[2] -lt 11)
+    } catch { return $false }
+}
+
 # VS generator -> MSBuild BuildCustomizations dir; toolset tracks the VS major
 # (18->v180, 17->v170), defaulting to v170 when unparseable.
 function Get-VcBuildCustomizationsDir {
@@ -1782,8 +1958,85 @@ if (-not $HasNvidiaSmi) {
     }
 }
 
+# gfx arches AMD publishes Windows ROCm wheels for (repo.amd.com/rocm/whl/<family>). Hoisted
+# above the Intel scan, which needs it: an unlisted arch gets CPU torch, so it must not outrank a
+# usable Arc card. test_rocm_arch_table_parity.py keeps it in sync with $archFamilyMap below.
+$_rocmWheelArches = @(
+    "gfx1201", "gfx1200",           # RDNA 4
+    "gfx1151", "gfx1150", "gfx1152",  # RDNA 3.5 (Strix Halo/Point, Krackan Point)
+    "gfx1103", "gfx1102", "gfx1101", "gfx1100",  # RDNA 3
+    "gfx1036", "gfx1035", "gfx1034", "gfx1033", "gfx1032", "gfx1031", "gfx1030",  # RDNA 2 (RX 6000)
+    "gfx90a", "gfx908"              # MI200 / MI100
+)
+# "AMD gets GPU wheels here", NOT "an AMD GPU is present": $HasROCm / $ROCmGfxArch are true on
+# unmapped arches (Vega, RDNA1) too, and those install CPU torch.
+$AmdHasGpuWheels = [bool]($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch))
+
+# Mirrors the Intel scan in install.ps1 so setup does not report "none (chat-only)" right after
+# install.ps1 reported a usable Arc GPU. Self-contained, because `studio update` runs setup.ps1
+# standalone. Same $AmdHasGpuWheels gate (an Arc card wins over an AMD host heading for CPU torch
+# anyway) and the same Arc / Data Center match.
+$script:IsIntelXpu = $false
+# Set when the stale check below keeps an installed +xpu venv instead of wiping it. Separate from
+# $script:IsIntelXpu on purpose: it steers the INSTALL, not the hardware report, which must stay
+# honest about the NVIDIA GPU that is also in the machine.
+$script:PreservedXpuVenv = $false
+$IntelGpuLabel = $null
+if (-not $HasNvidiaSmi -and -not $AmdHasGpuWheels) {
+    try {
+        # Bounded, registry as the fallback when WMI does not answer: an unbounded query hangs
+        # `studio update`, a swallowed one silently reports no GPU.
+        $_gpuScan = Invoke-BoundedVideoControllerScan
+        # @() wraps the WHOLE if, not each branch: a one-element array unrolls on its way out,
+        # making $_gpuNames a String on a single-adapter host and turning the += below into
+        # string concatenation.
+        $_gpuNames = @(if ($_gpuScan.Ok) { $_gpuScan.Names } else { Get-IntelRegistryAdapterNames })
+        # One definition for both the reconciliation gate and the classification below.
+        $_xpuNameRe = "(?i)Intel.*(Arc|Data Center GPU)"
+        # On non-English Windows the WMI name carries no ASCII "Intel" for the classification
+        # below. The registry helper resolves the PCI vendor id, so use it to RE-LABEL an adapter
+        # WMI already reported, never to add one (an unmatched entry is a driver record outliving
+        # its card). Gated on the absence of an XPU match, not of any Intel name: a hybrid laptop
+        # reports "Intel UHD" next to a localized Arc.
+        if ($_gpuScan.Ok -and -not ($_gpuNames | Where-Object { $_ -match $_xpuNameRe })) {
+            foreach ($_reg in @(Get-IntelRegistryAdapterNames)) {
+                foreach ($_wmiName in $_gpuNames) {
+                    if ($_wmiName -and $_reg.Contains($_wmiName)) { $_gpuNames += $_reg; break }
+                }
+            }
+        }
+        $xpuGpu = $_gpuNames | Where-Object { $_ -match $_xpuNameRe } | Select-Object -First 1
+        if ($xpuGpu) { $script:IsIntelXpu = $true; $IntelGpuLabel = $xpuGpu }
+    } catch {}
+    # Neither WMI nor the registry recognised an adapter, so ask the environment: an installed
+    # +xpu wheel whose runtime initialises proves the host better than a marketing name. The same
+    # check runs ~1300 lines below, but AFTER the report just below, so without this an Arc user
+    # on a wedged WMI is told no training GPU exists and then watches setup keep the XPU
+    # environment. Own try, so a throwing scan or a junk UNSLOTH_STUDIO_HOME cannot abort setup.
+    if (-not $script:IsIntelXpu) {
+        try {
+            $_probeVenv = Get-ProbableStudioVenvDir
+            if (Test-VenvTorchIsXpu $_probeVenv) {
+                $_probePy = Join-Path $_probeVenv "Scripts\python.exe"
+                if (Test-TorchXpuAvailable -PythonExe $_probePy) {
+                    $script:IsIntelXpu = $true
+                    $IntelGpuLabel = "Intel XPU runtime (reported by PyTorch)"
+                }
+            }
+        } catch {}
+    }
+}
+
 if ($HasNvidiaSmi) {
     step "gpu" "NVIDIA GPU detected"
+} elseif ($script:IsIntelXpu) {
+    # Ranks above every AMD branch: only true when AMD gets no GPU wheel ($AmdHasGpuWheels gates
+    # the scan above), so those branches would all end on CPU torch.
+    Write-Host ""
+    step "gpu" "Intel GPU detected" "Green"
+    substep "$IntelGpuLabel"
+    substep "PyTorch XPU (SYCL) wheels provide training and GPU inference on this GPU." "Cyan"
+    Write-Host ""
 } elseif ($HasROCm) {
     step "gpu" $ROCmGpuLabel
     $hipSdkPath = if ($env:HIP_PATH) { $env:HIP_PATH } elseif ($env:ROCM_PATH) { $env:ROCM_PATH } else { "on system PATH" }
@@ -1818,7 +2071,7 @@ if ($HasNvidiaSmi) {
 } else {
     Write-Host ""
     step "gpu" "none (chat-only / GGUF)" "Yellow"
-    substep "Training and GPU inference require an NVIDIA or AMD ROCm GPU." "Yellow"
+    substep "Training and GPU inference require an NVIDIA, AMD ROCm, or Intel Arc GPU." "Yellow"
     Write-Host ""
 }
 
@@ -3069,6 +3322,10 @@ Set-PersistedNoTorch -VenvPath $VenvDir -NoTorch $NoTorchMode
 # every accepted spelling to one value both sides parse identically.
 $env:UNSLOTH_NO_TORCH = if ($NoTorchMode) { "true" } else { "false" }
 $InstallerManagedSetup = $env:UNSLOTH_INSTALL_ROLLBACK_MANAGED -match '^(?i:true|1|yes)$'
+# Only the stale-venv block below assigns this, but the XPU install reads it to decide whether to
+# force-reinstall and a fresh install never enters that block. Declaring it keeps a caller's
+# Set-StrictMode from making the read fatal.
+$installedTorchTag = $null
 if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode) {
     $VenvPyExe = Join-Path $VenvDir "Scripts\python.exe"
     $installedTorchTag = $null
@@ -3077,35 +3334,37 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     $script:PinChangedForceReinstall = $false
 
     if (Test-Path -LiteralPath $VenvPyExe) {
-        try {
-            $psi = New-Object System.Diagnostics.ProcessStartInfo
-            $psi.FileName = $VenvPyExe
-            $psi.Arguments = '-c "import torch; print(torch.__version__)"'
-            $psi.RedirectStandardOutput = $true
-            $psi.RedirectStandardError = $true
-            $psi.UseShellExecute = $false
-            $psi.CreateNoWindow = $true
-            $proc = [System.Diagnostics.Process]::Start($psi)
-            $torchVer = $proc.StandardOutput.ReadToEnd().Trim()
-            $finished = $proc.WaitForExit(30000)
-            if ($finished -and $proc.ExitCode -eq 0 -and $torchVer) {
-                if ($torchVer -match '\+(cu\d+)') {
-                    $installedTorchTag = $Matches[1]
-                } elseif ($torchVer -match '\+rocm') {
-                    # Any +rocm / gfx wheel -> generic "rocm" flavor (the exact version is
-                    # repaired later by install_python_stack.py; here we only need the flavor).
-                    $installedTorchTag = "rocm"
-                } elseif ($torchVer -match '\+cpu') {
-                    $installedTorchTag = "cpu"
-                } else {
-                    # Untagged wheel (plain "2.x.y" from PyPI) -> cpu.
-                    $installedTorchTag = "cpu"
-                }
+        # Bounded like every other torch probe: reading stdout to EOF before waiting would hang
+        # setup forever on a wedged `import torch`, and an undrained stderr deadlocks on a noisy
+        # import. An unreadable flavor -> rebuild.
+        $_verProbe = Invoke-BoundedPythonProbe -PythonExe $VenvPyExe -Code 'import torch; print(torch.__version__)'
+        $torchVer = $_verProbe.Output.Trim()
+        if ($_verProbe.Ok -and $torchVer) {
+            if ($torchVer -match '\+(cu\d+)') {
+                $installedTorchTag = $Matches[1]
+            } elseif ($torchVer -match '\+rocm') {
+                # Any +rocm / gfx wheel -> generic "rocm" flavor (the exact version is
+                # repaired later by install_python_stack.py; here we only need the flavor).
+                $installedTorchTag = "rocm"
+            } elseif ($torchVer -match '\+xpu') {
+                # Without this arm a +xpu wheel reads as "cpu" and an Arc venv looks correct
+                # while being CPU-only. Matches ConvertTo-TorchFlavorTag.
+                $installedTorchTag = "xpu"
+            } elseif ($torchVer -match '\+cpu') {
+                $installedTorchTag = "cpu"
             } else {
-                if (-not $finished) { try { $proc.Kill() } catch {} }
-                $shouldRebuild = $true
+                # Untagged wheel (plain "2.x.y" from PyPI) -> cpu.
+                $installedTorchTag = "cpu"
             }
-        } catch {
+        } elseif (Test-VenvTorchIsXpu -VenvPath $VenvDir) {
+            # Bounding this probe made a timeout mean "rebuild", and the host most likely to
+            # time out inside `import torch` is an Arc box with a stalled driver -- where
+            # version.py still names a good +xpu wheel, and the stale path would DELETE $VenvDir.
+            # Trust the disk and warn about the driver; other families keep rebuilding.
+            $installedTorchTag = "xpu"
+            substep "PyTorch did not respond in time but this venv holds an XPU build -- keeping it." "Yellow"
+            substep "If training fails, update the Intel GPU compute driver." "Yellow"
+        } else {
             $shouldRebuild = $true
         }
     } else {
@@ -3114,6 +3373,17 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
     }
 
     if (-not $shouldRebuild) {
+        # The scan above only matches a WMI marketing name, so a throwing Get-CimInstance -- or
+        # an Intel part outside the Arc|Data Center regex -- leaves $script:IsIntelXpu false, and
+        # the chain below would expect "cpu", see "xpu" and WIPE a working XPU venv.
+        # torch.xpu.is_available() on a +xpu wheel proves the host, so re-evaluate before the
+        # stale decision. This repeats the scan's own gate, so NVIDIA / AMD keep winning.
+        if ($installedTorchTag -eq "xpu" -and -not $script:IsIntelXpu -and
+            -not $HasNvidiaSmi -and -not $AmdHasGpuWheels -and
+            (Test-TorchXpuAvailable -PythonExe $VenvPyExe)) {
+            $script:IsIntelXpu = $true
+            substep "Intel XPU runtime confirmed by PyTorch -- keeping this XPU environment." "Cyan"
+        }
         $_pinnedIdx = Get-PinnedTorchIndexUrl
         $_expectedKnown = $true
         if ($_pinnedIdx) {
@@ -3127,9 +3397,9 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
                 $_rocmTags = Get-RocmPinStaleTags -PinLeaf $_pinLeaf -TorchVersion $torchVer
                 $expectedTorchTag  = $_rocmTags.Expected
                 $installedTorchTag = $_rocmTags.Installed
-            } elseif ((Test-CudaFamilyLeaf $_pinLeaf) -or $_pinLeaf -eq 'cpu') {
-                # cu*/cpu leaves stay specific so a cu126-vs-cu128 mismatch rebuilds;
-                # /custom and /current fall through to the unknown-index branch below.
+            } elseif ((Test-CudaFamilyLeaf $_pinLeaf) -or $_pinLeaf -eq 'cpu' -or $_pinLeaf -eq 'xpu') {
+                # cu*/cpu/xpu leaves stay specific so a cu126-vs-cu128 (or cpu-vs-xpu) mismatch
+                # is caught; /custom and /current fall through to the unknown-index branch below.
                 $expectedTorchTag = $_pinLeaf
             } else {
                 # Custom index whose leaf is not a torch flavor (a /simple mirror): the
@@ -3139,19 +3409,19 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
             }
         } elseif ($HasNvidiaSmi) {
             $expectedTorchTag = Get-PytorchCudaTag
+        } elseif ($script:IsIntelXpu) {
+            # Arc / Data Center host: the install below selects the xpu index. BEFORE the AMD
+            # arm -- both can be true on an unmapped-arch AMD box, where xpu is what gets
+            # installed. A CPU wheel is not wiped (the xpu install force-reinstalls over it in
+            # place), so expect "cpu" there; a cu*/rocm wheel still rebuilds.
+            $expectedTorchTag = if ($installedTorchTag -eq "cpu") { "cpu" } else { "xpu" }
         } elseif ($HasROCm -or $script:ROCmGfxArch) {
             # AMD/ROCm host with no explicit pin: an existing +rocm wheel is correct (gfx arch
             # counts even when $HasROCm is false). But only the arches the install path maps to a
             # repo.amd.com index get ROCm torch; an unmapped arch installs CPU, so expect "cpu"
             # for those or a correct CPU venv rebuilds every update.
-            $_rocmWheelArches = @(
-                "gfx1201", "gfx1200",           # RDNA 4
-                "gfx1151", "gfx1150", "gfx1152",  # RDNA 3.5 (Strix Halo/Point, Krackan Point)
-                "gfx1103", "gfx1102", "gfx1101", "gfx1100",  # RDNA 3
-                "gfx1036", "gfx1035", "gfx1034", "gfx1033", "gfx1032", "gfx1031", "gfx1030",  # RDNA 2 (RX 6000)
-                "gfx90a", "gfx908"              # MI200 / MI100
-            )
-            if ($script:ROCmGfxArch -and ($_rocmWheelArches -contains $script:ROCmGfxArch)) {
+            # $_rocmWheelArches is defined above the Intel scan (that gate needs it too).
+            if ($AmdHasGpuWheels) {
                 # A correct +rocm wheel is not stale. A CPU wheel on a supported AMD arch is
                 # NOT wiped either (the AMD Windows ROCm override below upgrades it in place);
                 # expect "cpu" for that case. A wrong CUDA wheel still rebuilds.
@@ -3178,6 +3448,20 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         substep "Torch-index pin changed ($installedTorchTag) -- reinstalling torch from the pin in place." "Cyan"
         $script:PinChangedForceReinstall = $true
         $shouldRebuild = $false
+    }
+    # A +xpu venv is never wiped by a DIRECT update: on a hybrid NVIDIA+Arc box the promotion
+    # above is gated on -not $HasNvidiaSmi, so a later pinless update expects a cu* tag, calls the
+    # working Arc venv stale and deletes it -- then exits, because only install.ps1 creates venvs.
+    # Under install.ps1 ($InstallerManagedSetup) the rollback copy exists, so leave that alone.
+    if ($shouldRebuild -and -not $InstallerManagedSetup -and $installedTorchTag -eq "xpu") {
+        substep "Keeping the installed Intel XPU environment (this host expects $expectedTorchTag)." "Yellow"
+        substep "Re-run install.ps1 to replace it -- that path rebuilds with a rollback copy." "Yellow"
+        $shouldRebuild = $false
+        # Keeping the venv is only half the job: the index selection below prefers NVIDIA, and
+        # the CUDA arm does NOT --reinstall-package torch, so uv would keep the +xpu wheel as
+        # satisfied while installing triton-windows over torch's XPU triton, with $XpuIndexUrl
+        # null and nothing to swap it back. So the whole pass stays on the xpu index.
+        $script:PreservedXpuVenv = $true
     }
 
     if ($shouldRebuild) {
@@ -3294,6 +3578,38 @@ function Fast-Install {
     }
 }
 
+# uv first, pip as the fallback -- the shape install.sh uses to prune a dependency-pulled wheel.
+# No index scrub: an uninstall reads no index.
+function Fast-Uninstall {
+    param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
+    if ($UseUv) {
+        $VenvPy = (Get-Command python).Source
+        & uv pip uninstall --python $VenvPy @Args_ 2>&1
+        if ($LASTEXITCODE -eq 0) { return }
+    }
+    & python -m pip uninstall -y @Args_ 2>&1
+}
+
+# Fetch a wheel without installing it, so a destructive step can be staged behind a download.
+# pip only: uv has no `pip download` (astral-sh/uv#3163). Scrubbed like Fast-Install, minus the
+# UV_* pip cannot read: an inherited PIP_INDEX_URL or user pip.conf would outrank --index-url.
+function Fast-Download {
+    param([Parameter(ValueFromRemainingArguments=$true)]$Args_)
+    $saved = @{}
+    foreach ($n in 'PIP_EXTRA_INDEX_URL', 'PIP_FIND_LINKS', 'PIP_NO_INDEX', 'PIP_INDEX_URL', 'PIP_CONFIG_FILE') {
+        $saved[$n] = [Environment]::GetEnvironmentVariable($n)
+        Remove-Item "Env:$n" -ErrorAction SilentlyContinue
+    }
+    $env:PIP_CONFIG_FILE = 'nul'
+    try {
+        & python -m pip download @Args_ 2>&1
+    }
+    finally {
+        Remove-Item "Env:PIP_CONFIG_FILE" -ErrorAction SilentlyContinue
+        foreach ($n in $saved.Keys) { if ($null -ne $saved[$n]) { Set-Item "Env:$n" $saved[$n] } }
+    }
+}
+
 # ── Check if Python deps need updating ──
 # Compare installed package version against PyPI latest.
 # Skip all Python dependency work if versions match (fast update path).
@@ -3367,6 +3683,57 @@ sys.exit(0 if install_manifest.verify_install()['ok'] else 1)
             if ($_torchIsCpu) {
                 substep "AMD GPU ($script:ROCmGfxArch) detected but installed PyTorch is CPU-only -- reinstalling ROCm PyTorch" "Cyan"
                 $SkipPythonDeps = $false
+            }
+        }
+        # ...and the same for an Intel Arc / Data Center GPU, or an up-to-date package on a CPU
+        # wheel stays on CPU torch forever. $SkipPythonDeps is re-tested so an escape taken above
+        # does not read twice. Both escapes below exist to reach the XPU install and its two
+        # remediations, all three gated on $XpuIndexUrl (set only when the resolved leaf is xpu),
+        # so $_xpuIsReachable holds them back where a pin or no-torch mode sends this host
+        # elsewhere and clearing the fast path would install nothing and re-fire forever.
+        $_pinLeafNow = Get-TorchIndexLeaf (Get-PinnedTorchIndexUrl)
+        $_xpuIsReachable = (-not $NoTorchMode) -and ((-not $_pinLeafNow) -or ($_pinLeafNow -eq "xpu"))
+        if ($script:IsIntelXpu -and $SkipPythonDeps -and $_xpuIsReachable) {
+            # The WHEEL, not the runtime: torch.xpu.is_available() is also false for a supported
+            # +xpu wheel on a wedged driver, and the dependency pass cannot repair a driver, so
+            # keying on it would force a full resolution every update for nothing.
+            if (-not (Test-VenvTorchIsXpuSupported -VenvPath $VenvDir)) {
+                substep "Intel GPU detected but installed PyTorch is not a supported XPU build -- reinstalling XPU PyTorch" "Cyan"
+                $SkipPythonDeps = $false
+            }
+        }
+        # Keyed off the installed wheel as well as the scan: an explicit xpu pin on a host the
+        # scan skips (a mixed NVIDIA + Intel box) still ends up on XPU with $script:IsIntelXpu
+        # false. The bitsandbytes floor and the Triton replacement live in the dependency pass
+        # below, so a venv that reached +xpu without them would fast-path past them forever.
+        if ($SkipPythonDeps -and $_xpuIsReachable -and ($script:IsIntelXpu -or $installedTorchTag -eq "xpu")) {
+            $_xpuDepsCode = "import importlib.metadata as m; " +
+                "print('BNB=' + next((d.version for d in m.distributions() " +
+                "if (d.metadata['Name'] or '').lower() == 'bitsandbytes'), '')); " +
+                "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
+                "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), ''))"
+            $_xpuDeps = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_xpuDepsCode
+            if (-not $_xpuDeps.Ok) {
+                # A probe that did not answer says nothing about the venv, and reading that as
+                # "dependencies are current" would fast-path past both remediations forever.
+                # Same direction as an unparseable version below: one extra pass.
+                substep "Intel XPU dependencies could not be read -- running the dependency pass" "Cyan"
+                $SkipPythonDeps = $false
+            } else {
+                $_bnbVer = if ($_xpuDeps.Output -match '(?m)^BNB=(\S+)\s*$') { $Matches[1] } else { "" }
+                # An unreadable version is treated as stale, the safe direction: one extra pass,
+                # never a venv left without 4-bit kernels. Trailing suffixes (0.51.0.dev0) are
+                # dropped, not cast.
+                $_bnbNum = ($_bnbVer -replace '[^0-9.].*$', '').TrimEnd('.')
+                $_bnbStale = $true
+                if ($_bnbNum -match '^\d+\.\d+') {
+                    try { $_bnbStale = [version]$_bnbNum -lt [version]"0.50.0" } catch {}
+                }
+                $_tritonWinPresent = $_xpuDeps.Output -match '(?m)^TRITONWIN=\S+\s*$'
+                if ($_bnbStale -or $_tritonWinPresent) {
+                    substep "Intel XPU dependencies are stale -- running the dependency pass" "Cyan"
+                    $SkipPythonDeps = $false
+                }
             }
         }
     } elseif ($InstalledVer -and $LatestVer) {
@@ -3453,8 +3820,17 @@ $PinnedTorchIndexUrl = Get-PinnedTorchIndexUrl
 $TorchIndexPinned = [bool]$PinnedTorchIndexUrl
 if ($PinnedTorchIndexUrl) {
     $CuTag = Get-TorchIndexLeaf $PinnedTorchIndexUrl
+} elseif ($script:PreservedXpuVenv) {
+    # The stale check kept an installed +xpu venv rather than wiping it, which a hybrid
+    # NVIDIA + Arc host reaches. Ahead of the NVIDIA arm deliberately: converting halfway leaves
+    # +xpu torch under triton-windows and no XPU index to swap it back. install.ps1 converts.
+    $CuTag = "xpu"
 } elseif ($HasNvidiaSmi) {
     $CuTag = Get-PytorchCudaTag
+} elseif ($script:IsIntelXpu) {
+    # XPU (SYCL) wheels ship under the /xpu leaf, so $TorchInstallIndexUrl below resolves to
+    # <mirror>/xpu. A pin above still wins; the AMD reroute below needs $CuTag -eq "cpu".
+    $CuTag = "xpu"
 } else {
     $CuTag = "cpu"
 }
@@ -3571,6 +3947,10 @@ $PyTorchWhlBase = if ($env:UNSLOTH_PYTORCH_MIRROR) { $env:UNSLOTH_PYTORCH_MIRROR
 # goes through $ROCmIndexUrl; on failure the fallback uses the CPU index, not the ROCm pin.
 $TorchInstallIndexUrl = if ($ROCmIndexUrl) { "$PyTorchWhlBase/cpu" } elseif ($PinnedTorchIndexUrl) { $PinnedTorchIndexUrl } else { "$PyTorchWhlBase/$CuTag" }
 
+# Declared outside the guard: the bitsandbytes and Triton passes read it from outside too, and
+# no-torch mode never reaches the assignment below.
+$XpuIndexUrl = $null
+
 if (-not $NoTorchMode) {
 # Windows on ARM has win_arm64 torch and torchvision wheels but no torchaudio on any index,
 # so every branch below drops it. Ask the interpreter uv resolves for, not
@@ -3612,7 +3992,50 @@ if ($ROCmIndexUrl) {
     }
 }
 
-if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
+# ── Intel XPU (SYCL) ─────────────────────────────────────────────────────────
+# Its own index leaf, so it must not fall into the CUDA branch below ("CUDA support (xpu)").
+# Reached on an Arc / Data Center host and on an explicit xpu pin.
+$XpuCpuFallback = $false
+if (-not $ROCmIndexUrl -and $CuTag -eq "xpu") { $XpuIndexUrl = $TorchInstallIndexUrl }
+if ($XpuIndexUrl) {
+    substep "installing PyTorch (Intel XPU)..."
+    # Bounded like install.ps1's XPU install: the xpu index serves torch past what Unsloth
+    # supports. The floor is 2.6, not the usual 2.4 -- unsloth/models/_utils.py raises at import
+    # for an XPU device below that, and an older wheel would be kept as satisfying the range.
+    $_xpuTrio = @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0", "torchaudio>=2.6,<2.11.0")
+    if ($WinArm64NoAudio) { $_xpuTrio = @("torch>=2.6,<2.11.0", "torchvision>=0.21,<0.26.0") }
+    # Gated like $cpuForce below, NOT unconditional: install.ps1 already installed the XPU trio
+    # before calling setup, so forcing every pass re-downloads GB there and on every update.
+    # Force only on a flavor change -- a CPU (or cu*/rocm) wheel satisfies the range, so uv would
+    # keep it and never migrate. An unreadable flavor forces too, the safe direction.
+    $xpuForce = @()
+    if ($installedTorchTag -ne "xpu") { $xpuForce = @("--force-reinstall") }
+    # A changed pin repairs in place, so the existing +xpu wheel must be replaced too.
+    if ($script:PinChangedForceReinstall) { $xpuForce = @("--force-reinstall") }
+    if ($script:UnslothVerbose) {
+        Fast-Install @_xpuTrio @xpuForce --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+        $torchInstallExit = $LASTEXITCODE
+        $output = ""
+    } else {
+        $output = Fast-Install @_xpuTrio @xpuForce --index-url $XpuIndexUrl | Out-String
+        $torchInstallExit = $LASTEXITCODE
+    }
+    if ($torchInstallExit -ne 0) {
+        # Transient XPU-index failure: fall back to a CPU base rather than leaving no torch
+        # (same shape as ROCm above).
+        Write-Host "[WARN] Intel XPU PyTorch install failed -- falling back to CPU" -ForegroundColor Yellow
+        Write-Host (Redact-InstallOutput $output) -ForegroundColor Yellow
+        $XpuIndexUrl = $null
+        $XpuCpuFallback = $true
+        $TorchInstallIndexUrl = "$PyTorchWhlBase/cpu"
+    } else {
+        substep "GPU XPU PyTorch installed -- training and GPU inference will use the GPU" "Cyan"
+        # The wheel being in place does not mean the runtime initializes -- see the helper.
+        Assert-XpuRuntimeReady -PythonExe "python" | Out-Null
+    }
+}
+
+if (-not $ROCmIndexUrl -and -not $XpuIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback -or $XpuCpuFallback)) {
     substep "installing PyTorch (CPU-only)..."
     # After an AMD ROCm fallback, force-reinstall so a partial ROCm torch (which satisfies the
     # CPU torch>= range) is replaced by the CPU build; skip on a genuine CPU host to stay fast.
@@ -3621,6 +4044,8 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     # enumerate char-by-char.
     $cpuForce = @()
     if ($ROCmCpuFallback) { $cpuForce = @("--force-reinstall") }
+    # Same after an Intel XPU fallback: a partial +xpu torch satisfies the CPU torch>= range.
+    if ($XpuCpuFallback) { $cpuForce = @("--force-reinstall") }
     # --force-reinstall on a pin change: a stale +cu / +rocm wheel still satisfies the CPU
     # torch>= range, so uv would keep it and only swap companions.
     if ($script:PinChangedForceReinstall) { $cpuForce = @("--force-reinstall") }
@@ -3629,6 +4054,12 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
     # land an unsupported version. Unpinned CPU hosts keep the bare trio (pre-pin behavior).
     $cpuTorchSpec = "torch"; $cpuVisionSpec = "torchvision"; $cpuAudioSpec = "torchaudio"
     if ($TorchIndexPinned) {
+        $cpuTorchSpec  = "torch>=2.4,<2.12.0"
+        $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
+        $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
+    }
+    # Bound an XPU fallback too: this is not the plain CPU box the bare trio was preserved for.
+    if ($XpuCpuFallback) {
         $cpuTorchSpec  = "torch>=2.4,<2.12.0"
         $cpuVisionSpec = "torchvision>=0.19,<0.27.0"
         $cpuAudioSpec  = "torchaudio>=2.4,<2.12.0"
@@ -3648,7 +4079,7 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
         Write-Host (Redact-InstallOutput $output) -ForegroundColor Red
         Exit-SetupFailure "PyTorch installation failed (exit code $torchInstallExit)"
     }
-} elseif (-not $ROCmIndexUrl) {
+} elseif (-not $ROCmIndexUrl -and -not $XpuIndexUrl) {
     substep "installing PyTorch with CUDA support ($CuTag)..."
     substep "(This download is ~2.8 GB -- may take a few minutes)"
     # --force-reinstall on a pin change: an installed cuXXX wheel satisfies the bare torch
@@ -3716,6 +4147,178 @@ if (-not $ROCmIndexUrl -and ($CuTag -eq "cpu" -or $ROCmCpuFallback)) {
 substep "running ordered dependency installation..."
 python "$PSScriptRoot\install_python_stack.py"
 $stackExit = $LASTEXITCODE
+
+# ── Intel XPU: bitsandbytes must carry XPU kernels ──
+# unsloth/bnb_availability.py binds cgemv_4bit_inference_fp16/bf16 for device_type "xpu" and only
+# bitsandbytes' XPU library exports those, so a wheel without it turns 4-bit QLoRA off. 0.48.2 is
+# the first win_amd64 build carrying that library, but the floor is 0.50.0, the AMD paths' floor:
+# <=0.49.2 NaNs at 4-bit decode on AMD, and an Arc card can sit next to a Radeon. unsloth's own
+# floor (>=0.45.5) lets a MIGRATED venv keep its old wheel while the stack above upgrades unsloth
+# alone, so run after it for the last word. --no-deps (torch and numpy are in), and never the
+# curated unsloth[intel-gpu-torch*] extra: it pins torch to one +xpu wheel URL, unpinning the
+# trio above, and carries a preview bitsandbytes wheel uv refuses. $XpuIndexUrl is the "ended up
+# on XPU" gate. Must stay ABOVE the $ErrorActionPreference restore below: Fast-Install needs
+# EAP=Continue or PS 5.1 turns pip's stderr into a terminating error. Best-effort.
+if ($stackExit -eq 0 -and $XpuIndexUrl) {
+    substep "installing bitsandbytes with Intel XPU kernels..."
+    if ($script:UnslothVerbose) {
+        Fast-Install --no-deps "bitsandbytes>=0.50.0" | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+        $bnbXpuExit = $LASTEXITCODE
+        $bnbOutput = ""
+    } else {
+        $bnbOutput = Fast-Install --no-deps "bitsandbytes>=0.50.0" | Out-String
+        $bnbXpuExit = $LASTEXITCODE
+    }
+    if ($bnbXpuExit -ne 0) {
+        substep "[WARN] could not install an XPU-capable bitsandbytes (exit $bnbXpuExit); 4-bit QLoRA may be unavailable." "Yellow"
+        Write-Host (Redact-InstallOutput $bnbOutput) -ForegroundColor Yellow
+    }
+}
+
+# ── Intel XPU: triton-windows must not shadow torch's XPU triton ──
+# triton-windows and torch's XPU triton BOTH own the top-level `triton` package (80 to 160 shared
+# paths, __init__.py and _C/libtriton.pyd among them), so a cu*-to-xpu pin repair leaves the CUDA
+# build shadowing the XPU one. AFTER the stack, since unsloth declares triton-windows a win32
+# core dep and base.txt reinstalls anything removed earlier. Uninstall always paired with a
+# reinstall: removing one drops the shared paths the other overwrote. The spec is read from the
+# installed torch (renamed pytorch-triton-xpu -> triton-xpu in torch 2.10).
+if ($stackExit -eq 0 -and $XpuIndexUrl) {
+    # One -c line, so no double quotes (Invoke-BoundedPythonProbe wraps $Code in them).
+    $_tritonCode = "import importlib.metadata as m; " +
+        "print('TRITONWIN=' + next((d.version for d in m.distributions() " +
+        "if (d.metadata['Name'] or '').lower().replace('_','-') == 'triton-windows'), '')); " +
+        "print('TRITONXPU=' + next((r.split(';')[0].strip() " +
+        "for r in (m.requires('torch') or []) if 'triton' in r.lower()), ''))"
+    $_tritonProbe = Invoke-BoundedPythonProbe -PythonExe "python" -Code $_tritonCode
+    # Line-anchored like the other probes so a stdout banner ahead of the answer hides nothing.
+    $_tritonWinVer = if ($_tritonProbe.Ok -and $_tritonProbe.Output -match '(?m)^TRITONWIN=(\S+)\s*$') { $Matches[1] } else { "" }
+    $_tritonXpuSpec = if ($_tritonProbe.Ok -and $_tritonProbe.Output -match '(?m)^TRITONXPU=(\S+)\s*$') { $Matches[1] } else { "" }
+    # The spec must itself be an XPU triton (pytorch-triton-xpu / triton-xpu); anything else means
+    # torch is not the +xpu wheel this branch assumes.
+    if ($_tritonWinVer -and $_tritonXpuSpec -match '(?i)xpu') {
+        substep "replacing triton-windows $_tritonWinVer with $_tritonXpuSpec (Intel XPU)..." "Cyan"
+        # install_manifest.manifest_path() is venv_root()/MANIFEST_NAME and venv_root() is
+        # sys.prefix, which is $VenvDir here -- the same join Get-PersistedNoTorch does. Assembled
+        # rather than asked for: a subprocess to learn a constant can hang or fail in a way
+        # indistinguishable from "there is no manifest", which reopens the window this closes.
+        # test_intel_registry_fallback.ps1 asserts this literal still matches MANIFEST_NAME.
+        $_manifestPath = Join-Path $VenvDir "unsloth_install_manifest.json"
+        # Fetch, THEN uninstall, THEN install the file. The uninstall cannot go last -- it drops
+        # the paths in triton-windows' OWN record, which are the shared ones -- so pre-fetching
+        # keeps a dead mirror from stranding the venv between the two steps. uv has no
+        # `pip download`, hence Fast-Download.
+        $_tritonTmp = Join-Path ([System.IO.Path]::GetTempPath()) "unsloth_triton_xpu_$([guid]::NewGuid().ToString('N').Substring(0,8))"
+        try {
+            New-Item -ItemType Directory -Force -Path $_tritonTmp -ErrorAction SilentlyContinue | Out-Null
+            if ($script:UnslothVerbose) {
+                Fast-Download --no-deps --only-binary=:all: -d $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                $tritonDlExit = $LASTEXITCODE
+                $tritonDlOutput = ""
+            } else {
+                $tritonDlOutput = Fast-Download --no-deps --only-binary=:all: -d $_tritonTmp $_tritonXpuSpec --index-url $XpuIndexUrl | Out-String
+                $tritonDlExit = $LASTEXITCODE
+            }
+            # The exit code alone is not enough: no wheel on disk means nothing to install from.
+            $_tritonWheel = @(Get-ChildItem -LiteralPath $_tritonTmp -Filter "*.whl" -ErrorAction SilentlyContinue) | Select-Object -First 1 -ExpandProperty FullName
+            if ($tritonDlExit -ne 0 -or -not $_tritonWheel) {
+                substep "[WARN] could not fetch $_tritonXpuSpec (exit $tritonDlExit); triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
+                Write-Host (Redact-InstallOutput $tritonDlOutput) -ForegroundColor Yellow
+            } else {
+                # From here to the reinstall below is a window where a kill leaves a venv with
+                # no triton that the next update still reads as complete and fast-paths past.
+                # MOVE the manifest into the wheel's temp dir for the swap, never read and
+                # rewrite it: PS 5.1's Set-Content defaults to ANSI and its -Encoding utf8 emits
+                # a BOM read_manifest's json.load rejects, so either corrupts a manifest with a
+                # non-ASCII path. The finally below deletes the dir, so an unrestored manifest
+                # stays gone -- which is the truth while the venv has no triton.
+                $_manifestHeld = $null
+                $_manifestBlocked = $false
+                $_uninstallExit = 0
+                if ($_manifestPath -and (Test-Path -LiteralPath $_manifestPath -PathType Leaf)) {
+                    $_held = Join-Path $_tritonTmp "held_manifest.json"
+                    try {
+                        Move-Item -LiteralPath $_manifestPath -Destination $_held -Force -ErrorAction Stop
+                        # Move-Item across volumes is a copy plus a delete and reports success
+                        # even when only the delete fails, leaving the original in place. The
+                        # manifest must be GONE for the swap, so confirm rather than trust.
+                        if (Test-Path -LiteralPath $_manifestPath -PathType Leaf) {
+                            Remove-Item -LiteralPath $_held -Force -ErrorAction SilentlyContinue
+                            $_manifestBlocked = $true
+                        } else {
+                            $_manifestHeld = $_held
+                        }
+                    } catch { $_manifestBlocked = $true }
+                }
+                if ($_manifestBlocked) {
+                    # A manifest that will not move (locked, read-only) would stay valid right
+                    # through the destructive window, so do not open one. Leaving triton-windows
+                    # costs torch.compile on the XPU, which the next run can still fix.
+                    substep "[WARN] could not set the install manifest aside; triton-windows $_tritonWinVer left in place -- it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
+                } else {
+                    Fast-Uninstall "triton-windows" | Out-Null
+                    $_uninstallExit = $LASTEXITCODE
+                }
+                # A triton-windows that would not uninstall (Studio running and holding
+                # _C/libtriton.pyd open) still shadows the XPU triton, so installing over it
+                # achieves nothing and would restore the manifest onto an unchanged venv.
+                if (-not $_manifestBlocked -and $_uninstallExit -ne 0) {
+                    substep "[WARN] could not remove triton-windows $_tritonWinVer (exit $_uninstallExit); it still shadows torch XPU triton, so torch.compile will not use the XPU." "Yellow"
+                    if ($_manifestHeld) {
+                        try { Move-Item -LiteralPath $_manifestHeld -Destination $_manifestPath -Force -ErrorAction Stop } catch {}
+                    }
+                } elseif (-not $_manifestBlocked) {
+                    if ($script:UnslothVerbose) {
+                        Fast-Install --force-reinstall --no-deps $_tritonWheel | ForEach-Object { Redact-InstallOutput "$_" } | Out-Host
+                        $tritonXpuExit = $LASTEXITCODE
+                        $tritonOutput = ""
+                    } else {
+                        $tritonOutput = Fast-Install --force-reinstall --no-deps $_tritonWheel | Out-String
+                        $tritonXpuExit = $LASTEXITCODE
+                    }
+                    $_tritonPresent = ($tritonXpuExit -eq 0)
+                    if ($tritonXpuExit -ne 0) {
+                        # Off the network by now, so this is disk/permissions. triton-windows is
+                        # already gone and took the shared paths with it, so put SOME working
+                        # triton back rather than leave the venv unable to import one.
+                        Fast-Install --force-reinstall --no-deps "triton-windows<3.7" | Out-Null
+                        $tritonBackExit = $LASTEXITCODE
+                        $_tritonPresent = ($tritonBackExit -eq 0)
+                        Write-Host (Redact-InstallOutput $tritonOutput) -ForegroundColor Yellow
+                        if ($tritonBackExit -eq 0) {
+                            substep "[WARN] could not install $_tritonXpuSpec (exit $tritonXpuExit); restored triton-windows, so triton still imports -- but torch.compile will not use the XPU." "Yellow"
+                        } else {
+                            # Redacted: a mirror pin can carry a token, and this is the only place
+                            # setup.ps1 shows an index URL. A tokenless URL survives verbatim.
+                            $_tritonRepairUrl = Redact-InstallOutput $XpuIndexUrl
+                            Write-Host "[ERROR] triton-windows was removed and neither triton would reinstall -- torch.compile is broken." -ForegroundColor Red
+                            Write-Host "        Repair with: python -m pip install --force-reinstall --no-deps $_tritonXpuSpec --index-url $_tritonRepairUrl" -ForegroundColor Red
+                            # Printing alone left $stackExit at 0, so setup reported success and
+                            # install.ps1 COMMITTED this venv over its rollback copy. It has no
+                            # importable triton at all; the caller must not accept it.
+                            $stackExit = $tritonBackExit
+                        }
+                    }
+                    # Moved back, never rewritten, and only once a triton is importable again. If
+                    # neither would reinstall the venv really is incomplete, and losing the
+                    # manifest with the temp dir is what makes the next update repair it.
+                    if ($_manifestHeld -and $_tritonPresent) {
+                        try { Move-Item -LiteralPath $_manifestHeld -Destination $_manifestPath -Force -ErrorAction Stop } catch {}
+                        # The finally below deletes the held copy either way, so an unreported
+                        # failure loses the manifest silently and the next run does a full
+                        # dependency pass with nothing on screen explaining why.
+                        if (-not (Test-Path -LiteralPath $_manifestPath -PathType Leaf)) {
+                            substep "[WARN] could not restore the install manifest; the next update will re-run the dependency pass." "Yellow"
+                        }
+                    }
+                }
+            }
+        } finally {
+            # The wheel is ~300 MB, so it never outlives the install.
+            Remove-Item -Recurse -Force -LiteralPath $_tritonTmp -ErrorAction SilentlyContinue
+        }
+    }
+}
+
 # Restore ErrorActionPreference after pip/python work
 $ErrorActionPreference = $prevEAP
 if ($stackExit -ne 0) {
