@@ -1116,21 +1116,52 @@ def _is_mtp_model_name(model_identifier: Optional[str], gguf_path: Optional[str]
     return False
 
 
-def _is_companion_gguf_path(path: str) -> bool:
-    """True for a non-main GGUF: vision mmproj or a separate MTP drafter
-    (repo-root ``mtp-*.gguf`` or the ``MTP/`` subdir copies, Gemma 4).
+# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS.
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
-    Mirrors hub.utils.gguf so variant resolution never picks a companion as
-    the main model -- e.g. a Gemma ``Q8_0`` request must not resolve to the
-    ``MTP/...-Q8_0-MTP.gguf`` drafter, which sorts ahead of the real weight.
+
+def _drafter_path_kind(path: str) -> Optional[str]:
+    """Drafter kind naming *path*: basename prefix, or exact parent dir for
+    ``_DRAFTER_DIR_KINDS``. Never a substring: the kind names double as family
+    names, so ``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model, as is anything
+    in a user's ``dflash/`` folder."""
+    p = path.replace("\\", "/").lower()
+    if not p.endswith(".gguf"):
+        return None
+    parts = [segment for segment in p.split("/") if segment]
+    name, parents = parts[-1], parts[:-1]
+    for kind in _DRAFTER_KINDS:
+        if name.startswith(f"{kind}-"):
+            return kind
+    for kind in _DRAFTER_DIR_KINDS:
+        if kind in parents:
+            return kind
+    return None
+
+
+def _is_companion_gguf_path(path: str) -> bool:
+    """True for a non-main GGUF: vision mmproj, or a separate drafter (repo-root
+    ``mtp-*.gguf``, the ``MTP/`` subdir copies for Gemma 4, the ``dspark/``
+    drafters for DeepSeek V4 Flash). Mirrors hub.utils.gguf so variant resolution
+    never picks a companion as the main model -- a Gemma ``Q8_0`` request must not
+    resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead of the real weight.
+
+    EXCLUSION ONLY. Use ``_is_mtp_only_drafter_path`` to pick a drafter to launch.
     """
     p = path.lower()
     if not p.endswith(".gguf"):
         return False
     if "mmproj" in p:
         return True
-    name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    return _drafter_path_kind(path) is not None
+
+
+def _is_mtp_only_drafter_path(path: str) -> bool:
+    """MTP only, the one kind Studio launches today (``--spec-type draft-mtp``).
+    DSpark needs ``draft-dspark`` plus ``--fit off``, so drafter discovery must
+    narrow to MTP rather than reuse the broad companion predicate."""
+    return _drafter_path_kind(path) == "mtp"
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
@@ -1552,6 +1583,64 @@ def gguf_load_in_flight(hf_repo: Optional[str]):
                 _LOADS_IN_FLIGHT.pop(key, None)
             else:
                 _LOADS_IN_FLIGHT[key] = remaining
+
+
+# Chat loads in flight, repo-agnostic (local paths and safetensors included). The repo-keyed counter above answers the download manager; this one answers the GPU arbiter, which must know before llama-server spawns.
+_CHAT_LOADS_IN_FLIGHT = 0
+
+
+@contextlib.contextmanager
+def chat_load_in_flight():
+    """Track a chat load from before its download until the load call returns."""
+    global _CHAT_LOADS_IN_FLIGHT
+    with _LOADS_IN_FLIGHT_LOCK:
+        _CHAT_LOADS_IN_FLIGHT += 1
+    try:
+        yield
+    finally:
+        with _LOADS_IN_FLIGHT_LOCK:
+            _CHAT_LOADS_IN_FLIGHT = max(0, _CHAT_LOADS_IN_FLIGHT - 1)
+
+
+def chat_load_active() -> bool:
+    """Whether a chat load is in flight, spawned or not.
+
+    ``is_active`` only covers a live llama-server process, which an HF load does not have
+    until its GGUF finished downloading -- minutes during which the arbiter's evictor would
+    find nothing to cancel and grant the GPU to a second workload.
+    """
+    with _LOADS_IN_FLIGHT_LOCK:
+        return _CHAT_LOADS_IN_FLIGHT > 0
+
+
+def zero_vram_chat_load(
+    gpu_memory_mode: str,
+    gpu_layers: int,
+    extra_args: Optional[list] = None,
+    needs_mmproj: bool = False,
+    speculative_type: Optional[str] = None,
+) -> bool:
+    """Whether a GGUF load will hold no VRAM at all, decided from the request.
+
+    A deliberate manual zero-offload load runs on the CPU and is launched with the GPUs hidden
+    from the child (see ``_cpu_only_zero_offload``), so it neither needs the GPU arbiter nor
+    should evict an image/video pipeline for it. This mirrors that launch-time mask so both
+    agree: an mmproj, a GPU drafter, a device pin or a surviving tensor mode all keep the GPUs
+    visible, and the mask is skipped on Vulkan. ``--mmproj`` and ``--model-draft`` are added by
+    the backend rather than being present in ``extra_args``, so their intent is passed in.
+    """
+    if gpu_memory_mode != "manual" or gpu_layers != 0:
+        return False
+    # Any speculative mode may launch a GPU drafter and only the request's own knobs are known here, so treat every selection as GPU-bearing except
+    # "off". Canonicalize first: the UI sends the literal "off", which a bare truthiness test read as "speculation requested".
+    spec_mode = _canonicalize_spec_mode(speculative_type)
+    if needs_mmproj or spec_mode not in (None, "off"):
+        return False
+    if LlamaCppBackend._is_vulkan_backend():
+        return False
+    return not LlamaCppBackend._zero_offload_keeps_gpu_visible(
+        [str(arg) for arg in (extra_args or [])], os.environ
+    )
 
 
 def hf_gguf_load_in_flight(hf_repo: str) -> bool:
@@ -3424,6 +3513,22 @@ class LlamaCppBackend:
     def gpu_layers(self) -> int:
         """Requested --gpu-layers for manual mode (-1 when not manual)."""
         return self._gpu_layers
+
+    @property
+    def holds_no_vram(self) -> bool:
+        """Whether the resident server is a confirmed zero-VRAM launch.
+
+        True only for a deliberate manual zero-offload load whose launched argv carried no GPU
+        companion, pin or tensor mode, so the child was started with the GPUs hidden. The GPU
+        arbiter uses this to leave an image/video pipeline alone when re-asserting ownership for
+        such a model. ``_gpu_offload_active`` is None when no GPU was detected at all (nothing to
+        arbitrate) and True when something still reached the GPU, so both keep the normal path.
+        """
+        return (
+            self._gpu_memory_mode == "manual"
+            and self._gpu_layers == 0
+            and self._gpu_offload_active is False
+        )
 
     @property
     def diffusion_requested_ngl(self) -> Optional[int]:
@@ -7169,7 +7274,9 @@ class LlamaCppBackend:
             )
             for snap in snapshots:  # newest first
                 for f in sorted(_gguf_snapshot_files(snap)):
-                    if _is_companion_gguf_path(f) and "mmproj" not in f.lower():
+                    # MTP only: a DSpark drafter needs --spec-type draft-dspark,
+                    # so it must never be launched as an MTP one.
+                    if _is_mtp_only_drafter_path(f):
                         (roots if "/" not in f else subdirs).append(snap / f)
             # Keep snapshot order (newest first), root before any MTP/ copy, so a
             # newer main GGUF pairs with the newest cached drafter, not a stale one.

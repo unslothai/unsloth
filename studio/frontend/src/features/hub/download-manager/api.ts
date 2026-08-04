@@ -60,6 +60,9 @@ export interface ActiveModelDownload {
   transport?: TransportMode | null;
   state: DownloadJobState;
   generation?: number;
+  // Scoped jobs only: the exact files this job is fetching. Every file set of one repo rides the same "@scope" slot, so an
+  // adopting client needs it to tell its own transfer from a sibling's. Absent from an older backend means unprovable.
+  files?: string[] | null;
 }
 
 export interface ActiveDatasetDownload {
@@ -196,6 +199,9 @@ export async function startModelDownload(payload: {
   gguf_variant?: string | null;
   hf_token?: string | null;
   use_xet?: boolean;
+  // A partial-by-design download of `files` only (see DownloadRequest.scopeId).
+  scope_id?: string | null;
+  files?: string[];
   transport_mode?: "auto" | "xet" | "http";
 }): Promise<DownloadStartResult & { job_key: string }> {
   const { hf_token, ...body } = payload;

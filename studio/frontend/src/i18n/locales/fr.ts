@@ -29,7 +29,7 @@ export const fr = {
     updateAvailable: "Mise à jour disponible",
     resize: {
       collapse: "Cliquez pour réduire",
-      expand: "Cliquez pour développer",
+      expand: "Cliquez pour déployer",
       drag: "Faites glisser pour redimensionner",
     },
     aria: {
@@ -54,7 +54,7 @@ export const fr = {
       train: "Entraîner",
       recipes: "Recettes",
       export: "Exporter",
-      recents: "Récents",
+      recents: "Discussions récentes",
       noChatsYet: "Aucune discussion pour le moment",
       settings: "Paramètres",
       api: "API",
@@ -165,17 +165,18 @@ export const fr = {
         sttUnload: "Décharger",
         sttUnloading: "Déchargement…",
         microphoneLabel: "Microphone",
+        microphoneFallbackName: "Microphone {index}",
         microphoneDescription: "Utilisé pour la dictée",
         microphoneFallbackHint:
           "Utilisé pour la dictée. Revient au périphérique par défaut du système si le moteur vocal du navigateur ne peut pas utiliser ce périphérique",
         microphoneGrantDescription:
           "Autorisez l'accès au micro pour afficher le nom des périphériques",
-        allowMicrophone: "Autoriser le microphone",
+        allowMicrophone: "Autoriser l’accès au microphone",
         micAccessBlocked:
           "L'accès au microphone a été bloqué. Autorisez l'accès au microphone pour cette page Unsloth, puis réessayez.",
         micAccessUnsupported:
           "L'accès au microphone n'est pas pris en charge dans ce navigateur ou ce contexte.",
-        systemDefault: "Par défaut",
+        systemDefault: "Par défaut du système",
         savedMicDisconnected: "Microphone enregistré (non connecté)",
         languageLabel: "Langue de la dictée",
         languageDescription: "Langue à reconnaître",
@@ -189,6 +190,10 @@ export const fr = {
         manage: "Gérer",
         backToVoice: "Retour à la section Voix",
         addEntry: "Ajouter une entrée",
+        newEntryAria: "Nouvelle entrée du dictionnaire",
+        entryPlaceholder: "Marie Dupont",
+        entryAria: "Entrée du dictionnaire {index}",
+        removeEntryAria: "Supprimer l’entrée {index} du dictionnaire",
       },
       recents: {
         sectionTitle: "Historique des dictées",
@@ -212,7 +217,7 @@ export const fr = {
         dictationColumn: "Dictée",
         dateColumn: "Date de création",
         copy: "Copier la dictée",
-        copied: "Copié dans le presse-papiers",
+        copied: "Dictée copiée dans le presse-papiers",
         copyFailed: "Impossible de copier dans le presse-papiers",
         delete: "Supprimer la dictée",
         deleteTitle: "Supprimer la dictée",
@@ -227,13 +232,13 @@ export const fr = {
         clearDescription:
           "Supprimer toutes les dictées enregistrées ? Cette action est irréversible.",
         clearConfirm: "Tout effacer",
-        showMore: "Afficher plus ({count})",
+        showMore: "Afficher davantage ({count})",
         openChat: "Ouvrir la discussion",
       },
       readAloud: {
         sectionTitle: "Lecture à voix haute",
         buttonLabel: "Bouton de lecture à voix haute",
-        buttonDescription: "Afficher sur les réponses de l'assistant",
+        buttonDescription: "Afficher dans les réponses de l’assistant",
         engineLabel: "Moteur TTS",
         engineSystemDescription: "Voix intégrées à l'appareil",
         engineStudioDescription:
@@ -250,21 +255,24 @@ export const fr = {
         volumeLabel: "Volume",
         previewLabel: "Écouter la voix",
         previewDescription: "Lire un court extrait",
+        previewFailed: "Échec de l’aperçu de la synthèse vocale",
         previewAction: "Écouter",
         stopAction: "Arrêter",
         ttsLabel: "Synthèse vocale",
-        notSupported: "Non pris en charge dans ce navigateur",
+        notSupported: "Indisponible dans ce navigateur",
       },
     },
     general: {
       title: "Général",
       description: "Préférences globales pour Unsloth.",
       account: "Compte",
-      huggingFaceToken: "Token Hugging Face",
+      huggingFaceToken: "Jeton Hugging Face",
       huggingFaceTokenDescription:
         "Utilisé pour charger des modèles restreints et publier des artefacts.",
-      hideToken: "Masquer le token",
-      showToken: "Afficher le token",
+      hideToken: "Masquer le jeton",
+      showToken: "Afficher le jeton",
+      clearToken: "Effacer",
+      checkingToken: "Vérification du token...",
       tokenValidated: "Jeton validé",
       password: "Mot de passe",
       passwordDescription:
@@ -308,14 +316,15 @@ export const fr = {
         sectionTitle: "Changement automatique de modèle (API OpenAI)",
         enable: "Changer de modèle par requête",
         enableDescription:
-          "Lorsqu'une requête compatible OpenAI nomme un autre GGUF téléchargé, le charger avant de répondre. Désactivé par défaut ; les noms inconnus continuent de servir le modèle chargé.",
+          "Charger, avant de répondre, un GGUF téléchargé indiqué dans une requête API. Désactivé par défaut.",
         idleUnload: "Déchargement automatique en cas d'inactivité",
         idleUnloadDescription:
-          "Décharger le modèle après ce nombre de secondes d'inactivité pour libérer la VRAM ; la requête suivante le recharge. 0 le maintient chargé. Minimum 60 secondes.",
+          "Libérer la VRAM après ce nombre de secondes d’inactivité. 0 maintient le modèle chargé ; le minimum est 60.",
+        idleSecondsAriaLabel:
+          "Délai d’inactivité avant le déchargement automatique, en secondes",
         idleNeedsEnable:
-          "Activez Changer de modèle par requête pour qu'un modèle déchargé se recharge à la prochaine utilisation.",
-        idleActiveViaEnv:
-          "Le déchargement automatique en cas d'inactivité est actif via la variable d'environnement UNSLOTH_MODEL_IDLE_TTL.",
+          "Activez d’abord « Changer de modèle par requête ».",
+        idleActiveViaEnv: "Actif via UNSLOTH_MODEL_IDLE_TTL.",
         loadError:
           "Échec du chargement des paramètres de changement automatique de modèle.",
         saveError:
@@ -333,13 +342,13 @@ export const fr = {
         sectionTitle: "Partage de l'aperçu",
         enableLabel: "Liens d'aperçu publics",
         enableDescription:
-          "Permettre à quiconque disposant d'un lien signé de discuter avec un modèle terminé, sans connexion. Désactivez pour mettre l'aperçu public hors ligne ; les liens partagés cessent de fonctionner.",
+          "Permettre à quiconque disposant d'un lien signé de discuter avec un modèle finalisé, sans connexion. Désactivez cette option pour mettre l'aperçu public hors ligne ; les liens partagés cesseront de fonctionner.",
         loadError: "Échec du chargement des paramètres de partage d'aperçu.",
         saveError:
           "Échec de l'enregistrement des paramètres de partage d'aperçu.",
         revokeLabel: "Révoquer tous les liens d'aperçu",
         revokeDescription:
-          "Renouveler le secret de signature pour que tous les liens partagés cessent de fonctionner. Les liens nouvellement copiés continuent de fonctionner.",
+          "Renouveler le secret de signature pour que tous les liens partagés cessent de fonctionner. Les liens copiés après ce renouvellement continueront de fonctionner.",
         revokeAction: "Révoquer les liens",
         revoking: "Révocation...",
         revokeConfirmTitle: "Révoquer tous les liens d'aperçu ?",
@@ -356,10 +365,10 @@ export const fr = {
           "Notifier lorsqu'une nouvelle version de llama.cpp est disponible pour exécuter de nouveaux modèles. Désactivez si vous ne faites que de l'entraînement.",
       },
       gettingStarted: "Prise en main",
-      startOnboarding: "Démarrer l'intégration",
+      startOnboarding: "Démarrer la prise en main",
       startOnboardingDescription:
         "Rouvrir l'assistant de configuration sans modifier votre compte.",
-      startOnboardingAction: "Démarrer l'intégration",
+      startOnboardingAction: "Démarrer la prise en main",
       uploads: {
         sectionTitle: "Téléversements",
         maxUploadSize: "Limite de téléversement du jeu de données d'entraînement",
@@ -378,12 +387,13 @@ export const fr = {
         saveError: "Échec de l'enregistrement du modèle d'embedding.",
         saved: "Modèle d'embedding enregistré.",
         saveAnyway: "Enregistrer quand même",
-        resetAction: "Réinitialiser par défaut",
+        resetAction: "Rétablir la valeur par défaut",
       },
       storage: {
         sectionTitle: "Stockage",
         modelsFolder: "Dossier des modèles",
-        modelsFolderDescription: "Emplacement de stockage des modèles téléchargés.",
+        modelsFolderDescription:
+          "Emplacement de stockage des modèles téléchargés.",
         openAction: "Ouvrir",
         copyAction: "Copier le chemin",
         copied: "Chemin copié",
@@ -416,18 +426,18 @@ export const fr = {
       nickname: "Comment Unsloth doit-il vous appeler ?",
       nicknamePlaceholder: "Surnom",
       nicknameSaved: "Nom préféré enregistré",
-      avatarShape: "Forme de la photo de profil",
+      avatarShape: "Forme de l'avatar",
       avatarShapeCircle: "Cercle",
       avatarShapeRounded: "Arrondi",
       chooseSloth: "Ou choisissez un paresseux",
       nameSaved: "Nom de profil enregistré",
       namePersistErrorTitle: "Impossible d'enregistrer le nom de profil",
       namePersistErrorDescription:
-        "Nom mis à jour pour cette session, mais il pourrait ne pas persister après rechargement.",
+        "Le nom a été mis à jour pour cette session, mais risque de ne pas être conservé après le rechargement.",
       photoUpdated: "Photo de profil mise à jour",
       photoPersistErrorTitle: "Impossible d'enregistrer la photo de profil",
       photoPersistErrorDescription:
-        "Photo mise à jour pour cette session, mais elle pourrait ne pas persister après rechargement.",
+        "La photo a été mise à jour pour cette session, mais risque de ne pas être conservée après le rechargement.",
       photoUpdateErrorTitle: "Impossible de mettre à jour la photo de profil",
       imageUseError: "Impossible d'utiliser cette image.",
       uploadPhoto: "Importer une photo",
@@ -453,7 +463,7 @@ export const fr = {
         currentStreak: "Série en cours",
         longestStreak: "Plus longue série",
         activityTitle: "Activité en tokens",
-        activityDescription: "Période : {weeks} · {total}",
+        activityDescription: "{total} au cours des {weeks} dernières",
         mode: {
           daily: "Quotidienne",
           weekly: "Hebdomadaire",
@@ -484,8 +494,8 @@ export const fr = {
         modelSummary: "{tokens} · {messages}",
         noModels: "Aucune utilisation de modèle enregistrée pour l'instant.",
         trainingTitle: "Entraînement",
-        trainingDescription: "Exécutions de fine-tuning de cet espace de travail",
-        trainingRuns: "Exécutions",
+        trainingDescription: "Sessions de fine-tuning de cet espace de travail",
+        trainingRuns: "Sessions",
         trainingCompleted: "Terminées",
         trainingSteps: "Étapes",
         trainingTokens: "Tokens d'entraînement",
@@ -500,7 +510,7 @@ export const fr = {
       description: "L'apparence d'Unsloth sur cet appareil.",
       theme: {
         title: "Thème",
-        label: "Palette de couleurs",
+        label: "Mode de couleur",
         description: "Clair, sombre ou selon votre système.",
         system: "Système",
         light: "Clair",
@@ -622,35 +632,45 @@ export const fr = {
       disableOverlay: "Désactiver la superposition",
       liveMonitor: {
         title: "Moniteur en direct",
+        apiTitle: "Moniteur d’API",
+        summary: "Requêtes en cours, erreurs et utilisation des jetons",
+        status: "{active} actives · {recent} récentes · {model}",
+        noModelLoaded: "aucun modèle chargé",
+        autoOpen: "Afficher automatiquement le moniteur flottant",
+        autoOpenDescription:
+          "Ouvre un petit panneau lorsque l’API reçoit du trafic.",
         cpu: "CPU",
         ram: "RAM",
         disk: "Disque",
         vram: "VRAM",
         cpuCores: "{logical} cœurs logiques / {physical} physiques",
         currentLoad: "Charge actuelle",
-        free: "{value} libre",
+        free: "Disponible : {value}",
         noGpu: "Aucun GPU visible",
       },
       gpu: {
         title: "Périphériques GPU",
+        ggufInference: "Inférence GGUF",
+        unavailable: "indisponible",
         noGpu:
-          "Aucun GPU visible détecté. Les ressources CPU uniquement sont affichées ci-dessus.",
+          "Aucun GPU visible n'a été détecté. Seules les ressources du CPU sont affichées ci-dessus.",
         unknownDevice: "GPU inconnu",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
-        used: "{value} utilisé",
-        free: "{value} libre",
+        used: "Utilisé : {value}",
+        free: "Disponible : {value}",
         total: "{value} au total",
       },
       storage: {
         title: "Stockage",
         systemDisk: "Disque système",
-        diskUsage: "{used} utilisé / {total}",
-        diskFree: "{free} libre",
+        diskUsage: "Espace utilisé : {used} / Total : {total}",
+        diskFree: "Espace libre : {free}",
         modelsFolder: "Dossier des modèles",
         modelsFolderKeywords:
           "modeles modèles dossier repertoire répertoire chemin emplacement telechargements téléchargements cache stockage disque lecteur deplacer déplacer changer models folder path hugging face",
-        modelsFolderDescription: "Emplacement de stockage des modèles téléchargés.",
+        modelsFolderDescription:
+          "Emplacement où sont stockés les modèles téléchargés. Modifiez-le pour ne pas stocker les modèles sur votre disque système.",
         openAction: "Ouvrir",
         copyAction: "Copier le chemin",
         copied: "Chemin copié",
@@ -658,7 +678,7 @@ export const fr = {
         copyError: "Impossible de copier le chemin",
         futureDownloads: "Nouveaux téléchargements uniquement",
         environmentManaged: "Géré par la variable d'environnement {variable}.",
-        locationFree: "{free} libres",
+        locationFree: "Espace libre : {free}",
         changeAction: "Modifier",
         resetAction: "Utiliser la valeur par défaut",
         chooseTitle: "Choisir l'emplacement de téléchargement des modèles",
@@ -763,7 +783,7 @@ export const fr = {
         apiKey:
           "Fournit votre clé API Unsloth, ou lit la variable UNSLOTH_API_KEY.",
         yolo:
-          "Ignore les demandes de confirmation. À n'utiliser que dans des environnements de confiance.",
+          "Ignore les demandes d'autorisation. À n'utiliser que dans des environnements de confiance.",
       },
       remote: {
         title: "Se connecter à un Studio distant",
@@ -783,7 +803,29 @@ export const fr = {
     },
     chat: {
       title: "Discussion",
-      description: "Gérez l'historique des discussions stocké sur cet appareil.",
+      description: "Personnalisez le fonctionnement du chat sur cet appareil.",
+      modelSelection: {
+        title: "Paramètres de sélection du modèle",
+        expandQuantizations: "Développer les quantifications",
+        expandQuantizationsDescription:
+          "Activé : les modèles GGUF sur l’appareil affichent immédiatement leurs quantifications. Désactivé : cliquez sur un modèle pour afficher ses quantifications.",
+        showAllQuantizations: "Afficher toutes les quantifications",
+        showAllQuantizationsDescription:
+          "Activé : affiche toutes les quantifications sur l’appareil, y compris celles qui ne sont pas téléchargées. Désactivé : affiche uniquement les quantifications téléchargées.",
+      },
+      menu: {
+        title: "Menu du chat",
+        description:
+          "Épinglez des éléments dans le menu latéral + du chat. Les autres seront placés dans « Plus ».",
+        chatWithFiles: "Discuter avec des fichiers (RAG)",
+        mcp: "MCP",
+        savedPrompts: "Invites enregistrées",
+        compareChat: "Comparer le chat",
+        exportChat: "Exporter le chat",
+      },
+      showResponseModel: "Afficher le modèle de réponse",
+      showResponseModelDescription:
+        "Afficher les métadonnées du modèle dans les réponses de l’assistant.",
       modelDisclaimer: "Afficher l'avertissement du modèle",
       modelDisclaimerDescription:
         'Afficher "Les LLM peuvent faire des erreurs" sous la zone de discussion.',
@@ -791,10 +833,10 @@ export const fr = {
         title: "Canvas",
         collapseHtmlBlocks: "Réduire les blocs HTML",
         collapseHtmlBlocksDescription:
-          "Le mode Canvas réduit automatiquement le HTML complet. Activez ceci pour aussi réduire les documents HTML encadrés lorsque Canvas est désactivé.",
+          "Le mode Canvas réduit automatiquement les pages HTML complètes. Activez cette option pour réduire également les documents HTML placés dans des blocs de code lorsque Canvas est désactivé.",
         allowNetworkAccess: "Autoriser l'accès réseau du canvas",
         allowNetworkAccessDescription:
-          "Permettre aux aperçus de canvas de charger scripts, styles, polices, médias et ressources réseau depuis des CDN. Gardez désactivé pour des aperçus entièrement hors ligne.",
+          "Permettre aux aperçus Canvas de charger des scripts, des styles, des polices, des médias et d'autres ressources depuis des CDN. Laissez cette option désactivée pour des aperçus entièrement hors ligne.",
       },
       data: "Données",
       exportHistory: "Exporter l'historique des discussions",
@@ -859,6 +901,8 @@ export const fr = {
     },
     data: {
       title: "Données",
+      backToData: "Retour aux données",
+      exportFailed: "Impossible d’exporter les chats",
       description:
         "Gérez l'historique des discussions et les fichiers importés conservés sur cet appareil.",
       archivedChats: "Discussions archivées",
@@ -917,19 +961,19 @@ export const fr = {
       description: "Accédez à Unsloth via l'API compatible OpenAI.",
       readDocs: "Lire la documentation de l'API",
       noAccess: "Aucun accès API pour le moment.",
-      accessTokens: "Tokens d'accès",
+      accessTokens: "Jetons d’accès",
       loadError: "Impossible de charger l'accès API.",
-      createError: "Impossible de créer le token d'accès.",
-      revokeError: "Impossible de révoquer le token d'accès.",
+      createError: "Impossible de créer le jeton d’accès.",
+      revokeError: "Impossible de révoquer le jeton d’accès.",
       never: "Jamais",
-      tokenNamePlaceholder: "Nom du token (ex. production)",
-      newAccessTokenName: "Nom du nouveau token d'accès",
-      createToken: "Créer un token",
+      tokenNamePlaceholder: "Nom du jeton (par ex. production)",
+      newAccessTokenName: "Nom du nouveau jeton d’accès",
+      createToken: "Créer un jeton",
       creating: "Création...",
-      newTokenCreated: "Nouveau token d'accès créé",
-      accessTokenCopied: "Token d'accès copié",
-      copyAccessToken: "Copier le token d'accès",
-      copyNow: "Copiez maintenant - il ne sera plus affiché.",
+      newTokenCreated: "Nouveau jeton d’accès créé",
+      accessTokenCopied: "Jeton d’accès copié",
+      copyAccessToken: "Copier le jeton d’accès",
+      copyNow: "Copiez le jeton maintenant : il ne sera plus affiché.",
       usageExamples: "Exemples d'utilisation",
       usageTools: "Outils",
       exampleCurlTools: "curl + outils",
@@ -942,7 +986,7 @@ export const fr = {
       osWindows: "Windows",
       secureHttps: "HTTPS sécurisé",
       secureHttpsHint:
-        "Le port 0.0.0.0 reste accessible globalement. Pour une sécurité complète, lancez Unsloth avec --secure afin de n'exposer que ce lien HTTPS.",
+        "Le service lié à l’adresse 0.0.0.0 reste accessible sur toutes les interfaces réseau. Pour une sécurité complète, lancez Unsloth avec --secure afin de n’exposer que ce lien HTTPS.",
       copyTunnelUrl: "Copier l'URL du tunnel",
       copySnippet: "Copier l'extrait",
       copy: "Copier",
@@ -957,22 +1001,17 @@ export const fr = {
       codingAgentsDetectedHint: "Détecté sur cette machine : {agents}.",
       relativeNever: "jamais",
       relativeJustNow: "à l'instant",
-      relativeHoursAgo: "il y a {count} h",
-      relativeDaysAgo: "il y a {count} j",
-      relativeMonthsAgo: "il y a {count} mois",
-      relativeYearsAgo: "il y a {count} an(s)",
       expired: "expiré",
       today: "aujourd'hui",
-      inDays: "dans {count} j",
       created: "Créé {value}",
       used: "Utilisé {value}",
       expires: "Expire {value}",
       actionsFor: "Actions pour {name}",
       copyPrefix: "Copier le préfixe",
-      revokeToken: "Révoquer le token",
-      revokeTitle: 'Révoquer le token d\'accès "{name}" ?',
+      revokeToken: "Révoquer le jeton",
+      revokeTitle: "Révoquer le jeton d’accès « {name} » ?",
       revokeDescription:
-        "Les applications utilisant ce token perdent immédiatement l'accès. Cette action est irréversible.",
+        "Les applications utilisant ce jeton perdent immédiatement l’accès. Cette action est irréversible.",
       revokeAction: 'Révoquer "{name}"',
       revoking: "Révocation...",
       usageNoModel:
@@ -981,9 +1020,11 @@ export const fr = {
     about: {
       title: "À propos",
       description:
-        "Documentation, notes de version, retours et informations de build.",
+        "Documentation, notes de version, retours et informations de compilation.",
       studioVersion: "Version d'Unsloth",
       packageVersion: "Version du paquet",
+      desktopAppVersion: "Version de l’application de bureau",
+      desktopAppVersionUnavailable: "Indisponible",
       llamaCppVersion: "Version de llama.cpp",
       hardware: "Matériel",
       gpu: "GPU",
@@ -1013,11 +1054,11 @@ export const fr = {
       shutDown: "Arrêter",
       update: {
         title: "Mettre à jour Unsloth",
-        commandText: "Texte de {label}",
+        commandText: "Texte de la {label}",
         copied: "Copié",
         copyCommand: "Copier la commande",
-        commandCopied: "{label} copié",
-        copyNamedCommand: "Copier {label}",
+        commandCopied: "{label} copiée",
+        copyNamedCommand: "Copier la {label}",
         checkingInstall: "Vérification du mode d'installation d'Unsloth...",
         installIntro: "Pour installer ou mettre à jour Unsloth :",
         localUpdateHeading: "Mise à jour locale",
@@ -1035,7 +1076,33 @@ export const fr = {
           "Si vous avez encore le checkout du dépôt, lancez l'installateur local depuis celui-ci :",
         restartAfterUpdate: "Redémarrez Unsloth après la mise à jour.",
         desktopManaged:
-          "L'application de bureau maintient son backend intégré à jour et vous avertira lorsqu'une nouvelle version sera disponible.",
+          "L’application de bureau recherche automatiquement les nouvelles versions. Vous pouvez également rechercher ou installer une mise à jour ici à tout moment.",
+        desktopReady: "Mises à jour de l’application de bureau",
+        desktopReadyDescription:
+          "Vérifiez si une version plus récente de l’application de bureau est disponible.",
+        desktopChecking: "Recherche de mises à jour",
+        desktopCheckingDescription:
+          "Cette opération ne prend généralement que quelques secondes.",
+        desktopAvailable:
+          "La version {version} de l’application de bureau est disponible",
+        desktopAvailableDescription:
+          "Effectuez la mise à jour maintenant. L’application de bureau redémarrera une fois l’opération terminée.",
+        desktopExternalServer:
+          "Exécutez `unsloth studio update` dans le terminal depuis lequel vous avez lancé le serveur.",
+        desktopManualInstall:
+          "Ouvrez la page des versions pour installer le dernier paquet Linux.",
+        desktopCheckFailed: "Impossible de rechercher les mises à jour",
+        desktopCheckFailedDescription:
+          "Vérifiez votre connexion, puis réessayez.",
+        desktopCurrent: "L’application de bureau est à jour",
+        desktopCurrentDescription:
+          "Unsloth continuera à rechercher automatiquement les mises à jour.",
+        checkForUpdates: "Rechercher les mises à jour",
+        checkAgain: "Rechercher à nouveau",
+        retryCheck: "Réessayer",
+        checking: "Vérification...",
+        updateNow: "Mettre à jour maintenant",
+        openReleasePage: "Ouvrir la page des versions",
         unknownInstall:
           "Impossible de détecter le mode d'installation d'Unsloth. Pour les installations via installateur ou PyPI, utilisez les commandes ci-dessus.",
         localCheckout:
@@ -1357,7 +1424,7 @@ export const fr = {
       cancelAction: "Annuler l'entraînement",
       stopTitle: "Arrêter l'entraînement",
       stopDescription:
-        "Choisissez comment vous souhaitez arrêter l'entraînement en cours.",
+        "Choisissez comment arrêter l’entraînement en cours. « Arrêter et enregistrer » crée un point de contrôle qui permettra de le reprendre plus tard ; un entraînement simplement arrêté ne peut pas être repris.",
       stopAction: "Arrêter",
       stopping: "Arrêt...",
       stopAndSave: "Arrêter et enregistrer",
@@ -1394,9 +1461,6 @@ export const fr = {
       steps: "Étapes",
       lossTrendSparkline: "Sparkline de tendance de la perte",
       relativeJustNow: "à l'instant",
-      relativeMinutesAgo: "il y a {count} min",
-      relativeHoursAgo: "il y a {count} h",
-      relativeDaysAgo: "il y a {count} j",
       status: {
         completed: "Terminé",
         stopped: "Arrêté",

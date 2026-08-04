@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
+import { useSettingsDialogStore } from "@/features/settings/stores/settings-dialog-store";
 import {
   applyDictationDictionary,
   isCuratedSttModel,
@@ -340,7 +341,12 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           ? error.message
           : "A recorded segment could not be transcribed.";
       console.error("STT transcription error:", error);
-      toast.error(message);
+      toast.error(message, {
+        action: {
+          label: "Open Voice settings",
+          onClick: () => useSettingsDialogStore.getState().openDialog("voice"),
+        },
+      });
     };
 
     const buildTranscript = () =>

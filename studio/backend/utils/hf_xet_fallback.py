@@ -48,6 +48,29 @@ _shared_import_error: Optional[BaseException] = None
 _load_lock = threading.RLock()
 
 
+def _gpu_present() -> bool:
+    """Whether this host has a usable accelerator, decided WITHOUT importing unsloth_zoo.
+
+    Only torch is consulted (already imported by the time any download helper runs), and any
+    failure answers False so a genuinely torch-less host keeps the light-init retry below.
+    """
+    try:
+        import torch
+    except Exception:  # noqa: BLE001 -- no torch at all: the light path is the right one
+        return False
+    for probe in (
+        lambda: torch.cuda.is_available(),
+        lambda: torch.backends.mps.is_available(),
+        lambda: torch.xpu.is_available(),
+    ):
+        try:
+            if probe():
+                return True
+        except Exception:  # noqa: BLE001 -- a missing backend is just "not this one"
+            continue
+    return False
+
+
 def _load_shared() -> bool:
     """Import ``unsloth_zoo.hf_xet_fallback`` on demand; return True if available. Deferred so
     importing this module at worker startup does not pull transformers in before the sidecar is
@@ -70,6 +93,21 @@ def _load_shared() -> bool:
             # host. The download helper needs none of it, so retry via UNSLOTH_ZOO_DISABLE_GPU_INIT.
             _shared_import_error = exc
             import os as _os
+
+            # ...but ONLY on a host that really has no accelerator. That flag makes unsloth_zoo take its MLX/CPU path, injecting triton and bitsandbytes
+            # STUBS into sys.modules for the process. On a working GPU box those stubs raise from the first CUDA-only kernel, turning a healthy GPU into 500s.
+            if _gpu_present():
+                _shared_available = False
+                import logging as _logging
+
+                _logging.getLogger(__name__).warning(
+                    "unsloth_zoo.hf_xet_fallback unavailable (%s); the Xet stall watchdog is "
+                    "disabled. Not retrying under UNSLOTH_ZOO_DISABLE_GPU_INIT because this host "
+                    "has an accelerator and that path would stub out triton/bitsandbytes for the "
+                    "whole process.",
+                    exc,
+                )
+                return False
 
             global _gpu_init_override_depth
             _prev_gpu_init = _os.environ.get("UNSLOTH_ZOO_DISABLE_GPU_INIT")
