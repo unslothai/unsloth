@@ -62,9 +62,7 @@ def oracle(tmp_path, monkeypatch):
 
 
 def _diff(snapshot_dir, strict):
-    return nv.cmd_colab_diff(
-        argparse.Namespace(snapshot_dir = str(snapshot_dir), strict = strict)
-    )
+    return nv.cmd_colab_diff(argparse.Namespace(snapshot_dir = str(snapshot_dir), strict = strict))
 
 
 def test_no_drift_is_clean(oracle):
@@ -118,9 +116,7 @@ def test_refresh_all_writes_every_snapshot(oracle, tmp_path):
         upstream[key] = upstream[key].replace("2.10.0", "2.11.0").replace("4.5.3", "4.6.0")
         upstream[key] = upstream[key].replace("1ubuntu1.24", "1ubuntu1.25")
     out_dir = tmp_path / "fresh"
-    rc = nv.cmd_refresh_colab(
-        argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None)
-    )
+    rc = nv.cmd_refresh_colab(argparse.Namespace(all = True, snapshot_dir = str(out_dir), out = None))
     assert rc == 0
     for upstream_name, snapshot_name in nv.COLAB_ORACLE_FILES.items():
         assert (out_dir / snapshot_name).read_text(encoding = "utf-8") == upstream[upstream_name]
@@ -134,9 +130,7 @@ def test_refresh_without_all_still_writes_only_pip(oracle, tmp_path):
     # A dir of its own: the fixture pre-seeds tmp_path with all three snapshots.
     dest = tmp_path / "pip_only"
     out = dest / "just_pip.txt"
-    rc = nv.cmd_refresh_colab(
-        argparse.Namespace(all = False, snapshot_dir = str(dest), out = str(out))
-    )
+    rc = nv.cmd_refresh_colab(argparse.Namespace(all = False, snapshot_dir = str(dest), out = str(out)))
     assert rc == 0
     assert out.read_text(encoding = "utf-8") == PIP
     assert sorted(p.name for p in dest.iterdir()) == ["just_pip.txt"]
@@ -151,6 +145,7 @@ def test_workflow_diffs_before_it_refreshes():
         # Up to the next job key, which is the next line indented exactly two.
         nxt = re.search(r"^  [A-Za-z0-9_-]+:$", rest, re.M)
         body = rest[: nxt.start()] if nxt else rest
+
         # Match the invocations, not the prose: both steps are described in
         # comments that name the other subcommand.
         def _at(sub):
