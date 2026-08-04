@@ -645,6 +645,13 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         if snapshot is not None:
             for config_name, key in (
                 ("config.json", "has_config"),
+                # A diffusers pipeline's root manifest, which plays exactly the role config.json
+                # plays for transformers: from_pretrained reads it at the snapshot root to learn
+                # the component layout. Without it here no pure pipeline snapshot could classify
+                # (real repos ship model_index.json and per-component configs, never a root
+                # config.json), payload_snapshots came back empty, and every cached diffusion base
+                # pipeline was force-flagged partial and dropped from the On Device lists.
+                ("model_index.json", "has_config"),
                 ("adapter_config.json", "has_adapter_config"),
             ):
                 try:
