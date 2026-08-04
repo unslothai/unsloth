@@ -2384,20 +2384,47 @@ if [ -x "$VENV_DIR/bin/python" ]; then
     : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
 fi
 
-# Guard against two independent Apple Silicon venv problems, in order:
-#   1. uv may create the venv from a cached x86_64 (Rosetta) Python when a
-#      same-version x86_64 build is already cached (often because uv itself
-#      is an x86_64 build). That venv reports x86_64 to wheel resolvers, and
-#      PyTorch ships no macOS wheels on the CPU index for any architecture,
-#      so the torch install can never resolve. Recreate it with an
-#      arch-explicit arm64 CPython.
-#   2. Python 3.13.8 has a known torch import bug.
+# Python 3.13.8 ships a CPython regression (gh-139783) that breaks `import
+# torch`: inspect.getsourcelines() mis-reads a decorator followed by a comment,
+# which is exactly the shape of torch/nn/modules/rnn.py's @_overload_method
+# blocks, and torch parses those at import time. 3.13.9 was expedited with only
+# that fix, so it is the floor rather than a retreat to 3.12.
+_PY_TORCH_BROKEN="3.13.8"
+_PY_TORCH_FIXED="3.13.9"
+# 3.12 predates the regression entirely and every supported uv can produce it.
+_PY_TORCH_FALLBACK="3.12"
+
+# Interpreter spec for `uv venv --python`. Apple Silicon must pin the arch so uv
+# cannot reuse a cached x86_64 (Rosetta) build; every other platform lets uv
+# resolve its own native download, which is why the hardcoded macos-aarch64
+# spec below could not simply be un-gated (#7803).
+_uv_python_spec() {
+    if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+        printf 'cpython-%s-macos-aarch64-none' "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# Guard against two independent venv problems, in order:
+#   1. (Apple Silicon only) uv may create the venv from a cached x86_64
+#      (Rosetta) Python when a same-version x86_64 build is already cached
+#      (often because uv itself is an x86_64 build). That venv reports x86_64
+#      to wheel resolvers, and PyTorch ships no macOS wheels on the CPU index
+#      for any architecture, so the torch install can never resolve. Recreate
+#      it with an arch-explicit arm64 CPython.
+#   2. (every platform) the venv landed on Python 3.13.8. PYTHON_VERSION is
+#      "3.13" off Intel Mac and uv chooses the patch, so a uv whose manifest
+#      predates 3.13.9 (released four days after uv 0.9.2) puts Linux and WSL
+#      on 3.13.8 too. Studio then falls back to CPU with Train/Export silently
+#      disabled while the install still reports success, so this check must not
+#      stay behind the macOS gate it was first written under.
 # The two are independent: a venv may be x86_64 and, once recreated, still
 # land on 3.13.8. So we re-inspect the interpreter between the checks instead
 # of chaining them with elif, guaranteeing both invariants hold on whatever
 # venv we end up with. Skip both when the user explicitly chose an interpreter
 # via --python.
-if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+if [ -z "$_USER_PYTHON" ]; then
     _inspect_venv() {
         "$VENV_DIR/bin/python" -c \
             "import platform, sys; print(platform.machine(), '{}.{}.{}'.format(*sys.version_info[:3]))" \
@@ -2406,44 +2433,58 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     _info=$(_inspect_venv)
     _VENV_ARCH=${_info%% *}
     _PY_VER=${_info##* }
-    # If the interpreter could not be executed (an x86_64 venv python on a Mac
-    # without Rosetta installed), the probe above yields an empty arch. Fall
-    # back to reading the binary's Mach-O arch statically so the x86_64
-    # recreate below still triggers instead of letting uv fail later.
-    if [ -z "$_VENV_ARCH" ] && [ -x "$VENV_DIR/bin/python" ]; then
-        # uv symlinks bin/python to the base interpreter, so dereference with
-        # file -L (lipo already follows the link). Trailing || true keeps the
-        # installer alive under set -e when neither tool is present.
-        _archs=$(lipo -archs "$VENV_DIR/bin/python" 2>/dev/null \
-            || file -L "$VENV_DIR/bin/python" 2>/dev/null || true)
-        case "$_archs" in
-            *arm64*)  _VENV_ARCH=arm64 ;;
-            *x86_64*) _VENV_ARCH=x86_64 ;;
-        esac
-    fi
 
-    if [ "$_VENV_ARCH" = "x86_64" ]; then
-        echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
-        echo "  Recreating venv with native arm64 Python ${PYTHON_VERSION}..."
-        rm -rf "$VENV_DIR"
-        run_install_cmd "recreate venv (arm64)" uv venv "$VENV_DIR" \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
-        if [ -x "$VENV_DIR/bin/python" ]; then
-            : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
+    if [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
+        # If the interpreter could not be executed (an x86_64 venv python on a
+        # Mac without Rosetta installed), the probe above yields an empty arch.
+        # Fall back to reading the binary's Mach-O arch statically so the
+        # x86_64 recreate below still triggers instead of letting uv fail later.
+        if [ -z "$_VENV_ARCH" ] && [ -x "$VENV_DIR/bin/python" ]; then
+            # uv symlinks bin/python to the base interpreter, so dereference with
+            # file -L (lipo already follows the link). Trailing || true keeps the
+            # installer alive under set -e when neither tool is present.
+            _archs=$(lipo -archs "$VENV_DIR/bin/python" 2>/dev/null \
+                || file -L "$VENV_DIR/bin/python" 2>/dev/null || true)
+            case "$_archs" in
+                *arm64*)  _VENV_ARCH=arm64 ;;
+                *x86_64*) _VENV_ARCH=x86_64 ;;
+            esac
         fi
-        # Re-inspect: the recreated arm64 venv may still be 3.13.8.
-        _info=$(_inspect_venv)
-        _VENV_ARCH=${_info%% *}
-        _PY_VER=${_info##* }
+
+        if [ "$_VENV_ARCH" = "x86_64" ]; then
+            echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
+            echo "  Recreating venv with native arm64 Python ${PYTHON_VERSION}..."
+            rm -rf "$VENV_DIR"
+            run_install_cmd "recreate venv (arm64)" uv venv "$VENV_DIR" \
+                --python "$(_uv_python_spec "$PYTHON_VERSION")"
+            if [ -x "$VENV_DIR/bin/python" ]; then
+                : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
+            fi
+            # Re-inspect: the recreated arm64 venv may still be 3.13.8.
+            _info=$(_inspect_venv)
+            _VENV_ARCH=${_info%% *}
+            _PY_VER=${_info##* }
+        fi
     fi
 
-    if [ "$_PY_VER" = "3.13.8" ]; then
-        echo "  WARNING: Python 3.13.8 has a known torch import bug."
-        echo "  Recreating venv with Python 3.12..."
+    if [ "$_PY_VER" = "$_PY_TORCH_BROKEN" ]; then
+        echo "  WARNING: Python ${_PY_TORCH_BROKEN} has a known torch import bug (CPython gh-139783)."
+        echo "  Recreating venv with Python ${_PY_TORCH_FIXED}..."
         rm -rf "$VENV_DIR"
-        PYTHON_VERSION="3.12"
-        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
-            --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        # Tried in an if-condition so set -e does not abort the install: a uv
+        # older than 3.13.9's release has no such build in its manifest, and
+        # that is the same stale uv that produced 3.13.8 in the first place.
+        if run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
+                --python "$(_uv_python_spec "$_PY_TORCH_FIXED")"; then
+            PYTHON_VERSION="$_PY_TORCH_FIXED"
+        else
+            echo "  Python ${_PY_TORCH_FIXED} is unavailable (uv's manifest predates it)."
+            echo "  Recreating venv with Python ${_PY_TORCH_FALLBACK} instead..."
+            rm -rf "$VENV_DIR"
+            PYTHON_VERSION="$_PY_TORCH_FALLBACK"
+            run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
+                --python "$(_uv_python_spec "$_PY_TORCH_FALLBACK")"
+        fi
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
         fi
