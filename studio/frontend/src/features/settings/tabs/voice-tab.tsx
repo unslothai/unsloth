@@ -643,7 +643,8 @@ export function VoiceTab() {
       case "missing":
         return t("settings.voice.dictation.sttNotDownloaded");
       case "error":
-        return t("settings.voice.dictation.sttDownloadStatusFailed");
+        // This state means the download itself failed, not the status check.
+        return t("settings.voice.dictation.sttDownloadFailed");
       case "downloaded":
         return sttStatusText;
       default:
