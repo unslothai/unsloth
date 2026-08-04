@@ -3199,3 +3199,587 @@ def patch_accelerate_recursively_apply():
                         setattr(mod, "find_device", _patched_find_device)
                     except Exception:
                         pass
+
+
+def fix_peft_stale_torchao_import_error():
+    """Stop an old torchao from aborting LoRA creation that never uses it.
+
+    ``peft.import_utils.is_torchao_available`` returns False when torchao is
+    absent, but raises when it is installed and older than peft's minimum::
+
+        ImportError: Found an incompatible version of torchao. Found version
+        0.10.0, but only versions above 0.16.0 are supported
+
+    peft calls it from ``dispatch_torchao`` for every LoRA layer, so one stale
+    optional dependency ends ``get_peft_model`` for a model that never touches
+    torchao. "Installed but unusable" is closer to "not installed" than to
+    "fatal", so answer False and warn once, naming the upgrade.
+
+    Returns True when patched, False when no patch is needed, None when peft
+    is absent.
+    """
+    try:
+        import peft.import_utils as peft_import_utils
+    except Exception:
+        return None
+
+    original = getattr(peft_import_utils, "is_torchao_available", None)
+    if original is None:
+        return None
+    if getattr(original, "__unsloth_patched__", False):
+        return False
+
+    warned = [False]
+
+    @functools.wraps(original)
+    def is_torchao_available(*args, **kwargs):
+        try:
+            return original(*args, **kwargs)
+        except ImportError as exc:
+            # Only the version complaint. A torchao that fails to import for
+            # any other reason is a real problem and must still surface.
+            message = str(exc)
+            if "torchao" not in message.lower():
+                raise
+            if not warned[0]:
+                warned[0] = True
+                logger.warning(
+                    f"Unsloth: Ignoring an unusable torchao so LoRA can still "
+                    f"be built ({message}). Run "
+                    f"`pip install --upgrade torchao` if you need torchao "
+                    f"quantization."
+                )
+            return False
+
+    is_torchao_available.__unsloth_patched__ = True
+
+    patched = False
+    try:
+        peft_import_utils.is_torchao_available = is_torchao_available
+        patched = True
+    except Exception:
+        return False
+
+    # `from peft.import_utils import is_torchao_available` binds the original
+    # into each importing module, so patching only import_utils would leave
+    # peft.tuners.lora.torchao -- the actual caller -- still raising.
+    for mod_name, mod in tuple(sys.modules.items()):
+        if not mod_name.startswith("peft") or mod is None:
+            continue
+        if getattr(mod, "is_torchao_available", None) is original:
+            try:
+                setattr(mod, "is_torchao_available", is_torchao_available)
+            except Exception:
+                pass
+    return patched
+
+
+# Every name torchao 0.18.0 imports from torch.nn.functional, collected with
+#     grep -rh "from torch.nn.functional import" torchao/
+# over the installed package. scaled_grouped_mm matters as much as the two
+# mx_formats names: it is on the path of a plain `import torchao`.
+# scaled_dot_product_attention is listed for completeness and exists on every
+# supported torch, so it never gets a placeholder -- the loop below skips any
+# symbol torch already provides.
+_TORCHAO_TORCH_SYMBOLS = (
+    "ScalingType",
+    "SwizzleType",
+    "scaled_grouped_mm",
+    "scaled_dot_product_attention",
+)
+
+
+def _make_torch_symbol_placeholder(name, detail):
+    """A stand-in that imports cleanly and refuses to be used.
+
+    torchao 0.17 left these names undefined on older torch, so anything
+    wanting them already raised NameError. Pretending to be a real enum would
+    be worse than the crash it replaces -- it could hand a float8 path a
+    meaningless value. This satisfies the `from ... import` and nothing else.
+    """
+    message = (
+        f"Unsloth: `torch.nn.functional.{name}` does not exist in this torch. "
+        f"{detail} Unsloth supplied a placeholder so that importing torchao "
+        f"(and therefore unsloth) still works, but this symbol cannot be used. "
+        f"Install `torchao<0.18` to use float8/MX features on this torch, or "
+        f"upgrade torch."
+    )
+
+    class _Meta(type):
+        def __getattr__(cls, item):
+            raise RuntimeError(message)
+
+        def __call__(cls, *args, **kwargs):
+            raise RuntimeError(message)
+
+        def __repr__(cls):
+            return f"<unsloth placeholder for torch.nn.functional.{name}>"
+
+    placeholder = _Meta(name, (), {"__doc__": message})
+    # So we can recognise (and never double-patch) our own object later.
+    type.__setattr__(placeholder, "__unsloth_placeholder__", True)
+    return placeholder
+
+
+# The same skew, one layer down. torchao 0.18 also registers a handler against
+# an aten op at module scope, in float8/float8_tensor.py:
+#
+#     @implements([aten._grouped_mm.default])
+#
+# `aten::_grouped_mm` arrived in torch 2.8, so on anything older the lookup
+# raises before the decorator is applied:
+#
+#     AttributeError: '_OpNamespace' 'aten' object has no attribute '_grouped_mm'
+#
+# Supplying the torch.nn.functional names does not help: this lookup goes
+# through torch.ops, so the schema itself has to exist.
+_ATEN_GROUPED_MM_SCHEMA = (
+    "_grouped_mm(Tensor self, Tensor mat2, Tensor? offs=None, "
+    "Tensor? bias=None, ScalarType? out_dtype=None) -> Tensor"
+)
+
+# Module level on purpose: a torch.library.Library deregisters everything it
+# defined when it is garbage collected, so a local would undo itself.
+_aten_grouped_mm_library = None
+
+
+def _torch_op_is_missing(namespace, name):
+    """Is `torch.ops.<namespace>.<name>` absent on this torch?
+
+    Only a plain AttributeError counts. Anything else means we could not tell,
+    and the safe answer to "should I register into the aten namespace?" when
+    unsure is no.
+    """
+    try:
+        import torch
+        ns = getattr(torch.ops, namespace)
+    except Exception:
+        return False
+    try:
+        getattr(ns, name)
+    except AttributeError:
+        return True
+    except Exception:
+        return False
+    return False
+
+
+def _ensure_aten_grouped_mm(detail):
+    """Define an unusable `aten::_grouped_mm` so torchao's decorator resolves.
+
+    No real implementation on purpose: torchao only wants somewhere to hang a
+    float8 handler this torch will never dispatch to, so the schema is the
+    whole requirement. A silently wrong grouped matmul would be far worse than
+    the crash it replaces, so calling it raises and says why.
+    """
+    global _aten_grouped_mm_library
+    if _aten_grouped_mm_library is not None:
+        return False
+    if not _torch_op_is_missing("aten", "_grouped_mm"):
+        return False
+
+    message = (
+        f"Unsloth: `torch.ops.aten._grouped_mm` does not exist in this torch. "
+        f"{detail} Unsloth registered a placeholder schema so that importing "
+        f"torchao (and therefore unsloth) still works, but the operator cannot "
+        f"be used. Upgrade to torch >= 2.8 for grouped matmul, or install "
+        f"`torchao<0.18`."
+    )
+
+    def _refuse(self, mat2, offs = None, bias = None, out_dtype = None):
+        raise RuntimeError(message)
+
+    try:
+        import torch
+        # FRAGMENT is the documented way to add to a namespace someone else
+        # owns; DEF would try to claim "aten" outright and be rejected.
+        library = torch.library.Library("aten", "FRAGMENT")
+        library.define(_ATEN_GROUPED_MM_SCHEMA)
+        library.impl("_grouped_mm", _refuse, "CompositeExplicitAutograd")
+    except Exception:
+        # A torch that will not let us register simply keeps its own error.
+        return False
+
+    _aten_grouped_mm_library = library
+    return True
+
+
+def fix_torchao_torch_symbol_skew():
+    """Let `import unsloth` survive a torchao built for a newer torch.
+
+    torchao 0.17 guarded the import behind `torch_version_at_least("2.10.0")`.
+    0.18.0 left it unguarded at module level, so on torch below 2.10::
+
+        ImportError: cannot import name 'ScalingType' from 'torch.nn.functional'
+
+    That surfaces while importing transformers, so the failure reaches the
+    user as a bare Exception naming neither torchao nor torch.
+
+    Narrow by design: it fires only when torchao is installed, its version
+    actually has the bug, and torch really is missing the symbol. On a healthy
+    pair it does nothing, so nothing is masked.
+    """
+    if importlib.util.find_spec("torchao") is None:
+        return False
+    try:
+        torchao_version = importlib_version("torchao")
+    except Exception:
+        return False
+    try:
+        # 0.17 and earlier guard their own import and need no help.
+        if Version(torchao_version) < Version("0.18.0"):
+            return False
+    except Exception:
+        return False
+
+    try:
+        import torch
+        import torch.nn.functional as F
+        torch_version = str(torch.__version__)
+    except Exception:
+        return False
+
+    detail = (f"torchao {torchao_version} imports it unconditionally, but "
+              f"torch {torch_version} does not provide it (it arrived in "
+              f"torch 2.10).")
+
+    patched = []
+    for name in _TORCHAO_TORCH_SYMBOLS:
+        if hasattr(F, name):
+            continue        # real torch symbol, or already placed by us
+        try:
+            setattr(F, name, _make_torch_symbol_placeholder(name, detail))
+            patched.append(name)
+        except Exception:
+            pass
+    if patched:
+        logger.info(
+            "Unsloth: torchao %s needs torch.nn.functional.%s, which torch %s "
+            "does not have. Adding an unusable placeholder so the import "
+            "succeeds; install torchao<0.18 to use float8/MX features.",
+            torchao_version, "/".join(patched), torch_version,
+        )
+
+    # The aten-op half of the same skew. Independent of the loop above: a
+    # torch can have every torch.nn.functional symbol and still be missing
+    # the operator, and vice versa, so neither result gates the other.
+    op_detail = (f"torchao {torchao_version} registers a handler for it at "
+                 f"import time, but torch {torch_version} does not provide it "
+                 f"(it arrived in torch 2.8).")
+    if _ensure_aten_grouped_mm(op_detail):
+        patched.append("aten::_grouped_mm")
+        logger.info(
+            "Unsloth: torchao %s registers a handler for torch.ops.aten."
+            "_grouped_mm, which torch %s does not have. Registering an "
+            "unusable placeholder schema so the import succeeds.",
+            torchao_version, torch_version,
+        )
+    return bool(patched)
+
+
+# The in-process fix above is not enough for vLLM, which inspects model
+# architectures in a separate process. That child imports torch and torchao
+# itself, never sees a parent monkey-patch, and fails with the same
+# ImportError, surfacing only as the generic
+# "Model architectures ['...'] failed to be inspected".
+#
+# `sitecustomize` is the one hook that reaches a process we do not launch:
+# `site` imports it at interpreter startup and finds it on PYTHONPATH, which
+# subprocesses inherit. A `.pth` would also work, but only inside a real site
+# directory, which a library has no business writing into.
+
+_SUBPROCESS_FIX_DIRNAME = "unsloth_subprocess_import_fix"
+
+
+def _subprocess_fix_directory():
+    """A private directory for the generated sitecustomize.
+
+    Everything on PYTHONPATH is executed by every subprocess, and the temp dir
+    is shared on Linux, so a fixed name there would let whoever created it
+    first run code as everyone else. Scope it per user and refuse a path this
+    user does not own. Windows already gives each user a private TEMP.
+    """
+    import stat
+    import tempfile
+
+    name = _SUBPROCESS_FIX_DIRNAME
+    try:
+        name += "-%d" % os.getuid()
+    except AttributeError:
+        name += "-" + (os.environ.get("USERNAME") or "user")
+    directory = os.path.join(tempfile.gettempdir(), name)
+    os.makedirs(directory, mode = 0o700, exist_ok = True)
+    if hasattr(os, "getuid"):
+        info = os.lstat(directory)
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid():
+            raise RuntimeError(
+                "refusing a subprocess fix directory owned by another user: " + directory
+            )
+    return directory
+
+
+def _subprocess_sitecustomize_source():
+    """The sitecustomize we hand to child processes.
+
+    It chains rather than shadows: `sitecustomize` is a single global name and
+    other things legitimately install one, so silently replacing it would
+    disable whatever that does for every subprocess unsloth spawns. Ours loads
+    the next `sitecustomize.py` on sys.path first, then applies the fix.
+    """
+    return '''"""Written by unsloth. Makes `import torchao` survive a torch that
+predates the symbols torchao 0.18 imports unconditionally, in processes
+unsloth did not launch (notably vLLM's model-architecture inspector)."""
+import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+def _chain_to_the_real_sitecustomize():
+    """Do not shadow somebody else's sitecustomize."""
+    import importlib.util
+    for entry in sys.path:
+        try:
+            if not entry or os.path.abspath(entry) == _HERE:
+                continue
+            cand = os.path.join(entry, "sitecustomize.py")
+            if not os.path.isfile(cand):
+                continue
+            spec = importlib.util.spec_from_file_location(
+                "_unsloth_chained_sitecustomize", cand)
+            if spec is None or spec.loader is None:
+                continue
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            break
+        except Exception:
+            # A broken sitecustomize elsewhere must not stop us, and must not
+            # take down every subprocess either.
+            break
+
+
+def _apply():
+    import importlib.metadata as md
+    try:
+        version = md.version("torchao")
+    except Exception:
+        return
+    try:
+        major, minor = (int("".join(c for c in p if c.isdigit()) or 0)
+                        for p in str(version).split(".")[:2])
+        if (major, minor) < (0, 18):
+            return
+    except Exception:
+        return
+    try:
+        import torch
+        import torch.nn.functional as F
+    except Exception:
+        return
+    detail = ("torchao %s imports it unconditionally, but torch %s does not "
+              "provide it (it arrived in torch 2.10)." % (version, torch.__version__))
+    for name in ("ScalingType", "SwizzleType", "scaled_grouped_mm",
+                 "scaled_dot_product_attention"):
+        if hasattr(F, name):
+            continue
+        message = ("Unsloth: `torch.nn.functional.%s` does not exist in this "
+                   "torch. %s Unsloth supplied a placeholder so that importing "
+                   "torchao still works, but this symbol cannot be used. "
+                   "Install `torchao<0.18`, or upgrade torch." % (name, detail))
+
+        def _make(msg):
+            class _Meta(type):
+                def __getattr__(cls, item):
+                    raise RuntimeError(msg)
+
+                def __call__(cls, *args, **kwargs):
+                    raise RuntimeError(msg)
+            return _Meta
+
+        try:
+            placeholder = _make(message)(name, (), {"__doc__": message})
+            type.__setattr__(placeholder, "__unsloth_placeholder__", True)
+            setattr(F, name, placeholder)
+        except Exception:
+            pass
+
+    # torchao also hangs a handler off aten._grouped_mm at import time, and
+    # that operator only exists from torch 2.8. Same skew, different lookup:
+    # supplying the torch.nn.functional names above does not help it.
+    try:
+        torch.ops.aten._grouped_mm
+    except AttributeError:
+        op_message = (
+            "Unsloth: `torch.ops.aten._grouped_mm` does not exist in this "
+            "torch. torchao %s registers a handler for it at import time, but "
+            "torch %s does not provide it (it arrived in torch 2.8). Unsloth "
+            "registered a placeholder schema so the import succeeds; the "
+            "operator itself cannot be used."
+            % (version, torch.__version__))
+
+        def _refuse(self, mat2, offs=None, bias=None, out_dtype=None):
+            raise RuntimeError(op_message)
+
+        try:
+            # Held on the module so the Library is not collected -- that
+            # would deregister the schema again.
+            global _ATEN_LIBRARY
+            _ATEN_LIBRARY = torch.library.Library("aten", "FRAGMENT")
+            _ATEN_LIBRARY.define(
+                "_grouped_mm(Tensor self, Tensor mat2, Tensor? offs=None, "
+                "Tensor? bias=None, ScalarType? out_dtype=None) -> Tensor")
+            _ATEN_LIBRARY.impl("_grouped_mm", _refuse,
+                               "CompositeExplicitAutograd")
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+
+_ATEN_LIBRARY = None
+
+_chain_to_the_real_sitecustomize()
+try:
+    _apply()
+except Exception:
+    # Never let this abort interpreter startup: it would break every
+    # subprocess, which is far worse than the import error it fixes.
+    pass
+'''
+
+
+def propagate_torchao_fix_to_subprocesses():
+    """Make the torchao fix apply to child processes too.
+
+    Deliberately narrow, and a no-op unless the fix is actually needed: it
+    returns early when torchao is absent, when torchao is old enough to guard
+    its own import, or when torch already has the symbols. On a healthy pair
+    nothing is written and PYTHONPATH is not touched.
+
+    Only the torchao symbol fix is propagated, and the generated file inlines
+    it rather than importing unsloth: a sitecustomize runs at the start of
+    every subprocess on the machine, so importing unsloth there would pay the
+    full import cost each time and could recurse through this function.
+
+    The other fixes in this module were checked and do not need a child.
+    `fix_peft_stale_torchao_import_error` is the only other torchao one, and
+    it guards LoRA construction, which happens in this process. Anything found
+    to be needed later should be inlined here too, not turned into an
+    `import unsloth`.
+
+    Returns the directory added to PYTHONPATH, or None.
+    """
+    if importlib.util.find_spec("torchao") is None:
+        return None
+    try:
+        if Version(importlib_version("torchao")) < Version("0.18.0"):
+            return None
+    except Exception:
+        return None
+    try:
+        import torch.nn.functional as F
+        # Both halves of the skew must be absent for there to be nothing to
+        # do. Today a torch missing the operator is also missing the functional
+        # symbols (2.8 vs 2.10), so the second check never fires on its own; it
+        # keeps the gate correct if that ordering ever stops holding.
+        if (all(hasattr(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
+                and not _torch_op_is_missing("aten", "_grouped_mm")):
+            return None          # this torch is new enough; nothing to do
+    except Exception:
+        return None
+
+    try:
+        directory = _subprocess_fix_directory()
+        target = os.path.join(directory, "sitecustomize.py")
+        source = _subprocess_sitecustomize_source()
+        # Rewrite only when it differs, so concurrent runs do not fight and a
+        # reader never sees a truncated file.
+        try:
+            existing = open(target, "r", encoding="utf-8").read()
+        except Exception:
+            existing = None
+        if existing != source:
+            tmp = target + ".%d.tmp" % os.getpid()
+            with open(tmp, "w", encoding="utf-8") as handle:
+                handle.write(source)
+            os.replace(tmp, target)      # atomic
+    except Exception as exception:
+        logger.warning(
+            "Unsloth: could not stage the torchao subprocess fix (%s). vLLM "
+            "may fail to inspect model architectures.", exception)
+        return None
+
+    # os.pathsep, not ":" -- Windows uses ";".
+    current = os.environ.get("PYTHONPATH", "")
+    parts = [p for p in current.split(os.pathsep) if p]
+    if directory not in parts:
+        os.environ["PYTHONPATH"] = os.pathsep.join([directory] + parts)
+        logger.info(
+            "Unsloth: torchao %s needs torch symbols this torch lacks. Added "
+            "a sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
+            "inspector) can import torchao too.",
+            importlib_version("torchao"))
+    return directory
+
+
+# torchao 0.18.0 moved `torchao/dtypes/nf4tensor.py` to
+# `torchao/quantization/quantize_/workflows/nf4/nf4_tensor.py`. torchtune still
+# imports the old path, and xcodec2 imports torchtune, so anything downstream
+# dies with
+#
+#   ModuleNotFoundError: No module named 'torchao.dtypes.nf4tensor'
+#
+# Same shape as the vLLM tokenizer stub above: a meta path finder APPENDED
+# after the real finders, so an older torchao that still ships the module
+# always wins, and the alias resolves lazily so `import unsloth` does not pay
+# for a torchao import nobody asked for.
+_TORCHAO_NF4_OLD = "torchao.dtypes.nf4tensor"
+_TORCHAO_NF4_NEW = "torchao.quantization.quantize_.workflows.nf4.nf4_tensor"
+_TORCHAO_NF4_SENTINEL = "__unsloth_torchao_nf4_alias__"
+
+
+class _TorchaoNF4AliasLoader(importlib.abc.Loader):
+    __slots__ = ("module_name",)
+
+    def __init__(self, module_name):
+        self.module_name = module_name
+
+    def create_module(self, spec):
+        # Return the RELOCATED module itself rather than a stub with a
+        # hand-copied surface. Whatever torchtune reaches for is then whatever
+        # torchao actually ships, and this cannot rot as symbols are added.
+        return importlib.import_module(_TORCHAO_NF4_NEW)
+
+    def exec_module(self, module):
+        return None
+
+
+class _TorchaoNF4AliasFinder(importlib.abc.MetaPathFinder):
+    __slots__ = (_TORCHAO_NF4_SENTINEL,)
+
+    def __init__(self):
+        setattr(self, _TORCHAO_NF4_SENTINEL, True)
+
+    def find_spec(self, fullname, path = None, target = None):
+        if fullname != _TORCHAO_NF4_OLD:
+            return None
+        try:
+            if importlib.util.find_spec(_TORCHAO_NF4_NEW) is None:
+                return None      # neither layout: let the real ImportError happen
+        except Exception:
+            return None
+        return importlib.machinery.ModuleSpec(
+            name = fullname,
+            loader = _TorchaoNF4AliasLoader(fullname),
+            is_package = False,
+        )
+
+
+def fix_torchao_nf4tensor_move():
+    if importlib.util.find_spec("torchao") is None:
+        return
+    for finder in sys.meta_path:
+        if getattr(finder, _TORCHAO_NF4_SENTINEL, False):
+            return
+    # Appended, not inserted at 0, so a real module on older torchao wins.
+    sys.meta_path.append(_TorchaoNF4AliasFinder())
