@@ -3,33 +3,31 @@
 
 import { usePlatformStore } from "@/config/env";
 import {
-  isChannelEntryFresh,
-  useHubFeedStore,
-} from "./stores/hub-feed-store";
-import {
+  applyActiveModelStatusToStore,
   getInferenceStatus,
   isExternalModelId,
+  listGgufVariants,
+  resolveInferenceCheckpointId,
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { useHubInventory } from "./inventory";
-import type {
-  HfModelSearchChannel,
-  HfSortDirection,
-  HfSortKey,
-} from "./hooks/use-hub-model-search";
 import { useOnlineStatus } from "@/features/hub";
 import { useHubInfiniteScroll } from "@/features/hub";
-import { ggufVariantsMatch, modelIdsMatch } from "./lib/model-identity";
-import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
 import {
+  type ModelPickTarget,
+  type PerModelConfig,
+  adoptLegacyConfigKey,
   applyModelLoadConfigToRuntime,
+  applyPerModelConfigToRuntime,
   currentRuntimePerModelConfig,
   hfModelFitsDevice,
   resolveInitialConfig,
+  useActiveModelConfig,
 } from "@/features/model-picker";
+import { loadOpenAIAutoSwitchSettings } from "@/features/settings";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
-import { useGpuInfo } from "@/hooks/use-gpu-info";
+import { useGpuInfo, useInferenceGpuInfo } from "@/hooks/use-gpu-info";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import { useNavigate, useSearch } from "@tanstack/react-router";
 import {
@@ -43,6 +41,7 @@ import {
 import { ExternalLinkConfirmDialog } from "./catalog/external-link-confirm-dialog";
 import { HubDetailView } from "./catalog/hub-detail-view";
 import { HubFeed } from "./catalog/hub-feed";
+import { HubModelSettingsView } from "./catalog/hub-model-settings-view";
 import { HubTopBar } from "./catalog/hub-top-bar";
 import {
   ModelsCatalog,
@@ -66,8 +65,23 @@ import { useDiscoverSearch } from "./hooks/use-discover-search";
 import { useFeedWriteBack } from "./hooks/use-feed-write-back";
 import { useHiddenEmbeddingModelIds } from "./hooks/use-hidden-embedding-models";
 import { useHubFeed } from "./hooks/use-hub-feed";
+import type {
+  HfModelSearchChannel,
+  HfSortDirection,
+  HfSortKey,
+} from "./hooks/use-hub-model-search";
 import { useHubModelVram } from "./hooks/use-hub-model-vram";
 import { useModelsSelection } from "./hooks/use-models-selection";
+import { useHubInventory } from "./inventory";
+import { LOCAL_MODEL_SOURCE } from "./inventory/constants";
+import { settingsGgufVariantForRow } from "./inventory/settings-identity";
+import { adoptResidentModelStatus } from "./lib/adopt-inference-status";
+import { subscribeResidentStatusRefresh } from "./lib/resident-status-refresh";
+import {
+  type RefreshSupersession,
+  registerRefresh,
+  supersedingRefresh,
+} from "./lib/superseded-refresh";
 import {
   CHANNEL_TO_SECTION,
   type ChannelId,
@@ -83,6 +97,11 @@ import {
 } from "./lib/hidden-models";
 import { inventoryRowMatches, tokenizeQuery } from "./lib/inventory-search";
 import {
+  ggufVariantsMatch,
+  modelIdsMatch,
+  residentModelIdMatches,
+} from "./lib/model-identity";
+import {
   type ModelTypeFilter,
   matchesModelType,
 } from "./lib/model-type-filter";
@@ -95,6 +114,8 @@ import {
   matchesCapability,
   matchesFormat,
 } from "./lib/view-models";
+import { hfApiToken, useHfTokenStore } from "./stores/hf-token-store";
+import { isChannelEntryFresh, useHubFeedStore } from "./stores/hub-feed-store";
 import type {
   CachedInventoryRow,
   CapabilityFilter,
@@ -104,7 +125,23 @@ import type {
   ModelsTab,
   ResourceTypeFilter,
   SelectedModelView,
+  SelectedResourceRef,
 } from "./types";
+
+// What per-model settings are keyed by, which is not always what the loader is handed: a repo
+// cached outside the active HF cache loads by snapshot path while the picker and the auto-switch
+// index key it by repo id, so saving under the path strands them. The row decides that, not the
+// view it is shown in (a cache row is reachable from Discover too); `hub_cache` marks exactly
+// those, while a local row in the active cache stays on its run id.
+function modelConfigIdentity(
+  kind: SelectedModelView["kind"],
+  resource: SelectedResourceRef,
+): string {
+  if (kind !== "cache" && resource.source !== "hub_cache") {
+    return resource.runId;
+  }
+  return resource.repoId ?? resource.runId;
+}
 
 const MODELS_TAB_STORAGE_KEY = "unsloth.hub.modelsTab";
 const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
@@ -334,43 +371,118 @@ function selectedRepoMatchesRuntime(
 export function ModelsPage() {
   const navigate = useNavigate();
   const gpu = useGpuInfo();
+  const inferenceGpu = useInferenceGpuInfo();
   const online = useOnlineStatus();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const hubSearch = useSearch({ from: "/hub" });
   const urlModel = hubSearch.model ?? null;
+  const preferredGgufFile = hubSearch.file ?? null;
 
+  const preferredGgufFileIntent = hubSearch.intent ?? 0;
   const { selectModel, loadingModel, loadProgress, ejectModel } =
     useChatModelRuntime();
   const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
   const activeCheckpoint =
     checkpoint && !isExternalModelId(checkpoint) ? checkpoint : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
+  const activeGgufContextLength = useChatRuntimeStore(
+    (s) => s.ggufContextLength,
+  );
+  // Live settings of the loaded model, so its page shows what it is running with.
+  const { config: activeModelConfig } = useActiveModelConfig();
   // Shared with the chat model selector: list only models sized for this device.
   const fitOnDeviceOnly = useChatRuntimeStore((s) => s.fitOnDeviceOnly);
   const setFitOnDeviceOnly = useChatRuntimeStore((s) => s.setFitOnDeviceOnly);
 
-  useEffect(() => {
-    let cancelled = false;
-    void getInferenceStatus()
-      .then((status) => {
-        if (cancelled || !status.active_model) return;
+  // Drops a response that lands after a newer read started, or after unmount.
+  const residentStatusSeq = useRef(0);
+  // The newest read started, so a dropped response can resolve with that instead of with
+  // nothing. A caller awaits a settled store, and the settings handlers' own guard counts
+  // settings opens only: a focus or visibilitychange refresh supersedes one without bumping it.
+  const residentStatusSupersession = useRef<RefreshSupersession>({
+    latest: null,
+  });
+  // /status cannot say whether an empty answer is an idle eviction that will reload or a real
+  // unload, and only this endpoint knows. Read alongside every status read rather than cached,
+  // since the idle timeout is editable from Settings while this page stays mounted, and awaited
+  // with it, since the first read is the one most likely to land on an evicted model.
+  // Last answer wins on failure, not the default: "disarmed" is the side that clears the
+  // checkpoint, so a transient failure would discard a selection the idle loop is bringing
+  // back. Before any successful read it is false, the setting's own default.
+  const idleUnloadArmed = useRef(false);
+  const readIdleUnloadArmed = useCallback(
+    (): Promise<boolean> =>
+      loadOpenAIAutoSwitchSettings()
+        .then((settings) => {
+          idleUnloadArmed.current = settings.idleUnloadActive;
+          return idleUnloadArmed.current;
+        })
+        .catch(() => idleUnloadArmed.current),
+    [],
+  );
+  // Returns the read so a caller that needs the answer first can wait for it.
+  const refreshResidentModelStatus = useCallback((): Promise<void> => {
+    const seq = ++residentStatusSeq.current;
+    const read = Promise.all([getInferenceStatus(), readIdleUnloadArmed()])
+      .then(([status, idleUnloadArmed]) => {
+        // A newer read owns the store, so this writes nothing; resolving with the refresh
+        // that took it over keeps an awaiting caller from reading the store it has not
+        // written yet, which is the pre-switch store the await was there to replace.
+        if (seq !== residentStatusSeq.current)
+          return supersedingRefresh(residentStatusSupersession.current, seq);
         const store = useChatRuntimeStore.getState();
-        if (
-          !isExternalModelId(store.params.checkpoint) &&
-          (!modelIdsMatch(store.params.checkpoint, status.active_model) ||
-            !ggufVariantsMatch(
-              store.activeGgufVariant,
-              status.gguf_variant ?? null,
-            ))
-        ) {
-          store.setCheckpoint(status.active_model, status.gguf_variant ?? null);
-        }
+        adoptResidentModelStatus(
+          {
+            // The loadable identifier, as every other status reader records it: a GGUF off
+            // disk loads by path, and two files sharing a stem collapse onto one public id.
+            checkpointId: resolveInferenceCheckpointId(status),
+            ggufVariant: status.gguf_variant ?? null,
+          },
+          {
+            checkpoint: store.params.checkpoint,
+            checkpointIsExternal: isExternalModelId(store.params.checkpoint),
+            activeGgufVariant: store.activeGgufVariant,
+            modelLoading: store.modelLoading,
+            idleUnloadArmed,
+          },
+          {
+            setCheckpoint: (checkpointId, ggufVariant) => {
+              store.setCheckpoint(checkpointId, ggufVariant);
+            },
+            clearCheckpoint: () => {
+              store.clearCheckpoint();
+            },
+            // Landing here is the one entry point that has applied no status yet, so the
+            // settings page would read the live config off a store holding defaults.
+            applyStatus: (previous) => {
+              applyActiveModelStatusToStore(status, {
+                previousCheckpoint: previous.checkpoint ?? undefined,
+                previousGgufVariant: previous.ggufVariant,
+              });
+            },
+          },
+        );
       })
       .catch(() => undefined);
+    // In start order, synchronously with the sequence number, so a dropped response always
+    // finds the read that took the store over rather than one older than itself.
+    registerRefresh(residentStatusSupersession.current, seq, read);
+    return read;
+  }, [readIdleUnloadArmed]);
+
+  // Mount, then again whenever this tab could have missed an API-driven switch. Re-reading is
+  // safe: adoptResidentModelStatus stands down for an external selection and this tab's loads.
+  useEffect(() => {
+    void refreshResidentModelStatus();
+    const unsubscribe = subscribeResidentStatusRefresh(
+      refreshResidentModelStatus,
+    );
     return () => {
-      cancelled = true;
+      // A response still in flight adopts nothing once the Hub is gone.
+      residentStatusSeq.current += 1;
+      unsubscribe();
     };
-  }, []);
+  }, [refreshResidentModelStatus]);
 
   const { tab, setTab: setModelsTab } = useModelsTabState();
   const [query, setQuery] = useState("");
@@ -657,11 +769,7 @@ export function ModelsPage() {
   const visibleResults =
     results.length === 0 &&
     liveListChannel &&
-    isChannelEntryFresh(
-      cachedListEntry,
-      liveListChannel.id,
-      tokenFingerprint,
-    )
+    isChannelEntryFresh(cachedListEntry, liveListChannel.id, tokenFingerprint)
       ? (cachedListEntry?.results ?? results)
       : results;
 
@@ -757,7 +865,10 @@ export function ModelsPage() {
         // matching the chat model selector.
         (!fitOnDeviceOnly ||
           row.isAvailableOnDevice ||
-          hfModelFitsDevice(row.result, gpu)),
+          hfModelFitsDevice(
+            row.result,
+            row.result.isGguf ? inferenceGpu : gpu,
+          )),
     );
   }, [
     discoverRows,
@@ -769,6 +880,7 @@ export function ModelsPage() {
     activeChannel,
     fitOnDeviceOnly,
     gpu,
+    inferenceGpu,
   ]);
 
   const listRows = filteredDiscoverRows;
@@ -799,7 +911,7 @@ export function ModelsPage() {
           (row) =>
             !fitOnDeviceOnly ||
             row.isAvailableOnDevice ||
-            hfModelFitsDevice(row.result, gpu),
+            hfModelFitsDevice(row.result, inferenceGpu),
         ),
     [
       hubFeed.trending.results,
@@ -807,6 +919,7 @@ export function ModelsPage() {
       modelDiscoveryInventorySignature,
       fitOnDeviceOnly,
       gpu,
+      inferenceGpu,
     ],
   );
   const feedRows = useMemo(() => {
@@ -1025,7 +1138,7 @@ export function ModelsPage() {
       setSelected(id);
       void navigate({
         to: "/hub",
-        search: (prev) => ({ ...prev, model: id }),
+        search: (prev) => ({ ...prev, model: id, file: undefined }),
       });
     },
     [setSelected, navigate],
@@ -1111,7 +1224,7 @@ export function ModelsPage() {
     setSelected(firstId);
     void navigate({
       to: "/hub",
-      search: (prev) => ({ ...prev, model: firstId }),
+      search: (prev) => ({ ...prev, model: firstId, file: undefined }),
       replace: true,
     });
   }, [
@@ -1179,7 +1292,17 @@ export function ModelsPage() {
     (opts: ModelLoadOptions, isDownloaded: boolean) => {
       if (!selectedModel) return;
       const runId = selectedModel.resource.runId;
-      const resolvedConfig = resolveInitialConfig(runId, opts.ggufVariant);
+      const configIdentity = modelConfigIdentity(
+        selectedModel.kind,
+        selectedModel.resource,
+      );
+      // A cached repo used to be keyed by the snapshot path it loads from, which is its
+      // runId. Move that record over before reading, or an upgrade reads as unremembered.
+      adoptLegacyConfigKey(configIdentity, runId, opts.ggufVariant);
+      const resolvedConfig = resolveInitialConfig(
+        configIdentity,
+        opts.ggufVariant,
+      );
       const rememberedConfig = resolvedConfig.remembered
         ? resolvedConfig.config
         : null;
@@ -1213,6 +1336,151 @@ export function ModelsPage() {
       runSelectedModel(opts, selectedModel?.isDownloaded ?? true),
     [runSelectedModel, selectedModel],
   );
+
+  // Full-page per-model settings, opened from a downloaded row's menu. Local state, not a
+  // URL param: a deep link would need the row re-resolved against an unloaded inventory.
+  const [settingsTarget, setSettingsTarget] = useState<ModelPickTarget | null>(
+    null,
+  );
+  // Opening settings is where a stale read costs something: the editor is seeded once and Apply
+  // reloads with what it seeded, so this covers a switch that landed while the window kept
+  // focus. Resolving a target is openModelSettings' own read; this is for ready-made targets.
+  useEffect(() => {
+    if (settingsTarget) void refreshResidentModelStatus();
+  }, [settingsTarget, refreshResidentModelStatus]);
+  // Bumped per open so a slow lookup for an abandoned row cannot land on the chosen one.
+  const settingsOpenSeq = useRef(0);
+  const openModelSettings = useCallback(
+    async (row: CachedInventoryRow | LocalInventoryRow) => {
+      const openSeq = ++settingsOpenSeq.current;
+      // Before anything reads the store: the status effect watches settingsTarget, so it
+      // cannot run until the target exists. Every path out of here seeds the editor from the
+      // store and Apply reloads with that, so a pre-switch read would launch wrong settings.
+      await refreshResidentModelStatus();
+      if (settingsOpenSeq.current !== openSeq) return;
+      // loadId is what the loader accepts; repoId is only a display/API alias.
+      const id = row.loadId;
+      // Every name this row answers to.
+      const rowAliases =
+        row.kind === "local"
+          ? [id, row.repoId, row.path]
+          : [id, row.repoId, row.cachePath];
+      // Cached repo rows never carry a quant, and a null variant keys the config to `repo::`
+      // while the loader reads `repo::Q4_K_M`, so resolve one as the on-device card does.
+      let ggufVariant = settingsGgufVariantForRow(row);
+      if (!ggufVariant && row.isGguf && row.capabilities.requiresVariant) {
+        // A local row only carries a repo id inside the HF cache, so a plain folder of quants
+        // has none while still needing one. The listing scans a path in the same position, as
+        // the on-device card does; without it this menu entry only reaches the error toast.
+        const repoId =
+          row.kind === "cache" ? row.repoId : (row.repoId ?? row.path ?? null);
+        if (repoId) {
+          try {
+            const res = await listGgufVariants(repoId, hfApiToken(hfToken), {
+              preferLocalCache: true,
+              localPath:
+                row.kind === "local" ? row.path : (row.cachePath ?? null),
+            });
+            const downloaded = res.variants.filter((v) => v.downloaded);
+            // Re-read after this await too: the lookup hits the network, and a switch during
+            // it would leave the branch below on the displaced model's quant. Against the
+            // server, not the store: nothing pushes an API switch into this tab, so the store
+            // is as old as the read above.
+            await refreshResidentModelStatus();
+            if (settingsOpenSeq.current !== openSeq) return;
+            const settled = useChatRuntimeStore.getState();
+            const settledCheckpoint =
+              settled.params.checkpoint &&
+              !isExternalModelId(settled.params.checkpoint)
+                ? settled.params.checkpoint
+                : null;
+            const settledIsActive = rowAliases.some((alias) =>
+              modelIdsMatch(alias, settledCheckpoint),
+            );
+            ggufVariant =
+              // Loaded quant, then repo default, then whatever is on disk, mirroring
+              // LocalOnDeviceCard. Loaded row only: Q4_K_M exists in most repos.
+              (settledIsActive
+                ? downloaded.find((v) =>
+                    ggufVariantsMatch(v.quant, settled.activeGgufVariant),
+                  )?.quant
+                : undefined) ??
+              downloaded.find((v) =>
+                ggufVariantsMatch(v.quant, res.default_variant),
+              )?.quant ??
+              downloaded[0]?.quant ??
+              null;
+          } catch {
+            ggufVariant = null;
+          }
+        }
+        if (!ggufVariant) {
+          // A model needing a quant cannot be configured without one: the picker matches
+          // variants exactly and would never find the config, while the API would.
+          toast.error("Couldn't determine which quant to configure.", {
+            description:
+              "Settings for this model are per quant. Check the connection or the model's cache, then try again.",
+          });
+          return;
+        }
+      }
+      // The lookup is async: without this, whichever call finished last would win.
+      if (settingsOpenSeq.current !== openSeq) {
+        return;
+      }
+      // A repo in a previous cache loads by snapshot path, so `id` ends in the revision
+      // hash; name the row by what the user calls it instead.
+      const configId = row.kind === "cache" ? row.repoId : id;
+      const leaf = configId.split(/[\\/]/).filter(Boolean).pop() ?? configId;
+      setSettingsTarget({
+        id,
+        configId,
+        displayName: ggufVariant ? `${leaf} · ${ggufVariant}` : leaf,
+        ggufVariant,
+        isGguf: row.isGguf,
+        apiLoadable:
+          row.isGguf &&
+          (row.kind !== "local" || row.source !== LOCAL_MODEL_SOURCE.OLLAMA),
+        meta: {
+          source: "local",
+          isLora: row.modelFormat === "adapter",
+          ggufVariant: ggufVariant ?? undefined,
+          isGguf: row.isGguf,
+          // A partial opens settings too; claiming complete would skip download progress.
+          isDownloaded: !row.partial,
+          // Not on inventory rows; ModelConfigPage reads the GGUF header itself.
+          contextLength: null,
+        },
+      });
+    },
+    [activeCheckpoint, activeGgufVariant, hfToken, refreshResidentModelStatus],
+  );
+  // Applying loads the model with exactly these settings, which ModelConfigPage has already
+  // persisted locally and, with "remember" on, to the server, so an API load matches.
+  const runSettingsTarget = useCallback(
+    (config: PerModelConfig) => {
+      const target = settingsTarget;
+      if (!target) return;
+      const previousConfig = currentRuntimePerModelConfig({
+        includeMaxSeqLength: true,
+      });
+      applyPerModelConfigToRuntime(config);
+      setSettingsTarget(null);
+      void selectModel({
+        id: target.id,
+        source: "local",
+        ggufVariant: target.ggufVariant ?? undefined,
+        isGguf: target.isGguf,
+        // A partial row opens settings too; claiming complete would skip download progress.
+        isDownloaded: target.meta.isDownloaded,
+        isLora: target.meta.isLora,
+        keepSpeculative: true,
+        forceReload: true,
+        previousConfig,
+      }).catch(() => undefined);
+    },
+    [selectModel, settingsTarget],
+  );
   const handleLoadLocal = useCallback(
     (opts: ModelLoadOptions = {}) => runSelectedModel(opts, true),
     [runSelectedModel],
@@ -1220,6 +1488,95 @@ export function ModelsPage() {
   const handleTrain = useCallback(() => {
     // Hub → train integration ships in a later PR.
   }, []);
+  // Opened from the on-device card, which passes in the quant it already resolved.
+  const openSelectedModelSettings = useCallback(
+    async (ggufVariant: string | null, quantIsUserPicked = false) => {
+      if (!selectedModel) return;
+      // Shared with openModelSettings: another row's pending lookup must not land here.
+      const openSeq = ++settingsOpenSeq.current;
+      // Unconditional, as in openModelSettings: the editor is seeded from the store and
+      // Apply reloads with what it seeded.
+      await refreshResidentModelStatus();
+      if (settingsOpenSeq.current !== openSeq) return;
+      let variant = ggufVariant;
+      // The card derived this quant from the store's active variant, now settled by the
+      // read above. A user-picked quant stands; a derived one defers to what is loaded.
+      if (!quantIsUserPicked) {
+        const settled = useChatRuntimeStore.getState();
+        const settledCheckpoint =
+          settled.params.checkpoint &&
+          !isExternalModelId(settled.params.checkpoint)
+            ? settled.params.checkpoint
+            : null;
+        // Every name this model answers to, as the row menu path matches them.
+        const aliases = [
+          selectedModel.resource.runId,
+          selectedModel.resource.repoId,
+          selectedModel.resource.localPath,
+        ];
+        if (
+          settled.activeGgufVariant &&
+          aliases.some((alias) => modelIdsMatch(alias, settledCheckpoint))
+        ) {
+          variant = settled.activeGgufVariant;
+        }
+      }
+      // The card passes null while its lookup is pending or after it failed, so this needs
+      // the same guard openModelSettings applies.
+      if (!variant && selectedModel.isGguf && selectedModel.requiresVariant) {
+        toast.error("Couldn't determine which quant to configure.", {
+          description:
+            "Settings for this model are per quant. Check the connection or the model's cache, then try again.",
+        });
+        return;
+      }
+      const id = selectedModel.resource.runId;
+      const configId = modelConfigIdentity(
+        selectedModel.kind,
+        selectedModel.resource,
+      );
+      // As in runSelectedModel: the editor seeds from this key, so the move has to happen
+      // before it reads or the page opens on defaults and Apply writes them back.
+      adoptLegacyConfigKey(configId, id, variant);
+      const leaf = configId.split(/[\\/]/).filter(Boolean).pop() ?? configId;
+      setSettingsTarget({
+        id,
+        configId,
+        displayName: variant ? `${leaf} · ${variant}` : leaf,
+        ggufVariant: variant,
+        isGguf: selectedModel.isGguf,
+        apiLoadable:
+          selectedModel.isGguf &&
+          selectedModel.localSource !== LOCAL_MODEL_SOURCE.OLLAMA,
+        meta: {
+          source: "local",
+          isLora: selectedModel.modelFormat === "adapter",
+          ggufVariant: variant ?? undefined,
+          isGguf: selectedModel.isGguf,
+          isDownloaded: selectedModel.isDownloaded,
+          contextLength: null,
+        },
+      });
+    },
+    [selectedModel, refreshResidentModelStatus],
+  );
+  // Whether the settings page is open on the loaded model, so it can show the live launch
+  // config. A GGUF off disk loads by path but is reported by its public id, so the row's path
+  // and its settings identity are both offered as aliases. A loose .gguf carries no variant while
+  // the loader derives one from its filename, so the two can never be required to agree.
+  const settingsTargetIsStandaloneFile =
+    settingsTarget !== null &&
+    settingsTarget.ggufVariant == null &&
+    settingsTarget.id.toLowerCase().endsWith(".gguf");
+  const settingsTargetIsResident =
+    settingsTarget !== null &&
+    residentModelIdMatches(
+      activeCheckpoint,
+      settingsTarget.id,
+      settingsTarget.configId,
+    ) &&
+    (settingsTargetIsStandaloneFile ||
+      ggufVariantsMatch(activeGgufVariant, settingsTarget.ggufVariant));
   const handleSearchHub = useCallback(
     (next: string) => {
       const trimmed = next.trim();
@@ -1254,9 +1611,11 @@ export function ModelsPage() {
       loadingPhase: loadProgress?.phase,
       minMemory,
       vramInfo,
-      gpuGb: gpu.available ? gpu.memoryTotalGb : undefined,
+      gpuGb: inferenceGpu.available ? inferenceGpu.memoryTotalGb : undefined,
       systemRamGb:
-        gpu.systemRamAvailableGb > 0 ? gpu.systemRamAvailableGb : undefined,
+        inferenceGpu.systemRamAvailableGb > 0
+          ? inferenceGpu.systemRamAvailableGb
+          : undefined,
     }),
     [
       isActive,
@@ -1265,9 +1624,9 @@ export function ModelsPage() {
       loadProgress?.phase,
       minMemory,
       vramInfo,
-      gpu.available,
-      gpu.memoryTotalGb,
-      gpu.systemRamAvailableGb,
+      inferenceGpu.available,
+      inferenceGpu.memoryTotalGb,
+      inferenceGpu.systemRamAvailableGb,
     ],
   );
 
@@ -1280,6 +1639,7 @@ export function ModelsPage() {
       onTrain: handleTrain,
       onInventoryChange: refreshInventory,
       onSearchHub: handleSearchHub,
+      onOpenSettings: openSelectedModelSettings,
     }),
     [
       handleLoad,
@@ -1289,48 +1649,17 @@ export function ModelsPage() {
       handleTrain,
       handleSearchHub,
       refreshInventory,
+      openSelectedModelSettings,
     ],
   );
 
-  const catalogState = useMemo<ModelsCatalogState>(
-    () => {
-      const typeFilterActive =
-        !isDatasetMode && inventoryTypeFilter !== "all";
-      return {
-        tab,
-        discoverRows: listRows,
-        cachedRows: filteredCachedRows,
-        localRows: filteredLocalRows,
-        selectedId,
-        isLoading,
-        downloadedReady,
-        inventoryError,
-        inventoryWarning,
-        query,
-        activeCheckpoint,
-        activeGgufVariant,
-        searchError,
-        online,
-        isDataset: isDatasetMode,
-        inventoryTokens,
-        scannedCount,
-        loadingIntentCount: discoverFetchIntent,
-        hasMore,
-        manualFetchAvailable: discoverManualFetchAvailable,
-        hasActiveFilters:
-          !isFeedMode &&
-          (deferredFormatFilter !== "all" ||
-            deferredCapabilityFilter !== "all" ||
-            (tab === "downloaded" && typeFilterActive)),
-        typeFilterActive,
-      };
-    },
-    [
+  const catalogState = useMemo<ModelsCatalogState>(() => {
+    const typeFilterActive = !isDatasetMode && inventoryTypeFilter !== "all";
+    return {
       tab,
-      isFeedMode,
-      listRows,
-      filteredCachedRows,
-      filteredLocalRows,
+      discoverRows: listRows,
+      cachedRows: filteredCachedRows,
+      localRows: filteredLocalRows,
       selectedId,
       isLoading,
       downloadedReady,
@@ -1341,17 +1670,45 @@ export function ModelsPage() {
       activeGgufVariant,
       searchError,
       online,
-      isDatasetMode,
+      isDataset: isDatasetMode,
       inventoryTokens,
       scannedCount,
-      discoverFetchIntent,
+      loadingIntentCount: discoverFetchIntent,
       hasMore,
-      discoverManualFetchAvailable,
-      deferredFormatFilter,
-      deferredCapabilityFilter,
-      inventoryTypeFilter,
-    ],
-  );
+      manualFetchAvailable: discoverManualFetchAvailable,
+      hasActiveFilters:
+        !isFeedMode &&
+        (deferredFormatFilter !== "all" ||
+          deferredCapabilityFilter !== "all" ||
+          (tab === "downloaded" && typeFilterActive)),
+      typeFilterActive,
+    };
+  }, [
+    tab,
+    isFeedMode,
+    listRows,
+    filteredCachedRows,
+    filteredLocalRows,
+    selectedId,
+    isLoading,
+    downloadedReady,
+    inventoryError,
+    inventoryWarning,
+    query,
+    activeCheckpoint,
+    activeGgufVariant,
+    searchError,
+    online,
+    isDatasetMode,
+    inventoryTokens,
+    scannedCount,
+    discoverFetchIntent,
+    hasMore,
+    discoverManualFetchAvailable,
+    deferredFormatFilter,
+    deferredCapabilityFilter,
+    inventoryTypeFilter,
+  ]);
 
   const catalogPagination = useMemo<ModelsCatalogPagination>(
     () => ({
@@ -1370,6 +1727,7 @@ export function ModelsPage() {
       onRetry: handleRetrySearch,
       onInventoryChange: refreshInventory,
       onSwitchDevice: handleSwitchDevice,
+      onOpenModelSettings: openModelSettings,
     }),
     [
       handleSelect,
@@ -1378,6 +1736,7 @@ export function ModelsPage() {
       handleRetrySearch,
       refreshInventory,
       handleSwitchDevice,
+      openModelSettings,
     ],
   );
 
@@ -1520,6 +1879,8 @@ export function ModelsPage() {
 
   const detailOpen = urlModel !== null;
   const splitMode = allModelsView === "split";
+  // Unreachable under an opaque overlay: the detail view (full-page only) or settings.
+  const catalogCovered = (detailOpen && !splitMode) || settingsTarget !== null;
 
   return (
     <div className="hub-page flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden bg-background">
@@ -1560,24 +1921,28 @@ export function ModelsPage() {
       <div
         className={cn(
           "relative flex min-h-0 min-w-0 flex-1 basis-0",
-          // Split mode shares the top bar's centered 1100px measure so the
+          // Split mode shares the top bar's centered --hub-measure column so the
           // master list lines up with the heading instead of hugging the edge.
           splitMode
-            ? "flex-col lg:mx-auto lg:w-full lg:max-w-[1100px] lg:flex-row"
+            ? "flex-col lg:mx-auto lg:w-full lg:max-w-[var(--hub-measure)] lg:flex-row"
             : "flex-col",
         )}
       >
         <div
           className={cn(
             "flex min-h-0 flex-col",
-            // Split mode keeps the catalog as a fixed-width master pane on large
-            // screens; otherwise it fills the area and the detail view overlays it.
+            // Split mode keeps the catalog as a master pane that grows with the
+            // container off a 460px floor; otherwise it fills the area and the
+            // detail view overlays it.
             splitMode
-              ? "flex-1 lg:w-[460px] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
+              ? "flex-1 lg:w-[clamp(460px,32%,620px)] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
               : "flex-1",
-            detailOpen && !splitMode && "pointer-events-none",
+            // A full-bleed opaque overlay, so the catalog leaves the tab order; without
+            // this, tabbing out of the form walks into the rows behind it.
+            catalogCovered && "pointer-events-none",
           )}
-          aria-hidden={(detailOpen && !splitMode) || undefined}
+          aria-hidden={catalogCovered || undefined}
+          inert={catalogCovered || undefined}
         >
           <ModelsCatalog
             state={catalogState}
@@ -1593,9 +1958,15 @@ export function ModelsPage() {
 
         {splitMode ? (
           detailOpen ? (
-            <div className="hub-canvas z-20 flex min-h-0 flex-col max-lg:absolute max-lg:inset-0 lg:relative lg:min-w-0 lg:flex-1">
+            <div
+              className="hub-canvas z-20 flex min-h-0 flex-col max-lg:absolute max-lg:inset-0 lg:relative lg:min-w-0 lg:flex-1"
+              inert={settingsTarget !== null || undefined}
+            >
               <HubDetailView
                 model={selectedModel}
+                preferredGgufFile={preferredGgufFile}
+
+                preferredGgufFileIntent={preferredGgufFileIntent}
                 isDataset={isDatasetMode}
                 metadataUnavailable={metadataUnavailable}
                 selectionHiddenByFilters={selectionHiddenByFilters}
@@ -1612,9 +1983,15 @@ export function ModelsPage() {
           )
         ) : (
           detailOpen && (
-            <div className="hub-canvas absolute inset-0 z-20 flex min-h-0 flex-col">
+            <div
+              className="hub-canvas absolute inset-0 z-20 flex min-h-0 flex-col"
+              inert={settingsTarget !== null || undefined}
+            >
               <HubDetailView
                 model={selectedModel}
+                preferredGgufFile={preferredGgufFile}
+
+                preferredGgufFileIntent={preferredGgufFileIntent}
                 isDataset={isDatasetMode}
                 metadataUnavailable={metadataUnavailable}
                 selectionHiddenByFilters={selectionHiddenByFilters}
@@ -1624,6 +2001,22 @@ export function ModelsPage() {
               />
             </div>
           )
+        )}
+
+        {/* Above the detail overlay (z-30), so settings do not stack behind a preview. */}
+        {settingsTarget && (
+          <div className="hub-canvas absolute inset-0 z-30 flex min-h-0 flex-col">
+            <HubModelSettingsView
+              target={settingsTarget}
+              loadedConfig={settingsTargetIsResident ? activeModelConfig : null}
+              loadedContextLength={
+                settingsTargetIsResident ? activeGgufContextLength : null
+              }
+              onBack={() => setSettingsTarget(null)}
+              onRun={runSettingsTarget}
+              compact={splitMode}
+            />
+          </div>
         )}
       </div>
 

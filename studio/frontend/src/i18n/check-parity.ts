@@ -19,6 +19,7 @@ import { fr } from "./locales/fr.ts";
 import { ru } from "./locales/ru.ts";
 import { de } from "./locales/de.ts";
 import { ko } from "./locales/ko.ts";
+import { it } from "./locales/it.ts";
 
 type Tree = { readonly [k: string]: string | Tree };
 
@@ -107,6 +108,7 @@ const overlays: Record<string, Tree> = {
   ru: ru as unknown as Tree,
   de: de as unknown as Tree,
   ko: ko as unknown as Tree,
+  it: it as unknown as Tree,
 };
 let anyError = false;
 

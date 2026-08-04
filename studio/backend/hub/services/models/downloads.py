@@ -91,6 +91,7 @@ def _spawn_download_worker(
     use_xet: bool = True,
     protected_blob_hashes: Optional[frozenset[str]] = None,
     cache_env: Optional[dict[str, str]] = None,
+    allow_ambient_token: bool = True,
 ) -> subprocess.Popen:
     args = ["--repo-id", repo_id]
     if variant:
@@ -101,11 +102,21 @@ def _spawn_download_worker(
         use_xet = use_xet,
         protected_blob_hashes = protected_blob_hashes,
         cache_env = cache_env,
+        allow_ambient_token = allow_ambient_token,
     )
 
 
-async def download_model_response(body: DownloadModelRequest, hf_token: Optional[str] = None):
-    """Start a background download for a HuggingFace model."""
+async def download_model_response(
+    body: DownloadModelRequest,
+    hf_token: Optional[str] = None,
+    *,
+    allow_ambient_token: bool = True,
+):
+    """Start a background download for a HuggingFace model.
+
+    ``allow_ambient_token=False`` keeps the worker anonymous when the caller sent
+    no token, for repos named over the API rather than chosen here.
+    """
     repo_id = body.repo_id.strip()
     if not _is_valid_repo_id(repo_id):
         raise HTTPException(
@@ -125,8 +136,15 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             detail = f"Invalid gguf_variant: {variant!r}",
         )
     key = _download_job_key(repo_id, variant)
-    use_xet = download_lifecycle.resolve_effective_use_xet(body.use_xet)
+    # Off the event loop: resolving "auto" can run the Xet reachability probe, and a blackholed DNS
+    # makes that outlast its 3s budget while every other Studio request waits behind it.
+    use_xet, transport_reason = await asyncio.to_thread(
+        download_lifecycle.resolve_requested_use_xet,
+        getattr(body, "transport_mode", None),
+        body.use_xet,
+    )
     transport = download_lifecycle.resolve_transport(use_xet)
+    logger.info("Download transport for %s: %s (%s)", repo_id, transport, transport_reason)
     from utils.hf_cache_settings import get_hf_cache_paths
 
     cache_paths = get_hf_cache_paths()
@@ -218,6 +236,7 @@ async def download_model_response(body: DownloadModelRequest, hf_token: Optional
             use_xet = use_xet,
             protected_blob_hashes = protected_blob_hashes,
             cache_env = cache_env,
+            allow_ambient_token = allow_ambient_token,
         ),
         hf_token = hf_token,
         label = label,

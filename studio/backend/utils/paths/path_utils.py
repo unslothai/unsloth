@@ -34,7 +34,7 @@ def _is_wsl() -> bool:
     if sys.platform == "win32":
         return False
     try:
-        with open("/proc/version", "r") as f:
+        with open("/proc/version", "r", encoding = "utf-8") as f:
             return "microsoft" in f.read().lower()
     except Exception:
         return False

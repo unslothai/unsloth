@@ -88,11 +88,21 @@ class TestStructuralTorchConstraint:
         """$TORCH_CONSTRAINT must appear in a uv pip install line."""
         assert '"$TORCH_CONSTRAINT"' in self._sh
 
-    def test_hardcoded_torch_constraint_only_once(self):
-        """The hard-coded torch>=2.4,<2.11.0 string should appear exactly once
-        in install.sh (the default assignment), not in pip install lines."""
-        count = self._sh.count('"torch>=2.4,<2.11.0"')
-        assert count == 1, f"Expected 1, found {count}"
+    def test_hardcoded_torch_constraint_only_on_assignments(self):
+        """The hard-coded torch>=2.4,<2.11.0 string must only appear on
+        TORCH_CONSTRAINT= assignment lines, never on a pip/uv install line
+        (those must reference $TORCH_CONSTRAINT). Two assignments are expected:
+        the default, and the gfx906 (MI50) reroute that restores the default
+        <2.11 window after the rocm7.2 floor bump raised it to 2.11."""
+        hits = [ln for ln in self._sh.splitlines() if '"torch>=2.4,<2.11.0"' in ln]
+        assert hits, "default constraint literal missing from install.sh"
+        for ln in hits:
+            assert (
+                "TORCH_CONSTRAINT=" in ln
+            ), f"torch>=2.4,<2.11.0 hardcoded off a TORCH_CONSTRAINT= assignment: {ln.strip()!r}"
+            assert (
+                "pip install" not in ln
+            ), f"torch>=2.4,<2.11.0 hardcoded on a pip install line: {ln.strip()!r}"
 
     def test_tightening_guarded_by_skip_torch(self):
         """The block must check SKIP_TORCH=false."""
@@ -166,7 +176,17 @@ class TestInstallShUvDefaultIndex:
         assert '--default-index "$TORCH_INDEX_URL"' in self._sh
 
     def test_torch_installs_do_not_use_deprecated_index_url(self):
-        assert '--index-url "$TORCH_INDEX_URL"' not in self._sh
+        # uv deprecated --index-url in favour of --default-index; pip never had it, so the XPU
+        # triton pre-fetch (`pip download`) legitimately uses --index-url. Checked per
+        # occurrence so a uv invocation still cannot slip one through. Backslash continuations
+        # are joined first, since the flag and its command are often on different lines.
+        joined = self._sh.replace("\\\n", " ")
+        offenders = [
+            " ".join(line.split())
+            for line in joined.splitlines()
+            if '--index-url "$TORCH_INDEX_URL"' in line and "pip download" not in line
+        ]
+        assert not offenders, offenders
 
     def test_torch_installs_neutralize_all_uv_index_env_vars(self):
         # --default-index installs run with all uv index env vars unset via `env -u`.

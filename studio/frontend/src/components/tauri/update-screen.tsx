@@ -21,9 +21,19 @@ const EASE_OUT_QUART: [number, number, number, number] = [0.165, 0.84, 0.44, 1];
 
 function Logo() {
   return (
-    <div className="flex flex-col items-center gap-4">
-      <img src="/sticker.png" alt="Unsloth" className="h-[72px] w-[72px] object-contain" />
-      <img src="/studio.png" alt="Unsloth Studio" className="h-auto w-[250px] object-contain dark:invert" />
+    <div className="flex items-center justify-center gap-3">
+      <img
+        src="/sticker.png"
+        alt=""
+        aria-hidden="true"
+        className="h-[60px] w-[60px] object-contain"
+      />
+      <span
+        className="text-ui-50 font-semibold leading-none tracking-[-0.02em] text-foreground"
+        style={{ fontFamily: '"Hellix", sans-serif' }}
+      >
+        unsloth
+      </span>
     </div>
   );
 }

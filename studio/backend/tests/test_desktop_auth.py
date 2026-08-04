@@ -123,7 +123,7 @@ def test_ensure_default_admin_does_not_recreate_bootstrap_for_existing_admin():
 
 def test_ensure_default_admin_loads_existing_bootstrap_after_restart(monkeypatch):
     created = storage.ensure_default_admin()
-    bootstrap_pw = storage._BOOTSTRAP_PW_PATH.read_text().strip()
+    bootstrap_pw = storage._BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8").strip()
 
     monkeypatch.setattr(storage, "_bootstrap_password", None)
     created_again = storage.ensure_default_admin()
@@ -134,14 +134,226 @@ def test_ensure_default_admin_loads_existing_bootstrap_after_restart(monkeypatch
     assert storage.get_bootstrap_password() == bootstrap_pw
 
 
+def test_bootstrap_password_file_ends_with_a_newline():
+    # Otherwise `cat` welds the passphrase onto the shell prompt.
+    storage.ensure_default_admin()
+
+    # Bytes: read_text would decode CRLF back to "\n" and hide a CR.
+    raw = storage._BOOTSTRAP_PW_PATH.read_bytes()
+
+    assert raw == storage.get_bootstrap_password().encode("utf-8") + b"\n"
+
+
+def test_bootstrap_password_round_trips_across_a_restart_with_the_newline():
+    storage.ensure_default_admin()
+    original = storage.get_bootstrap_password()
+
+    storage._bootstrap_password = None
+
+    assert storage.generate_bootstrap_password() == original
+
+
+def test_upgrade_normalises_the_bootstrap_file():
+    # Upgrade path: the admin row exists, so generate_bootstrap_password() never runs.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+
+    storage.ensure_default_admin()
+
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret\n"
+    assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+
+
+@pytest.mark.parametrize(
+    "other",
+    [
+        b"legacy-bootstrap-secret\r\n",  # only an unreleased build wrote this
+        b"legacy-bootstrap-secret\r",
+        b"legacy-bootstrap-secret   ",
+    ],
+)
+def test_only_an_exactly_unterminated_bootstrap_file_is_touched(other):
+    # Appending is safe only because it is restricted to the one released shape.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(other)
+
+    storage.ensure_default_admin()
+
+    assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == other
+
+
+def test_upgrade_normalises_when_the_admin_row_is_missing():
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+
+    assert storage.generate_bootstrap_password() == "legacy-bootstrap-secret"
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret\n"
+
+
+def test_a_well_formed_bootstrap_file_is_not_rewritten():
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret\n")
+    mtime = storage._BOOTSTRAP_PW_PATH.stat().st_mtime_ns
+
+    storage.ensure_default_admin()
+
+    assert storage._BOOTSTRAP_PW_PATH.stat().st_mtime_ns == mtime
+
+
+def test_migration_failure_does_not_break_startup(monkeypatch):
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+
+    real_open = storage.os.open
+
+    def refuse(path, flags, *args, **kwargs):
+        if str(path) == str(storage._BOOTSTRAP_PW_PATH):
+            raise PermissionError("read-only auth dir")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(storage.os, "open", refuse)
+
+    storage.ensure_default_admin()
+
+    assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret"
+
+
+def test_normalising_never_recreates_a_cleared_bootstrap_file(monkeypatch):
+    # A rename would resurrect revoked plaintext if the password changed after the read.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+
+    real_open = storage.os.open
+
+    def clear_then_open(path, flags, *args, **kwargs):
+        if str(path) == str(storage._BOOTSTRAP_PW_PATH):
+            storage._BOOTSTRAP_PW_PATH.unlink(missing_ok = True)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(storage.os, "open", clear_then_open)
+
+    assert storage._read_persisted_bootstrap_password() == "legacy-bootstrap-secret"
+    assert not storage._BOOTSTRAP_PW_PATH.exists()
+
+
+def test_normalising_does_not_overwrite_a_rotated_bootstrap_file(monkeypatch):
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+
+    real_open = storage.os.open
+
+    def rotate_then_open(path, flags, *args, **kwargs):
+        if str(path) == str(storage._BOOTSTRAP_PW_PATH):
+            storage._BOOTSTRAP_PW_PATH.write_bytes(b"brand-new-secret\n")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(storage.os, "open", rotate_then_open)
+
+    storage._read_persisted_bootstrap_password()
+
+    # The append may add a second newline; the rotated credential must survive.
+    raw = storage._BOOTSTRAP_PW_PATH.read_bytes()
+    assert raw.strip() == b"brand-new-secret"
+    storage._bootstrap_password = None
+    assert storage._load_bootstrap_password() == "brand-new-secret"
+
+
+def test_leading_whitespace_bootstrap_file_is_left_alone(monkeypatch):
+    # An in-place rewrite is not atomic, so only the exact unterminated shape is touched.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"  legacy-bootstrap-secret  ")
+
+    storage.ensure_default_admin()
+
+    assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"  legacy-bootstrap-secret  "
+
+
+def test_normalising_opens_the_file_in_binary_mode(monkeypatch):
+    # Without O_BINARY, Windows text mode turns the written LF back into CRLF.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+    monkeypatch.setattr(storage.os, "O_BINARY", 0x8000, raising = False)
+    seen = []
+    real_open = storage.os.open
+
+    def spy(path, flags, *args, **kwargs):
+        if str(path) == str(storage._BOOTSTRAP_PW_PATH):
+            seen.append(flags)
+        return real_open(path, flags & ~0x8000, *args, **kwargs)
+
+    monkeypatch.setattr(storage.os, "open", spy)
+
+    storage.ensure_default_admin()
+
+    assert seen and all(f & 0x8000 for f in seen), seen
+
+
+def test_clearing_by_truncation_mid_normalisation_is_not_undone(monkeypatch):
+    # clear_bootstrap_password() truncates through its own descriptor when the unlink
+    # fails (Windows, while ours is open); the append must not restore the plaintext.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+
+    real_open = storage.os.open
+
+    def truncate_then_open(path, flags, *args, **kwargs):
+        fd = real_open(path, flags, *args, **kwargs)
+        if str(path) == str(storage._BOOTSTRAP_PW_PATH):
+            storage._BOOTSTRAP_PW_PATH.write_text("", encoding = "utf-8")
+        return fd
+
+    monkeypatch.setattr(storage.os, "open", truncate_then_open)
+
+    storage._read_persisted_bootstrap_password()
+
+    # A lone newline over a cleared file still reads back as no password.
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes().strip() == b""
+    storage._bootstrap_password = None
+    assert storage._load_bootstrap_password() is None
+
+
+def test_normalising_works_without_fchmod(monkeypatch):
+    # os.fchmod only reached Windows in 3.13; its absence must not raise.
+    seed_user()
+    storage._BOOTSTRAP_PW_PATH.write_bytes(b"legacy-bootstrap-secret")
+    monkeypatch.delattr(storage.os, "fchmod", raising = False)
+
+    storage.ensure_default_admin()
+
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"legacy-bootstrap-secret\n"
+    assert storage.get_bootstrap_password() == "legacy-bootstrap-secret"
+
+
+def test_persisting_the_bootstrap_password_is_atomic(monkeypatch, tmp_path):
+    # A partial write would destroy the only plaintext recovery credential.
+    storage._persist_bootstrap_password("original-secret")
+
+    def boom(src, dst):
+        raise OSError("crash before replace")
+
+    monkeypatch.setattr(storage.os, "replace", boom)
+    with pytest.raises(OSError):
+        storage._persist_bootstrap_password("new-secret")
+
+    assert storage._BOOTSTRAP_PW_PATH.read_bytes() == b"original-secret\n"
+    leftovers = [
+        p.name
+        for p in storage._BOOTSTRAP_PW_PATH.parent.iterdir()
+        if "bootstrap_password." in p.name
+    ]
+    assert leftovers == []
+
+
 def test_ensure_default_admin_does_not_generate_for_empty_existing_bootstrap():
     seed_user()
-    storage._BOOTSTRAP_PW_PATH.write_text(" \n")
+    storage._BOOTSTRAP_PW_PATH.write_text(" \n", encoding = "utf-8")
 
     created = storage.ensure_default_admin()
 
     assert created is False
-    assert storage._BOOTSTRAP_PW_PATH.read_text() == " \n"
+    assert storage._BOOTSTRAP_PW_PATH.read_text(encoding = "utf-8") == " \n"
     assert storage.get_bootstrap_password() is None
 
 
@@ -233,7 +445,7 @@ def test_consume_refresh_token_second_call_returns_none():
     storage.save_refresh_token(raw, storage.DEFAULT_ADMIN_USERNAME, expires)
 
     first = storage.consume_refresh_token(raw)
-    assert first == (storage.DEFAULT_ADMIN_USERNAME, False)
+    assert first[:2] == (storage.DEFAULT_ADMIN_USERNAME, False)
     second = storage.consume_refresh_token(raw)
     assert second is None
 
@@ -262,7 +474,7 @@ def test_consume_refresh_token_concurrent_only_one_succeeds(tmp_path, monkeypatc
 
     successes = [r for r in results if r is not None]
     assert len(successes) == 1, f"expected exactly one consumer to win, got {len(successes)}"
-    assert successes[0] == (storage.DEFAULT_ADMIN_USERNAME, False)
+    assert successes[0][:2] == (storage.DEFAULT_ADMIN_USERNAME, False)
 
 
 def test_consume_refresh_token_expired_returns_none():
@@ -336,6 +548,28 @@ def test_local_recipe_token_authenticates_as_admin_for_web_user(loaded_local_mod
     assert asyncio.run(get_current_subject(credentials)) == storage.DEFAULT_ADMIN_USERNAME
 
 
+def test_rotated_credential_job_start_is_401_not_500(loaded_local_model):
+    # A reset-password landing mid-request makes the workflow-key mint refuse.
+    # That must reach the client as a revoked credential, not an unhandled error.
+    from fastapi import HTTPException
+
+    seed_user()
+    jobs_route = data_recipe_jobs_module()
+    stale_gen = storage.credential_generation(secrets.token_urlsafe(64))
+
+    with pytest.raises(storage.CredentialRotated):
+        jobs_route._inject_local_providers(local_recipe(), local_recipe_request("t"), stale_gen)
+
+    def _boom(*_a, **_k):
+        raise storage.CredentialRotated("revoked")
+
+    jobs_route._inject_local_providers = _boom
+    payload = SimpleNamespace(recipe = local_recipe(), run = {})
+    with pytest.raises(HTTPException) as excinfo:
+        jobs_route.create_job(payload, local_recipe_request("t"), ("unsloth", stale_gen))
+    assert excinfo.value.status_code == 401
+
+
 def test_desktop_login_rejects_invalid_secret():
     seed_user(must_change_password = False)
     client = auth_client()
@@ -358,7 +592,7 @@ def test_write_desktop_secret_file_is_0600_on_unix(tmp_path):
 
     studio_cli._write_auth_secret(path, "desktop-secret")
 
-    assert path.read_text() == "desktop-secret"
+    assert path.read_bytes() == b"desktop-secret\n"
     if platform.system() != "Windows":
         assert oct(path.stat().st_mode & 0o777) == "0o600"
 
@@ -368,18 +602,31 @@ def test_reset_password_removes_desktop_secret_files(tmp_path, monkeypatch):
     from unsloth_cli.commands import studio as studio_cli
 
     auth_dir = tmp_path / "auth"
-    auth_dir.mkdir()
-    (auth_dir / "auth.db").write_text("db")
-    (auth_dir / ".bootstrap_password").write_text("boot")
-    (auth_dir / ".desktop_secret").write_text("new")
     monkeypatch.setattr(studio_cli, "STUDIO_HOME", tmp_path)
+    secret = studio_cli._create_desktop_secret_in_cli()
+    studio_cli._write_auth_secret(auth_dir / studio_cli.DESKTOP_SECRET_FILE, secret)
+    (auth_dir / studio_cli.BOOTSTRAP_PASSWORD_FILE).write_text("boot")
 
     result = CliRunner().invoke(studio_cli.studio_app, ["reset-password"])
 
-    assert result.exit_code == 0
-    assert not (auth_dir / "auth.db").exists()
-    assert not (auth_dir / ".bootstrap_password").exists()
-    assert not (auth_dir / ".desktop_secret").exists()
+    assert result.exit_code == 0, result.output
+    # The DB survives on purpose: a running server keeps serving from its admin row.
+    assert (auth_dir / "auth.db").exists()
+    assert not (auth_dir / studio_cli.BOOTSTRAP_PASSWORD_FILE).exists()
+    assert not (auth_dir / studio_cli.DESKTOP_SECRET_FILE).exists()
+
+    conn = studio_cli._connect_auth_db()
+    try:
+        surviving = conn.execute(
+            "SELECT COUNT(*) FROM app_secrets WHERE key IN (?, ?)",
+            (
+                studio_cli.DESKTOP_SECRET_HASH_KEY,
+                studio_cli.DESKTOP_SECRET_CREATED_AT_KEY,
+            ),
+        ).fetchone()[0]
+    finally:
+        conn.close()
+    assert surviving == 0
 
 
 def test_reset_password_removes_desktop_secret_files_without_db(tmp_path, monkeypatch):
@@ -436,6 +683,7 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
         "models_router": APIRouter(),
         "providers_router": APIRouter(),
         "rag_router": APIRouter(),
+        "research_runs_router": APIRouter(),
         "settings_router": settings_module.router,
         "training_history_router": APIRouter(),
         "training_router": APIRouter(),
@@ -451,6 +699,9 @@ def test_health_response_reports_desktop_capability_fields(monkeypatch):
 
     import studio.backend.main as backend_main
 
+    # DEVICE alongside the two it is set with, since /api/health waits on
+    # ensure_hardware_detected(). CPU + "mlx_unavailable" is an MLX-less Apple Silicon.
+    monkeypatch.setattr(backend_main._hw_module, "DEVICE", backend_main._hw_module.DeviceType.CPU)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY", True)
     monkeypatch.setattr(backend_main._hw_module, "CHAT_ONLY_REASON", "mlx_unavailable")
 
@@ -524,7 +775,8 @@ if result.exit_code != 0:
         capture_output = True,
     )
     assert result.returncode == 0, result.stderr + result.stdout
-    secret = (auth_dir / ".desktop_secret").read_text()
+    # Strip like the src-tauri readers do.
+    secret = (auth_dir / ".desktop_secret").read_text().strip()
     assert secret.startswith("desktop-")
 
     conn = sqlite3.connect(auth_dir / "auth.db")
@@ -632,7 +884,7 @@ def test_update_password_clears_desktop_secret():
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
 
     changed = storage.update_password(storage.DEFAULT_ADMIN_USERNAME, "new-admin-password")
-    assert changed is True
+    assert changed
     assert storage.validate_desktop_secret(raw) is None
 
 
@@ -641,7 +893,7 @@ def test_update_password_on_unknown_user_leaves_desktop_secret_intact():
     raw = storage.create_desktop_secret()
 
     changed = storage.update_password("not-a-user", "irrelevant")
-    assert changed is False
+    assert not changed
     assert storage.validate_desktop_secret(raw) == storage.DEFAULT_ADMIN_USERNAME
 
 
@@ -649,7 +901,7 @@ def test_desktop_auth_provision_has_bounded_timeout():
     rs_path = (
         Path(__file__).resolve().parents[3] / "studio" / "src-tauri" / "src" / "desktop_auth.rs"
     )
-    src = rs_path.read_text()
+    src = rs_path.read_text(encoding = "utf-8")
     start = src.index("async fn provision_desktop_auth(")
     depth = 0
     body_start = src.index("{", start)

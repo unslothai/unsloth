@@ -64,7 +64,7 @@ export function ModelsHeader({
   return (
     <header className="font-heading flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
       <PageHeading
-        title={isDataset ? "Datasets" : "Models"}
+        title={isDataset ? "Datasets" : "Model hub"}
         onTitleClick={onTitleClick}
         subtitle={
           isDataset

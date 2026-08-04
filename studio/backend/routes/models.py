@@ -10,7 +10,10 @@ import os
 import re
 import shutil
 import sys
+import threading
+import time
 import uuid
+import weakref
 from pathlib import Path
 from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel
@@ -285,6 +288,25 @@ def _has_non_gguf_weights(path: Path) -> bool:
         return False
 
 
+def _is_gguf_companion_only_dir(path: Path) -> bool:
+    """True for a folder whose entire content is GGUF companions -- a lone mmproj adapter, an
+    MTP drafter, or both -- with nothing servable beside them.
+
+    The scanners report ``model_format = None`` for such a folder, because neither companion is a
+    primary weight, and that is also what a plain checkpoint reports. The custom-folder scan below
+    validates GGUF rows through ``detect_gguf_model`` and waves the rest through, so without this
+    the folder is published as a model that no loader can start.
+    """
+    try:
+        if not path.is_dir():
+            return False
+        if (path / "config.json").exists() or (path / "adapter_config.json").exists():
+            return False
+        return any(path.glob("*.gguf")) and not _has_non_gguf_weights(path)
+    except OSError:
+        return False
+
+
 def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[LocalModelInfo]:
     if not models_dir.exists() or not models_dir.is_dir():
         return []
@@ -314,7 +336,11 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         try:
             if not child.is_dir():
                 continue
-            has_gguf = any(child.glob("*.gguf"))
+            gguf_names = [p.name for p in child.glob("*.gguf")]
+            has_gguf = bool(gguf_names)
+            # mmproj alone is a vision adapter, not servable weights, so it decides
+            # presence but never format (same rule as _dir_model_format).
+            has_main_gguf = any(_is_main_gguf_filename(n) for n in gguf_names)
             has_non_gguf_weights = _has_non_gguf_weights(child)
             has_config = (child / "config.json").exists() or (
                 child / "adapter_config.json"
@@ -332,7 +358,7 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         # A folder whose only weights are .gguf is GGUF-format even when it also
         # ships a config.json (common for HF GGUF repos); such folders often lack
         # a -GGUF suffix, so surface the format for the UI's GGUF classification.
-        model_format = "gguf" if has_gguf and not has_non_gguf_weights else None
+        model_format = "gguf" if has_main_gguf and not has_non_gguf_weights else None
         found.append(
             LocalModelInfo(
                 id = str(child),
@@ -348,7 +374,8 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
         for gguf_file in models_dir.glob("*.gguf"):
             if limit is not None and len(found) >= limit:
                 break
-            if gguf_file.is_file():
+            # A standalone mmproj is a vision adapter, not servable weights.
+            if gguf_file.is_file() and _is_main_gguf_filename(gguf_file.name):
                 try:
                     updated_at = gguf_file.stat().st_mtime
                 except OSError:
@@ -367,7 +394,12 @@ def _scan_models_dir(models_dir: Path, *, limit: int | None = None) -> List[Loca
     return found
 
 
-def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalModelInfo]:
+def _scan_hf_cache(
+    cache_dir: Path,
+    *,
+    active_cache: bool = True,
+    classify_format: bool = True,
+) -> List[LocalModelInfo]:
     if not cache_dir.exists() or not cache_dir.is_dir():
         return []
 
@@ -392,13 +424,23 @@ def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalM
         partial = partial or hf_cache_scan.is_gguf_repo_partial(model_id, repo_dir)
 
         load_id = model_id
+        snapshot = _resolve_hf_cache_realpath(repo_dir)
         if not active_cache:
-            load_id = _resolve_hf_cache_realpath(repo_dir) or str(repo_dir.resolve())
+            load_id = snapshot or str(repo_dir.resolve())
+        # Classify from the snapshot's own weights. A GGUF repo without a -GGUF
+        # suffix is common, and leaving this unset makes every consumer guess from
+        # the name; the snapshot is already resolved just above.
+        model_format = (
+            _dir_model_format(Path(snapshot), recursive = True)
+            if snapshot and classify_format
+            else None
+        )
         found.append(
             LocalModelInfo(
                 id = load_id,
                 model_id = model_id,
                 display_name = model_id.split("/")[-1],
+                model_format = model_format,
                 path = load_id if not active_cache else str(repo_dir),
                 source = "hf_cache",
                 active_cache = active_cache,
@@ -409,16 +451,30 @@ def _scan_hf_cache(cache_dir: Path, *, active_cache: bool = True) -> List[LocalM
     return found
 
 
-def _dir_model_format(path: Path) -> Optional[str]:
+def _dir_model_format(path: Path, recursive: bool = False) -> Optional[str]:
     """Return ``"gguf"`` for a directory whose only weights are ``.gguf`` files.
 
     LM Studio and custom GGUF folders frequently lack a ``-GGUF`` name suffix,
     so the UI relies on this hint to route them through the GGUF load path
-    rather than treating them as plain local checkpoints.
+    rather than treating them as plain local checkpoints. A directory whose only
+    ``.gguf`` is an mmproj vision adapter is not one: the variant selector drops
+    mmproj, so that path would find nothing to serve.
+
+    ``recursive`` is for HF cache snapshots, which keep split quants in per-quant
+    subdirectories: a flat glob sees no ``.gguf`` there and would report the
+    snapshot as non-GGUF, hiding every sharded repo from the GGUF pickers. It looks
+    one level down rather than walking the tree, because that is where split quants
+    live and ``/api/models/local`` is async: an unbounded ``rglob`` per repo would
+    have to exhaust every non-GGUF snapshot before concluding there is no GGUF,
+    blocking the event loop on a large cache.
     """
     try:
-        if not any(path.glob("*.gguf")):
-            return None
+        found = path.glob("*.gguf")
+        if not any(_is_main_gguf_filename(p.name) for p in found):
+            if not recursive:
+                return None
+            if not any(_is_main_gguf_filename(p.name) for p in path.glob("*/*.gguf")):
+                return None
         return None if _has_non_gguf_weights(path) else "gguf"
     except OSError:
         return None
@@ -455,7 +511,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
     for child in lm_dir.iterdir():
         try:
             if not child.is_dir():
-                if child.suffix == ".gguf" and child.is_file():
+                if _is_main_gguf_filename(child.name) and child.is_file():
                     try:
                         updated_at = child.stat().st_mtime
                     except OSError:
@@ -518,7 +574,7 @@ def _scan_lmstudio_dir(lm_dir: Path) -> List[LocalModelInfo]:
                                 updated_at = updated_at,
                             ),
                         )
-                    elif model_dir.suffix == ".gguf" and model_dir.is_file():
+                    elif _is_main_gguf_filename(model_dir.name) and model_dir.is_file():
                         try:
                             updated_at = model_dir.stat().st_mtime
                         except OSError:
@@ -688,8 +744,8 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
             stem_hash = hashlib.sha256(manifest_key.encode()).hexdigest()[:10]
 
             try:
-                manifest = json.loads(tag_file.read_text())
-            except (json.JSONDecodeError, OSError) as e:
+                manifest = json.loads(tag_file.read_text(encoding = "utf-8-sig"))
+            except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
                 logger.debug(
                     "Skipping unreadable/invalid Ollama manifest %s: %s",
                     tag_file,
@@ -704,10 +760,10 @@ def _scan_ollama_dir(ollama_dir: Path, limit: Optional[int] = None) -> List[Loca
                 config_blob = blobs_dir / config_digest.replace(":", "-")
                 if config_blob.is_file():
                     try:
-                        cfg = json.loads(config_blob.read_text())
+                        cfg = json.loads(config_blob.read_text(encoding = "utf-8-sig"))
                         model_type = cfg.get("model_type", "")
                         file_type = cfg.get("file_type", "")
-                    except (json.JSONDecodeError, OSError) as e:
+                    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
                         logger.debug(
                             "Could not parse Ollama config blob %s: %s",
                             config_blob,
@@ -778,6 +834,7 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
     must already be validated/trusted by the caller.
     """
     from storage.studio_db import list_scan_folders
+    from utils.models.model_config import detect_gguf_model
     from utils.paths import (
         hf_default_cache_dir,
         legacy_hf_cache_dir,
@@ -837,7 +894,30 @@ def collect_local_models(models_root: Path) -> List[LocalModelInfo]:
                 )
                 if not any(p in (".studio_links", "ollama_links") for p in Path(m.path).parts)
             ]
-            custom_models = _generic
+            custom_models = []
+            for model in _generic:
+                path = Path(model.path)
+                is_gguf_row = model.model_format == "gguf" or _is_gguf_companion_only_dir(path)
+                if not is_gguf_row or model.partial:
+                    custom_models.append(model)
+                    continue
+                if path.is_dir():
+                    patterns = ("*", "*/*") if model.source == "hf_cache" else ("*",)
+                    if any(
+                        detect_gguf_model(str(file), model_root = str(folder_path)) is not None
+                        for pattern in patterns
+                        for file in path.glob(pattern)
+                        if not _safe_is_dir(file) and file.suffix.lower() == ".gguf"
+                    ):
+                        custom_models.append(model)
+                elif (
+                    detect_gguf_model(
+                        model.path,
+                        model_root = str(folder_path),
+                    )
+                    is not None
+                ):
+                    custom_models.append(model)
             if len(custom_models) < _MAX_MODELS_PER_FOLDER:
                 custom_models += _scan_ollama_dir(
                     folder_path,
@@ -1008,7 +1088,7 @@ def _dir_has_downloaded_model(directory: Path, max_entries: int = 4000) -> bool:
                 if not m.is_file():
                     continue
                 try:
-                    manifest = json.loads(m.read_text())
+                    manifest = json.loads(m.read_text(encoding = "utf-8-sig"))
                 except (json.JSONDecodeError, OSError, ValueError):
                     continue
                 for layer in manifest.get("layers") or []:
@@ -1709,7 +1789,9 @@ def _looks_like_mlx_repo(model_id: str) -> bool:
 async def list_models(current_subject: str = Depends(get_current_subject)):
     """List available models: default plus currently loaded."""
     try:
-        inference_backend = get_inference_backend()
+        # Off-loop: building the singleton calls get_device(), and the frontend
+        # fetches this on load, so inline it would freeze the whole torch import.
+        inference_backend = await asyncio.to_thread(get_inference_backend)
 
         default_models = inference_backend.default_models
 
@@ -1821,75 +1903,86 @@ async def get_model_config(
 ):
     """Get configuration for a specific model (wraps load_model_defaults)."""
     hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
-    try:
-        if not is_local_path(model_name):
-            resolved = resolve_cached_repo_id_case(model_name)
-            if resolved != model_name:
-                logger.info(
-                    "Using cached repo_id casing '%s' for requested '%s'",
-                    resolved,
-                    model_name,
-                )
-            model_name = resolved
+    from core.inference.llama_cpp import _hf_offline_if_unreachable_for
 
-        logger.info(f"Getting model config for: {model_name}")
-        from utils.models.model_config import detect_audio_type
+    def _resolve(model_name: str) -> ModelDetails:
+        # Each probe below can reach the hub, so the guard wraps the whole handler:
+        # offline they must all resolve from the HF cache instead of retrying. Local
+        # paths stay on disk, so they skip the probe entirely.
+        with _hf_offline_if_unreachable_for(model_name):
+            if not is_local_path(model_name):
+                resolved = resolve_cached_repo_id_case(model_name)
+                if resolved != model_name:
+                    logger.info(
+                        "Using cached repo_id casing '%s' for requested '%s'",
+                        resolved,
+                        model_name,
+                    )
+                model_name = resolved
 
-        config_dict = load_model_defaults(model_name)
+            logger.info(f"Getting model config for: {model_name}")
+            from utils.models.model_config import detect_audio_type
 
-        # Detect capabilities (HF token for gated models).
-        is_vision = is_vision_model(model_name, hf_token = hf_token)
-        is_embedding = is_embedding_model(model_name, hf_token = hf_token)
-        audio_type = detect_audio_type(model_name, hf_token = hf_token)
+            config_dict = load_model_defaults(model_name)
 
-        is_lora = False
-        base_model = None
-        max_position_embeddings = None
-        try:
-            model_config = ModelConfig.from_identifier(model_name)
-            is_lora = model_config.is_lora
-            base_model = model_config.base_model if is_lora else None
-            max_position_embeddings = _get_max_position_embeddings(model_config)
-        except Exception:
-            pass
+            # Detect capabilities (HF token for gated models).
+            is_vision = is_vision_model(model_name, hf_token = hf_token)
+            is_embedding = is_embedding_model(model_name, hf_token = hf_token)
+            audio_type = detect_audio_type(model_name, hf_token = hf_token)
 
-        # Fallback: read raw config.json (declarative fields only) -- a selection-time
-        # metadata probe that must never execute a repo's auto_map Python.
-        if max_position_embeddings is None:
+            is_lora = False
+            base_model = None
+            max_position_embeddings = None
             try:
-                from utils.transformers_version import _load_config_json
-                from types import SimpleNamespace
-
-                _cfg = _load_config_json(model_name, hf_token = hf_token)
-                if _cfg is not None:
-
-                    def _to_ns(d):
-                        if isinstance(d, dict):
-                            return SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
-                        return d
-
-                    max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
+                model_config = ModelConfig.from_identifier(model_name)
+                is_lora = model_config.is_lora
+                base_model = model_config.base_model if is_lora else None
+                max_position_embeddings = _get_max_position_embeddings(model_config)
             except Exception:
                 pass
 
-        logger.info(
-            f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
-        )
-        return ModelDetails(
-            id = model_name,
-            model_name = model_name,
-            config = config_dict,
-            is_vision = is_vision,
-            is_embedding = is_embedding,
-            is_lora = is_lora,
-            is_audio = audio_type is not None,
-            audio_type = audio_type,
-            has_audio_input = is_audio_input_type(audio_type),
-            model_type = derive_model_type(is_vision, audio_type, is_embedding),
-            base_model = base_model,
-            max_position_embeddings = max_position_embeddings,
-            model_size_bytes = _get_model_size_bytes(model_name, hf_token),
-        )
+            # Fallback: read raw config.json (declarative fields only) -- a selection-time
+            # metadata probe that must never execute a repo's auto_map Python.
+            if max_position_embeddings is None:
+                try:
+                    from utils.transformers_version import _load_config_json
+                    from types import SimpleNamespace
+
+                    _cfg = _load_config_json(model_name, hf_token = hf_token)
+                    if _cfg is not None:
+
+                        def _to_ns(d):
+                            if isinstance(d, dict):
+                                return SimpleNamespace(**{k: _to_ns(v) for k, v in d.items()})
+                            return d
+
+                        max_position_embeddings = _get_max_position_embeddings(_to_ns(_cfg))
+                except Exception:
+                    pass
+
+            logger.info(
+                f"Model config result for {model_name}: is_vision={is_vision}, is_embedding={is_embedding}, audio_type={audio_type}, is_lora={is_lora}, max_position_embeddings={max_position_embeddings}"
+            )
+            return ModelDetails(
+                id = model_name,
+                model_name = model_name,
+                config = config_dict,
+                is_vision = is_vision,
+                is_embedding = is_embedding,
+                is_lora = is_lora,
+                is_audio = audio_type is not None,
+                audio_type = audio_type,
+                has_audio_input = is_audio_input_type(audio_type),
+                model_type = derive_model_type(is_vision, audio_type, is_embedding),
+                base_model = base_model,
+                max_position_embeddings = max_position_embeddings,
+                model_size_bytes = _get_model_size_bytes(model_name, hf_token),
+            )
+
+    try:
+        # Off the loop: the guard blocks on DNS + HEAD + TCP, which stalled every
+        # other request for the whole handler.
+        return await asyncio.to_thread(_resolve, model_name)
 
     except Exception as e:
         raise log_and_http_error(
@@ -2069,8 +2162,11 @@ async def discard_remote_code_download(
     except Exception:
         pass
     try:
-        inference_backend = get_inference_backend()
-        if inference_backend.active_model_name:
+        # Peek, not construct: no orchestrator means no active model to protect, and
+        # building one here would reach get_device() and wait on the torch import.
+        from core.inference.orchestrator import peek_inference_backend
+        inference_backend = peek_inference_backend()
+        if inference_backend is not None and inference_backend.active_model_name:
             if _loaded_id_matches_repo(inference_backend.active_model_name, model_name):
                 return {"deleted": False, "reason": "loaded"}
     except Exception:
@@ -2409,25 +2505,29 @@ async def delete_finetuned_model(
         ) from e
 
     try:
-        inference_backend = get_inference_backend()
-        loading_models = getattr(inference_backend, "loading_models", set())
-        if any(
-            _loading_model_matches_deleted_path(loading_model, target_path)
-            for loading_model in loading_models
-        ):
-            raise HTTPException(
-                status_code = 409,
-                detail = "Cannot delete a model while it is loading",
-            )
-        if inference_backend.active_model_name:
-            if _loaded_model_matches_deleted_path(
-                inference_backend.active_model_name,
-                target_path,
+        # Peek: no orchestrator means nothing below can block this delete, and building one
+        # to learn that reaches get_device() -- a torch import for a metadata-only op.
+        from core.inference.orchestrator import peek_inference_backend
+        inference_backend = peek_inference_backend()
+        if inference_backend is not None:
+            loading_models = getattr(inference_backend, "loading_models", set())
+            if any(
+                _loading_model_matches_deleted_path(loading_model, target_path)
+                for loading_model in loading_models
             ):
                 raise HTTPException(
-                    status_code = 400,
-                    detail = "Unload the model before deleting",
+                    status_code = 409,
+                    detail = "Cannot delete a model while it is loading",
                 )
+            if inference_backend.active_model_name:
+                if _loaded_model_matches_deleted_path(
+                    inference_backend.active_model_name,
+                    target_path,
+                ):
+                    raise HTTPException(
+                        status_code = 400,
+                        detail = "Unload the model before deleting",
+                    )
     except HTTPException:
         raise
     except Exception as e:
@@ -2551,7 +2651,17 @@ async def check_vision_model(
     try:
         logger.info(f"Checking if vision model: {model_name}")
         # Authenticate so a gated/private VLM classifies correctly (else 404 -> non-vision).
-        is_vision = is_vision_model(model_name, hf_token = hf_token)
+        # Offline the guard keeps this on the HF cache instead of retrying the hub.
+        # A local path resolves from disk, so it skips the probe.
+        from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+
+        # Off-loop: the probes block, and is_vision_model()'s lazy sets make the first
+        # call import transformers or wait on _DETECTION_SETS_LOCK behind the warm.
+        def _check():
+            with _hf_offline_if_unreachable_for(model_name):
+                return is_vision_model(model_name, hf_token = hf_token)
+
+        is_vision = await asyncio.to_thread(_check)
 
         logger.info(f"Vision check result for {model_name}: is_vision={is_vision}")
         return VisionCheckResponse(
@@ -2584,7 +2694,15 @@ async def check_embedding_model(
     hf_token = _normalize_hf_token(header_hf_token) or _normalize_hf_token(hf_token)
     try:
         logger.info(f"Checking if embedding model: {model_name}")
-        is_embedding = is_embedding_model(model_name, hf_token = hf_token)
+        # Same guard as /check-vision: is_embedding_model hits the hub with a 15s
+        # timeout, then answers False. Off the loop for the same reason.
+        from core.inference.llama_cpp import _hf_offline_if_unreachable_for
+
+        def _check():
+            with _hf_offline_if_unreachable_for(model_name):
+                return is_embedding_model(model_name, hf_token = hf_token)
+
+        is_embedding = await asyncio.to_thread(_check)
 
         logger.info(f"Embedding check result for {model_name}: is_embedding={is_embedding}")
         return EmbeddingCheckResponse(
@@ -2602,14 +2720,102 @@ async def check_embedding_model(
         )
 
 
+# Budget for the walk below: a slow volume or a large tree can far outlast the
+# listing it is attached to.
+_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS = 5.0
+# Backstop for the case the walk's own budget cannot cover: a single syscall that
+# never returns, which no in-loop check can interrupt. Longer than the walk budget,
+# so a responding filesystem always ends the walk itself and this never fires.
+_NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS = 8.0
+# Reads running at once. A read stranded on a hung mount holds its slot, so retries wait
+# for one instead of starting a thread apiece.
+_NATIVE_CONTEXT_MAX_CONCURRENT_READS = 4
+_NATIVE_CONTEXT_SLOTS: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
+
+
+def _native_context_slots() -> asyncio.Semaphore:
+    """Per running loop, since an asyncio primitive cannot be shared across loops."""
+    loop = asyncio.get_running_loop()
+    slots = _NATIVE_CONTEXT_SLOTS.get(loop)
+    if slots is None:
+        slots = asyncio.Semaphore(_NATIVE_CONTEXT_MAX_CONCURRENT_READS)
+        _NATIVE_CONTEXT_SLOTS[loop] = slots
+    return slots
+
+
+def _settle_native_context(
+    slots: asyncio.Semaphore, future: "asyncio.Future", value: Optional[int]
+) -> None:
+    slots.release()
+    if not future.done():
+        future.set_result(value)
+
+
+async def _read_native_context_length_bounded(model: str, is_local: bool) -> Optional[int]:
+    """``_read_native_context_length`` off the event loop, with a hard bound.
+
+    Reporting None costs a pre-filled context field; waiting costs the whole variant
+    listing, which is what left the picker on "Loading variants…". Runs on a daemon
+    thread, not a pool: a stranded read must not join at interpreter exit, which would
+    hang shutdown for as long as the mount stays hung. Waiting for a slot is awaited
+    rather than skipped, so ordinary concurrent reads queue instead of losing their
+    length; the wait and the read share one budget.
+    """
+    slots = _native_context_slots()
+    began = time.monotonic()
+    try:
+        await asyncio.wait_for(slots.acquire(), timeout = _NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        logger.debug("native context read for '%s' waited out its slot; reporting none", model)
+        return None
+
+    remaining = _NATIVE_CONTEXT_HARD_TIMEOUT_SECONDS - (time.monotonic() - began)
+    loop = asyncio.get_running_loop()
+    future: "asyncio.Future" = loop.create_future()
+
+    def worker() -> None:
+        try:
+            value = _read_native_context_length(model, is_local = is_local)
+        except Exception:
+            value = None
+        try:
+            loop.call_soon_threadsafe(_settle_native_context, slots, future, value)
+        except RuntimeError:
+            pass  # loop already closed; nothing is waiting on this
+
+    if remaining <= 0:
+        slots.release()
+        return None
+    try:
+        threading.Thread(target = worker, name = "native-ctx", daemon = True).start()
+    except RuntimeError:
+        slots.release()  # thread never ran, so it will never release
+        return None
+
+    try:
+        return await asyncio.wait_for(future, timeout = remaining)
+    except asyncio.TimeoutError:
+        logger.debug("native context read for '%s' did not return; reporting none", model)
+        return None
+
+
 def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
     """Native max context from a downloaded GGUF for this repo, or None.
 
     The value is identical across quants, so reading one non-mmproj shard's
     header is enough. Only resolves once a file is on disk. Never raises.
+
+    Bounded by ``_NATIVE_CONTEXT_READ_TIMEOUT_SECONDS``: this only pre-fills a
+    context field on an already selectable row, so a dragging walk reports None
+    rather than holding the variant listing open. Checked between files, and
+    files already read stay cached, so a later request resumes.
     """
     try:
         from utils.models.gguf_metadata import read_gguf_context_length
+
+        # Before cache discovery, which touches the filesystem too: started after, a slow
+        # enumeration would hand the walk a full fresh budget on top of its own cost.
+        deadline = time.monotonic() + _NATIVE_CONTEXT_READ_TIMEOUT_SECONDS
         if is_local:
             roots = [Path(repo_id)]
         else:
@@ -2619,7 +2825,13 @@ def _read_native_context_length(repo_id: str, is_local: bool) -> Optional[int]:
             roots = list(iter_repo_cache_dirs("model", repo_id))
 
         for root in roots:
-            for f in _iter_gguf_paths(root):
+            if time.monotonic() >= deadline:
+                logger.debug("native context read for '%s' out of budget", repo_id)
+                return None
+            for f in _iter_gguf_paths(root, deadline):
+                if time.monotonic() >= deadline:
+                    logger.debug("native context read for '%s' out of budget", repo_id)
+                    return None
                 if _is_mmproj_filename(f.name):
                     continue
                 n = read_gguf_context_length(str(f))
@@ -2692,7 +2904,10 @@ async def get_kv_cache_estimate(
     repo_id: str = Query(..., description = "HF repo ID or local path"),
     quant: str = Query(..., description = "Quantization label (e.g. Q4_K_M)"),
     n_ctx: int = Query(..., ge = 1, description = "Context length to size the KV cache for"),
-    cache_type_kv: Optional[str] = Query(None, description = "KV cache dtype (e.g. q8_0)"),
+    cache_type_kv: Optional[str] = Query(
+        None,
+        description = "KV cache dtype (e.g. q8_0, q4_0, q5_0, iq4_nl, f32)",
+    ),
     current_subject: str = Depends(get_current_subject),
 ):
     """Estimate KV cache + weight bytes for a downloaded GGUF at n_ctx.
@@ -2754,6 +2969,7 @@ async def get_gguf_variants(
         ..., description = "HuggingFace repo ID (e.g. 'unsloth/gemma-3-4b-it-GGUF')"
     ),
     prefer_local_cache: bool = False,
+    offline: bool = False,
     local_path: Optional[str] = None,
     hf_token: Optional[str] = Query(None, description = "HuggingFace token for private repos"),
     hf_token_header: Optional[str] = Depends(get_hf_token),
@@ -2764,16 +2980,20 @@ async def get_gguf_variants(
         hf_token = _normalize_hf_token(hf_token_header) or _normalize_hf_token(hf_token)
         from hub.services.models import gguf_variants as hub_gguf_variants
 
-        response = await hub_gguf_variants.get_gguf_variants_response(
+        answer = await hub_gguf_variants.get_gguf_variants_answer(
             repo_id,
             prefer_local_cache = prefer_local_cache,
+            offline = offline,
             local_path = local_path,
             hf_token = hf_token,
         )
+        response = answer.response
+        # The copy the listing answered from, else the pin naming the copy that will load.
+        # Both beat a repo-wide walk, which can read another revision's length.
         context_model = (
-            local_path
-            if prefer_local_cache and local_path and is_local_path(local_path)
-            else repo_id
+            answer.context_source
+            or hub_gguf_variants.pinned_snapshot_for_request(repo_id, local_path)
+            or repo_id
         )
         local = is_local_path(context_model)
 
@@ -2789,16 +3009,13 @@ async def get_gguf_variants(
                     ),
                     downloaded = bool(v.downloaded),
                     update_available = bool(getattr(v, "update_available", False)),
+                    partial = bool(getattr(v, "partial", False)),
                 )
                 for v in response.variants
             ],
             has_vision = response.has_vision,
             default_variant = response.default_variant,
-            # The header walk reads tokenizer arrays on dense models (tens of
-            # ms per uncached file); keep it off the event loop.
-            context_length = await asyncio.to_thread(
-                _read_native_context_length, context_model, is_local = local
-            ),
+            context_length = await _read_native_context_length_bounded(context_model, local),
         )
     except HTTPException:
         raise
@@ -2829,22 +3046,14 @@ async def get_gguf_download_progress(
 
 
 def _resolve_hf_cache_realpath(repo_dir: Path) -> Optional[str]:
-    """Pick the most useful on-disk path for a HF cache repo.
+    """Most useful on-disk path for a HF cache repo.
 
-    Prefers the most-recent snapshot dir (what ``from_pretrained`` uses),
-    falling back to the cache repo root. Returns the resolved realpath so
-    snapshot symlinks follow back to blobs/.
+    Delegates to the Hub scanner's function of the same name so this route and
+    ``/api/hub/local-models`` name one directory: the newest snapshot dir, ties broken by
+    ``snapshot_selection_key``.
     """
-    try:
-        snapshots_dir = repo_dir / "snapshots"
-        if snapshots_dir.is_dir():
-            snaps = [s for s in snapshots_dir.iterdir() if s.is_dir()]
-            if snaps:
-                latest = max(snaps, key = lambda s: s.stat().st_mtime)
-                return str(latest.resolve())
-        return str(repo_dir.resolve())
-    except Exception:
-        return None
+    from hub.utils import inventory_scan as hf_cache_scan
+    return hf_cache_scan.resolve_hf_cache_realpath(repo_dir)
 
 
 @router.get("/download-progress")
@@ -2913,9 +3122,57 @@ def _is_mmproj_filename(name: str) -> bool:
 
 
 def _is_main_gguf_filename(name: str) -> bool:
-    """A GGUF file that is a primary weight, not an mmproj vision
-    adapter."""
-    return _is_gguf_filename(name) and not _is_mmproj_filename(name)
+    """A primary GGUF weight, not an mmproj vision adapter or an MTP drafter. Same rule as
+    ``hub.services.models.common``; pass a snapshot-relative path to catch ``MTP/`` copies too."""
+    return _is_gguf_filename(name) and not _is_mmproj_filename(name) and not _is_mtp_drafter(name)
+
+
+def _recovered_repo_is_unusable_by_repo_id(repo_info) -> bool:
+    """See hub.utils.inventory_scan; False for anything upstream already returns."""
+    from hub.utils.inventory_scan import recovered_repo_is_unusable_by_repo_id as impl
+    return impl(repo_info)
+
+
+def _repo_id_will_not_resolve(repo_cache_dir: Path) -> bool:
+    """See hub.utils.inventory_scan; True only in the dangling refs/main window."""
+    from hub.utils.inventory_scan import repo_id_will_not_resolve as impl
+    return impl(repo_cache_dir)
+
+
+def _default_ref_offers_no_whole_quant(repo_cache_dir: Path) -> bool:
+    """See hub.utils.inventory_scan; True when refs/main resolves onto a torn quant."""
+    from hub.utils.inventory_scan import default_ref_offers_no_whole_quant as impl
+    return impl(repo_cache_dir)
+
+
+def _gguf_copy_is_usable(repo_info, load_id: Optional[str]) -> bool:
+    """Whether this copy of the repo holds a quant a load can reach.
+
+    A pinned copy names a complete snapshot. An unpinned one is usable when its id resolves onto a
+    whole quant, which is exactly what withheld the pin.
+    """
+    if load_id:
+        return True
+    try:
+        repo_path = Path(repo_info.repo_path)
+        return not _repo_id_will_not_resolve(repo_path) and not _default_ref_offers_no_whole_quant(
+            repo_path
+        )
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
+def _snapshot_has_gguf_projector(snapshot: str) -> bool:
+    """See hub.utils.inventory_scan; reads the same walk the variant lister reports from."""
+    from hub.utils.inventory_scan import snapshot_has_gguf_projector as impl
+    return impl(Path(snapshot))
+
+
+def _cached_repo_file_name(file_obj) -> str:
+    """Snapshot-relative name for a cached file: huggingface_hub records the bare ``file_name``,
+    which cannot tell an ``MTP/`` drafter from a quant."""
+    from hub.services.models.cache_inventory import _cached_repo_file_name as impl
+    return impl(file_obj)
 
 
 def _main_variant_gguf_label(rel_path: str) -> Optional[str]:
@@ -2942,8 +3199,41 @@ def _repo_has_mmproj(repo_info) -> bool:
     )
 
 
-def _iter_gguf_paths(root: Path):
+def _cached_gguf_row_has_vision(repo_info, load_id: Optional[str]) -> bool:
+    """Whether the copy this row loads ships a projector.
+
+    The loader opens the projector out of the snapshot it loads from, so one in a revision the
+    load never reaches is not vision support. A pinned row is judged on its snapshot, an unpinned
+    one on the first snapshot the load's own ordering finds a quant in. Judged per snapshot, not
+    per file: a split quant can sit in a subdirectory while the projector sits at the root.
+    """
+    if load_id:
+        return _snapshot_has_gguf_projector(load_id)
+    # No projector in any revision means none to reach, and saves a cache walk.
+    if not _repo_has_mmproj(repo_info):
+        return False
+    try:
+        from hub.utils.gguf import iter_snapshots_preferring_whole, list_local_gguf_variants
+
+        # The row describes this copy; a duplicate in another root is one the load never reaches.
+        root = Path(repo_info.repo_path).parent
+        for snapshot in iter_snapshots_preferring_whole(repo_info.repo_id, None, root = root):
+            variants, has_vision = list_local_gguf_variants(str(snapshot))
+            if variants:
+                return bool(has_vision)
+    except Exception:
+        pass
+    # Nothing on disk to load, so the row describes the repo rather than a copy of it.
+    return True
+
+
+def _iter_gguf_paths(root: Path, deadline: Optional[float] = None):
+    """GGUF files under ``root``. With a ``deadline`` (time.monotonic), gives up mid-walk:
+    only .gguf files are yielded, so a large tree can walk for a long time yielding nothing,
+    and a caller checking its budget per yield would never get to check it."""
     for path in root.rglob("*"):
+        if deadline is not None and time.monotonic() >= deadline:
+            return
         if path.is_file() and _is_gguf_filename(path.name):
             yield path
 
@@ -2964,13 +3254,15 @@ def _repo_gguf_size_bytes(repo_info) -> int:
     for revision in repo_info.revisions:
         rev_id = getattr(revision, "commit_hash", None) or str(id(revision))
         for f in revision.files:
-            if _is_main_gguf_filename(f.file_name):
+            # Snapshot-relative: only the directory tells an MTP/ drafter from a primary quant.
+            name = _cached_repo_file_name(f)
+            if _is_main_gguf_filename(name):
                 blob_path = getattr(f, "blob_path", None)
                 size = f.size_on_disk or 0
                 if blob_path:
                     unique_blobs[str(blob_path)] = size
                 else:
-                    unique_blobs[f"{rev_id}:{f.file_name}"] = size
+                    unique_blobs[f"{rev_id}:{name}"] = size
     return sum(unique_blobs.values())
 
 
@@ -3008,9 +3300,78 @@ def _repo_gguf_last_modified(repo_info) -> float:
     latest = 0.0
     for revision in repo_info.revisions:
         for f in revision.files:
-            if _is_main_gguf_filename(f.file_name):
+            if _is_main_gguf_filename(_cached_repo_file_name(f)):
                 latest = max(latest, _blob_mtime(f))
     return latest
+
+
+def snapshot_variants_all_complete(snapshot: str) -> bool:
+    """Re-export; the predicate lives beside the completed-variant walk it uses."""
+    from hub.utils import inventory_scan
+    return inventory_scan.snapshot_variants_all_complete(snapshot)
+
+
+def snapshot_has_complete_variants(snapshot: str) -> bool:
+    """Re-export of the predicate every load-id pin shares; see above."""
+    from hub.utils import inventory_scan
+    return inventory_scan.snapshot_has_complete_variants(snapshot)
+
+
+def _repo_gguf_load_id(repo_info, active_root: Optional[Path]) -> Optional[str]:
+    """Snapshot dir holding the newest primary GGUF, for a repo outside the active
+    hub cache that does not resolve by id. ``None`` when the id works or no
+    snapshot is recorded, since the repo dir itself is not loadable.
+    """
+    from hub.utils.hf_cache_state import snapshot_selection_key
+
+    repo_path = getattr(repo_info, "repo_path", None)
+    if repo_path is None or active_root is None:
+        return None
+    try:
+        # A recovered repo's refs/main names nothing, so its id resolves nowhere and needs a pin.
+        if (
+            repo_path.parent.resolve(strict = False) == active_root
+            and not _repo_id_will_not_resolve(repo_path)
+            and not _default_ref_offers_no_whole_quant(repo_path)
+        ):
+            return None
+    except (OSError, RuntimeError, ValueError):
+        pass
+    # Shared selection key, so this route and the /gguf-variants lister name one snapshot.
+    candidates = [
+        Path(snapshot)
+        for revision in repo_info.revisions
+        if (snapshot := getattr(revision, "snapshot_path", None)) is not None
+        and any(_is_main_gguf_filename(_cached_repo_file_name(f)) for f in revision.files)
+    ]
+    candidates.sort(key = snapshot_selection_key, reverse = True)
+    # Newest first, skipping any holding no whole quant, else a torn download beats a loadable one.
+    for snapshot in candidates:
+        if snapshot_has_complete_variants(str(snapshot)):
+            return str(snapshot)
+    # Nothing complete anywhere: publishing a half-downloaded snapshot would put that
+    # path in the copied command and fail on load. Drop the id so the repo id is used,
+    # which fetches the missing shards instead.
+    return None
+
+
+def _preferred_gguf_copy(
+    rows: dict, ranks: dict, key: str, candidate: tuple[bool, bool], size: int
+) -> bool:
+    """Whether this copy should replace the one already kept for *key*.
+
+    Same order the Hub inventory deduplicates by: a copy that cannot load loses to one that can,
+    whichever cache holds it, then the active cache wins, then the larger download.
+    """
+    existing = rows.get(key)
+    if existing is None:
+        return True
+    kept = ranks.get(key, (True, True))
+    if candidate[0] != kept[0]:
+        return candidate[0]
+    if candidate[1] != kept[1]:
+        return candidate[1]
+    return size > int(existing.get("size_bytes") or 0)
 
 
 @router.get("/cached-gguf")
@@ -3018,8 +3379,14 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
         cache_scans = _all_hf_cache_scans()
+        try:
+            active_root = _resolve_hf_cache_dir().resolve(strict = False)
+        except Exception:
+            active_root = None
 
         seen_lower: dict[str, dict] = {}
+        # How each kept row's copy ranks, since the compatibility schema carries neither field.
+        seen_rank: dict[str, tuple[bool, bool]] = {}
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:
                 try:
@@ -3036,19 +3403,28 @@ async def list_cached_gguf(current_subject: str = Depends(get_current_subject)):
                     key = repo_id.lower()
                     existing = seen_lower.get(key)
                     last_modified = _repo_gguf_last_modified(repo_info)
-                    if existing is None or total_size > existing["size_bytes"]:
+                    load_id = _repo_gguf_load_id(repo_info, active_root)
+                    rank = (
+                        _gguf_copy_is_usable(repo_info, load_id),
+                        active_root is not None
+                        and Path(repo_info.repo_path).parent.resolve(strict = False) == active_root,
+                    )
+                    if _preferred_gguf_copy(seen_lower, seen_rank, key, rank, total_size):
                         row = {
                             "repo_id": repo_id,
                             "size_bytes": total_size,
                             "cache_path": str(repo_info.repo_path),
-                            "has_vision": _repo_has_mmproj(repo_info),
+                            "has_vision": _cached_gguf_row_has_vision(repo_info, load_id),
                         }
+                        if load_id:
+                            row["load_id"] = load_id
                         # Keep the newest timestamp across duplicate caches;
                         # attach only when known so absent rows sort as oldest.
                         lm = max(last_modified, (existing or {}).get("last_modified", 0.0))
                         if lm > 0:
                             row["last_modified"] = lm
                         seen_lower[key] = row
+                        seen_rank[key] = rank
                     elif last_modified > existing.get("last_modified", 0.0):
                         existing["last_modified"] = last_modified
                 except Exception as e:
@@ -3077,8 +3453,14 @@ async def list_cached_models(
 
     try:
         cache_scans = _all_hf_cache_scans()
+        try:
+            active_root = _resolve_hf_cache_dir().resolve(strict = False)
+        except Exception:
+            active_root = None
 
         seen_lower: dict[str, dict] = {}
+        # Repos whose active-cache copy cannot be loaded by id; this schema carries no path.
+        unusable_active: set[str] = set()
         for hf_cache in cache_scans:
             for repo_info in hf_cache.repos:
                 try:
@@ -3088,6 +3470,18 @@ async def list_cached_models(
                     # Pass the snapshot path too so the config check also hides
                     # custom Whisper checkpoints, not just curated repo ids.
                     if _is_hidden_model(repo_id, str(repo_info.repo_path)):
+                        continue
+                    # No partial or load id here, so a snapshot-path-only repo would read as ready.
+                    if _recovered_repo_is_unusable_by_repo_id(repo_info):
+                        try:
+                            if (
+                                active_root is not None
+                                and Path(repo_info.repo_path).parent.resolve(strict = False)
+                                == active_root
+                            ):
+                                unusable_active.add(repo_id.lower())
+                        except (OSError, RuntimeError, ValueError):
+                            pass
                         continue
                     if _repo_has_gguf_files(repo_info):
                         continue
@@ -3128,7 +3522,7 @@ async def list_cached_models(
                     logger.warning(f"Skipping cached model repo {repo_label}: {e}")
                     continue
 
-        rows = list(seen_lower.values())
+        rows = [row for key, row in seen_lower.items() if key not in unusable_active]
         # Local-only list path: update checks are GGUF-only and happen lazily
         # when a repo's variants are viewed.
         cached = sorted(
@@ -3250,6 +3644,8 @@ def _wsl_reveal_in_explorer(path: Path) -> bool:
             ["wslpath", "-w", str(path)],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             check = True,
             timeout = 10,
         ).stdout.strip()

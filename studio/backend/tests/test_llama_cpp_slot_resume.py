@@ -221,6 +221,34 @@ def test_fingerprint_tracks_effective_context_length(tmp_path):
     assert backend._slot_launch_fingerprint() != before
 
 
+def test_fingerprint_tracks_swa_full_mode(tmp_path):
+    backend = _resume_backend(tmp_path)
+    before = backend._slot_launch_fingerprint()
+    backend._swa_full = True
+    assert backend._slot_launch_fingerprint() != before
+
+
+def test_fingerprint_tracks_unified_cache_mode(tmp_path):
+    backend = _resume_backend(tmp_path)
+    before = backend._slot_launch_fingerprint()
+    backend._kv_cache_unified = True
+    assert backend._slot_launch_fingerprint() != before
+
+
+def test_fingerprint_tracks_flash_attention_mode(tmp_path):
+    backend = _resume_backend(tmp_path)
+    before = backend._slot_launch_fingerprint()
+    backend._flash_attn_enabled = False
+    assert backend._slot_launch_fingerprint() != before
+
+
+def test_fingerprint_tracks_effective_cache_types(tmp_path):
+    backend = _resume_backend(tmp_path)
+    before = backend._slot_launch_fingerprint()
+    backend._effective_cache_types = ("f32", "f16")
+    assert backend._slot_launch_fingerprint() != before
+
+
 def test_gguf_file_identity_covers_split_shards(tmp_path):
     backend = _resume_backend(tmp_path)
     first = tmp_path / "m-00001-of-00002.gguf"
@@ -442,6 +470,81 @@ def test_save_skipped_when_estimate_exceeds_cap(monkeypatch, tmp_path):
         raising = False,
     )
     assert backend.save_slots_for_resume() is None
+
+
+def test_save_estimate_uses_total_context_and_active_cache_settings(monkeypatch, tmp_path):
+    backend = _resume_backend(tmp_path, n_slots = 4)
+    backend._effective_context_length = 8192
+    backend._kv_cache_context_total = 32768
+    backend._sliding_window = 4096
+    backend._swa_full = True
+    backend._flash_attn_enabled = False
+    backend._effective_cache_types = ("f32", "f16")
+    calls = []
+
+    def estimate(ctx, cache_type, **kwargs):
+        calls.append((ctx, cache_type, kwargs))
+        return 0
+
+    backend._estimate_kv_cache_bytes = estimate
+    _fake_disk(monkeypatch)
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "post",
+        lambda *a, **k: _Resp(200, {"n_saved": 1, "n_written": 1}),
+        raising = False,
+    )
+
+    assert backend.save_slots_for_resume() is not None
+    assert calls == [
+        (
+            32768,
+            "f32",
+            {
+                "n_parallel": 4,
+                "swa_full": True,
+                "kv_unified": False,
+                "n_ubatch": 512,
+                "flash_attn": False,
+            },
+        )
+    ]
+
+
+def test_compact_swa_slot_save_is_skipped(monkeypatch, tmp_path):
+    backend = _resume_backend(tmp_path)
+    backend._sliding_window = 4096
+    backend._kv_key_length = 256
+    backend._kv_value_length = 256
+    backend._swa_full = False
+    backend._estimate_kv_cache_bytes = lambda *a, **k: (_ for _ in ()).throw(AssertionError)
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "post",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError),
+        raising = False,
+    )
+    assert backend.save_slots_for_resume() is None
+
+
+def test_window_without_kv_dims_still_saves(monkeypatch, tmp_path):
+    # phi3 reports a window but no key/value length, and llama.cpp runs it
+    # non-SWA, so the compact-SWA skip must not catch it.
+    backend = _resume_backend(tmp_path)
+    backend._sliding_window = 262144
+    backend._kv_key_length = None
+    backend._kv_value_length = None
+    backend._swa_full = False
+    posted = []
+    monkeypatch.setattr(
+        llama_cpp.httpx,
+        "post",
+        lambda *a, **k: posted.append(a)
+        or SimpleNamespace(status_code = 200, json = lambda: {"filename": "slot.bin"}),
+        raising = False,
+    )
+    backend.save_slots_for_resume()
+    assert posted
 
 
 def test_save_skipped_when_model_file_changed_since_load(monkeypatch, tmp_path):

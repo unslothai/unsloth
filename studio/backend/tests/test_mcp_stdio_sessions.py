@@ -60,7 +60,12 @@ class FakeClient:
     def is_connected(self) -> bool:
         return self.connected
 
-    async def call_tool(self, name: str, args: dict):
+    async def call_tool(
+        self,
+        name: str,
+        args: dict,
+        raise_on_error: bool = True,
+    ):
         if self.call_delay:
             await asyncio.sleep(self.call_delay)
         if self.fail_next:
@@ -120,10 +125,15 @@ def test_tool_error_does_not_recycle_session(fake_clients, monkeypatch):
     from fastmcp.exceptions import ToolError
 
     class ToolFailure(FakeClient):
-        async def call_tool(self, name, args):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             if name == "boom":
                 raise ToolError("tool exploded")  # tool-level: session stays connected
-            return await super().call_tool(name, args)
+            return await super().call_tool(name, args, raise_on_error)
 
     monkeypatch.setattr(
         mcp_client, "_client", lambda url, headers, use_oauth = False: ToolFailure(url)
@@ -441,12 +451,17 @@ def test_overlapping_calls_serialize_on_shared_session(fake_clients, monkeypatch
         active = 0
         max_active = 0
 
-        async def call_tool(self, name, args):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             OverlapDetect.active += 1
             OverlapDetect.max_active = max(OverlapDetect.max_active, OverlapDetect.active)
             try:
                 await asyncio.sleep(0.2)
-                return await super().call_tool(name, args)
+                return await super().call_tool(name, args, raise_on_error)
             finally:
                 OverlapDetect.active -= 1
 
@@ -473,9 +488,14 @@ def test_timeout_budget_spans_connect_and_call(fake_clients, monkeypatch):
             await asyncio.sleep(0.4)
             return await super().__aenter__()
 
-        async def call_tool(self, name, args):
+        async def call_tool(
+            self,
+            name,
+            args,
+            raise_on_error = True,
+        ):
             await asyncio.sleep(0.5)
-            return await super().call_tool(name, args)
+            return await super().call_tool(name, args, raise_on_error)
 
     monkeypatch.setattr(mcp_client, "_client", lambda url, headers, use_oauth = False: SlowBoth(url))
     start = time.monotonic()
@@ -565,7 +585,11 @@ def test_execute_tool_config_check_tracks_row(tmp_path, monkeypatch):
 
 
 def test_multi_block_result_flattens_through_session(fake_clients):
-    async def _rich_call(name, args):
+    async def _rich_call(
+        name,
+        args,
+        raise_on_error = True,
+    ):
         return SimpleNamespace(
             content = [
                 SimpleNamespace(type = "text", text = "### Page"),

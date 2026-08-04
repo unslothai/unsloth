@@ -58,10 +58,12 @@ logger = get_logger(__name__)
 
 from hub.utils.hf_cache_state import (
     INCOMPLETE_SUFFIX,
+    TRANSPORT_AUTO,
     TRANSPORT_HTTP,
     TRANSPORT_XET,
     TRANSPORT_MARKER_NAME,
     VALID_TRANSPORTS,
+    VALID_TRANSPORT_MODES,
     has_active_incomplete_blobs,
     iter_repo_cache_dirs,
     iter_active_repo_cache_dirs,
@@ -81,10 +83,30 @@ class DownloadTransportCapability:
 class DownloadTransportCapabilities:
     http: DownloadTransportCapability
     xet: DownloadTransportCapability
+    # What "auto" would pick right now, and why, so the picker can say
+    # "Auto (HTTP -- Xet stalled twice on this machine)" instead of just "Auto".
+    auto_resolves_to: str = TRANSPORT_XET
+    auto_reason: Optional[str] = None
 
 
-def get_download_transport_capabilities() -> DownloadTransportCapabilities:
+def get_download_transport_capabilities(*, probe: bool = False) -> DownloadTransportCapabilities:
     xet_available = importlib.util.find_spec("hf_xet") is not None
+    auto_transport = TRANSPORT_XET if xet_available else TRANSPORT_HTTP
+    auto_reason: Optional[str] = None
+    if xet_available:
+        try:
+            from utils.hf_xet_fallback import xet_health
+
+            # Default probe = False: the UI polls this endpoint, so it answers from the cached
+            # verdict and local signals. The download-start path opts in, since otherwise a host
+            # with an unreachable CAS and no recorded failures yet would learn only by stalling.
+            health = xet_health(probe = probe)
+            if health is not None:
+                auto_transport = TRANSPORT_XET if health.use_xet else TRANSPORT_HTTP
+                auto_reason = str(health.reason)
+        except Exception:
+            # No opinion: keep the optimistic default; the download-time ladder still recovers.
+            pass
     return DownloadTransportCapabilities(
         http = DownloadTransportCapability(available = True),
         xet = DownloadTransportCapability(
@@ -93,6 +115,8 @@ def get_download_transport_capabilities() -> DownloadTransportCapabilities:
             if xet_available
             else "Xet transport is unavailable because hf_xet is not installed.",
         ),
+        auto_resolves_to = auto_transport,
+        auto_reason = auto_reason,
     )
 
 
@@ -462,8 +486,10 @@ def _read_marker_value(marker: Path) -> Optional[str]:
     try:
         if not marker.exists():
             return None
-        value = marker.read_text().strip()
-    except OSError:
+        value = marker.read_text(encoding = "utf-8").strip()
+    except (OSError, UnicodeDecodeError):
+        # UnicodeDecodeError is a ValueError, so it would escape and abort
+        # prepare_cache_for_transport. An unknown value just purges and restarts.
         return None
     return value if value in VALID_TRANSPORTS else None
 
@@ -473,7 +499,7 @@ def _write_marker_value(marker: Path, mode: str) -> None:
         # tmp + rename so a SIGKILL mid-write can't leave a half-written marker.
         # The tmp name is per-process so concurrent writers don't clobber tmps.
         tmp = marker.with_name(f"{marker.name}.tmp-{os.getpid()}")
-        tmp.write_text(mode)
+        tmp.write_text(mode, encoding = "utf-8")
         os.replace(tmp, marker)
     except OSError:
         # Best-effort: a missing marker next run purges the partial defensively,
@@ -541,7 +567,17 @@ def prepare_cache_for_transport(
     the environment. Markers are written for the new mode before returning.
     """
     if mode not in VALID_TRANSPORTS:
-        raise ValueError(f"Invalid transport mode: {mode!r}")
+        if mode == TRANSPORT_AUTO:
+            # "auto" is a request preference, not a cache writer: it must be resolved to xet/http
+            # before reaching this layer. Naming it turns "invalid transport" into the actual bug.
+            raise ValueError(
+                f"{TRANSPORT_AUTO!r} must be resolved to a concrete transport before preparing the "
+                f"cache; expected one of {sorted(VALID_TRANSPORTS)}"
+            )
+        raise ValueError(
+            f"Invalid transport mode: {mode!r} (transports: {sorted(VALID_TRANSPORTS)}, "
+            f"request modes: {sorted(VALID_TRANSPORT_MODES)})"
+        )
     root = hf_cache_root(create = True) if root is None else hf_cache_root(create = True, root = root)
     if root is None:
         return 0

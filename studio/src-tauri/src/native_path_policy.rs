@@ -44,6 +44,34 @@ pub fn classify_native_model_path(path: &Path) -> Result<ClassifiedPath, String>
     })
 }
 
+/// Document types the RAG ingest accepts; keep in sync with `config.UPLOAD_EXTS`.
+pub const ATTACHMENT_EXTS: &[&str] = &["pdf", "txt", "md", "markdown", "docx", "html", "htm"];
+
+pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, String> {
+    let classified = classify_existing_path(path)?;
+    if classified.path_type != NativePathType::File {
+        return Err("Only files can be attached to a chat.".to_string());
+    }
+    if !ATTACHMENT_EXTS
+        .iter()
+        .any(|ext| has_extension(&classified.canonical_path, ext))
+    {
+        return Err(format!(
+            "Unsupported attachment type. Supported: {}",
+            ATTACHMENT_EXTS
+                .iter()
+                .map(|ext| format!(".{ext}"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ));
+    }
+    Ok(ClassifiedPath {
+        path_kind: NativePathKind::Attachment,
+        allowed_operations: vec![NativePathOperation::Attach, NativePathOperation::Reveal],
+        ..classified
+    })
+}
+
 pub fn classify_artifact_path(
     kind: NativeArtifactKind,
     path: &Path,
@@ -286,6 +314,29 @@ mod tests {
         let path = temp_path("model").with_extension("txt");
         fs::write(&path, b"not gguf").unwrap();
         assert!(classify_native_model_path(&path).is_err());
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn document_allows_attach_and_reveal_only() {
+        let path = temp_path("doc").with_extension("pdf");
+        fs::write(&path, b"%PDF-1.4").unwrap();
+        let classified = classify_native_attachment_path(&path).unwrap();
+        assert_eq!(classified.path_kind, NativePathKind::Attachment);
+        assert!(classified
+            .allowed_operations
+            .contains(&NativePathOperation::Attach));
+        assert!(!classified
+            .allowed_operations
+            .contains(&NativePathOperation::LoadModel));
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn unsupported_attachment_type_is_rejected() {
+        let path = temp_path("doc").with_extension("exe");
+        fs::write(&path, b"MZ").unwrap();
+        assert!(classify_native_attachment_path(&path).is_err());
         let _ = fs::remove_file(path);
     }
 }

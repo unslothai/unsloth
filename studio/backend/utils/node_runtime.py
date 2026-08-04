@@ -79,6 +79,8 @@ def _node_version_ok(executable: str) -> bool:
             [executable, "-v"],
             capture_output = True,
             text = True,
+            encoding = "utf-8",
+            errors = "replace",
             timeout = _NODE_VERSION_PROBE_TIMEOUT_SECONDS,
             **windows_hidden_subprocess_kwargs(),
         )

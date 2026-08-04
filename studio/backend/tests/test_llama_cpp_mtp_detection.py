@@ -15,6 +15,7 @@ import os
 import struct
 import sys
 import types as _types
+from importlib.util import find_spec as _find_spec
 from pathlib import Path
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
@@ -29,31 +30,41 @@ _structlog_stub = _types.ModuleType("structlog")
 _structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("stub")
 sys.modules.setdefault("structlog", _structlog_stub)
 
-_httpx_stub = _types.ModuleType("httpx")
-for _exc in (
-    "ConnectError",
-    "TimeoutException",
-    "ReadTimeout",
-    "ReadError",
-    "RemoteProtocolError",
-    "CloseError",
-):
-    setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
-_httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
-_httpx_stub.Client = type(
-    "C",
-    (),
-    {
-        "__init__": lambda s, **kw: None,
-        "__enter__": lambda s: s,
-        "__exit__": lambda s, *a: None,
-    },
-)
-sys.modules.setdefault("httpx", _httpx_stub)
+# Real httpx wins when installed: setdefault only checks whether httpx is already
+# imported, not whether it exists, so the stub used to shadow the real module for the
+# rest of the session, and it is a subset (no Response) that blew routes/inference up in
+# combined runs. find_spec rather than an import, so installing the stub stays this
+# module's only side effect on sys.modules. sys.modules is tested first because find_spec
+# raises ValueError on a module already there without a spec (every bare-ModuleType httpx
+# stub in this tree), which would be a collection error rather than one failed test.
+if "httpx" not in sys.modules and _find_spec("httpx") is None:
+    _httpx_stub = _types.ModuleType("httpx")
+    for _exc in (
+        "ConnectError",
+        "TimeoutException",
+        "ReadTimeout",
+        "ReadError",
+        "RemoteProtocolError",
+        "CloseError",
+    ):
+        setattr(_httpx_stub, _exc, type(_exc, (Exception,), {}))
+    _httpx_stub.Timeout = type("T", (), {"__init__": lambda s, *a, **k: None})
+    _httpx_stub.Response = type("Response", (), {})
+    _httpx_stub.Client = type(
+        "C",
+        (),
+        {
+            "__init__": lambda s, **kw: None,
+            "__enter__": lambda s: s,
+            "__exit__": lambda s, *a: None,
+        },
+    )
+    sys.modules["httpx"] = _httpx_stub
 
 import pytest
 
 from core.inference.llama_cpp import (
+    GgufLoadIntent,
     LlamaCppBackend,
     _GPU_OFFLOAD_OVERRIDE_FLAGS,
     _THREAD_OVERRIDE_FLAGS,
@@ -63,8 +74,14 @@ from core.inference.llama_cpp import (
     _extra_args_set_any_flag,
     _extra_args_set_spec_type,
     _is_mtp_model_name,
+    _kv_unified_from_args,
     _mla_mtp_auto_enabled,
+    _swa_full_from_args_or_env,
 )
+
+
+def _matches(backend: LlamaCppBackend, **kwargs) -> bool:
+    return backend.adopt_load_intent_if_matched(GgufLoadIntent(**kwargs))
 
 
 # Synthetic GGUF helper (mirrors test_gguf_metadata.py).
@@ -147,6 +164,41 @@ def test_is_mtp_model_name_handles_none():
     assert _is_mtp_model_name("", "") is False
 
 
+@pytest.mark.parametrize("flag", ["--swa-full", "--swa_full"])
+def test_swa_full_detects_llama_cpp_long_flag_spellings(flag):
+    assert _swa_full_from_args_or_env([flag], {}) is True
+
+
+@pytest.mark.parametrize("value", ["on", "enabled", "true", "1"])
+def test_swa_full_detects_llama_cpp_env_truth_values(value):
+    assert _swa_full_from_args_or_env([], {"LLAMA_ARG_SWA_FULL": value}) is True
+
+
+@pytest.mark.parametrize("value", ["", "off", "yes", "TRUE", " true ", "0"])
+def test_swa_full_rejects_values_llama_cpp_treats_as_false(value):
+    assert _swa_full_from_args_or_env([], {"LLAMA_ARG_SWA_FULL": value}) is False
+
+
+def test_swa_full_cli_wins_when_env_is_false():
+    assert _swa_full_from_args_or_env(["--swa-full"], {"LLAMA_ARG_SWA_FULL": "0"}) is True
+
+
+@pytest.mark.parametrize("flag", ["--kv-unified", "--kv_unified", "-kvu"])
+def test_kv_unified_detects_enable_aliases(flag):
+    assert _kv_unified_from_args([flag]) is True
+
+
+@pytest.mark.parametrize("flag", ["--no-kv-unified", "--no_kv_unified", "-no-kvu"])
+def test_kv_unified_detects_disable_aliases(flag):
+    assert _kv_unified_from_args(["--kv-unified", flag]) is False
+
+
+def test_kv_unified_uses_environment_before_cli():
+    assert _kv_unified_from_args([], env = {"LLAMA_ARG_KV_UNIFIED": "true"}) is True
+    assert _kv_unified_from_args([], default = True, env = {"LLAMA_ARG_KV_UNIFIED": "false"}) is True
+    assert _kv_unified_from_args(["--kv-unified"], env = {"LLAMA_ARG_KV_UNIFIED": "false"}) is True
+
+
 def test_is_mtp_model_name_detects_marker_in_filename(tmp_path):
     gguf = tmp_path / "Qwen3.6-27B-MTP-Q4_K_M.gguf"
     gguf.write_bytes(b"")
@@ -212,7 +264,8 @@ def test_already_in_target_state_matches_when_request_omits_spec_for_mtp_model()
     # Duplicate /load with no spec must match a running draft-mtp backend.
     backend = _mtp_backend()
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -230,7 +283,8 @@ def test_already_in_target_state_matches_when_request_omits_spec_for_mtp_model()
 def test_already_in_target_state_matches_when_request_uses_default_for_mtp_model():
     backend = _mtp_backend()
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -255,7 +309,8 @@ def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_m
         _speculative_type = "default",
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-GGUF",
             hf_variant = "Q4_K_M",
@@ -273,7 +328,8 @@ def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_m
 def test_already_in_target_state_explicit_off_still_mismatches_mtp_backend():
     backend = _mtp_backend()
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -422,7 +478,8 @@ def test_already_in_target_state_user_spec_type_override_matches_clean_backend()
         _extra_args = ["--spec-type", "none"],
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -447,7 +504,8 @@ def test_already_in_target_state_local_file_mtp_match(tmp_path):
         _hf_variant = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = str(gguf),
             model_identifier = "local-qwen-mtp",
             hf_variant = None,
@@ -467,7 +525,8 @@ def test_already_in_target_state_vision_mtp_match():
     # with auto/default spec must match a backend already running draft-mtp.
     backend = _mtp_backend(_is_vision = True)
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -485,7 +544,8 @@ def test_already_in_target_state_vision_mtp_match():
 def test_already_in_target_state_vision_mtp_default_matches():
     backend = _mtp_backend(_is_vision = True)
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -511,7 +571,8 @@ def test_already_in_target_state_vision_off_matches_vision_backend():
         _requested_spec_mode = "off",
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3-VL-4B-Instruct-GGUF",
             hf_variant = "Q4_K_M",
@@ -637,7 +698,9 @@ def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch
     def fake_run(cmd, **kwargs):
         captured["cmd"] = cmd
         captured["env"] = kwargs.get("env")
-        return _types.SimpleNamespace(stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "")
+        return _types.SimpleNamespace(
+            stdout = "--spec-type none,mtp,ngram-simple\n", stderr = "", returncode = 0
+        )
 
     monkeypatch.setattr("core.inference.llama_cpp.subprocess.run", fake_run)
 
@@ -678,6 +741,95 @@ def test_probe_server_capabilities_reports_outdated_binary(tmp_path):
     assert caps["found"] is True
     assert caps["mtp_token"] is None
     assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_reads_mtp_from_multiline_help(tmp_path):
+    # Enum on the indented line: first-line-only probing falsely reported
+    # "lacks MTP" (#7302).
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type TYPE\n"
+        "                                        speculative decoding type\n"
+        "                                        (none,draft-simple,draft-mtp,ngram-mod)\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["mtp_token"] == "draft-mtp"
+    assert caps["supports_mtp"] is True
+    assert caps["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_empty_help_fails_open(tmp_path):
+    # --help prints nothing: must not claim the prebuilt lacks MTP (#7302).
+    fake = tmp_path / "llama-server"
+    fake.write_text("#!/usr/bin/env bash\nexit 0\n")
+    fake.chmod(0o755)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_no_spec_type_is_definitive(tmp_path):
+    # Nonempty --help without --spec-type: pre-spec binary, not inconclusive.
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--gpu-layers N\n  GPU layers to offload\n",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is False
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_failed_help_with_output_is_inconclusive(tmp_path):
+    fake = tmp_path / "llama-server"
+    fake.write_text(
+        "#!/usr/bin/env bash\n"
+        'if [ "$1" = "--help" ]; then\n'
+        "  echo 'illegal instruction'\n"
+        "  exit 1\n"
+        "fi\n"
+    )
+    fake.chmod(0o755)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_crash_on_help_fails_open(tmp_path):
+    fake = tmp_path / "llama-server"
+    fake.write_text("#!/usr/bin/env bash\nkill -SEGV $$\n")
+    fake.chmod(0o755)
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["found"] is True
+    assert caps["mtp_token"] is None
+    assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
+
+
+def test_mtp_token_from_spec_help_prefers_draft_mtp():
+    assert (
+        LlamaCppBackend._mtp_token_from_spec_help("--spec-type none,draft-mtp,mtp,ngram-mod")
+        == "draft-mtp"
+    )
+    assert LlamaCppBackend._mtp_token_from_spec_help("--spec-type [none|mtp|ngram-cache]") == "mtp"
+    assert LlamaCppBackend._mtp_token_from_spec_help("--spec-type none,ngram-mod") is None
+    # No incidental substring matches.
+    assert LlamaCppBackend._mtp_token_from_spec_help("prompt cache") is None
 
 
 def test_probe_server_capabilities_handles_missing_binary():
@@ -685,6 +837,7 @@ def test_probe_server_capabilities_handles_missing_binary():
     caps = LlamaCppBackend.probe_server_capabilities("/no/such/llama-server")
     assert caps["found"] is False
     assert caps["supports_mtp"] is False
+    assert caps["mtp_probe_inconclusive"] is True
     assert caps["supports_cache_ram"] is False
     assert caps["supports_ctx_checkpoints"] is False
     assert caps["supports_no_cache_prompt"] is False
@@ -876,62 +1029,66 @@ def test_probe_server_capabilities_caches_by_mtime(tmp_path):
 # spec_draft_n_max plumbing (first-class --spec-draft-n-max override).
 
 
+def _draft_n_max_matches(
+    backend,
+    requested,
+    *,
+    speculative_type = None,
+):
+    return _matches(
+        backend,
+        gguf_path = None,
+        model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
+        hf_variant = "Q4_K_M",
+        n_ctx = 8192,
+        cache_type_kv = None,
+        speculative_type = speculative_type,
+        spec_draft_n_max = requested,
+        chat_template_override = None,
+        extra_args = None,
+        is_vision = False,
+    )
+
+
 def test_already_in_target_state_matches_when_draft_n_max_unset():
     # None on the request means "platform default"; matches any backend.
-    backend = _mtp_backend(_spec_draft_n_max = None)
-    assert (
-        backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = None,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = None), None)
 
 
 def test_already_in_target_state_matches_when_draft_n_max_equals_backend():
-    backend = _mtp_backend(_spec_draft_n_max = 4)
-    assert (
-        backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = 4,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), 4)
 
 
-def test_already_in_target_state_mismatches_when_draft_n_max_differs():
-    backend = _mtp_backend(_spec_draft_n_max = 4)
-    assert (
-        backend._already_in_target_state(
-            gguf_path = None,
+def test_mtp_draft_n_max_mismatch_survives_active_runtime_state():
+    assert not _draft_n_max_matches(_mtp_backend(_spec_draft_n_max = 4), 8, speculative_type = "mtp")
+
+
+@pytest.mark.parametrize(
+    ("saved_draft_n_max", "expected_match"),
+    [(8, True), (4, False), (None, False)],
+)
+def test_mtp_draft_n_max_compares_saved_runtime_fallback_intent(saved_draft_n_max, expected_match):
+    backend = _mtp_backend(
+        _requested_spec_mode = "mtp",
+        _speculative_type = None,
+        _spec_draft_n_max = None,
+        _spec_fallback_reason = "runtime_error",
+        _last_load_intent = GgufLoadIntent(
             model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = None,
-            spec_draft_n_max = 8,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is False
+            spec_draft_n_max = saved_draft_n_max,
+        ),
     )
+    assert _draft_n_max_matches(backend, 8, speculative_type = "mtp") is expected_match
+
+
+def test_mtp_draft_n_max_ignored_when_binary_lacks_mtp():
+    backend = _mtp_backend(
+        _requested_spec_mode = "mtp",
+        _speculative_type = "default",
+        _spec_draft_n_max = None,
+        _spec_fallback_reason = "binary_no_mtp",
+    )
+    assert _draft_n_max_matches(backend, 8, speculative_type = "mtp")
 
 
 def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
@@ -942,21 +1099,7 @@ def test_already_in_target_state_draft_n_max_ignored_when_not_mtp():
         _requested_spec_mode = "ngram",
         _spec_draft_n_max = None,
     )
-    assert (
-        backend._already_in_target_state(
-            gguf_path = None,
-            model_identifier = "unsloth/Qwen3.6-27B-MTP-GGUF",
-            hf_variant = "Q4_K_M",
-            n_ctx = 8192,
-            cache_type_kv = None,
-            speculative_type = "ngram-mod",
-            spec_draft_n_max = 8,
-            chat_template_override = None,
-            extra_args = None,
-            is_vision = False,
-        )
-        is True
-    )
+    assert _draft_n_max_matches(backend, 8, speculative_type = "ngram-mod")
 
 
 # Sub-3B MTP gate -- tiny dense models regress with the MTP draft head, so
@@ -998,7 +1141,8 @@ def test_already_in_target_state_sub_3b_falls_back_to_ngram_mod_when_supported(m
         _spec_draft_n_max = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -1022,7 +1166,8 @@ def test_already_in_target_state_sub_3b_falls_back_to_off_when_no_ngram(monkeypa
         _spec_draft_n_max = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.5-0.8B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -1046,7 +1191,8 @@ def test_already_in_target_state_4b_mtp_request_promotes_as_before(monkeypatch):
         _spec_draft_n_max = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.5-4B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -1071,7 +1217,8 @@ def test_already_in_target_state_2b_falls_back_to_ngram_below_threshold(monkeypa
         _spec_draft_n_max = None,
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = "unsloth/Qwen3.5-2B-MTP-GGUF",
             hf_variant = "Q4_K_M",
@@ -1176,12 +1323,14 @@ def _resolver_backend(
     *,
     ngram_supported = True,
     mtp_token = "draft-mtp",
+    mtp_probe_inconclusive = False,
 ):
     """Backend with a deterministic probe so the resolver is hermetic."""
     fake = {
         "found": True,
         "mtp_token": mtp_token,
         "supports_mtp": bool(mtp_token),
+        "mtp_probe_inconclusive": mtp_probe_inconclusive,
         "ngram_mod_flavor": "new" if ngram_supported else None,
         "supports_ngram_mod": bool(ngram_supported),
         "spec_draft_n_max_flag": "--spec-draft-n-max",
@@ -1639,7 +1788,8 @@ def test_reload_skip_auto_mla_ngram_is_idempotent():
         _requested_spec_mode = "auto",
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = _GLM_MLA_MODEL,
             hf_variant = "Q4_K_M",
@@ -1663,7 +1813,8 @@ def test_reload_forced_mtp_bounces_auto_mla():
         _requested_spec_mode = "auto",
     )
     assert (
-        backend._already_in_target_state(
+        _matches(
+            backend,
             gguf_path = None,
             model_identifier = _GLM_MLA_MODEL,
             hf_variant = "Q4_K_M",
@@ -1879,6 +2030,24 @@ def test_spec_fallback_reason_set_when_binary_lacks_mtp(monkeypatch):
     assert backend.spec_fallback_reason == "binary_no_mtp"
 
 
+def test_spec_fallback_reason_none_when_mtp_probe_inconclusive(monkeypatch):
+    backend = _resolver_backend(
+        monkeypatch,
+        mtp_token = None,
+        mtp_probe_inconclusive = True,
+    )
+    backend._build_speculative_flags(
+        speculative_type = "mtp",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = _MTP_MODEL,
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert backend.spec_fallback_reason is None
+
+
 def test_spec_fallback_reason_none_when_mtp_engages(monkeypatch):
     backend = _resolver_backend(monkeypatch)
     backend._build_speculative_flags(
@@ -2036,7 +2205,46 @@ def test_already_in_target_state_retries_after_hf_drafter_not_found():
         _mtp_draft_path = None,
         _gguf_path = None,
     )
-    assert backend._already_in_target_state(**_drafter_not_found_kwargs()) is False
+    assert _matches(backend, **_drafter_not_found_kwargs()) is False
     # Sanity: with no fallback reason the same request still dedupes (matches).
     ok = _mtp_backend(_model_identifier = "unsloth/gemma-4-E4B-it-GGUF", _gguf_path = None)
-    assert ok._already_in_target_state(**_drafter_not_found_kwargs()) is True
+    assert _matches(ok, **_drafter_not_found_kwargs()) is True
+
+
+_MODERN_DRAFT_NGL_HELP = """usage: llama-server [options]
+
+--spec-draft-ngl N                      layers to offload for the draft model
+--parallel N                            number of parallel sequences
+"""
+
+_LEGACY_DRAFT_NGL_HELP = """usage: llama-server [options]
+
+-ngld, --gpu-layers-draft N             layers to offload for the draft model
+--parallel N                            number of parallel sequences
+"""
+
+
+@_NEEDS_BASH
+def test_probe_reports_the_draft_ngl_alias_the_build_actually_has(tmp_path):
+    """--spec-draft-ngl only exists from llama.cpp b8955, so a plain "yes" for either
+    alias would make the paravirtual drafter pin emit a name an older build does not
+    know and the server would refuse to start."""
+    modern = _make_fake_llama_server(tmp_path / "modern", _MODERN_DRAFT_NGL_HELP)
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(modern))["spec_draft_ngl_flag"] == (
+        "--spec-draft-ngl"
+    )
+
+    legacy = _make_fake_llama_server(tmp_path / "legacy", _LEGACY_DRAFT_NGL_HELP)
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(legacy))["spec_draft_ngl_flag"] == (
+        "--gpu-layers-draft"
+    )
+
+
+@_NEEDS_BASH
+def test_probe_reports_no_draft_ngl_flag_when_the_build_has_neither(tmp_path):
+    """The negative: without it the pin must be skipped, not guessed at."""
+    neither = _make_fake_llama_server(tmp_path / "neither", "usage: llama-server\n\n--parallel N\n")
+    _clear_caps_cache()
+    assert LlamaCppBackend.probe_server_capabilities(str(neither))["spec_draft_ngl_flag"] is None

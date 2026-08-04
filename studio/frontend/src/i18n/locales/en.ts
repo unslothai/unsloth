@@ -21,22 +21,33 @@ export const en = {
   shell: {
     beta: "BETA",
     brand: "unsloth",
-    product: "Unsloth Studio",
+    product: "Unsloth",
     accountMenu: "{name} account menu",
     updateAvailable: "Update available",
+    resize: {
+      collapse: "Click to collapse",
+      expand: "Click to expand",
+      drag: "Drag to resize",
+    },
     aria: {
       home: "Unsloth home",
       closeSidebar: "Close sidebar",
       openSidebar: "Open sidebar",
+      resizeSidebar: "Resize or collapse sidebar",
+      resizeRunSettings: "Resize or close run settings",
+      openRunSettings: "Open run settings",
       chatOptions: "Chat options",
       runOptions: "Run options",
     },
     navigation: {
       newChat: "New chat",
       returnToChat: "Return to Chat",
+      returnToChats: "Return to {count} Chats",
+      chatGenerating: "Generating",
       compare: "Compare",
       search: "Search",
-      hub: "Models",
+      hub: "Model hub",
+      projects: "Projects",
       train: "Train",
       recipes: "Recipes",
       export: "Export",
@@ -101,6 +112,7 @@ export const en = {
       connections: "Connections",
       data: "Data",
       apiKeys: "API",
+      agents: "Agents",
       about: "About",
     },
     voice: {
@@ -162,7 +174,8 @@ export const en = {
       },
       dictionary: {
         sectionTitle: "Dictation dictionary",
-        sectionDescription: "Set how dictation spells specific words or phrases",
+        sectionDescription:
+          "Set how dictation spells specific words or phrases",
         manageLabel: "Custom spellings",
         manage: "Manage",
         backToVoice: "Back to Voice",
@@ -282,20 +295,21 @@ export const en = {
         sectionTitle: "Model auto-switch (OpenAI API)",
         enable: "Switch model by request",
         enableDescription:
-          "When an OpenAI-compatible request names a different downloaded GGUF, load it before serving. Off by default; unknown names keep serving the loaded model.",
+          "Load a downloaded GGUF named in an API request before serving. Off by default.",
+        autoDownload: "Download missing models",
+        autoDownloadDescription:
+          "Fetch a GGUF named in an API request that is not downloaded yet. Anyone with an API key can then use disk and bandwidth.",
         idleUnload: "Idle auto-unload",
         idleUnloadDescription:
-          "Unload the model after this many idle seconds to free VRAM; the next request reloads it. 0 keeps it loaded. Minimum 60 seconds.",
-        idleNeedsEnable:
-          "Turn on Switch model by request so an unloaded model reloads on next use.",
-        idleActiveViaEnv:
-          "Idle auto-unload is active via the UNSLOTH_MODEL_IDLE_TTL environment variable.",
+          "Free VRAM after this many idle seconds. 0 keeps it loaded, minimum 60.",
+        idleNeedsEnable: "Turn on Switch model by request first.",
+        idleActiveViaEnv: "Active via UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Failed to load model auto-switch settings.",
         saveError: "Failed to save model auto-switch settings.",
         idleError: "Enter 0 to keep the model loaded, or at least 60 seconds.",
         keepKv: "Keep chat context across idle unload",
         keepKvDescription:
-          "Save the model's KV cache to disk before an idle unload and restore it on reload, so resumed chats skip re-reading their history. Chat context is written to disk (up to 10 GB) until it is restored or cleaned up.",
+          "Save the KV cache before an idle unload so resumed chats skip re-reading history. Up to 10 GB on disk.",
       },
       previewSharing: {
         sectionTitle: "Preview sharing",
@@ -378,16 +392,19 @@ export const en = {
       title: "Profile",
       description: "How your profile appears in Unsloth.",
       changePicture: "Change profile picture",
+      uploadPhoto: "Upload photo",
+      removePhoto: "Remove",
+      pictureOptions: "Profile picture options",
       displayName: "Display name",
       nickname: "What should Unsloth call you?",
       nicknamePlaceholder: "Nickname",
       nicknameSaved: "Preferred name saved",
-      avatarShape: "Profile picture shape",
+      avatarShape: "Avatar shape",
       avatarShapeCircle: "Circle",
       avatarShapeRounded: "Rounded",
       greetingSloth: "Sloth in greeting",
       greetingSlothDescription: "Show the sloth in the chat greeting.",
-      chooseSloth: "Or pick a sloth profile picture",
+      chooseSloth: "Or pick a sloth",
       noPicture: "No profile picture",
       noneLabel: "None",
       nameSaved: "Profile name saved",
@@ -400,10 +417,66 @@ export const en = {
         "Photo updated for this session, but may not persist after reload.",
       photoUpdateErrorTitle: "Could not update profile photo",
       imageUseError: "Could not use this image.",
+      stats: {
+        title: "Your stats",
+        subtitle:
+          "Everything below is counted from your own history. Nothing is collected or sent to Unsloth.",
+        retry: "Try again",
+        privacyNote:
+          "Stats are computed from the chat and training history held by your Unsloth install. Nothing is collected, and nothing is sent to Unsloth or any third party.",
+        emptyChats:
+          "No chats yet. Start a conversation and your stats will fill in here.",
+        lifetimeTokens: "Lifetime tokens",
+        peakTokens: "Peak day",
+        longestChat: "Longest chat",
+        currentStreak: "Current streak",
+        longestStreak: "Longest streak",
+        activityTitle: "Token activity",
+        activityDescription: "{total} over the last {weeks}",
+        mode: {
+          daily: "Daily",
+          weekly: "Weekly",
+          cumulative: "Cumulative",
+        },
+        cellTooltip: "{date} · {tokens}, {messages}",
+        weekTooltip: "Week of {date} · {tokens}",
+        less: "Less",
+        more: "More",
+        insightsTitle: "Activity insights",
+        totalChats: "Total chats",
+        totalMessages: "Total messages",
+        tokensIn: "Tokens sent",
+        tokensOut: "Tokens generated",
+        cachedTokens: "Cached tokens",
+        cachedValue: "{tokens} ({percent}% of input)",
+        avgTokensPerChat: "Average tokens per chat",
+        timeInChat: "Time in chat",
+        activeDays: "Active days",
+        toolCalls: "Tool calls",
+        attachments: "Files attached",
+        avgSpeed: "Average speed",
+        bestSpeed: "Fastest response",
+        firstToken: "Average time to first token",
+        tokensPerSecond: "{value} tok/s",
+        topModelsTitle: "Most used models",
+        topModelsDescription: "Ranked by tokens exchanged",
+        modelSummary: "{tokens} · {messages}",
+        noModels: "No model usage recorded yet.",
+        trainingTitle: "Training",
+        trainingDescription: "Fine-tuning runs from this workspace",
+        trainingRuns: "Runs",
+        trainingCompleted: "Completed",
+        trainingSteps: "Steps",
+        trainingTokens: "Tokens trained",
+        trainingTime: "Training time",
+        bestLoss: "Best loss",
+        runSteps: "{steps}",
+        runLoss: "loss {loss}",
+      },
     },
     appearance: {
       title: "Appearance",
-      description: "How Unsloth Studio looks on this device.",
+      description: "How Unsloth looks on this device.",
       theme: {
         title: "Theme",
         label: "Color scheme",
@@ -466,7 +539,8 @@ export const en = {
             "Unsupported file type. Use .woff2, .woff, .ttf, or .otf.",
           errorTooLarge: "Font file is too large (max 1.5 MB).",
           errorLimit: "You can import up to 3 fonts.",
-          errorStorageFull: "Not enough local storage for this font. Remove an imported font first.",
+          errorStorageFull:
+            "Not enough local storage for this font. Remove an imported font first.",
           errorFailed: "Could not load this font file.",
         },
         uiFontSize: {
@@ -550,8 +624,12 @@ export const en = {
         systemDisk: "System disk",
         diskUsage: "{used} used / {total}",
         diskFree: "{free} free",
-        modelsFolder: "Model downloads",
-        modelsFolderDescription: "Hugging Face cache used for model downloads.",
+        modelsFolder: "Models folder",
+        modelsFolderDescription:
+          "Where downloaded models are stored. Change it to keep models off your system drive.",
+        // Not rendered: extra terms the settings search matches this row on.
+        modelsFolderKeywords:
+          "models folder directory path location download downloads cache storage disk drive move relocate hugging face",
         futureDownloads: "New downloads only",
         environmentManaged: "Managed by the {variable} environment variable.",
         locationFree: "{free} free",
@@ -578,6 +656,100 @@ export const en = {
         processMemory: "Process memory",
         notInstalled: "Not installed",
         unknown: "Unknown",
+      },
+    },
+    agents: {
+      title: "Agents",
+      description:
+        "Connect coding agents like Claude Code and Codex to a local model with unsloth start.",
+      intro:
+        "connects Claude Code, Codex, Hermes, OpenClaw, OpenCode and other agents to a model served locally by Unsloth, fully offline. It runs an OpenAI-compatible server and never touches your agent's config files.",
+      readDocs: "Read the docs",
+      copy: "Copy",
+      copied: "Copied",
+      commandBuilder: "Command builder",
+      agent: "Coding agent",
+      model: "Model",
+      searchModels: "Search GGUF models...",
+      noModels: "No matching GGUF models.",
+      showingModels:
+        "Showing {shown} of {total} matches. Keep typing to narrow the list.",
+      quantization: "Quantization",
+      loadingQuantizations: "Loading quantizations...",
+      noQuantizations: "No separate quantization",
+      recommended: "Recommended",
+      downloaded: "Downloaded",
+      quantizationLoadError:
+        "Couldn't load all quantizations. The command will use the available model value.",
+      generatedCommand: "Generated command",
+      docs: "Docs",
+      agentDocs: "Open {agent} setup docs",
+      copyGeneratedCommand: "Copy generated command",
+      modelNote:
+        "Codex requires a GGUF model served by llama-server. Other agents can also use transformer-backed models; remove --model to use the model already loaded in Unsloth.",
+      subagent: {
+        title: "Use a local model as a subagent",
+        description:
+          "Keep {agent} on its current model and delegate selected tasks to this local Unsloth model.",
+        setupCommand: "Setup command",
+        copySetupCommand: "Copy subagent setup command",
+        usagePrompt: "Then in {agent}, type:",
+        copyUsagePrompt: "Copy subagent usage prompt",
+        defaultPrompt: "Spawn a local agent to implement this function.",
+        opencodePrompt: "@unsloth find the cause of this test failure",
+      },
+      quickstart: {
+        title: "Build a command",
+        description:
+          "Launch an agent against the model currently loaded in Studio. Load a model first, then swap claude for any supported agent below.",
+        noneDetected: "No supported agent CLIs were found on your PATH.",
+        installed: "Installed",
+      },
+      supportedAgents: {
+        title: "Supported agents",
+        description: "Each agent launches with its own command:",
+        requiresGguf: "Needs a GGUF model",
+      },
+      models: {
+        title: "Choosing a model",
+        description:
+          "Pass --model to pick a model and quantization, and --context-length to set the window. Use a quantization suffix, or an explicit --gguf-variant flag.",
+        suffixLabel: "With a quantization suffix",
+        variantLabel: "With an explicit variant flag",
+      },
+      options: {
+        title: "Common options",
+        description:
+          "Unsloth flags are parsed first; anything it doesn't recognize is passed straight through to the agent.",
+        model:
+          "Select a model. Without --model, unsloth start uses the model currently loaded in Studio and errors if none is loaded.",
+        contextLength:
+          "Set the requested context length (alias: --max-seq-length).",
+        ggufVariant: "Choose the GGUF quantization variant.",
+        loadIn4bit: "Toggle 4-bit loading for Hugging Face models.",
+        tensorParallel: "Toggle tensor-parallel across multiple GPUs.",
+        serve: "Enable or disable the automatic local server.",
+        launch: "Launch the agent, or just print the command and environment.",
+        persist: "Keep Unsloth-managed agent storage between runs.",
+        asSubagent:
+          "Keep the parent on its current model and register Unsloth as a local subagent (Claude Code, Codex, and OpenCode).",
+        apiKey: "Provide your Unsloth API key (or set UNSLOTH_API_KEY).",
+        yolo: "Skip approval prompts. Use only in trusted environments.",
+      },
+      remote: {
+        title: "Connect to a remote Studio",
+        description:
+          "Point unsloth start at a Studio running elsewhere by setting these before launching (or pass --api-key directly):",
+      },
+      passthrough: {
+        title: "Passing agent arguments",
+        description:
+          "Arguments after the Unsloth flags are forwarded to the agent itself, so native commands like resume still work:",
+      },
+      dryRun: {
+        title: "Preview without launching",
+        description:
+          "Add --no-launch to print the environment and command instead of launching the agent. If --model is set, the model may still be resolved and loaded.",
       },
     },
     chat: {
@@ -721,6 +893,8 @@ export const en = {
       copyAccessToken: "Copy access token",
       copyNow: "Copy now - this won't be shown again.",
       usageExamples: "Usage examples",
+      usageNoModel:
+        "Load or download a model to see runnable examples. This server has no model to name yet.",
       usageTools: "Tools",
       exampleCurlTools: "curl + tools",
       examplePythonTools: "Python + tools",
@@ -732,7 +906,7 @@ export const en = {
       osWindows: "Windows",
       secureHttps: "Secure HTTPS",
       secureHttpsHint:
-        "The 0.0.0.0 port is still reachable globally. For full security, launch Unsloth Studio with --secure to expose only this HTTPS link.",
+        "The 0.0.0.0 port is still reachable globally. For full security, launch Unsloth with --secure to expose only this HTTPS link.",
       copyTunnelUrl: "Copy tunnel URL",
       copySnippet: "Copy snippet",
       copy: "Copy",
@@ -741,15 +915,16 @@ export const en = {
       codingAgents: "Coding agents",
       codingAgentsHint:
         "Launch a coding agent against this server. It uses the loaded model; a local server mints an API key automatically, a remote one includes it in the command.",
-      codingAgentsSwap:
-        "Swap claude for codex, openclaw, opencode, hermes, or pi.",
+      codingAgentsSwap: "Swap claude for codex, openclaw, opencode, or hermes.",
       codingAgentDetected: "Installed on this machine",
       codingAgentsDetectedHint: "Detected on this machine: {agents}.",
       relativeNever: "never",
       relativeJustNow: "just now",
       relativeHoursAgo: "{count}h ago",
       relativeDaysAgo: "{count}d ago",
+      relativeOneMonthAgo: "1mo ago",
       relativeMonthsAgo: "{count}mo ago",
+      relativeOneYearAgo: "1y ago",
       relativeYearsAgo: "{count}y ago",
       expired: "expired",
       today: "today",
@@ -771,11 +946,14 @@ export const en = {
       description: "Docs, release notes, feedback, and build info.",
       studioVersion: "Unsloth Version",
       packageVersion: "Package Version",
+      desktopAppVersion: "Desktop App Version",
+      desktopAppVersionUnavailable: "Unavailable",
       llamaCppVersion: "llama.cpp Version",
       hardware: "Hardware",
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Update",
       help: "Help",
       documentation: "Documentation",
@@ -785,7 +963,7 @@ export const en = {
       reportIssue: "Report an issue",
       license: {
         sectionTitle: "License",
-        studioLabel: "Unsloth Studio",
+        studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
         studioDescription: "Open source under the GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
@@ -793,12 +971,12 @@ export const en = {
         libraryDescription: "Licensed under Apache 2.0.",
       },
       dangerZone: "Danger zone",
-      shutDownStudio: "Shut down Unsloth Studio",
+      shutDownStudio: "Shut down Unsloth",
       shutDownStudioDescription:
         "Stops the Unsloth server and ends your session.",
       shutDown: "Shut down",
       update: {
-        title: "Update Unsloth Studio",
+        title: "Update Unsloth",
         commandText: "{label} text",
         copied: "Copied",
         copyCommand: "Copy command",
@@ -821,7 +999,30 @@ export const en = {
           "If you still have the repo checkout, run the local installer from it:",
         restartAfterUpdate: "Restart Unsloth after updating.",
         desktopManaged:
-          "The desktop app keeps its bundled backend updated and will prompt when a new version is available.",
+          "The desktop app checks for new app versions automatically. You can also check or update here at any time.",
+        desktopReady: "Desktop app updates",
+        desktopReadyDescription:
+          "Check whether a newer desktop app version is available.",
+        desktopChecking: "Checking for updates",
+        desktopCheckingDescription: "This usually takes a few seconds.",
+        desktopAvailable: "Desktop app {version} is available",
+        desktopAvailableDescription:
+          "Update now and the desktop app will restart when it finishes.",
+        desktopExternalServer:
+          "Run `unsloth studio update` from the terminal that started your server.",
+        desktopManualInstall:
+          "Open the release page to install the latest Linux package.",
+        desktopCheckFailed: "Could not check for updates",
+        desktopCheckFailedDescription: "Check your connection and try again.",
+        desktopCurrent: "Desktop app is up to date",
+        desktopCurrentDescription:
+          "Unsloth will continue checking automatically.",
+        checkForUpdates: "Check for updates",
+        checkAgain: "Check again",
+        retryCheck: "Try again",
+        checking: "Checking...",
+        updateNow: "Update now",
+        openReleasePage: "Open release page",
         unknownInstall:
           "Could not detect how Unsloth was installed. For installer or PyPI installs, use the commands above.",
         localCheckout:
@@ -1045,6 +1246,7 @@ export const en = {
       trainWithLora: "Train with LoRA",
       stableRank: "Stable Rank",
       memoryEfficient: "Memory Efficient",
+      weightDecomposed: "Weight-Decomposed",
       optimization: "Optimization",
       schedule: "Schedule",
       memory: "Memory",

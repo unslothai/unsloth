@@ -34,6 +34,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { isOllamaLinkPath } from "../model-config/model-identity";
 import {
   type PerModelConfig,
   resolveInitialConfig,
@@ -185,6 +186,8 @@ function ModelSelectorTrigger({
             "rounded-full bg-muted hover:bg-muted/80 has-[[data-eject-hit]:hover]:!bg-muted",
           // More left padding than right; the chevron is pulled close to the
           // label (below) so the trigger reads balanced around the text.
+          // Height stays pinned: both call sites force the chat header's own
+          // --studio-chat-control-height, which its fixed header cannot grow.
           size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
           size === "default" && "h-9 pl-4 pr-2 text-sm",
           size === "lg" && "h-10 pl-4.5 pr-2.5 text-sm",
@@ -301,12 +304,12 @@ const HUB_SECTION_TABS: { value: string; label: string; icon?: ReactNode }[] = [
   {
     value: "recommended",
     label: "Recommended",
-    icon: <HugeiconsIcon icon={StarIcon} className="size-3.5" />,
+    icon: <HugeiconsIcon icon={StarIcon} className="size-3.5 shrink-0" />,
   },
   {
     value: "downloaded",
     label: "On Device",
-    icon: <HugeiconsIcon icon={Download01Icon} className="size-3.5" />,
+    icon: <HugeiconsIcon icon={Download01Icon} className="size-3.5 shrink-0" />,
   },
 ];
 
@@ -384,7 +387,9 @@ function ModelSelectorContent({
             {
               value: "connected",
               label: "Connected",
-              icon: <HugeiconsIcon icon={CloudIcon} className="size-3.5" />,
+              icon: (
+                <HugeiconsIcon icon={CloudIcon} className="size-3.5 shrink-0" />
+              ),
             },
           ]
         : HUB_SECTION_TABS,
@@ -478,11 +483,15 @@ function ModelSelectorContent({
   const visibleConfigTarget = open ? configTarget : null;
   const openConfigPage = (id: string, meta: ModelSelectorChangeMeta) => {
     const leaf = id.includes("/") ? id.slice(id.lastIndexOf("/") + 1) : id;
+    const isGguf = meta.isGguf ?? Boolean(meta.ggufVariant);
     setConfigTarget({
       id,
       displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
       ggufVariant: meta.ggufVariant ?? null,
-      isGguf: meta.isGguf ?? Boolean(meta.ggufVariant),
+      isGguf,
+      // Ollama's models sit under a link dir the resolver skips, so mirroring their
+      // settings would advertise a load the API can never make.
+      apiLoadable: isGguf && !isOllamaLinkPath(id),
       meta,
     });
   };
@@ -507,14 +516,16 @@ function ModelSelectorContent({
       className={cn(
         "unsloth-model-selector-menu menu-soft-surface ring-0 max-w-[calc(100vw-1rem)] min-w-0 gap-0",
         visibleConfigTarget
-          ? "w-[min(468px,calc(100vw-1rem))] px-4 pt-4 pb-4"
+          ? "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-y-auto px-4 pt-4 pb-4"
           : cn(
               "pt-4 pb-0 pl-4",
               // Sized so the left-packed row keeps uniform gaps and the last
               // dropdown's right gap matches the pill's left gap (pl-4 vs pr-4).
+              // Widths track the controls they hold, so the tuned single-line
+              // row does not wrap once text and icons grow.
               hasExternal
-                ? "w-[min(614px,calc(100vw-1rem))] pr-4"
-                : "w-[min(506px,calc(100vw-1rem))] pr-2",
+                ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
+                : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
             ),
         className,
       )}
@@ -533,10 +544,11 @@ function ModelSelectorContent({
             key={`${visibleConfigTarget.id}::${visibleConfigTarget.ggufVariant ?? ""}`}
             target={visibleConfigTarget}
             onBack={() => setConfigTarget(null)}
-            onRun={(config) =>
+            onRun={(config, isDiffusion) =>
               onSelect(visibleConfigTarget.id, {
                 ...visibleConfigTarget.meta,
                 config,
+                isDiffusion,
                 forceReload: true,
               })
             }
@@ -856,13 +868,13 @@ function ExternalModelPicker({
       <div className="relative">
         <HugeiconsIcon
           icon={Search01Icon}
-          className="pointer-events-none absolute left-2.5 top-2.5 size-4 text-muted-foreground"
+          className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
         />
         <Input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder="Search models"
-          className="h-9 pl-8"
+          className="h-(--picker-control-h) pl-8"
         />
       </div>
       <div className="-mr-1.5 max-h-72 overflow-y-auto pr-1.5">

@@ -35,9 +35,11 @@ def test_fixture_bytes_are_deterministic(tmp_path):
     rebuild_dir = tmp_path / "rebuild"
     rebuild_dir.mkdir()
     # The build helper writes to its own dir; copy + patch HERE.
-    builder_src = (FIXTURES / "_build.py").read_text()
+    builder_src = (FIXTURES / "_build.py").read_text(encoding = "utf-8")
     rebuilt_helper = rebuild_dir / "_build.py"
-    rebuilt_helper.write_text(builder_src)
+    # builder_src came out of a checked-in file, so it carries whatever
+    # non-ASCII that file holds and cp1252 cannot encode it back out.
+    rebuilt_helper.write_text(builder_src, encoding = "utf-8")
     # Run with SOURCE_DATE_EPOCH=0 and HERE override via a shim.
     shim = rebuild_dir / "run.py"
     shim.write_text(
@@ -1260,7 +1262,7 @@ def test_committed_baseline_suppresses_known_but_not_a_new_payload():
     import json
 
     baseline_path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
-    entries = json.loads(baseline_path.read_text())["entries"]
+    entries = json.loads(baseline_path.read_text(encoding = "utf-8"))["entries"]
     target = next(
         e
         for e in entries
@@ -1296,7 +1298,7 @@ def test_committed_baseline_entries_all_carry_evidence_hash():
     import json
 
     baseline_path = REPO_ROOT / "scripts" / "scan_packages_baseline.json"
-    entries = json.loads(baseline_path.read_text())["entries"]
+    entries = json.loads(baseline_path.read_text(encoding = "utf-8"))["entries"]
     assert entries, "committed baseline should not be empty"
     missing = [
         f"{e['package']}:{e['file']}:{e['check']}" for e in entries if not e.get("evidence_hash")

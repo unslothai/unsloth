@@ -326,11 +326,20 @@ class TestCanKeepAuto(_GpuCacheResetMixin, unittest.TestCase):
         keep, _, _ = self._run((None, meta))
         self.assertFalse(keep)
 
-    def test_unload_on_non_cuda(self):
+    def test_unload_on_non_accelerator(self):
         keep, info, auto_mock = self._run(([0], {}), device = DeviceType.CPU)
         self.assertFalse(keep)
-        self.assertEqual(info["mode"], "non_cuda")
+        self.assertEqual(info["mode"], "non_accelerator")
         auto_mock.assert_not_called()
+
+    def test_xpu_gets_sized_like_cuda(self):
+        # XPU is a first-class training backend: the keep-guard must size it,
+        # not blanket-unload it as a non-accelerator.
+        meta = {"selection_mode": "auto", "required_gb": 10.0, "usable_gb": 30.0}
+        keep, info, auto_mock = self._run(([0], meta), device = DeviceType.XPU)
+        self.assertTrue(keep)
+        self.assertNotEqual(info.get("mode"), "non_accelerator")
+        auto_mock.assert_called_once()
 
     def test_full_finetuning_forces_16bit_in_estimate(self):
         meta = {"selection_mode": "auto", "required_gb": 10.0, "usable_gb": 30.0}

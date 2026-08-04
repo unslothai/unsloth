@@ -74,6 +74,8 @@ const PREFS_KEYS: string[] = [
   LOCALE_STORAGE_KEY,
   // UI state
   "sidebar_pinned",
+  "sidebar_width",
+  "chat_settings_width",
   "unsloth_sidebar_navigate_open",
   "unsloth_settings_active_tab",
   // Chat runtime prefs
@@ -93,6 +95,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_model_configs",
   "unsloth_model_configs_migrated",
   "unsloth_load_settings",
+  "unsloth_model_advanced_settings",
   "unsloth_chat_load_on_selection",
   // Model selector settings ("Select model settings" group)
   "unsloth_chat_expand_quantizations",

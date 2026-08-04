@@ -39,6 +39,11 @@ import {
   ThreadAutosaveHandle,
   createOpenAIStreamAdapter,
 } from "./api/chat-adapter";
+import { getResearchThreadState } from "./api/research-api";
+import {
+  ingestResearchUpdate,
+  useResearchRunStore,
+} from "./stores/research-run-store";
 import {
   loadConnectionsEnabled,
   loadExternalProviders,
@@ -62,6 +67,10 @@ import {
   onChatAttachmentDeleted,
 } from "./utils/chat-attachment-events";
 import {
+  refreshContextUsage,
+  setActiveBranchReader,
+} from "./utils/refresh-context-usage";
+import {
   deleteStoredChatThreads,
   ensureStoredChatThread,
   getStoredChatThread,
@@ -80,7 +89,11 @@ import { requestPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
-const pendingRunStartReadyByMessageId = new Map<string, Promise<void>>();
+// Resolves to the thread id assigned when this message's chat was first persisted.
+const pendingRunStartReadyByMessageId = new Map<
+  string,
+  Promise<string | undefined>
+>();
 
 type TitleResponse = {
   choices?: Array<{
@@ -694,6 +707,10 @@ function createStudioDbAdapter(
 
     async initialize(threadId: string) {
       await ensureThreadRecord({ threadId, modelType, pairId, projectId });
+      // A run already streaming on this thread filed its handles under "__default" because
+      // the id did not exist yet. Re-key them now, or the sidebar row and Stop look up an
+      // id nothing is registered against.
+      useChatRuntimeStore.getState().adoptDefaultThreadRun(threadId);
       return { remoteId: threadId, externalId: undefined };
     },
 
@@ -830,8 +847,8 @@ function trackHistoryAppend(
 
 function trackRunStartReady(
   messageId: string,
-  ready: Promise<void>,
-): Promise<void> {
+  ready: Promise<string | undefined>,
+): Promise<string | undefined> {
   pendingRunStartReadyByMessageId.set(messageId, ready);
   const cleanup = () => {
     setTimeout(() => {
@@ -846,37 +863,53 @@ function trackRunStartReady(
 
 async function waitForRunStartHistoryAppend(
   messages: Parameters<ChatModelAdapter["run"]>[0]["messages"],
-): Promise<void> {
-  const lastMessage = messages.at(-1);
-  if (!lastMessage || lastMessage.role !== "user") {
+): Promise<string | undefined> {
+  // Deep Research reserves an assistant placeholder before invoking the model
+  // adapter, so the user message is not necessarily the final entry here.
+  const userMessage = [...messages]
+    .reverse()
+    .find((message) => message.role === "user");
+  if (!userMessage) {
     return;
   }
-  const ready =
-    pendingRunStartReadyByMessageId.get(lastMessage.id) ??
-    pendingHistoryAppendByMessageId.get(lastMessage.id);
-  if (!ready) {
-    return;
+  const runStartReady = pendingRunStartReadyByMessageId.get(userMessage.id);
+  const historyAppendReady = pendingHistoryAppendByMessageId.get(userMessage.id);
+  if (runStartReady === undefined && historyAppendReady === undefined) {
+    return undefined;
   }
   let didBecomeReady = false;
+  let adoptedThreadId: string | undefined;
   try {
-    await ready;
+    [adoptedThreadId] = await Promise.all([
+      runStartReady ?? Promise.resolve(undefined),
+      historyAppendReady?.then(() => undefined),
+    ]);
     didBecomeReady = true;
   } finally {
     if (
       didBecomeReady &&
-      pendingRunStartReadyByMessageId.get(lastMessage.id) === ready
+      runStartReady &&
+      pendingRunStartReadyByMessageId.get(userMessage.id) === runStartReady
     ) {
-      pendingRunStartReadyByMessageId.delete(lastMessage.id);
+      pendingRunStartReadyByMessageId.delete(userMessage.id);
     }
   }
+  return adoptedThreadId;
 }
 
 function createPersistedRunAdapter(adapter: ChatModelAdapter): ChatModelAdapter {
   return {
     ...adapter,
     async *run(options) {
-      await waitForRunStartHistoryAppend(options.messages);
-      const result = adapter.run(options);
+      const adoptedThreadId = await waitForRunStartHistoryAppend(options.messages);
+      // The thread has an id by the time that resolves, but assistant-ui bound unstable_threadId
+      // before the await. Hand the run its real id so a first turn never files its handles
+      // under the unresolved key that concurrent runs share.
+      const result = adapter.run(
+        !options.unstable_threadId && adoptedThreadId
+          ? { ...options, unstable_threadId: adoptedThreadId }
+          : options,
+      );
       if (!result) {
         return;
       }
@@ -1078,6 +1111,32 @@ function useStudioRuntimeAdapters(
           }
           msgs = [];
         }
+        // Durable research can outlive this runtime. Reattach its server-owned
+        // assistant message to the inline card after navigation or refresh.
+        const researchThreadState = await getResearchThreadState(remoteId).catch(
+          () => null,
+        );
+        if (researchThreadState) {
+          useResearchRunStore
+            .getState()
+            .setThreadClaimed(remoteId, researchThreadState.hasRun);
+        }
+        const activeResearchRun = researchThreadState?.activeRun ?? null;
+        if (activeResearchRun) ingestResearchUpdate(activeResearchRun);
+        if (activeResearchRun?.assistantMessageId) {
+          const assistant = msgs.find(
+            (message) => message.id === activeResearchRun.assistantMessageId,
+          );
+          if (assistant) {
+            assistant.metadata = {
+              ...(assistant.metadata ?? {}),
+              researchRunId: activeResearchRun.id,
+              researchRun: activeResearchRun,
+              serverManaged: true,
+              serverRevision: activeResearchRun.lastEventSeq,
+            };
+          }
+        }
         msgs.sort((a, b) => {
           if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
           const aOrder = roleOrder[a.role] ?? 99;
@@ -1114,8 +1173,26 @@ function useStudioRuntimeAdapters(
           ? savedUsage.modelId === store.params.checkpoint
           : typeof store.ggufContextLength === "number" &&
             store.ggufContextLength > 0;
-        if (savedUsage && withinLocalLimit && modelMatches) {
-          store.setContextUsage(savedUsage);
+        // The value, not a boolean: the writes below need the narrowing.
+        const restoredUsage =
+          savedUsage && withinLocalLimit && modelMatches ? savedUsage : null;
+        if (restoredUsage) {
+          // Key by the thread this loader read, not whichever is active when the await resolves:
+          // a switch inside it would file this thread's usage under the incoming one. Same rule
+          // the adapter's end-of-run write follows.
+          store.setThreadContextUsage(remoteId, restoredUsage);
+          if (store.activeThreadId === remoteId) {
+            store.setContextUsage(restoredUsage);
+          }
+        }
+        // Only when nothing was restored: saved usage is the last completion's exact totals, and
+        // refreshContextUsage does NOT stand down for usage already there, so it would overwrite
+        // them with an estimate whose completionTokens is 0. A thread opened after a model switch
+        // fails modelMatches and still gets priced (#7450).
+        // Primary pane only: a compare pane never owns the global bar, so its count would be
+        // rebuilt from storage, sent, then dropped at publish for not being activeThreadId.
+        if (!restoredUsage && modelType === "base" && !pairId) {
+          void refreshContextUsage({ threadId: remoteId });
         }
 
         // If any message has a stored parentId, reconstruct the tree so
@@ -1141,7 +1218,10 @@ function useStudioRuntimeAdapters(
 
       append({ parentId, message }: ExportedMessageRepositoryItem) {
         const initializeThread = aui.threadListItem().initialize();
-        trackRunStartReady(message.id, initializeThread.then(() => undefined));
+        trackRunStartReady(
+          message.id,
+          initializeThread.then(({ remoteId }) => remoteId),
+        );
         const write = (async () => {
           const { remoteId } = await initializeThread;
           if (isChatThreadDeleted(remoteId)) {
@@ -1176,16 +1256,38 @@ function useStudioRuntimeAdapters(
           const createdAt =
             existingMessage?.createdAt ??
             message.createdAt?.getTime?.() ??
-            Date.now();
+              Date.now();
+          const existingMetadata = existingMessage?.metadata;
+          const incomingRevision = Number(
+            (custom as Record<string, unknown> | undefined)?.serverRevision ?? -1,
+          );
+          const existingRevision = Number(existingMetadata?.serverRevision ?? -1);
+          const incomingMetadata = custom as
+            | Record<string, unknown>
+            | undefined;
+          const sameResearchRun =
+            typeof existingMetadata?.researchRunId === "string" &&
+            existingMetadata.researchRunId === incomingMetadata?.researchRunId;
+          const preserveServerManaged =
+            existingMetadata?.serverManaged === true &&
+            (sameResearchRun ||
+              !incomingMetadata?.serverManaged ||
+              existingRevision > incomingRevision);
+          // Echo the backend's stored metadata verbatim on autosave: merging
+          // incomingMetadata re-adds client-only fields (researchRun / serverRevision) the
+          // server never persisted, so _research_message_would_change sees a diff and
+          // rejects every streamed/snapshot update with 409.
+          const metadata = preserveServerManaged
+            ? existingMetadata
+            : incomingMetadata;
           await saveStoredChatMessage({
             id: message.id,
             threadId: remoteId,
             parentId: parentId ?? null,
             role: message.role,
-            content,
+            content: preserveServerManaged ? existingMessage!.content : content,
             ...(attachments.length > 0 && { attachments }),
-            ...(custom &&
-              Object.keys(custom).length > 0 && { metadata: custom }),
+            ...(metadata && { metadata }),
             createdAt,
           });
         })();
@@ -1248,17 +1350,6 @@ function createRuntimeHook(modelType: ModelType, pairId?: string) {
   };
 }
 
-function stopChatRun(threadId: string | null | undefined) {
-  if (!threadId) {
-    return;
-  }
-  try {
-    useChatRuntimeStore.getState().cancelByThreadId[threadId]?.();
-  } catch {
-    // The run may have ended while navigation was mounting.
-  }
-}
-
 function ThreadAutoSwitch({
   threadId,
   syncActiveThreadId = true,
@@ -1273,8 +1364,9 @@ function ThreadAutoSwitch({
   useEffect(() => {
     if (!isLoading && mainThreadId !== threadId) {
       if (syncActiveThreadId) {
-        requestPromptQueueStop();
-        stopChatRun(mainThreadId);
+        // Stop queueing prompts to the outgoing thread but leave its run alone: its runtime
+        // stays mounted and keeps streaming. Only an explicit Stop cancels one.
+        requestPromptQueueStop({ cancelActiveRun: false });
       }
       const switchResult = aui.threads().switchToThread(threadId) as unknown;
       if (
@@ -1305,21 +1397,48 @@ function ThreadNewChatSwitch({
 }: { nonce: string }): ReactElement | null {
   const aui = useAui();
   const isLoading = useAuiState(({ threads }) => threads.isLoading);
-  const mainThreadId = useAuiState(({ threads }) => threads.mainThreadId);
-  const mainThreadIdRef = useRef(mainThreadId);
-  mainThreadIdRef.current = mainThreadId;
-
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  // Read only by the recount below: New Chat itself must not care whether a run is still going.
+  const runActive = useChatRuntimeStore((s) =>
+    Object.values(s.runningByThreadId).some(Boolean),
+  );
+  // The outgoing thread is not read here: New Chat leaves it running.
   useEffect(() => {
     if (isLoading) {
       return;
     }
-    requestPromptQueueStop();
-    stopChatRun(mainThreadIdRef.current);
+    // New Chat leaves the previous conversation generating: its runtime stays mounted and
+    // the sidebar spins. Stopping it is its own Stop button's job.
+    requestPromptQueueStop({ cancelActiveRun: false });
     // Switch to a fresh local thread without persisting it yet; persistence
     // still happens on first message append.
     void aui.threads().switchToNewThread();
     useChatRuntimeStore.getState().setActiveThreadId(null);
   }, [aui, isLoading, nonce]);
+
+  // The effect above blanks the bar, and this view reaches no other recount trigger: no persisted
+  // thread for the history loader, and ActiveThreadSync is off while a nonce is present. Keyed on
+  // the model too: on a RELOAD of /chat?new=<uuid> nothing is known until status answers.
+  useEffect(() => {
+    if (
+      isLoading ||
+      modelLoading ||
+      runActive ||
+      !checkpoint ||
+      ggufContextLength == null
+    ) {
+      return;
+    }
+    const store = useChatRuntimeStore.getState();
+    if (store.activeThreadId != null || store.contextUsage != null) return;
+    void refreshContextUsage();
+    // nonce: a fresh New Chat click re-runs the effect above, which blanks the bar again.
+    // runActive is a DEPENDENCY, not just a guard: refreshContextUsage declines while anything
+    // generates, and nothing else re-fires this when the run ends. ThreadContextUsageRecount
+    // cannot cover for it -- an unpersisted New Chat has no activeThreadId.
+  }, [checkpoint, ggufContextLength, isLoading, modelLoading, nonce, runActive]);
 
   return null;
 }
@@ -1338,6 +1457,75 @@ function ActiveThreadSync({
     }
     setActiveThreadId(mainThreadId ?? null);
   }, [enabled, mainThreadId, setActiveThreadId]);
+
+  return null;
+}
+
+// Lets the recount read the on-screen branch, not the stored records: an incognito thread stores
+// none, and a retried thread's newest stored leaf is not what the runtime would send.
+function ActiveBranchRegistrar({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const aui = useAui();
+
+  useEffect(() => {
+    if (!enabled) {
+      return;
+    }
+    setActiveBranchReader(() => {
+      try {
+        return aui.thread().getState().messages;
+      } catch {
+        // No thread mounted yet; the recount falls back to the stored records.
+        return null;
+      }
+    });
+    return () => setActiveBranchReader(null);
+  }, [aui, enabled]);
+
+  return null;
+}
+
+// Price whichever thread the bar points at whenever it has nothing to show. Only two paths reach
+// it: (1) a model change empties contextUsageByThreadId and a mounted thread does not rerun its
+// history loader; (2) on a deep link to /chat/:id the history loader and status can each land
+// before the other, so neither independently timed callback counts.
+function ThreadContextUsageRecount({
+  enabled,
+}: { enabled: boolean }): ReactElement | null {
+  const activeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const ggufContextLength = useChatRuntimeStore((s) => s.ggufContextLength);
+  const modelLoading = useChatRuntimeStore((s) => s.modelLoading);
+  // A DEPENDENCY, not just a guard: nothing else here changes when a run ends, so a count skipped
+  // for being busy would never be retried. Every run, not just local ones, since that is what the
+  // endpoint refuses on.
+  const runActive = useChatRuntimeStore((s) =>
+    Object.values(s.runningByThreadId).some(Boolean),
+  );
+
+  useEffect(() => {
+    if (
+      !enabled ||
+      !activeThreadId ||
+      modelLoading ||
+      runActive ||
+      !checkpoint ||
+      ggufContextLength == null
+    ) {
+      return;
+    }
+    // Only into a blank bar: restored or completion-written usage is exact, this is an estimate.
+    if (useChatRuntimeStore.getState().contextUsage != null) return;
+    void refreshContextUsage({ threadId: activeThreadId });
+  }, [
+    activeThreadId,
+    checkpoint,
+    enabled,
+    ggufContextLength,
+    runActive,
+    modelLoading,
+  ]);
 
   return null;
 }
@@ -1524,6 +1712,8 @@ export function ChatRuntimeProvider({
             !initialThreadId
           }
         />
+        <ActiveBranchRegistrar enabled={modelType === "base" && !pairId} />
+        <ThreadContextUsageRecount enabled={modelType === "base" && !pairId} />
         <ThreadBackendAutosave modelType={modelType} pairId={pairId} />
         <CancelRegistrar />
         {initialThreadId && (

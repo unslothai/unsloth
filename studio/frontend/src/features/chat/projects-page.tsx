@@ -34,7 +34,6 @@ import { isTauri } from "@/lib/api-base";
 import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
-  createChatProject,
   deleteChatProject,
   renameChatProject,
   useChatProjects,
@@ -42,6 +41,7 @@ import {
   usePinnedProjectsStore,
   type ProjectRecord,
 } from "@/features/chat";
+import { NewProjectDialog } from "./components/new-project-dialog";
 import {
   Delete02Icon,
   Download01Icon,
@@ -124,7 +124,6 @@ export function ProjectsPage() {
   );
 
   const [creating, setCreating] = useState(false);
-  const [nameDraft, setNameDraft] = useState("");
   const [renaming, setRenaming] = useState<ProjectRecord | null>(null);
   const [renameDraft, setRenameDraft] = useState("");
   const [deleting, setDeleting] = useState<ProjectRecord | null>(null);
@@ -256,21 +255,6 @@ export function ProjectsPage() {
     runtime.setActiveThreadId(null);
     runtime.setActiveProjectId(projectId);
     navigate({ to: "/chat", search: { project: projectId } });
-  }
-
-  async function commitCreate() {
-    const name = nameDraft.trim();
-    if (!name) return;
-    try {
-      const project = await createChatProject(name);
-      setCreating(false);
-      setNameDraft("");
-      openProject(project.id);
-    } catch (err) {
-      toast.error("Failed to create project", {
-        description: err instanceof Error ? err.message : undefined,
-      });
-    }
   }
 
   async function commitRename() {
@@ -469,14 +453,7 @@ export function ProjectsPage() {
               </DropdownMenuSub>
             </DropdownMenuContent>
           </DropdownMenu>
-          <Button
-            onClick={() => {
-              setNameDraft("");
-              setCreating(true);
-            }}
-          >
-            New project
-          </Button>
+          <Button onClick={() => setCreating(true)}>New project</Button>
         </div>
       </div>
 
@@ -511,10 +488,7 @@ export function ProjectsPage() {
             <Button
               variant="outline"
               className="mt-2 border-none bg-background shadow-[0_2px_8px_-2px_rgba(0,0,0,0.16)] dark:bg-card dark:shadow-none"
-              onClick={() => {
-                setNameDraft("");
-                setCreating(true);
-              }}
+              onClick={() => setCreating(true)}
             >
               <HugeiconsIcon icon={FolderAddIcon} strokeWidth={1.75} className="size-icon" />
               Create your first project
@@ -674,42 +648,8 @@ export function ProjectsPage() {
         </>
       )}
 
-      {/* Create project */}
-      <Dialog
-        open={creating}
-        onOpenChange={(open) => {
-          if (!open) setCreating(false);
-        }}
-      >
-        <DialogContent className="corner-squircle dialog-soft-surface sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>New project</DialogTitle>
-          </DialogHeader>
-          <Input
-            value={nameDraft}
-            onChange={(e) => setNameDraft(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter") {
-                e.preventDefault();
-                void commitCreate();
-              }
-            }}
-            autoFocus
-            maxLength={120}
-            placeholder="Project name"
-            aria-label="Project name"
-            className="focus-visible:border-input focus-visible:ring-0"
-          />
-          <DialogFooter className="flex-wrap gap-2 sm:justify-end">
-            <Button type="button" variant="ghost" onClick={() => setCreating(false)}>
-              Cancel
-            </Button>
-            <Button type="button" onClick={() => void commitCreate()} disabled={!nameDraft.trim()}>
-              Create
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
+      {/* Create project (name + drag-and-drop sources) */}
+      <NewProjectDialog open={creating} onOpenChange={setCreating} />
 
       {/* Rename project */}
       <Dialog

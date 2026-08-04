@@ -319,6 +319,13 @@
       "min_p": 0.01,
       "repetition_penalty": 1.0
     },
+    "kimi-k3": {
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": -1,
+      "min_p": 0.0,
+      "repetition_penalty": 1.0
+    },
     "kimi-k2": {
       "temperature": 0.6,
       "top_p": 0.95,
@@ -406,7 +413,7 @@
     "nemotron",
     "minimax-m2.7", "minimax-m2.5", "minimax",
     "gpt-oss", "granite-4",
-    "kimi-k2", "kimi",
+    "kimi-k3", "kimi-k2", "kimi",
     "lfm2", "smollm", "olmo", "falcon", "ernie", "seed", "grok", "mimo"
   ]
 }

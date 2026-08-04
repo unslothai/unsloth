@@ -278,13 +278,13 @@ function SttModelPicker({
                       {sttModelName(model)}
                     </span>
                     {twoLines ? (
-                      <span className="mt-0.5 block truncate font-mono text-[9px] leading-tight text-muted-foreground">
+                      <span className="mt-0.5 block truncate font-mono text-ui-9 leading-tight text-muted-foreground">
                         {sttModelSource(model)}
                       </span>
                     ) : null}
                   </span>
                   {sttModelSize(model) ? (
-                    <span className="shrink-0 text-[10px] tabular-nums text-muted-foreground">
+                    <span className="shrink-0 text-ui-10 tabular-nums text-muted-foreground">
                       {sttModelSize(model)}
                     </span>
                   ) : null}
@@ -299,7 +299,7 @@ function SttModelPicker({
 }
 
 const TTS_PREVIEW_TEXT =
-  "Hello from Unsloth Studio! This is a preview of the selected voice.";
+  "Hello from Unsloth! This is a preview of the selected voice.";
 
 function useAudioInputDevices() {
   const t = useT();
