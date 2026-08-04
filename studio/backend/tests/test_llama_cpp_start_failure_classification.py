@@ -328,6 +328,59 @@ class TestMissingSharedLibrary:
         assert "/opt/My Runtime/libbar.so" in msg
         assert "is missing" in msg
 
+    def test_an_absolute_path_is_not_offered_to_a_package_manager(self):
+        # An absolute DT_NEEDED names one exact file. No package puts a file at
+        # /opt/vendor, so apt/dnf is the wrong instruction whoever owns the
+        # binary.
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "/opt/vendor/libaccelerator.so: cannot open shared object file: "
+            "No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "/opt/vendor/libaccelerator.so" in msg
+        assert "package manager" not in msg
+        assert "that exact location" in msg
+
+    def test_an_absolute_path_on_a_pinned_binary_names_the_custom_runtime(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "/opt/vendor/libaccelerator.so: cannot open shared object file: "
+            "No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127, "/opt/custom/llama-server")
+        assert "custom llama.cpp" in msg
+        assert "unsloth studio update" not in msg
+        assert "package manager" not in msg
+
+    def test_a_bare_soname_keeps_package_advice_even_on_a_pinned_binary(
+        self, monkeypatch
+    ):
+        # The counter-case that stops the rule from being "unmanaged means never
+        # mention a package": a custom-built llama.cpp on a bare-bones host is
+        # still missing a distro library, and libgomp1 is exactly what fixes it.
+        monkeypatch.setenv("LLAMA_SERVER_PATH", "/opt/custom/llama-server")
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "libgomp.so.1: cannot open shared object file: No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127, "/opt/custom/llama-server")
+        assert "libgomp1" in msg
+        assert "package manager" in msg
+
+    def test_a_windows_absolute_path_is_recognised_too(self):
+        out = (
+            "llama-server: error while loading shared libraries: "
+            "C:\\vendor\\accel.dll: cannot open shared object file: "
+            "No such file or directory"
+        )
+        msg = _classify(out, "/models/x.gguf", "local/x", 127)
+        assert "package manager" not in msg
+        assert "that exact location" in msg
+
     def test_bundled_library_under_a_spaced_path_still_points_at_the_installer(self):
         out = (
             "llama-server: error while loading shared libraries: "

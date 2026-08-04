@@ -7295,6 +7295,13 @@ class LlamaCppBackend:
             return True
 
     @staticmethod
+    def _is_absolute_library_path(lib: str) -> bool:
+        # os.path.isabs is platform-bound, and this classifies a string produced
+        # on whatever host ran llama-server, so match both spellings.
+        lib = (lib or "").strip()
+        return bool(re.match(r"^(?:/|\\\\|[A-Za-z]:[\\/])", lib))
+
+    @staticmethod
     def _missing_library_message(lib: str, binary: Optional[str] = None) -> str:
         """The loader could not FIND ``lib`` ("cannot open shared object file")."""
         if LlamaCppBackend._is_bundled_llama_library(lib):
@@ -7310,6 +7317,20 @@ class LlamaCppBackend:
                 "runtime that the llama-server binary in use was built with. That "
                 "binary is a custom install Unsloth does not manage, so reinstall "
                 "or rebuild that llama.cpp, then load the model again."
+            )
+        # A bare soname means the loader searched the standard directories, which
+        # is what a package populates. A full path means one exact file is absent
+        # (an absolute DT_NEEDED, e.g. a vendor .so under /opt), and no package
+        # will put a file there, so do not send the user to a package manager.
+        if LlamaCppBackend._is_absolute_library_path(lib):
+            _remedy = (
+                "run `unsloth studio update`"
+                if LlamaCppBackend._is_unsloth_managed_binary(binary)
+                else "reinstall or rebuild that custom llama.cpp"
+            )
+            return (
+                f"llama-server could not start: {lib} is missing from that exact "
+                f"location. Restore it, or {_remedy}, then load the model again."
             )
         return (
             f"llama-server could not start: the system library "
