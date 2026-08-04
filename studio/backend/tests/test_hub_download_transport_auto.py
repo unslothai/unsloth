@@ -508,3 +508,14 @@ def test_both_loaders_share_one_env_lock():
         assert (
             "with _load_lock:" in source
         ), f"{fn.__name__} mutates the GPU-init override outside the shared _load_lock"
+
+
+def test_the_worker_never_gets_the_flag_and_our_caps_together(monkeypatch):
+    """End to end against whichever unsloth_zoo is installed, with nothing stubbed. Which of the
+    two the zoo picks is its call and changes with the version; what must never happen either way
+    is both at once, because xet-core applies the preset after reading the environment, so it
+    voids the limit while still honouring the smaller per-file and concurrency numbers."""
+    env = _spawn_env(monkeypatch, use_xet = True, parent_env = {"HF_XET_HIGH_PERFORMANCE": "1"})
+    flag_on = env.get("HF_XET_HIGH_PERFORMANCE", "0").strip().lower() in ("1", "true", "yes", "on")
+    sized = "HF_XET_RECONSTRUCTION_DOWNLOAD_BUFFER_PERFILE_SIZE" in env
+    assert not (flag_on and sized), f"worst of both: flag on with our sizing still applied ({env})"
