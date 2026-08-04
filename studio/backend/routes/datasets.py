@@ -538,9 +538,8 @@ def check_format(request: CheckFormatRequest, current_subject: str = Depends(get
         dataset_path = resolve_dataset_path(request.dataset_name)
         total_rows = None
 
-        # Local uploads and recipes are always sent as absolute paths, so a missing
-        # one is a deleted file rather than a Hub repo id. One stat() for both
-        # branches, or a file deleted in between would fall through both.
+        # Uploads and recipes always arrive as absolute paths, so a missing one is a
+        # deleted file, not a Hub repo id. One stat() for both branches.
         dataset_exists = dataset_path.exists()
         if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
             raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
