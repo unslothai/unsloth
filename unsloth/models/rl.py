@@ -1429,18 +1429,28 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         extra_args += saving_check
 
     # Edit dataset_num_proc
+    # The policy lives in unsloth.utils.dataset_num_proc, not inline here, because
+    # this heuristic had drifted into four copies and two of them were wrong: they
+    # asked stdlib `multiprocessing` about the start method when `datasets` uses
+    # `multiprocess`, and they used `1` as the "no multiprocessing" sentinel when
+    # only `None` is in-process on datasets >= 4.0 (`1` still builds a Pool(1)).
+    #
+    # serial_as_none = False: this writes back to the *config*, and
+    # unsloth_zoo.sft_prepare_dataset reads a config `None` as "auto-size me".
+    # Collapsing an explicit 1 to None here would therefore inflate it to the
+    # auto worker count downstream. The config keeps the user's intent; the
+    # map() call site (patched in rl_replacements.py) makes it safe.
+    #
+    # The import is guarded so a generated file that outlives an unsloth downgrade
+    # degrades to the caller's own value rather than failing to construct a config.
     if "dataset_num_proc" in call_args:
         num_proc_check = (
-            "import multiprocessing as _mp\n"
-            "if dataset_num_proc is None:\n"
-            "    if _mp.get_start_method() != 'fork':\n"
-            "        dataset_num_proc = None\n"
-            "    else:\n"
-            "        import psutil\n"
-            "        dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)\n"
-            "        memory_gb_left = psutil.virtual_memory().available / (1024**3)\n"
-            "        if memory_gb_left <= 2: dataset_num_proc = 1\n"
-            "        else: dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))\n"
+            "try:\n"
+            "    from unsloth.utils.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc\n"
+            "except Exception:\n"
+            "    _unsloth_get_dataset_num_proc = None\n"
+            "if _unsloth_get_dataset_num_proc is not None:\n"
+            "    dataset_num_proc = _unsloth_get_dataset_num_proc(dataset_num_proc, serial_as_none = False)\n"
         )
         extra_args += num_proc_check
 

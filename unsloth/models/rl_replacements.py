@@ -552,6 +552,56 @@ def sft_trainer_prepare_dataset(function_name, function):
         )""",
                 where = "sft_prepare_dataset pack_dataset call",
             )
+            # why: this is the map() call site, so it -- not the config -- is where
+            # the worker count must be made safe. Two defects in the Zoo copy:
+            # it asks stdlib `multiprocessing` for the start method while datasets
+            # uses `multiprocess` (independent default contexts), and its
+            # low-memory branch yields 1, which still builds a Pool(1) on
+            # datasets >= 4.0. Route it through the one shared helper instead, so
+            # a config value of None auto-sizes with the same capped policy rather
+            # than the Zoo's uncapped `cpu_count + 4 -> 64`.
+            function = _require_replace(
+                function,
+                """if not isinstance(dataset, IterableDataset):
+            import multiprocessing as _mp
+            dataset_num_proc = getattr(args, "dataset_num_proc", None)
+            if dataset_num_proc is None:
+                if _mp.get_start_method() != 'fork':
+                    dataset_num_proc = None
+                else:
+                    import psutil
+                    dataset_num_proc = min(max((psutil.cpu_count() or 1)+4, 2), 64)
+                    memory_gb_left = psutil.virtual_memory().available / (1024**3)
+                    if memory_gb_left <= 2:
+                        dataset_num_proc = 1
+                    else:
+                        dataset_num_proc = min(dataset_num_proc, int(memory_gb_left))
+            map_kwargs["num_proc"] = dataset_num_proc""",
+                """if not isinstance(dataset, IterableDataset):
+            from unsloth.utils.dataset_num_proc import get_dataset_num_proc as _unsloth_get_dataset_num_proc
+            map_kwargs["num_proc"] = _unsloth_get_dataset_num_proc(
+                getattr(args, "dataset_num_proc", None)
+            )""",
+                where = "sft_prepare_dataset dataset_num_proc selection",
+            )
+            # why: datasets flattens every worker death -- OOM kill, segfault,
+            # real exception -- into "One of the subprocesses has abruptly died
+            # during map operation", because it compares pool PIDs and never
+            # reads the child's exit status. Wrap both tokenizing map() calls so
+            # the user gets the worker count, the start method and the memory
+            # those workers implied, instead of having to guess. count = 2: the
+            # anchor is the prompt-completion branch and the plain-text branch,
+            # and the drift canary asserts both are still there.
+            function = _require_replace(
+                function,
+                """            with _w.catch_warnings():
+                _w.filterwarnings("ignore", message=".*couldn't be hashed properly.*")""",
+                """            from unsloth.utils.dataset_num_proc import map_failure_diagnostics as _unsloth_map_diagnostics
+            with _w.catch_warnings(), _unsloth_map_diagnostics(map_kwargs.get("num_proc")):
+                _w.filterwarnings("ignore", message=".*couldn't be hashed properly.*")""",
+                count = 2,
+                where = "sft_prepare_dataset tokenizing map() calls",
+            )
             function = function.split("\n")
             function = "\n".join(" " * 4 + x for x in function)
             function = function.replace("def sft_prepare_dataset", "def _prepare_dataset")

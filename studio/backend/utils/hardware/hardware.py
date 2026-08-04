@@ -3319,14 +3319,26 @@ def dataset_map_num_proc(desired: Optional[int] = None) -> Optional[int]:
     """
     Return a safe ``num_proc`` for ``Dataset.map()`` and ``Dataset.filter()``.
 
-    Returns ``None`` on spawn platforms (Windows, macOS) because ``datasets``
-    treats ``num_proc=1`` as multiprocessing (creates ``Pool(1)``); only
-    ``num_proc=None`` guarantees in-process execution.
+    Returns ``None`` on spawn platforms (Windows, macOS). ``None`` -- not ``1``
+    -- is the disable sentinel: on ``datasets`` >= 4.0 (Studio pins 4.3.0)
+    ``map()`` takes the pool branch for any ``num_proc >= 1``, so ``num_proc=1``
+    still builds a ``Pool(1)``. Older ``datasets`` (the 3.x range the library
+    extra still allows) does run ``num_proc=1`` in-process, but only ``None``
+    is in-process on every supported version.
 
     Also returns ``None`` on XPU once its runtime is initialized in this
     process: ``os.fork()`` corrupts the Level-Zero context, making Triton
     kernels fail with "Pointer argument doesn't reference XPU device memory".
     Pre-init XPU hosts can still parallelize CPU-side preprocessing.
+
+    There is deliberately no CUDA equivalent. Forking after
+    ``torch.cuda._lazy_init()`` is a real hazard in general, but the child here
+    only runs the tokenizer and never touches CUDA, and 300 forced-fork map()
+    runs on an initialized CUDA context produced no failures. Since
+    ``detect_hardware()`` always initializes CUDA, adding the guard would force
+    in-process tokenization for every CUDA training run -- a throughput cost
+    with no measured benefit. The worker-count bound in
+    ``unsloth.utils.dataset_num_proc`` is what actually addresses issue #2693.
     """
     if sys.platform in ("win32", "darwin"):
         return None

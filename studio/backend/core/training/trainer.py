@@ -35,7 +35,6 @@ if sys.platform in ("win32", "darwin"):
 import torch
 from utils.hardware import (
     clear_gpu_cache,
-    safe_num_proc,
     dataset_map_num_proc,
     get_device_map,
     raise_if_offloaded,
