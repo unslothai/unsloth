@@ -19,7 +19,7 @@ Stdlib-only so the grouping logic is testable without importing unsloth.
 
 import re
 
-__all__ = ["get_layer_index", "make_layerwise_lr_param_groups"]
+__all__ = ["get_layer_index", "make_layerwise_lr_param_groups", "check_layerwise_lr_compat"]
 
 _LAYER_INDEX_RE = re.compile(r"(?:^|\.)layers\.(\d+)\.")
 
@@ -29,8 +29,26 @@ def get_layer_index(name):
     return int(match.group(1)) if match is not None else None
 
 
+def get_layer_key(name):
+    # (stack prefix, index): decoder and vision towers are independent stacks.
+    match = _LAYER_INDEX_RE.search(name)
+    return (name[: match.start()], int(match.group(1))) if match is not None else None
+
+
 def _is_embedding_param(name):
     return name.endswith("modules_to_save.default.weight")
+
+
+def check_layerwise_lr_compat(layerwise_lr_decay, q_galore_config):
+    if (
+        layerwise_lr_decay is not None
+        and layerwise_lr_decay != 1.0
+        and q_galore_config is not None
+    ):
+        raise ValueError(
+            "Unsloth: layerwise_lr_decay is not supported together with q_galore_config. "
+            "Set one of them to None."
+        )
 
 
 def make_layerwise_lr_param_groups(
@@ -39,6 +57,7 @@ def make_layerwise_lr_param_groups(
     weight_decay,
     layerwise_lr_decay,
     embedding_lr = None,
+    num_layers = None,
     verbose = True,
 ):
     if not (0.0 < layerwise_lr_decay <= 1.0):
@@ -52,12 +71,22 @@ def make_layerwise_lr_param_groups(
         if getattr(param, "requires_grad", False)
     ]
 
-    layer_indices = [
-        idx for idx in (get_layer_index(name) for name, _ in trainable) if idx is not None
-    ]
-    num_layers = max(layer_indices) + 1 if layer_indices else 0
-    # Embeddings inherit the shallowest layer's rate unless overridden.
-    shallowest_lr = lr * (layerwise_lr_decay ** (num_layers - 1)) if num_layers else lr
+    # Depth per stack (prefix before ".layers.N."), so a deeper vision tower
+    # never rescales the decoder and vice-versa.
+    stack_depth = {}
+    for name, _ in trainable:
+        key = get_layer_key(name)
+        if key is not None:
+            prefix, idx = key
+            stack_depth[prefix] = max(stack_depth.get(prefix, 0), idx + 1)
+    # num_layers (model config depth) is only unambiguous with a single stack;
+    # use it as a floor there for partial adapters, else per-stack derived depth.
+    if num_layers is not None and len(stack_depth) == 1:
+        prefix = next(iter(stack_depth))
+        stack_depth[prefix] = max(stack_depth[prefix], num_layers)
+    max_depth = max(stack_depth.values(), default = 0)
+    # Embeddings inherit the most-decayed (deepest-stack) rate unless overridden.
+    shallowest_lr = lr * (layerwise_lr_decay ** (max_depth - 1)) if max_depth else lr
 
     groups = {}
 
@@ -72,19 +101,21 @@ def make_layerwise_lr_param_groups(
         if _is_embedding_param(name):
             _bucket(embedding_lr if embedding_lr is not None else shallowest_lr, param)
             continue
-        idx = get_layer_index(name)
-        if idx is None:
+        key = get_layer_key(name)
+        if key is None:
             # Non-block params (final norm, lm_head, ...) train at the top rate.
             _bucket(lr, param)
         else:
-            _bucket(lr * (layerwise_lr_decay ** (num_layers - 1 - idx)), param)
+            prefix, idx = key
+            _bucket(lr * (layerwise_lr_decay ** (stack_depth[prefix] - 1 - idx)), param)
 
     param_groups = sorted(groups.values(), key = lambda g: g["lr"])
 
     if verbose:
         rates = [g["lr"] for g in param_groups]
         print(
-            f"Unsloth: Layer-wise LR decay = {layerwise_lr_decay} across {num_layers} "
-            f"layers -> {len(param_groups)} groups, lr in [{min(rates):.2e}, {max(rates):.2e}]."
+            f"Unsloth: Layer-wise LR decay = {layerwise_lr_decay} across {len(stack_depth)} "
+            f"stack(s), max depth {max_depth} -> {len(param_groups)} groups, "
+            f"lr in [{min(rates):.2e}, {max(rates):.2e}]."
         )
     return param_groups
