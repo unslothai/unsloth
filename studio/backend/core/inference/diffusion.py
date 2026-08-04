@@ -35,6 +35,7 @@ from .diffusion_families import (
     IDEOGRAM4_FAMILY_NAME,
     LUMINA2_FAMILY_NAME,
     DiffusionFamily,
+    assert_flux2_gguf_matches_base,
     assert_pipeline_class_available,
     default_generation_params,
     detect_family_for_pick,
@@ -348,6 +349,13 @@ _TRUSTED_NON_GGUF_REPOS = frozenset(
         # FLUX.2 LoRA training bases (dev gated, klein-4B open); reloaded as a pipeline by "Deploy to Create".
         "black-forest-labs/flux.2-dev",
         "black-forest-labs/flux.2-klein-4b",
+        # The other klein sizes and variants. One family covers both sizes and defaults to 4B, on
+        # the understanding that the real base comes from the base_model card tag. Leaving these
+        # out made that tag untrusted, so a klein-9B GGUF silently resolved to the 4B config and
+        # died in the GGUF quantizer with a bare shape mismatch (24576x4096 vs 18432x3072).
+        "black-forest-labs/flux.2-klein-9b",
+        "black-forest-labs/flux.2-klein-base-4b",
+        "black-forest-labs/flux.2-klein-base-9b",
         "tongyi-mai/z-image-turbo",
         "qwen/qwen-image",
         "qwen/qwen-image-2512",
@@ -1415,6 +1423,10 @@ class DiffusionBackend:
                     if kind in ("gguf", "single_file")
                     else None
                 )
+                # A renamed or hand-picked FLUX.2 GGUF can still land on a different-size base, and
+                # no name-based rule catches that. Say so here, naming the file and the repo,
+                # rather than letting the GGUF quantizer raise a bare shape mismatch.
+                assert_flux2_gguf_matches_base(fam, base, single_file_path)
                 transformer_cls = getattr(diffusers, fam.transformer_class)
                 pipeline_cls = getattr(diffusers, fam.pipeline_class)
 

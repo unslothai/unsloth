@@ -78,13 +78,18 @@ const fp8Single = (
   keywords: ["fp8", "float8"],
 });
 
-const fp8Pipeline = (repoId: string, approxSizeGb: number): ModelArtifact => ({
+const fp8Pipeline = (
+  repoId: string,
+  approxSizeGb: number,
+  extra: Partial<ModelArtifact> = {},
+): ModelArtifact => ({
   repoId,
   format: "fp8",
   loadKind: "pipeline",
   label: "FP8",
   approxSizeGb,
   keywords: ["fp8", "float8"],
+  ...extra,
 });
 
 const bf16Pipeline = (
@@ -143,13 +148,16 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Qwen-Image 2512",
     description: "Text-to-image",
     scope: "image",
+    // The prequant repo is real and public, and the backend reaches its int8 half through
+    // prequant_repos. It has no artifact row here (see below), so alias it to keep a pasted
+    // repo id finding this group.
+    aliases: ["unsloth/Qwen-Image-2512-FP8"],
     artifacts: [
       bf16Pipeline("Qwen/Qwen-Image-2512", 54),
-      fp8Single(
-        "unsloth/Qwen-Image-2512-FP8",
-        "qwen-image-2512-fp8.safetensors",
-        24,
-      ),
+      // No FP8 row: unsloth/Qwen-Image-2512-FP8 holds torch prequant .pt checkpoints, not a
+      // single-file .safetensors, and fp8 is denied for this family anyway
+      // (_FAMILY_SCHEME_DENY: qwen-image renders every frame black under fp8). The repo's int8
+      // half is reached through the backend prequant path, not from here.
       bnb4bit("unsloth/Qwen-Image-2512-unsloth-bnb-4bit", 14),
       gguf("unsloth/Qwen-Image-2512-GGUF"),
     ],
@@ -170,7 +178,9 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      bf16Pipeline("black-forest-labs/FLUX.1-schnell", 32),
+      // Apache-2.0 but still gated on the Hub (gated: "auto", a contact-info form), so an
+      // anonymous download 401s exactly like dev. The licence and the gate are independent.
+      bf16Pipeline("black-forest-labs/FLUX.1-schnell", 32, { gated: true }),
       gguf("unsloth/FLUX.1-schnell-GGUF"),
     ],
   },
@@ -180,7 +190,7 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      // FLUX.1-dev is gated (license acceptance + token); FLUX.1-schnell above is Apache-2.0.
+      // FLUX.1-dev is gated (license acceptance + token), like FLUX.1-schnell above.
       bf16Pipeline("black-forest-labs/FLUX.1-dev", 32, { gated: true }),
       gguf("unsloth/FLUX.1-dev-GGUF"),
     ],
@@ -236,7 +246,9 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     displayName: "Krea 2 Turbo",
     description: "Text-to-image",
     scope: "image",
-    artifacts: [bf16Pipeline("krea/Krea-2-Turbo", 18)],
+    // Gated on the Hub, and the group's only artifact, so a bare click has nothing open to fall
+    // through to: the picker must show the gate rather than start a download that 401s.
+    artifacts: [bf16Pipeline("krea/Krea-2-Turbo", 18, { gated: true })],
   },
   {
     // 2.6B DiT + Gemma2-2B encoder, ~11 GB bf16-resident (ships fp32, cast on load). Apache-2.0, ungated. No upstream GGUF quants, so the official pipeline is the only artifact.
@@ -283,8 +295,9 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
     description: "Text-to-image",
     scope: "image",
     artifacts: [
-      fp8Pipeline("ideogram-ai/ideogram-4-fp8", 46),
-      bnb4bit("ideogram-ai/ideogram-4-nf4-diffusers", 11),
+      // Both Ideogram repos are gated on the Hub, so neither can be auto-routed anonymously.
+      fp8Pipeline("ideogram-ai/ideogram-4-fp8", 46, { gated: true }),
+      bnb4bit("ideogram-ai/ideogram-4-nf4-diffusers", 11, { gated: true }),
     ],
   },
   // SDXL Turbo and Base are different checkpoints with different step/guidance defaults, so two groups.

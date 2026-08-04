@@ -150,18 +150,35 @@ def _sidebar_nav(items):
     return {"appearance": {"customization": {"sidebarNav": items}}}
 
 
+# The layout the frontend ships (SIDEBAR_NAV_ITEM_IDS / SIDEBAR_NAV_DEFAULT_PINNED in
+# features/settings/stores/appearance-custom-store.ts). The client sends this list verbatim on
+# every personalization save, so the backend must accept it and default to the same thing.
+FRONTEND_SHIPPED_SIDEBAR_NAV = [
+    ("hub", True),
+    ("projects", True),
+    ("images", True),
+    ("video", True),
+    ("train", True),
+    ("recipes", False),
+    ("export", False),
+    ("api", False),
+]
+
+
+def test_customization_sidebar_nav_accepts_the_frontend_shipped_layout():
+    # The frontend always sends every nav id, "api" included. A backend id list short of one of
+    # them 422s the whole PUT, so no appearance customization can ever be saved.
+    p = PersonalizationPayload.model_validate(
+        _sidebar_nav([{"id": i, "pinned": pinned} for i, pinned in FRONTEND_SHIPPED_SIDEBAR_NAV])
+    )
+    nav = p.appearance.customization.sidebarNav
+    assert [(i.id, i.pinned) for i in nav] == FRONTEND_SHIPPED_SIDEBAR_NAV
+
+
 def test_customization_sidebar_nav_defaults_match_shipped_layout():
     # A fresh account must look like the shipped sidebar.
     c = PersonalizationPayload().appearance.customization
-    assert [(i.id, i.pinned) for i in c.sidebarNav] == [
-        ("projects", True),
-        ("hub", True),
-        ("images", True),
-        ("train", True),
-        ("video", False),
-        ("recipes", False),
-        ("export", False),
-    ]
+    assert [(i.id, i.pinned) for i in c.sidebarNav] == FRONTEND_SHIPPED_SIDEBAR_NAV
 
 
 def test_customization_sidebar_nav_preserves_order_and_normalizes():
@@ -183,6 +200,7 @@ def test_customization_sidebar_nav_preserves_order_and_normalizes():
         ("train", True),
         ("recipes", False),
         ("export", False),
+        ("api", False),
     ]
 
 
@@ -450,6 +468,7 @@ def test_personalization_route_roundtrip_real_shape(monkeypatch):
                     {"id": "projects", "pinned": False},
                     {"id": "recipes", "pinned": False},
                     {"id": "export", "pinned": False},
+                    {"id": "api", "pinned": False},
                 ],
             },
         },

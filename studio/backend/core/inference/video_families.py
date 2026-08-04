@@ -113,8 +113,10 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         frame_step = 4,
         # TI2V-5B's VAE is 16x spatial + patch 2, so WanPipeline floors H/W to 32; snap to 32 so the recorded size matches the clip.
         resolution_multiple = 32,
-        # 720p-class presets (all /32); first is the default the loader plans against.
-        resolution_presets = ((1280, 704), (704, 1280), (960, 960), (832, 480)),
+        # TI2V-5B is a 720P-only checkpoint: upstream SUPPORTED_SIZES is exactly
+        # ('704*1280', '1280*704') and generate.py asserts membership, so nothing else is offered.
+        # First is the default the loader plans against.
+        resolution_presets = ((1280, 704), (704, 1280)),
         # bf16-RESIDENT. transformer + VAE ship FP32 on disk (20.0 GB = 5B x 4), so bf16 transformer ~10.0; UMT5 TE bf16 (11.4); VAE fp32 (2.8).
         bf16_components_gb = (10.0, 11.4, 2.8),
         vae_force_fp32 = True,
@@ -164,8 +166,11 @@ _FAMILIES: tuple[VideoFamily, ...] = (
         # HV15 VAE compresses 16x spatial / 4x temporal, patch-1, so sizes snap /16, frames 4k+1.
         frame_step = 4,
         resolution_multiple = 16,
-        # 480p-class presets (the base is the 480p variant): landscape, vertical, square.
-        resolution_presets = ((832, 480), (480, 832), (624, 624)),
+        # 480p-class presets (the base is the 480p variant): landscape, vertical, square. Every
+        # entry is a real bucket of this tier (generate_crop_size_list(base_size=640)); 624x624
+        # was not one, so the square option snapped off-tier at 1521 tokens against the trained
+        # 1600.
+        resolution_presets = ((832, 480), (480, 832), (640, 640)),
         # DiT fp32 on disk (32.0 to 16.6 bf16); VAE (4.7 to 2.4); Qwen2.5-VL TE bf16 14.0 + ByT5 0.8.
         bf16_components_gb = (16.6, 14.8, 2.4),
     ),
@@ -216,7 +221,19 @@ def detect_video_family(repo_id: str, override: Optional[str] = None) -> Optiona
         for token in (fam.name, *fam.aliases):
             if _token_in_needle(token, needle) and (best is None or len(token) > best[1]):
                 best = (fam, len(token))
-    return best[0] if best else None
+    if best is None:
+        return None
+    fam = best[0]
+    # HunyuanVideo-1.5's resolution tier is baked into the weights: the 480p and 720p repacks ship
+    # transformer target_size 640 vs 960 and scheduler shift 5.0 vs 9.0, and their bucket lists are
+    # disjoint. Only the literal 720p_t2v path was aliased, so 720p_i2v and every GGUF repack fell
+    # through to the generic "hunyuanvideo-1.5" token and inherited the 480p base repo -- which is
+    # also where the VAE and text encoder come from. Re-route on the tier marker instead.
+    if fam.name == "hunyuanvideo-1.5" and re.search(r"(?:^|[-_./\\])720p", needle):
+        for candidate in _FAMILIES:
+            if candidate.name == "hunyuanvideo-1.5-720p":
+                return candidate
+    return fam
 
 
 def supported_video_family_names() -> tuple[str, ...]:

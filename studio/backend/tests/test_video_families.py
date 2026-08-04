@@ -269,3 +269,57 @@ def test_hv15_generation_defaults():
     assert default_video_generation_params(
         None, "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v"
     ) == (50, 6.0)
+
+
+def test_hv15_720p_checkpoints_never_route_to_the_480p_family():
+    """Every 720p repack must land on the 720p family, not just the aliased t2v path.
+
+    The tier is baked into the weights: the two repacks ship transformer target_size 640 vs 960
+    and scheduler shift 5.0 vs 9.0, and their bucket lists are disjoint. The 480p family also
+    supplies the base repo the VAE and text encoder come from, so a 720p checkpoint routed there
+    runs the whole pipeline off-tier.
+    """
+    for repo_id in (
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_t2v",
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_i2v",
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-720p_i2v_distilled",
+        "QuantStack/HunyuanVideo-1.5-GGUF/720p_t2v-Q4_K_M.gguf",
+    ):
+        fam = detect_video_family(repo_id)
+        assert fam is not None and fam.name == "hunyuanvideo-1.5-720p", repo_id
+        assert fam.base_repo.endswith("720p_t2v"), repo_id
+    # The 480p repacks are untouched.
+    for repo_id in (
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_t2v",
+        "hunyuanvideo-community/HunyuanVideo-1.5-Diffusers-480p_i2v",
+    ):
+        assert detect_video_family(repo_id).name == "hunyuanvideo-1.5", repo_id
+
+
+def test_video_resolution_presets_are_upstream_sanctioned():
+    """No preset may be a size its checkpoint was never trained for.
+
+    HV15 presets must be real buckets of their own tier (generate_crop_size_list(base_size=640)
+    for 480p, 960 for 720p); Wan2.2 TI2V-5B must offer only the two shapes upstream's
+    SUPPORTED_SIZES asserts on.
+    """
+    def buckets(base_size, patch_size = 16):
+        num_patches = round((base_size / patch_size) ** 2)
+        out, wp, hp = [], num_patches, 1
+        while wp > 0:
+            if max(wp, hp) / min(wp, hp) <= 4.0:
+                out.append((wp * patch_size, hp * patch_size))
+            if (hp + 1) * wp <= num_patches:
+                hp += 1
+            else:
+                wp -= 1
+        return out
+
+    for name, base_size in (("hunyuanvideo-1.5", 640), ("hunyuanvideo-1.5-720p", 960)):
+        fam = detect_video_family("x/y", override = name)
+        allowed = buckets(base_size)
+        for size in fam.resolution_presets:
+            assert size in allowed, f"{name}: {size} is not a bucket of this tier"
+
+    ti2v = detect_video_family("Wan-AI/Wan2.2-TI2V-5B-Diffusers")
+    assert set(ti2v.resolution_presets) == {(1280, 704), (704, 1280)}

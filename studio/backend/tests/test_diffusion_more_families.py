@@ -10,9 +10,11 @@ from core.inference.diffusion import _is_trusted_diffusion_repo
 from core.inference.diffusion_auto_policy import family_bf16_components_gb
 from core.inference.diffusion_families import (
     IDEOGRAM4_FAMILY_NAME,
+    assert_flux2_gguf_matches_base,
     default_generation_params,
     detect_family,
     excluded_model_reason,
+    sd_cpp_text_encoders_for,
 )
 from core.inference.diffusion_lora import _CURATED, list_loras
 
@@ -443,3 +445,44 @@ def test_create_causal_mask_patch_is_self_disabling_and_idempotent():
     finally:
         pipe_mod.create_causal_mask = original
         ig4._CAUSAL_MASK_PATCHED = False
+
+
+# ── FLUX.2 klein size resolution ─────────────────────────────────────────────
+def test_flux2_klein_9b_resolves_its_own_base_and_text_encoder():
+    """A klein-9B GGUF must not inherit the family's 4B default.
+
+    One family covers both klein sizes and defaults to 4B, relying on the base_model card tag for
+    the real base. That tag is only honoured for repos on the trust allowlist, so omitting the 9B
+    entries silently loaded a 9B checkpoint against a 4B config (inner_dim 4096 vs 3072), which
+    surfaces as a bare shape mismatch inside the GGUF quantizer. klein-BASE-9B is 9B too, and the
+    text-encoder rule matched the literal "klein-9b", so it was handed the 4B encoder.
+    """
+    for repo in (
+        "black-forest-labs/FLUX.2-klein-9B",
+        "black-forest-labs/FLUX.2-klein-base-9B",
+        "black-forest-labs/FLUX.2-klein-base-4B",
+    ):
+        assert _is_trusted_diffusion_repo(repo), repo
+
+    for repo_id, want_te in (
+        ("unsloth/FLUX.2-klein-9B-GGUF", "qwen_3_8b"),
+        ("unsloth/FLUX.2-klein-base-9B-GGUF", "qwen_3_8b"),
+        ("unsloth/FLUX.2-klein-4B-GGUF", "qwen_3_4b"),
+        ("unsloth/FLUX.2-klein-base-4B-GGUF", "qwen_3_4b"),
+    ):
+        encoders = sd_cpp_text_encoders_for(detect_family(repo_id), repo_id, None)
+        assert want_te in encoders[0][1], (repo_id, encoders)
+
+
+def test_flux2_gguf_base_mismatch_check_fails_open(tmp_path):
+    """The size check never turns a working load into a failing one."""
+    fam = detect_family("unsloth/FLUX.2-klein-9B-GGUF")
+    empty = tmp_path / "not-a-gguf.gguf"
+    empty.write_bytes(b"")
+    # No path, an unreadable file, an unmapped base, and a non-FLUX.2 family are all pass-through.
+    assert_flux2_gguf_matches_base(fam, "black-forest-labs/FLUX.2-klein-4B", None)
+    assert_flux2_gguf_matches_base(fam, "black-forest-labs/FLUX.2-klein-4B", empty)
+    assert_flux2_gguf_matches_base(fam, "unsloth/Something-FP8", empty)
+    assert_flux2_gguf_matches_base(
+        detect_family("unsloth/FLUX.1-dev-GGUF"), "black-forest-labs/FLUX.2-klein-4B", empty
+    )

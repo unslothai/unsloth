@@ -1059,14 +1059,19 @@ SIDEBAR_MENU_ITEM_DEFAULTS = {
 }
 
 # Navigable sidebar rows the user can pin/reorder; the boolean is each id's default pin state.
+# Order and pin state MUST match the frontend's shipped layout (SIDEBAR_NAV_ITEM_IDS /
+# SIDEBAR_NAV_DEFAULT_PINNED in features/settings/stores/appearance-custom-store.ts): the client
+# sends every id on each save, so a missing id 422s the whole personalization PUT, and a legacy
+# record that predates sidebarNav is served this default as if it were an explicit remote choice.
 SIDEBAR_NAV_ITEM_DEFAULTS = {
-    "projects": True,
     "hub": True,
+    "projects": True,
     "images": True,
+    "video": True,
     "train": True,
-    "video": False,
     "recipes": False,
     "export": False,
+    "api": False,
 }
 
 MAX_SIDEBAR_NAV_INPUT_ITEMS = 4 * len(SIDEBAR_NAV_ITEM_DEFAULTS)
@@ -1107,13 +1112,14 @@ class PersonalizationSidebarNavItem(BaseModel):
     model_config = ConfigDict(extra = "ignore")
 
     id: Literal[
-        "projects",
         "hub",
+        "projects",
         "images",
-        "train",
         "video",
+        "train",
         "recipes",
         "export",
+        "api",
     ]
     pinned: bool = True
 

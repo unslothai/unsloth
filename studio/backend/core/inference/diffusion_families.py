@@ -632,9 +632,63 @@ def sd_cpp_text_encoders_for(
     identity (repo id + GGUF filename); every other family returns its static table."""
     if fam.name == "flux.2-klein":
         identity = f"{repo_id or ''}/{gguf_filename or ''}".lower()
-        if "klein-9b" in identity or "klein_9b" in identity:
+        # Match the size token on its own: klein-BASE-9B is 9B too, and matching "klein-9b"
+        # literally handed it the 4B text encoder.
+        if _token_in_needle("9b", identity) or "klein9b" in identity:
             return _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS
     return fam.sd_cpp_text_encoders
+
+
+# FLUX.2 sizes the adaLN modulation projection as (6 * inner_dim, inner_dim), and inner_dim is the
+# only thing that differs between the klein sizes and dev. sd.cpp keys its own FLUX.2 version
+# detection on this same tensor, and GGUF metadata cannot help: our files and leejet's carry no kv
+# pairs at all, and city96/orabazes write general.architecture = "flux" for FLUX.1 and FLUX.2 alike.
+_FLUX2_PROBE_TENSOR = "double_stream_modulation_img.lin.weight"
+_FLUX2_INNER_DIMS = {3072: "FLUX.2-klein-4B / klein-base-4B",
+                     4096: "FLUX.2-klein-9B / klein-base-9B",
+                     6144: "FLUX.2-dev"}
+_FLUX2_BASE_INNER_DIM = {
+    "black-forest-labs/flux.2-klein-4b": 3072,
+    "black-forest-labs/flux.2-klein-base-4b": 3072,
+    "black-forest-labs/flux.2-klein-9b": 4096,
+    "black-forest-labs/flux.2-klein-base-9b": 4096,
+    "black-forest-labs/flux.2-dev": 6144,
+}
+
+
+def gguf_flux2_inner_dim(path) -> Optional[int]:
+    """``inner_dim`` of a FLUX.2 GGUF, read from its header, or None if it cannot be determined."""
+    try:
+        from gguf import GGUFReader
+
+        for t in GGUFReader(str(path)).tensors:
+            if t.name == _FLUX2_PROBE_TENSOR or t.name.endswith("." + _FLUX2_PROBE_TENSOR):
+                # GGUF stores dims reversed relative to torch, so the input dim leads.
+                return int(t.shape[0])
+    except Exception:
+        return None
+    return None
+
+
+def assert_flux2_gguf_matches_base(fam, base_repo: str, gguf_path) -> None:
+    """Fail early, and legibly, when a FLUX.2 GGUF is paired with a different-size base config.
+
+    Without this the mismatch surfaces from inside the GGUF quantizer as a bare shape error
+    ("expected torch.Size([18432, 3072]), decodes to (24576, 4096)") that names neither the file
+    nor the repo. Fail-open by construction: any unreadable file, non-FLUX.2 tensor set, or
+    unmapped base leaves the load exactly as it was."""
+    if gguf_path is None or not str(getattr(fam, "name", "")).startswith("flux.2"):
+        return
+    want = _FLUX2_BASE_INNER_DIM.get((base_repo or "").strip().lower())
+    got = gguf_flux2_inner_dim(gguf_path)
+    if want is None or got is None or want == got:
+        return
+    raise ValueError(
+        f"'{Path(str(gguf_path)).name}' is a {_FLUX2_INNER_DIMS.get(got, f'FLUX.2 variant with inner_dim {got}')} "
+        f"checkpoint, but it is being loaded against '{base_repo}', which is "
+        f"{_FLUX2_INNER_DIMS.get(want, f'inner_dim {want}')}. Pass base_repo for the matching "
+        f"variant, or pick the GGUF that matches the selected model."
+    )
 
 
 def resolve_local_gguf_child(repo_root: Path, gguf_filename: str) -> Path:

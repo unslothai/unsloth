@@ -166,10 +166,6 @@ const OLD_SAFETENSORS_MODELS: Record<
   "ideogram-ai/ideogram-4-fp8": { kind: "pipeline" },
   "ideogram-ai/ideogram-4-nf4-diffusers": { kind: "pipeline" },
   "unsloth/Qwen-Image-2512-unsloth-bnb-4bit": { kind: "pipeline" },
-  "unsloth/Qwen-Image-2512-FP8": {
-    kind: "single_file",
-    filename: "qwen-image-2512-fp8.safetensors",
-  },
   "stabilityai/sdxl-turbo": { kind: "pipeline" },
   "stabilityai/stable-diffusion-xl-base-1.0": { kind: "pipeline" },
 };
@@ -280,17 +276,19 @@ assert.equal(
     .format,
   "gguf",
 );
-// 24 GB: bnb-4bit (14 GB) fits the 16.8 GB budget, fp8 (24 GB) does not.
+// 24 GB: bnb-4bit (14 GB) fits the 16.8 GB budget.
 assert.equal(
   pickDefaultArtifact(qwenGroup, { gpuGb: 24, systemRamGb: 64, isDownloaded: notDownloaded })
     .format,
   "bnb-4bit",
 );
-// 48 GB: fp8 fits -> highest quality that fits wins.
+// 48 GB: still bnb-4bit. The group has no fp8 artifact -- fp8 is family-denied for qwen-image
+// (it renders black), and the -FP8 repo ships prequant .pt checkpoints, not a single-file
+// safetensors, so the row that used to win here auto-routed to a download that 404s.
 assert.equal(
   pickDefaultArtifact(qwenGroup, { gpuGb: 48, systemRamGb: 64, isDownloaded: notDownloaded })
     .format,
-  "fp8",
+  "bnb-4bit",
 );
 // Unknown device: GGUF (the backend plans offload itself).
 assert.equal(
@@ -393,13 +391,14 @@ assert.equal(
   catalogGroupFitsDevice(hidream, { gpuGb: 24, systemRamGb: 32 }, notDownloaded),
   false,
 );
-// FLUX.1-schnell is Apache-2.0 (not gated): its BF16 IS auto-routed on a GPU that fits it.
+// FLUX.1-schnell is Apache-2.0 but gated on the Hub, so a not-downloaded BF16 is skipped and the
+// open GGUF is auto-routed instead, even on a GPU that fits the pipeline.
 const fluxSchnellRoute = groupForRepoId("unsloth/FLUX.1-schnell", IMAGE_CATALOG);
 assert.ok(fluxSchnellRoute);
 assert.equal(
   pickDefaultArtifact(fluxSchnellRoute, { gpuGb: 80, systemRamGb: 128, isDownloaded: notDownloaded })
     .format,
-  "bf16",
+  "gguf",
 );
 // HunyuanVideo on 80 GB: the highest-quality artifact that FITS (720p, 52 GB <= budget 56) wins.
 const hunyuan = groupForRepoId(
@@ -541,6 +540,8 @@ assert.equal(
 assert.ok(groupMatchesQuery(qwenGroup, "qwen"));
 assert.ok(groupMatchesQuery(qwenGroup, "2512"));
 assert.ok(groupMatchesQuery(qwenGroup, "gguf"));
+// Still reachable by "fp8" and by the full prequant repo id, now through the group alias rather
+// than an artifact row.
 assert.ok(groupMatchesQuery(qwenGroup, "fp8"));
 assert.ok(groupMatchesQuery(qwenGroup, "4bit"));
 assert.ok(groupMatchesQuery(qwenGroup, "q4_k_m"));
