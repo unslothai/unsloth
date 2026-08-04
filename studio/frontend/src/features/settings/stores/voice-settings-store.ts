@@ -322,8 +322,7 @@ export const useVoiceSettingsStore = create<VoiceSettingsState>()(
         // "gguf" was a short-lived separate engine choice; both local
         // backends now live under "model".
         const savedEngine = saved?.dictationEngine as string | undefined;
-        // Desktop has no working browser speech service, so it always resolves
-        // to the local model.
+        // Desktop has no browser speech engine, so always resolve to "model".
         const dictationEngine: DictationEngine =
           isTauri || savedEngine === "model" || savedEngine === "gguf"
             ? "model"
