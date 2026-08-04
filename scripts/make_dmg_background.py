@@ -178,7 +178,14 @@ def write_tiff(image: Image.Image, destination: Path) -> None:
 
         destination.parent.mkdir(parents = True, exist_ok = True)
         subprocess.run(
-            ["tiffutil", "-cathidpicheck", str(base_page), str(hidpi_page), "-out", str(destination)],
+            [
+                "tiffutil",
+                "-cathidpicheck",
+                str(base_page),
+                str(hidpi_page),
+                "-out",
+                str(destination),
+            ],
             check = True,
             stdout = subprocess.DEVNULL,
         )

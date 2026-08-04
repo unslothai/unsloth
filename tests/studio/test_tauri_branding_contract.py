@@ -40,7 +40,9 @@ def tiff_first_image_size(path: Path) -> tuple[int, int]:
         tag, field_type = struct.unpack_from(order + "HH", data, entry)
         if tag in (256, 257):
             # tag 256 is ImageWidth and 257 is ImageLength, either SHORT or LONG
-            sizes[tag] = struct.unpack_from(order + ("H" if field_type == 3 else "I"), data, entry + 8)[0]
+            sizes[tag] = struct.unpack_from(
+                order + ("H" if field_type == 3 else "I"), data, entry + 8
+            )[0]
     return sizes[256], sizes[257]
 
 
