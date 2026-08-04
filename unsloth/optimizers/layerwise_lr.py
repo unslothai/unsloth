@@ -53,14 +53,14 @@ def make_layerwise_lr_param_groups(
     ]
 
     layer_indices = [
-        idx for idx in (get_layer_index(name) for name, _ in trainable)
-        if idx is not None
+        idx for idx in (get_layer_index(name) for name, _ in trainable) if idx is not None
     ]
     num_layers = max(layer_indices) + 1 if layer_indices else 0
     # Embeddings inherit the shallowest layer's rate unless overridden.
     shallowest_lr = lr * (layerwise_lr_decay ** (num_layers - 1)) if num_layers else lr
 
     groups = {}
+
     def _bucket(group_lr, param):
         group = groups.get(group_lr)
         if group is None:

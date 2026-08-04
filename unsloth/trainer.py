@@ -450,6 +450,7 @@ class UnslothTrainer(SFTTrainer):
         if layerwise_lr_decay is not None and layerwise_lr_decay != 1.0:
             if self.optimizer is None:
                 from unsloth.optimizers.layerwise_lr import make_layerwise_lr_param_groups
+
                 optimizer_cls, optimizer_kwargs = SFTTrainer.get_optimizer_cls_and_kwargs(self.args)
                 param_groups = make_layerwise_lr_param_groups(
                     self.model,

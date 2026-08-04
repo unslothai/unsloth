@@ -26,7 +26,11 @@ get_layer_index = mod.get_layer_index
 
 
 class FakeParam:
-    def __init__(self, tag, requires_grad = True):
+    def __init__(
+        self,
+        tag,
+        requires_grad = True,
+    ):
         self.tag = tag
         self.requires_grad = requires_grad
 
@@ -39,7 +43,12 @@ class FakeModel:
         return list(self._named)
 
 
-def build_model(num_layers = 4, with_head = True, with_embedding = True, frozen_layer = None):
+def build_model(
+    num_layers = 4,
+    with_head = True,
+    with_embedding = True,
+    frozen_layer = None,
+):
     named = []
     for i in range(num_layers):
         rg = not (frozen_layer is not None and i == frozen_layer)
@@ -48,10 +57,12 @@ def build_model(num_layers = 4, with_head = True, with_embedding = True, frozen_
     if with_head:
         named.append(("base_model.model.lm_head.weight", FakeParam("lm_head")))
     if with_embedding:
-        named.append((
-            "base_model.model.model.embed_tokens.modules_to_save.default.weight",
-            FakeParam("embed"),
-        ))
+        named.append(
+            (
+                "base_model.model.model.embed_tokens.modules_to_save.default.weight",
+                FakeParam("embed"),
+            )
+        )
     return FakeModel(named)
 
 
@@ -72,47 +83,62 @@ def test_layer_index_parsing():
 
 def test_decay_math_and_boundaries():
     base, decay = 1e-3, 0.9
-    groups = make_groups(build_model(4), lr = base, weight_decay = 0.01,
-                         layerwise_lr_decay = decay, verbose = False)
+    groups = make_groups(
+        build_model(4), lr = base, weight_decay = 0.01, layerwise_lr_decay = decay, verbose = False
+    )
     lrs = lr_by_tag(groups)
-    assert lrs["layer3"] == pytest.approx(base)              # top layer = base
-    assert lrs["layer2"] == pytest.approx(base * decay ** 1)
-    assert lrs["layer1"] == pytest.approx(base * decay ** 2)
-    assert lrs["layer0"] == pytest.approx(base * decay ** 3)  # deepest decay
-    assert lrs["lm_head"] == pytest.approx(base)              # non-block = top
-    assert lrs["embed"] == pytest.approx(base * decay ** 3)   # inherits shallowest
+    assert lrs["layer3"] == pytest.approx(base)  # top layer = base
+    assert lrs["layer2"] == pytest.approx(base * decay**1)
+    assert lrs["layer1"] == pytest.approx(base * decay**2)
+    assert lrs["layer0"] == pytest.approx(base * decay**3)  # deepest decay
+    assert lrs["lm_head"] == pytest.approx(base)  # non-block = top
+    assert lrs["embed"] == pytest.approx(base * decay**3)  # inherits shallowest
 
 
 def test_each_trainable_param_in_exactly_one_group():
-    groups = make_groups(build_model(4), lr = 1e-3, weight_decay = 0.0,
-                         layerwise_lr_decay = 0.9, verbose = False)
+    groups = make_groups(
+        build_model(4), lr = 1e-3, weight_decay = 0.0, layerwise_lr_decay = 0.9, verbose = False
+    )
     tags = [p.tag for g in groups for p in g["params"]]
     assert sorted(tags) == sorted(["layer0", "layer1", "layer2", "layer3", "lm_head", "embed"])
     assert len(tags) == len(set(tags))
 
 
 def test_frozen_params_excluded():
-    groups = make_groups(build_model(4, frozen_layer = 1), lr = 1e-3, weight_decay = 0.0,
-                         layerwise_lr_decay = 0.9, verbose = False)
+    groups = make_groups(
+        build_model(4, frozen_layer = 1),
+        lr = 1e-3,
+        weight_decay = 0.0,
+        layerwise_lr_decay = 0.9,
+        verbose = False,
+    )
     assert "layer1" not in lr_by_tag(groups)
 
 
 def test_embedding_lr_overrides_decay():
-    groups = make_groups(build_model(4), lr = 1e-3, weight_decay = 0.0,
-                         layerwise_lr_decay = 0.9, embedding_lr = 7e-6, verbose = False)
+    groups = make_groups(
+        build_model(4),
+        lr = 1e-3,
+        weight_decay = 0.0,
+        layerwise_lr_decay = 0.9,
+        embedding_lr = 7e-6,
+        verbose = False,
+    )
     assert lr_by_tag(groups)["embed"] == pytest.approx(7e-6)
 
 
 def test_decay_one_is_flat():
     base = 1e-3
-    groups = make_groups(build_model(4), lr = base, weight_decay = 0.0,
-                         layerwise_lr_decay = 1.0, verbose = False)
+    groups = make_groups(
+        build_model(4), lr = base, weight_decay = 0.0, layerwise_lr_decay = 1.0, verbose = False
+    )
     assert all(v == pytest.approx(base) for v in lr_by_tag(groups).values())
 
 
 def test_groups_sorted_and_weight_decay_propagated():
-    groups = make_groups(build_model(4), lr = 1e-3, weight_decay = 0.05,
-                         layerwise_lr_decay = 0.9, verbose = False)
+    groups = make_groups(
+        build_model(4), lr = 1e-3, weight_decay = 0.05, layerwise_lr_decay = 0.9, verbose = False
+    )
     rates = [g["lr"] for g in groups]
     assert rates == sorted(rates)
     assert all(g["weight_decay"] == 0.05 for g in groups)
