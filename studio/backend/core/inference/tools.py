@@ -148,11 +148,19 @@ _BLOCKED_COMMANDS_WIN = frozenset(
         "pwsh",
     }
 )
-_BLOCKED_COMMANDS = (
-    _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_WIN
-    if sys.platform == "win32"
-    else _BLOCKED_COMMANDS_COMMON
-)
+_BLOCKED_COMMANDS_ALL = _BLOCKED_COMMANDS_COMMON | _BLOCKED_COMMANDS_WIN
+
+
+def _blocked_commands() -> "frozenset[str]":
+    """The blocked names for the platform this call runs on.
+
+    Resolved per call rather than frozen at import so that a test can pin
+    sys.platform the way the rest of the Windows suite does. Freezing it meant
+    the Windows screen -- `cmd /c powershell` and friends -- could only ever be
+    exercised on a Windows runner, so it went untested everywhere it is built.
+    Both operands are constants, so this costs one comparison.
+    """
+    return _BLOCKED_COMMANDS_ALL if sys.platform == "win32" else _BLOCKED_COMMANDS_COMMON
 
 
 _SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "\n", "(", ")", "`", "{", "}"})
@@ -469,7 +477,7 @@ def _blocked_matching_glob(base: str) -> "set[str]":
     """Blocked command names a command-position glob can expand to."""
     if not _is_unresolved_command_glob(base):
         return set()
-    return {name for name in _BLOCKED_COMMANDS if fnmatch.fnmatchcase(name, base)}
+    return {name for name in _blocked_commands() if fnmatch.fnmatchcase(name, base)}
 
 
 def _is_sed_command(base: str) -> bool:
@@ -1519,12 +1527,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             sed_indexes.append(token_index)
             if xargs_index >= 0:
                 sed_xargs[token_index] = xargs_index
-        if base in _BLOCKED_COMMANDS:
+        if base in _blocked_commands():
             blocked.add(base)
         else:
             blocked |= _blocked_matching_glob(base)
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag,
-        # non-numeric token is the real command. sudo is also in _BLOCKED_COMMANDS.
+        # non-numeric token is the real command, and that wrapper is blocked too.
         if base in _COMMAND_PREFIXES:
             if base == "xargs" and xargs_index < 0:
                 xargs_index = token_index
@@ -1572,7 +1580,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # a command that could not have worked anyway; a spelling
                 # that does forward them would otherwise be a free pass.
                 sed_indexes.append(i)
-            if attached_base in _BLOCKED_COMMANDS:
+            if attached_base in _blocked_commands():
                 blocked.add(attached_base)
             else:
                 blocked |= _blocked_matching_glob(attached_base)
@@ -1597,7 +1605,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                     # screened (`find . -exec sed '1e rm -f victim' {} +`, and
                     # behind a wrapper `find . -exec env sed '1e ...' {} +`).
                     sed_indexes.append(word)
-                if base in _BLOCKED_COMMANDS:
+                if base in _blocked_commands():
                     blocked.add(base)
                 else:
                     blocked |= _blocked_matching_glob(base)
@@ -1606,8 +1614,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     # $(rm -rf), <(rm), backtick chains, or "foo;rm". Anchored to command-position
     # delimiters, so it doesn't match in argument position.
     lowered = command.lower()
-    if _BLOCKED_COMMANDS:
-        words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
+    blocked_names = _blocked_commands()
+    if blocked_names:
+        words_alt = "|".join(re.escape(w) for w in sorted(blocked_names))
         pattern = (
             rf"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
             rf"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
@@ -1658,11 +1667,18 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
             # /d C:\dir and friends carry their value in the next token.
             j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
-        # `start ""` is the idiom for "no title"; anything else is the program.
-        if j < len(tokens) and tokens[j] == "":
-            j += 1
+        # `start "title" prog` is the documented form, so the program may be the
+        # token after the title rather than the title itself. Screen both instead
+        # of deciding which is which: cmd only treats the first quoted argument as
+        # a title when something follows it, the POSIX lexer strips those quotes
+        # while the non-POSIX one keeps them, and guessing wrong leaves the
+        # program unscreened. Matching `== ""` did exactly that twice -- it saw
+        # neither `start "" prog` on a Windows host without Git Bash (where the
+        # token arrives as a literal `""`) nor any non-empty title on either.
         if j < len(tokens):
             blocked |= _find_blocked_commands(tokens[j])
+        if j + 1 < len(tokens):
+            blocked |= _find_blocked_commands(tokens[j + 1])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The
