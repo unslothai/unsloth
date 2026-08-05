@@ -19,31 +19,59 @@ touched no behaviour. The results container beside it already had
 import re
 from pathlib import Path
 
+import pytest
+
 
 REPO = Path(__file__).resolve().parents[2]
 VOICE_TAB = REPO / "studio/frontend/src/features/settings/tabs/voice-tab.tsx"
 EXTRA_UI = REPO / "tests/studio/playwright_extra_ui.py"
 EN_LOCALE = REPO / "studio/frontend/src/i18n/locales/en.ts"
 
+# Every element the dictation step drives, and the i18n key each one used to be
+# located by. All four gate the same popover.
+TEST_IDS = {
+    "dictation-engine-trigger": "settings.voice.dictation.engineLabel",
+    "dictation-engine-model": "settings.voice.dictation.engineModel",
+    "stt-model-trigger": "settings.voice.dictation.sttModelLabel",
+    "stt-model-search": "settings.voice.dictation.sttModelSearchPlaceholder",
+}
 TEST_ID = "stt-model-search"
 
 
-def test_the_input_carries_the_test_id():
+@pytest.mark.parametrize("test_id", sorted(TEST_IDS))
+def test_the_element_carries_the_test_id(test_id):
     source = VOICE_TAB.read_text(encoding = "utf-8")
-    assert f'data-testid="{TEST_ID}"' in source, VOICE_TAB
+    assert f'data-testid="{test_id}"' in source, (test_id, VOICE_TAB)
 
 
-def test_the_test_id_sits_on_the_search_input_not_somewhere_else():
-    """A test id on the wrong element would still satisfy the check above."""
+@pytest.mark.parametrize("test_id,key", sorted(TEST_IDS.items()))
+def test_the_test_id_sits_on_the_right_element(test_id, key):
+    """A test id on the wrong element would still satisfy the check above, so
+    each one is required to sit beside the i18n key it replaced."""
     source = VOICE_TAB.read_text(encoding = "utf-8")
-    index = source.index(f'data-testid="{TEST_ID}"')
+    index = source.index(f'data-testid="{test_id}"')
     block = source[max(0, index - 400) : index + 400]
-    assert "sttModelSearchPlaceholder" in block, block
+    assert key in block, (test_id, block)
 
 
-def test_the_driver_uses_it():
+@pytest.mark.parametrize("test_id", sorted(TEST_IDS))
+def test_the_driver_uses_it(test_id):
     source = EXTRA_UI.read_text(encoding = "utf-8")
-    assert f'get_by_test_id("{TEST_ID}")' in source, EXTRA_UI
+    assert f'get_by_test_id("{test_id}")' in source, (test_id, EXTRA_UI)
+
+
+def test_the_dictation_step_binds_to_no_translated_copy_at_all():
+    """The whole step, not just the input. These four lines sit together and
+    gate one popover, so a reword of any of them reproduces the same outage."""
+    source = EXTRA_UI.read_text(encoding = "utf-8")
+    start = source.index("Voice model picker: real mouse-wheel scrolling")
+    step = source[start : source.index("results.hover()", start)]
+    offenders = [
+        line.strip()
+        for line in step.splitlines()
+        if re.search(r"get_by_(placeholder|label)\(|get_by_role\([^)]*name\s*=", line)
+    ]
+    assert offenders == [], offenders
 
 
 def test_no_playwright_step_locates_this_input_by_its_copy():
