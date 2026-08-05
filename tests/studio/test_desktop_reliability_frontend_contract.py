@@ -24,6 +24,7 @@ TITLEBAR = FRONTEND / "components/tauri/window-titlebar.tsx"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
 NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
 TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
+TAURI_COMMANDS = REPO / "studio/src-tauri/src/commands.rs"
 TAURI_UPDATE_CONTEXT = FRONTEND / "hooks/tauri-update-context.ts"
 TAURI_UPDATE_HOOK = FRONTEND / "hooks/use-tauri-update.ts"
 UPDATE_INSTRUCTIONS = FRONTEND / "features/settings/components/update-studio-instructions.tsx"
@@ -523,3 +524,16 @@ def test_media_pages_clear_the_custom_titlebar():
     for page in (IMAGES_PAGE, VIDEO_PAGE):
         shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
         assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
+
+
+def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
+    """unslothai/unsloth#7793: the support report prints final_status verbatim, so a
+    user quitting mid-update must not read as a failed repair."""
+    source = TAURI_COMMANDS.read_text(encoding = "utf-8")
+    stopped_arm = source.split("if msg == update::UPDATE_STOPPED", 1)[1].split(
+        "return Err(msg);", 1
+    )[0]
+    # The status argument of the call, so the surrounding comment cannot satisfy this.
+    call = stopped_arm.split("finish_repair_group(", 1)[1].split(");", 1)[0]
+    assert '"canceled"' in call
+    assert '"failed"' not in call
