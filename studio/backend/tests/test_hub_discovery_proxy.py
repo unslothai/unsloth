@@ -501,6 +501,6 @@ class TestErrorDetailScrubbing:
         cleaned = discovery._scrub_detail(
             "Max retries exceeded with url: /api/models?search=x", None
         )
-        assert "Max retries exceeded" in cleaned, (
-            "stripping the URL must not strip the reason the request failed"
-        )
+        assert (
+            "Max retries exceeded" in cleaned
+        ), "stripping the URL must not strip the reason the request failed"
