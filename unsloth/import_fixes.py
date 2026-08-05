@@ -511,8 +511,11 @@ def _transformers_needs_bare_annotation_fix():
     try:
         # Exactly the shape vLLM defines: a default, then a bare annotation.
         # `__init_subclass__` is what raises, so creating the class is the probe.
-        type("_UnslothProbeConfig", (PretrainedConfig,),
-             {"__annotations__": {"a": int, "b": int}, "a": 0})
+        type(
+            "_UnslothProbeConfig",
+            (PretrainedConfig,),
+            {"__annotations__": {"a": int, "b": int}, "a": 0},
+        )
     except TypeError:
         return True
     except Exception:

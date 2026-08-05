@@ -1543,6 +1543,7 @@ export const ptBR = {
         loadingDataset: "Carregando dataset",
         configuring: "Configurando",
         training: "Treinando",
+        finalizing: "Salvando modelo",
         completed: "Concluído",
         error: "Erro",
         stopped: "Interrompido",

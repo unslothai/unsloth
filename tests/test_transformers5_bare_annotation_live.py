@@ -113,9 +113,9 @@ def test_the_fix_stands_down_when_transformers_handles_it():
 
     kw_only = _transformers_configs_are_kw_only(PretrainedConfig)
     expected = Version(transformers.__version__) >= Version("5.5.1")
-    assert kw_only == expected, (
-        f"transformers {transformers.__version__}: probe says kw_only={kw_only}"
-    )
+    assert (
+        kw_only == expected
+    ), f"transformers {transformers.__version__}: probe says kw_only={kw_only}"
     if not kw_only:
         pytest.skip("this transformers still needs the fix")
 

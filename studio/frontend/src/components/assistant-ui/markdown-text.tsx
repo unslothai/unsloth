@@ -24,7 +24,12 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Block, type BlockProps, Streamdown } from "streamdown";
+import {
+  Block,
+  type BlockProps,
+  Streamdown,
+  type StreamdownProps,
+} from "streamdown";
 import { createCodePlugin } from "./code-plugin";
 import "katex/dist/katex.min.css";
 import { AudioPlayer } from "./audio-player";
@@ -35,6 +40,15 @@ const code = createCodePlugin({
   themes: [unslothLightTheme, unslothDarkTheme],
 });
 const { withSmoothContextProvider } = INTERNAL;
+
+// Streamdown 2.5 schedules ordinary streaming blocks in an interruptible React
+// transition. A continuous token stream can starve that transition for seconds.
+// Its animated path commits every block update directly; zero duration preserves
+// that scheduling behavior without adding a visible text animation.
+const STREAMDOWN_IMMEDIATE_UPDATES = {
+  duration: 0,
+  stagger: 0,
+} satisfies NonNullable<StreamdownProps["animated"]>;
 
 const STREAMDOWN_COMPONENTS = {
   a: ({ href, children, ...props }: React.ComponentProps<"a">) => (
@@ -395,6 +409,7 @@ const MarkdownTextImpl = () => {
         key={messageId}
         mode="streaming"
         isAnimating={status.type === "running"}
+        animated={STREAMDOWN_IMMEDIATE_UPDATES}
         plugins={{ code, math, mermaid }}
         components={STREAMDOWN_COMPONENTS}
         urlTransform={safeMarkdownUrl}

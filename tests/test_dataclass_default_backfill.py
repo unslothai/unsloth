@@ -149,11 +149,15 @@ def test_unreadable_source_falls_back_to_probing_the_behaviour(monkeypatch):
     number labels the wrong builds. A config that raises needs the fix.
     """
     monkeypatch.setattr(
-        ifx, "_transformers_needs_bare_annotation_fix", lambda: True,
+        ifx,
+        "_transformers_needs_bare_annotation_fix",
+        lambda: True,
     )
     assert not _transformers_configs_are_kw_only(_config_without_readable_source())
     monkeypatch.setattr(
-        ifx, "_transformers_needs_bare_annotation_fix", lambda: False,
+        ifx,
+        "_transformers_needs_bare_annotation_fix",
+        lambda: False,
     )
     assert _transformers_configs_are_kw_only(_config_without_readable_source())
 
@@ -169,6 +173,7 @@ def test_the_probe_answers_from_the_class_not_the_version(monkeypatch):
 def test_the_probe_detects_a_config_that_raises(monkeypatch):
     """A transformers whose `__init_subclass__` rejects the bare-annotation
     shape is exactly what the fix exists for, whatever it calls itself."""
+
     class Raising:
         def __init_subclass__(cls, **kwargs):
             raise TypeError("non-default argument follows default argument")
