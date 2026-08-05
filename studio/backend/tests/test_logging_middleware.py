@@ -385,17 +385,20 @@ def test_generation_progress_errors_still_log(logs, monkeypatch):
     assert _paths_logged(logs) == ["/api/inference/images/generate-progress"] * 3
 
 
-def test_image_video_load_progress_suppressed_errors_logged(logs):
-    # 2xx is dropped (diffusion.loaded / video.loaded carry the phases), the failure is not.
+def test_image_video_load_progress_heartbeats(logs, monkeypatch):
+    # These handlers log nothing themselves, so keep a pulse for a multi-minute load.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
     for path in ("/api/inference/images/load-progress", "/api/inference/video/load-progress"):
-        _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
-    assert logs.events == []
-    _run(
-        LoggingMiddleware(_status_app(503))(
-            _http_scope("/api/inference/images/load-progress"), _noop_receive, _drop
-        )
-    )
-    assert _paths_logged(logs) == ["/api/inference/images/load-progress"]
+        mw = LoggingMiddleware(_status_app(200))
+        for _ in range(5):
+            _run(mw(_http_scope(path), _noop_receive, _drop))
+        assert _paths_logged(logs) == [path]
+        logs.events.clear()
+    mw = LoggingMiddleware(_status_app(503))
+    for _ in range(3):
+        _run(mw(_http_scope("/api/inference/images/load-progress"), _noop_receive, _drop))
+    assert _paths_logged(logs) == ["/api/inference/images/load-progress"] * 3
 
 
 def test_unrelated_image_routes_still_log(logs, monkeypatch):
@@ -412,3 +415,30 @@ def test_unrelated_image_routes_still_log(logs, monkeypatch):
         "/api/inference/images/info",
         "/api/inference/video/status",
     ]
+
+
+def test_verbose_restores_the_dropped_success_polls(logs, monkeypatch):
+    # `unsloth studio --verbose` zeroes both windows and promises every request is
+    # logged, so the drop-the-2xx suppressor has to stand down too.
+    monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 0)
+    monkeypatch.setattr(hmod, "_VERBOSE_ACCESS_LOG", True)
+    for path in (
+        "/api/inference/load-progress",
+        "/api/hub/download-progress",
+        "/api/export/status",
+        "/api/chat/threads",
+    ):
+        mw = LoggingMiddleware(_status_app(200))
+        for _ in range(3):
+            _run(mw(_http_scope(path), _noop_receive, _drop))
+        assert _paths_logged(logs) == [path] * 3
+        logs.events.clear()
+
+
+def test_verbose_off_by_default_keeps_the_polls_quiet(logs):
+    # The default env leaves both windows set, so nothing changes for a normal launch.
+    assert hmod._VERBOSE_ACCESS_LOG is False
+    for path in ("/api/inference/load-progress", "/api/hub/download-progress"):
+        _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
+    assert logs.events == []

@@ -41,6 +41,10 @@ _ACCESS_LOG_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS", 300)
 # Liveness/UI polls whose line means only "still polling"; collapse to a longer
 # heartbeat. First hit and errors still log. 0 = off.
 _QUIET_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS", 10000)
+# Both windows off is exactly what `unsloth studio --verbose` sets, and that flag
+# promises to log every request. The drop-the-2xx suppressor below has no window of
+# its own, so it has to read the same signal or --verbose cannot reach those paths.
+_VERBOSE_ACCESS_LOG = _ACCESS_LOG_DEDUP_MS <= 0 and _QUIET_POLL_DEDUP_MS <= 0
 _QUIET_POLL_PATHS = {
     "/api/health",
     "/api/auth/status",
@@ -61,6 +65,12 @@ _QUIET_POLL_PATHS = {
     "/api/inference/video/generate-progress",
     # Diffusion training status, polled every 1.5s while the train UI is open.
     "/api/train/diffusion/status",
+    # Unlike /api/inference/load-progress, whose handler emits inference_load_progress
+    # every 10%, these two only read state, and diffusion.loaded / video.loaded fire
+    # once the load is already done. A diffusion load runs minutes (download, quant,
+    # compile), so a pulse is the only sign it is still moving.
+    "/api/inference/images/load-progress",
+    "/api/inference/video/load-progress",
 }
 _DEDUP_MAP_MAX = 4096
 _NATIVE_PATH_LEASE_RE = re.compile(
@@ -87,9 +97,6 @@ _EXCLUDED_SUFFIXES = (
 # events; the legacy /api/models and /api/datasets ones heartbeat via _QUIET_POLL_PATHS.
 _QUIET_SUCCESS_PATHS = {
     "/api/inference/load-progress",
-    # Load phases are already logged by diffusion.loaded / video.loaded.
-    "/api/inference/images/load-progress",
-    "/api/inference/video/load-progress",
     "/api/llama/update-status",
     "/api/export/logs",
     "/api/export/status",
@@ -119,8 +126,8 @@ def _is_quiet_success(method: str, path: str, status_code: int, pre_auth: bool) 
     """GET-only. Suppress a 2xx poll line that carries no signal, plus a chat list
     poll's transient pre-auth 401 (only in the bootstrap window before the first
     successful token refresh). Mutations, real (post-refresh) auth failures, and
-    all other errors always log."""
-    if method != "GET":
+    all other errors always log. --verbose disables the whole suppressor."""
+    if _VERBOSE_ACCESS_LOG or method != "GET":
         return False
     if 200 <= status_code < 300:
         return path in _QUIET_SUCCESS_PATHS or path in _CHAT_LIST_PATHS
