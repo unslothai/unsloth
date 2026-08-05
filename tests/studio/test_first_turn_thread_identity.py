@@ -55,7 +55,11 @@ def test_the_run_is_given_its_real_thread_id():
     )
     assert block, "createPersistedRunAdapter's run wrapper not found"
     body = block.group(0)
-    assert "const adoptedThreadId = await waitForRunStartHistoryAppend(" in body
+    assert "let adoptedThreadId: string | undefined;" in body
+    assert re.search(
+        r"adoptedThreadId\s*=\s*await waitForRunStartHistoryAppend\(",
+        body,
+    ), "the persisted-run preflight must retain the assigned thread id"
     assert (
         "!options.unstable_threadId && adoptedThreadId" in body
     ), "only fill in the id when assistant-ui had none"
