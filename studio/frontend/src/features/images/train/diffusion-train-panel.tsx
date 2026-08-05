@@ -140,7 +140,10 @@ const DATASET_FILE_ACCEPT = ".png,.jpg,.jpeg,.webp,.bmp,.txt,.caption,.jsonl";
 const selectClass =
   "h-8 w-full min-w-0 text-xs *:data-[slot=select-value]:min-w-0 *:data-[slot=select-value]:truncate";
 // Every settings cell is a grid item, so it needs min-w-0 to be allowed to shrink.
-const fieldClass = "grid min-w-0 gap-2";
+// grid-cols-1 is what carries that shrink to the contents: a bare `grid` leaves the
+// implicit column auto-sized, so the track froze at its widest child's min-content
+// (150px for the run-length pair) and the cell painted over the next column.
+const fieldClass = "grid grid-cols-1 min-w-0 gap-2";
 
 /** A field's label with its guidance behind an "i" tooltip, keeping the grid scannable.
  *  Only facts a user must act on stay on the page as text. */
@@ -153,7 +156,9 @@ function FieldLabel({
 }) {
   return (
     <div className="flex min-w-0 items-center gap-1">
-      <Label className="min-w-0 truncate text-xs">{children}</Label>
+      {/* block, not Label's default flex: text-overflow does nothing on a flex
+          container, so truncate cut the text mid-glyph instead of ellipsing it. */}
+      <Label className="block min-w-0 truncate text-xs">{children}</Label>
       {hint ? <InfoHint>{hint}</InfoHint> : null}
     </div>
   );
@@ -941,9 +946,14 @@ export function DiffusionTrainPanel({
   };
 
   // The training settings, shown as the run area's MAIN content before a run starts; the run view replaces them afterwards.
+  // Columns key off this pane's OWN width, not the window's: the pane is whatever is
+  // left beside the 416px form column, so a viewport breakpoint put three columns in a
+  // ~280px pane and every cell spilled into its neighbour. A cell needs 150px (the run
+  // length pair's floor: 66px number field + 6px gap + 78px unit select), hence 324px
+  // for two columns and 498px for three.
   const trainingSettings = (
-    <div className="flex flex-col gap-6">
-      <div className="grid grid-cols-2 gap-x-6 gap-y-5 lg:grid-cols-3">
+    <div className="@container flex flex-col gap-6">
+      <div className="grid grid-cols-1 gap-x-6 gap-y-5 @min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3">
         {durationField}
         {numberField("LoRA rank", rank, setRank, 1, {
           hint: "How much the adapter can learn. Higher captures more detail and makes a bigger file; 16 suits most styles, 32+ for complex subjects.",
@@ -965,7 +975,7 @@ export function DiffusionTrainPanel({
         })}
       </div>
 
-      <div className="grid grid-cols-2 items-start gap-x-6 gap-y-5 lg:grid-cols-3">
+      <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 @min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3">
         {numberField("Learning rate", learningRate, setLearningRate, 0.0001, {
           min: 0,
           step: 0.00001,
@@ -997,7 +1007,7 @@ export function DiffusionTrainPanel({
           })}
       </div>
 
-      <div className="grid grid-cols-2 items-start gap-x-6 gap-y-5 lg:grid-cols-3">
+      <div className="grid grid-cols-1 items-start gap-x-6 gap-y-5 @min-[324px]:grid-cols-2 @min-[498px]:grid-cols-3">
         <div className={fieldClass}>
           <FieldLabel hint="Recomputes activations instead of holding them in memory: less VRAM, slightly slower steps.">
             Gradient checkpointing
