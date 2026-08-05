@@ -979,3 +979,46 @@ def test_detached_windows_stay_launchable(command, _windows_blocklist):
     # The blocklist is faked here too, or the Linux runner asserts this against
     # a set with no powershell in it and cannot see a blanket block at all.
     assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\powershell scripts\\notepad.exe"',
+        'start "" "C:\\powershell scripts\\notepad.exe"',
+        'cmd /c "C:\\rm backups\\notepad.exe"',
+    ],
+)
+def test_a_folder_name_is_not_the_program(windows_terminal, command):
+    # A program path holds spaces like any other, so re-lexing one read its
+    # directory components as words and reported the folder the executable sits
+    # in. The path shape and an executable suffix say to read the program off the
+    # path instead of scanning the whole thing as a shell line.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_a_program_path_is_still_read(windows_terminal):
+    # The other side: the same shape, and this one really is a blocked shell.
+    assert "pwsh" in tools._find_blocked_commands(
+        'cmd /c "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command ls'
+    )
+    # And a real command line handed over in quotes is not a path, so it is lexed.
+    assert "rm" in tools._find_blocked_commands('start "" "rm -rf x"')
+
+
+def test_cmd_has_no_semicolon_separator(monkeypatch):
+    # The main scan treats `;` as a separator for bash and records what follows
+    # as a command. cmd never opens a command there, so trusting that set read
+    # `echo ; start "" powershell` as a launch when it only prints.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert not tools._find_blocked_commands('echo ; start "" powershell')
+    assert not tools._find_blocked_commands('cmd /c echo hi; start "" powershell')
+    # Under bash the same line really does open a command.
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert "powershell" in tools._find_blocked_commands('echo ; start "" powershell')

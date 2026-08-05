@@ -1053,6 +1053,19 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
     )
 
 
+def _is_program_path(target: str) -> bool:
+    """Whether ``target`` is a path to an executable rather than a command line.
+
+    Told apart by shape and suffix: a path opens with a drive, a separator or a
+    `%VAR%`, and ends in one of the extensions cmd runs. `rm -rf x` is neither,
+    so a real command line handed over in quotes is still lexed as one.
+    """
+    stripped = target.strip('"')
+    if not stripped or not _PATH_FRAGMENT_RE.match(stripped):
+        return False
+    return os.path.splitext(stripped)[1].lower() in _WINDOWS_EXE_SUFFIXES
+
+
 def _is_document_target(target: str) -> bool:
     """Whether START would OPEN ``target`` through its file association rather
     than execute it.
@@ -1617,6 +1630,12 @@ def _find_blocked_commands(command: str) -> set[str]:
         `cmd /c powershell&echo ok` runs powershell and read as one program named
         `powershell&echo`. That is a command line too, escaped carets aside.
         """
+        if _is_program_path(text):
+            # A program path holds spaces like any other, and re-lexing one reads
+            # its directory components as words: `C:\powershell scripts\
+            # notepad.exe` runs notepad and reported the folder it sits in. The
+            # recovery below reads the program off the path instead.
+            return _blocked_quoted_program(text, _BLOCKED_COMMANDS)
         if any(char.isspace() or char in "\"'" for char in text) or _has_bare_cmd_operator(text):
             return _find_blocked_commands(text)
         base = _token_basename(text)
@@ -2021,6 +2040,11 @@ def _find_blocked_commands(command: str) -> set[str]:
             # a command followed it.
             and (lexed_posix or not _ends_with_cmd_operator(previous))
         ):
+            continue
+        if not lexed_posix and previous.endswith(";"):
+            # cmd has no `;` separator, so the scan above opened a command
+            # position that shell never opens: `echo ; start "" powershell` and
+            # `echo hi; start ""...` both print their whole line there.
             continue
         j = i + 1
         titled = False
