@@ -65,7 +65,7 @@ def test_it_is_valid_python():
 def test_it_chains_instead_of_shadowing():
     src = IF._subprocess_sitecustomize_source()
     assert "_chain_to_the_real_sitecustomize" in src
-    assert "sitecustomize.py" in src
+    assert 'PathFinder.find_spec("sitecustomize"' in src
 
 
 def test_the_chain_runs_before_the_fix():
@@ -108,6 +108,7 @@ def test_it_only_imports_the_stdlib_and_torch():
         "sys",
         "importlib",
         "importlib.util",
+        "importlib.machinery",
         "importlib.metadata",
         "torch",
         "torch.nn.functional",
@@ -361,6 +362,51 @@ def test_an_existing_sitecustomize_still_runs(staged, tmp_path):
     p = _child("import torchao; print('OK')", [site, other, fake])
     assert "OTHER SITECUSTOMIZE RAN" in p.stdout, p.stdout + p.stderr
     assert "OK" in p.stdout
+
+
+def test_a_package_form_existing_sitecustomize_still_runs(staged, tmp_path):
+    """`sitecustomize` is also legitimately installed as a package. CPython
+    imports it exactly like the file form, so probing for a `sitecustomize.py`
+    would silently drop it in every subprocess."""
+    site, fake = staged
+    other = tmp_path / "other"
+    (other / "sitecustomize").mkdir(parents = True)
+    (other / "sitecustomize" / "__init__.py").write_text(
+        "from . import extra\nprint('PACKAGE SITECUSTOMIZE RAN', extra.NAME)\n",
+        encoding = "utf-8",
+    )
+    (other / "sitecustomize" / "extra.py").write_text("NAME = 'submodule'\n", encoding = "utf-8")
+    p = _child("import torchao; print('OK')", [site, other, fake])
+    assert "PACKAGE SITECUSTOMIZE RAN submodule" in p.stdout, p.stdout + p.stderr
+    assert "OK" in p.stdout
+
+
+def test_a_pyc_only_existing_sitecustomize_still_runs(staged, tmp_path):
+    """Same argument for a shipped `sitecustomize.pyc` with no source."""
+    import py_compile
+
+    site, fake = staged
+    source = tmp_path / "src"
+    source.mkdir()
+    written = source / "sitecustomize.py"
+    written.write_text("print('PYC SITECUSTOMIZE RAN')\n", encoding = "utf-8")
+    other = tmp_path / "other_pyc"
+    other.mkdir()
+    py_compile.compile(str(written), cfile = str(other / "sitecustomize.pyc"), doraise = True)
+    p = _child("import torchao; print('OK')", [site, other, fake])
+    assert "PYC SITECUSTOMIZE RAN" in p.stdout, p.stdout + p.stderr
+    assert "OK" in p.stdout
+
+
+def test_a_broken_package_form_sitecustomize_does_not_kill_the_process(staged, tmp_path):
+    site, fake = staged
+    other = tmp_path / "other"
+    (other / "sitecustomize").mkdir(parents = True)
+    (other / "sitecustomize" / "__init__.py").write_text(
+        "raise RuntimeError('boom')\n", encoding = "utf-8"
+    )
+    p = _child("import torchao; print('STILL OK')", [site, other, fake])
+    assert "STILL OK" in p.stdout, p.stdout + p.stderr
 
 
 def test_a_broken_existing_sitecustomize_does_not_kill_the_process(staged, tmp_path):
