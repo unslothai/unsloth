@@ -784,10 +784,10 @@ export const zhCN = {
         title: "模型选择设置",
         expandQuantizations: "展开量化版本",
         expandQuantizationsDescription:
-          "开启：本机 GGUF 模型会直接显示其量化版本。关闭：点击模型即可查看其量化版本。",
+          "开启：“On Device”中的 GGUF 模型会直接显示其量化版本。关闭：点击模型即可查看其量化版本。",
         showAllQuantizations: "显示所有量化版本",
         showAllQuantizationsDescription:
-          "开启：列出本机的所有量化版本，包括尚未下载的版本。关闭：仅显示已下载的量化版本。",
+          "开启：列出“On Device”中的所有量化版本，包括尚未下载的版本。关闭：仅显示已下载的量化版本。",
       },
       menu: {
         title: "聊天菜单",
@@ -1343,7 +1343,7 @@ export const zhCN = {
       cancelAction: "取消训练",
       stopTitle: "停止训练",
       stopDescription:
-        "选择如何停止当前训练运行。“停止并保存”会写入检查点，之后可从该处恢复；“停止”则无法恢复。",
+        "选择如何停止当前训练运行。“停止并保存”会写入检查点，之后可从该处恢复；不保存直接停止则无法恢复。",
       stopAction: "停止",
       stopping: "停止中...",
       stopAndSave: "停止并保存",

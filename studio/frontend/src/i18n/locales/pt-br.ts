@@ -814,10 +814,10 @@ export const ptBR = {
         title: "Configurações de seleção de modelo",
         expandQuantizations: "Expandir quantizações",
         expandQuantizationsDescription:
-          "Ativado: os modelos GGUF no dispositivo exibem imediatamente suas quantizações. Desativado: clique em um modelo para ver suas quantizações.",
+          "Ativado: os modelos GGUF em “On Device” exibem imediatamente suas quantizações. Desativado: clique em um modelo para ver suas quantizações.",
         showAllQuantizations: "Mostrar todas as quantizações",
         showAllQuantizationsDescription:
-          "Ativado: lista todas as quantizações no dispositivo, inclusive as que não foram baixadas. Desativado: mostra apenas as quantizações baixadas.",
+          "Ativado: lista todas as quantizações em “On Device”, inclusive as que não foram baixadas. Desativado: mostra apenas as quantizações baixadas.",
       },
       menu: {
         title: "Menu do chat",
@@ -1403,7 +1403,7 @@ export const ptBR = {
       cancelAction: "Cancelar Treinamento",
       stopTitle: "Interromper Treinamento",
       stopDescription:
-        "Escolha como interromper a execução de treino atual. Interromper e Salvar cria um checkpoint que poderá ser retomado mais tarde; Interromper não permite retomar o treino.",
+        "Escolha como interromper a execução de treino atual. Interromper e Salvar cria um checkpoint que poderá ser retomado mais tarde; se interromper sem salvar, não será possível retomar o treino.",
       stopAction: "Interromper",
       stopping: "Interrompendo...",
       stopAndSave: "Interromper e Salvar",
