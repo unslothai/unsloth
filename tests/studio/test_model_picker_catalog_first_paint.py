@@ -44,10 +44,9 @@ def test_listing_takes_over_each_id_once_it_reports_it():
     rows_end = source.index("const recommendedMeta = useMemo(", rows_start)
     rows = source[rows_start:rows_end]
 
-    # The merge lives in orderRecommendedRows (see recommended-catalog-seeds.test.ts),
-    # which hands a seed over only to a row that survived `keep`. Retiring it on
-    # bare membership of the raw result set dropped a curated row the filters had
-    # rejected, so a row that first-painted from the catalog vanished on response.
+    # orderRecommendedRows (see recommended-catalog-seeds.test.ts) hands a seed
+    # over only to a row that survived `keep`: keying on the raw result set
+    # dropped curated rows the filters had rejected, right after they painted.
     assert "return orderRecommendedRows({" in rows
     assert "seeds: catalogSeedRows," in rows
     assert "results: recommendedSearch.results," in rows

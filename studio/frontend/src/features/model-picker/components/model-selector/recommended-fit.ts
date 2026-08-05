@@ -163,16 +163,12 @@ export function hfModelFitsDevice(
   });
 }
 
-/** Order the Recommended list: curated seeds first, in catalog order, then the
- * rest of the listing in its own order, each id once. `keep` is the listing's
- * metadata filter chain (task, format, hidden ids).
- *
- * A seed hands off only to a row that survived `keep`, so a curated row does not
- * disappear when the response carries its id with metadata the filters reject
- * (missing/wrong `pipelineTag`, an unsupported tag). Device fit then applies to
- * whichever row renders: a listing row that loses that cut takes its seed with
- * it, since the seed's id-derived size estimate is coarser and would put a model
- * that does not fit back on screen. */
+/** Order Recommended: curated seeds first in catalog order, then the rest of the
+ * listing, each id once. `keep` is the listing's metadata filter chain (task,
+ * format, hidden ids); a seed hands off only to a row that survived it, so a
+ * curated row does not vanish when the response reports its id with metadata the
+ * filters reject. Device fit is judged on whichever row renders, so a seed's
+ * coarser id-derived size cannot resurrect a model its listing row failed on. */
 export function orderRecommendedRows<T extends { id: string }>(opts: {
   seeds: readonly T[];
   results: readonly T[];

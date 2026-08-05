@@ -28,7 +28,7 @@ const LTX_PARAMS = 21_005_004_544;
 const KLEIN_PARAMS = 9_078_581_248;
 const OTHER = "unsloth/Wan2.2-T2V-A14B-GGUF";
 
-// The Video picker's task gate: a row with no usable pipeline tag is dropped.
+// The Video picker's task gate: no usable pipeline tag means dropped.
 const VIDEO_TASKS = ["text-to-video", "image-to-video"];
 const keepVideo = (r: Row) =>
   r.pipelineTag != null && VIDEO_TASKS.includes(r.pipelineTag);
@@ -36,9 +36,8 @@ const keepVideo = (r: Row) =>
 const ids = (rows: Row[]) => rows.map((r) => r.id);
 
 test("a curated row the listing reports but the filters drop keeps its seed", () => {
-  // The response carries LTX-2.3, but its row has no pipeline tag, so the task
-  // gate rejects it. The catalog knows the model belongs on this page, so the
-  // row that already painted must stay instead of vanishing on the response.
+  // The response carries LTX-2.3 with no pipeline tag, so the task gate rejects
+  // it; the row that already painted must stay rather than vanish.
   const results: Row[] = [
     { id: LTX, isGguf: true, totalParams: LTX_PARAMS },
     { id: OTHER, isGguf: true, pipelineTag: "text-to-video" },
@@ -124,8 +123,8 @@ test("device fit is judged on whichever row renders", () => {
 
 test("an unlisted seed is sized from its id, and hidden when it cannot be", () => {
   const small = { memoryTotalGb: 6, systemRamAvailableGb: 0, budgetKnown: true };
-  // "LTX-2.3" has no "<n>B" token, so the seed is unsizable and requireKnown
-  // hides it; "klein-9B" reads as 9B -> 3.6 GB, inside the 4.2 GB budget.
+  // "LTX-2.3" has no "<n>B" token, so requireKnown hides the unsizable seed;
+  // "klein-9B" reads as 9B -> 3.6 GB, inside the 4.2 GB budget.
   assert.equal(hfModelFitsDevice(SEEDS[0], small), false);
   assert.equal(hfModelFitsDevice(SEEDS[1], small), true);
   assert.deepEqual(

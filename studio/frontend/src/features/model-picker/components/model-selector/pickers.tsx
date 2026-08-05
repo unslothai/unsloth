@@ -2352,9 +2352,8 @@ export function HubModelPicker({
   const hubRowsShowSize =
     formatFilter === "mlx" || formatFilter === "safetensors";
 
-  // Curated rows painted before any request goes out, so a task-scoped picker
-  // does not sit on a spinner for a round trip; each stands in until the listing
-  // reports that id. Chat has no catalog, so it stays on the listing.
+  // Paint curated rows before any request, so a task-scoped picker does not sit
+  // on a spinner for a round trip; each stands in until the listing reports it.
   const catalogSeedRows = useMemo<HfModelResult[]>(() => {
     if (!task) return [];
     return dedupe(models.map((model) => model.id))
@@ -2383,15 +2382,14 @@ export function HubModelPicker({
       // Never list mobile-targeted builds in the Unsloth section.
       !isHiddenModelId(r.id) &&
       !isMobileVariant(r.id) &&
-      // Drop models Unsloth can't run for chat (diffusion / image / video / etc.).
       isChatSupported(r) &&
-      // With no explicit format, show the device-recommended formats (GGUF, plus
-      // MLX on Mac). When the user picks a format, honor it instead so Safetensors
-      // is not dropped by the recommendation default.
+      // With no format picked, show the device-recommended ones (GGUF, plus MLX
+      // on Mac); otherwise honor the pick so Safetensors is not dropped.
       (formatFilter === "all"
         ? isRecommendableFormat(r.id, r.isGguf, isMac)
         : matchesFormatFilter(r.id, r.isGguf, formatFilter)) &&
-      // Task-scoped pages load single-file GGUF only. As with recommendedIds, a curated artifact is loadable whatever its format, so GGUF-only here hid the catalog's bf16 / bnb-4bit / fp8 models from Hub search.
+      // Task-scoped pages load single-file GGUF; as with recommendedIds, curated
+      // artifacts load in any format (bf16 / bnb-4bit / fp8), so allow those too.
       (!task || r.isGguf || Boolean(catalog && artifactForRepoId(r.id, catalog)));
     // Members would render under their canonical group row, which does not exist yet (see recommendedIds): filtering here removed curated models from Hub
     // search too. The "recommended" sort always applies the device-fit filter; the shared "Fits on device" tick extends it to the other sorts.
@@ -2400,7 +2398,8 @@ export function HubModelPicker({
       // Downloaded models always show, regardless of device fit.
       downloadedSet.has(r.id.toLowerCase()) ||
       hfModelFitsDevice(r, r.isGguf ? inferenceGpu : gpu);
-    // Curated rows lead, in catalog order, so the list does not reshuffle as pages land.
+    // Curated rows lead, in catalog order, so the list does not reshuffle as
+    // pages land.
     return orderRecommendedRows({
       seeds: catalogSeedRows,
       results: recommendedSearch.results,
@@ -4796,7 +4795,7 @@ export function HubModelPicker({
                     {recommendedSearch.hasMore && (
                       <>
                         <div ref={recommendedSentinelRef} className="h-px" />
-                        {/* Only while a page is in flight: keyed on hasMore it sat under an already-usable list. */}
+                        {/* Only while a page is in flight; on hasMore it sat under a usable list. */}
                         {recommendedSearch.isLoadingMore ? (
                           <div className="flex items-center justify-center py-2">
                             <Spinner className="size-3.5 text-muted-foreground" />
