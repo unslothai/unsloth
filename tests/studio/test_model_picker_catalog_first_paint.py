@@ -28,13 +28,12 @@ def test_curated_catalog_becomes_rows_without_a_request():
     seed_end = source.index("const recommendedRows = useMemo(", seed_start)
     seed = source[seed_start:seed_end]
 
-    # Built from the `models` prop (catalogToModelOptions of IMAGE/VIDEO_CATALOG),
-    # never from a fetch result.
+    # Built from the `models` prop, never from a fetch result.
     assert "dedupe(models.map((model) => model.id))" in seed
     assert "recommendedSearch" not in seed
     # Chat has no catalog: leave it on the listing.
     assert "if (!task) return [];" in seed
-    # Same format policy the listing rows get, so nothing vanishes when it lands.
+    # Same format policy as the listing rows, so nothing vanishes when one lands.
     assert "isRecommendableFormat(id, isG, isMac)" in seed
     assert "matchesFormatFilter(id, isG, formatFilter)" in seed
 
@@ -46,7 +45,7 @@ def test_listing_takes_over_each_id_once_it_reports_it():
     rows = source[rows_start:rows_end]
 
     assert "const listed = new Set(recommendedSearch.results.map((r) => r.id));" in rows
-    # A listed id renders the listing's row; only an unlisted one keeps its seed.
+    # A listed id renders the listing's row; an unlisted one keeps its seed.
     assert "if (listedRow) {" in rows
     assert "} else if (!listed.has(seed.id) && (!deviceFiltered || fits(seed))) {" in rows
     # Curated first, then whatever else the listing found, each id once.
@@ -59,7 +58,7 @@ def test_bottom_spinner_shows_only_while_a_page_is_in_flight():
     start = source.index("{recommendedSearch.hasMore && (")
     block = source[start : start + 700]
 
-    # The sentinel still mounts on hasMore so infinite scroll keeps paging...
+    # The sentinel still mounts on hasMore, so paging continues...
     assert '<div ref={recommendedSentinelRef} className="h-px" />' in block
     # ...but the spinner is gated on the in-flight flag.
     assert "{recommendedSearch.isLoadingMore ? (" in block

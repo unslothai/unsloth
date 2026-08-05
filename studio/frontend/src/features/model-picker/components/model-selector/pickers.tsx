@@ -2351,11 +2351,9 @@ export function HubModelPicker({
   const hubRowsShowSize =
     formatFilter === "mlx" || formatFilter === "safetensors";
 
-  // The curated catalog as rows, ready before any request goes out. Recommended
-  // rendered the HF listing alone, so a task-scoped picker whose models were
-  // already in memory sat on a spinner for a whole round trip; these stand in per
-  // id until the listing reports that id, which then takes over (params, size,
-  // capability icons, device fit). Chat has no catalog and is unaffected.
+  // Curated rows painted before any request goes out, so a task-scoped picker
+  // does not sit on a spinner for a round trip; each stands in until the listing
+  // reports that id. Chat has no catalog, so it stays on the listing.
   const catalogSeedRows = useMemo<HfModelResult[]>(() => {
     if (!task) return [];
     return dedupe(models.map((model) => model.id))
@@ -2407,8 +2405,7 @@ export function HubModelPicker({
       downloadedSet.has(r.id.toLowerCase()) ||
       hfModelFitsDevice(r, r.isGguf ? inferenceGpu : gpu);
     if (deviceFiltered) rows = rows.filter(fits);
-    // Curated rows lead, in catalog order, so the list does not reshuffle under the
-    // pointer as pages land; anything else the listing found follows in its order.
+    // Curated rows lead, in catalog order, so the list does not reshuffle as pages land.
     const byId = new Map(rows.map((r) => [r.id, r]));
     const listed = new Set(recommendedSearch.results.map((r) => r.id));
     const curated: HfModelResult[] = [];
@@ -4810,9 +4807,7 @@ export function HubModelPicker({
                     {recommendedSearch.hasMore && (
                       <>
                         <div ref={recommendedSentinelRef} className="h-px" />
-                        {/* Only while a page is actually in flight: keyed on hasMore
-                            it sat under an already-usable list for as long as pages
-                            remained, which reads as "still loading". */}
+                        {/* Only while a page is in flight: keyed on hasMore it sat under an already-usable list. */}
                         {recommendedSearch.isLoadingMore ? (
                           <div className="flex items-center justify-center py-2">
                             <Spinner className="size-3.5 text-muted-foreground" />
