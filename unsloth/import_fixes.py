@@ -3728,7 +3728,16 @@ def propagate_torchao_fix_to_subprocesses():
 
     # os.pathsep, not ":" -- Windows uses ";".
     current = os.environ.get("PYTHONPATH", "")
-    parts = [p for p in current.split(os.pathsep) if p]
+    # An empty component is an import location, not padding: it is what
+    # `PYTHONPATH="$PYTHONPATH:/opt/lib"` leaves behind when PYTHONPATH was
+    # unset, and CPython reads it as the current working directory (3.11+
+    # absolutises every component in Modules/getpath.py, and abspath("") is the
+    # cwd; 3.10 puts the literal "" on sys.path and site.removeduppaths() makes
+    # it absolute). Dropping those would quietly take an import location away
+    # from every descendant process. A SET-BUT-EMPTY PYTHONPATH is the opposite
+    # case: CPython ignores it entirely, so it must not become a lone ""
+    # component, which would ADD the cwd instead.
+    parts = current.split(os.pathsep) if current else []
     if directory not in parts:
         os.environ["PYTHONPATH"] = os.pathsep.join([directory] + parts)
         logger.info(

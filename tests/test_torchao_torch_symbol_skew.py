@@ -203,6 +203,15 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
     import torch.nn.functional as F
     import unsloth.import_fixes as IF
 
+    # conftest.py imports unsloth, so on the environment this fix exists for
+    # (torchao >= 0.18 with a torch that predates the symbols) the placeholders
+    # are already on F before any test runs. Drop them first, or the "before"
+    # half below cannot raise, this test skips itself, and the guard test after
+    # it fails on the leak.
+    for n in _TORCHAO_TORCH_SYMBOLS:
+        if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
+            delattr(F, n)
+
     # Gate on the two symbols the line below actually imports. `any` over the
     # whole tuple is always true, since scaled_dot_product_attention exists on
     # every supported torch, so this test used to skip on every machine.

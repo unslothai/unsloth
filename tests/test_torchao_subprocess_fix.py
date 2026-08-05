@@ -132,7 +132,10 @@ def _torchao_is_broken_here() -> bool:
     except Exception:
         return False
     import torch.nn.functional as F
-    return not all(hasattr(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS)
+    # `_torch_really_has`, not `hasattr`: conftest.py imports unsloth, so on a
+    # broken environment the placeholders are already on F and a plain hasattr
+    # reads it as healthy -- the very confusion the product gate avoids.
+    return not all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS)
 
 
 def test_it_is_a_noop_on_a_healthy_environment():
@@ -374,8 +377,16 @@ def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp
     only asked `hasattr` would read a healthy torch and stage nothing, in
     exactly the environments vLLM's inspector child needs it."""
     import torch.nn.functional as F
-    if all(hasattr(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS):
+    if all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS):
         pytest.skip("this torch provides every symbol; nothing to place")
+
+    # conftest.py imports unsloth, so on the environment this fix exists for the
+    # placeholders are already installed before any test runs, and the call
+    # below would find nothing left to do and return False. _gpu_init sees a
+    # fresh interpreter; reproduce that.
+    for name in IF._TORCHAO_TORCH_SYMBOLS:
+        if getattr(getattr(F, name, None), "__unsloth_placeholder__", False):
+            delattr(F, name)
 
     monkeypatch.setattr(IF, "importlib_version",
                         lambda name: "0.18.0" if name == "torchao" else "0")
