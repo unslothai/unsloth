@@ -47,6 +47,7 @@ _mpl.pyplot = _plt
 _stub("matplotlib", _mpl)
 _stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
+_hw.get_device = lambda: _types.SimpleNamespace(value = "cuda")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
 _stub("utils.hardware", _hw)
 _npl = _types.ModuleType("utils.native_path_leases")
@@ -151,6 +152,45 @@ def test_watchdog_escalates_after_grace_once_complete_seen(monkeypatch):
         lambda: calls == ["force", "final"]
     ), "watchdog must force_terminate a worker still alive after the post-save grace"
     b._stop_watchdog.join(timeout = 5)
+
+
+def test_natural_completion_reaps_worker_stuck_after_save(monkeypatch):
+    """A normal completion needs the same teardown guard as Stop and Save."""
+    monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
+    b = TrainingBackend()
+
+    class _StuckTeardownProc(_FakeProc):
+        def terminate(self):
+            super().terminate()
+            self._alive = False
+
+    proc = _StuckTeardownProc(alive = True)
+    b._proc = proc
+    b.current_job_id = "job-natural"
+    b._db_run_created = True
+    b._progress.is_training = True
+    monkeypatch.setattr(
+        b,
+        "_finalize_run_in_db",
+        lambda **_kwargs: setattr(b, "_run_finalized", True),
+    )
+
+    b._handle_event(
+        {
+            "type": "complete",
+            "output_dir": "/tmp/outputs/run-natural",
+            "status_message": "Training completed! Model saved",
+        }
+    )
+
+    assert b._progress.is_completed is True
+    assert _wait_until(
+        lambda: b._proc is None
+    ), "a worker stuck in post-save teardown must be reaped after natural completion"
+    assert proc.terminated is True
+    assert b._progress.status_message == "Training completed! Model saved"
+    assert b.is_training_active() is False
 
 
 # ----------------------------------------------------------------------------

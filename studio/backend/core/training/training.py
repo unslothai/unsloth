@@ -48,9 +48,10 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# Stop-watchdog escalation timeouts. Primary trigger: a short grace once "complete"
-# (save done). Absolute cap is a backstop: long for save=True so a slow save is never
-# killed mid-write, shorter for a cancel that has nothing to save.
+# Worker-exit watchdog escalation timeouts. Primary trigger: a short grace once
+# "complete" (save done), whether completion was natural or user-requested. The
+# absolute cap is a backstop for requested stops: long for save=True so a slow
+# save is never killed mid-write, shorter for a cancel that has nothing to save.
 _STOP_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_GRACE_S", 15)
 _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
@@ -1137,9 +1138,10 @@ class TrainingBackend:
         cancel: bool,
         expected_job_id: Optional[str] = None,
     ) -> None:
-        """Start a daemon that force-terminates the worker if a requested stop does not
-        exit on its own. No-op if no worker is alive or a live watchdog already watches
-        this proc (a stale watchdog on an old proc never blocks a new run's watcher)."""
+        """Start a daemon that force-terminates a worker which does not exit after a
+        requested stop or terminal completion. No-op if no worker is alive or a live
+        watchdog already watches this proc (a stale watchdog on an old proc never blocks
+        a new run's watcher)."""
         with self._lock:
             if expected_job_id is not None and self.current_job_id != expected_job_id:
                 return
@@ -1168,9 +1170,9 @@ class TrainingBackend:
         cancel: bool,
         watched_job_id: Optional[str] = None,
     ) -> None:
-        """Escalate a stuck stop to force_terminate(): grace after "complete", else the
-        absolute backstop (see the module timeouts). No-ops on a clean exit; exits
-        silently if a new run replaces the worker."""
+        """Escalate a stuck worker to force_terminate(): grace after "complete", else
+        the requested-stop absolute backstop (see the module timeouts). No-ops on a
+        clean exit; exits silently if a new run replaces the worker."""
         started = time.monotonic()
         complete_at: Optional[float] = None
         reason = ""
@@ -1206,7 +1208,7 @@ class TrainingBackend:
                 reason,
             )
         else:
-            logger.warning("Stop watchdog force-terminating stuck training worker: %s", reason)
+            logger.warning("Training worker watchdog force-terminating stuck worker: %s", reason)
         # force_terminate can raise on a wedged child; finalize regardless.
         try:
             self.force_terminate(target_proc = target_proc)
@@ -1222,11 +1224,12 @@ class TrainingBackend:
         target_proc: "Optional[mp.Process]" = None,
         watched_job_id: Optional[str] = None,
     ) -> None:
-        """Finalize parent state after a force-terminate so the UI leaves "Stopping..."
-        even if the worker is wedged in driver teardown; preserves output_dir on a save so
-        the checkpoint is kept, and clears it on a cancel (Stop without saving must not
-        offer resume/export). No-ops if a new run already replaced the watched worker, so a
-        stale watchdog never marks a fresh run stopped or drops its handle.
+        """Finalize parent state after a force-terminate so the UI reaches the recorded
+        terminal state even if the worker is wedged in driver teardown; preserves
+        output_dir on a save or natural completion, and clears it on a cancel (Stop
+        without saving must not offer resume/export). No-ops if a new run already replaced
+        the watched worker, so a stale watchdog never marks a fresh run stopped or drops
+        its handle.
 
         Supersession is checked on both the watched proc and job id: start_training sets
         current_job_id before it installs the new _proc, so a stale watchdog entering that
@@ -1254,9 +1257,11 @@ class TrainingBackend:
         with self._lock:
             if self.current_job_id != run_id:
                 return
-            self._progress.status_message = error_message or "Training stopped."
             if error_message:
+                self._progress.status_message = error_message
                 self._progress.error = error_message
+            elif status != "completed":
+                self._progress.status_message = "Training stopped."
         # Create the row if a start-time create failed (no-op otherwise; skips when the pump
         # is mid-create, in which case its create-then-finalize records the run instead).
         self._ensure_db_run_created()
@@ -2058,6 +2063,15 @@ class TrainingBackend:
             self._flush_metrics_to_db()
         elif db_action == "finalize":
             self._finalize_run_in_db(**db_action_kwargs)
+
+        if etype == "complete":
+            # A successful save is terminal even if CUDA/Python teardown wedges the
+            # subprocess. Requested stops already have a watchdog; this call is a no-op
+            # for that same worker and fills the missing natural-completion path.
+            self._start_stop_watchdog(
+                cancel = self._cancel_requested,
+                expected_job_id = db_action_kwargs.get("expected_job_id"),
+            )
 
         if etype == "progress":
             self._log_training_progress()
