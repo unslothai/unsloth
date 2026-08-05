@@ -4,6 +4,7 @@
 import os
 import platform
 import shutil
+import sqlite3
 import threading
 import uuid
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from storage import studio_db
+from utils.paths import studio_db_path
 
 
 def _reset_studio_db(
@@ -106,6 +108,138 @@ def test_sync_chat_messages_upserts_without_pruning(tmp_path, monkeypatch):
     by_id = {message["id"]: message for message in messages}
     assert set(by_id) == {"msg-1", "msg-2"}
     assert by_id["msg-2"]["content"] == [{"type": "text", "text": "updated text"}]
+
+
+def test_chat_thread_updated_at_bumps_on_message_writes(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    thread = studio_db.upsert_chat_thread(_thread())
+    assert thread["updatedAt"] == thread["createdAt"]
+
+    studio_db.upsert_chat_message(_message("msg-1", 1_700_000_000_500, "hi"))
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_000_500
+
+    studio_db.upsert_chat_message(_message("msg-0", 1_600_000_000_000, "old"))
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_000_500
+
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [_message("msg-2", 1_700_000_001_000, "newer")],
+    )
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_001_000
+
+
+def test_chat_thread_updated_at_recomputed_when_pruning(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    thread = studio_db.upsert_chat_thread(_thread())
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [
+            _message("msg-1", 1_700_000_000_500, "older"),
+            _message("msg-2", 1_700_000_001_000, "newest"),
+        ],
+        prune_missing = True,
+    )
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_001_000
+
+    # Pruning the newest message must lower updated_at to the remaining one.
+    studio_db.sync_chat_messages(
+        "thread-1",
+        [_message("msg-1", 1_700_000_000_500, "older")],
+        prune_missing = True,
+    )
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_000_500
+
+    # Pruning every message falls back to created_at.
+    studio_db.sync_chat_messages("thread-1", [], prune_missing = True)
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == thread["createdAt"]
+
+
+def test_chat_thread_updated_at_survives_thread_resave(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread())
+    studio_db.upsert_chat_message(_message("msg-1", 1_700_000_000_500, "hi"))
+
+    studio_db.upsert_chat_thread(_thread())
+    assert studio_db.get_chat_thread("thread-1")["updatedAt"] == 1_700_000_000_500
+
+
+def test_list_chat_threads_orders_by_last_activity(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    older = _thread("thread-old")
+    older["createdAt"] = 1_700_000_000_000
+    newer = _thread("thread-new")
+    newer["createdAt"] = 1_700_000_100_000
+    studio_db.upsert_chat_thread(older)
+    studio_db.upsert_chat_thread(newer)
+    assert [t["id"] for t in studio_db.list_chat_threads()] == ["thread-new", "thread-old"]
+
+    studio_db.upsert_chat_message(
+        _message("msg-1", 1_700_000_200_000, "hi", thread_id = "thread-old")
+    )
+    assert [t["id"] for t in studio_db.list_chat_threads()] == ["thread-old", "thread-new"]
+
+
+def test_chat_threads_updated_at_migration_backfills_from_messages(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    db_path = studio_db_path()
+    db_path.parent.mkdir(parents = True, exist_ok = True)
+    conn = sqlite3.connect(str(db_path))
+    try:
+        conn.execute(
+            """
+            CREATE TABLE chat_threads (
+                id TEXT NOT NULL PRIMARY KEY,
+                title TEXT NOT NULL,
+                model_type TEXT NOT NULL,
+                model_id TEXT,
+                pair_id TEXT,
+                archived INTEGER NOT NULL DEFAULT 0,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE chat_messages (
+                id TEXT NOT NULL PRIMARY KEY,
+                thread_id TEXT NOT NULL,
+                parent_id TEXT,
+                role TEXT NOT NULL,
+                content_json TEXT NOT NULL,
+                attachments_json TEXT,
+                metadata_json TEXT,
+                created_at INTEGER NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, created_at) VALUES (?, ?, ?, ?)",
+            ("thread-with-msgs", "Old", "base", 1_700_000_000_000),
+        )
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, created_at) VALUES (?, ?, ?, ?)",
+            ("thread-empty", "Empty", "base", 1_700_000_050_000),
+        )
+        # Fork-like thread: copied ancestor messages predate the thread itself.
+        conn.execute(
+            "INSERT INTO chat_threads (id, title, model_type, created_at) VALUES (?, ?, ?, ?)",
+            ("thread-fork", "Fork", "base", 1_700_000_100_000),
+        )
+        conn.executemany(
+            "INSERT INTO chat_messages (id, thread_id, role, content_json, created_at) VALUES (?, ?, ?, ?, ?)",
+            [
+                ("m1", "thread-with-msgs", "user", "[]", 1_700_000_001_000),
+                ("m2", "thread-with-msgs", "assistant", "[]", 1_700_000_002_000),
+                ("m3", "thread-fork", "user", "[]", 1_700_000_001_000),
+            ],
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert studio_db.get_chat_thread("thread-with-msgs")["updatedAt"] == 1_700_000_002_000
+    assert studio_db.get_chat_thread("thread-empty")["updatedAt"] == 1_700_000_050_000
+    assert studio_db.get_chat_thread("thread-fork")["updatedAt"] == 1_700_000_100_000
 
 
 def test_chat_projects_delete_cascades_threads_and_messages(tmp_path, monkeypatch):
@@ -466,6 +600,73 @@ def test_fork_chat_thread_preserves_project_id(tmp_path, monkeypatch):
         "fork-1",
         "src",
     }
+
+
+def test_fork_chat_thread_detaches_research_run_metadata(tmp_path, monkeypatch):
+    _reset_studio_db(tmp_path, monkeypatch)
+    studio_db.upsert_chat_thread(_thread("src"))
+    studio_db.upsert_chat_message(_msg("user", None, 1))
+    studio_db.upsert_chat_message(
+        {
+            "id": "research-report",
+            "threadId": "src",
+            "parentId": "user",
+            "role": "assistant",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "# Copied report",
+                    "researchRunId": "run-source",
+                },
+                {
+                    "type": "source",
+                    "url": "https://example.com",
+                    "title": "Example",
+                    "researchStatus": "completed",
+                },
+            ],
+            "metadata": {
+                "researchRunId": "run-source",
+                "researchStatus": "completed",
+                "researchPlanRevision": 1,
+                "serverManaged": True,
+                "model": "local-model",
+            },
+            "createdAt": 2,
+        }
+    )
+
+    studio_db.fork_chat_thread(
+        source_thread_id = "src",
+        branch_message_id = "research-report",
+        new_thread_id = "fork-1",
+        new_title = "fork",
+        created_at = 3,
+        id_factory = iter(("fork-user", "fork-report")).__next__,
+    )
+
+    report = next(
+        message
+        for message in studio_db.list_chat_messages("fork-1")
+        if message["role"] == "assistant"
+    )
+    assert report["content"][0]["text"] == "# Copied report"
+    assert report["content"][1]["url"] == "https://example.com"
+    assert all(
+        not ({"researchRunId", "researchStatus", "serverManaged"} & set(part))
+        for part in report["content"]
+    )
+    assert report["metadata"] == {"model": "local-model"}
+
+
+def test_fork_detachment_detects_non_id_research_content_keys():
+    content_json, metadata_json = studio_db._detach_research_message_json(
+        '[{"type":"text","text":"Report","serverManaged":true}]',
+        '{"model":"local-model"}',
+    )
+
+    assert "serverManaged" not in content_json
+    assert metadata_json == '{"model": "local-model"}'
 
 
 def test_fork_chat_thread_returns_none_for_missing_source(tmp_path, monkeypatch):

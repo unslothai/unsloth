@@ -94,10 +94,6 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/llama-2-7b-chat",
         "meta-llama/Llama-2-7b-chat-hf",
     ),
-    "unsloth/llama-2-7b-chat-bnb-4bit" : (
-        "unsloth/llama-2-7b-chat",
-        "meta-llama/Llama-2-7b-chat-hf",
-    ),
     "unsloth/Mixtral-8x7B-v0.1-unsloth-bnb-4bit" : (
         "unsloth/Mixtral-8x7B-v0.1",
         "mistralai/Mixtral-8x7B-v0.1",
@@ -134,7 +130,7 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/gemma-7b-it",
         "google/gemma-7b-it",
     ),
-    "unsloth/gemma-2b-bnb-4bit" : (
+    "unsloth/gemma-2b-it-bnb-4bit" : (
         "unsloth/gemma-2b-it",
         "google/gemma-2b-it",
     ),
@@ -701,7 +697,7 @@ __INT_TO_FLOAT_MAPPER = \
         "unsloth/Qwen2.5-VL-72B-Instruct-bnb-4bit",
     ),
     "unsloth/DeepScaleR-1.5B-Preview-unsloth-bnb-4bit" : (
-        "unsloth/DeepHermes-3-Llama-3-8B-Preview",
+        "unsloth/DeepScaleR-1.5B-Preview",
         "agentica-org/DeepScaleR-1.5B-Preview",
         "unsloth/DeepScaleR-1.5B-Preview-bnb-4bit",
     ),

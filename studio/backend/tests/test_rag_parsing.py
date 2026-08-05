@@ -54,6 +54,56 @@ def test_pdf_markdown_off_uses_plain_text(tmp_path, monkeypatch):
     assert "#" not in text and "|" not in text  # plain text path emits no Markdown markup
 
 
+def test_pdf_bytes_use_same_extraction_path(tmp_path, monkeypatch):
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", False)
+    pdf = tmp_path / "table.pdf"
+    _table_pdf(pdf)
+    from_file = parsers.parse(str(pdf))
+    from_bytes, total_pages = parsers.parse_pdf_bytes(pdf.read_bytes())
+    assert [page.text for page in from_bytes] == [page.text for page in from_file]
+    assert total_pages == len(from_file)
+
+
+def test_pdf_bytes_limit_pages_before_extraction(monkeypatch):
+    import pymupdf
+
+    from core.rag import config, parsers
+
+    monkeypatch.setattr(config, "PDF_MARKDOWN", False)
+    doc = pymupdf.open()
+    for marker in ("page one", "page two", "page three"):
+        page = doc.new_page()
+        page.insert_text((40, 40), marker)
+    data = doc.tobytes()
+    doc.close()
+
+    pages, total_pages = parsers.parse_pdf_bytes(data, max_pages = 2)
+    assert len(pages) == 2
+    assert "page two" in pages[-1].text
+    assert total_pages == 3  # full count, not the 2 extracted
+
+
+def test_pdf_markdown_receives_page_limit(monkeypatch):
+    from core.rag import parsers
+
+    captured = {}
+
+    class _FakePymupdf4llm:
+        @staticmethod
+        def to_markdown(doc, **kwargs):
+            captured.update(kwargs)
+            return [{"text": "page"} for _ in kwargs["pages"]]
+
+    class _Doc:
+        page_count = 100
+
+    monkeypatch.setitem(__import__("sys").modules, "pymupdf4llm", _FakePymupdf4llm)
+    assert parsers._pdf_markdown(_Doc(), range(2)) == ["page", "page"]
+    assert captured == {"page_chunks": True, "show_progress": False, "pages": [0, 1]}
+
+
 def test_pdf_markdown_passes_only_supported_legacy_kwargs(monkeypatch):
     # The pinned PyMuPDF4LLM legacy path ignores unknown kwargs; do not pass the
     # newer layout-only OCR knobs or Markdown extraction silently loses policy control.

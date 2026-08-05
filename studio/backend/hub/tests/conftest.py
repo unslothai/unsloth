@@ -104,3 +104,23 @@ sys.modules.setdefault(
         get_logger = lambda *args, **kwargs: _DummyLogger(),
     ),
 )
+
+
+import pytest
+
+
+@pytest.fixture(autouse = True)
+def _reset_optional_module_memo():
+    """Forget the shim's memoised optional-module results between tests.
+
+    ``_load_optional`` caches per module name including failures, so without this one test's fake
+    module would answer the next test's question.
+    """
+    try:
+        import utils.hf_xet_fallback as _shim
+    except Exception:  # noqa: BLE001 - hub tests run against stubbed modules
+        yield
+        return
+    _shim._reset_optional_module_cache()
+    yield
+    _shim._reset_optional_module_cache()

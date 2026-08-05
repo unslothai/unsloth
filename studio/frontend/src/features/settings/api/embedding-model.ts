@@ -2,11 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { authFetch } from "@/features/auth";
+import { bumpInventoryVersion } from "@/features/hub";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
 export type EmbeddingModelSettings = {
   embeddingModel: string;
+  embeddingGgufRepo: string;
   defaultEmbeddingModel: string;
+  defaultEmbeddingGgufRepo: string;
   isCustom: boolean;
 };
 
@@ -14,7 +17,11 @@ type ApiEmbeddingModelSettings = {
   // biome-ignore lint/style/useNamingConvention: API schema
   embedding_model: string;
   // biome-ignore lint/style/useNamingConvention: API schema
+  embedding_gguf_repo: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
   default_embedding_model: string;
+  // biome-ignore lint/style/useNamingConvention: API schema
+  default_embedding_gguf_repo: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   is_custom: boolean;
 };
@@ -23,10 +30,16 @@ type ApiEmbeddingModelSettings = {
  * (wrong type, gated repo, or offline). Retry with force to save anyway. */
 export class EmbeddingModelVerificationError extends Error {}
 
+/** 403 from the backend: the repo is flagged unsafe by Hugging Face's security scan.
+ * A hard block; force cannot bypass it, so it must not enter the "save anyway" flow. */
+export class EmbeddingModelBlockedError extends Error {}
+
 function fromApi(settings: ApiEmbeddingModelSettings): EmbeddingModelSettings {
   return {
     embeddingModel: settings.embedding_model,
+    embeddingGgufRepo: settings.embedding_gguf_repo,
     defaultEmbeddingModel: settings.default_embedding_model,
+    defaultEmbeddingGgufRepo: settings.default_embedding_gguf_repo,
     isCustom: settings.is_custom,
   };
 }
@@ -56,6 +69,11 @@ export async function updateEmbeddingModelSettings(
       force: options?.force ?? false,
     }),
   });
+  if (res.status === 403) {
+    throw new EmbeddingModelBlockedError(
+      await readFastApiError(res, "This model is blocked by a security scan"),
+    );
+  }
   if (res.status === 409) {
     throw new EmbeddingModelVerificationError(
       await readFastApiError(res, "Could not verify the embedding model"),
@@ -66,7 +84,9 @@ export async function updateEmbeddingModelSettings(
       await readFastApiError(res, "Failed to save embedding model"),
     );
   }
-  return fromApi(await res.json());
+  const settings = fromApi(await res.json());
+  bumpInventoryVersion();
+  return settings;
 }
 
 export async function resetEmbeddingModelSettings(): Promise<EmbeddingModelSettings> {
@@ -78,5 +98,7 @@ export async function resetEmbeddingModelSettings(): Promise<EmbeddingModelSetti
       await readFastApiError(res, "Failed to reset embedding model"),
     );
   }
-  return fromApi(await res.json());
+  const settings = fromApi(await res.json());
+  bumpInventoryVersion();
+  return settings;
 }

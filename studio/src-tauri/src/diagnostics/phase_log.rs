@@ -163,7 +163,7 @@ impl PhaseLogWriter {
 
     fn header(&self) -> String {
         let mut lines = vec![
-            "# Unsloth Studio diagnostics phase log".to_string(),
+            "# Unsloth diagnostics phase log".to_string(),
             format!("diag_schema={SCHEMA_VERSION}"),
             format!("flow={}", self.flow),
             format!("segment_index={}", self.segment_index),

@@ -3,13 +3,14 @@
 
 import { CPT_TARGET_MODULES, DEFAULT_HYPERPARAMS, LR_DEFAULT_CPT, LR_DEFAULT_FULL, LR_DEFAULT_LORA, STEPS, TARGET_MODULES } from "@/config/training";
 import { authFetch } from "@/features/auth";
+import { getHfToken, mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
 import { isAdapterMethod } from "@/types/training";
 import type { DatasetFormat } from "@/types/training";
 import type { ModelType, StepNumber, TrainingMethod } from "@/types/training";
 import { toast } from "sonner";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { checkDatasetFormat } from "../api/datasets-api";
+import { checkDatasetFormat, DatasetFormatError } from "../api/datasets-api";
 import { checkVisionModel, getModelConfig } from "../api/models-api";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
@@ -115,11 +116,13 @@ let _yamlLearningRate: number | undefined = undefined;
 let _datasetFormatBeforeCpt: DatasetFormat | null = null;
 let _datasetFormatAutoForcedByCpt = false;
 
+// modelType / isVisionModel / isAudioModel persist so multimodal-only UI
+// paints right on reload; the model-config fetch still re-derives them.
+// hfToken mirrors the shared hf-token-store and is persisted there instead.
 const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set([
-  "modelType",
+  "hfToken",
   "isCheckingVision",
   "isEmbeddingModel",
-  "isAudioModel",
   "isLoadingModelDefaults",
   "modelDefaultsError",
   "modelDefaultsAppliedFor",
@@ -128,7 +131,6 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> = new Set
   "isDatasetAudio",
   "trainOnCompletions",
   "maxPositionEmbeddings",
-  "isVisionModel",
   "s3Config",
 ]);
 
@@ -514,8 +516,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             }
             set(updates);
           })
-          .catch(() => {
+          .catch((error: unknown) => {
             if (controller.signal.aborted) return;
+            // Otherwise a deleted dataset stays selected and re-fails every visit.
+            if (error instanceof DatasetFormatError && error.status === 404) {
+              clearDeletedDataset(datasetName);
+              toast.error(error.message);
+            }
             set({ isDatasetImage: null, isCheckingDataset: false });
           });
       };
@@ -570,6 +577,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             visionImageSize?: number | null;
             trustRemoteCode?: boolean;
             approvedRemoteCodeFingerprint?: string | null;
+            isVisionModel?: boolean;
+            isAudioModel?: boolean;
+            isEmbeddingModel?: boolean;
           } = {
             selectedModel,
             modelDefaultsError: null,
@@ -581,6 +591,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             // re-applied below, and a custom-code model re-opens the dialog before start.
             patch.trustRemoteCode = false;
             patch.approvedRemoteCodeFingerprint = null;
+            // Reset capability flags so a mid-fetch reload can't persist the
+            // previous model's vision/audio flags against the new model.
+            patch.isVisionModel = false;
+            patch.isAudioModel = false;
+            patch.isEmbeddingModel = false;
           }
           set(patch);
 
@@ -625,8 +640,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             ),
           );
         },
-        setHfToken: (hfToken) =>
-          set({ hfToken: hfToken.trim().replace(/^["']+|["']+$/g, "") }),
+        setHfToken: (hfToken) => useHfTokenStore.getState().setToken(hfToken),
         setDatasetSource: (datasetSource) => set({ datasetSource }),
         selectHfDataset: (dataset) => {
           _datasetCheckController?.abort();
@@ -916,7 +930,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           _learningRateManuallySet = false;
           _yamlLearningRate = undefined;
           clearCptDatasetFormatTracking();
-          set(initialState);
+          set({ ...initialState, hfToken: getHfToken() });
         },
         resetToModelDefaults: () => {
           const { selectedModel } = get();
@@ -940,7 +954,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
     {
       name: "unsloth_training_config_v1",
-      version: 11,
+      version: 12,
       migrate: (persisted, version) => {
         const s = persisted as Record<string, unknown>;
         if (version < 2 && s.datasetSubset == null && s.datasetConfig != null) {
@@ -993,6 +1007,15 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           // own version guard.
           s.datasetStreaming ??= false;
         }
+        if (version < 12) {
+          // hfToken moved to the shared hf-token-store; seed it once so an
+          // existing Unsloth-only token isn't lost.
+          const legacyToken = typeof s.hfToken === "string" ? s.hfToken.trim() : "";
+          if (legacyToken && !getHfToken()) {
+            useHfTokenStore.getState().setToken(legacyToken);
+          }
+          delete s.hfToken;
+        }
         return s as unknown as TrainingConfigStore;
       },
       partialize: partializePersistedState,
@@ -1015,3 +1038,26 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
   ),
 );
+
+const unsubscribeHfTokenMirror = mirrorHfTokenInto(useTrainingConfigStore);
+if (import.meta.hot) {
+  import.meta.hot.dispose(unsubscribeHfTokenMirror);
+}
+
+/** POSIX, Windows drive, UNC or extended-length path. A Hub repo id is never one. */
+function isLocalDatasetPath(datasetName: string): boolean {
+  return /^([/\\]|[A-Za-z]:[\\/])/.test(datasetName.trim());
+}
+
+/** Drop a selection whose file the backend reports as gone (404). */
+export function clearDeletedDataset(datasetName: string): void {
+  // Only a local file can be deleted, so an unrelated 404 cannot wipe a good pick.
+  if (!isLocalDatasetPath(datasetName)) return;
+  const { dataset, uploadedFile, setDataset, selectLocalDataset } =
+    useTrainingConfigStore.getState();
+  if (uploadedFile === datasetName) {
+    selectLocalDataset(null);
+  } else if (dataset === datasetName) {
+    setDataset(null);
+  }
+}

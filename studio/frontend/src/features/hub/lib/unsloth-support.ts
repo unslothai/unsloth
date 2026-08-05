@@ -126,6 +126,30 @@ export type UnslothSupportStatus = "supported" | "unsupported";
 export interface UnslothSupport {
   status: UnslothSupportStatus;
   reason: string | null;
+  /** Set when Studio runs this model on a dedicated page rather than in chat. The status stays "unsupported" because the chat pickers gate on it, but the UI must not call it unsupported: the Images and Video pages load it. */
+  supportedIn?: "images" | "video";
+}
+
+// Generation tasks the Images / Video pages handle. Mirrors IMAGE_GEN_TASKS and the video picker's tasks; image-to-video is included for LTX-2.3.
+const IMAGE_PAGE_TASKS: ReadonlySet<string> = new Set([
+  "text-to-image",
+  "image-to-image",
+  "image-text-to-image",
+]);
+const VIDEO_PAGE_TASKS: ReadonlySet<string> = new Set([
+  "text-to-video",
+  "image-to-video",
+]);
+
+/** Which Studio page runs this pipeline task, if any. */
+export function studioPageForTask(
+  pipelineTag?: string | null,
+): "images" | "video" | undefined {
+  const tag = pipelineTag?.toLowerCase().trim();
+  if (!tag) return undefined;
+  if (IMAGE_PAGE_TASKS.has(tag)) return "images";
+  if (VIDEO_PAGE_TASKS.has(tag)) return "video";
+  return undefined;
 }
 
 export function excludedFormatTagsForDevice(
@@ -157,6 +181,9 @@ function detectFormatKey(
     if (alias) return alias;
   }
   if (modelId) {
+    // Owner implies format even when local metadata lacks tags; mirrors the
+    // backend's _looks_like_mlx_repo heuristic.
+    if (modelId.trim().toLowerCase().startsWith("mlx-community/")) return "mlx";
     const name = repoLeaf(modelId);
     for (const { key, pattern } of FORMAT_NAME_PATTERNS) {
       if (pattern.test(name)) return key;
@@ -211,6 +238,8 @@ export function classifyUnslothSupport({
     return {
       status: "unsupported",
       reason: `Pipeline task: ${pipeline}.`,
+      // Not chat-loadable, but the Images/Video pages run it, so the UI must not present it as unsupported.
+      supportedIn: studioPageForTask(pipeline),
     };
   }
   for (const tag of lowerTags) {

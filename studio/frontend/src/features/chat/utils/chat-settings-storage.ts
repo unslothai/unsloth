@@ -8,6 +8,7 @@ import {
   type PersistedChatSettings,
   type PersistedInferenceParams,
 } from "../api/chat-settings-api";
+import { normalizePresetLoadConfig } from "../presets/preset-load-config";
 import {
   BUILTIN_PRESETS,
   defaultInferenceParams,
@@ -21,6 +22,7 @@ import type { ReasoningEffort } from "../stores/chat-runtime-store";
 
 const AUTO_TITLE_KEY = "unsloth_chat_auto_title";
 const AUTO_HEAL_TOOL_CALLS_KEY = "unsloth_auto_heal_tool_calls";
+const NUDGE_TOOL_CALLS_KEY = "unsloth_nudge_tool_calls";
 const MAX_TOOL_CALLS_KEY = "unsloth_max_tool_calls_per_message";
 const TOOL_CALL_TIMEOUT_KEY = "unsloth_tool_call_timeout";
 const INFERENCE_PARAMS_KEY = "unsloth_chat_inference_params";
@@ -151,6 +153,7 @@ function sanitizeInferenceParams(
 }
 
 function toFullPreset(preset: PersistedChatPreset): Preset {
+  const loadConfig = normalizePresetLoadConfig(preset.loadConfig);
   return {
     name: preset.name,
     params: {
@@ -158,6 +161,7 @@ function toFullPreset(preset: PersistedChatPreset): Preset {
       ...preset.params,
       checkpoint: defaultInferenceParams.checkpoint,
     },
+    ...(loadConfig ? { loadConfig } : {}),
   };
 }
 
@@ -173,7 +177,12 @@ function sanitizeCustomPresets(
       const name = item.name.trim();
       if (!name) return null;
       const params = sanitizeInferenceParams(item.params);
-      return { name, params: params ?? {} };
+      const loadConfig = normalizePresetLoadConfig(item.loadConfig);
+      return {
+        name,
+        params: params ?? {},
+        ...(loadConfig ? { loadConfig } : {}),
+      };
     })
     .filter((preset): preset is PersistedChatPreset => preset !== null);
 
@@ -182,6 +191,7 @@ function sanitizeCustomPresets(
     (preset, index) => ({
       name: preset.name,
       params: presets[index]?.params ?? {},
+      ...(preset.loadConfig ? { loadConfig: preset.loadConfig } : {}),
     }),
   );
 }
@@ -223,6 +233,7 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
     value.allowArtifactNetworkAccess,
   );
   const autoHealToolCalls = sanitizeBool(value.autoHealToolCalls);
+  const nudgeToolCalls = sanitizeBool(value.nudgeToolCalls);
   const maxToolCallsPerMessage = sanitizeInt(value.maxToolCallsPerMessage, 1);
   const toolCallTimeout = sanitizeInt(value.toolCallTimeout, 1);
 
@@ -244,6 +255,9 @@ function sanitizeChatSettings(value: unknown): PersistedChatSettings {
   }
   if (autoHealToolCalls !== undefined) {
     settings.autoHealToolCalls = autoHealToolCalls;
+  }
+  if (nudgeToolCalls !== undefined) {
+    settings.nudgeToolCalls = nudgeToolCalls;
   }
   if (maxToolCallsPerMessage !== undefined) {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
@@ -305,6 +319,7 @@ export function isEmptyChatSettings(settings: PersistedChatSettings): boolean {
     settings.collapseHtmlArtifacts === undefined &&
     settings.allowArtifactNetworkAccess === undefined &&
     settings.autoHealToolCalls === undefined &&
+    settings.nudgeToolCalls === undefined &&
     settings.maxToolCallsPerMessage === undefined &&
     settings.toolCallTimeout === undefined
   );
@@ -335,6 +350,7 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   const collapseHtmlArtifacts = loadBool(COLLAPSE_HTML_ARTIFACTS_KEY);
   const allowArtifactNetworkAccess = loadBool(ALLOW_ARTIFACT_NETWORK_ACCESS_KEY);
   const autoHealToolCalls = loadBool(AUTO_HEAL_TOOL_CALLS_KEY);
+  const nudgeToolCalls = loadBool(NUDGE_TOOL_CALLS_KEY);
   const maxToolCallsPerMessage = loadInt(MAX_TOOL_CALLS_KEY, 1);
   const toolCallTimeout = loadInt(TOOL_CALL_TIMEOUT_KEY, 1);
   const allCustomPresets = sanitizeCustomPresets([
@@ -360,6 +376,9 @@ export function loadLegacyChatSettings(): PersistedChatSettings {
   }
   if (autoHealToolCalls !== undefined) {
     settings.autoHealToolCalls = autoHealToolCalls;
+  }
+  if (nudgeToolCalls !== undefined) {
+    settings.nudgeToolCalls = nudgeToolCalls;
   }
   if (maxToolCallsPerMessage !== undefined) {
     settings.maxToolCallsPerMessage = maxToolCallsPerMessage;
