@@ -1,5 +1,6 @@
 """Contracts for the host-integrated Linux AppImage release path."""
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -99,6 +100,61 @@ def test_thin_appimage_rejects_a_bundled_host_library(tmp_path):
 
     assert result.returncode != 0
     assert "libglib-2.0.so.0" in result.stderr
+
+
+def test_thin_appimage_resolves_a_relative_output_before_verification(tmp_path):
+    package_root = tmp_path / "package"
+    control_dir = package_root / "DEBIAN"
+    binary_dir = package_root / "usr" / "bin"
+    desktop_dir = package_root / "usr" / "share" / "applications"
+    icon_dir = package_root / "usr" / "share" / "icons" / "hicolor" / "128x128" / "apps"
+    for directory in (control_dir, binary_dir, desktop_dir, icon_dir):
+        directory.mkdir(parents = True, exist_ok = True)
+
+    (control_dir / "control").write_text(
+        "Package: unsloth-test\nVersion: 1.0\nArchitecture: amd64\nDescription: test\n",
+        encoding = "utf-8",
+    )
+    shutil.copy2("/bin/true", binary_dir / "unsloth-studio")
+    (desktop_dir / "Unsloth.desktop").write_text("[Desktop Entry]\n", encoding = "utf-8")
+    (icon_dir / "unsloth-studio.png").write_bytes(b"test")
+
+    deb_path = tmp_path / "unsloth-test.deb"
+    subprocess.run(
+        ["dpkg-deb", "--build", "--root-owner-group", package_root, deb_path],
+        check = True,
+        capture_output = True,
+        text = True,
+    )
+
+    appimagetool = tmp_path / "appimagetool"
+    appimagetool.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+while [[ $# -gt 2 ]]; do shift; done
+app_dir="$1"
+output_path="$2"
+printf '#!/usr/bin/env bash\nset -euo pipefail\ncp -a %q squashfs-root\n' "$app_dir" > "$output_path"
+chmod +x "$output_path"
+""",
+        encoding = "utf-8",
+    )
+    appimagetool.chmod(0o755)
+    runtime = tmp_path / "runtime"
+    runtime.touch()
+
+    relative_output = Path("artifacts") / "unsloth-test.AppImage"
+    result = subprocess.run(
+        [PACKAGER, deb_path, appimagetool, runtime, relative_output],
+        cwd = tmp_path,
+        check = True,
+        capture_output = True,
+        text = True,
+    )
+
+    output_path = tmp_path / relative_output
+    assert output_path.is_file()
+    assert f"Built thin AppImage: {output_path}" in result.stdout
 
 
 def test_release_notes_keep_experimental_appimage_guidance_concise():

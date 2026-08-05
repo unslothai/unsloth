@@ -58,7 +58,10 @@ work_root="$(mktemp -d "${RUNNER_TEMP:-/tmp}/unsloth-thin-appimage.XXXXXX")"
 trap 'rm -rf -- "$work_root"' EXIT
 app_dir="$work_root/AppDir"
 verify_dir="$work_root/verify"
-mkdir -p "$app_dir" "$verify_dir" "$(dirname -- "$output_path")"
+output_dir="$(dirname -- "$output_path")"
+mkdir -p "$app_dir" "$verify_dir" "$output_dir"
+output_dir="$(CDPATH= cd -- "$output_dir" && pwd -P)"
+output_path="$output_dir/$(basename -- "$output_path")"
 
 # The deb is already a working host-integrated package. Reusing its payload
 # avoids a partial GTK/WebKit dependency closure, which can mix an
