@@ -559,7 +559,8 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         # no-op, and the compiled graph then returns inf/NaN logits. A float32 model has
         # nothing to autocast to; disable instead of asking for a dtype that is not one.
         autocaster = torch.autocast(
-            device_type = DEVICE_TYPE_TORCH, dtype = dtype,
+            device_type = DEVICE_TYPE_TORCH,
+            dtype = dtype,
             enabled = dtype in (torch.float16, torch.bfloat16),
         )
     # Prepare LoRA

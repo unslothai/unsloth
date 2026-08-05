@@ -60,8 +60,11 @@ def _the_autocaster_call():
     for node in ast.walk(ast.parse(SRC)):
         if not isinstance(node, ast.Assign):
             continue
-        if not (len(node.targets) == 1 and isinstance(node.targets[0], ast.Name)
-                and node.targets[0].id == "autocaster"):
+        if not (
+            len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "autocaster"
+        ):
             continue
         call = node.value
         if not isinstance(call, ast.Call):
@@ -85,11 +88,14 @@ def test_the_forced_float16_branch_is_left_alone():
     assert "dtype = torch.float16)" in SRC
 
 
-@pytest.mark.parametrize("dtype,expected", [
-    (torch.float32, False),
-    (torch.float16, True),
-    (torch.bfloat16, True),
-])
+@pytest.mark.parametrize(
+    "dtype,expected",
+    [
+        (torch.float32, False),
+        (torch.float16, True),
+        (torch.bfloat16, True),
+    ],
+)
 def test_the_gate_by_execution(dtype, expected):
     assert (dtype in (torch.float16, torch.bfloat16)) is expected
 
@@ -107,8 +113,9 @@ def test_cuda_really_does_accept_float32_as_an_autocast_dtype():
 @pytest.mark.skipif(not torch.cuda.is_available(), reason = "needs a CUDA device")
 def test_the_gate_turns_that_into_a_no_op():
     dtype = torch.float32
-    with torch.autocast(device_type = "cuda", dtype = dtype,
-                        enabled = dtype in (torch.float16, torch.bfloat16)):
+    with torch.autocast(
+        device_type = "cuda", dtype = dtype, enabled = dtype in (torch.float16, torch.bfloat16)
+    ):
         assert torch.is_autocast_enabled("cuda") is False
 
 
