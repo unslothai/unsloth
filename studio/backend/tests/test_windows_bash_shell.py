@@ -437,6 +437,83 @@ def test_a_quote_elsewhere_cannot_hide_the_start_program(monkeypatch, command, b
     assert tools._find_blocked_commands(command)
 
 
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # cmd keeps the quotes around the string after /c when it names an
+        # executable file (`cmd /?` rule 1) and never splits a quoted command
+        # token on its spaces, and start reads its program argument the same
+        # way, so all three really launch pwsh. Only re-lexing the payload split
+        # it into `C:/Program` and `Files/...` and the program went unscreened.
+        # The sandbox PATH carries System32 but not Program Files, so the full
+        # path is the spelling left once the bare `pwsh` is not found.
+        'cmd //c "C:/Program Files/PowerShell/7/pwsh.exe" -Command ls',
+        'cmd //c start "" "C:/Program Files/PowerShell/7/pwsh.exe"',
+        'cmd //c start "My Window" "C:/Program Files/PowerShell/7/pwsh.exe"',
+    ],
+)
+def test_quoted_program_paths_with_spaces_are_screened(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Only a payload that is ENTIRELY one executable path reads as a
+        # program, so an ordinary argument list that merely mentions one keeps
+        # working: cmd splits these itself and runs the word in front.
+        'cmd //c "C:/Program Files/Git/bin/git.exe" status',
+        'cmd //c "C:/Program Files/Microsoft VS Code/Code.exe"',
+        'cmd //c "type C:/logs/curl"',
+        'cmd //c "echo C:/tools/curl.exe"',
+        'cmd //c "copy build/curl.exe dist"',
+    ],
+)
+def test_quoted_payloads_are_not_read_as_programs_by_mistake(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A `start` the shell never runs launches nothing, so the quoted word
+        # behind it is not a title and the word behind THAT is not a program.
+        # Reading them as one hard-refused a grep and an echo on a program that
+        # never starts. The head is still screened, whatever position it is in.
+        'echo start "title" powershell',
+        'printf "%s" start "title" powershell',
+        'grep -rn start "src/my dir" curl',
+    ],
+)
+def test_a_start_in_argument_position_launches_nothing(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Every route by which the shell really reaches a start: `cmd /c` hands
+        # control one token past a switch, which is no command position of its
+        # own, and find/xargs run their child directly.
+        'cmd //c start "My Window" pwsh -Command ls',
+        'cmd /c start "" powershell -Command ls',
+        r'find . -exec start "" powershell \;',
+        'xargs start "" powershell',
+        'start "" powershell',
+    ],
+)
+def test_a_start_the_shell_runs_still_steps_past_its_title(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
 def _fake_git_for_windows(monkeypatch, tmp_path):
     """A trusted Git for Windows layout under a faked Program Files root."""
     program_files = tmp_path / "Program Files"

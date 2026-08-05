@@ -1353,6 +1353,10 @@ def _cmd_unquote(token: str) -> str:
 # position. These switches precede it; the value-taking ones eat a token.
 _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 
+# A word ending in a program extension, used to tell one quoted executable path
+# apart from an argument list that merely mentions one.
+_EXECUTABLE_PATH_RE = re.compile(r"\.(?:exe|com|bat|cmd)(?=\s|$)", re.IGNORECASE)
+
 
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
@@ -1413,6 +1417,31 @@ def _find_blocked_commands(command: str) -> set[str]:
             base = stem
         return base
 
+    def _scan_cmd_payload(payload: str) -> "set[str]":
+        """A cmd payload, read as a command line AND as one quoted program path.
+
+        `cmd /?` keeps the quotes around the string after /c when it "is the
+        name of an executable file", and a quoted command token is never split
+        on its spaces, so `cmd /c "C:/Program Files/PowerShell/7/pwsh.exe" -c ls`
+        really runs pwsh; start's program argument reads the same way. Only
+        re-lexing the payload splits it into `C:/Program` and `Files/...`, so
+        the program launched was never screened at all.
+        """
+        found = _find_blocked_commands(payload)
+        if not any(char in payload for char in " \t"):
+            return found  # no spaces: the re-lex above already read the program
+        # Anything but ONE whole executable path is an argument list cmd splits
+        # itself, so `cmd /c "type C:/logs/curl"` and a second program in
+        # `cmd /c "C:/bin/copy.exe build/curl.exe"` are left to the re-lex.
+        if len(_EXECUTABLE_PATH_RE.findall(payload)) != 1 or not payload.lower().endswith(
+            (".exe", ".com", ".bat", ".cmd")
+        ):
+            return found
+        if not any(char in payload.split()[0] for char in ":/\\"):
+            return found  # starts on a command word (`echo C:/tools/curl.exe`)
+        base = _token_basename(payload)
+        return found | ({base} if base in _BLOCKED_COMMANDS else _blocked_matching_glob(base))
+
     def _exec_child_index(start: int) -> "tuple[int, bool]":
         """The command a `find -exec` actually runs, as ``(index, overflowed)``;
         the index is -1 when the action holds no command word at all.
@@ -1464,6 +1493,8 @@ def _find_blocked_commands(command: str) -> set[str]:
     prefix_command = ""  # which wrapper that was, for its own value-taking options
     skip_operand = False  # consume a wrapper/conditional operand, not the command
     sed_indexes: "list[int]" = []  # command-position sed words, for the `e` scan below
+    command_positions: "set[int]" = set()  # command-position words, for the start scan
+    win_c_payloads: "set[int]" = set()  # the word a `cmd /c` hands over, same
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     xargs_index = -1  # an xargs awaiting the command it wraps
     for token_index, token in enumerate(tokens):
@@ -1525,6 +1556,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         # Numeric wrapper arg: `timeout 1 cmd` / `nice -n 5 cmd`.
         if prefix_pending and token.lstrip("-").isdigit():
             continue
+        command_positions.add(token_index)
         base = _token_basename(token)
         if _is_sed_command(base):
             sed_indexes.append(token_index)
@@ -1656,7 +1688,11 @@ def _find_blocked_commands(command: str) -> set[str]:
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(_cmd_unquote(tokens[i + 1]))
             elif is_win_c and prev_base in _SHELLS_WIN:
-                blocked |= _find_blocked_commands(_cmd_unquote(tokens[i + 1]))
+                # `cmd //c start ...` puts start one token past a switch, which
+                # is no command position at all, so the start scan below is told
+                # where cmd hands control over.
+                win_c_payloads.add(i + 1)
+                blocked |= _scan_cmd_payload(_cmd_unquote(tokens[i + 1]))
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
@@ -1701,9 +1737,19 @@ def _find_blocked_commands(command: str) -> set[str]:
         # never an under-block: `echo "powershell" && cmd //c start powershell
         # -Command ls` reports titled from the echo, so skipping the head on a
         # title would let the powershell start launches through unscreened.
-        blocked |= _find_blocked_commands(_cmd_unquote(head))
-        if titled and j + 1 < len(tokens):
-            blocked |= _find_blocked_commands(_cmd_unquote(tokens[j + 1]))
+        blocked |= _scan_cmd_payload(_cmd_unquote(head))
+        # Stepping PAST the head only makes sense where this start is a command
+        # the shell runs: at command position, one token past a `cmd /c`, or as
+        # a find -exec child. `echo start "title" powershell` and
+        # `grep -rn start "src/my dir" curl` run neither the title nor the word
+        # behind it, and were hard-refused on a program that never starts.
+        runnable = (
+            i in command_positions
+            or i in win_c_payloads
+            or any(i == flag + 1 for flag in exec_flag_indexes)
+        )
+        if titled and runnable and j + 1 < len(tokens):
+            blocked |= _scan_cmd_payload(_cmd_unquote(tokens[j + 1]))
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The
