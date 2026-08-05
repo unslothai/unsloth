@@ -1067,7 +1067,7 @@ SIDEBAR_NAV_ITEM_DEFAULTS = {
     "hub": True,
     "projects": True,
     "images": True,
-    "video": True,
+    "video": False,
     "train": True,
     "recipes": False,
     "export": False,
