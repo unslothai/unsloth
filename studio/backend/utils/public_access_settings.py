@@ -144,11 +144,14 @@ def _admin_password_ready() -> bool:
         return False
 
 
-def configure_public_access(app_state, *, port: int, intent: str, is_colab: bool) -> None:
+def configure_public_access(
+    app_state, *, port: int, intent: str, is_colab: bool, launch_managed: bool
+) -> None:
     """Publish immutable launch policy used by every settings request."""
     app_state.public_access_port = port
     app_state.public_access_intent = intent
     app_state.public_access_is_colab = bool(is_colab)
+    app_state.public_access_launch_managed = bool(launch_managed)
     app_state.public_access_ready = False
 
 
@@ -179,6 +182,7 @@ def public_access_status(app_state) -> dict:
 
     intent = getattr(app_state, "public_access_intent", "disabled")
     is_colab = bool(getattr(app_state, "public_access_is_colab", False))
+    launch_managed = bool(getattr(app_state, "public_access_launch_managed", False))
     ready = bool(getattr(app_state, "public_access_ready", False))
     owner = status["managed_by"]
     state = status["state"]
@@ -189,7 +193,7 @@ def public_access_status(app_state) -> dict:
         block_reason = "colab_managed" if owner == "colab" else "colab"
     elif intent == "disabled":
         block_reason = "explicitly_disabled"
-    elif intent == "enabled":
+    elif launch_managed:
         block_reason = "launch_managed"
     elif not _admin_password_ready():
         block_reason = "admin_password_change_required"

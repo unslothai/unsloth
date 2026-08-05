@@ -22,10 +22,15 @@ import utils.public_access_settings as public_access  # noqa: E402
 from storage import studio_db  # noqa: E402
 
 
-def _state(intent = "unset", is_colab = False):
+def _state(
+    intent = "unset",
+    is_colab = False,
+    launch_managed = False,
+):
     return SimpleNamespace(
         public_access_intent = intent,
         public_access_is_colab = is_colab,
+        public_access_launch_managed = launch_managed,
         public_access_port = 8888,
         public_access_ready = True,
     )
@@ -48,6 +53,31 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch):
         studio_db, "get_app_setting", lambda *args: (_ for _ in ()).throw(OSError())
     )
     assert public_access.get_public_access_auto_start() is False
+
+
+@pytest.mark.parametrize(
+    "launch_managed,expected_block,can_start",
+    [(False, None, True), (True, "launch_managed", False)],
+)
+def test_enabled_intent_blocks_only_selected_launch_path(
+    monkeypatch, launch_managed, expected_block, can_start
+):
+    monkeypatch.setattr(public_access, "_start_worker", None)
+    monkeypatch.setattr(public_access, "_stop_worker", None)
+    monkeypatch.setattr(public_access, "get_public_access_auto_start", lambda: False)
+    monkeypatch.setattr(public_access, "_admin_password_ready", lambda: True)
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "get_studio_tunnel_status",
+        lambda: {"state": "off", "url": None, "error": None, "managed_by": None},
+    )
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
+
+    status = public_access.public_access_status(
+        _state(intent = "enabled", launch_managed = launch_managed)
+    )
+    assert status["block_reason"] == expected_block
+    assert status["can_start"] is can_start
 
 
 def test_workers_and_stops_are_scoped_to_backend_lifecycle(monkeypatch):

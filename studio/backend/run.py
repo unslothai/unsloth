@@ -1996,11 +1996,19 @@ def run_server(
     app.state.cloudflare_url = None
     from utils.public_access_settings import configure_public_access
 
+    _launch_tunnel_managed = _cloudflare_tunnel_should_start(
+        cloudflare = cloudflare,
+        host = host,
+        secure = secure,
+        api_only = api_only,
+        is_colab = _IS_COLAB,
+    )
     configure_public_access(
         app.state,
         port = port,
         intent = cloudflare_intent,
         is_colab = _IS_COLAB,
+        launch_managed = _launch_tunnel_managed,
     )
 
     # Expose a shutdown callable before the server accepts requests so
@@ -2021,13 +2029,7 @@ def run_server(
     # warn / fail closed headless; see _terminal_password_gate). Runs BEFORE the
     # socket binds so a pre-gate listener can't hand out the injected credential.
     _pw_proceed, _pw_drop_bootstrap = _terminal_password_gate(
-        tunnel_will_start = _cloudflare_tunnel_should_start(
-            cloudflare = cloudflare,
-            host = host,
-            secure = secure,
-            api_only = api_only,
-            is_colab = _IS_COLAB,
-        ),
+        tunnel_will_start = _launch_tunnel_managed,
         host = host,
         secure = secure,
         api_only = api_only,
@@ -2133,13 +2135,7 @@ def run_server(
     # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often
     # unreachable). Started pre-banner and even when silent so the CLI banner can
     # read app.state.cloudflare_url; torn down by _graceful_shutdown.
-    _cloudflare_enabled = _cloudflare_tunnel_should_start(
-        cloudflare = cloudflare,
-        host = host,
-        secure = secure,
-        api_only = api_only,
-        is_colab = _IS_COLAB,
-    )
+    _cloudflare_enabled = _launch_tunnel_managed
     _cloudflare_requested = _cloudflare_enabled
 
     if _cloudflare_enabled:
