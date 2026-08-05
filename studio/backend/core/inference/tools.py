@@ -378,7 +378,10 @@ _SEPARATOR_CHARS = frozenset("".join(_SHELL_SEPARATORS))
 # non-whitespace, non-quote, non-punctuation_chars character serves, so the
 # masked text splits into the same words and the token lists line up.
 _QUOTED_SEPARATOR_MARK = "\x00"
-_NEWLINE_COMMAND_MARK = "\x01"
+# Stand-ins for a newline during the second lex. Several, because the command is
+# the caller's text: a literal \x01 in it used to disable newline recovery for
+# the whole line, which is a boundary an author could delete by including one.
+_NEWLINE_COMMAND_MARKS = ("\x01", "\x02", "\x03", "\x04", "\x05", "\x06", "\x0e", "\x0f")
 # The characters bash expands a word against the filesystem for, and the
 # placeholder standing in for a QUOTED one during the same second lex.
 _GLOB_CHARS = frozenset("*?[")
@@ -1098,7 +1101,21 @@ def _is_document_target(target: str) -> bool:
     stripped = target.strip('"')
     if not stripped or not _PATH_FRAGMENT_RE.match(stripped):
         return False
-    suffix = _path_suffix(stripped)
+    # A target may carry its own arguments, so the path is walked first. An
+    # executable suffix anywhere along it means a PROGRAM was named and the rest
+    # are its arguments: reading `C:\tools\pwsh.exe scripts\job.ps1` by its
+    # final chunk called a PowerShell launch a `.ps1` document and skipped every
+    # other check on it.
+    words = stripped.split()
+    for position, word in enumerate(words):
+        if position and not _continues_path(words, position):
+            break
+        if _path_suffix(word) in _WINDOWS_EXE_SUFFIXES:
+            return False
+    # Nothing along the path is executable, so the whole target is a candidate
+    # FILE and its own suffix decides. A document's name may hold spaces, which
+    # is why `C:\tmp\rm report.docx` is one file rather than rm with an operand.
+    suffix = _path_suffix(words[-1])
     return bool(suffix) and suffix not in _WINDOWS_EXE_SUFFIXES
 
 
@@ -1157,7 +1174,10 @@ def _newline_command_indexes(text: str, tokens: "list[str]", mode: str) -> "froz
     marks alone; the recovered count is checked against the original and anything
     unexpected reports nothing.
     """
-    if "\n" not in text or _NEWLINE_COMMAND_MARK in text:
+    if "\n" not in text:
+        return frozenset()
+    mark = next((candidate for candidate in _NEWLINE_COMMAND_MARKS if candidate not in text), "")
+    if not mark:
         return frozenset()
     states = _shell_quote_states(text)
 
@@ -1174,10 +1194,10 @@ def _newline_command_indexes(text: str, tokens: "list[str]", mode: str) -> "froz
         return carets % 2 == 0
 
     marked = "".join(
-        f" {_NEWLINE_COMMAND_MARK} " if char == "\n" and _separates(index) else char
+        f" {mark} " if char == "\n" and _separates(index) else char
         for index, char in enumerate(text)
     )
-    if _NEWLINE_COMMAND_MARK not in marked:
+    if mark not in marked:
         return frozenset()  # every newline was quoted, so none of them separates
     try:
         if mode == "posix":
@@ -1196,7 +1216,7 @@ def _newline_command_indexes(text: str, tokens: "list[str]", mode: str) -> "froz
     starts: "set[int]" = set()
     index, opening = 0, False
     for token in relexed:
-        if token == _NEWLINE_COMMAND_MARK:
+        if token == mark:
             opening = True
             continue
         if opening:
@@ -1543,18 +1563,34 @@ def _is_start_switch(token: str) -> bool:
     return switch.startswith("/") and "/" not in switch[1:]
 
 
-def _continues_path(bare: str) -> bool:
-    """Whether ``bare`` is another chunk of the path in front of it.
+def _continues_path(words: "list[str]", position: int) -> bool:
+    """Whether ``words[position]`` is another chunk of the path in front of it.
 
     What continues a path holding spaces is a RELATIVE fragment. A word that
     opens a path of its own, names a URL, or is an option belongs to the
     arguments however many separators it carries.
+
+    A fragment need not carry a separator itself: `C:\\Program Files (x86)\\
+    PowerShell\\7\\pwsh.exe` has `Files` between two that do, and stopping there
+    left `Program` as the program and the shell behind it unreported. Such a
+    word continues the path when a LATER one still carries it.
     """
+    bare = words[position].strip('"')
     if not bare or bare.startswith("-"):
         return False
-    if "\\" not in bare and "/" not in bare:
+    if _PATH_FRAGMENT_RE.match(bare) or _URL_SCHEME_RE.match(bare):
         return False
-    return not _PATH_FRAGMENT_RE.match(bare) and not _URL_SCHEME_RE.match(bare)
+    if "\\" in bare or "/" in bare:
+        return True
+    for later in words[position + 1 :]:
+        following = later.strip('"')
+        if not following or following.startswith("-"):
+            break
+        if _PATH_FRAGMENT_RE.match(following) or _URL_SCHEME_RE.match(following):
+            break
+        if "\\" in following or "/" in following:
+            return True
+    return False
 
 
 def _quoted_program_word(payload: str) -> str:
@@ -1619,17 +1655,16 @@ def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "s
         # continues one is a RELATIVE fragment: `C:\Program Files\PowerShell\7\
         # pwsh` runs pwsh, while the `rm` of `C:\tools\notepad rm` is a file
         # notepad is being run on.
-        if program and not _continues_path(bare):
+        if program and not _continues_path(words, position):
             break
         program.append(bare)
         if os.path.splitext(bare)[1].lower() in _WINDOWS_EXE_SUFFIXES:
-            # An executable suffix ends the path, unless the NEXT word carries
-            # it on: a directory may be named `rm.exe dir`, and stopping at the
-            # chunk rather than the basename reported the folder as the program
-            # for a line that runs `C:\rm.exe dir\notepad`.
-            following = words[position + 1].strip('"') if position + 1 < len(words) else ""
-            if not _continues_path(following):
-                break
+            # An executable suffix ends the path. CreateProcess resolves an
+            # unquoted path by trying its space-separated prefixes SHORTEST
+            # first, so `C:\tools\pwsh.exe scripts\job.ps1` runs pwsh with a
+            # script argument; carrying the path on through that argument read
+            # `job.ps1` as the program and let the shell behind it through.
+            break
     if not program:
         return set()
     # cmd searches PATHEXT, so the suffix is optional: `...\PowerShell\7\pwsh`
@@ -2161,9 +2196,16 @@ def _find_blocked_commands(command: str) -> set[str]:
         gate already reads it off the previous token; the shell lookbacks did
         not, so `cmd /c echo hi& cmd /c powershell` left the second shell unread.
         """
+        previous = tokens[index - 1] if index else ""
+        if not lexed_posix and previous.endswith(";"):
+            # cmd has no `;` separator, so the scan above opened a command
+            # position that shell never opens. The START gate already refuses it
+            # and this one trusted the index, which read `echo ; cmd /c
+            # powershell` as a launch when cmd prints the whole line.
+            return False
         if index in command_indexes:
             return True
-        return bool(index) and not lexed_posix and _ends_with_cmd_operator(tokens[index - 1])
+        return bool(index) and not lexed_posix and _ends_with_cmd_operator(previous)
 
     def _is_start_word(token: str) -> bool:
         """Whether ``token`` is a START the shell will run.

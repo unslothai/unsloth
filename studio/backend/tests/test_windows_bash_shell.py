@@ -1342,13 +1342,62 @@ def test_glue_survives_an_earlier_quoted_argument(windows_cmd_only):
 
 @pytest.mark.parametrize(
     "command",
-    ['cmd /c "C:\\rm.exe dir\\notepad"', 'start "" "C:\\rm.exe dir\\notepad"'],
+    ['cmd /c "C:\\rm.exe dir\\notepad"', 'start "" "C:\\tools\\pwsh.exe scripts\\job.ps1"'],
 )
-def test_an_exe_suffix_inside_a_directory_name_does_not_end_the_path(windows_terminal, command):
-    # A directory may be named `rm.exe dir`. Stopping at that chunk rather than
-    # the basename reported the folder as the program for a line running notepad.
-    assert not tools._find_blocked_commands(command)
+def test_an_executable_suffix_ends_the_path(windows_terminal, command):
+    # CreateProcess resolves a path holding spaces by trying its prefixes
+    # SHORTEST first, so `C:\tools\pwsh.exe scripts\job.ps1` runs pwsh with a
+    # script argument rather than naming one long path. Carrying the path on
+    # through that argument read `job.ps1` as the program, whose suffix is not
+    # executable, and let the shell behind it through.
+    #
+    # A directory really named `rm.exe dir` is the same list of words, so it is
+    # refused here. That is the safe direction of an ambiguity the command line
+    # cannot resolve, and it is what the shell would try first.
+    assert tools._find_blocked_commands(command)
 
 
 def test_a_real_executable_still_ends_the_path(windows_terminal):
     assert "rm" in tools._find_blocked_commands('cmd /c "C:\\tools\\rm.exe"')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\Program Files (x86)\\PowerShell\\7\\pwsh.exe"',
+        'start "" "C:\\Program Files (x86)\\PowerShell\\7\\pwsh.exe"',
+    ],
+)
+def test_a_space_only_fragment_still_continues_a_path(windows_terminal, command):
+    # `Files` carries no separator of its own, and stopping there left `Program`
+    # as the program while the shell at the end of the path went unreported.
+    # A word like that continues the path when a LATER one still carries it.
+    assert "pwsh" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\tools\\pwsh.exe scripts\\job.ps1"',
+        'start "" "C:\\tools\\pwsh.exe scripts\\job.ps1"',
+    ],
+)
+def test_an_executable_is_not_extended_into_its_arguments(windows_terminal, command):
+    # Carrying the path on through a relative ARGUMENT read `job.ps1` as the
+    # program; its suffix is not executable, so the launch was reported as a
+    # document and the shell in front of it went unscreened.
+    assert "pwsh" in tools._find_blocked_commands(command)
+
+
+def test_a_document_name_may_still_hold_a_space(windows_terminal):
+    # The other side of that: nothing along `C:\tmp\rm report.docx` is
+    # executable, so the whole target is one file and its own suffix decides.
+    assert not tools._find_blocked_commands('cmd //c start "" "C:\\tmp\\rm report.docx"')
+
+
+def test_the_newline_marker_is_not_attacker_controlled(windows_terminal):
+    # The stand-in for a newline during the second lex used to be one fixed
+    # control character, so including it disabled newline recovery for the whole
+    # line: a boundary an author could delete by typing it.
+    assert "powershell" in tools._find_blocked_commands('echo \x01\nstart "" powershell')
+    assert "powershell" in tools._find_blocked_commands('echo \x01\x02\x03\nstart "" powershell')
