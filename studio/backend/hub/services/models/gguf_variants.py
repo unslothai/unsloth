@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import threading
 import time
 import weakref
@@ -547,6 +548,42 @@ def _direct_gguf_loads(path: Path) -> bool:
     )
 
 
+# llama.cpp's split naming, as hub.utils.inventory_scan._GGUF_SPLIT_RE reads it.
+_DIRECT_SPLIT_RE = re.compile(
+    r"^(?P<stem>.+)-(?P<index>\d{3,})-of-(?P<total>\d{3,})$", re.IGNORECASE
+)
+
+
+def _direct_gguf_split_is_whole(path: Path) -> bool:
+    """Whether *path*'s split set is entirely beside it (True when it is not a split).
+
+    llama.cpp resolves a split GGUF's siblings from the main shard's directory
+    (see llama_cpp._snapshot_has_all_shards), so a lone shard is a load that
+    fails after the teardown. Unknown -- an unreadable directory, a nonsense
+    total -- reports whole, keeping the row as ready as it was.
+    """
+    match = _DIRECT_SPLIT_RE.match(path.name.rsplit(".", 1)[0])
+    if match is None:
+        return True
+    total = int(match.group("total"))
+    if not 1 < total <= 1000:
+        return True
+    sibling = re.compile(
+        re.escape(match.group("stem"))
+        + r"-\d{"
+        + str(len(match.group("index")))
+        + r"}-of-"
+        + re.escape(match.group("total"))
+        + r"\.gguf$",
+        re.IGNORECASE,
+    )
+    try:
+        found = {p.name.lower() for p in path.parent.iterdir() if sibling.match(p.name)}
+    except OSError:
+        return True
+    return len(found) >= total
+
+
 def _complete_quants_under(snapshot: str):
     """Quants whose shards are all present under *snapshot*, or None if unknown.
 
@@ -616,6 +653,11 @@ async def get_gguf_variants_answer(
     # Set by whichever branch answers, and returned with the listing: the HF cache answers
     # before local_path, so a caller cannot infer the copy from the request alone.
     answered_from: list[Optional[str]] = [None]
+    # Set by the existence-first local branch below. A repo-shaped id that resolves to a
+    # directory is answered by that directory alone, so the HF cache of the identically
+    # named repo must not add rows to it: the load resolves the same directory, and a
+    # GGUF-less one loaded on the strength of a cleanable row evicts the resident model.
+    answered_locally = [False]
 
     def _compute() -> GgufVariantsResponse:
         repo_cache_dir = (
@@ -760,9 +802,12 @@ async def get_gguf_variants_answer(
                 # The shard scan resolves a file to its marked parent, so an
                 # unmarked one leaves it walking a file: it answers "no complete
                 # quant" and the row this file IS would read as not downloaded.
-                # Nothing to judge here, so report it as the load sees it.
-                complete = None
+                # Nothing to judge there, so report it as the load sees it --
+                # except for the one thing the file itself does answer, a split
+                # missing a sibling, which the directory scan marks partial too.
+                complete = None if _direct_gguf_split_is_whole(local_target) else set()
             answered_from[0] = repo_id
+            answered_locally[0] = True
             return _local_response(repo_id, variants, has_vision, complete)
 
         # Reject invalid remote repo_ids up front (like download/delete) so a
@@ -1120,7 +1165,7 @@ async def get_gguf_variants_answer(
             if enriched.variants:
                 return enriched
             raise
-        if skip:
+        if skip or answered_locally[0]:
             return response
         return _mark_empty_dir_cleanables(
             repo_id,

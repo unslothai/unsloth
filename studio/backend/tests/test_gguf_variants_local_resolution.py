@@ -109,3 +109,70 @@ def test_direct_gguf_file_quant_round_trips_through_the_load_path(in_tmp_cwd):
     assert config.gguf_file == os.fspath(gguf)
     # A quant the file is not stays unresolved rather than loading other weights.
     assert ModelConfig.from_identifier(os.fspath(gguf), gguf_variant = "Q8_0").is_gguf is False
+
+
+def test_direct_gguf_file_quant_round_trips_case_insensitively(in_tmp_cwd):
+    # llama.cpp matches a quant label case-insensitively, and so does the CLI's
+    # pre-load gate, so a typed lowercase --gguf-variant has to resolve to the
+    # same file here; resolving nothing loads no GGUF and evicts the resident
+    # model on the transformers path before failing.
+    from utils.models.model_config import ModelConfig
+
+    gguf = in_tmp_cwd / "foo-Q4_K_M.gguf"
+    gguf.write_bytes(b"GGUF")
+
+    config = ModelConfig.from_identifier(os.fspath(gguf), gguf_variant = "q4_k_m")
+    assert config is not None and config.is_gguf
+    assert config.gguf_file == os.fspath(gguf)
+    # A directory of the same weights answers the same spelling.
+    marked = in_tmp_cwd / "marked"
+    marked.mkdir()
+    (marked / "config.json").write_text("{}")
+    (marked / "foo-Q4_K_M.gguf").write_bytes(b"GGUF")
+    dir_config = ModelConfig.from_identifier(os.fspath(marked), gguf_variant = "q4_k_m")
+    assert dir_config is not None and dir_config.is_gguf
+
+
+def test_torn_direct_split_is_not_offered_as_downloaded(in_tmp_cwd):
+    # llama.cpp resolves a split's siblings from the main shard's directory, so
+    # a lone shard is a load that fails after the teardown. The directory scan
+    # marks a torn quant partial; the direct-file fallback must not call it ready.
+    shard = in_tmp_cwd / "model-Q4_K_M-00001-of-00002.gguf"
+    shard.write_bytes(b"GGUF")
+
+    row = _variants(os.fspath(shard)).variants[0]
+    assert row.quant == "Q4_K_M"
+    assert row.downloaded is False and row.partial is True
+
+    # The whole set beside it is ready, and an unsplit file is untouched.
+    (in_tmp_cwd / "model-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF")
+    whole = _variants(os.fspath(shard)).variants[0]
+    assert whole.downloaded is True and whole.partial is False
+
+
+def test_local_dir_answer_ignores_the_hub_cache_of_the_same_name(in_tmp_cwd, monkeypatch):
+    # A repo-shaped id that exists as a directory is resolved existence-first by
+    # the load, so this answer describes that directory. An empty leftover
+    # <quant>/ folder in the HF cache of the identically named repo must not add
+    # a row to it: the CLI's attach gate reads any row as "this is a GGUF model"
+    # and the load then evicts the resident model for a directory with none.
+    from types import SimpleNamespace
+
+    hub_cache = in_tmp_cwd / "hub"
+    (hub_cache / "models--unsloth--foo" / "snapshots" / "rev" / "Q4_K_M").mkdir(parents = True)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(
+            hub_cache = hub_cache,
+            hf_home = in_tmp_cwd,
+            source = "studio",
+            cache_home = in_tmp_cwd,
+        ),
+    )
+    (in_tmp_cwd / "unsloth" / "foo").mkdir(parents = True)
+    (in_tmp_cwd / "unsloth" / "foo" / "config.json").write_text("{}")
+
+    from utils.models.model_config import detect_gguf_model
+
+    assert detect_gguf_model("unsloth/foo") is None
+    assert _variants("unsloth/foo").variants == []

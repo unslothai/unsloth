@@ -1714,6 +1714,29 @@ def _is_auxiliary_gguf(filename: str) -> bool:
     return not parents and stem.endswith(("-be", "_be"))
 
 
+def _direct_gguf_is_companion(path: str) -> bool:
+    """Whether the server refuses this .gguf path as a model in its own right.
+
+    A strict subset of detect_gguf_model / gguf_variants._direct_gguf_loads: the
+    projector and the drafter prefixes come off the basename and the
+    companion-only folders off the immediate parent, which is exactly the
+    context those read, so nothing the server would load is refused here. The
+    big-endian form is left out on purpose -- that check needs quant context the
+    CLI does not mirror, and a parent quant folder flips its answer.
+    """
+    parts = [segment for segment in path.replace("\\", "/").split("/") if segment]
+    if not parts:
+        return False
+    name = parts[-1].lower()
+    if not name.endswith(".gguf"):
+        return False
+    if "mmproj" in name:
+        return True
+    if any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS):
+        return True
+    return len(parts) > 1 and parts[-2].lower() in _DRAFTER_DIR_KINDS
+
+
 def _answer_offers_variant(variants: list, variant: str) -> bool:
     """Whether a live variants answer can resolve *variant* to a file.
 
@@ -1821,6 +1844,14 @@ def _attach_gguf_check_for_codex(
         and ":" not in repo
         and "\\" not in repo
     ):
+        # A companion is the exception: detect_gguf_model refuses mmproj files
+        # and the separate-file drafters, so the load falls through to the
+        # transformers path, which unloads the resident llama-server before it
+        # fails. Settled on the name, not by probing: the probe's own empty
+        # answer defers whenever the path exists for this process, which on the
+        # loopback attach this gate protects is exactly when it does.
+        if _direct_gguf_is_companion(repo):
+            _fail_codex_needs_gguf(repo)
         return
     # Mirror the load path's shorthand precedence: the raw name first (it may
     # be a directory relative to the server's cwd), then the unsloth/<name>

@@ -6408,6 +6408,35 @@ def test_codex_attach_check_skips_direct_gguf_files(monkeypatch):
     )
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf")
     start._attach_gguf_check_for_codex(BASE, "sk-test", "./local/model.GGUF")
+    # A quant folder or an unrelated parent name is still the model itself.
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q4_K_M/model-be.gguf")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/mmproj-dumps/foo-Q4_K_M.gguf")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/dflash/Qwen-DFlash-Q4_K_M.gguf")
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/models/mmproj-F16.gguf",
+        "./local/MMPROJ-F32.GGUF",
+        "/models/mtp-Qwen3-Q8_0.gguf",
+        "/models/MTP/Gemma-4-Q8_0-MTP.gguf",
+        "/models/dspark/dspark-DeepSeek-Q8_0.gguf",
+        "C:\\models\\mmproj-F16.gguf",
+    ],
+)
+def test_codex_attach_check_refuses_companion_gguf_files(monkeypatch, capsys, path):
+    # detect_gguf_model refuses the companions, so the load falls through to the
+    # transformers path -- which unloads the resident llama-server before it
+    # fails. The name settles it; probing would defer on a path that exists here.
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: pytest.fail("a companion .gguf needs no variants probe"),
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", path)
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("kwargs", [{"serve": False}, {"launch": False}])

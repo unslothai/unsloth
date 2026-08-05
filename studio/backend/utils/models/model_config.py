@@ -2304,6 +2304,17 @@ def list_local_gguf_variants(
     return variants, has_vision
 
 
+def _variant_matches(variant: str, *labels: str) -> bool:
+    """Whether a requested variant names one of *labels*, case-insensitively.
+
+    Mirrors llama.cpp's quant-label comparison in
+    ``core.inference.llama_cpp._gguf_files_for_variant``, so a local path
+    resolves the same spelling the hub path does.
+    """
+    wanted = str(variant).casefold()
+    return any(wanted == str(label).casefold() for label in labels)
+
+
 def _direct_gguf_for_variant(
     path: str,
     variant: str,
@@ -2317,6 +2328,13 @@ def _direct_gguf_for_variant(
     identifier loaded without a variant and failed with it. Only the file's
     own label matches, so a request for a different quant still finds
     nothing, and detect_gguf_model still refuses the companions.
+
+    The label is matched case-insensitively, as llama.cpp's own resolution
+    (``_gguf_files_for_variant``) matches it: a quant label is not a filename,
+    so ``q4_k_m`` names the same weights as ``Q4_K_M``. Resolving it
+    case-sensitively here would leave a typed lowercase ``--gguf-variant``
+    unresolved, which loads nothing as GGUF and evicts the resident model on
+    the transformers path before failing.
     """
     f = Path(path).expanduser()
     if f.suffix.lower() != ".gguf" or not f.is_file():
@@ -2324,7 +2342,7 @@ def _direct_gguf_for_variant(
     context = f"{f.parent.name}/{f.name}"
     quant = _extract_quant_label(context)
     fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", f.name.rsplit(".", 1)[0])
-    if variant not in (quant, fallback_variant):
+    if not _variant_matches(variant, quant, fallback_variant):
         return None
     return detect_gguf_model(str(f), model_root)
 
@@ -2361,7 +2379,9 @@ def _find_local_gguf_by_variant(
             continue
         quant = _extract_quant_label(rel)
         fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
-        if variant not in (quant, fallback_variant) or _is_big_endian_gguf_path(rel, quant):
+        if not _variant_matches(variant, quant, fallback_variant) or _is_big_endian_gguf_path(
+            rel, quant
+        ):
             continue
         matches.append(f)
     matches.sort()
