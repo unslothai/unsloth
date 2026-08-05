@@ -725,6 +725,11 @@ export async function startJob(
     }
     const started = transportAfterStart(mode, result.transport);
     if (started !== activeTransport) patchJob(key, { transport: started });
+    // An adopted job can already have fallen back from Xet to HTTP, which
+    // keeps its original cancel marker and so its stop control.
+    if (isResolvedTransport(result.cancel_transport)) {
+      patchJob(key, { cancelTransport: result.cancel_transport });
+    }
   }
 
   beginPolling(key, rt);

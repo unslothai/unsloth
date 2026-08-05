@@ -55,6 +55,8 @@ export interface DownloadStartResult {
   // Present only when the start adopted a job another client had already
   // begun: the transport it is really running on.
   transport?: TransportMode | null;
+  // And its cancel marker, when that job had fallen back from Xet to HTTP.
+  cancel_transport?: TransportMode | null;
 }
 
 export interface ActiveModelDownload {

@@ -312,6 +312,9 @@ async def download_model_response(
             # An adopted job keeps the transport it started on, so report it
             # rather than let the caller assume the one it asked for.
             "transport": _registry.job_transport(key),
+            # And its cancel marker: a run that fell back from Xet to HTTP
+            # still cancels into a restart-only partial.
+            "cancel_transport": _registry.job_cancel_transport(key),
         }
     download_manifest.clear_cancel_marker(
         "model",

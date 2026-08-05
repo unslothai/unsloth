@@ -99,3 +99,29 @@ def test_an_ordinary_run_publishes_no_cancel_marker():
     registry.claim(key, "http", repo_type = "model", repo_id = key)
     ref = active_download_refs(registry, key, with_variant = True)[0]
     assert ref.cancel_transport is None
+
+
+def test_an_adopted_fallback_run_reports_its_marker_to_the_new_client():
+    """The start response is the only source for that adoption path, so it has
+    to carry the marker as well as the live transport."""
+    registry = DownloadRegistry()
+    key = "unsloth/Qwen3-4B-GGUF"
+    registry.claim(
+        key,
+        "http",
+        repo_type = "model",
+        repo_id = key,
+        cancel_marker_transport = "xet",
+    )
+    # What the rejected second claim then reports.
+    assert registry.adoptable(key) is True
+    assert registry.job_transport(key) == "http"
+    assert registry.job_cancel_transport(key) == "xet"
+
+
+def test_an_ordinary_adopted_run_reports_no_marker():
+    registry = DownloadRegistry()
+    key = "unsloth/Qwen3-4B-GGUF"
+    registry.claim(key, "xet", repo_type = "model", repo_id = key)
+    assert registry.job_cancel_transport(key) is None
+    assert registry.job_cancel_transport("unsloth/never-started") is None

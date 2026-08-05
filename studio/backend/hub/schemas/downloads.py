@@ -82,6 +82,9 @@ class DownloadStartResponse(BaseModel):
     # fresh start, or the running job's own when this start adopted one.
     # Either can differ from what the client asked for.
     transport: Optional[str] = None
+    # Set only when an adopted job had fallen back from Xet to HTTP: stopping
+    # it still writes the original marker, so it is a restart, not a resume.
+    cancel_transport: Optional[str] = None
 
 
 class CancelDownloadResponse(BaseModel):
@@ -197,8 +200,9 @@ class DatasetDownloadStartResponse(BaseModel):
     state: str
     accepted: bool
     generation: int
-    # The transport the job is really on (see above).
+    # The transport the job is really on, and its cancel marker (see above).
     transport: Optional[str] = None
+    cancel_transport: Optional[str] = None
 
 
 class CancelDatasetDownloadResponse(BaseModel):

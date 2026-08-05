@@ -102,7 +102,7 @@ export function GgufDownloadingFallbackCard({
           downloading
           cancelling={cancelling}
           progressPercent={Math.round(Math.min(progress.fraction, 1) * 100)}
-          stopMode={downloadStopMode(job.transport)}
+          stopMode={downloadStopMode(job.transport, null, job.cancelTransport)}
           disabled={cancelling}
           onClick={() => void job.cancelDownload(progress.variant)}
         />

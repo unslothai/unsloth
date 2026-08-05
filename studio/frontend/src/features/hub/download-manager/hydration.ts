@@ -98,6 +98,9 @@ async function adoptActiveModelDownloads(): Promise<void> {
       safeGeneration(download.generation),
       download.state,
       isResolvedTransport(download.transport) ? download.transport : undefined,
+      isResolvedTransport(download.cancel_transport)
+        ? download.cancel_transport
+        : undefined,
     );
   }
 }
@@ -120,6 +123,9 @@ async function adoptActiveDatasetDownloads(): Promise<void> {
       safeGeneration(download.generation),
       download.state,
       isResolvedTransport(download.transport) ? download.transport : undefined,
+      isResolvedTransport(download.cancel_transport)
+        ? download.cancel_transport
+        : undefined,
     );
   }
 }
