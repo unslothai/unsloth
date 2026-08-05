@@ -1128,6 +1128,10 @@ _OPENAI_PASSTHROUGH_PREHEADER_STATUS_WINDOW_S = 0.1
 _OPENAI_PASSTHROUGH_PENDING_RESPONSE_KEEPALIVE_S = 5.0
 _OPENAI_PASSTHROUGH_SSE_KEEPALIVE = ": keep-alive\n\n"
 _OPENAI_LLAMA_ADMISSION_POLL_S = 0.25
+# Upper bound on waiting for a cancelled teardown task to settle. Request.is_disconnected()
+# can swallow cancel() outright (#7617), so every teardown await is bounded and abandons
+# the task instead of holding the response, and the process-wide slot, open forever.
+_TEARDOWN_TASK_STOP_TIMEOUT_S = 5.0
 # Idle window before a local tool-loop stream emits an SSE keepalive comment
 # (e.g. prompt prefill between tool iterations). A second layer atop the
 # tool_stream_exec heartbeats, keeping proxies (Cloudflare drops idle at ~100s).
@@ -1648,15 +1652,17 @@ async def _aclose_stream_resources(
     client = None,
 ) -> None:
     """Tear down an httpx streaming generator's resources in the required order:
-    cancel + await each watcher task, then aclose() the byte/line iterator, the
-    response, and the client. Each step swallows its own exceptions so teardown
+    cancel + bounded-wait each watcher task, then aclose() the byte/line iterator,
+    the response, and the client. Each step swallows its own exceptions so teardown
     always completes; a close-time CancelledError is re-raised only after every
     step has run. See _anthropic_passthrough_stream for the ordering rationale."""
     for watcher in watchers:
         if watcher is not None:
-            watcher.cancel()
             try:
-                await watcher
+                # bounded: a watcher parked in Request.is_disconnected() can swallow
+                # our cancel() outright, so awaiting it here would hold the response
+                # open until the client itself gives up. see #7617.
+                await _stop_local_disconnect_cancel_watcher(watcher)
             except (asyncio.CancelledError, Exception):
                 pass
     close_cancelled = False
@@ -1683,6 +1689,27 @@ async def _aclose_stream_resources(
             pass
     if close_cancelled:
         raise asyncio.CancelledError()
+
+
+def _discard_task_outcome(task: asyncio.Task) -> None:
+    """Drain an abandoned teardown task so asyncio does not log its result as unretrieved."""
+    if not task.cancelled():
+        task.exception()
+
+
+def _release_admission(admission_lease = None, tracker = None) -> None:
+    """Give back the process-wide llama-server slot and the cancel-registry entry.
+
+    Synchronous and called before a stream's teardown awaits, not after: the generation is
+    already finished upstream by then, and both are shared by every client, so anything that
+    stalls between here and the end of teardown must not keep holding them. #7617
+    """
+    try:
+        if admission_lease is not None:
+            admission_lease.release()
+    finally:
+        if tracker is not None:
+            tracker.__exit__(None, None, None)
 
 
 async def _preheader_cancelled(cancel_event = None, request: Optional[Request] = None) -> bool:
@@ -1720,9 +1747,17 @@ async def _send_stream_with_preheader_cancel(
             await client.aclose()
         except Exception:
             pass
+        # bounded like every other teardown await: the client is already closed, so an
+        # abandoned send owns nothing and its result is drained by the callback. #7617
         send_task.cancel()
+        done, _pending = await asyncio.wait(
+            {send_task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S
+        )
+        if not done:
+            send_task.add_done_callback(_discard_task_outcome)
+            return
         try:
-            await send_task
+            send_task.result()
         except (asyncio.CancelledError, Exception):
             pass
 
@@ -1742,9 +1777,11 @@ async def _send_stream_with_preheader_cancel(
         await _stop_send_task()
         raise
     finally:
-        cancel_task.cancel()
+        # bounded: cancel_task polls Request.is_disconnected(), which can swallow
+        # cancel(). this finally also runs on the success path, so an unbounded wait
+        # here stalls the stream before its first byte. see #7617.
         try:
-            await cancel_task
+            await _stop_local_disconnect_cancel_watcher(cancel_task)
         except (asyncio.CancelledError, Exception):
             pass
 
@@ -2595,7 +2632,9 @@ async def _await_cancel_or_disconnect_then_close_client(
         return
 
 
-async def _stop_local_disconnect_cancel_watcher(watcher, timeout_s: float = 5.0) -> None:
+async def _stop_local_disconnect_cancel_watcher(
+    watcher, timeout_s: float = _TEARDOWN_TASK_STOP_TIMEOUT_S
+) -> None:
     # Bounded: this runs in the stream's finally, so awaiting the watcher outright would let a
     # wedged poll loop hold the response open forever. asyncio.wait neither cancels nor re-raises,
     # and an abandoned watcher owns no resources.
@@ -16955,17 +16994,15 @@ async def _anthropic_passthrough_stream(
                     yield event
                 return
         finally:
-            # Same shape as the OpenAI passthrough: a close-time CancelledError
-            # re-raised by _aclose_stream_resources must not skip the tracker exit.
-            try:
-                await _aclose_stream_resources(
-                    watchers = (cancel_watcher, disconnect_watcher),
-                    iterator = lines_iter,
-                    resp = resp,
-                    client = client,
-                )
-            finally:
-                _tracker.__exit__(None, None, None)
+            # Same shape as the OpenAI passthrough: exit the tracker before the teardown
+            # awaits so a close-time stall cannot keep the cancel-registry entry alive.
+            _release_admission(tracker = _tracker)
+            await _aclose_stream_resources(
+                watchers = (cancel_watcher, disconnect_watcher),
+                iterator = lines_iter,
+                resp = resp,
+                client = client,
+            )
 
         for line in emitter.finish():
             yield line
@@ -17795,8 +17832,17 @@ async def _openai_passthrough_stream_admitted(
             return
         if not task.done():
             task.cancel()
+        # bounded: the send polls Request.is_disconnected() before dispatch, which can
+        # swallow cancel(). abandoning it is safe because the caller closes the per-request
+        # client right after, which tears down whatever response it later produces. #7617
+        done, _pending = await asyncio.wait(
+            {task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S
+        )
+        if not done:
+            task.add_done_callback(_discard_task_outcome)
+            return
         try:
-            task_resp = await task
+            task_resp = task.result()
             if task_resp is not None:
                 try:
                     await task_resp.aclose()
@@ -17857,6 +17903,9 @@ async def _openai_passthrough_stream_admitted(
                 # llama-server subprocess crashed / starting / unreachable.
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
+                # the outer handler releases too, but both are idempotent and nothing
+                # process-wide should be held across the closes below. #7617
+                _release_admission(admission_lease, _tracker)
                 await _aclose_send_task(send_task)
                 await _aclose_stream_resources(resp = resp, client = client)
                 raise HTTPException(
@@ -17869,14 +17918,9 @@ async def _openai_passthrough_stream_admitted(
                 if cancel_event is not None:
                     cancel_event.set()
                 api_monitor.finish(monitor_id, "cancelled")
-                try:
-                    await _aclose_send_task(send_task)
-                    await _aclose_stream_resources(client = client)
-                finally:
-                    try:
-                        admission_lease.release()
-                    finally:
-                        _tracker.__exit__(None, None, None)
+                _release_admission(admission_lease, _tracker)
+                await _aclose_send_task(send_task)
+                await _aclose_stream_resources(client = client)
                 return _SameTaskStreamingResponse(
                     iter(()),
                     media_type = "text/event-stream",
@@ -18411,35 +18455,26 @@ async def _openai_passthrough_stream_admitted(
                 err = _openai_stream_error_chunk(e)
                 yield _openai_stream_error_sse(err)
             finally:
-                # _aclose_stream_resources re-raises a close-time CancelledError
-                # only after finishing teardown, and the tracker exits either way.
-                try:
-                    await _aclose_send_task(send_task)
-                    await _aclose_stream_resources(
-                        watchers = (cancel_watcher, disconnect_watcher),
-                        iterator = lines_iter,
-                        resp = resp,
-                        client = client,
-                    )
-                finally:
-                    try:
-                        admission_lease.release()
-                    finally:
-                        _tracker.__exit__(None, None, None)
+                # Free the slot and the cancel-registry entry before any teardown await:
+                # llama-server has already released its own slot by here, and holding ours
+                # across the closes let one wedged teardown starve every client. #7617
+                _release_admission(admission_lease, _tracker)
+                await _aclose_send_task(send_task)
+                await _aclose_stream_resources(
+                    watchers = (cancel_watcher, disconnect_watcher),
+                    iterator = lines_iter,
+                    resp = resp,
+                    client = client,
+                )
 
         async def _unstarted_cleanup() -> None:
             # Client disconnected before the body stream started, so _stream()'s
             # finally never ran. Release the eagerly-opened upstream resp/client
             # and the cancel-registry entry here; the watchers and line iterator
             # are created inside _stream(), so there is nothing else to close.
-            try:
-                await _aclose_send_task(send_task)
-                await _aclose_stream_resources(resp = resp, client = client)
-            finally:
-                try:
-                    admission_lease.release()
-                finally:
-                    _tracker.__exit__(None, None, None)
+            _release_admission(admission_lease, _tracker)
+            await _aclose_send_task(send_task)
+            await _aclose_stream_resources(resp = resp, client = client)
 
         return _SameTaskStreamingResponse(
             _stream(),
@@ -18459,14 +18494,9 @@ async def _openai_passthrough_stream_admitted(
         else:
             detail = exc.detail if isinstance(exc, HTTPException) else _friendly_error(exc)
             api_monitor.fail(monitor_id, str(detail))
-        try:
-            await _aclose_send_task(send_task)
-            await _aclose_stream_resources(resp = resp, client = client)
-        finally:
-            try:
-                admission_lease.release()
-            finally:
-                _tracker.__exit__(None, None, None)
+        _release_admission(admission_lease, _tracker)
+        await _aclose_send_task(send_task)
+        await _aclose_stream_resources(resp = resp, client = client)
         raise
 
 
@@ -18634,9 +18664,10 @@ async def _openai_passthrough_non_streaming_upstream(
                 raise asyncio.CancelledError()
             return response
         finally:
-            watcher.cancel()
+            # bounded: the watcher polls Request.is_disconnected(), which can swallow
+            # cancel(). the client it owns is closed below either way. see #7617.
             try:
-                await watcher
+                await _stop_local_disconnect_cancel_watcher(watcher)
             except (asyncio.CancelledError, Exception):
                 pass
             try:
