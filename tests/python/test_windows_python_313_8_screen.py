@@ -52,8 +52,8 @@ def _blocks() -> tuple:
     is a syntax error before 3.12, and this repo is 3.9+ (ruff targets py311).
     """
     return (
-        _extract(r'    # Patch releases the stack cannot run.*?\$PythonSkip = @\([^\)]*\)'),
-        _extract(r'    function Remove-SkippedPython \{.*?\n    \}'),
+        _extract(r"    # Patch releases the stack cannot run.*?\$PythonSkip = @\([^\)]*\)"),
+        _extract(r"    function Remove-SkippedPython \{.*?\n    \}"),
     )
 
 
@@ -179,9 +179,7 @@ def test_every_enumerated_candidate_is_screened():
         len(
             [
                 l
-                for l in _extract(
-                    r"    function Find-CompatiblePython \{.*?\n    \}"
-                ).splitlines()
+                for l in _extract(r"    function Find-CompatiblePython \{.*?\n    \}").splitlines()
                 if 'match "Python' in l
             ]
         )
@@ -202,14 +200,12 @@ def _fake_launcher(root: Path, versions: dict[str, str]) -> Path:
         # -S -c "import sys; print(sys.base_prefix)" for the conda screen.
         exe.write_text('#!/bin/sh\necho "/usr"\n', encoding = "utf-8")
         exe.chmod(0o755)
-        branches.append(
-            f'  {minor}) ver="{full}"; exe="{exe}" ;;'
-        )
+        branches.append(f'  {minor}) ver="{full}"; exe="{exe}" ;;')
     launcher = root / "py"
     launcher.write_text(
         "#!/bin/sh\n"
         'case "$1" in\n'
-        + "\n".join(f'  -{b.lstrip()}' for b in branches)
+        + "\n".join(f"  -{b.lstrip()}" for b in branches)
         + "\n  *) exit 1 ;;\nesac\n"
         "shift\n"
         'case "$1" in\n'
@@ -230,9 +226,9 @@ def _resolve(tmp_path: Path, versions: dict[str, str]) -> str:
     skip_block, screen_block = _blocks()
     # Hoisted for the same reason as _blocks: a backslash in an f-string
     # expression does not parse before 3.12.
-    conda_block = _extract(r'    function Test-IsCondaPython \{.*?\n    \}')
-    tag_block = _extract(r'    function Get-PythonPlatformTag \{.*?\n    \}')
-    resolver_block = _extract(r'    function Find-CompatiblePython \{.*?\n    \}')
+    conda_block = _extract(r"    function Test-IsCondaPython \{.*?\n    \}")
+    tag_block = _extract(r"    function Get-PythonPlatformTag \{.*?\n    \}")
+    resolver_block = _extract(r"    function Find-CompatiblePython \{.*?\n    \}")
     script = f"""
 $ErrorActionPreference = "Stop"
 $env:PATH = "{root}"
@@ -264,15 +260,11 @@ def test_the_resolver_falls_through_to_the_next_minor(tmp_path):
     # nothing installable. Ending the search on the 3.13 would leave the caller
     # with a Python that cannot import torch; refusing it outright would fail a
     # machine that has a perfectly good interpreter one entry down the list.
-    assert (
-        _resolve(tmp_path, {"3.13": "3.13.8", "3.12": "3.12.11"}) == "3.12"
-    )
+    assert _resolve(tmp_path, {"3.13": "3.13.8", "3.12": "3.12.11"}) == "3.12"
 
 
 def test_a_good_preferred_minor_still_wins(tmp_path):
-    assert (
-        _resolve(tmp_path, {"3.13": "3.13.13", "3.12": "3.12.11"}) == "3.13"
-    )
+    assert _resolve(tmp_path, {"3.13": "3.13.13", "3.12": "3.12.11"}) == "3.13"
 
 
 def test_nothing_usable_is_still_nothing(tmp_path):
