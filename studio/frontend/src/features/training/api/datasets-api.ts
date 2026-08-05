@@ -20,12 +20,18 @@ type CheckDatasetFormatArgs = {
   signal?: AbortSignal;
 };
 
-class DatasetFormatError extends Error {
+export class DatasetFormatError extends Error {
   readonly errorCode: string | null;
+  readonly status: number;
 
-  constructor(message: string, errorCode: string | null = null) {
+  constructor(
+    message: string,
+    status: number,
+    errorCode: string | null = null,
+  ) {
     super(message);
     this.name = "DatasetFormatError";
+    this.status = status;
     this.errorCode = errorCode;
   }
 }
@@ -42,14 +48,21 @@ async function readDatasetFormatError(
       if (typeof structured.message === "string" && structured.message) {
         return new DatasetFormatError(
           structured.message,
+          response.status,
           typeof structured.code === "string" ? structured.code : null,
         );
       }
     }
   } catch {
-    return new DatasetFormatError(await readFastApiError(fallbackResponse));
+    return new DatasetFormatError(
+      await readFastApiError(fallbackResponse),
+      response.status,
+    );
   }
-  return new DatasetFormatError(await readFastApiError(fallbackResponse));
+  return new DatasetFormatError(
+    await readFastApiError(fallbackResponse),
+    response.status,
+  );
 }
 
 export async function checkDatasetFormat({

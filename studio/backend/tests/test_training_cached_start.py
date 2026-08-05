@@ -810,6 +810,7 @@ def test_unadvertised_cache_pin_reaches_worker(monkeypatch, tmp_path, offline):
     assert worker._verify_config_pins(config, SimpleNamespace(put = events.append)) is True
     assert config["actual_model_repo_id"] == "bert-base-uncased"
     assert config["model_snapshot_path"] == str(snapshot.resolve())
+    assert config["model_revision"] == "rev"
     assert config["require_validated_model_snapshot"] is True
     assert (
         worker._cache_artifact_fallback_allowed(
@@ -817,7 +818,7 @@ def test_unadvertised_cache_pin_reaches_worker(monkeypatch, tmp_path, offline):
             ValueError("Either model_file or model_proto must be specified."),
             "model",
         )
-        is False
+        is (not offline)
     )
 
 
@@ -845,17 +846,96 @@ def test_selected_cached_model_tokenizer_failure_allows_hub_fallback(tmp_path):
 
     assert config["model_snapshot_path"] == str(snapshot.resolve())
     assert config["actual_model_repo_id"] == "unsloth/test"
+    assert config["model_revision"] == "rev"
     assert config.get("require_validated_model_snapshot", False) is False
     error = ValueError("Either model_file or model_proto must be specified.")
     assert worker._cache_artifact_fallback_allowed(config, error, "model") is True
 
     with patch(
         "utils.transformers_version.get_transformers_activation_tier",
-        return_value = "default",
+        side_effect = AssertionError("an exact-revision retry must not probe mutable HEAD"),
     ):
         assert worker._drop_model_pin_for_fallback(config, None) == "unsloth/test"
     assert config["model_snapshot_path"] is None
-    assert config["actual_model_repo_id"] is None
+    assert config["actual_model_repo_id"] == "unsloth/test"
+    assert config["model_revision"] == "rev"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        TypeError(
+            "stat: path should be string, bytes, os.PathLike or integer, not NoneType"
+        ),
+        TypeError("expected str, bytes or os.PathLike object, not NoneType"),
+        OSError("Can't load processor for 'org/model'."),
+        OSError("Can't load image processor for 'org/model'."),
+        OSError("Can't load feature extractor for 'org/model'."),
+    ],
+)
+def test_worker_model_cache_fallback_recognizes_missing_tokenizer_and_processor(
+    monkeypatch, error
+):
+    from core.training import worker
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+
+    assert worker._cache_artifact_fallback_allowed({}, error, "model") is True
+
+
+@pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
+def test_worker_incomplete_model_cache_reports_actionable_offline_error(
+    monkeypatch, offline_variable
+):
+    from core.training import worker
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    monkeypatch.setenv(offline_variable, "1")
+    config = {"model_revision": "deadbeef"}
+    error = TypeError("expected str, bytes or os.PathLike object, not NoneType")
+
+    assert worker._cache_artifact_fallback_allowed(config, error, "model") is False
+    fallback_error = worker._model_cache_fallback_error(config, error)
+    assert fallback_error is not None
+    assert "Offline mode is enabled" in str(fallback_error)
+    assert "deadbeef" in str(fallback_error)
+
+
+def test_worker_exact_resume_rejects_incomplete_model_cache_with_clear_error(monkeypatch):
+    from core.training import worker
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    config = {"require_exact_model_resource": True}
+    error = OSError("Can't load processor for '/cache/snapshot'.")
+
+    assert worker._cache_artifact_fallback_allowed(config, error, "model") is False
+    fallback_error = worker._model_cache_fallback_error(config, error)
+    assert fallback_error is not None
+    assert "exact cached model snapshot is incomplete" in str(fallback_error)
+
+
+def test_mlx_pinned_fallback_rejects_cross_repository_bnb_remap():
+    from core.training import worker
+
+    error = worker._mlx_revision_fallback_error(
+        {
+            "model_name": "unsloth/test-bnb-4bit",
+            "model_revision": "deadbeef",
+        }
+    )
+
+    assert error is not None
+    assert "different base repository" in str(error)
+    assert "deadbeef" in str(error)
+    assert (
+        worker._mlx_revision_fallback_error(
+            {"model_name": "org/mlx-model", "model_revision": "deadbeef"}
+        )
+        is None
+    )
 
 
 def test_untrainable_gate_rejects_remote_adapter():
@@ -2299,7 +2379,29 @@ def test_worker_model_cache_fallback_drops_pin_for_matching_transformers_tier():
 
     assert target == "org/model"
     assert config["model_snapshot_path"] is None
-    assert config["actual_model_repo_id"] is None
+    assert config["actual_model_repo_id"] == "org/model"
+
+
+def test_worker_model_cache_fallback_preserves_exact_revision_without_head_probe():
+    from core.training import worker
+
+    config = {
+        "model_name": "org/model",
+        "model_snapshot_path": "/cache/models--org--model/snapshots/deadbeef",
+        "actual_model_repo_id": "org/model",
+        "model_revision": "deadbeef",
+    }
+
+    with patch(
+        "utils.transformers_version.get_transformers_activation_tier",
+        side_effect = AssertionError("the pinned revision already selected the active tier"),
+    ):
+        target = worker._drop_model_pin_for_fallback(config, "hf_test")
+
+    assert target == "org/model"
+    assert config["model_snapshot_path"] is None
+    assert config["actual_model_repo_id"] == "org/model"
+    assert config["model_revision"] == "deadbeef"
 
 
 def test_worker_cached_dataset_load_requires_verified_path():
@@ -2654,6 +2756,7 @@ def test_worker_model_retry_refreshes_tokenizer_before_dataset():
         "org/model",
         "hf_test",
         reload_dataset,
+        "deadbeef",
     )
 
     assert result is expected
@@ -2663,6 +2766,7 @@ def test_worker_model_retry_refreshes_tokenizer_before_dataset():
     assert tokenizer_kwargs["model_load_name"] == "org/model"
     assert tokenizer_kwargs["local_files_only"] is False
     assert tokenizer_kwargs["hf_token"] == "hf_test"
+    assert tokenizer_kwargs["model_revision"] == "deadbeef"
 
 
 def test_worker_bootstrap_drops_vanished_pins_and_emits_warnings(tmp_path):
@@ -2886,6 +2990,7 @@ def test_strict_resume_cached_eval_none_never_loads_remote():
         "dataset_snapshot_path": "/cache/exact",
         "train_split": "train",
         "eval_split": "validation",
+        "eval_steps": 0.1,
         "require_exact_resume_resources": True,
     }
 

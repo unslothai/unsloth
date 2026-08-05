@@ -8,14 +8,20 @@ import {
   type ModelInventoryFormat,
   fetchInventorySource,
   normalizeModelIdentity,
+  useDeviceInventoryStore,
   useHfTokenStore,
   useInventoryVersion,
   useTokenScopedInventoryRequestOptions,
 } from "@/features/hub";
 import {
+  type DatasetCacheInventoryIdentity,
+  type DatasetCacheUsabilityIdentity,
   cachedInventoryPathMatchesSelection,
+  createDatasetCacheUsabilityIdentity,
+  datasetCacheUsabilityIdentitiesEqual,
   isLocalTrainingModelSelection,
   isTrainableModelFormat,
+  trainingDatasetCacheRejections,
   useTrainingConfigStore,
 } from "@/features/training";
 import { translate } from "@/i18n";
@@ -34,6 +40,31 @@ function findDatasetReference(
 ): CachedDatasetRepo | undefined {
   const key = dataset.toLowerCase();
   return rows.find((row) => !row.partial && row.repo_id.toLowerCase() === key);
+}
+
+function datasetReferenceUsabilityIdentity(
+  reference: CachedDatasetRepo,
+  dataset: string,
+  expected: DatasetCacheUsabilityIdentity,
+): DatasetCacheUsabilityIdentity {
+  return createDatasetCacheUsabilityIdentity({
+    dataset,
+    cachePath: reference.cache_path,
+    subset: expected.subset,
+    split: expected.split,
+    streaming: expected.streaming,
+  });
+}
+
+function datasetReferenceInventoryIdentity(
+  reference: CachedDatasetRepo,
+): DatasetCacheInventoryIdentity {
+  return {
+    cachePath: reference.cache_path,
+    sizeBytes: reference.size_bytes,
+    partial: reference.partial,
+    partialTransport: reference.partial_transport,
+  };
 }
 
 function modelIdentityMatches(
@@ -87,7 +118,7 @@ function findModelReference(
 function reconcileDatasetReference(
   rows: readonly CachedDatasetRepo[],
   expectedDataset: string,
-  expectedLocalPath: string | null,
+  expectedIdentity: DatasetCacheUsabilityIdentity,
   wasKnownCached: boolean,
 ): void {
   const current = useTrainingConfigStore.getState();
@@ -97,41 +128,87 @@ function reconcileDatasetReference(
   ) {
     return;
   }
+  const currentIdentity = createDatasetCacheUsabilityIdentity({
+    dataset: expectedDataset,
+    cachePath: current.datasetLocalPath,
+    subset: current.datasetSubset,
+    split: current.datasetSplit,
+    streaming: current.datasetStreaming,
+  });
+  if (
+    !datasetCacheUsabilityIdentitiesEqual(currentIdentity, expectedIdentity)
+  ) {
+    return;
+  }
+  if (current.datasetKnownCached !== wasKnownCached) {
+    return;
+  }
   const reference = findDatasetReference(rows, expectedDataset);
-  if (wasKnownCached) {
-    if (!current.datasetKnownCached) {
-      return;
-    }
-    if (reference) {
-      if (
-        cachedInventoryPathMatchesSelection(
-          reference.cache_path,
-          expectedLocalPath,
-        )
-      ) {
-        return;
-      }
-      current.setSelectedDatasetCacheReference(
-        expectedDataset,
-        reference.cache_path ?? null,
-      );
+  if (!reference) {
+    trainingDatasetCacheRejections.reset(expectedDataset);
+    if (!wasKnownCached) {
       return;
     }
     current.clearSelectedDatasetCacheReference(
       expectedDataset,
-      expectedLocalPath,
+      expectedIdentity.cachePath,
     );
     toast.warning(translate("studio.wizard.cachedDatasetGoneTitle"), {
       description: translate("studio.wizard.cachedDatasetGoneDescription"),
     });
     return;
   }
-  if (!current.datasetKnownCached && reference) {
+
+  const candidateIdentity = datasetReferenceUsabilityIdentity(
+    reference,
+    expectedDataset,
+    expectedIdentity,
+  );
+  const inventoryIdentity = datasetReferenceInventoryIdentity(reference);
+  if (wasKnownCached) {
+    if (
+      cachedInventoryPathMatchesSelection(
+        reference.cache_path,
+        expectedIdentity.cachePath,
+      )
+    ) {
+      trainingDatasetCacheRejections.observe(
+        candidateIdentity,
+        inventoryIdentity,
+      );
+      return;
+    }
+    if (
+      !trainingDatasetCacheRejections.shouldPromote(
+        candidateIdentity,
+        inventoryIdentity,
+      )
+    ) {
+      current.clearSelectedDatasetCacheReference(
+        expectedDataset,
+        expectedIdentity.cachePath,
+      );
+      return;
+    }
     current.setSelectedDatasetCacheReference(
       expectedDataset,
       reference.cache_path ?? null,
     );
+    return;
   }
+
+  if (
+    !trainingDatasetCacheRejections.shouldPromote(
+      candidateIdentity,
+      inventoryIdentity,
+    )
+  ) {
+    return;
+  }
+  current.setSelectedDatasetCacheReference(
+    expectedDataset,
+    reference.cache_path ?? null,
+  );
 }
 
 function reconcileModelReference(
@@ -175,6 +252,9 @@ function reconcileModelReference(
 
 export function useTrainingCacheReconciliation(): void {
   const inventoryVersion = useInventoryVersion();
+  const cachedDatasetRows = useDeviceInventoryStore(
+    (s) => s.cachedDatasets.rows,
+  );
   const hfToken = useHfTokenStore((s) => s.token);
   const modelInventoryOptions = useTokenScopedInventoryRequestOptions(
     inventoryVersion,
@@ -186,6 +266,9 @@ export function useTrainingCacheReconciliation(): void {
     modelLocalPath,
     datasetSource,
     dataset,
+    datasetSubset,
+    datasetSplit,
+    datasetStreaming,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       selectedModel: s.selectedModel,
@@ -193,9 +276,13 @@ export function useTrainingCacheReconciliation(): void {
       modelLocalPath: s.modelLocalPath,
       datasetSource: s.datasetSource,
       dataset: s.dataset,
+      datasetSubset: s.datasetSubset,
+      datasetSplit: s.datasetSplit,
+      datasetStreaming: s.datasetStreaming,
     })),
   );
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: row replacement is an intentional force-refresh trigger even when the global version is unchanged
   useEffect(() => {
     if (datasetSource !== "huggingface" || !dataset) {
       return;
@@ -203,23 +290,39 @@ export function useTrainingCacheReconciliation(): void {
     const current = useTrainingConfigStore.getState();
     if (
       current.datasetSource !== "huggingface" ||
-      current.dataset !== dataset
+      current.dataset !== dataset ||
+      current.datasetSubset !== datasetSubset ||
+      current.datasetSplit !== datasetSplit ||
+      current.datasetStreaming !== datasetStreaming
     ) {
       return;
     }
     let cancelled = false;
     const expectedDataset = dataset;
-    const expectedLocalPath = current.datasetLocalPath;
+    const expectedIdentity = createDatasetCacheUsabilityIdentity({
+      dataset: expectedDataset,
+      cachePath: current.datasetLocalPath,
+      subset: current.datasetSubset,
+      split: current.datasetSplit,
+      streaming: current.datasetStreaming,
+    });
+    const expectedValidation =
+      trainingDatasetCacheRejections.beginValidation(expectedIdentity);
     const wasKnownCached = current.datasetKnownCached;
     fetchInventorySource("cachedDatasets", { inventoryVersion })
       .then((rows) => {
-        if (cancelled) {
+        if (
+          cancelled ||
+          !trainingDatasetCacheRejections.isValidationCurrent(
+            expectedValidation,
+          )
+        ) {
           return;
         }
         reconcileDatasetReference(
           rows,
           expectedDataset,
-          expectedLocalPath,
+          expectedIdentity,
           wasKnownCached,
         );
       })
@@ -227,7 +330,15 @@ export function useTrainingCacheReconciliation(): void {
     return () => {
       cancelled = true;
     };
-  }, [inventoryVersion, datasetSource, dataset]);
+  }, [
+    inventoryVersion,
+    cachedDatasetRows,
+    datasetSource,
+    dataset,
+    datasetSubset,
+    datasetSplit,
+    datasetStreaming,
+  ]);
 
   useEffect(() => {
     if (

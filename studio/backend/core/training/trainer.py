@@ -171,6 +171,7 @@ class UnslothTrainer:
         trust_remote_code: bool = False,
         model_load_name: Optional[str] = None,
         local_files_only: bool = False,
+        model_revision: Optional[str] = None,
     ) -> None:
         """Lightweight detection and tokenizer load — no model weights, no VRAM.
 
@@ -190,7 +191,10 @@ class UnslothTrainer:
 
         # --- Detect audio type (reads config.json only, no VRAM) ---
         self._audio_type = detect_audio_type(
-            lookup_name, hf_token, local_files_only = local_files_only
+            lookup_name,
+            hf_token,
+            local_files_only = local_files_only,
+            revision = model_revision,
         )
         if self._audio_type == "audio_vlm":
             self.is_audio = False
@@ -205,7 +209,12 @@ class UnslothTrainer:
 
         # --- Detect VLM ---
         vision = (
-            is_vision_model(lookup_name, hf_token = hf_token, local_files_only = local_files_only)
+            is_vision_model(
+                lookup_name,
+                hf_token = hf_token,
+                local_files_only = local_files_only,
+                revision = model_revision,
+            )
             if not self.is_audio
             else False
         )
@@ -229,6 +238,7 @@ class UnslothTrainer:
                 trust_remote_code = trust_remote_code,
                 token = hf_token,
                 local_files_only = local_files_only,
+                revision = model_revision,
             )
         else:
             from transformers import AutoTokenizer
@@ -237,6 +247,7 @@ class UnslothTrainer:
                 trust_remote_code = trust_remote_code,
                 token = hf_token,
                 local_files_only = local_files_only,
+                revision = model_revision,
             )
 
         logger.info("Pre-loaded tokenizer for %s", model_name)
@@ -540,6 +551,7 @@ class UnslothTrainer:
         model_load_name: Optional[str] = None,
         local_files_only: bool = False,
         actual_model_repo_id: Optional[str] = None,
+        model_revision: Optional[str] = None,
     ) -> bool:
         """Load model for training (supports both text and vision models)"""
         self.load_in_4bit = load_in_4bit  # For training_meta.json
@@ -583,7 +595,10 @@ class UnslothTrainer:
             clear_unsloth_compiled_cache(preserve_patterns = _preserve)
             # Detect audio model type dynamically (config.json + tokenizer)
             self._audio_type = detect_audio_type(
-                lookup_name, hf_token, local_files_only = local_files_only
+                lookup_name,
+                hf_token,
+                local_files_only = local_files_only,
+                revision = model_revision,
             )
             # audio_vlm is detected as an audio_type now; handle separately
             if self._audio_type == "audio_vlm":
@@ -599,7 +614,12 @@ class UnslothTrainer:
 
             # VLM: vision model + image dataset (mutually exclusive with audio)
             vision = (
-                is_vision_model(lookup_name, hf_token = hf_token, local_files_only = local_files_only)
+                is_vision_model(
+                    lookup_name,
+                    hf_token = hf_token,
+                    local_files_only = local_files_only,
+                    revision = model_revision,
+                )
                 if not self.is_audio
                 else False
             )
@@ -640,7 +660,10 @@ class UnslothTrainer:
             if "/" in model_name and not local_files_only and not _env_offline():
                 try:
                     from huggingface_hub import model_info as hf_model_info
-                    info = hf_model_info(model_name, token = hf_token or None)
+                    model_info_kwargs = {"token": hf_token or None}
+                    if model_revision:
+                        model_info_kwargs["revision"] = model_revision
+                    info = hf_model_info(model_name, **model_info_kwargs)
                     # model_info succeeds for gated repos (metadata is public);
                     # info.gated tells us if files require acceptance/token.
                     if info.gated and not hf_token:
@@ -698,6 +721,8 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 logger.info("Loaded CSM audio model")
 
@@ -717,6 +742,8 @@ class UnslothTrainer:
                     whisper_task = "transcribe",
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 # Generation settings (notebook lines 100-105)
                 self.model.generation_config.language = "<|en|>"
@@ -736,6 +763,8 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 logger.info(f"Loaded {self._audio_type} audio model (FastLanguageModel)")
 
@@ -760,7 +789,11 @@ class UnslothTrainer:
                 if local_files_only:
                     repo_path = lookup_name
                 else:
-                    repo_path = snapshot_download(hf_repo, local_dir = local_dir)
+                    repo_path = snapshot_download(
+                        hf_repo,
+                        local_dir = local_dir,
+                        revision = model_revision,
+                    )
                 self._spark_tts_repo_dir = os.path.abspath(repo_path)  # Absolute for sys.path
                 llm_path = os.path.join(self._spark_tts_repo_dir, "LLM")
 
@@ -787,6 +820,8 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 logger.info("Loaded OuteTTS (dac) model (FastModel)")
 
@@ -803,6 +838,8 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 logger.info("Loaded audio VLM model (FastModel)")
 
@@ -817,6 +854,8 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 logger.info("Loaded vision model")
 
@@ -844,6 +883,8 @@ class UnslothTrainer:
                     full_finetuning = full_finetuning,
                     token = hf_token,
                     trust_remote_code = trust_remote_code,
+                    revision = model_revision,
+                    use_exact_model_name = model_revision is not None,
                 )
                 logger.info("Loaded text model")
 
@@ -893,6 +934,7 @@ class UnslothTrainer:
                     model_load_name = model_load_name,
                     local_files_only = local_files_only,
                     actual_model_repo_id = actual_model_repo_id,
+                    model_revision = model_revision,
                 )
             error_msg = str(e)
             error_lower = error_msg.lower()

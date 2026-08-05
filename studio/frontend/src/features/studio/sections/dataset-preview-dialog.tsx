@@ -12,8 +12,10 @@ import {
 import { Spinner } from "@/components/ui/spinner";
 import {
   type CheckFormatResponse,
+  DatasetFormatError,
   aiAssistMapping,
   checkDatasetFormat,
+  clearDeletedDataset,
   isRawTextDatasetFormat,
   useTrainingActions,
   useTrainingConfigStore,
@@ -357,7 +359,7 @@ export function DatasetPreviewDialog({
       return;
     }
 
-    let cancelled = false;
+    const controller = new AbortController();
 
     checkDatasetFormat({
       datasetName: previewRequest.datasetName,
@@ -367,9 +369,10 @@ export function DatasetPreviewDialog({
       isVlm: previewRequest.isVlm,
       preferLocalCache: previewRequest.preferLocalCache,
       localPath: previewRequest.localPath,
+      signal: controller.signal,
     })
       .then((res) => {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setPreviewResult({
             requestKey: previewRequest.requestKey,
             data: res,
@@ -378,18 +381,21 @@ export function DatasetPreviewDialog({
         }
       })
       .catch((err) => {
-        if (!cancelled) {
-          setPreviewResult({
-            requestKey: previewRequest.requestKey,
-            data: null,
-            error:
-              err instanceof Error ? err.message : "Failed to load preview",
-          });
+        if (controller.signal.aborted) {
+          return;
         }
+        if (err instanceof DatasetFormatError && err.status === 404) {
+          clearDeletedDataset(previewRequest.datasetName);
+        }
+        setPreviewResult({
+          requestKey: previewRequest.requestKey,
+          data: null,
+          error: err instanceof Error ? err.message : "Failed to load preview",
+        });
       });
 
     return () => {
-      cancelled = true;
+      controller.abort();
     };
   }, [previewRequest]);
 

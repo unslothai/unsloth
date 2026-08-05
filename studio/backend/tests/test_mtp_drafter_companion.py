@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Separate-file MTP drafter (Gemma 4) contracts.
+"""Separate-file drafter contracts: MTP (Gemma 4) and DSpark (DeepSeek V4 Flash).
 
 Pins: the drafter-path predicate and its two layering mirrors, Gemma
 effective-size extraction, companion classification in variant plans
@@ -58,6 +58,29 @@ DRAFTER_CASES = [
     ("prompt-mtp-test.gguf", False),
     ("smtp/model.gguf", False),
     ("mtp-readme.txt", False),
+    # DSpark drafters (DeepSeek V4 Flash). Their BF16/Q8_0 tokens make them the
+    # two smallest, most pickable entries in a repo whose real quants are 87 GB+.
+    ("dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf", True),
+    ("dspark/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", True),
+    ("DSPARK/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", True),
+    ("dspark/whatever.gguf", True),
+    ("dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", True),
+    # Local scans can hand the predicate a Windows path.
+    ("dspark\\dspark-DeepSeek-V4-Flash-0731-BF16.gguf", True),
+    # Same drafter under its general.architecture name; the prefix carries it,
+    # e.g. ggml-org/Qwen3.6-27B-GGUF ships one at the repo root.
+    ("dflash/dflash-model-Q8_0.gguf", True),
+    ("dflash-model.gguf", True),
+    ("dflash-Qwen3.6-27B-BF16.gguf", True),
+    # DFlash is also a family name, so a directory alone is not a drafter marker.
+    ("dflash/Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", False),
+    ("foo/dflash/bar.gguf", False),
+    # Real filenames where dflash/dspark is the family name remain selectable.
+    ("Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", False),
+    ("qwen36-35b-a3b-dflash-Q8_0.gguf", False),
+    ("laguna-xs21-dflash-q4.gguf", False),
+    ("xdspark/model.gguf", False),
+    ("dspark/README.md", False),
 ]
 
 
@@ -880,3 +903,135 @@ def test_companion_search_root_keeps_non_quant_directories(tmp_path):
         weight = directory / "model.gguf"
         weight.write_bytes(b"x")
         assert _local_gguf_companion_search_root(str(directory), str(weight)) == str(directory)
+
+
+# ── DSpark drafters (DeepSeek V4 Flash) ──────────────────────────────
+
+DEEPSEEK_SIBLINGS = [
+    _sib("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00001-of-00002.gguf", 9_000, "q4-1"),
+    _sib("UD-Q4_K_XL/DeepSeek-V4-Flash-0731-UD-Q4_K_XL-00002-of-00002.gguf", 8_000, "q4-2"),
+    _sib("UD-IQ1_S/DeepSeek-V4-Flash-0731-UD-IQ1_S-00001-of-00002.gguf", 5_000, "iq1-1"),
+    _sib("dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf", 1_100, "dspark-bf16"),
+    _sib("dspark/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf", 1_000, "dspark-q8"),
+]
+
+
+def test_dspark_drafters_are_not_quants_and_are_not_auto_fetched():
+    plans = build_gguf_variant_plans(DEEPSEEK_SIBLINGS)
+
+    assert set(plans) == {"ud-q4_k_xl", "ud-iq1_s"}
+    for plan in plans.values():
+        assert not any(name.startswith("dspark/") for name in plan.target_filenames)
+        assert plan.companion_hashes == frozenset()
+
+    q4 = plans["ud-q4_k_xl"]
+    assert q4.main_size_bytes == 17_000
+    assert q4.download_size_bytes == 17_000
+
+
+def test_a_root_dflash_drafter_is_not_a_quant():
+    plans = build_gguf_variant_plans(
+        [
+            _sib("Qwen3.6-27B-BF16.gguf", 54_000, "bf16"),
+            _sib("dflash-Qwen3.6-27B-BF16.gguf", 3_000, "dflash"),
+        ]
+    )
+
+    assert set(plans) == {"bf16"}
+    assert plans["bf16"].main_filenames == frozenset({"Qwen3.6-27B-BF16.gguf"})
+    assert plans["bf16"].main_size_bytes == 54_000
+
+
+def test_gemma_mtp_is_still_auto_downloaded():
+    plans = build_gguf_variant_plans(GEMMA_SIBLINGS)
+
+    for plan in plans.values():
+        assert "mtp-gemma-4-12b-it.gguf" in plan.target_filenames
+
+
+def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    def _snapshot(files):
+        snap = tmp_path / f"snap{len(list(tmp_path.iterdir()))}"
+        for rel in files:
+            path = snap / rel
+            path.parent.mkdir(parents = True, exist_ok = True)
+            path.write_bytes(b"x")
+        return snap
+
+    dspark_only = _snapshot(["dspark/dspark-model-Q8_0.gguf", "model-Q4_K_M.gguf"])
+    with_mtp = _snapshot(["mtp-model.gguf", "model-Q4_K_M.gguf"])
+
+    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
+    snapshots: list[Path] = []
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots",
+        lambda *a, **k: list(snapshots),
+    )
+
+    snapshots[:] = [dspark_only]
+    assert backend._cached_repo_mtp_drafter("some/repo") is None
+
+    snapshots[:] = [with_mtp, dspark_only]
+    found = backend._cached_repo_mtp_drafter("some/repo")
+    assert found is not None and found.endswith("mtp-model.gguf")
+
+
+def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
+    """Create an HF cache snapshot whose files are symlinks to blobs."""
+    repo_dir = tmp_path / f"models--{repo_id.replace('/', '--')}"
+    snap = repo_dir / "snapshots" / "rev1"
+    blobs = repo_dir / "blobs"
+    snap.mkdir(parents = True)
+    blobs.mkdir(parents = True)
+    files = []
+    for index, name in enumerate(names):
+        blob = blobs / f"sha{index}"
+        blob.write_bytes(b"x" * 64)
+        link = snap / name
+        link.parent.mkdir(parents = True, exist_ok = True)
+        link.symlink_to(blob)
+        files.append(
+            SimpleNamespace(
+                file_name = name,
+                file_path = str(link),
+                blob_path = str(blob),
+                size_on_disk = 64,
+            )
+        )
+    return SimpleNamespace(
+        repo_id = repo_id,
+        repo_type = "model",
+        repo_path = repo_dir,
+        revisions = [SimpleNamespace(files = files, snapshot_path = str(snap))],
+    ), snap
+
+
+def test_deleting_a_variant_keeps_an_opt_in_dspark_drafter(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        ["model-Q4_K_M.gguf", "dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf"],
+    )
+    _delete_gguf_variant_from_repos(
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root = tmp_path
+    )
+
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert (snap / "dspark" / "dspark-DeepSeek-V4-Flash-0731-BF16.gguf").is_symlink()
+
+
+def test_deleting_the_last_variant_still_reclaims_mtp_and_mmproj(tmp_path):
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path, "org/Model-GGUF", ["model-Q4_K_M.gguf", "mtp-model.gguf", "mmproj-F16.gguf"]
+    )
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert not (snap / "mtp-model.gguf").is_symlink()
+    assert not (snap / "mmproj-F16.gguf").is_symlink()

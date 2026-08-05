@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   isHuggingFaceDatasetSelected,
+  resolveDeletedLocalDatasetSelection,
   shouldClearMissingLocalDatasetSelection,
 } from "../src/features/training/lib/dataset-selection.ts";
 
@@ -67,5 +68,47 @@ test("clears missing recipe selections only after local inventory settles", () =
       selectedPath: String.raw`C:\datasets\uploads\train.jsonl`,
     }),
     false,
+  );
+});
+
+test("clears only the exact local dataset selection reported missing", () => {
+  const selectedPath = "/datasets/uploads/train.jsonl";
+  assert.equal(
+    resolveDeletedLocalDatasetSelection({
+      datasetName: selectedPath,
+      source: "upload",
+      dataset: null,
+      uploadedFile: selectedPath,
+    }),
+    "upload",
+  );
+  assert.equal(
+    resolveDeletedLocalDatasetSelection({
+      datasetName: selectedPath,
+      source: "upload",
+      dataset: null,
+      uploadedFile: "/datasets/uploads/replacement.jsonl",
+    }),
+    null,
+    "a stale 404 must not clear a newer selection",
+  );
+  assert.equal(
+    resolveDeletedLocalDatasetSelection({
+      datasetName: "owner/dataset",
+      source: "huggingface",
+      dataset: "owner/dataset",
+      uploadedFile: null,
+    }),
+    null,
+    "a Hub 404 must not clear a valid Hub selection",
+  );
+  assert.equal(
+    resolveDeletedLocalDatasetSelection({
+      datasetName: String.raw`C:\datasets\train.jsonl`,
+      source: "huggingface",
+      dataset: String.raw`C:\datasets\train.jsonl`,
+      uploadedFile: null,
+    }),
+    "huggingface",
   );
 });

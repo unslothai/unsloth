@@ -31,7 +31,10 @@ sys.modules.setdefault("loggers", _loggers_stub)
 
 from utils.models.model_config import (
     ModelConfig,
+    load_model_config,
     is_vision_model,
+    _detect_audio_from_tokenizer,
+    _is_vision_model_subprocess,
     _is_vision_model_uncached,
     _vision_detection_cache,
 )
@@ -411,6 +414,121 @@ class TestVisionCacheTokenHandling:
         mock_uncached.assert_called_once()
 
 
+class TestRevisionAwareVisionDetection:
+    """A pinned Hub commit must flow through every vision config read and cache key."""
+
+    @patch(
+        "utils.models.model_config._is_vision_model_uncached",
+        side_effect = [False, True],
+    )
+    def test_different_revisions_do_not_share_cache(self, mock_uncached, monkeypatch):
+        monkeypatch.setattr("utils.models.model_config._env_offline", lambda: False)
+        assert is_vision_model("org/model", revision = "commit-a") is False
+        assert is_vision_model("org/model", revision = "commit-b") is True
+        assert is_vision_model("org/model", revision = "commit-a") is False
+
+        assert mock_uncached.call_count == 2
+        mock_uncached.assert_any_call(
+            "org/model",
+            None,
+            local_files_only = False,
+            revision = "commit-a",
+        )
+        mock_uncached.assert_any_call(
+            "org/model",
+            None,
+            local_files_only = False,
+            revision = "commit-b",
+        )
+        assert _vision_detection_cache[("org/model", None, False, "commit-a")] is False
+        assert _vision_detection_cache[("org/model", None, False, "commit-b")] is True
+
+    @patch("transformers.AutoConfig.from_pretrained")
+    def test_load_model_config_forwards_only_non_null_revision(self, from_pretrained):
+        load_model_config("org/model", use_auth = True, revision = "commit-a")
+        assert from_pretrained.call_args.kwargs["revision"] == "commit-a"
+
+        load_model_config("org/model", use_auth = True)
+        assert "revision" not in from_pretrained.call_args.kwargs
+
+    def test_raw_config_download_uses_revision(self, monkeypatch, tmp_path):
+        import utils.models.model_config as mc
+
+        config_path = tmp_path / "config.json"
+        config_path.write_text('{"model_type": "llama"}')
+        download = MagicMock(return_value = str(config_path))
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr("huggingface_hub.hf_hub_download", download)
+
+        assert mc._raw_config_has_vision_config(
+            "org/model",
+            revision = "commit-a",
+        ) is False
+        assert download.call_args.kwargs["revision"] == "commit-a"
+
+        assert mc._raw_config_has_vision_config("org/model") is False
+        assert "revision" not in download.call_args.kwargs
+
+    @patch("utils.models.model_config.load_model_config")
+    @patch("utils.transformers_version.needs_transformers_5", return_value = False)
+    @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
+    def test_direct_config_fallback_uses_revision(self, mock_raw, mock_needs_t5, mock_load):
+        cfg = MagicMock(spec = [])
+        cfg.model_type = "llama"
+        cfg.architectures = ["LlamaForCausalLM"]
+        mock_load.return_value = cfg
+
+        assert _is_vision_model_uncached(
+            "org/model",
+            hf_token = "hf_x",
+            revision = "commit-a",
+        ) is False
+        mock_load.assert_called_once_with(
+            "org/model",
+            use_auth = True,
+            token = "hf_x",
+            local_files_only = False,
+            revision = "commit-a",
+        )
+
+    @patch("utils.models.model_config._is_vision_model_subprocess", return_value = True)
+    @patch("utils.transformers_version.needs_transformers_5", return_value = True)
+    @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
+    def test_transformers_5_fallback_uses_revision(
+        self,
+        mock_raw,
+        mock_needs_t5,
+        mock_subprocess,
+    ):
+        assert _is_vision_model_uncached(
+            "org/model",
+            hf_token = "hf_x",
+            revision = "commit-a",
+        ) is True
+        mock_subprocess.assert_called_once_with(
+            "org/model",
+            hf_token = "hf_x",
+            revision = "commit-a",
+        )
+
+    @patch("utils.transformers_version.get_transformers_tier", return_value = "default")
+    @patch("utils.models.model_config.subprocess.run")
+    def test_subprocess_command_carries_revision(self, run, mock_tier):
+        run.return_value = MagicMock(
+            returncode = 0,
+            stdout = '{"is_vision": false}',
+            stderr = "",
+        )
+
+        assert _is_vision_model_subprocess(
+            "org/model",
+            hf_token = "hf_x",
+            revision = "commit-a",
+        ) is False
+        assert run.call_args.args[0][-3:] == ["org/model", "hf_x", "commit-a"]
+        assert 'kwargs["revision"] = revision' in run.call_args.args[0][2]
+
+
 class TestVisionCacheLocalOnly:
     """local_files_only is in the cache key: an offline negative must not be reused by a
     later online probe (else a VLM is routed through the text loader until restart)."""
@@ -625,6 +743,7 @@ class TestAudioDetectionCacheTokenAware:
         monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _fake)
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
         monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        monkeypatch.setattr(mc, "_env_offline", lambda: False)
 
         # Unauthenticated miss caches None under (name, None)...
         assert mc.detect_audio_type("private/spark") is None
@@ -635,6 +754,34 @@ class TestAudioDetectionCacheTokenAware:
         # Same (model, token) is served from cache (no third probe).
         assert mc.detect_audio_type("private/spark", hf_token = "hf_x") == "bicodec"
         assert calls == [None, "hf_x"]
+        mc._audio_detection_cache.clear()
+
+    def test_audio_cache_is_revision_aware(self, monkeypatch):
+        import utils.models.model_config as mc
+
+        mc._audio_detection_cache.clear()
+        calls = []
+
+        def _fake(
+            name,
+            hf_token = None,
+            local_files_only = False,
+            revision = None,
+        ):
+            calls.append(revision)
+            return ("csm", True) if revision == "commit-a" else (None, True)
+
+        monkeypatch.setattr(mc, "_detect_audio_from_tokenizer", _fake)
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "resolve_cached_repo_id_case", lambda n, *_a, **_k: n)
+        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+
+        assert mc.detect_audio_type("org/model", revision = "commit-a") == "csm"
+        assert mc.detect_audio_type("org/model", revision = "commit-b") is None
+        assert mc.detect_audio_type("org/model", revision = "commit-a") == "csm"
+        assert calls == ["commit-a", "commit-b"]
+        assert mc._audio_detection_cache[("org/model", None, False, "commit-a")] == "csm"
+        assert mc._audio_detection_cache[("org/model", None, False, "commit-b")] is None
         mc._audio_detection_cache.clear()
 
     def test_transient_none_is_not_cached_but_definitive_none_is(self, monkeypatch):
@@ -746,6 +893,86 @@ class TestAudioDetectionCacheTokenAware:
         assert seen == [True, False]
         mc._audio_detection_cache.clear()
 
+
+class TestRevisionAwareAudioReads:
+    @staticmethod
+    def _tokenizer_config(*tokens):
+        return {
+            "added_tokens_decoder": {
+                str(index): {"content": token}
+                for index, token in enumerate(tokens)
+            }
+        }
+
+    def test_local_cache_reads_only_requested_snapshot(self, monkeypatch, tmp_path):
+        import utils.models.model_config as mc
+
+        repo_dir = tmp_path / "models--org--model"
+        commit_a = repo_dir / "snapshots" / "commit-a"
+        commit_b = repo_dir / "snapshots" / "commit-b"
+        commit_a.mkdir(parents = True)
+        commit_b.mkdir(parents = True)
+        (commit_a / "tokenizer_config.json").write_text(
+            _json.dumps(self._tokenizer_config("<|AUDIO|>", "<|audio_eos|>"))
+        )
+        (commit_b / "tokenizer_config.json").write_text(
+            _json.dumps(self._tokenizer_config("<ordinary-token>"))
+        )
+
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: repo_dir)
+        monkeypatch.setattr(mc, "_env_offline", lambda: True)
+
+        assert _detect_audio_from_tokenizer(
+            "org/model",
+            local_files_only = True,
+            revision = "commit-b",
+        ) == (None, True)
+        assert _detect_audio_from_tokenizer(
+            "org/model",
+            local_files_only = True,
+            revision = "commit-a",
+        ) == ("csm", True)
+
+    def test_remote_tokenizer_read_uses_requested_revision(self, monkeypatch):
+        import requests
+        import utils.models.model_config as mc
+
+        response = MagicMock(status_code = 200, ok = True)
+        response.json.return_value = self._tokenizer_config(
+            "<|AUDIO|>",
+            "<|audio_eos|>",
+        )
+        get = MagicMock(return_value = response)
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: None)
+        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+        monkeypatch.setattr(requests, "get", get)
+
+        assert _detect_audio_from_tokenizer(
+            "org/model",
+            revision = "refs/pr/7",
+        ) == ("csm", True)
+        assert get.call_args.args[0] == (
+            "https://huggingface.co/org/model/resolve/refs%2Fpr%2F7/tokenizer_config.json"
+        )
+
+    def test_remote_tokenizer_read_keeps_main_without_revision(self, monkeypatch):
+        import requests
+        import utils.models.model_config as mc
+
+        response = MagicMock(status_code = 200, ok = True)
+        response.json.return_value = self._tokenizer_config("<|startoftranscript|>")
+        get = MagicMock(return_value = response)
+        monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
+        monkeypatch.setattr(mc, "get_cache_path", lambda *_a, **_k: None)
+        monkeypatch.setattr(mc, "_env_offline", lambda: False)
+        monkeypatch.setattr(requests, "get", get)
+
+        assert _detect_audio_from_tokenizer("org/model") == ("whisper", True)
+        assert get.call_args.args[0] == (
+            "https://huggingface.co/org/model/resolve/main/tokenizer_config.json"
+        )
 
 class TestEnvOfflineParsing:
     """_env_offline accepts the canonical truthy set (strip+lower, on/true/yes/1); it gates

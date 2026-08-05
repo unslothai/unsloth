@@ -40,6 +40,7 @@ from hub.utils.dataset_format import check_dataset_format, format_dataset_previe
 from hub.utils.hf_errors import hf_error_status
 from hub.utils.paths import (
     is_valid_repo_id as _is_valid_repo_id,
+    normalize_path,
     resolve_dataset_path,
 )
 
@@ -49,6 +50,12 @@ _BINARY_IMAGE_PREVIEW_MAX_BYTES = 10 * 1024 * 1024
 _IMAGE_PREVIEW_MAX_PIXELS = 16_000_000
 _IMAGE_PREVIEW_THUMBNAIL_SIZE = (512, 512)
 _LOCAL_CACHE_MISS_ERROR_CODE = "dataset_local_cache_miss"
+_MISSING_DATASET_DETAIL = "This dataset is no longer on disk. Add it again or pick another dataset."
+
+
+def _is_local_dataset_ref(dataset_name: str) -> bool:
+    normalized = normalize_path(str(dataset_name or "").strip())
+    return Path(normalized).expanduser().is_absolute()
 
 
 def _image_pixel_count(image) -> int:
@@ -291,7 +298,11 @@ def check_format_response(
             raise HTTPException(status_code = 400, detail = str(e)) from e
         total_rows = None
 
-        if dataset_path.exists():
+        dataset_exists = dataset_path.exists()
+        if not dataset_exists and _is_local_dataset_ref(request.dataset_name):
+            raise HTTPException(status_code = 404, detail = _MISSING_DATASET_DETAIL)
+
+        if dataset_exists:
             train_split = request.train_split or "train"
             preview_slice, total_rows = _load_local_preview_slice(
                 dataset_path = dataset_path,

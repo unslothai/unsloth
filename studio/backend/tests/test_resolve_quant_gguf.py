@@ -67,6 +67,17 @@ def test_skips_mtp_drafter_for_main_weights(tmp_path):
     assert total == 100
 
 
+def test_skips_dspark_drafter_for_main_weights(tmp_path):
+    root = tmp_path / "repo"
+    main = _write(root / "model-Q8_0.gguf", 100)
+    _write(root / "dspark" / "dspark-model-Q8_0.gguf", 50)
+
+    path, total = models_route._resolve_quant_gguf(str(root), "Q8_0", is_local = True)
+
+    assert path == str(main)
+    assert total == 100
+
+
 def test_prefers_the_complete_snapshot(tmp_path, monkeypatch):
     cache = tmp_path / "hub"
     snaps = cache / "models--org--repo" / "snapshots"

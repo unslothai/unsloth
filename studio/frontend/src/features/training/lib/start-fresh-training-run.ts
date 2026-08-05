@@ -8,7 +8,7 @@ import { confirmRemoteCodeIfNeeded } from "@/features/security";
 import { translate } from "@/i18n";
 import { primeNativeNotificationPermission } from "@/lib/native-notifications";
 import { toast } from "@/lib/toast";
-import { checkDatasetFormat } from "../api/datasets-api";
+import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
 import { buildTrainingStartPayload } from "../api/mappers";
 import {
   TrainingStartError,
@@ -16,11 +16,18 @@ import {
   startTraining,
 } from "../api/train-api";
 import { useDatasetPreviewDialogStore } from "../stores/dataset-preview-dialog-store";
-import { useTrainingConfigStore } from "../stores/training-config-store";
+import {
+  clearDeletedDataset,
+  useTrainingConfigStore,
+} from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingConfigState, TrainingConfigStore } from "../types/config";
 import type { CheckFormatResponse } from "../types/datasets";
 import { cacheLocalPathMatchesSelection } from "./cache-reference";
+import {
+  createDatasetCacheUsabilityIdentity,
+  trainingDatasetCacheRejections,
+} from "./dataset-cache-rejection";
 import { shouldUseVisionDatasetCheck } from "./fresh-dataset-check";
 import { isMissingLocalDatasetCacheError } from "./local-cache-errors";
 import { isRawTextDatasetFormat } from "./training-methods";
@@ -504,6 +511,18 @@ async function checkSelectedDataset(
     config.datasetKnownCached &&
     !config.datasetStreaming;
   const datasetLocalPath = preferLocalCache ? config.datasetLocalPath : null;
+  const requestedCacheIdentity = preferLocalCache
+    ? createDatasetCacheUsabilityIdentity({
+        dataset: datasetName,
+        cachePath: datasetLocalPath,
+        subset: config.datasetSubset,
+        split: config.datasetSplit,
+        streaming: config.datasetStreaming,
+      })
+    : null;
+  const requestedCacheValidation = requestedCacheIdentity
+    ? trainingDatasetCacheRejections.beginValidation(requestedCacheIdentity)
+    : null;
 
   try {
     const check = await checkDatasetFormat({
@@ -520,9 +539,25 @@ async function checkSelectedDataset(
     if (attempt.abortIfInputsChanged()) {
       return null;
     }
+    if (
+      error instanceof DatasetFormatError &&
+      error.status === 404 &&
+      clearDeletedDataset(datasetName)
+    ) {
+      attempt.cancel(error.message);
+      return null;
+    }
     if (!(preferLocalCache && isMissingLocalDatasetCacheError(error))) {
       throw error;
     }
+  }
+
+  if (
+    requestedCacheValidation &&
+    !trainingDatasetCacheRejections.rejectValidation(requestedCacheValidation)
+  ) {
+    attempt.cancel(TRAINING_SETUP_CHANGED_ERROR);
+    return null;
   }
 
   if (

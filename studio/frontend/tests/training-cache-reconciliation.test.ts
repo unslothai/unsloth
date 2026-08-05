@@ -7,6 +7,15 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import ts from "typescript";
+import { registerBundlerResolver } from "./helpers/kit.ts";
+
+registerBundlerResolver();
+
+const {
+  DatasetCacheRejectionTracker,
+  createDatasetCacheUsabilityIdentity,
+  datasetCacheUsabilityIdentitiesEqual,
+} = await import("../src/features/training/lib/dataset-cache-rejection.ts");
 
 const RECONCILIATION_PATH = fileURLToPath(
   new URL(
@@ -24,6 +33,20 @@ const STORE_PATH = fileURLToPath(
 
 const DATASETS_API_PATH = fileURLToPath(
   new URL("../src/features/training/api/datasets-api.ts", import.meta.url),
+);
+
+const START_FRESH_PATH = fileURLToPath(
+  new URL(
+    "../src/features/training/lib/start-fresh-training-run.ts",
+    import.meta.url,
+  ),
+);
+
+const PREVIEW_DIALOG_PATH = fileURLToPath(
+  new URL(
+    "../src/features/studio/sections/dataset-preview-dialog.tsx",
+    import.meta.url,
+  ),
 );
 
 function parseSource(path: string): ts.SourceFile {
@@ -57,7 +80,7 @@ function findCall(
   return found;
 }
 
-test("dataset cache reconciliation only reruns for external inventory inputs", () => {
+test("dataset cache reconciliation reruns for usability inputs but not cache status", () => {
   const datasetFetch = findCall(
     reconciliationSource,
     (call) =>
@@ -87,7 +110,15 @@ test("dataset cache reconciliation only reruns for external inventory inputs", (
     dependencies.elements.map((element) =>
       element.getText(reconciliationSource),
     ),
-    ["inventoryVersion", "datasetSource", "dataset"],
+    [
+      "inventoryVersion",
+      "cachedDatasetRows",
+      "datasetSource",
+      "dataset",
+      "datasetSubset",
+      "datasetSplit",
+      "datasetStreaming",
+    ],
   );
 
   const options = datasetFetch.arguments[1];
@@ -111,6 +142,179 @@ test("dataset cache reconciliation only reruns for external inventory inputs", (
   assert.ok(
     stateRead,
     "dataset cache state is not snapshotted inside the effect",
+  );
+});
+
+function usabilityIdentity(
+  overrides: Partial<{
+    dataset: string;
+    cachePath: string | null;
+    subset: string | null;
+    split: string | null;
+    streaming: boolean;
+  }> = {},
+) {
+  return createDatasetCacheUsabilityIdentity({
+    dataset: "Org/Data",
+    cachePath: "/cache/datasets--Org--Data",
+    subset: "default",
+    split: "train",
+    streaming: false,
+    ...overrides,
+  });
+}
+
+const cachedRow = {
+  cachePath: "/cache/datasets--Org--Data",
+  sizeBytes: 128,
+  partial: false,
+  partialTransport: null,
+};
+
+function rejectCache(
+  tracker: InstanceType<typeof DatasetCacheRejectionTracker>,
+  identity: ReturnType<typeof usabilityIdentity>,
+): void {
+  if (!tracker.rejectValidation(tracker.beginValidation(identity))) {
+    throw new Error("current cache validation was unexpectedly stale");
+  }
+}
+
+test("an unchanged rejected inventory row stays rejected across reconciliation runs", () => {
+  const tracker = new DatasetCacheRejectionTracker();
+  const identity = usabilityIdentity();
+
+  tracker.observe(identity, cachedRow);
+  rejectCache(tracker, identity);
+
+  assert.equal(tracker.shouldPromote(identity, cachedRow), false);
+  assert.equal(tracker.shouldPromote(identity, cachedRow), false);
+});
+
+test("a relevant inventory identity change makes a rejected cache retryable", () => {
+  const tracker = new DatasetCacheRejectionTracker();
+  const identity = usabilityIdentity();
+
+  tracker.observe(identity, cachedRow);
+  rejectCache(tracker, identity);
+  assert.equal(tracker.shouldPromote(identity, cachedRow), false);
+  assert.equal(
+    tracker.shouldPromote(identity, { ...cachedRow, sizeBytes: 256 }),
+    true,
+  );
+
+  rejectCache(tracker, identity);
+  const replacement = usabilityIdentity({
+    cachePath: "/other-cache/datasets--Org--Data",
+  });
+  assert.equal(
+    tracker.shouldPromote(replacement, {
+      ...cachedRow,
+      cachePath: "/other-cache/datasets--Org--Data",
+    }),
+    true,
+  );
+  assert.equal(tracker.shouldPromote(identity, cachedRow), true);
+});
+
+test("cache rejection is scoped to subset, split, and streaming mode", () => {
+  const tracker = new DatasetCacheRejectionTracker();
+  const rejected = usabilityIdentity();
+
+  tracker.observe(rejected, cachedRow);
+  rejectCache(tracker, rejected);
+
+  assert.equal(
+    tracker.shouldPromote(
+      usabilityIdentity({ split: "validation" }),
+      cachedRow,
+    ),
+    true,
+  );
+  assert.equal(
+    tracker.shouldPromote(usabilityIdentity({ subset: "english" }), cachedRow),
+    true,
+  );
+  assert.equal(
+    tracker.shouldPromote(usabilityIdentity({ streaming: true }), cachedRow),
+    true,
+  );
+  assert.equal(tracker.shouldPromote(rejected, cachedRow), false);
+
+  tracker.reset("org/data");
+  assert.equal(tracker.shouldPromote(rejected, cachedRow), true);
+});
+
+test("a cache request without a path binds rejection to the observed inventory row", () => {
+  const tracker = new DatasetCacheRejectionTracker();
+  const unpinned = usabilityIdentity({ cachePath: null });
+
+  tracker.observe(usabilityIdentity(), cachedRow);
+  rejectCache(tracker, unpinned);
+
+  assert.equal(tracker.shouldPromote(usabilityIdentity(), cachedRow), false);
+  assert.equal(
+    tracker.shouldPromote(
+      usabilityIdentity({ cachePath: "/replacement/datasets--Org--Data" }),
+      {
+        ...cachedRow,
+        cachePath: "/replacement/datasets--Org--Data",
+      },
+    ),
+    true,
+  );
+});
+
+test("an explicit reset invalidates an older cache validation result", () => {
+  const tracker = new DatasetCacheRejectionTracker();
+  const identity = usabilityIdentity();
+  const staleValidation = tracker.beginValidation(identity);
+
+  tracker.reset("org/data");
+
+  assert.equal(tracker.isValidationCurrent(staleValidation), false);
+  assert.equal(tracker.rejectValidation(staleValidation), false);
+  assert.equal(tracker.shouldPromote(identity, cachedRow), true);
+});
+
+test("a material inventory change invalidates an older cache validation result", () => {
+  const tracker = new DatasetCacheRejectionTracker();
+  const identity = usabilityIdentity();
+
+  tracker.observe(identity, cachedRow);
+  const staleValidation = tracker.beginValidation(identity);
+  tracker.observe(identity, { ...cachedRow, sizeBytes: 256 });
+
+  assert.equal(tracker.isValidationCurrent(staleValidation), false);
+  assert.equal(tracker.rejectValidation(staleValidation), false);
+  assert.equal(
+    tracker.shouldPromote(identity, { ...cachedRow, sizeBytes: 256 }),
+    true,
+  );
+});
+
+test("usability identity equality supports exact stale-response guards", () => {
+  const expected = usabilityIdentity();
+  assert.equal(
+    datasetCacheUsabilityIdentitiesEqual(
+      expected,
+      usabilityIdentity({ dataset: "org/data" }),
+    ),
+    true,
+  );
+  assert.equal(
+    datasetCacheUsabilityIdentitiesEqual(
+      expected,
+      usabilityIdentity({ split: "validation" }),
+    ),
+    false,
+  );
+  assert.equal(
+    datasetCacheUsabilityIdentitiesEqual(
+      expected,
+      usabilityIdentity({ cachePath: "/cache/other" }),
+    ),
+    false,
   );
 });
 
@@ -153,5 +357,37 @@ test("dataset checks pass cancellation through to the request", () => {
       (property) => property.getText(apiSource) === "signal",
     ),
     "dataset format request does not forward the signal",
+  );
+});
+
+test("deleted local dataset handling covers background, preview, and start checks", () => {
+  for (const path of [STORE_PATH, START_FRESH_PATH, PREVIEW_DIALOG_PATH]) {
+    const source = parseSource(path);
+    assert.ok(
+      findCall(
+        source,
+        (call) => call.expression.getText(source) === "clearDeletedDataset",
+      ),
+      `${path} does not clear a backend-reported deleted dataset`,
+    );
+  }
+
+  const previewSource = parseSource(PREVIEW_DIALOG_PATH);
+  const previewCheck = findCall(
+    previewSource,
+    (call) => call.expression.getText(previewSource) === "checkDatasetFormat",
+  );
+  assert.ok(previewCheck, "preview dataset format check not found");
+  const previewOptions = previewCheck.arguments[0];
+  assert.ok(
+    previewOptions && ts.isObjectLiteralExpression(previewOptions),
+    "preview dataset format options not found",
+  );
+  assert.ok(
+    previewOptions.properties.some(
+      (property) =>
+        property.getText(previewSource) === "signal: controller.signal",
+    ),
+    "preview dataset format request is not cancelled when superseded",
   );
 });

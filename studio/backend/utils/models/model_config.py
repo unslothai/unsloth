@@ -505,6 +505,7 @@ def load_model_config(
     token: Optional[str] = None,
     trust_remote_code: bool = False,
     local_files_only: bool = False,
+    revision: Optional[str] = None,
 ):
     """Load model config with optional authentication control.
 
@@ -514,9 +515,12 @@ def load_model_config(
     ``FastLanguageModel.from_pretrained`` with the user's own consent.
 
     ``local_files_only`` keeps the config read on the local HF cache (offline
-    export), so an offline probe never blocks on the network.
+    export), so an offline probe never blocks on the network. ``revision`` pins
+    remote reads to the same Hub revision used for the eventual model load.
     """
     from transformers import AutoConfig
+
+    revision_kwargs = {"revision": revision} if revision is not None else {}
 
     if token:
         return AutoConfig.from_pretrained(
@@ -525,6 +529,7 @@ def load_model_config(
             token = token,
             local_files_only = local_files_only,
             cache_dir = active_hf_hub_cache(),
+            **revision_kwargs,
         )
 
     if not use_auth:
@@ -536,6 +541,7 @@ def load_model_config(
                 token = None,
                 local_files_only = local_files_only,
                 cache_dir = active_hf_hub_cache(),
+                **revision_kwargs,
             )
 
     # Default auth (cached tokens)
@@ -544,6 +550,7 @@ def load_model_config(
         trust_remote_code = trust_remote_code,
         local_files_only = local_files_only,
         cache_dir = active_hf_hub_cache(),
+        **revision_kwargs,
     )
 
 
@@ -665,20 +672,24 @@ def _raw_config_has_vision_config(
     model_name: str,
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
+    revision: Optional[str] = None,
 ) -> Optional[bool]:
     try:
         if is_local_path(model_name):
             config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
         else:
             from huggingface_hub import hf_hub_download
+            download_kwargs = {
+                "repo_id": model_name,
+                "filename": "config.json",
+                "token": hf_token,
+                "local_files_only": local_files_only,
+                "cache_dir": active_hf_hub_cache(),
+            }
+            if revision is not None:
+                download_kwargs["revision"] = revision
             config_path = Path(
-                hf_hub_download(
-                    repo_id = model_name,
-                    filename = "config.json",
-                    token = hf_token,
-                    local_files_only = local_files_only,
-                    cache_dir = active_hf_hub_cache(),
-                )
+                hf_hub_download(**download_kwargs)
             )
         config = json.loads(config_path.read_text(encoding = "utf-8-sig"))
         architectures = config.get("architectures") or []
@@ -747,6 +758,7 @@ venv_t5 = sys.argv[1]
 backend_dir = sys.argv[2]
 model_name = sys.argv[3]
 token = sys.argv[4] if len(sys.argv) > 4 and sys.argv[4] != "" else None
+revision = sys.argv[5] if len(sys.argv) > 5 else None
 
 sys.path.insert(0, venv_t5)
 if backend_dir not in sys.path:
@@ -781,6 +793,8 @@ try:
     kwargs = {"trust_remote_code": False}
     if token:
         kwargs["token"] = token
+    if revision is not None:
+        kwargs["revision"] = revision
     config = AutoConfig.from_pretrained(model_name, **kwargs)
 
     is_vlm = _is_vlm(config)
@@ -825,7 +839,11 @@ def __getattr__(name: str) -> Any:
     return _lazy_module_attr(name)
 
 
-def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None) -> Optional[bool]:
+def _is_vision_model_subprocess(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    revision: Optional[str] = None,
+) -> Optional[bool]:
     """Run is_vision_model in a subprocess with transformers 5.x.
 
     Spawns a clean subprocess with .venv_t5/ on sys.path so AutoConfig
@@ -846,16 +864,19 @@ def _is_vision_model_subprocess(model_name: str, hf_token: Optional[str] = None)
         pass
 
     try:
+        command = [
+            sys.executable,
+            "-c",
+            _lazy_module_attr("_VISION_CHECK_SCRIPT"),
+            sidecar_dir,
+            _BACKEND_DIR,
+            model_name,
+            token_arg,
+        ]
+        if revision is not None:
+            command.append(revision)
         result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                _lazy_module_attr("_VISION_CHECK_SCRIPT"),
-                sidecar_dir,
-                _BACKEND_DIR,
-                model_name,
-                token_arg,
-            ],
+            command,
             capture_output = True,
             text = True,
             encoding = "utf-8",
@@ -912,8 +933,10 @@ def _token_fingerprint(token: Optional[str]) -> Optional[str]:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
-# Vision detection cache keyed by (name, token, local_files_only); only definitive results cached.
-_vision_detection_cache: Dict[Tuple[str, Optional[str], bool], bool] = {}
+# Revision-less entries retain their historical three-part key; pinned entries append
+# revision so capability results from one commit cannot leak into another.
+_CapabilityCacheKey = Tuple[str, Optional[str], bool] | Tuple[str, Optional[str], bool, str]
+_vision_detection_cache: Dict[_CapabilityCacheKey, bool] = {}
 _vision_cache_lock = threading.Lock()
 
 
@@ -921,11 +944,12 @@ def is_vision_model(
     model_name: str,
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
+    revision: Optional[str] = None,
 ) -> bool:
     """Detect VLMs via the config architecture (works for fine-tunes); transformers-5.x
     models are checked in a .venv_t5/ subprocess. Cached per (model_name, token,
-    local_files_only) minus transient failures; local_files_only is in the key so an
-    offline probe never shares an online entry."""
+    local_files_only, revision) minus transient failures; local_files_only is in the
+    key so an offline probe never shares an online entry."""
     # Local GGUF models are served by llama-server. Their multimodal
     # capability comes from a companion mmproj, not a Transformers config.
     # Do not cache this lookup: a projector may be added beside an existing
@@ -961,7 +985,13 @@ def is_vision_model(
     # Key on effective offline (kwarg OR env) so an offline probe can't poison a later
     # online lookup once the env var is cleared.
     effective_offline = bool(local_files_only or _env_offline())
-    cache_key = (resolved_name, _token_fingerprint(hf_token), effective_offline)
+    cache_key: _CapabilityCacheKey = (
+        resolved_name,
+        _token_fingerprint(hf_token),
+        effective_offline,
+    )
+    if revision is not None:
+        cache_key += (revision,)
 
     # Lock-free fast path for cache hits. Sentinel distinguishes "key not found"
     # from "value is False" in a single atomic dict.get() call.
@@ -972,7 +1002,10 @@ def is_vision_model(
 
     # Compute outside the lock so long-running detection isn't serialized across
     # models. Two concurrent calls may both run, but produce the same result.
-    result = _is_vision_model_uncached(resolved_name, hf_token, local_files_only = effective_offline)
+    uncached_kwargs = {"local_files_only": effective_offline}
+    if revision is not None:
+        uncached_kwargs["revision"] = revision
+    result = _is_vision_model_uncached(resolved_name, hf_token, **uncached_kwargs)
     # Only cache definitive results; None is a transient failure, retry later.
     if result is not None:
         with _vision_cache_lock:
@@ -985,6 +1018,7 @@ def _is_vision_model_uncached(
     model_name: str,
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
+    revision: Optional[str] = None,
 ) -> Optional[bool]:
     """Uncached vision detection; use is_vision_model() instead.
 
@@ -994,9 +1028,13 @@ def _is_vision_model_uncached(
     # Try the raw-config reader FIRST (code-free, version-independent): it classifies
     # repo-code VLMs like DeepSeek-OCR via declarative vision_config with no remote-code
     # execution or transformers-5.x subprocess.
-    raw = _raw_config_has_vision_config(
-        model_name, hf_token = hf_token, local_files_only = local_files_only
-    )
+    raw_kwargs = {
+        "hf_token": hf_token,
+        "local_files_only": local_files_only,
+    }
+    if revision is not None:
+        raw_kwargs["revision"] = revision
+    raw = _raw_config_has_vision_config(model_name, **raw_kwargs)
     if raw is not None:
         if raw is False and not local_files_only:
             # Raw heuristics predate latest-only architectures; on the latest tier,
@@ -1006,7 +1044,10 @@ def _is_vision_model_uncached(
             try:
                 from utils.transformers_version import get_transformers_tier
                 if get_transformers_tier(model_name, hf_token, probe = False) == "latest":
-                    return _is_vision_model_subprocess(model_name, hf_token = hf_token)
+                    subprocess_kwargs = {"hf_token": hf_token}
+                    if revision is not None:
+                        subprocess_kwargs["revision"] = revision
+                    return _is_vision_model_subprocess(model_name, **subprocess_kwargs)
             except Exception:
                 pass
         return raw
@@ -1020,15 +1061,20 @@ def _is_vision_model_uncached(
             "Model '%s' needs transformers 5.x -- checking vision via subprocess",
             model_name,
         )
-        return _is_vision_model_subprocess(model_name, hf_token = hf_token)
+        subprocess_kwargs = {"hf_token": hf_token}
+        if revision is not None:
+            subprocess_kwargs["revision"] = revision
+        return _is_vision_model_subprocess(model_name, **subprocess_kwargs)
 
     try:
-        config = load_model_config(
-            model_name,
-            use_auth = True,
-            token = hf_token,
-            local_files_only = local_files_only,
-        )
+        config_kwargs = {
+            "use_auth": True,
+            "token": hf_token,
+            "local_files_only": local_files_only,
+        }
+        if revision is not None:
+            config_kwargs["revision"] = revision
+        config = load_model_config(model_name, **config_kwargs)
 
         if _is_vlm(config):
             model_type = getattr(config, "model_type", None)
@@ -1068,9 +1114,9 @@ def _is_vision_model_uncached(
 
 VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
 
-# Keyed like the vision cache by (name, token, local_files_only) so an unauthenticated
-# or offline miss cannot poison a later authenticated / online lookup.
-_audio_detection_cache: Dict[Tuple[str, Optional[str], bool], Optional[str]] = {}
+# Keyed like the vision cache so an unauthenticated, offline, or different-revision
+# miss cannot poison a later lookup.
+_audio_detection_cache: Dict[_CapabilityCacheKey, Optional[str]] = {}
 
 # Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json)
 _AUDIO_TOKEN_PATTERNS = {
@@ -1097,6 +1143,7 @@ def detect_audio_type(
     model_name: str,
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
+    revision: Optional[str] = None,
 ) -> Optional[str]:
     """Detect if a model is an audio model and return its type.
 
@@ -1119,13 +1166,20 @@ def detect_audio_type(
     # Key on effective offline (kwarg OR env), matching where the remote fetch is skipped,
     # so an offline negative can't poison a later online probe.
     effective_offline = bool(local_files_only or _env_offline())
-    cache_key = (resolved_name, _token_fingerprint(hf_token), effective_offline)
+    cache_key: _CapabilityCacheKey = (
+        resolved_name,
+        _token_fingerprint(hf_token),
+        effective_offline,
+    )
+    if revision is not None:
+        cache_key += (revision,)
     if cache_key in _audio_detection_cache:
         return _audio_detection_cache[cache_key]
 
-    result, definitive = _detect_audio_from_tokenizer(
-        model_name, hf_token, local_files_only = effective_offline
-    )
+    tokenizer_kwargs = {"local_files_only": effective_offline}
+    if revision is not None:
+        tokenizer_kwargs["revision"] = revision
+    result, definitive = _detect_audio_from_tokenizer(model_name, hf_token, **tokenizer_kwargs)
     # Cache only definitive results; a transient read failure stays None and retries.
     if definitive:
         _audio_detection_cache[cache_key] = result
@@ -1138,6 +1192,7 @@ def _detect_audio_from_tokenizer(
     model_name: str,
     hf_token: Optional[str] = None,
     local_files_only: bool = False,
+    revision: Optional[str] = None,
 ) -> Tuple[Optional[str], bool]:
     """Detect audio type from tokenizer special tokens.
 
@@ -1175,10 +1230,19 @@ def _detect_audio_from_tokenizer(
             repo_dir = get_cache_path(model_name)
             if repo_dir is not None and repo_dir.is_dir():
                 snapshots_dir = repo_dir / "snapshots"
-                if snapshots_dir.is_dir():
+                if snapshots_dir.is_dir() and revision is None:
                     roots.extend(
                         snapshot for snapshot in snapshots_dir.iterdir() if snapshot.is_dir()
                     )
+                elif snapshots_dir.is_dir():
+                    snapshots_root = snapshots_dir.resolve(strict = False)
+                    snapshot = (snapshots_dir / revision).resolve(strict = False)
+                    try:
+                        snapshot.relative_to(snapshots_root)
+                    except ValueError:
+                        snapshot = None
+                    if snapshot is not None and snapshot.is_dir():
+                        roots.append(snapshot)
 
         for root in roots:
             for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
@@ -1211,8 +1275,11 @@ def _detect_audio_from_tokenizer(
     headers = {"Authorization": f"Bearer {token}"} if token else {}
 
     transient = False  # a fetch failed for a non-404 reason (network/5xx)
+    from urllib.parse import quote
+
+    revision_path = "main" if revision is None else quote(revision, safe = "")
     for tok_path in _AUDIO_TOKENIZER_CONFIG_PATHS:
-        url = f"https://huggingface.co/{model_name}/resolve/main/{tok_path}"
+        url = f"https://huggingface.co/{model_name}/resolve/{revision_path}/{tok_path}"
         try:
             resp = requests.get(url, headers = headers, timeout = 15)
         except Exception as e:
@@ -1249,22 +1316,36 @@ def _is_mmproj(filename: str) -> bool:
     return "mmproj" in filename.lower()
 
 
-def _is_mtp_drafter(path: str) -> bool:
-    """True for a separate-file MTP drafter (speculative head), a companion
-    to the main model rather than a selectable quant: the repo-root
-    ``mtp-*.gguf`` or the ``MTP/`` subdir copies (Gemma 4).
+# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS. A dflash/ folder
+# holds real weights, so dflash is a drafter by prefix only.
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
-    Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub).
-    Must be excluded everywhere mmproj is, or the drafter leaks into variant
-    menus (a phantom quant) and quant-matched file lookups -- e.g. a ``Q8_0``
-    request must not resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead
-    of the real weight.
+
+def _is_mtp_drafter(path: str) -> bool:
+    """True for a separate-file drafter, a companion to the main model rather
+    than a selectable quant: the repo-root ``mtp-*.gguf``, the ``MTP/`` subdir
+    copies (Gemma 4) or the ``dspark/`` drafters (DeepSeek V4 Flash).
+
+    Mirrors hub.utils.gguf.is_mtp_drafter_path (utils cannot import hub). Must be
+    excluded everywhere mmproj is, or the drafter leaks into variant menus (a
+    phantom quant) and quant-matched file lookups -- a ``Q8_0`` request must not
+    resolve to ``MTP/...-Q8_0-MTP.gguf``, which sorts ahead of the real weight,
+    or to ``dspark/dspark-...-Q8_0.gguf``.
+
+    Prefix, or an exact directory for ``_DRAFTER_DIR_KINDS``; never a substring,
+    since the kind names double as family names
+    (``Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf`` IS the model, as is anything in a
+    user's ``dflash/`` folder).
     """
-    p = path.lower()
+    p = path.replace("\\", "/").lower()
     if not p.endswith(".gguf"):
         return False
-    name = p.rsplit("/", 1)[-1]
-    return name.startswith("mtp-") or "/mtp/" in f"/{p}"
+    parts = [segment for segment in p.split("/") if segment]
+    name, parents = parts[-1], parts[:-1]
+    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS) or any(
+        kind in parents for kind in _DRAFTER_DIR_KINDS
+    )
 
 
 # Family tokens for #5347's filename fallback. Lowercase; order irrelevant.

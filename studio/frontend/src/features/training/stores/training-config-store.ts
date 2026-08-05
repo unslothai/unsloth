@@ -13,10 +13,16 @@ import { isAdapterMethod } from "@/types/training";
 import type { ModelType } from "@/types/training";
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import { checkDatasetFormat } from "../api/datasets-api";
+import { DatasetFormatError, checkDatasetFormat } from "../api/datasets-api";
 import { checkVisionModel, getModelConfig } from "../api/models-api";
 import type { BackendModelConfig } from "../api/models-api";
 import { cacheReferenceMatchesSelection } from "../lib/cache-reference";
+import {
+  createDatasetCacheUsabilityIdentity,
+  datasetCacheUsabilityIdentitiesEqual,
+  trainingDatasetCacheRejections,
+} from "../lib/dataset-cache-rejection";
+import { resolveDeletedLocalDatasetSelection } from "../lib/dataset-selection";
 import { isMissingLocalDatasetCacheError } from "../lib/local-cache-errors";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
 import { trainingConfigPatchTouchesModelDefaults } from "../lib/model-defaults-edit-policy";
@@ -430,6 +436,21 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           (isHfSelection && state.datasetKnownCached);
         const preferLocalCache =
           requestedPreferLocalCache && !state.datasetStreaming;
+        const requestedCacheIdentity =
+          isHfSelection && preferLocalCache
+            ? createDatasetCacheUsabilityIdentity({
+                dataset: datasetName,
+                cachePath: state.datasetLocalPath,
+                subset: state.datasetSubset,
+                split,
+                streaming: state.datasetStreaming,
+              })
+            : null;
+        const requestedCacheValidation = requestedCacheIdentity
+          ? trainingDatasetCacheRejections.beginValidation(
+              requestedCacheIdentity,
+            )
+          : null;
         checkDatasetFormat({
           datasetName,
           hfToken: getHfToken() || null,
@@ -481,23 +502,63 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           })
           .catch((error) => {
             if (controller.signal.aborted) return;
-            if (preferLocalCache && isMissingLocalDatasetCacheError(error)) {
+            if (
+              requestedCacheIdentity &&
+              requestedCacheValidation &&
+              isMissingLocalDatasetCacheError(error)
+            ) {
               const current = get();
-              if (
+              const currentCacheIdentity =
                 current.datasetSource === "huggingface" &&
-                current.dataset === datasetName
+                current.dataset === datasetName &&
+                current.datasetKnownCached
+                  ? createDatasetCacheUsabilityIdentity({
+                      dataset: datasetName,
+                      cachePath: current.datasetLocalPath,
+                      subset: current.datasetSubset,
+                      split: current.datasetSplit,
+                      streaming: current.datasetStreaming,
+                    })
+                  : null;
+              if (
+                !currentCacheIdentity ||
+                !datasetCacheUsabilityIdentitiesEqual(
+                  currentCacheIdentity,
+                  requestedCacheIdentity,
+                )
               ) {
-                set({
-                  datasetKnownCached: false,
-                  datasetLocalPath: null,
-                  browseDatasetSelection:
-                    createHfBrowseDatasetSelection(datasetName),
-                });
-                runDatasetCheck(datasetName, split, {
-                  preferLocalCache: false,
-                });
                 return;
               }
+              if (
+                !trainingDatasetCacheRejections.rejectValidation(
+                  requestedCacheValidation,
+                )
+              ) {
+                if (_datasetCheckController === controller) {
+                  runDatasetCheck(datasetName, split, {
+                    preferLocalCache: true,
+                  });
+                }
+                return;
+              }
+              set({
+                datasetKnownCached: false,
+                datasetLocalPath: null,
+                browseDatasetSelection:
+                  createHfBrowseDatasetSelection(datasetName),
+              });
+              runDatasetCheck(datasetName, split, {
+                preferLocalCache: false,
+              });
+              return;
+            }
+            if (
+              error instanceof DatasetFormatError &&
+              error.status === 404 &&
+              clearDeletedDataset(datasetName)
+            ) {
+              toast.error(error.message);
+              return;
             }
             set({
               isDatasetImage: null,
@@ -542,6 +603,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         options?: DatasetCacheReferenceOptions,
       ) => {
         const datasetId = dataset?.trim() || null;
+        trainingDatasetCacheRejections.reset();
         _datasetCheckController?.abort();
         _datasetCheckController = null;
         _trainOnCompletionsManuallySet = false;
@@ -565,6 +627,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       };
 
       const selectLocalDatasetInternal = (uploadedFile: string | null) => {
+        trainingDatasetCacheRejections.reset();
         _datasetCheckController?.abort();
         _datasetCheckController = null;
         _trainOnCompletionsManuallySet = false;
@@ -584,6 +647,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       };
 
       const selectS3SourceInternal = () => {
+        trainingDatasetCacheRejections.reset();
         _datasetCheckController?.abort();
         _datasetCheckController = null;
         _trainOnCompletionsManuallySet = false;
@@ -921,6 +985,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           }),
         setDataset: (dataset) => {
           const datasetId = dataset?.trim() || null;
+          trainingDatasetCacheRejections.reset();
           _datasetCheckController?.abort();
           _datasetCheckController = null;
           _trainOnCompletionsManuallySet = false;
@@ -948,6 +1013,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           }
         },
         setDatasetSubset: (datasetSubset) => {
+          const state = get();
+          if (
+            state.datasetSubset !== datasetSubset ||
+            state.datasetSplit !== null
+          ) {
+            trainingDatasetCacheRejections.reset(state.dataset);
+          }
           _datasetCheckController?.abort();
           _datasetCheckController = null;
           _trainOnCompletionsManuallySet = false;
@@ -963,6 +1035,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setDatasetSplit: (datasetSplit) => {
           const state = get();
+          if (state.datasetSplit !== datasetSplit) {
+            trainingDatasetCacheRejections.reset(state.dataset);
+          }
           const nextState = { ...state, datasetSplit };
           const streamingPatch = streamingCompatiblePatch(nextState);
           setUserEdit({
@@ -1013,8 +1088,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           notifyStreamingCompat(streamingPatch);
         },
         setDatasetStreaming: (datasetStreaming) => {
+          const state = get();
+          const changed = state.datasetStreaming !== datasetStreaming;
           if (!datasetStreaming) {
-            const changed = get().datasetStreaming;
+            if (changed) {
+              trainingDatasetCacheRejections.reset(state.dataset);
+            }
             setUserEdit({
               datasetStreaming: false,
               ...(changed
@@ -1031,13 +1110,16 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             return;
           }
 
-          const state = get();
           if (state.maxSteps <= 0) {
             set({ datasetStreaming: false });
             toast.warning(
               translate("studio.dataset.streaming.notifications.needsMaxSteps"),
             );
             return;
+          }
+
+          if (changed) {
+            trainingDatasetCacheRejections.reset(state.dataset);
           }
 
           const dropsTrainOnCompletions = state.trainOnCompletions;
@@ -1198,6 +1280,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setS3Config: (s3Config) => setUserEdit({ s3Config }),
         canProceed: () => canProceedForTrainingStep(get()),
         reset: () => {
+          trainingDatasetCacheRejections.reset();
           _trainOnCompletionsManuallySet = false;
           _modelDefaultsEditBaseline = null;
           setUserEdit(initialTrainingConfigState);
@@ -1250,3 +1333,23 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
     },
   ),
 );
+
+export function clearDeletedDataset(datasetName: string): boolean {
+  const state = useTrainingConfigStore.getState();
+  const selection = resolveDeletedLocalDatasetSelection({
+    datasetName,
+    source: state.datasetSource,
+    dataset: state.dataset,
+    uploadedFile: state.uploadedFile,
+  });
+  switch (selection) {
+    case "upload":
+      state.selectLocalDataset(null);
+      return true;
+    case "huggingface":
+      state.setDataset(null);
+      return true;
+    default:
+      return false;
+  }
+}

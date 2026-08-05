@@ -22,7 +22,7 @@ import threading
 import time
 import traceback
 import structlog
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 from loggers import get_logger
 from dataclasses import dataclass, field, replace
@@ -177,6 +177,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "model_local_path": values.get("model_local_path"),
         "model_format": values.get("model_format"),
         "model_snapshot_path": values.get("model_snapshot_path"),
+        "model_revision": values.get("model_revision"),
         "actual_model_repo_id": values.get("actual_model_repo_id"),
         "resume_model_load_mode": values.get("resume_model_load_mode"),
         "dataset_known_cached": values.get("dataset_known_cached", False),
@@ -332,6 +333,7 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
     if is_local_path(model_name):
         config["actual_model_repo_id"] = None
         config["model_snapshot_path"] = None
+        config["model_revision"] = None
         return
     requested_pin = config.get("model_snapshot_path")
     require_validated_snapshot = bool(config.get("require_validated_model_snapshot"))
@@ -364,8 +366,10 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
         config["model_snapshot_path"] = pin
         if pin is None:
             config["actual_model_repo_id"] = None
+            config["model_revision"] = None
         else:
             config["actual_model_repo_id"] = pinned_repo_id
+            config["model_revision"] = Path(pin).name
     elif requested_pin and config.get("actual_model_repo_id"):
         from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
 
@@ -384,6 +388,9 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
                     "The cached model snapshot selected during preflight is no longer available."
                 )
             config["actual_model_repo_id"] = None
+            config["model_revision"] = None
+        else:
+            config["model_revision"] = Path(pin).name
     elif model_claimed:
         pinned_repo_id = canonical_model_repo_id(model_name)
         pin = _resolve_model_snapshot(model_name, config.get("model_local_path"))
@@ -393,9 +400,11 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
             )
         config["model_snapshot_path"] = pin
         config["actual_model_repo_id"] = pinned_repo_id if pin is not None else None
+        config["model_revision"] = Path(pin).name if pin is not None else None
     else:
         config["model_snapshot_path"] = None
         config["actual_model_repo_id"] = None
+        config["model_revision"] = None
 
 
 def resolve_training_model_load_target(values: dict[str, Any]) -> str:
@@ -404,6 +413,7 @@ def resolve_training_model_load_target(values: dict[str, Any]) -> str:
         "model_known_cached": values.get("model_known_cached", False),
         "model_local_path": values.get("model_local_path"),
         "model_snapshot_path": values.get("model_snapshot_path"),
+        "model_revision": values.get("model_revision"),
         "actual_model_repo_id": values.get("actual_model_repo_id"),
         "resume_model_load_mode": values.get("resume_model_load_mode"),
         "resume_from_checkpoint": values.get("resume_from_checkpoint"),
@@ -1235,25 +1245,35 @@ class TrainingBackend:
         start_request_id: Optional[str] = None,
         **kwargs,
     ) -> bool:
-        from .lifecycle import training_lifecycle_guard
-        with training_lifecycle_guard():
-            resume_checkpoint = kwargs.get("resume_from_checkpoint")
-            if resume_checkpoint:
-                from .resume import get_resume_checkpoint_path
-                if get_resume_checkpoint_path(resume_checkpoint) is None:
-                    message = "Resume checkpoint is no longer available."
-                    with self._lock:
-                        self._progress.is_training = False
-                        self._progress.error = message
-                        self._progress.status_message = message
-                    return False
-            return self._start_training_with_lifecycle_reserved(
-                job_id,
-                before_spawn = before_spawn,
-                resume_source_run_id = resume_source_run_id,
-                start_request_id = start_request_id,
-                **kwargs,
-            )
+        # Reserve before lifecycle locking and synchronous validation. Routes call
+        # start_training from worker threads, so this compare-and-set window makes a
+        # start active immediately and prevents two requests from reaching the late
+        # subprocess assignment together.
+        with self._new_job_spawn_reservation(job_id) as spawn_reserved:
+            if not spawn_reserved:
+                logger.warning("Training subprocess already running")
+                return False
+
+            from .lifecycle import training_lifecycle_guard
+            with training_lifecycle_guard():
+                resume_checkpoint = kwargs.get("resume_from_checkpoint")
+                if resume_checkpoint:
+                    from .resume import get_resume_checkpoint_path
+                    if get_resume_checkpoint_path(resume_checkpoint) is None:
+                        message = "Resume checkpoint is no longer available."
+                        with self._lock:
+                            self._progress.is_training = False
+                            self._progress.error = message
+                            self._progress.status_message = message
+                        return False
+                return self._start_training_with_lifecycle_reserved(
+                    job_id,
+                    before_spawn = before_spawn,
+                    resume_source_run_id = resume_source_run_id,
+                    start_request_id = start_request_id,
+                    spawn_already_reserved = True,
+                    **kwargs,
+                )
 
     def _start_training_with_lifecycle_reserved(
         self,
@@ -1262,6 +1282,7 @@ class TrainingBackend:
         before_spawn = None,
         resume_source_run_id: Optional[str] = None,
         start_request_id: Optional[str] = None,
+        spawn_already_reserved: bool = False,
         **kwargs,
     ) -> bool:
         """Spawn a subprocess to run the full training pipeline.
@@ -1277,7 +1298,10 @@ class TrainingBackend:
         Hook failures never block the start.
         """
         with self._lock:
-            if self._spawn_in_progress or (self._proc is not None and self._proc.is_alive()):
+            if (
+                (self._spawn_in_progress and not spawn_already_reserved)
+                or (self._proc is not None and self._proc.is_alive())
+            ):
                 logger.warning("Training subprocess already running")
                 return False
 
@@ -1338,7 +1362,12 @@ class TrainingBackend:
         # sees this flag (or the recorded proc) and refuses.
         from utils.transformers_version import sidecar_swap_in_progress
 
-        with self._new_job_spawn_reservation(job_id) as spawn_reserved:
+        spawn_reservation = (
+            nullcontext(True)
+            if spawn_already_reserved
+            else self._new_job_spawn_reservation(job_id)
+        )
+        with spawn_reservation as spawn_reserved:
             if not spawn_reserved:
                 logger.warning("Training subprocess already running")
                 return False

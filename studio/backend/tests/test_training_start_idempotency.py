@@ -77,6 +77,68 @@ def test_accepted_start_request_remains_queryable():
     assert record.job_id == "job-1"
 
 
+def test_start_training_reserves_early_and_rejects_an_overlapping_start(monkeypatch):
+    backend = TrainingBackend()
+    first_entered = threading.Event()
+    release_first = threading.Event()
+    calls = []
+    outcome = {}
+
+    def blocking_start(job_id, **kwargs):
+        calls.append((job_id, kwargs.get("start_request_id")))
+        assert backend.is_training_active() is True
+        assert backend._spawn_in_progress is True
+        assert backend._new_job_spawn_id == job_id
+        first_entered.set()
+        assert release_first.wait(timeout = 5)
+        return False
+
+    monkeypatch.setattr(backend, "_start_training_with_lifecycle_reserved", blocking_start)
+
+    first = threading.Thread(
+        target = lambda: outcome.update(
+            first = backend.start_training(
+                "job-1",
+                start_request_id = "request-1",
+                model_name = "unsloth/test",
+            )
+        ),
+        daemon = True,
+    )
+    first.start()
+    assert first_entered.wait(timeout = 5)
+
+    assert backend.start_training(
+        "job-2",
+        start_request_id = "request-2",
+        model_name = "unsloth/test",
+    ) is False
+    assert calls == [("job-1", "request-1")]
+
+    release_first.set()
+    first.join(timeout = 5)
+    assert not first.is_alive()
+    assert outcome["first"] is False
+    assert backend._spawn_in_progress is False
+    assert backend._new_job_spawn_id is None
+
+
+def test_start_training_cleans_early_reservation_after_validation_error(monkeypatch):
+    backend = TrainingBackend()
+
+    def fail_start(*_args, **_kwargs):
+        assert backend.is_training_active() is True
+        raise RuntimeError("validation failed")
+
+    monkeypatch.setattr(backend, "_start_training_with_lifecycle_reserved", fail_start)
+
+    with pytest.raises(RuntimeError, match = "validation failed"):
+        backend.start_training("job-1", model_name = "unsloth/test")
+
+    assert backend._spawn_in_progress is False
+    assert backend._new_job_spawn_id is None
+
+
 @pytest.mark.parametrize(
     ("state", "expected_status"),
     [

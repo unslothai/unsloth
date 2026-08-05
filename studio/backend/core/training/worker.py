@@ -96,7 +96,6 @@ def _effective_training_load_in_4bit(
 
 def _drop_model_pin(config: dict) -> str:
     config["model_snapshot_path"] = None
-    config["actual_model_repo_id"] = None
     return config["model_name"]
 
 
@@ -105,15 +104,59 @@ def _drop_model_pin_for_fallback(config: dict, hf_token: str | None) -> str:
 
     active_target = _resolve_cached_model_load_name(config)
     fallback_target = config["model_name"]
-    active_tier = get_transformers_activation_tier(active_target, hf_token)
-    fallback_tier = get_transformers_activation_tier(fallback_target, hf_token)
-    if active_tier != fallback_tier:
-        raise RuntimeError(
-            "The cached model is incomplete and its Hugging Face fallback requires "
-            f"a different Transformers runtime ({active_tier} to {fallback_tier}). "
-            "Remove the incomplete cached model and retry."
-        )
+    if not config.get("model_revision"):
+        active_tier = get_transformers_activation_tier(active_target, hf_token)
+        fallback_tier = get_transformers_activation_tier(fallback_target, hf_token)
+        if active_tier != fallback_tier:
+            raise RuntimeError(
+                "The cached model is incomplete and its Hugging Face fallback requires "
+                f"a different Transformers runtime ({active_tier} to {fallback_tier}). "
+                "Remove the incomplete cached model and retry."
+            )
     return _drop_model_pin(config)
+
+
+def _is_model_cache_artifact_error(error: BaseException | None) -> bool:
+    """Classify model-only failures that mean a local snapshot is incomplete.
+
+    Transformers does not consistently report a missing tokenizer or processor as
+    a file error.  Some families raise a bare ``TypeError`` after resolving a
+    missing vocabulary path to ``None``.  Keep those otherwise-generic messages
+    scoped to the model-cache retry path so they cannot make unrelated dataset or
+    training failures retryable.
+    """
+    from hub.utils.dataset_cache import is_cache_artifact_error
+
+    if is_cache_artifact_error(error):
+        return True
+    markers = (
+        "can't load processor for",
+        "can't load image processor for",
+        "can't load feature extractor for",
+        "stat: path should be string, bytes, os.pathlike or integer, not nonetype",
+        "expected str, bytes or os.pathlike object, not nonetype",
+    )
+    seen: set[int] = set()
+    current = error
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if any(marker in str(current).lower() for marker in markers):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _model_offline_mode_enabled() -> bool:
+    try:
+        from utils.utils import hf_env_offline
+
+        return hf_env_offline()
+    except Exception:
+        pass
+    return any(
+        str(os.environ.get(name, "")).strip().lower() in {"1", "true", "yes", "on"}
+        for name in ("HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE")
+    )
 
 
 def _cache_artifact_fallback_allowed(
@@ -122,7 +165,6 @@ def _cache_artifact_fallback_allowed(
     require_exact = bool(
         config.get("require_exact_resume_resources")
         or config.get(f"require_exact_{resource}_resource")
-        or (resource == "model" and config.get("require_validated_model_snapshot"))
     )
     if resource == "dataset":
         from hub.utils.dataset_cache import dataset_cache_fallback_allowed
@@ -131,11 +173,56 @@ def _cache_artifact_fallback_allowed(
             require_exact = require_exact,
             revision = config.get("dataset_revision"),
         )
-    if require_exact:
+    if require_exact or _model_offline_mode_enabled():
         return False
-    from hub.utils.dataset_cache import is_cache_artifact_error
+    return _is_model_cache_artifact_error(error)
 
-    return is_cache_artifact_error(error)
+
+def _model_cache_fallback_error(
+    config: dict, error: BaseException | None
+) -> RuntimeError | None:
+    """Return an actionable error when an incomplete cache cannot be repaired."""
+    if not _is_model_cache_artifact_error(error):
+        return None
+    if config.get("require_exact_resume_resources") or config.get(
+        "require_exact_model_resource"
+    ):
+        return RuntimeError(
+            "The exact cached model snapshot is incomplete, so this run cannot "
+            "preserve its recorded model resources. Restore the missing model, "
+            "tokenizer, or processor files and retry."
+        )
+    if _model_offline_mode_enabled():
+        revision = config.get("model_revision")
+        revision_text = f" at revision {revision}" if revision else ""
+        return RuntimeError(
+            "Offline mode is enabled, but the cached model snapshot is incomplete. "
+            "Reconnect to download the missing model, tokenizer, or processor files"
+            f"{revision_text}, or select a complete local model."
+        )
+    return None
+
+
+def _mlx_revision_fallback_error(config: dict) -> RuntimeError | None:
+    """Refuse an exact retry when MLX would remap the repo and drop its commit.
+
+    ``FastMLXModel`` maps Unsloth bitsandbytes repositories to their full-precision
+    base because MLX cannot read bnb-packed weights.  A commit from the selected
+    repository has no guaranteed meaning in that different repository, so silently
+    applying it (or dropping it) would violate the cache pin.
+    """
+    model_name = str(config.get("model_name") or "")
+    revision = config.get("model_revision")
+    if revision and model_name.startswith("unsloth/") and model_name.endswith(
+        ("-unsloth-bnb-4bit", "-bnb-4bit")
+    ):
+        return RuntimeError(
+            "The cached model snapshot is incomplete, but MLX cannot safely retry "
+            f"'{model_name}' at revision {revision}: MLX maps its bitsandbytes "
+            "weights to a different base repository. Select that full-precision "
+            "base model directly, or restore the missing cached files."
+        )
+    return None
 
 
 def _require_strict_cached_dataset(config: dict, dataset: Any, split: str) -> Any:
@@ -182,6 +269,7 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
             return False
         if model_snapshot is not None:
             config["model_snapshot_path"] = model_snapshot
+            config["model_revision"] = Path(model_snapshot).name
         if dataset_snapshot is not None:
             config["dataset_snapshot_path"] = dataset_snapshot
 
@@ -228,7 +316,10 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
                     }
                 )
                 return False
-            config["actual_model_repo_id"] = None
+            if not config.get("model_revision"):
+                config["actual_model_repo_id"] = None
+        else:
+            config["model_revision"] = Path(config["model_snapshot_path"]).name
     dataset_path = config.get("dataset_snapshot_path")
     if dataset_path and not require_dataset:
         from hub.utils.dataset_cache import (
@@ -565,6 +656,7 @@ def _pre_detect_training_model(
     hf_token: str | None,
     model_load_name: str,
     local_files_only: bool,
+    model_revision: str | None = None,
 ) -> None:
     trainer.pre_detect_and_load_tokenizer(
         model_name = model_name,
@@ -575,6 +667,7 @@ def _pre_detect_training_model(
         trust_remote_code = config.get("trust_remote_code", False),
         model_load_name = model_load_name,
         local_files_only = local_files_only,
+        model_revision = model_revision,
     )
 
 
@@ -584,6 +677,7 @@ def _reload_dataset_with_remote_model_tokenizer(
     model_name: str,
     hf_token: str | None,
     reload_dataset: Callable[[], tuple],
+    model_revision: str | None = None,
 ):
     _pre_detect_training_model(
         trainer,
@@ -592,6 +686,7 @@ def _reload_dataset_with_remote_model_tokenizer(
         hf_token,
         model_name,
         False,
+        model_revision,
     )
     return reload_dataset()
 
@@ -2186,6 +2281,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         os.environ["HF_TOKEN"] = hf_token
     model_load_name = _resolve_cached_model_load_name(config)
     model_local_only = _model_local_files_only(config)
+    model_revision = None if model_local_only else config.get("model_revision")
 
     if config.get("use_loftq"):
         message = "LoftQ is not supported for MLX training yet."
@@ -2243,11 +2339,20 @@ def _run_mlx_training(event_queue, stop_queue, config):
             token = hf_token,
             trust_remote_code = bool(config.get("trust_remote_code", False)),
             random_state = model_random_state,
+            revision = model_revision,
         )
     except Exception as error:
-        if not model_local_only or not _cache_artifact_fallback_allowed(config, error, "model"):
+        if not model_local_only:
             raise
-        security_error = _model_load_security_error(config, model_name, hf_token)
+        fallback_error = _model_cache_fallback_error(config, error)
+        if fallback_error is not None:
+            raise fallback_error from error
+        if not _cache_artifact_fallback_allowed(config, error, "model"):
+            raise
+        revision_error = _mlx_revision_fallback_error(config)
+        if revision_error is not None:
+            raise revision_error from error
+        security_error = _model_load_security_error(config, model_load_name, hf_token)
         if security_error:
             _send("error", **security_error)
             return
@@ -2259,6 +2364,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         )
         model_load_name = _drop_model_pin_for_fallback(config, hf_token)
         model_local_only = False
+        model_revision = config.get("model_revision")
         model, tokenizer = FastMLXModel.from_pretrained(
             model_load_name,
             load_in_4bit = config.get("load_in_4bit", True),
@@ -2267,6 +2373,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             token = hf_token,
             trust_remote_code = bool(config.get("trust_remote_code", False)),
             random_state = model_random_state,
+            revision = model_revision,
         )
 
     from utils.models.model_identity import restore_hf_cache_repo_identity
@@ -3615,6 +3722,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         hf_token = hf_token if hf_token and hf_token.strip() else None
         model_load_name = _resolve_cached_model_load_name(config)
         model_local_only = _model_local_files_only(config)
+        model_revision = None if model_local_only else config.get("model_revision")
         dataset_local_only = _dataset_local_files_only(config)
         eval_steps = config.get("eval_steps", 0.00)
 
@@ -3668,11 +3776,17 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 hf_token,
                 model_load_name,
                 model_local_only,
+                model_revision,
             )
         except Exception as error:
-            if not model_local_only or not _cache_artifact_fallback_allowed(config, error, "model"):
+            if not model_local_only:
                 raise
-            security_error = _model_load_security_error(config, model_name, hf_token)
+            fallback_error = _model_cache_fallback_error(config, error)
+            if fallback_error is not None:
+                raise fallback_error from error
+            if not _cache_artifact_fallback_allowed(config, error, "model"):
+                raise
+            security_error = _model_load_security_error(config, model_load_name, hf_token)
             if security_error:
                 event_queue.put({"type": "error", **security_error, "ts": time.time()})
                 return
@@ -3682,6 +3796,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
             )
             model_load_name = _drop_model_pin_for_fallback(config, hf_token)
             model_local_only = False
+            model_revision = config.get("model_revision")
             _pre_detect_training_model(
                 trainer,
                 config,
@@ -3689,6 +3804,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 hf_token,
                 model_load_name,
                 model_local_only,
+                model_revision,
             )
         if trainer.should_stop:
             event_queue.put({"type": "complete", "output_dir": None, "ts": time.time()})
@@ -3779,14 +3895,23 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 model_load_name = model_load_name,
                 local_files_only = model_local_only,
                 actual_model_repo_id = config.get("actual_model_repo_id"),
+                model_revision = model_revision,
             )
+            fallback_error = (
+                _model_cache_fallback_error(config, trainer.model_load_error)
+                if not success and model_local_only and not trainer.should_stop
+                else None
+            )
+            if fallback_error is not None:
+                trainer.training_progress.error = str(fallback_error)
             if (
                 not success
                 and model_local_only
                 and not trainer.should_stop
+                and fallback_error is None
                 and _cache_artifact_fallback_allowed(config, trainer.model_load_error, "model")
             ):
-                security_error = _model_load_security_error(config, model_name, hf_token)
+                security_error = _model_load_security_error(config, model_load_name, hf_token)
                 if security_error:
                     event_queue.put({"type": "error", **security_error, "ts": time.time()})
                     return
@@ -3796,6 +3921,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 )
                 model_load_name = _drop_model_pin_for_fallback(config, hf_token)
                 model_local_only = False
+                model_revision = config.get("model_revision")
                 trainer.model = None
                 trainer.tokenizer = None
                 dataset = None
@@ -3814,6 +3940,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     model_name,
                     hf_token,
                     _load_training_dataset,
+                    model_revision,
                 )
                 if dataset is None or trainer.should_stop:
                     success = False
@@ -3831,6 +3958,7 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                         model_load_name = model_load_name,
                         local_files_only = model_local_only,
                         actual_model_repo_id = config.get("actual_model_repo_id"),
+                        model_revision = model_revision,
                     )
         finally:
             _load_watchdog_stop.set()
@@ -4309,6 +4437,7 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
     model_name = config["model_name"]
     model_load_name = _resolve_cached_model_load_name(config)
     model_local_only = _model_local_files_only(config)
+    model_revision = None if model_local_only else config.get("model_revision")
     training_start_time = time.time()
 
     # ── 1. Import embedding-specific libraries ──
@@ -4375,11 +4504,18 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 max_seq_length = max_seq_length,
                 full_finetuning = not use_lora,
                 token = hf_token,
+                revision = model_revision,
+                use_exact_model_name = model_revision is not None,
             )
         except Exception as error:
-            if not model_local_only or not _cache_artifact_fallback_allowed(config, error, "model"):
+            if not model_local_only:
                 raise
-            security_error = _model_load_security_error(config, model_name, hf_token)
+            fallback_error = _model_cache_fallback_error(config, error)
+            if fallback_error is not None:
+                raise fallback_error from error
+            if not _cache_artifact_fallback_allowed(config, error, "model"):
+                raise
+            security_error = _model_load_security_error(config, model_load_name, hf_token)
             if security_error:
                 event_queue.put({"type": "error", **security_error, "ts": time.time()})
                 return
@@ -4389,11 +4525,14 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
             )
             model_load_name = _drop_model_pin_for_fallback(config, hf_token)
             model_local_only = False
+            model_revision = config.get("model_revision")
             model = FastSentenceTransformer.from_pretrained(
                 model_name = model_load_name,
                 max_seq_length = max_seq_length,
                 full_finetuning = not use_lora,
                 token = hf_token,
+                revision = model_revision,
+                use_exact_model_name = model_revision is not None,
             )
     except Exception as e:
         event_queue.put(

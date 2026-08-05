@@ -558,6 +558,50 @@ def test_check_format_rejects_invalid_path_as_400():
     assert exc_info.value.status_code == 400
 
 
+@pytest.mark.parametrize(
+    "spelling",
+    [
+        pytest.param("{path}", id = "absolute"),
+        pytest.param("  {path}  ", id = "surrounding-whitespace"),
+        pytest.param(
+            "~/.unsloth/studio/assets/datasets/uploads/deleted.jsonl",
+            id = "tilde",
+        ),
+    ],
+)
+def test_check_format_missing_local_path_never_reaches_hub(
+    monkeypatch,
+    tmp_path,
+    spelling,
+):
+    studio_home = tmp_path / ".unsloth" / "studio"
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(studio_home))
+    missing = studio_home / "assets" / "datasets" / "uploads" / "deleted.jsonl"
+    dataset_name = spelling.format(path = missing)
+    attempts = []
+
+    class _NoHubApi:
+        def __init__(self, *args, **kwargs):
+            attempts.append("HfApi")
+            raise AssertionError("a missing local path must not reach Hugging Face")
+
+    def _no_load_dataset(*args, **kwargs):
+        attempts.append("load_dataset")
+        raise AssertionError("a missing local path must not reach datasets.load_dataset")
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _NoHubApi)
+    monkeypatch.setattr("datasets.load_dataset", _no_load_dataset)
+
+    with pytest.raises(HTTPException) as exc_info:
+        formatting.check_format_response(CheckFormatRequest(dataset_name = dataset_name))
+
+    assert exc_info.value.status_code == 404
+    assert exc_info.value.detail == formatting._MISSING_DATASET_DETAIL
+    assert attempts == []
+
+
 def test_check_format_returns_stable_code_for_missing_selected_cache(monkeypatch, tmp_path):
     monkeypatch.setattr(
         formatting,

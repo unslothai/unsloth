@@ -36,11 +36,13 @@ export { useMaxStepsEpochsToggle } from "./hooks/use-max-steps-epochs-toggle";
 export { HfDatasetSubsetSplitSelectors } from "./components/hf-dataset-subset-split-selectors";
 export { useDatasetPreviewDialogStore } from "./stores/dataset-preview-dialog-store";
 export {
+  DatasetFormatError,
   aiAssistMapping,
   checkDatasetFormat,
   uploadNativeTrainingDataset,
   uploadTrainingDataset,
 } from "./api/datasets-api";
+export { clearDeletedDataset } from "./stores/training-config-store";
 export type { CheckFormatResponse } from "./types/datasets";
 export type {
   AdvancedSettingsBaseline,
@@ -87,10 +89,20 @@ export {
   cacheLocalPathMatchesSelection,
   cachedInventoryPathMatchesSelection,
 } from "./lib/cache-reference";
+export {
+  createDatasetCacheUsabilityIdentity,
+  datasetCacheUsabilityIdentitiesEqual,
+  trainingDatasetCacheRejections,
+} from "./lib/dataset-cache-rejection";
+export type {
+  DatasetCacheInventoryIdentity,
+  DatasetCacheUsabilityIdentity,
+} from "./lib/dataset-cache-rejection";
 export { validateTrainingModelCandidate } from "./lib/freeform-model-validation";
 export { isLocalTrainingModelSelection } from "./lib/model-selection";
 export {
   isHuggingFaceDatasetSelected,
+  resolveDeletedLocalDatasetSelection,
   shouldClearMissingLocalDatasetSelection,
 } from "./lib/dataset-selection";
 export {
