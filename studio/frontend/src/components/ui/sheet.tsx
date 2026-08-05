@@ -3,13 +3,31 @@
 
 import { Dialog as SheetPrimitive } from "radix-ui";
 import type * as React from "react";
-import { useState } from "react";
+import { createContext, useContext, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { DialogPortalContainerContext } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { Cancel01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+
+const SheetViewportTopInsetContext = createContext<
+  React.CSSProperties["top"]
+>(0);
+
+function SheetViewportInsetProvider({
+  children,
+  top,
+}: {
+  children: React.ReactNode;
+  top: React.CSSProperties["top"];
+}) {
+  return (
+    <SheetViewportTopInsetContext.Provider value={top}>
+      {children}
+    </SheetViewportTopInsetContext.Provider>
+  );
+}
 
 function Sheet({ ...props }: React.ComponentProps<typeof SheetPrimitive.Root>) {
   return <SheetPrimitive.Root data-slot="sheet" {...props} />;
@@ -67,6 +85,7 @@ function SheetOverlay({
 function SheetContent({
   className,
   children,
+  style,
   side = "right",
   showCloseButton = true,
   container,
@@ -83,6 +102,12 @@ function SheetContent({
   overlayPosition?: "fixed" | "absolute";
 }) {
   const [contentEl, setContentEl] = useState<HTMLDivElement | null>(null);
+  const viewportTopInset = useContext(SheetViewportTopInsetContext);
+  // This inline top wins over any top-* utility passed through className.
+  const contentStyle =
+    position === "fixed" && side !== "bottom"
+      ? { top: viewportTopInset, ...style }
+      : style;
   return (
     <SheetPortal container={container ?? undefined}>
       <SheetOverlay
@@ -94,10 +119,11 @@ function SheetContent({
         data-slot="sheet-content"
         data-side={side}
         className={cn(
-          "bg-background data-open:animate-in data-closed:animate-out data-[side=right]:data-closed:slide-out-to-right-10 data-[side=right]:data-open:slide-in-from-right-10 data-[side=left]:data-closed:slide-out-to-left-10 data-[side=left]:data-open:slide-in-from-left-10 data-[side=top]:data-closed:slide-out-to-top-10 data-[side=top]:data-open:slide-in-from-top-10 data-closed:fade-out-0 data-open:fade-in-0 data-[side=bottom]:data-closed:slide-out-to-bottom-10 data-[side=bottom]:data-open:slide-in-from-bottom-10 z-50 flex flex-col bg-clip-padding text-sm shadow-lg transition duration-200 ease-in-out data-[side=bottom]:inset-x-0 data-[side=bottom]:bottom-0 data-[side=bottom]:h-auto data-[side=bottom]:border-t data-[side=left]:inset-y-0 data-[side=left]:left-0 data-[side=left]:h-full data-[side=left]:w-3/4 data-[side=left]:border-r data-[side=right]:inset-y-0 data-[side=right]:right-0 data-[side=right]:h-full data-[side=right]:w-3/4 data-[side=right]:border-l data-[side=top]:inset-x-0 data-[side=top]:top-0 data-[side=top]:h-auto data-[side=top]:border-b data-[side=left]:sm:max-w-sm data-[side=right]:sm:max-w-sm data-[side=bottom]:max-h-[85dvh] data-[side=top]:max-h-[85dvh] data-[side=bottom]:overflow-y-auto data-[side=top]:overflow-y-auto",
+          "bg-background data-open:animate-in data-closed:animate-out data-[side=right]:data-closed:slide-out-to-right-10 data-[side=right]:data-open:slide-in-from-right-10 data-[side=left]:data-closed:slide-out-to-left-10 data-[side=left]:data-open:slide-in-from-left-10 data-[side=top]:data-closed:slide-out-to-top-10 data-[side=top]:data-open:slide-in-from-top-10 data-closed:fade-out-0 data-open:fade-in-0 data-[side=bottom]:data-closed:slide-out-to-bottom-10 data-[side=bottom]:data-open:slide-in-from-bottom-10 z-50 flex flex-col bg-clip-padding text-sm shadow-lg transition duration-200 ease-in-out data-[side=bottom]:inset-x-0 data-[side=bottom]:bottom-0 data-[side=bottom]:h-auto data-[side=bottom]:border-t data-[side=left]:top-0 data-[side=left]:left-0 data-[side=left]:bottom-0 data-[side=left]:w-3/4 data-[side=left]:border-r data-[side=right]:top-0 data-[side=right]:right-0 data-[side=right]:bottom-0 data-[side=right]:w-3/4 data-[side=right]:border-l data-[side=top]:inset-x-0 data-[side=top]:top-0 data-[side=top]:h-auto data-[side=top]:border-b data-[side=left]:sm:max-w-sm data-[side=right]:sm:max-w-sm data-[side=bottom]:max-h-[85dvh] data-[side=top]:max-h-[85dvh] data-[side=bottom]:overflow-y-auto data-[side=top]:overflow-y-auto",
           position === "fixed" ? "fixed" : "absolute",
           className,
         )}
+        style={contentStyle}
         {...props}
       >
         <DialogPortalContainerContext.Provider value={contentEl}>
@@ -163,6 +189,7 @@ export {
   SheetClose,
   SheetCloseButton,
   SheetContent,
+  SheetViewportInsetProvider,
   SheetHeader,
   SheetFooter,
   SheetTitle,
