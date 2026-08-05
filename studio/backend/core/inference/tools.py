@@ -1571,7 +1571,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     )
     # Both lexers count a newline as plain whitespace, so neither leaves a token
     # behind to look back at; recovered with the lexer that produced `tokens`.
-    newline_starts = _newline_command_indexes(command, tokens, lex_mode)
+    # Built only when a START is actually reached, since it costs a second lex
+    # and only that walk has to decide command position on its own.
+    newline_starts: "frozenset[int] | None" = None
     exec_flag_indexes, invocation_stops, redirect_indexes = _exec_scan_layout(
         tokens, quoted_separators, quoted_redirects
     )
@@ -1878,6 +1880,8 @@ def _find_blocked_commands(command: str) -> set[str]:
         # sees only as an argument -- `cmd //c start "" powershell` is the very
         # command this walk exists for.
         previous = tokens[i - 1] if i else ""
+        if newline_starts is None:
+            newline_starts = _newline_command_indexes(command, tokens, lex_mode)
         if (
             i
             and i not in command_indexes
