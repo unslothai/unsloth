@@ -528,6 +528,7 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
     a = _analyze(before_src)
     b = _analyze(after_src)
     findings: list[tuple[str, str]] = []
+    after_exported = _dunder_all_names(after_src)
 
     def used_targets(analysis) -> set[str]:
         out: set[str] = set()
@@ -569,6 +570,12 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
         # "resolve" to a use. Skip it so a legitimately-added future import
         # (e.g. `annotations` for lazy PEP 604 `X | None` on py3.9) is not flagged.
         if all(t.startswith("from:__future__:") for t in tids):
+            continue
+        # A name listed in __all__ is an intentional public re-export, which is the
+        # whole point of a package __init__: it is loaded by importers, not by this
+        # module, so "no load resolves to it here" is expected rather than a botched
+        # hoist. Without this, adding any new re-export is an automatic blocker.
+        if n in after_exported:
             continue
         newly_added = bool(tids - before_module_targets)
         was_used_before = bool(tids & before_used)
@@ -793,6 +800,31 @@ def audit_files(paths: list[str]) -> int:
         "ROBUST (no crashes, no false positives vs pyflakes)" if ok else "NEEDS WORK (see above)",
     )
     return 0 if ok else 1
+
+
+def _dunder_all_names(src: str) -> set[str]:
+    """Names a module publishes via __all__, i.e. deliberate re-exports."""
+    out: set[str] = set()
+    try:
+        tree = ast.parse(src)
+    except SyntaxError:
+        return out
+    for node in tree.body:
+        targets = []
+        if isinstance(node, ast.Assign):
+            targets = node.targets
+        elif isinstance(node, ast.AnnAssign):
+            targets = [node.target]
+        elif isinstance(node, ast.AugAssign):
+            targets = [node.target]
+        if not any(isinstance(t, ast.Name) and t.id == "__all__" for t in targets):
+            continue
+        value = getattr(node, "value", None)
+        if isinstance(value, (ast.List, ast.Tuple, ast.Set)):
+            for elt in value.elts:
+                if isinstance(elt, ast.Constant) and isinstance(elt.value, str):
+                    out.add(elt.value)
+    return out
 
 
 def main() -> int:
