@@ -83,6 +83,7 @@ function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null): void {
 
 type ModalBlockStore = {
   getSnapshot: () => boolean;
+  getTriggerElement: () => HTMLElement | null;
   setTriggerElement: (element: HTMLElement | null) => void;
   subscribe: (listener: () => void) => () => void;
 };
@@ -106,6 +107,7 @@ function createModalBlockStore(): ModalBlockStore {
 
   return {
     getSnapshot: () => blocked,
+    getTriggerElement: () => triggerElement,
     setTriggerElement: (element) => {
       triggerElement = element;
       update();
@@ -211,11 +213,16 @@ function Tooltip({
   useEffect(() => {
     if (!clickOpen) return;
     const release = (event: Event) => {
-      const target = event.target as Element | null;
+      const target = event.target as Node | null;
+      // The trigger is matched by element, not by data-slot: an `asChild` child
+      // can drop the attribute (a component that does not spread props), and
+      // then a press on this very trigger read as outside, cleared the pin, and
+      // the click handler toggled it straight back on.
+      if (target && modalBlockStore.getTriggerElement()?.contains(target)) {
+        return;
+      }
       if (
-        target?.closest?.(
-          '[data-slot="tooltip-trigger"],[data-slot="tooltip-content"]',
-        )
+        (target as Element | null)?.closest?.('[data-slot="tooltip-content"]')
       ) {
         return;
       }
@@ -233,7 +240,7 @@ function Tooltip({
       document.removeEventListener("keydown", releaseOnEscape, true);
       window.removeEventListener("blur", releaseNow);
     };
-  }, [clickOpen]);
+  }, [clickOpen, modalBlockStore]);
 
   return (
     <TooltipTriggerElementCtx.Provider value={modalBlockStore.setTriggerElement}>
