@@ -403,8 +403,8 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
         if normalized.casefold().endswith(".gguf"):
             has_gguf = True
         for root in load_roots:
-            if normalized.startswith(root) and "/" not in normalized[len(root):]:
-                root_files.add(normalized[len(root):])
+            if normalized.startswith(root) and "/" not in normalized[len(root) :]:
+                root_files.add(normalized[len(root) :])
     if "adapter_config.json" in root_files:
         return "adapter"
     has_trainable_weights = any(name in root_files for name, _ in _MODEL_WEIGHT_CANDIDATES)
@@ -435,6 +435,7 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
     cached_path = None
     if not request.dataset_streaming:
         from hub.utils.dataset_cache import training_dataset_cache_pin
+
         cached_path, _ = training_dataset_cache_pin(
             dataset_id,
             request.dataset_snapshot_path or request.dataset_local_path,
