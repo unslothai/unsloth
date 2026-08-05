@@ -51,7 +51,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from unsloth.import_fixes import (          # noqa: E402
+from unsloth.import_fixes import (  # noqa: E402
     _TORCHAO_TORCH_SYMBOLS,
     _make_torch_symbol_placeholder,
     fix_torchao_torch_symbol_skew,
@@ -61,6 +61,7 @@ GPU_INIT = ROOT / "unsloth" / "_gpu_init.py"
 
 
 # ---- the placeholder ------------------------------------------------------
+
 
 def test_it_can_be_imported():
     """The whole point: satisfy `from torch.nn.functional import X`."""
@@ -105,11 +106,13 @@ def test_it_is_marked_as_ours():
 
 # ---- the gating -----------------------------------------------------------
 
+
 def test_it_is_a_no_op_when_torch_already_has_the_symbols():
     """On torch >= 2.10 there is nothing to fix, and overwriting the real
     enum with a placeholder that raises would BREAK float8 rather than fix
     anything."""
     import torch.nn.functional as F
+
     added = [n for n in _TORCHAO_TORCH_SYMBOLS if not hasattr(F, n)]
     if not added:
         assert fix_torchao_torch_symbol_skew() is False
@@ -122,8 +125,10 @@ def test_a_healthy_torchao_is_left_alone():
         pytest.skip("torchao not installed")
     from importlib.metadata import version
     from packaging.version import Version
+
     if Version(version("torchao")) < Version("0.18.0"):
         import torch.nn.functional as F
+
         before = {n: hasattr(F, n) for n in _TORCHAO_TORCH_SYMBOLS}
         assert fix_torchao_torch_symbol_skew() is False
         after = {n: hasattr(F, n) for n in _TORCHAO_TORCH_SYMBOLS}
@@ -150,22 +155,22 @@ def test_calling_it_twice_is_stable():
 
 # ---- the wiring -----------------------------------------------------------
 
+
 def test_it_runs_before_unsloth_zoo_is_imported():
     """unsloth_zoo is what pulls in transformers and therefore torchao. Called
     after that import, the fix would be pointless."""
-    lines = GPU_INIT.read_text(encoding="utf-8").splitlines()
-    call = next(i for i, l in enumerate(lines)
-                if l.strip() == "fix_torchao_torch_symbol_skew()")
-    zoo = next(i for i, l in enumerate(lines)
-               if l.strip() == "import unsloth_zoo")
-    assert call < zoo, f"called at line {call+1}, too late for line {zoo+1}"
+    lines = GPU_INIT.read_text(encoding = "utf-8").splitlines()
+    call = next(i for i, l in enumerate(lines) if l.strip() == "fix_torchao_torch_symbol_skew()")
+    zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
+    assert call < zoo, f"called at line {call + 1}, too late for line {zoo + 1}"
 
 
 def test_it_is_imported_and_cleaned_up():
-    src = GPU_INIT.read_text(encoding="utf-8")
+    src = GPU_INIT.read_text(encoding = "utf-8")
     assert "fix_torchao_torch_symbol_skew," in src, "not imported"
     assert "del fix_torchao_torch_symbol_skew" in src, (
-        "every other fix is deleted after use; this one must be too")
+        "every other fix is deleted after use; this one must be too"
+    )
 
 
 def test_the_symbol_list_matches_what_torchao_imports():
@@ -178,8 +183,11 @@ def test_the_symbol_list_matches_what_torchao_imports():
     real and watching it still fail.
     """
     assert set(_TORCHAO_TORCH_SYMBOLS) == {
-        "ScalingType", "SwizzleType", "scaled_grouped_mm",
-        "scaled_dot_product_attention"}
+        "ScalingType",
+        "SwizzleType",
+        "scaled_grouped_mm",
+        "scaled_dot_product_attention",
+    }
 
 
 def test_symbols_torch_already_provides_are_never_replaced():
@@ -187,12 +195,14 @@ def test_symbols_torch_already_provides_are_never_replaced():
     it a placeholder that raises would break attention itself."""
     import torch.nn.functional as F
     import unsloth.import_fixes as IF
+
     real = F.scaled_dot_product_attention
     IF.fix_torchao_torch_symbol_skew()
     assert F.scaled_dot_product_attention is real
 
 
 # ---- the fix actually unblocks the import --------------------------------
+
 
 def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
     """The decisive test: reproduce torchao 0.18 mx_tensor.py line 39 exactly,
@@ -224,14 +234,16 @@ def test_the_real_torchao_018_import_line_is_unblocked(monkeypatch):
     with pytest.raises(ImportError):
         exec(line, {})
 
-    monkeypatch.setattr(IF, "importlib_version",
-                        lambda name: "0.18.0" if name == "torchao" else "0")
+    monkeypatch.setattr(
+        IF, "importlib_version", lambda name: "0.18.0" if name == "torchao" else "0"
+    )
     try:
         assert IF.fix_torchao_torch_symbol_skew() is True
-        exec(line, {})                      # must not raise now
+        exec(line, {})  # must not raise now
         from torch.nn.functional import ScalingType
+
         with pytest.raises(RuntimeError):
-            ScalingType.DYNAMIC             # still refuses to be used
+            ScalingType.DYNAMIC  # still refuses to be used
     finally:
         for n in _TORCHAO_TORCH_SYMBOLS:
             if getattr(getattr(F, n, None), "__unsloth_placeholder__", False):
@@ -245,7 +257,8 @@ def test_the_cleanup_in_the_test_above_is_real():
     for n in _TORCHAO_TORCH_SYMBOLS:
         obj = getattr(F, n, None)
         assert not getattr(obj, "__unsloth_placeholder__", False), (
-            f"a placeholder for {n} leaked out of a test")
+            f"a placeholder for {n} leaked out of a test"
+        )
 
 
 # ---- the Mac / MLX path ---------------------------------------------------
@@ -258,10 +271,9 @@ def test_the_mlx_path_applies_the_fix_too():
     branch in __init__.py imports unsloth_zoo directly and never reaches
     _gpu_init. Without the fix there, an Apple Silicon user with torchao 0.18
     and torch < 2.10 hits exactly the same dead import."""
-    lines = INIT.read_text(encoding="utf-8").splitlines()
+    lines = INIT.read_text(encoding = "utf-8").splitlines()
     fix = next(i for i, l in enumerate(lines) if "_fix_torchao()" in l)
-    zoo = next(i for i, l in enumerate(lines)
-               if l.strip() == "import unsloth_zoo")
+    zoo = next(i for i, l in enumerate(lines) if l.strip() == "import unsloth_zoo")
     assert fix < zoo, "the fix must precede the MLX unsloth_zoo import"
 
 
@@ -274,7 +286,8 @@ def test_the_mlx_call_is_inside_the_mlx_branch():
     "just after it".
     """
     import ast as _ast
-    tree = _ast.parse(INIT.read_text(encoding="utf-8"))
+
+    tree = _ast.parse(INIT.read_text(encoding = "utf-8"))
 
     def _mlx_if(nodes):
         for n in nodes:
@@ -286,35 +299,44 @@ def test_the_mlx_call_is_inside_the_mlx_branch():
     assert node is not None, "no `if _IS_MLX:` branch found"
     inside = any(
         isinstance(c, _ast.Call) and getattr(c.func, "id", "") == "_fix_torchao"
-        for stmt in node.body for c in _ast.walk(stmt))
+        for stmt in node.body
+        for c in _ast.walk(stmt)
+    )
     assert inside, "the call must be INSIDE the `if _IS_MLX:` body"
 
     outside = any(
         isinstance(c, _ast.Call) and getattr(c.func, "id", "") == "_fix_torchao"
-        for stmt in tree.body if stmt is not node for c in _ast.walk(stmt))
+        for stmt in tree.body
+        if stmt is not node
+        for c in _ast.walk(stmt)
+    )
     assert not outside, "it must not also run on the non-MLX path"
 
 
 def test_the_mlx_call_cannot_break_the_import():
     """On Mac this runs before anything else; an exception here would replace
     a torchao problem with an unsloth problem."""
-    src = INIT.read_text(encoding="utf-8")
+    src = INIT.read_text(encoding = "utf-8")
     i = src.index("_fix_torchao()")
-    window = src[max(0, i - 400):i + 200]
+    window = src[max(0, i - 400) : i + 200]
     assert "except Exception" in window and "pass" in window
 
 
 # ---- version gating across the strings that actually ship ----------------
 
-@pytest.mark.parametrize("version,affected", [
-    ("0.18.0", True),
-    ("0.18.0+cu130", True),          # wheels carry a local version
-    ("0.19.0.dev20260801", True),    # a dev build of a later release still has it
-    ("1.0.0", True),                 # future majors, until upstream fixes it
-    ("0.17.0", False),               # guards its own import
-    ("0.17.0+cu130", False),
-    ("0.13.0", False),               # the floor in pyproject
-])
+
+@pytest.mark.parametrize(
+    "version,affected",
+    [
+        ("0.18.0", True),
+        ("0.18.0+cu130", True),  # wheels carry a local version
+        ("0.19.0.dev20260801", True),  # a dev build of a later release still has it
+        ("1.0.0", True),  # future majors, until upstream fixes it
+        ("0.17.0", False),  # guards its own import
+        ("0.17.0+cu130", False),
+        ("0.13.0", False),  # the floor in pyproject
+    ],
+)
 def test_the_version_gate(version, affected):
     """The gate decides whether we touch torch at all, so it has to cope with
     local versions and dev builds, not just clean releases."""
@@ -326,8 +348,8 @@ def test_an_unparseable_version_is_not_patched(monkeypatch):
     """Better to leave torch alone and let torchao raise its own error than to
     guess from a version string we do not understand."""
     import unsloth.import_fixes as IF
-    monkeypatch.setattr(IF, "importlib_version",
-                        lambda name: "not-a-version-at-all")
+
+    monkeypatch.setattr(IF, "importlib_version", lambda name: "not-a-version-at-all")
     assert IF.fix_torchao_torch_symbol_skew() is False
 
 

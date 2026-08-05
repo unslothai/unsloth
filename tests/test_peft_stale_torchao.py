@@ -57,9 +57,11 @@ def peft_env(monkeypatch):
         pkg = types.ModuleType("peft")
         pkg.__path__ = []
         pkg.import_utils = import_utils
-        for name, mod in (("peft", pkg),
-                          ("peft.import_utils", import_utils),
-                          ("peft.tuners.lora.torchao", consumer)):
+        for name, mod in (
+            ("peft", pkg),
+            ("peft.import_utils", import_utils),
+            ("peft.tuners.lora.torchao", consumer),
+        ):
             monkeypatch.setitem(sys.modules, name, mod)
         return import_utils, consumer
 
@@ -72,13 +74,16 @@ def peft_env(monkeypatch):
 def _fix():
     """Load the function without importing unsloth (which needs a GPU)."""
     import ast
-    src = (REPO_ROOT / "unsloth" / "import_fixes.py").read_text(encoding="utf-8")
+
+    src = (REPO_ROOT / "unsloth" / "import_fixes.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
     for node in tree.body:
-        if (isinstance(node, ast.FunctionDef)
-                and node.name == "fix_peft_stale_torchao_import_error"):
-            ns = {"functools": __import__("functools"), "sys": sys,
-                  "logger": types.SimpleNamespace(warning=lambda *a, **k: None)}
+        if isinstance(node, ast.FunctionDef) and node.name == "fix_peft_stale_torchao_import_error":
+            ns = {
+                "functools": __import__("functools"),
+                "sys": sys,
+                "logger": types.SimpleNamespace(warning = lambda *a, **k: None),
+            }
             exec(ast.get_source_segment(src, node), ns)
             return ns["fix_peft_stale_torchao_import_error"]
     raise AssertionError("fix_peft_stale_torchao_import_error not found")
@@ -86,17 +91,21 @@ def _fix():
 
 FIX = _fix()
 
-STALE = ImportError("Found an incompatible version of torchao. Found version "
-                    "0.10.0, but only versions above 0.16.0 are supported")
+STALE = ImportError(
+    "Found an incompatible version of torchao. Found version "
+    "0.10.0, but only versions above 0.16.0 are supported"
+)
 
 
 def _raiser(exc):
     def is_torchao_available():
         raise exc
+
     return is_torchao_available
 
 
 # ---- the bug --------------------------------------------------------------
+
 
 def test_stale_torchao_becomes_false(peft_env):
     iu, _ = peft_env(_raiser(STALE))
@@ -116,12 +125,19 @@ def test_warning_is_emitted_once(peft_env):
     iu, _ = peft_env(_raiser(STALE))
     seen = []
     import ast
-    src = (REPO_ROOT / "unsloth" / "import_fixes.py").read_text(encoding="utf-8")
+
+    src = (REPO_ROOT / "unsloth" / "import_fixes.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
-    node = next(n for n in tree.body if isinstance(n, ast.FunctionDef)
-                and n.name == "fix_peft_stale_torchao_import_error")
-    ns = {"functools": __import__("functools"), "sys": sys,
-          "logger": types.SimpleNamespace(warning=seen.append)}
+    node = next(
+        n
+        for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "fix_peft_stale_torchao_import_error"
+    )
+    ns = {
+        "functools": __import__("functools"),
+        "sys": sys,
+        "logger": types.SimpleNamespace(warning = seen.append),
+    }
     exec(ast.get_source_segment(src, node), ns)
     ns["fix_peft_stale_torchao_import_error"]()
     for _ in range(5):
@@ -133,9 +149,9 @@ def test_warning_is_emitted_once(peft_env):
 
 # ---- what must still fail -------------------------------------------------
 
+
 def test_an_unrelated_import_error_still_raises(peft_env):
-    iu, _ = peft_env(_raiser(ImportError("libcudart.so.12: cannot open "
-                                         "shared object file")))
+    iu, _ = peft_env(_raiser(ImportError("libcudart.so.12: cannot open shared object file")))
     FIX()
     with pytest.raises(ImportError):
         iu.is_torchao_available()
@@ -149,6 +165,7 @@ def test_a_non_import_error_still_raises(peft_env):
 
 
 # ---- what must not change -------------------------------------------------
+
 
 def test_a_working_torchao_still_answers_true(peft_env):
     iu, _ = peft_env(lambda: True)
@@ -164,9 +181,10 @@ def test_absent_torchao_still_answers_false(peft_env):
 
 def test_no_peft_is_not_an_error(monkeypatch):
     for k in [k for k in sys.modules if k.startswith("peft")]:
-        monkeypatch.delitem(sys.modules, k, raising=False)
+        monkeypatch.delitem(sys.modules, k, raising = False)
     monkeypatch.setattr(sys, "path", [p for p in sys.path])
     import builtins
+
     real = builtins.__import__
 
     def no_peft(name, *a, **k):
@@ -194,8 +212,9 @@ def test_metadata_survives(peft_env):
 
 # ---- wiring ---------------------------------------------------------------
 
+
 def test_called_from_gpu_init():
-    src = (REPO_ROOT / "unsloth" / "_gpu_init.py").read_text(encoding="utf-8")
+    src = (REPO_ROOT / "unsloth" / "_gpu_init.py").read_text(encoding = "utf-8")
     assert "fix_peft_stale_torchao_import_error,\n" in src, "not imported"
     assert "\nfix_peft_stale_torchao_import_error()\n" in src, "not called"
     assert "\ndel fix_peft_stale_torchao_import_error\n" in src, "not cleaned up"

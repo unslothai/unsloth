@@ -612,9 +612,7 @@ if _IS_MLX:
 
     def _assign_mlx_positional_kwarg(kwargs, name, value):
         if name in kwargs:
-            raise TypeError(
-                f"UnslothTrainer.__init__() got multiple values for argument " f"{name!r}"
-            )
+            raise TypeError(f"UnslothTrainer.__init__() got multiple values for argument {name!r}")
         kwargs[name] = value
 
     def _normalize_mlx_trainer_init_args(args, kwargs):

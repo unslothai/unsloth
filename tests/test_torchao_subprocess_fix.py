@@ -55,6 +55,7 @@ from unsloth import import_fixes as IF  # noqa: E402
 
 # ---- the generated sitecustomize -----------------------------------------
 
+
 def test_it_is_valid_python():
     """It is imported at the start of EVERY subprocess. A syntax error here
     breaks all of them, which is far worse than the bug being fixed."""
@@ -74,7 +75,7 @@ def test_the_chain_runs_before_the_fix():
 
 def test_it_never_raises_at_interpreter_startup():
     src = IF._subprocess_sitecustomize_source()
-    tail = src[src.index("_chain_to_the_real_sitecustomize()"):]
+    tail = src[src.index("_chain_to_the_real_sitecustomize()") :]
     assert "except Exception:" in tail
 
 
@@ -100,9 +101,17 @@ def test_the_child_never_imports_unsloth():
 def test_it_only_imports_the_stdlib_and_torch():
     """Anything heavier makes interpreter startup slower for every process."""
     import ast
+
     tree = ast.parse(IF._subprocess_sitecustomize_source())
-    allowed = {"os", "sys", "importlib", "importlib.util",
-               "importlib.metadata", "torch", "torch.nn.functional"}
+    allowed = {
+        "os",
+        "sys",
+        "importlib",
+        "importlib.util",
+        "importlib.metadata",
+        "torch",
+        "torch.nn.functional",
+    }
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             for a in node.names:
@@ -113,7 +122,8 @@ def test_it_only_imports_the_stdlib_and_torch():
 
 # ---- staging ---------------------------------------------------------------
 
-@pytest.fixture(autouse=True)
+
+@pytest.fixture(autouse = True)
 def _restore_pythonpath():
     before = os.environ.get("PYTHONPATH")
     yield
@@ -132,6 +142,7 @@ def _torchao_is_broken_here() -> bool:
     except Exception:
         return False
     import torch.nn.functional as F
+
     # `_torch_really_has`, not `hasattr`: conftest.py imports unsloth, so on a
     # broken environment the placeholders are already on F and a plain hasattr
     # reads it as healthy -- the very confusion the product gate avoids.
@@ -151,6 +162,7 @@ def test_it_is_a_noop_on_a_healthy_environment():
 def test_it_uses_the_platform_path_separator():
     """Windows uses ';'. A hardcoded ':' would corrupt PYTHONPATH there."""
     import inspect
+
     src = inspect.getsource(IF.propagate_torchao_fix_to_subprocesses)
     assert "os.pathsep" in src
     assert 'split(":")' not in src
@@ -160,6 +172,7 @@ def test_it_writes_atomically():
     """Concurrent runs must never let a subprocess read a truncated
     sitecustomize -- that would be a SyntaxError at startup."""
     import inspect
+
     src = inspect.getsource(IF.propagate_torchao_fix_to_subprocesses)
     assert "os.replace" in src
 
@@ -171,6 +184,7 @@ def test_it_is_idempotent_on_pythonpath():
 
 
 # ---- the directory it writes into -----------------------------------------
+
 
 def test_the_directory_is_private_to_this_user():
     """The temp dir is shared, and everything on PYTHONPATH runs in every
@@ -197,9 +211,10 @@ def test_it_refuses_a_directory_owned_by_someone_else(monkeypatch, tmp_path):
         st_mode = real_lstat(str(hostile)).st_mode
         st_uid = os.getuid() + 1
 
-    monkeypatch.setattr(os, "lstat", lambda p: _NotOurs() if str(p) == str(hostile)
-                        else real_lstat(p))
-    with pytest.raises(RuntimeError, match="owned by another user"):
+    monkeypatch.setattr(
+        os, "lstat", lambda p: _NotOurs() if str(p) == str(hostile) else real_lstat(p)
+    )
+    with pytest.raises(RuntimeError, match = "owned by another user"):
         IF._subprocess_fix_directory()
 
 
@@ -207,6 +222,7 @@ def test_the_refusal_does_not_propagate_as_a_crash(monkeypatch):
     """`propagate_...` wraps the staging in try/except and warns. A hostile
     directory must degrade to "no subprocess fix", not kill the import."""
     import inspect
+
     src = inspect.getsource(IF.propagate_torchao_fix_to_subprocesses)
     i = src.index("_subprocess_fix_directory()")
     assert "try:" in src[:i]
@@ -215,36 +231,40 @@ def test_the_refusal_does_not_propagate_as_a_crash(monkeypatch):
 
 # ---- behaviour, with real interpreters ------------------------------------
 
+
 @pytest.fixture
 def staged(tmp_path):
     """The generated sitecustomize on a PYTHONPATH dir, plus a fake torch and
     a fake torchao 0.18 that reproduces the real import error."""
     site = tmp_path / "hook"
     site.mkdir()
-    (site / "sitecustomize.py").write_text(
-        IF._subprocess_sitecustomize_source(), encoding="utf-8")
+    (site / "sitecustomize.py").write_text(IF._subprocess_sitecustomize_source(), encoding = "utf-8")
 
     fake = tmp_path / "fake"
-    (fake / "torch" / "nn").mkdir(parents=True)
+    (fake / "torch" / "nn").mkdir(parents = True)
     (fake / "torch" / "__init__.py").write_text(
-        "from . import nn\n__version__='2.9.0'\n", encoding="utf-8")
+        "from . import nn\n__version__='2.9.0'\n", encoding = "utf-8"
+    )
     (fake / "torch" / "nn" / "__init__.py").write_text(
-        "from . import functional\n", encoding="utf-8")
+        "from . import functional\n", encoding = "utf-8"
+    )
     (fake / "torch" / "nn" / "functional.py").write_text(
-        "def linear(*a, **k):\n    return None\n", encoding="utf-8")
+        "def linear(*a, **k):\n    return None\n", encoding = "utf-8"
+    )
     (fake / "torchao").mkdir()
     (fake / "torchao" / "__init__.py").write_text(
-        "from torch.nn.functional import ScalingType, scaled_grouped_mm\n"
-        "__version__='0.18.0'\n", encoding="utf-8")
+        "from torch.nn.functional import ScalingType, scaled_grouped_mm\n__version__='0.18.0'\n",
+        encoding = "utf-8",
+    )
     d = fake / "torchao-0.18.0.dist-info"
     d.mkdir()
     (d / "METADATA").write_text(
-        "Metadata-Version: 2.1\nName: torchao\nVersion: 0.18.0\n",
-        encoding="utf-8")
+        "Metadata-Version: 2.1\nName: torchao\nVersion: 0.18.0\n", encoding = "utf-8"
+    )
     return site, fake
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope = "session")
 def bare_interpreter(tmp_path_factory):
     """An interpreter whose site-packages is empty.
 
@@ -255,8 +275,12 @@ def bare_interpreter(tmp_path_factory):
     """
     venv = tmp_path_factory.mktemp("bare") / "venv"
     try:
-        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)],
-                       check=True, capture_output=True, timeout=300)
+        subprocess.run(
+            [sys.executable, "-m", "venv", "--without-pip", str(venv)],
+            check = True,
+            capture_output = True,
+            timeout = 300,
+        )
     except Exception as exception:
         pytest.skip(f"cannot build a venv here ({exception})")
     exe = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -265,12 +289,21 @@ def bare_interpreter(tmp_path_factory):
     return str(exe)
 
 
-def _child(code: str, path_entries, timeout=300, executable=None):
+def _child(
+    code: str,
+    path_entries,
+    timeout = 300,
+    executable = None,
+):
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["PYTHONPATH"] = os.pathsep.join(str(p) for p in path_entries)
-    return subprocess.run([executable or sys.executable, "-c", textwrap.dedent(code)],
-                          capture_output=True, text=True, timeout=timeout,
-                          env=env)
+    return subprocess.run(
+        [executable or sys.executable, "-c", textwrap.dedent(code)],
+        capture_output = True,
+        text = True,
+        timeout = timeout,
+        env = env,
+    )
 
 
 def test_the_broken_import_really_fails_without_the_hook(staged):
@@ -295,13 +328,16 @@ def test_it_also_reaches_a_grandchild(staged):
         "r = subprocess.run([sys.executable, '-c',"
         "'import torchao; print(\"GRANDCHILD OK\")'],"
         "capture_output=True, text=True);"
-        "print(r.stdout, r.stderr)", [site, fake])
+        "print(r.stdout, r.stderr)",
+        [site, fake],
+    )
     assert "GRANDCHILD OK" in p.stdout, p.stdout + p.stderr
 
 
 def test_the_placeholder_still_refuses_to_be_used(staged):
     site, fake = staged
-    p = _child('''
+    p = _child(
+        """
         import torchao
         from torch.nn.functional import ScalingType
         try:
@@ -309,7 +345,9 @@ def test_the_placeholder_still_refuses_to_be_used(staged):
             print("NO ERROR")
         except RuntimeError as e:
             print("RAISED", "does not exist in this torch" in str(e))
-    ''', [site, fake])
+    """,
+        [site, fake],
+    )
     assert "RAISED True" in p.stdout, p.stdout + p.stderr
 
 
@@ -319,22 +357,19 @@ def test_an_existing_sitecustomize_still_runs(staged, tmp_path):
     site, fake = staged
     other = tmp_path / "other"
     other.mkdir()
-    (other / "sitecustomize.py").write_text(
-        "print('OTHER SITECUSTOMIZE RAN')\n", encoding="utf-8")
+    (other / "sitecustomize.py").write_text("print('OTHER SITECUSTOMIZE RAN')\n", encoding = "utf-8")
     p = _child("import torchao; print('OK')", [site, other, fake])
     assert "OTHER SITECUSTOMIZE RAN" in p.stdout, p.stdout + p.stderr
     assert "OK" in p.stdout
 
 
-def test_a_broken_existing_sitecustomize_does_not_kill_the_process(staged,
-                                                                   tmp_path):
+def test_a_broken_existing_sitecustomize_does_not_kill_the_process(staged, tmp_path):
     """Chaining must not turn somebody else's bug into a startup crash for
     every subprocess."""
     site, fake = staged
     other = tmp_path / "other"
     other.mkdir()
-    (other / "sitecustomize.py").write_text(
-        "raise RuntimeError('boom')\n", encoding="utf-8")
+    (other / "sitecustomize.py").write_text("raise RuntimeError('boom')\n", encoding = "utf-8")
     p = _child("import torchao; print('STILL OK')", [site, other, fake])
     assert "STILL OK" in p.stdout, p.stdout + p.stderr
 
@@ -343,17 +378,24 @@ def test_it_does_nothing_when_torchao_is_absent(staged, tmp_path, bare_interpret
     """No torchao, no patching: torch.nn.functional must be untouched."""
     site, _fake = staged
     bare = tmp_path / "bare"
-    (bare / "torch" / "nn").mkdir(parents=True)
+    (bare / "torch" / "nn").mkdir(parents = True)
     (bare / "torch" / "__init__.py").write_text(
-        "from . import nn\n__version__='2.9.0'\n", encoding="utf-8")
+        "from . import nn\n__version__='2.9.0'\n", encoding = "utf-8"
+    )
     (bare / "torch" / "nn" / "__init__.py").write_text(
-        "from . import functional\n", encoding="utf-8")
+        "from . import functional\n", encoding = "utf-8"
+    )
     (bare / "torch" / "nn" / "functional.py").write_text(
-        "def linear(*a, **k):\n    return None\n", encoding="utf-8")
-    p = _child('''
+        "def linear(*a, **k):\n    return None\n", encoding = "utf-8"
+    )
+    p = _child(
+        """
         import torch.nn.functional as F
         print("PATCHED", hasattr(F, "ScalingType"))
-    ''', [site, bare], executable=bare_interpreter)
+    """,
+        [site, bare],
+        executable = bare_interpreter,
+    )
     assert "PATCHED False" in p.stdout, p.stdout + p.stderr
 
 
@@ -370,6 +412,7 @@ if __name__ == "__main__":
 
 # ---- the in-process fix must not disable this one -------------------------
 
+
 def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp_path):
     """_gpu_init.py calls fix_torchao_torch_symbol_skew() immediately before
     propagate_torchao_fix_to_subprocesses(). The first installs a placeholder
@@ -377,6 +420,7 @@ def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp
     only asked `hasattr` would read a healthy torch and stage nothing, in
     exactly the environments vLLM's inspector child needs it."""
     import torch.nn.functional as F
+
     if all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS):
         pytest.skip("this torch provides every symbol; nothing to place")
 
@@ -388,15 +432,17 @@ def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp
         if getattr(getattr(F, name, None), "__unsloth_placeholder__", False):
             delattr(F, name)
 
-    monkeypatch.setattr(IF, "importlib_version",
-                        lambda name: "0.18.0" if name == "torchao" else "0")
+    monkeypatch.setattr(
+        IF, "importlib_version", lambda name: "0.18.0" if name == "torchao" else "0"
+    )
     monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
     monkeypatch.delenv("PYTHONPATH", raising = False)
     try:
-        assert IF.fix_torchao_torch_symbol_skew() is True   # the _gpu_init order
+        assert IF.fix_torchao_torch_symbol_skew() is True  # the _gpu_init order
         directory = IF.propagate_torchao_fix_to_subprocesses()
         assert directory is not None, (
-            "staged nothing: the in-process placeholders defeated the gate")
+            "staged nothing: the in-process placeholders defeated the gate"
+        )
         assert os.path.isfile(os.path.join(directory, "sitecustomize.py"))
         assert directory in os.environ["PYTHONPATH"].split(os.pathsep)
     finally:
@@ -408,8 +454,10 @@ def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp
 def test_a_placeholder_does_not_count_as_a_real_torch_symbol():
     """The distinction the gate above turns on."""
     import torch.nn.functional as F
+
     placeholder = IF._make_torch_symbol_placeholder("ScalingType", "detail")
     assert IF._torch_really_has(F, "scaled_dot_product_attention") is True
-    assert IF._torch_really_has(
-        type("_F", (), {"ScalingType": placeholder}), "ScalingType") is False
+    assert (
+        IF._torch_really_has(type("_F", (), {"ScalingType": placeholder}), "ScalingType") is False
+    )
     assert IF._torch_really_has(type("_F", (), {}), "ScalingType") is False

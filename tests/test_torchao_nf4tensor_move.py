@@ -47,20 +47,26 @@ ROOT = Path(__file__).resolve().parents[1]
 def _make_torchao(root: Path, *, old: bool, new: bool):
     """A minimal torchao package with either layout, or neither."""
     pkg = root / "torchao"
-    (pkg / "dtypes").mkdir(parents=True, exist_ok=True)
-    (pkg / "__init__.py").write_text("__version__ = '0.18.0'\n", encoding="utf-8")
-    (pkg / "dtypes" / "__init__.py").write_text("", encoding="utf-8")
+    (pkg / "dtypes").mkdir(parents = True, exist_ok = True)
+    (pkg / "__init__.py").write_text("__version__ = '0.18.0'\n", encoding = "utf-8")
+    (pkg / "dtypes" / "__init__.py").write_text("", encoding = "utf-8")
     if old:
         (pkg / "dtypes" / "nf4tensor.py").write_text(
-            "WHICH = 'old'\ndef to_nf4(x): return x\n", encoding="utf-8")
+            "WHICH = 'old'\ndef to_nf4(x): return x\n", encoding = "utf-8"
+        )
     if new:
         d = pkg / "quantization" / "quantize_" / "workflows" / "nf4"
-        d.mkdir(parents=True, exist_ok=True)
-        for part in (pkg / "quantization", pkg / "quantization" / "quantize_",
-                     pkg / "quantization" / "quantize_" / "workflows", d):
-            (part / "__init__.py").write_text("", encoding="utf-8")
+        d.mkdir(parents = True, exist_ok = True)
+        for part in (
+            pkg / "quantization",
+            pkg / "quantization" / "quantize_",
+            pkg / "quantization" / "quantize_" / "workflows",
+            d,
+        ):
+            (part / "__init__.py").write_text("", encoding = "utf-8")
         (d / "nf4_tensor.py").write_text(
-            "WHICH = 'new'\ndef to_nf4(x): return x\n", encoding="utf-8")
+            "WHICH = 'new'\ndef to_nf4(x): return x\n", encoding = "utf-8"
+        )
     return pkg
 
 
@@ -79,71 +85,87 @@ def _run(root: Path, body: str):
         sys.modules["_if"] = _if
         spec.loader.exec_module(_if)
     """) + textwrap.dedent(body)
-    return subprocess.run([sys.executable, "-c", script],
-                          capture_output=True, text=True, timeout=180)
+    return subprocess.run(
+        [sys.executable, "-c", script], capture_output = True, text = True, timeout = 180
+    )
 
 
 def test_the_new_layout_is_reachable_under_the_old_name(tmp_path):
     """The actual fix: torchao 0.18, torchtune's import works anyway."""
-    _make_torchao(tmp_path, old=False, new=True)
-    r = _run(tmp_path, """
+    _make_torchao(tmp_path, old = False, new = True)
+    r = _run(
+        tmp_path,
+        """
         _if.fix_torchao_nf4tensor_move()
         import torchao.dtypes.nf4tensor as m
         print("RESOLVED", m.WHICH, hasattr(m, "to_nf4"))
-    """)
+    """,
+    )
     assert "RESOLVED new True" in r.stdout, (r.stdout, r.stderr[-2000:])
 
 
 def test_without_the_fix_that_import_fails(tmp_path):
     """The premise. Without it the test above could pass on any torchao."""
-    _make_torchao(tmp_path, old=False, new=True)
-    r = _run(tmp_path, """
+    _make_torchao(tmp_path, old = False, new = True)
+    r = _run(
+        tmp_path,
+        """
         try:
             import torchao.dtypes.nf4tensor
             print("UNEXPECTEDLY OK")
         except ModuleNotFoundError as e:
             print("EXPECTED FAILURE", e)
-    """)
+    """,
+    )
     assert "EXPECTED FAILURE" in r.stdout, (r.stdout, r.stderr[-2000:])
 
 
 def test_an_older_torchao_still_gets_its_own_module(tmp_path):
     """Appended, not inserted at 0. On torchao < 0.18 the real module must win,
     or the fix would silently swap out code that was working."""
-    _make_torchao(tmp_path, old=True, new=True)
-    r = _run(tmp_path, """
+    _make_torchao(tmp_path, old = True, new = True)
+    r = _run(
+        tmp_path,
+        """
         _if.fix_torchao_nf4tensor_move()
         import torchao.dtypes.nf4tensor as m
         print("RESOLVED", m.WHICH)
-    """)
+    """,
+    )
     assert "RESOLVED old" in r.stdout, (r.stdout, r.stderr[-2000:])
 
 
 def test_neither_layout_still_raises(tmp_path):
     """A genuinely missing module must not be masked by an empty alias -- that
     would turn a clear ModuleNotFoundError into an AttributeError later."""
-    _make_torchao(tmp_path, old=False, new=False)
-    r = _run(tmp_path, """
+    _make_torchao(tmp_path, old = False, new = False)
+    r = _run(
+        tmp_path,
+        """
         _if.fix_torchao_nf4tensor_move()
         try:
             import torchao.dtypes.nf4tensor
             print("UNEXPECTEDLY OK")
         except ModuleNotFoundError:
             print("STILL RAISES")
-    """)
+    """,
+    )
     assert "STILL RAISES" in r.stdout, (r.stdout, r.stderr[-2000:])
 
 
 def test_it_is_idempotent(tmp_path):
     """`import unsloth` twice, or a re-import, must not stack finders."""
-    _make_torchao(tmp_path, old=False, new=True)
-    r = _run(tmp_path, """
+    _make_torchao(tmp_path, old = False, new = True)
+    r = _run(
+        tmp_path,
+        """
         import sys
         before = len(sys.meta_path)
         for _ in range(5):
             _if.fix_torchao_nf4tensor_move()
         print("ADDED", len(sys.meta_path) - before)
-    """)
+    """,
+    )
     assert "ADDED 1" in r.stdout, (r.stdout, r.stderr[-2000:])
 
 
@@ -155,7 +177,9 @@ def test_no_torchao_means_no_finder(tmp_path):
     asserted no finder while a finder was correctly being added, and it was the
     test that was wrong.
     """
-    r = _run(tmp_path, """
+    r = _run(
+        tmp_path,
+        """
         import sys
         sys.path = [p for p in sys.path
                     if "site-packages" not in p and "dist-packages" not in p]
@@ -165,25 +189,29 @@ def test_no_torchao_means_no_finder(tmp_path):
         before = len(sys.meta_path)
         _if.fix_torchao_nf4tensor_move()
         print("ADDED", len(sys.meta_path) - before)
-    """)
+    """,
+    )
     assert "ADDED 0" in r.stdout, (r.stdout, r.stderr[-2000:])
 
 
 def test_it_does_not_import_torchao_eagerly(tmp_path):
     """Lazy by construction. Calling the fix must not drag torchao into every
     `import unsloth`, which on some builds is seconds and a CUDA probe."""
-    _make_torchao(tmp_path, old=False, new=True)
-    r = _run(tmp_path, """
+    _make_torchao(tmp_path, old = False, new = True)
+    r = _run(
+        tmp_path,
+        """
         import sys
         _if.fix_torchao_nf4tensor_move()
         print("LOADED", "torchao.dtypes.nf4tensor" in sys.modules)
-    """)
+    """,
+    )
     assert "LOADED False" in r.stdout, (r.stdout, r.stderr[-2000:])
 
 
 def test_it_is_wired_into_the_init_sequence():
     """A fix nobody calls is not a fix."""
-    src = (ROOT / "unsloth" / "_gpu_init.py").read_text(encoding="utf-8")
+    src = (ROOT / "unsloth" / "_gpu_init.py").read_text(encoding = "utf-8")
     assert "fix_torchao_nf4tensor_move," in src, "not imported"
     assert "fix_torchao_nf4tensor_move()" in src, "not called"
 
@@ -195,7 +223,10 @@ def test_the_real_environment_is_left_alone():
     # imported unsloth the alias is already registered, so find_spec answers for
     # the alias and an in-process check would read the new layout as the old one.
     p = subprocess.run(
-        [sys.executable, "-c", textwrap.dedent('''
+        [
+            sys.executable,
+            "-c",
+            textwrap.dedent("""
             import importlib.util, os, sys
             if importlib.util.find_spec("torchao") is None:
                 print("SKIP torchao not installed"); raise SystemExit
@@ -211,8 +242,13 @@ def test_the_real_environment_is_left_alone():
             mod.fix_torchao_nf4tensor_move()
             import torchao.dtypes.nf4tensor as m
             print("FILE", getattr(m, "__file__", ""))
-        '''), str(ROOT / "unsloth" / "import_fixes.py")],
-        capture_output=True, text=True, timeout=600)
+        """),
+            str(ROOT / "unsloth" / "import_fixes.py"),
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 600,
+    )
     assert p.returncode == 0, p.stdout + p.stderr
     if "SKIP " in p.stdout:
         pytest.skip(p.stdout.split("SKIP ", 1)[1].strip())
@@ -232,7 +268,9 @@ def test_the_relocated_module_keeps_its_own_specification(tmp_path):
     alone, find_spec reports the old name for the new module and reload runs
     the alias loader's no-op exec_module instead of the file."""
     _make_torchao(tmp_path, old = False, new = True)
-    r = _run(tmp_path, """
+    r = _run(
+        tmp_path,
+        """
         import importlib.util
         NEW = "torchao.quantization.quantize_.workflows.nf4.nf4_tensor"
         _if.fix_torchao_nf4tensor_move()
@@ -240,7 +278,8 @@ def test_the_relocated_module_keeps_its_own_specification(tmp_path):
         print("SPEC", m.__spec__.name)
         print("FINDSPEC", importlib.util.find_spec(NEW).name)
         print("SAME", sys.modules[NEW] is m)
-    """)
+    """,
+    )
     new = "torchao.quantization.quantize_.workflows.nf4.nf4_tensor"
     assert f"SPEC {new}" in r.stdout, (r.stdout, r.stderr[-2000:])
     assert f"FINDSPEC {new}" in r.stdout, (r.stdout, r.stderr[-2000:])
@@ -252,11 +291,14 @@ def test_the_mlx_branch_installs_the_alias_too():
     it, so on Apple Silicon xcodec2 would still die on the old path. Source
     level, because the branch only runs when mlx is importable."""
     import ast
+
     src = (ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")
-    branch = [n for n in ast.walk(ast.parse(src))
-              if isinstance(n, ast.If)
-              and any(getattr(x, "id", None) == "_IS_MLX"
-                      for x in ast.walk(n.test))]
+    branch = [
+        n
+        for n in ast.walk(ast.parse(src))
+        if isinstance(n, ast.If)
+        and any(getattr(x, "id", None) == "_IS_MLX" for x in ast.walk(n.test))
+    ]
     assert branch, "the _IS_MLX branch moved; this test needs updating"
     body = ast.get_source_segment(src, branch[0])
     assert "fix_torchao_nf4tensor_move" in body

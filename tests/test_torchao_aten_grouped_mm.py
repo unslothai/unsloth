@@ -56,6 +56,7 @@ from unsloth import import_fixes as IF  # noqa: E402
 
 # ---- the guard ----------------------------------------------------------
 
+
 def test_a_present_op_is_reported_as_present():
     assert IF._torch_op_is_missing("aten", "mm") is False
 
@@ -73,25 +74,28 @@ def test_an_op_in_an_unknown_namespace_is_missing():
     always exists, so the answer is never used to decide whether to register
     into a namespace that is not there.
     """
-    assert IF._torch_op_is_missing(
-        "unsloth_no_such_namespace", "_grouped_mm") is True
+    assert IF._torch_op_is_missing("unsloth_no_such_namespace", "_grouped_mm") is True
 
 
 def test_a_non_attribute_error_means_do_not_touch_it(monkeypatch):
     """Only a plain AttributeError is evidence of absence. Anything else means
     we could not tell, and the safe answer is to leave torch alone."""
+
     class Exploding:
         def __getattr__(self, item):
             raise RuntimeError("something else entirely")
 
-    monkeypatch.setattr(torch.ops, "aten", Exploding(), raising=False)
+    monkeypatch.setattr(torch.ops, "aten", Exploding(), raising = False)
     assert IF._torch_op_is_missing("aten", "_grouped_mm") is False
 
 
 # ---- the fix, on a torch that does not need it --------------------------
 
-@pytest.mark.skipif(not hasattr(torch.ops.aten, "_grouped_mm"),
-                    reason="this torch is missing the op; see the live test")
+
+@pytest.mark.skipif(
+    not hasattr(torch.ops.aten, "_grouped_mm"),
+    reason = "this torch is missing the op; see the live test",
+)
 def test_it_does_nothing_when_torch_already_has_the_op():
     """The property that matters most here. Registering a placeholder over a
     real aten operator would replace a working grouped matmul with one that
@@ -101,8 +105,10 @@ def test_it_does_nothing_when_torch_already_has_the_op():
     assert torch.ops.aten._grouped_mm is before
 
 
-@pytest.mark.skipif(not hasattr(torch.ops.aten, "_grouped_mm"),
-                    reason="this torch is missing the op; see the live test")
+@pytest.mark.skipif(
+    not hasattr(torch.ops.aten, "_grouped_mm"),
+    reason = "this torch is missing the op; see the live test",
+)
 def test_the_real_operator_still_works_afterwards():
     IF._ensure_aten_grouped_mm("detail")
     assert callable(torch.ops.aten._grouped_mm)
@@ -119,6 +125,7 @@ def test_it_never_registers_twice(monkeypatch):
 
 # ---- the schema ---------------------------------------------------------
 
+
 def test_the_placeholder_schema_matches_upstream():
     """Read off `torch.ops.aten._grouped_mm.default._schema` on torch 2.9.
 
@@ -127,8 +134,7 @@ def test_the_placeholder_schema_matches_upstream():
     """
     s = IF._ATEN_GROUPED_MM_SCHEMA
     assert s.startswith("_grouped_mm(Tensor self, Tensor mat2")
-    for kwarg in ("Tensor? offs=None", "Tensor? bias=None",
-                  "ScalarType? out_dtype=None"):
+    for kwarg in ("Tensor? offs=None", "Tensor? bias=None", "ScalarType? out_dtype=None"):
         assert kwarg in s, kwarg
     assert s.endswith("-> Tensor")
 
@@ -151,19 +157,26 @@ def test_the_placeholder_refuses_to_compute_rather_than_guessing():
     try:
         lib.define(IF._ATEN_GROUPED_MM_SCHEMA)
 
-        def _refuse(self, mat2, offs=None, bias=None, out_dtype=None):
+        def _refuse(
+            self,
+            mat2,
+            offs = None,
+            bias = None,
+            out_dtype = None,
+        ):
             raise RuntimeError("Unsloth: placeholder, cannot be used")
 
         lib.impl("_grouped_mm", _refuse, "CompositeExplicitAutograd")
         a = torch.ones(4, 4)
         b = torch.ones(1, 4, 4)
-        with pytest.raises(RuntimeError, match="placeholder"):
+        with pytest.raises(RuntimeError, match = "placeholder"):
             torch.ops.unsloth_refuse_probe._grouped_mm(a, b)
     finally:
         del lib
 
 
 # ---- wiring -------------------------------------------------------------
+
 
 def test_the_subprocess_fix_covers_the_op_too():
     """vLLM inspects architectures in a child process that never sees an
@@ -192,7 +205,7 @@ def test_the_subprocess_fix_never_aborts_interpreter_startup():
     """It runs in every child process on the machine. Raising there would be
     far worse than the import error it fixes."""
     src = IF._subprocess_sitecustomize_source()
-    tail = src[src.index("_chain_to_the_real_sitecustomize()"):]
+    tail = src[src.index("_chain_to_the_real_sitecustomize()") :]
     assert "try:" in tail and "except Exception:" in tail
 
 
@@ -200,6 +213,7 @@ def test_the_symbol_fix_reports_the_op_as_one_of_its_patches():
     """`fix_torchao_torch_symbol_skew` returns whether it did anything; the
     op half has to count, or a torch needing only that fix reports False."""
     import inspect
+
     src = inspect.getsource(IF.fix_torchao_torch_symbol_skew)
     assert "_ensure_aten_grouped_mm" in src
     assert 'patched.append("aten::_grouped_mm")' in src

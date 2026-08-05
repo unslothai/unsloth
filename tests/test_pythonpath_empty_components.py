@@ -74,8 +74,9 @@ def _stage(monkeypatch, tmp_path, pythonpath):
     """
     if importlib.util.find_spec("torchao") is None:
         pytest.skip("no torchao here; the function returns before PYTHONPATH")
-    monkeypatch.setattr(IF, "importlib_version",
-                        lambda name: "0.18.0" if name == "torchao" else "0")
+    monkeypatch.setattr(
+        IF, "importlib_version", lambda name: "0.18.0" if name == "torchao" else "0"
+    )
     monkeypatch.setattr(IF, "_torch_really_has", lambda F, name: False)
     # Keeps the generated sitecustomize inside tmp_path instead of the real
     # temp dir, so a test run leaves no staged directory behind.
@@ -95,20 +96,22 @@ def _stage(monkeypatch, tmp_path, pythonpath):
     return directory, os.environ.get("PYTHONPATH", "")
 
 
-@pytest.mark.parametrize("before", [
-    os.pathsep + "/opt/lib",                       # PYTHONPATH=$PYTHONPATH:/opt/lib, unset
-    "/opt/lib" + os.pathsep,                       # PYTHONPATH=/opt/lib:$PYTHONPATH, unset
-    "/opt/a" + os.pathsep + os.pathsep + "/opt/b", # interior empty
-    os.pathsep,                                    # separator only
-])
+@pytest.mark.parametrize(
+    "before",
+    [
+        os.pathsep + "/opt/lib",  # PYTHONPATH=$PYTHONPATH:/opt/lib, unset
+        "/opt/lib" + os.pathsep,  # PYTHONPATH=/opt/lib:$PYTHONPATH, unset
+        "/opt/a" + os.pathsep + os.pathsep + "/opt/b",  # interior empty
+        os.pathsep,  # separator only
+    ],
+)
 def test_empty_components_survive(monkeypatch, tmp_path, before):
     directory, after = _stage(monkeypatch, tmp_path, before)
     assert after == directory + os.pathsep + before, after
 
 
 @pytest.mark.parametrize("before", [None, ""])
-def test_an_absent_or_empty_pythonpath_does_not_gain_the_cwd(
-        monkeypatch, tmp_path, before):
+def test_an_absent_or_empty_pythonpath_does_not_gain_the_cwd(monkeypatch, tmp_path, before):
     """The hazard in the other direction. CPython ignores a set-but-empty
     PYTHONPATH, so "" must not be split into a lone "" component."""
     directory, after = _stage(monkeypatch, tmp_path, before)
@@ -126,6 +129,7 @@ def test_it_is_still_idempotent(monkeypatch, tmp_path):
 
 # ---- the premise and the consequence, with real child processes -----------
 
+
 def _probe_tree(tmp_path):
     """cwddir holds a module reachable ONLY through the cwd.
 
@@ -140,8 +144,9 @@ def _probe_tree(tmp_path):
         d.mkdir(exist_ok = True)
     (cwddir / "only_in_cwd.py").write_text("MARKER = 1\n", encoding = "utf-8")
     (scriptdir / "probe.py").write_text(
-        "import importlib.util as u\n"
-        "print(u.find_spec('only_in_cwd') is not None)\n", encoding = "utf-8")
+        "import importlib.util as u\nprint(u.find_spec('only_in_cwd') is not None)\n",
+        encoding = "utf-8",
+    )
     return cwddir, libdir, scriptdir
 
 
@@ -149,9 +154,14 @@ def _cwd_is_importable(cwddir, scriptdir, pythonpath):
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     if pythonpath is not None:
         env["PYTHONPATH"] = pythonpath
-    out = subprocess.run([sys.executable, str(scriptdir / "probe.py")],
-                         cwd = str(cwddir), env = env, capture_output = True,
-                         text = True, timeout = 300)
+    out = subprocess.run(
+        [sys.executable, str(scriptdir / "probe.py")],
+        cwd = str(cwddir),
+        env = env,
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
     assert out.returncode == 0, out.stderr
     return out.stdout.strip() == "True"
 
@@ -161,8 +171,7 @@ def test_the_cwd_really_is_importable_from_an_empty_component(tmp_path):
     cwddir, libdir, scriptdir = _probe_tree(tmp_path)
     assert _cwd_is_importable(cwddir, scriptdir, None) is False
     assert _cwd_is_importable(cwddir, scriptdir, str(libdir)) is False
-    assert _cwd_is_importable(
-        cwddir, scriptdir, os.pathsep + str(libdir)) is True
+    assert _cwd_is_importable(cwddir, scriptdir, os.pathsep + str(libdir)) is True
 
 
 def test_the_rewritten_pythonpath_still_reaches_the_cwd(monkeypatch, tmp_path):
@@ -174,8 +183,7 @@ def test_the_rewritten_pythonpath_still_reaches_the_cwd(monkeypatch, tmp_path):
     assert _cwd_is_importable(cwddir, scriptdir, after) is True, after
 
 
-def test_a_set_but_empty_pythonpath_still_reaches_nothing_new(
-        monkeypatch, tmp_path):
+def test_a_set_but_empty_pythonpath_still_reaches_nothing_new(monkeypatch, tmp_path):
     """And the mirror image: no cwd before, no cwd after."""
     cwddir, _libdir, scriptdir = _probe_tree(tmp_path)
     assert _cwd_is_importable(cwddir, scriptdir, "") is False

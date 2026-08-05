@@ -3386,11 +3386,18 @@ def _ensure_aten_grouped_mm(detail):
         f"`torchao<0.18`."
     )
 
-    def _refuse(self, mat2, offs = None, bias = None, out_dtype = None):
+    def _refuse(
+        self,
+        mat2,
+        offs = None,
+        bias = None,
+        out_dtype = None,
+    ):
         raise RuntimeError(message)
 
     try:
         import torch
+
         # FRAGMENT is the documented way to add to a namespace someone else
         # owns; DEF would try to claim "aten" outright and be rejected.
         library = torch.library.Library("aten", "FRAGMENT")
@@ -3439,14 +3446,16 @@ def fix_torchao_torch_symbol_skew():
     except Exception:
         return False
 
-    detail = (f"torchao {torchao_version} imports it unconditionally, but "
-              f"torch {torch_version} does not provide it (it arrived in "
-              f"torch 2.10).")
+    detail = (
+        f"torchao {torchao_version} imports it unconditionally, but "
+        f"torch {torch_version} does not provide it (it arrived in "
+        f"torch 2.10)."
+    )
 
     patched = []
     for name in _TORCHAO_TORCH_SYMBOLS:
         if hasattr(F, name):
-            continue        # real torch symbol, or already placed by us
+            continue  # real torch symbol, or already placed by us
         try:
             setattr(F, name, _make_torch_symbol_placeholder(name, detail))
             patched.append(name)
@@ -3457,22 +3466,27 @@ def fix_torchao_torch_symbol_skew():
             "Unsloth: torchao %s needs torch.nn.functional.%s, which torch %s "
             "does not have. Adding an unusable placeholder so the import "
             "succeeds; install torchao<0.18 to use float8/MX features.",
-            torchao_version, "/".join(patched), torch_version,
+            torchao_version,
+            "/".join(patched),
+            torch_version,
         )
 
     # The aten-op half of the same skew. Independent of the loop above: a
     # torch can have every torch.nn.functional symbol and still be missing
     # the operator, and vice versa, so neither result gates the other.
-    op_detail = (f"torchao {torchao_version} registers a handler for it at "
-                 f"import time, but torch {torch_version} does not provide it "
-                 f"(it arrived in torch 2.8).")
+    op_detail = (
+        f"torchao {torchao_version} registers a handler for it at "
+        f"import time, but torch {torch_version} does not provide it "
+        f"(it arrived in torch 2.8)."
+    )
     if _ensure_aten_grouped_mm(op_detail):
         patched.append("aten::_grouped_mm")
         logger.info(
             "Unsloth: torchao %s registers a handler for torch.ops.aten."
             "_grouped_mm, which torch %s does not have. Registering an "
             "unusable placeholder schema so the import succeeds.",
-            torchao_version, torch_version,
+            torchao_version,
+            torch_version,
         )
     return bool(patched)
 
@@ -3692,16 +3706,19 @@ def propagate_torchao_fix_to_subprocesses():
         return None
     try:
         import torch.nn.functional as F
+
         # Both halves of the skew must be absent for there to be nothing to
         # do. Today a torch missing the operator is also missing the functional
         # symbols (2.8 vs 2.10), so the second check never fires on its own; it
         # keeps the gate correct if that ordering ever stops holding.
         # Our own patches do not count as torch being new enough: the in-process
         # fix runs first and would otherwise make this look healthy every time.
-        if (all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
-                and _aten_grouped_mm_library is None
-                and not _torch_op_is_missing("aten", "_grouped_mm")):
-            return None          # this torch is new enough; nothing to do
+        if (
+            all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
+            and _aten_grouped_mm_library is None
+            and not _torch_op_is_missing("aten", "_grouped_mm")
+        ):
+            return None  # this torch is new enough; nothing to do
     except Exception:
         return None
 
@@ -3712,18 +3729,20 @@ def propagate_torchao_fix_to_subprocesses():
         # Rewrite only when it differs, so concurrent runs do not fight and a
         # reader never sees a truncated file.
         try:
-            existing = open(target, "r", encoding="utf-8").read()
+            existing = open(target, "r", encoding = "utf-8").read()
         except Exception:
             existing = None
         if existing != source:
             tmp = target + ".%d.tmp" % os.getpid()
-            with open(tmp, "w", encoding="utf-8") as handle:
+            with open(tmp, "w", encoding = "utf-8") as handle:
                 handle.write(source)
-            os.replace(tmp, target)      # atomic
+            os.replace(tmp, target)  # atomic
     except Exception as exception:
         logger.warning(
             "Unsloth: could not stage the torchao subprocess fix (%s). vLLM "
-            "may fail to inspect model architectures.", exception)
+            "may fail to inspect model architectures.",
+            exception,
+        )
         return None
 
     # os.pathsep, not ":" -- Windows uses ";".
@@ -3744,7 +3763,8 @@ def propagate_torchao_fix_to_subprocesses():
             "Unsloth: torchao %s needs torch symbols this torch lacks. Added "
             "a sitecustomize to PYTHONPATH so subprocesses (vLLM's model "
             "inspector) can import torchao too.",
-            importlib_version("torchao"))
+            importlib_version("torchao"),
+        )
     return directory
 
 
@@ -3801,12 +3821,17 @@ class _TorchaoNF4AliasFinder(importlib.abc.MetaPathFinder):
     def __init__(self):
         setattr(self, _TORCHAO_NF4_SENTINEL, True)
 
-    def find_spec(self, fullname, path = None, target = None):
+    def find_spec(
+        self,
+        fullname,
+        path = None,
+        target = None,
+    ):
         if fullname != _TORCHAO_NF4_OLD:
             return None
         try:
             if importlib.util.find_spec(_TORCHAO_NF4_NEW) is None:
-                return None      # neither layout: let the real ImportError happen
+                return None  # neither layout: let the real ImportError happen
         except Exception:
             return None
         return importlib.machinery.ModuleSpec(
