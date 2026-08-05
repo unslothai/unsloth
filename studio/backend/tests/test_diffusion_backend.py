@@ -157,7 +157,7 @@ def test_resolve_base_repo():
 
 
 def _no_cache(monkeypatch):
-    """Report every upstream as uncached, so the mirror decision is not masked by local files."""
+    """Report every upstream as uncached, so local files cannot mask the mirror decision."""
     monkeypatch.setattr(
         "core.inference.diffusion_families._upstream_is_cached", lambda repo_id: False
     )
@@ -170,9 +170,9 @@ def test_gated_mirror_table_round_trips():
     for upstream, mirror in _GATED_MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
-        # Case-insensitive on the way in, since a card tag may carry any casing.
+        # Case-insensitive in, since a card tag may carry any casing.
         assert mirror_repo(upstream.upper()) == mirror
-    # An ungated base is left completely alone.
+    # An ungated base is left alone.
     assert mirror_repo("Qwen/Qwen-Image") is None
     assert canonical_base("Qwen/Qwen-Image") == "Qwen/Qwen-Image"
 
@@ -181,7 +181,7 @@ def test_prefer_ungated_mirror_swaps_gated_bases(monkeypatch):
     _no_cache(monkeypatch)
     for upstream, mirror in _GATED_MIRROR_PAIRS:
         assert prefer_ungated_mirror(upstream) == mirror
-    # Ungated bases are untouched, and cost no probe.
+    # Ungated bases are untouched.
     assert prefer_ungated_mirror("Qwen/Qwen-Image") == "Qwen/Qwen-Image"
 
 
@@ -194,7 +194,7 @@ def test_prefer_ungated_mirror_declines(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     assert prefer_ungated_mirror(gated) == gated
 
-    # 2. upstream already on disk: switching would re-pull tens of GiB
+    # 2. already on disk: switching would re-pull tens of GiB
     _no_cache(monkeypatch)
     monkeypatch.setattr(
         "core.inference.diffusion_families._upstream_is_cached", lambda repo_id: True
@@ -203,15 +203,13 @@ def test_prefer_ungated_mirror_declines(monkeypatch):
 
 
 def test_mirrored_base_still_trips_the_flux2_shape_guard():
-    """The regression the whole two-helper split exists for.
+    """The regression the two-helper split exists for.
 
-    ``assert_flux2_gguf_matches_base`` fails OPEN on an unmapped base, so if a mirror id ever
-    reached ``_FLUX2_BASE_INNER_DIM`` the guard would go quiet and the mismatch would resurface as
-    the bare quantizer shape error it was written to replace. Assert the RAISE, not just the
-    absence of a crash: a disabled guard passes any weaker check.
+    The guard fails OPEN on an unmapped base, so a mirror id reaching ``_FLUX2_BASE_INNER_DIM``
+    would silence it. Assert the RAISE: a disabled guard passes any weaker check.
     """
-    # "flux.2-klein", not "flux.2": there is no family by that bare name, and detect_family would
-    # hand back None, whose empty name makes the guard return before it ever reads the file.
+    # "flux.2-klein", not "flux.2": no family has that bare name, and a None family's empty name
+    # makes the guard return before it reads the file.
     fam = detect_family("x", override = "flux.2-klein")
     assert fam is not None and fam.name.startswith("flux.2")
 
@@ -232,8 +230,8 @@ def test_mirrored_base_still_trips_the_flux2_shape_guard():
 
     original = gguf.GGUFReader
     try:
-        # klein-4B is ungated and therefore has NO mirror, so the id that has to normalise is the
-        # 9B one. A 4B GGUF (inner_dim 3072) against the mirrored 9B base must still raise.
+        # klein-4B is ungated and has no mirror, so the 9B id is the one that must normalise:
+        # a 4B GGUF (inner_dim 3072) against the mirrored 9B base still raises.
         gguf.GGUFReader = _reader_for(3072)
         for base in ("black-forest-labs/FLUX.2-klein-9B", "unsloth/FLUX.2-klein-9B"):
             with pytest.raises(ValueError, match = "klein"):
@@ -247,7 +245,7 @@ def test_mirrored_base_still_trips_the_flux2_shape_guard():
 
 
 def test_family_prequant_repo_accepts_either_id():
-    """prequant_variant_repos is keyed on upstream ids, so a mirror must normalise to the same hit."""
+    """prequant_variant_repos is keyed on upstream ids, so a mirror must hit the same entry."""
     fam = detect_family("x", override = "flux.1")
     for scheme in ("int8", "fp8"):
         upstream = family_prequant_repo(fam, scheme, "black-forest-labs/FLUX.1-dev")
@@ -1980,9 +1978,8 @@ def test_prefetch_downloads_gguf_and_base(monkeypatch, tmp_path):
 
 
 def test_prefetch_pulls_companions_from_the_ungated_mirror(monkeypatch, tmp_path):
-    """The companions are the whole reason a gated base blocked a GGUF pick, so this is the
-    call that has to move. The estimate deliberately still runs on the upstream id, and the
-    file names are identical either way, so the list passes through untouched."""
+    """The companions are why a gated base blocked a GGUF pick, so this is the call that has to
+    move. The file names are identical either way, so the list passes through untouched."""
     backend = DiffusionBackend()
     calls: list = []
     monkeypatch.setattr(
@@ -2002,10 +1999,10 @@ def test_prefetch_pulls_companions_from_the_ungated_mirror(monkeypatch, tmp_path
     )
     assert ("unsloth/FLUX.1-dev", "vae/diffusion_pytorch_model.safetensors") in calls
     assert all(repo != "black-forest-labs/FLUX.1-dev" for repo, _ in calls)
-    # The GGUF itself is a different repo and is never rewritten.
+    # The GGUF repo is never rewritten.
     assert ("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf") in calls
 
-    # An upstream already on disk keeps its cache rather than re-pulling tens of GiB.
+    # An upstream already on disk keeps its cache.
     calls.clear()
     monkeypatch.setattr(
         "core.inference.diffusion_families._upstream_is_cached", lambda repo_id: True
@@ -3254,8 +3251,7 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         fam = types.SimpleNamespace(name = "krea-2"),
     )
     assert isinstance(pipe, Pipe)
-    # _assemble_pipe only ever reads base to FETCH, so it hands the loader the ungated
-    # mirror. krea/Krea-2-Turbo is gated; unsloth/Krea-2-Turbo is the byte-identical copy.
+    # _assemble_pipe reads base only to FETCH, so the loader gets the ungated mirror.
     assert calls == {"base": "unsloth/Krea-2-Turbo", "transformer": marker, "device": "cuda:0"}
 
 

@@ -760,9 +760,8 @@ class SdCppDiffusionBackend:
         # Callers without a per-load event (tests, direct use) fall back to the current one.
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         paths: dict[str, str] = {}
-        # The asset repos, not the base, are what this backend fetches, and some are gated: the
-        # FLUX.1 VAE comes out of black-forest-labs/FLUX.1-schnell. Redirect each to its ungated
-        # mirror where one exists.
+        # This backend fetches the ASSET repos, never the base, and some are gated (the FLUX.1 VAE
+        # lives in black-forest-labs/FLUX.1-schnell), so the mirror swap goes here.
         assets = [(prefer_ungated_mirror(repo, hf_token), fn, kind) for repo, fn, kind in assets]
         for repo, fn, kind in assets:
             if cancel.is_set():

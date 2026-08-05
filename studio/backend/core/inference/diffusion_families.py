@@ -468,18 +468,11 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
     return base or fam.base_repo
 
 
-# Ungated unsloth mirrors of the Hub-GATED vendor bases, keyed by lowercased upstream id.
-# A GGUF or FP8 pick ships only the denoiser, so the VAE / text encoder / tokenizer / scheduler /
-# model_index.json still come from the base -- which means picking unsloth/FLUX.1-dev-GGUF used to
-# die on a 401 for a repo the user never chose. Each mirror is byte identical to its upstream and
-# republished under the terms the upstream licence sets for redistribution.
-#
-# NOT applied here. ``resolve_base_repo`` is the pure resolver whose result keys the two tables
-# below, both of which hold UPSTREAM ids; substituting a mirror at this level would silently void
-# them. The swap happens at fetch time in ``diffusion._resolve_base_repo``, and anything that
-# looks a base up in a table runs it through ``canonical_base`` first.
-# Canonically cased on BOTH sides, so canonical_base hands back a real repo id rather than a
-# lowercased lookup key. The two indexes below carry the case-insensitive matching.
+# Byte-identical ungated unsloth mirrors of the gated vendor bases. A GGUF/FP8 pick ships only the
+# denoiser, so the companions still come from the base and a gated one 401s on a repo nobody picked.
+# NOT swapped in ``resolve_base_repo``: its result keys the tables below, which hold UPSTREAM ids,
+# so the swap happens at the fetch sites and every table lookup normalises via ``canonical_base``.
+# Canonically cased on both sides; the two lowercased indexes carry the matching.
 _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"),
     ("black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell"),
@@ -506,22 +499,16 @@ def mirror_repo(repo_id: Optional[str]) -> Optional[str]:
 def canonical_base(repo_id: Optional[str]) -> str:
     """``repo_id`` with a mirror mapped back to the upstream id it copies, else unchanged.
 
-    Every table keyed on a base holds the UPSTREAM id, so each lookup normalises through here.
-    Without it a mirrored base misses ``_FLUX2_BASE_INNER_DIM`` and the shape guard fails OPEN by
-    construction -- no error, just the bare quantizer crash it was written to replace. Also covers
-    a user who passes the mirror id by hand, which was always reachable.
+    Tables keyed on a base hold UPSTREAM ids, so every lookup normalises through here: otherwise a
+    mirrored base misses ``_FLUX2_BASE_INNER_DIM`` and the shape guard fails OPEN, going silent.
     """
     base = (repo_id or "").strip()
     return _MIRROR_UPSTREAM.get(base.lower(), base)
 
 
 def _upstream_is_cached(repo_id: str) -> bool:
-    """Whether ``repo_id`` already has blobs in the LIVE hub cache root.
-
-    The live setting, not huggingface_hub's import-time constant: a mid-session cache-folder
-    change never updates the constant, so reading it would probe a root the download no longer
-    writes to and report "not cached" for a base sitting right there.
-    """
+    """Whether ``repo_id`` has blobs in the LIVE cache root -- not huggingface_hub's import-time
+    constant, which goes stale after a mid-session cache-folder change."""
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
         blobs = Path(active_hf_hub_cache()) / f"models--{repo_id.replace('/', '--')}" / "blobs"
@@ -533,30 +520,20 @@ def _upstream_is_cached(repo_id: str) -> bool:
 def prefer_ungated_mirror(base: str, hf_token: Optional[str] = None) -> str:
     """``base``, or the ungated unsloth mirror of it when that is the better repo to FETCH from.
 
-    A GGUF or FP8 pick carries only the denoiser, so the VAE, text encoder, tokenizer and
-    scheduler still come from the base. When that base is one of the gated vendor repos the load
-    dies on a 401 for a repo the user never picked. The mirrors are byte identical, so preferring
-    one removes the gate without changing a single weight.
+    A GGUF/FP8 pick carries only the denoiser, so the companions still come from the base, and a
+    gated base 401s on a repo the user never picked. The mirrors are byte identical, so this drops
+    the gate without changing a weight. Used only to fetch: the upstream id stays what the UI shows,
+    what saved configs hold and what a trained LoRA's base_model tag records.
 
-    Deliberately invisible: the result is only ever used to fetch. The upstream id stays what the
-    UI shows, what saved configs hold and what a trained LoRA's base_model tag records, so nothing
-    a user already stored changes meaning.
+    Declines back to today's behaviour when ``UNSLOTH_DIFFUSION_NO_MIRROR`` is set, or when the
+    upstream is already cached and switching would re-pull tens of GiB for no gain.
 
-    Two ways to decline, each landing on exactly today's behaviour:
-      * ``UNSLOTH_DIFFUSION_NO_MIRROR`` is set, for anyone who wants the vendor repo and has a
-        token for it,
-      * the upstream is already cached, so switching would re-pull tens of GiB for no gain.
-
-    PURE: a table lookup, an env read and a local stat, with no network call. An earlier version
-    probed the mirror with ``model_info`` and fell back on failure, but this runs inside pipeline
-    assembly, so that put a Hub round trip on the load path and made the outcome depend on
-    connectivity -- unit tests silently reached the network and would have flipped answer offline.
-    The twelve mirrors are ours and verified, so a missing one is our own doing and surfaces as
-    the ordinary download error for the repo that is actually being fetched.
-
-    ``hf_token`` is unused and kept so callers can pass it without caring which way this resolves.
+    PURE: table lookup, env read, local stat, no network. This runs inside pipeline assembly, so an
+    earlier ``model_info`` probe of the mirror put a Hub round trip on the load path and made the
+    answer depend on connectivity. The mirrors are ours and verified, so a missing one surfaces as
+    the ordinary download error. ``hf_token`` is unused, kept so callers need not care.
     """
-    del hf_token  # noqa: F841 -- signature stability only; nothing here authenticates
+    del hf_token  # noqa: F841 -- signature stability only
     mirror = mirror_repo(base)
     if not mirror or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
         return base
@@ -621,7 +598,7 @@ def family_prequant_repo(
     baked from ONE base's weights and the loader refuses it for any other base, so a variant
     without its own entry still returns the family default (harmless: the base_model_id
     validation then falls back to dense-quantise, exactly as before this table existed)."""
-    # prequant_variant_repos is keyed on upstream ids, so a mirrored base normalises back first.
+    # prequant_variant_repos is keyed on upstream ids, so normalise a mirrored base first.
     base = canonical_base(base_repo).lower()
     if base:
         for entry_base, entry_scheme, repo_id in fam.prequant_variant_repos:
@@ -777,8 +754,8 @@ def assert_flux2_gguf_matches_base(fam, base_repo: str, gguf_path) -> None:
     unmapped base leaves the load exactly as it was."""
     if gguf_path is None or not str(getattr(fam, "name", "")).startswith("flux.2"):
         return
-    # Keyed on upstream ids, and this guard fails OPEN on an unmapped base, so a mirrored base
-    # would disable it in silence. Normalise before the lookup, never after.
+    # Keyed on upstream ids, and this guard fails OPEN on an unmapped base, so a mirror id reaching
+    # the lookup would silently disable it.
     want = _FLUX2_BASE_INNER_DIM.get(canonical_base(base_repo).lower())
     got = gguf_flux2_inner_dim(gguf_path)
     if want is None or got is None or want == got:
