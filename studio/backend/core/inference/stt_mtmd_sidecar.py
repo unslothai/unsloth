@@ -186,11 +186,17 @@ def _cached_main_revision(repo: str) -> Optional[str]:
 
 def _cached_file(model_id: str, filename: str) -> Optional[str]:
     from huggingface_hub import hf_hub_download
+
+    from core.inference.stt_sidecar import _active_hf_hub_cache
+
     try:
         return hf_hub_download(
             repo_id = MTMD_STT_MODELS[model_id].repo,
             filename = filename,
             local_files_only = True,
+            # The worker spawns with get_hf_cache_paths(), so a cache relocated
+            # in Studio settings is written there and has to be read there too.
+            cache_dir = str(_active_hf_hub_cache()),
         )
     except Exception:
         return None
@@ -248,13 +254,12 @@ class _MtmdDownloadState:
     def _cache_bytes(self) -> Optional[int]:
         """Best-effort progress: bytes in this repo's cache blobs."""
         try:
-            from huggingface_hub.constants import HF_HUB_CACHE
+            from core.inference.stt_sidecar import _repo_cache_dir
 
             model_id = self._model_id
             if not model_id:
                 return None
-            repo = MTMD_STT_MODELS[model_id].repo.replace("/", "--")
-            blobs = Path(HF_HUB_CACHE) / f"models--{repo}" / "blobs"
+            blobs = _repo_cache_dir(MTMD_STT_MODELS[model_id].repo) / "blobs"
             if not blobs.is_dir():
                 return 0
             return sum(p.stat().st_size for p in blobs.iterdir() if p.is_file())
@@ -429,6 +434,12 @@ class MtmdSttSidecar:
         _reap(process)
 
     def unload(self) -> None:
+        # A startup has not assigned _process yet, so releasing alone would let
+        # it finish and republish the model that was just unloaded. Cancel and
+        # settle outside _lock: load() holds _start_lock across startup and
+        # takes _lock inside it, so holding _lock here would invert them.
+        self.cancel_pending_load()
+        self.wait_for_load_to_settle()
         with self._lock:
             self._release_locked()
 
@@ -534,6 +545,9 @@ class MtmdSttSidecar:
             self._loading = True
         try:
             sock, port = self._reserve_free_port()
+            # Read once: two calls could disagree and leave the projector on the
+            # GPU while the main model was pinned off it.
+            training = _training_active()
             cmd = [
                 binary,
                 "-m",
@@ -551,8 +565,14 @@ class MtmdSttSidecar:
                 # Keep off the accelerator during training (as whisper.cpp does)
                 # so a dictation load cannot reclaim VRAM training just freed.
                 "-ngl",
-                "0" if _training_active() else "99",
+                "0" if training else "99",
             ]
+            if training:
+                # -ngl 0 covers the main model only. clip.cpp offloads the
+                # projector on its own flag, which is what the chat backend's
+                # _cmd_has_gpu_companion() treats as a GPU companion whatever
+                # --gpu-layers says.
+                cmd.append("--no-mmproj-offload")
             sock.close()
             process = subprocess.Popen(
                 cmd,

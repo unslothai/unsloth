@@ -69,9 +69,9 @@ def spawned(monkeypatch):
     return made, adopted, forgotten
 
 
-def test_training_preempts_a_startup_unload_cannot_reach(spawned, monkeypatch):
-    """The bug: _process is only set once the server is ready, so unload() is a
-    no-op for the whole startup and training races an -ngl 99 child."""
+def test_training_preempts_a_startup_before_it_can_publish(spawned, monkeypatch):
+    """_process is only set once the server is ready, so training had nothing to
+    act on for the whole startup and raced a child that was still allocating."""
     made, _, forgotten = spawned
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     started = threading.Event()
@@ -92,10 +92,6 @@ def test_training_preempts_a_startup_unload_cannot_reach(spawned, monkeypatch):
     try:
         assert started.wait(2), "startup never began"
         assert sidecar.is_loading()
-        # unload() alone would return having done nothing at all.
-        sidecar.unload()
-        assert made[0].poll() is None, "unload should not reach a starting child"
-
         assert sidecar.cancel_pending_load() is True
         sidecar.wait_for_load_to_settle()
     finally:
@@ -289,3 +285,88 @@ def test_the_engine_is_unavailable_without_pyav(monkeypatch):
 
     monkeypatch.setattr(builtins, "__import__", no_av)
     assert mtmd_mod.is_available() is False
+
+
+def test_a_training_load_pins_the_projector_off_the_gpu_too(spawned, monkeypatch):
+    """-ngl 0 covers the main model only; clip.cpp offloads on its own flag."""
+    commands = []
+
+    def capture(cmd, **kwargs):
+        commands.append([str(a) for a in cmd])
+        return _FakeProcess()
+
+    monkeypatch.setattr(mtmd_mod.subprocess, "Popen", capture)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(mtmd_mod, "_training_active", lambda: True)
+
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("qwen3-asr-0.6b")
+
+    cmd = commands[0]
+    assert cmd[cmd.index("-ngl") + 1] == "0"
+    assert "--mmproj" in cmd, "the projector is what needs pinning"
+    assert cmd[-1] == "--no-mmproj-offload", "last flag wins, so it must be last"
+    sidecar.unload()
+
+
+def test_an_ordinary_load_keeps_the_gpu(spawned, monkeypatch):
+    commands = []
+
+    def capture(cmd, **kwargs):
+        commands.append([str(a) for a in cmd])
+        return _FakeProcess()
+
+    monkeypatch.setattr(mtmd_mod.subprocess, "Popen", capture)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(mtmd_mod, "_training_active", lambda: False)
+
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("qwen3-asr-0.6b")
+
+    cmd = commands[0]
+    assert cmd[cmd.index("-ngl") + 1] == "99"
+    assert "--no-mmproj-offload" not in cmd
+    sidecar.unload()
+
+
+def test_unload_stops_a_startup_instead_of_letting_it_publish(spawned, monkeypatch):
+    """_process is unset during startup, so a plain release was a no-op and the
+    model came back resident moments after the user unloaded it."""
+    made, _, forgotten = spawned
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    started = threading.Event()
+
+    def never_ready(process, port, cancel_event = None):
+        started.set()
+        while not (cancel_event is not None and cancel_event.is_set()):
+            time.sleep(0.01)
+        return False
+
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(never_ready))
+    loader = threading.Thread(target = lambda: _swallow(sidecar, "qwen3-asr-0.6b"))
+    loader.start()
+    try:
+        assert started.wait(2), "startup never began"
+        sidecar.unload()
+    finally:
+        loader.join(timeout = 5)
+
+    assert made[0].terminated, "the starting server survived an explicit unload"
+    assert sidecar.loaded_model is None
+    assert forgotten == [made[0].pid]
+
+
+def test_the_cached_lookup_uses_studios_configured_cache(monkeypatch, tmp_path):
+    """A relocated cache is written by the worker and must be read there too."""
+    seen = {}
+
+    def fake_download(**kwargs):
+        seen.update(kwargs)
+        return "/cached/model.gguf"
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", fake_download)
+    monkeypatch.setattr("core.inference.stt_sidecar._active_hf_hub_cache", lambda: tmp_path)
+
+    assert mtmd_mod._cached_file("qwen3-asr-0.6b", "Qwen3-ASR-0.6B-Q8_0.gguf")
+    assert seen["cache_dir"] == str(tmp_path)
+    assert seen["local_files_only"] is True
