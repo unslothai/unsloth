@@ -36,9 +36,7 @@ def _load_helper():
     raise AssertionError("unsloth/save.py defines no _model_basename")
 
 
-# ---------------------------------------------------------------------------
-# Ground truth: the platform behaviours the Linux simulation asserts
-# ---------------------------------------------------------------------------
+# Ground truth: the platform behaviours the Linux simulation asserts.
 
 
 def test_join_really_discards_the_prefix_for_a_drive_bearing_component():
@@ -66,9 +64,7 @@ def test_posix_basename_would_not_have_fixed_it():
     assert posixpath.basename(r"D:\M\MyModel") == r"D:\M\MyModel"  # posix: broken
 
 
-# ---------------------------------------------------------------------------
-# The fix, on real paths
-# ---------------------------------------------------------------------------
+# The fix, on real paths.
 
 
 @pytest.mark.parametrize(

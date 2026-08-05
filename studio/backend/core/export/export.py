@@ -1157,8 +1157,7 @@ class ExportBackend:
                         logger.info(f"Cleaned up intermediate GGUF dir: {gguf_dir}")
 
                 # iterdir, not glob.glob: glob hides dot-leading names, so an empty
-                # model stem's ".Q4_K_M.gguf" was reported as "(none)" while sitting
-                # right here.
+                # model stem's ".Q4_K_M.gguf" got reported as "(none)".
                 final_ggufs = sorted(
                     str(p)
                     for p in Path(abs_save_dir).iterdir()

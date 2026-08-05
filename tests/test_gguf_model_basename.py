@@ -33,11 +33,9 @@ _SAVE_PY = _REPO_ROOT / "unsloth" / "save.py"
 
 
 def _load_helper():
-    """Exec just ``_model_basename`` out of save.py -- no torch, no unsloth import.
-
-    save.py cannot be imported without the full ML stack, and this helper is pure
-    string/stat logic, so lift it out with ast the way test_export_capability.py
-    lifts hardware helpers.
+    """Exec just ``_model_basename`` out of save.py: save.py cannot be imported
+    without the full ML stack, and the helper is pure string/stat logic. Same ast
+    lift as test_export_capability.py.
     """
     src = _SAVE_PY.read_text(encoding = "utf-8")
     tree = ast.parse(src)
@@ -53,10 +51,7 @@ def _load_helper():
     )
 
 
-# ---------------------------------------------------------------------------
-# Table A -- the basename contract
-# ---------------------------------------------------------------------------
-
+# Table A: the basename contract.
 # (label, config._name_or_path, expected model_name)
 # Rows marked REGRESSION must be byte-identical to the old .split("/")[-1].
 _TABLE_A = [
@@ -148,9 +143,7 @@ def test_helper_is_idempotent():
         assert helper(once) == once
 
 
-# ---------------------------------------------------------------------------
-# The join arithmetic this protects (real ntpath, no mocking)
-# ---------------------------------------------------------------------------
+# The join arithmetic this protects (real ntpath, no mocking).
 
 _GGUF_DIR = r"C:\Users\u\.unsloth\exports\MyModel\_tmp_model_ab12_gguf"
 
@@ -163,9 +156,8 @@ _GGUF_DIR = r"C:\Users\u\.unsloth\exports\MyModel\_tmp_model_ab12_gguf"
 def test_quantize_output_stays_inside_gguf_directory(label, name_or_path, _expected):
     """save.py:2073 joins the stem onto gguf_directory. Prove it cannot escape.
 
-    This is the exact arithmetic from _quantize_one. With the unfixed stem the
-    join silently relocates the output to another drive/UNC share; with the
-    fixed stem it stays put.
+    Exact arithmetic from _quantize_one: the unfixed stem silently relocates the
+    output to another drive/UNC share, the fixed stem stays put.
     """
     stem = _load_helper()(name_or_path)
     out = ntpath.join(_GGUF_DIR, f"{stem}.Q5_K_M.gguf")
@@ -183,9 +175,7 @@ def test_unfixed_derivation_really_did_escape():
     assert ntpath.dirname(escaped) != _GGUF_DIR
 
 
-# ---------------------------------------------------------------------------
-# Source guards
-# ---------------------------------------------------------------------------
+# Source guards.
 
 
 def _gguf_func_src(name: str) -> str:
@@ -251,9 +241,8 @@ def test_helper_is_module_level_and_adds_no_locals_to_the_gguf_entrypoint():
                     return True
         return False
 
-    # Locals bound before `arguments = dict(locals())`. Names bound only inside a
-    # branch that always returns/raises (e.g. the save_method="lora" early exit)
-    # never reach the snapshot, so they are not leaks.
+    # Locals bound before `arguments = dict(locals())`. Names bound only in a branch
+    # that always returns/raises (the save_method="lora" early exit) never reach it.
     bound: set[str] = set()
     saw_snapshot = False
     for stmt in fn.body:

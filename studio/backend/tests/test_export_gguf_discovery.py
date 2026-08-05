@@ -60,9 +60,7 @@ def _gguf(path: Path, payload: bytes = b"GGUF") -> Path:
     return path
 
 
-# ---------------------------------------------------------------------------
-# _reported_gguf_files: the "is this build telling us anything?" contract
-# ---------------------------------------------------------------------------
+# _reported_gguf_files: the "is this build telling us anything?" contract.
 
 
 @pytest.mark.parametrize(
@@ -118,9 +116,7 @@ def test_reported_files_accepts_future_keys(monkeypatch, tmp_path):
     assert out == [str(real)]
 
 
-# ---------------------------------------------------------------------------
-# Table B: where the fake exporter puts its output
-# ---------------------------------------------------------------------------
+# Table B: where the fake exporter puts its output.
 
 
 def test_gguf_beside_base_model_is_relocated(monkeypatch, tmp_path):
@@ -188,11 +184,10 @@ def test_nested_gguf_is_rescued_before_rmtree(monkeypatch, tmp_path):
 def test_hidden_gguf_is_reported_not_none(monkeypatch, tmp_path):
     """An empty model stem produced '.Q5_K_M.gguf'; glob.glob could not see it.
 
-    This was a *reporting* defect, not file loss -- the flatten pass uses
-    Path.glob, which does match dot-leading names, so the file was already in
-    place while the log said "(none)". The assertion still bites now: with the
-    new zero-files-is-a-failure rule, reverting the listing to glob.glob would
-    make this export fail outright.
+    A reporting defect, not file loss: the flatten pass uses Path.glob, which does
+    match dot-leading names, so the file was in place while the log said "(none)".
+    Still bites, because zero-files is now a failure: reverting the listing to
+    glob.glob would fail this export outright.
     """
 
     class _Model:
@@ -291,10 +286,9 @@ def test_modelfile_is_relocated_not_deleted(monkeypatch, tmp_path):
 
 
 def test_stale_gguf_alone_does_not_fake_a_successful_export(monkeypatch, tmp_path):
-    """A leftover file in the destination should not mask a failed conversion.
-
-    Documents current behaviour: the listing is directory-based, so a pre-existing
-    GGUF does count. Asserted explicitly so a future change is deliberate.
+    """Documents current behaviour: the listing is directory-based, so a leftover
+    GGUF in the destination does count as success. Asserted so a future change is
+    deliberate.
     """
 
     class _Model:

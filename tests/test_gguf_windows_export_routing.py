@@ -17,15 +17,13 @@ import posixpath
 
 import pytest
 
-# The pure basename contract is covered by tests/test_gguf_model_basename.py with no
-# dependencies; this file additionally drives the real save_to_gguf, so it needs the
-# ML stack. Skip cleanly rather than failing collection in a minimal environment.
+# test_gguf_model_basename.py covers the pure basename contract with no deps; this
+# file drives the real save_to_gguf, so it needs the ML stack. Skip cleanly rather
+# than failing collection in a minimal environment.
 save_mod = pytest.importorskip("unsloth.save", reason = "needs torch + unsloth_zoo")
 
 
-# ---------------------------------------------------------------------------
-# OS shim: pure path ops from ntpath/posixpath, filesystem ops stay real
-# ---------------------------------------------------------------------------
+# OS shim: pure path ops from ntpath/posixpath, filesystem ops stay real.
 
 _PURE = {
     "join",
@@ -101,9 +99,8 @@ class _Harness:
         # unsloth_zoo/llama_cpp.py:2465 -- the name zoo would build.
         final = model_name if model_name.endswith(".gguf") else f"{model_name}.{qtype.upper()}.gguf"
         self.initial_names.append(final)
-        # save.py:2037 requires the returned paths to exist, so hand back a real
-        # file. The escape under test happens at the *quantize* join, which is
-        # driven by model_name + gguf_directory, not by this path.
+        # save.py:2037 requires the returned paths to exist. The escape under test is
+        # at the *quantize* join (model_name + gguf_directory), not this path.
         return [str(self._scratch(final))], False
 
     def _quantize(self, input_gguf, output_gguf, quant_type, **kw):
@@ -142,9 +139,8 @@ def _run(
 
 
 class _NoMove:
-    """save_to_gguf relocates initial files with shutil.move; the sources here are
-    virtual Windows paths that do not exist on POSIX, so neutralise the move and
-    keep the assertion on the join arithmetic."""
+    """save_to_gguf relocates initial files with shutil.move, but the sources here are
+    virtual Windows paths that do not exist on POSIX. Neutralise the move."""
 
     def move(self, src, dst):
         return dst

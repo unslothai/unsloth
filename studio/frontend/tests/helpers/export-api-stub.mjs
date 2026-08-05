@@ -5,11 +5,10 @@
 //
 // The real module reaches authFetch -> features/auth/index.ts -> login-page.tsx, and
 // node --experimental-strip-types cannot parse JSX, so importing the export store for
-// a unit test pulls in the whole React tree. Cutting the chain here keeps the store's
-// state machine testable without touching the shared bundler-resolver.
-//
-// Each call is recorded on `calls` and answered from `responses`, so a test can drive
-// runExport end to end without a server.
+// a unit test would pull in the whole React tree. Cutting the chain here keeps the
+// state machine testable without touching the shared bundler-resolver. Calls are
+// recorded on `calls` and answered from `responses`, so a test can drive runExport
+// end to end without a server.
 
 export const calls = [];
 export const responses = new Map();

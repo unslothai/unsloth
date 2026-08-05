@@ -49,9 +49,7 @@ def _progress(step = 0, total_steps = 0):
     return SimpleNamespace(step = step, total_steps = total_steps)
 
 
-# ---------------------------------------------------------------------------
 # _is_finalizing
-# ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
@@ -81,9 +79,7 @@ def test_is_finalizing_tolerates_missing_attributes():
     assert fn(SimpleNamespace(step = None, total_steps = None), "training") is False
 
 
-# ---------------------------------------------------------------------------
 # Contract guards
-# ---------------------------------------------------------------------------
 
 
 def _phase_literals() -> set[str]:
