@@ -3250,9 +3250,7 @@ class UnslothTrainer:
                 # skips that. Studio's own caps still apply to whatever it
                 # chooses.
                 "dataset_num_proc": dataset_map_num_proc(
-                    1
-                    if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used)
-                    else None,
+                    1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else None,
                     serial_as_none = False,
                 ),
                 "max_seq_length": training_args.get("max_seq_length", 2048),

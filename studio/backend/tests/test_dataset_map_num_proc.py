@@ -578,9 +578,9 @@ def test_the_trainer_leaves_the_ordinary_case_to_the_policy():
     import ast
     from pathlib import Path
 
-    source = (
-        Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py"
-    ).read_text(encoding = "utf-8")
+    source = (Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py").read_text(
+        encoding = "utf-8"
+    )
 
     calls = [
         value
