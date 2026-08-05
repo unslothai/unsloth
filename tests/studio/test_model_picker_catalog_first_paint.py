@@ -13,7 +13,9 @@ from pathlib import Path
 
 
 REPO = Path(__file__).resolve().parents[2]
-PICKERS_TSX = REPO / "studio/frontend/src/features/model-picker/components/model-selector/pickers.tsx"
+PICKERS_TSX = (
+    REPO / "studio/frontend/src/features/model-picker/components/model-selector/pickers.tsx"
+)
 
 
 def _source() -> str:
@@ -48,18 +50,16 @@ def test_listing_takes_over_each_id_once_it_reports_it():
     assert "if (listedRow) {" in rows
     assert "} else if (!listed.has(seed.id) && (!deviceFiltered || fits(seed))) {" in rows
     # Curated first, then whatever else the listing found, each id once.
-    assert (
-        "return [...curated, ...rows.filter((r) => !curatedIds.has(r.id))];" in rows
-    )
+    assert "return [...curated, ...rows.filter((r) => !curatedIds.has(r.id))];" in rows
     assert "catalogSeedRows," in rows
 
 
 def test_bottom_spinner_shows_only_while_a_page_is_in_flight():
     source = _source()
     start = source.index("{recommendedSearch.hasMore && (")
-    block = source[start:start + 700]
+    block = source[start : start + 700]
 
     # The sentinel still mounts on hasMore so infinite scroll keeps paging...
-    assert "<div ref={recommendedSentinelRef} className=\"h-px\" />" in block
+    assert '<div ref={recommendedSentinelRef} className="h-px" />' in block
     # ...but the spinner is gated on the in-flight flag.
     assert "{recommendedSearch.isLoadingMore ? (" in block
