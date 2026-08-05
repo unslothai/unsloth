@@ -3431,6 +3431,27 @@ def test_a_denoiser_index_naming_a_shard_outside_the_component_is_not_a_denoiser
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
 
 
+@pytest.mark.skipif(os.name == "nt", reason = "a directory called C: cannot exist on Windows")
+def test_a_drive_qualified_shard_name_is_outside_the_component_everywhere(tmp_path):
+    """The escape above, spelled the way a Windows-written index spells it.
+
+    ``PurePosixPath`` reads ``C:/pipe/...`` as a subdirectory literally called ``C:``, so without a
+    drive check the name resolves to a real file here while on Windows the same join discards the
+    component and reaches the drive root. The verdict has to be the escape on both.
+    """
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                {"weight_map": {"a": "C:/pipe/diffusion_pytorch_model.safetensors"}}
+            ).encode(),
+            "transformer/C:/pipe/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
 def test_a_denoiser_index_short_of_the_total_its_shard_names_declare_is_torn(tmp_path):
     """An index truncated to shard 1 of 2 satisfies every name it maps, but the loader opens the
     map and nothing else, so the omitted half is silently dropped."""

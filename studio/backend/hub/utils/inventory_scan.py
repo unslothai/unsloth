@@ -19,7 +19,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass, replace
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Callable, NamedTuple, Optional
 
 from loggers import get_logger
@@ -1096,7 +1096,12 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
         if not isinstance(shard, str) or not shard:
             return True
         parts = PurePosixPath(shard.replace("\\", "/"))
-        if parts.is_absolute() or ".." in parts.parts:
+        # is_absolute() is per flavour: PurePosixPath reads a drive-qualified name like
+        # "C:/weights/x.safetensors" as a relative subdirectory called "C:", while the join below
+        # is a platform Path -- so on Windows that name replaces the index directory outright and
+        # lands wherever it points. A drive is never part of a shard name relative to its index.
+        windows = PureWindowsPath(shard)
+        if parts.is_absolute() or ".." in parts.parts or windows.is_absolute() or windows.drive:
             return True
         try:
             named = index_path.parent / parts
