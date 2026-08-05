@@ -6946,6 +6946,16 @@ def test_codex_attach_check_refuses_companion_gguf_files(monkeypatch, capsys, pa
     assert "Codex needs a GGUF model" in capsys.readouterr().err
 
 
+def test_codex_preflight_canonicalizes_missing_bare_gguf_names(tmp_path, monkeypatch):
+    # A bare foo.gguf naming no local file is a shorthand: the load
+    # canonicalizes it, so the preflight checks the repo that will load.
+    monkeypatch.chdir(tmp_path)
+    calls = _fake_hub_listing(monkeypatch, {"unsloth/foo.gguf": []})
+    with pytest.raises(typer.Exit):
+        start._preflight_codex_gguf("foo.gguf")
+    assert calls == ["unsloth/foo.gguf"]
+
+
 @pytest.mark.parametrize("kwargs", [{"serve": False}, {"launch": False}])
 def test_codex_preflight_skips_when_autostart_impossible(monkeypatch, kwargs):
     calls = _fake_hub_listing(monkeypatch, {"mlx-community/Qwen3-0.6B-4bit": []})

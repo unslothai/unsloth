@@ -686,40 +686,37 @@ def _loadable_variants(identifier: str, variants) -> list:
     """
     from utils.models.model_config import _find_local_gguf_by_variant
 
-    # Over-generate the spellings a client might send -- the row label, the
-    # file's own stem, its quant tokens, both bpw spellings -- and let the
-    # resolver adjudicate each. Enumerating candidates is not predicting the
-    # outcome: every one of them is accepted only because the resolver said so.
-    candidates: list = []
-    for variant in variants:
-        for label in (getattr(variant, "quant", None), getattr(variant, "display_label", None)):
-            if isinstance(label, str) and label:
-                candidates.append(label)
-        filename = getattr(variant, "filename", None)
-        if isinstance(filename, str) and filename:
-            stem = re.sub(r"-\d{5}-of-\d{5}$", "", filename.rsplit(".", 1)[0])
-            candidates.append(stem)
-            basename = stem.rsplit("/", 1)[-1]
-            candidates.append(basename)
-            for match in _KNOWN_QUANT_RE.finditer(basename):
-                prefix, core, bpw = match.group(1) or "", match.group(2), match.group(3) or ""
-                candidates.append(f"{prefix}{core}")
-                if bpw:
-                    candidates.append(f"{prefix}{core}{bpw}")
-
-    resolved: list = []
+    # One resolver call per ROW, not per spelling: the resolver walks the tree
+    # each time, so asking it about every alias turned a single request into
+    # dozens of full walks. Ask once for the row's own label, then name the
+    # file it bound -- its stem and quant tokens are the same file by
+    # construction, so the aliases a client may echo cost nothing more.
+    accepted: list = []
     seen = set()
-    for candidate in candidates:
-        key = candidate.strip().lower()
-        if not key or key in seen:
+    for variant in variants:
+        quant = getattr(variant, "quant", None)
+        if not isinstance(quant, str) or not quant:
             continue
-        seen.add(key)
         try:
-            if _will_serve(_find_local_gguf_by_variant(identifier, candidate)):
-                resolved.append(candidate)
+            bound = _find_local_gguf_by_variant(identifier, quant)
+            if not _will_serve(bound):
+                continue
         except Exception:
             continue
-    return resolved
+        spellings = [quant]
+        stem = re.sub(r"-\d{5}-of-\d{5}$", "", Path(bound).name.rsplit(".", 1)[0])
+        spellings.append(stem)
+        for match in _KNOWN_QUANT_RE.finditer(stem):
+            prefix, core, bpw = match.group(1) or "", match.group(2), match.group(3) or ""
+            spellings.append(f"{prefix}{core}")
+            if bpw:
+                spellings.append(f"{prefix}{core}{bpw}")
+        for spelling in spellings:
+            key = spelling.strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                accepted.append(spelling)
+    return accepted
 
 
 def _loads_without_variant(identifier: str) -> bool:
@@ -743,32 +740,33 @@ def _complete_quants_under(snapshot: str):
         return None
     if complete is None:
         return None
-    # The scan reads the cache's looser -\d{3,}- split grammar, so a name the
-    # LOAD treats as an ordinary file (llama.cpp splits are five digits) can be
-    # judged a torn set with no siblings. Such a file is ready when it is one
-    # the loader would take: whole bytes, and not a companion it refuses.
-    root = Path(snapshot)
-    try:
-        for file in _iter_gguf_paths(root):
-            path = Path(file)
-            if _DIRECT_SPLIT_RE.match(path.name.rsplit(".", 1)[0]) is not None:
-                continue
-            if _CACHE_SPLIT_RE.search(path.name) is None:
-                continue
-            if not _direct_gguf_loads(path) or path.stat().st_size == 0:
-                continue
-            # The label the lister and the loader use is the snapshot-relative
-            # one, so a quant named by the parent directory is honored.
-            try:
-                rel = path.relative_to(root).as_posix()
-            except ValueError:
-                rel = path.name
-            quant = extract_quant_label(rel)
-            if quant:
-                complete = set(complete) | {quant}
-    except Exception:
-        return complete
     return complete
+
+
+def _complete_with_servable(snapshot: str, complete, variants):
+    """*complete* plus the quants whose bound file the load would actually serve.
+
+    The scan reads the cache's looser -\\d{3,}- split grammar, so a name the
+    LOAD treats as an ordinary file (llama.cpp splits are five digits) reads as
+    a torn set. Rather than re-judge those names here -- which cannot see which
+    file the resolver binds for the quant -- ask the resolver and check what it
+    chose, so a quant whose selected file is itself torn stays partial.
+    """
+    if complete is None:
+        return None
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    repaired = set(complete)
+    for variant in variants:
+        quant = getattr(variant, "quant", None)
+        if not isinstance(quant, str) or not quant or quant in repaired:
+            continue
+        try:
+            if _will_serve(_find_local_gguf_by_variant(snapshot, quant)):
+                repaired.add(quant)
+        except Exception:
+            continue
+    return repaired
 
 
 # One scan per identical request in flight. Aborting the HTTP request cannot stop the scan
@@ -951,8 +949,10 @@ async def get_gguf_variants_answer(
             local_target = None
         if local_target is not None:
             variants, has_vision = list_local_gguf_variants(repo_id)
-            # The load id is this path, so a quant offered here has to resolve here.
-            complete = _complete_quants_under(repo_id)
+            # The load id is this path, so a quant offered here has to resolve
+            # here -- and a quant the scan calls torn is ready when the file
+            # the resolver binds for it is one llama-server can open.
+            complete = _complete_with_servable(repo_id, _complete_quants_under(repo_id), variants)
             if (
                 not variants
                 and local_target.is_file()

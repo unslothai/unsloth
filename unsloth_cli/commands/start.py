@@ -1995,7 +1995,9 @@ def _preflight_codex_gguf(
     if find_studio_server() is not None:
         return
     repo, _ = _split_repo_variant(model)
-    if "/" not in repo and not _is_model_path(repo):
+    # A bare foo.gguf naming no local file is a shorthand too, not a path: the
+    # load canonicalizes it like any other owner-less name.
+    if "/" not in repo and (not _is_model_path(repo) or repo.lower().endswith(".gguf")):
         # The server canonicalizes owner-less shorthands to unsloth/<name>.
         try:
             if Path(os.path.expanduser(repo)).exists():

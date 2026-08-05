@@ -346,6 +346,18 @@ def test_local_answers_report_what_a_load_would_serve(in_tmp_cwd):
     assert aliased.default_variant in aliased.loadable_variants
 
 
+def test_a_torn_split_keeps_its_quant_partial(in_tmp_cwd):
+    # A short shard-like name is ready on its own, but not when the file the
+    # resolver binds for that quant is an earlier torn five-digit split.
+    (in_tmp_cwd / "config.json").write_text("{}")
+    (in_tmp_cwd / "a-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
+    (in_tmp_cwd / "z-Q4_K_M-001-of-002.gguf").write_bytes(b"GGUF")
+
+    response = _variants(os.fspath(in_tmp_cwd))
+    assert response.variants[0].partial is True
+    assert response.loadable_variants == []
+
+
 def test_short_shard_like_name_in_a_directory_reads_ready(in_tmp_cwd):
     # The cache scan's looser split grammar would call this a torn set, but the
     # load treats a -001-of-002 name as an ordinary file and opens it.
