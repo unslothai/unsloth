@@ -1979,7 +1979,6 @@ def _find_blocked_commands(command: str) -> set[str]:
                     blocked |= _blocked_quoted_program(tail, _BLOCKED_COMMANDS)
             break  # stop at first non-flag token
 
-
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The
     # pattern-space forms yield an empty payload; the auto gate prompts on those.
