@@ -592,7 +592,7 @@ def test_a_quoted_command_line_is_not_only_a_title(monkeypatch):
     [
         'ls\nstart "" powershell -Command ls',
         'echo hi\nstart "" ssh a@b',
-        "FOO=1 start \"\" powershell -Command ls",
+        'FOO=1 start "" powershell -Command ls',
         'time start "" powershell -Command ls',
         'env start "" powershell -Command ls',
         'nohup start "" powershell -Command ls',
@@ -613,4 +613,4 @@ def test_a_newline_inside_quotes_does_not_start_a_command(windows_terminal):
     # Only a newline the quoting left bare ends a command. One inside a quoted
     # word is data the command receives, and treating it as a separator would
     # read printed text as a launch.
-    assert not tools._find_blocked_commands('echo "hi\nstart \'\' powershell"')
+    assert not tools._find_blocked_commands("echo \"hi\nstart '' powershell\"")
