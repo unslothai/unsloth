@@ -1931,6 +1931,14 @@ def _answer_offers_variant(
             stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", filename.rsplit(".", 1)[0]).lower()
             if wanted == stem:
                 return True
+            # It also takes any whole quant token of the BASENAME, which is how
+            # the listing's own default can name the file by the other of its
+            # two labels (F16-checkpoint-Q4_K_M advertises Q4_K_M).
+            if any(
+                wanted == f"{m.group(1) or ''}{m.group(2)}".lower()
+                for m in _QUANT_LABEL_RE.finditer(stem.rsplit("/", 1)[-1])
+            ):
+                return True
         if strict:
             if not isinstance(quant, str):
                 return True
@@ -2051,12 +2059,20 @@ def _attach_gguf_check_for_codex(
             # extension as a GGUF load and llama-server only finds the missing
             # bytes or shards after the resident model is torn down.
             if is_loopback_url(base):
-                if not _direct_gguf_file_is_ready(repo):
-                    _fail(
-                        f"{repo} is incomplete (zero bytes or a split missing shards); "
-                        "re-download or re-copy it before pointing Codex at it."
-                    )
-                return
+                # A .gguf-NAMED DIRECTORY is not a direct file: the detector
+                # falls through and scans it, so the suffix proves nothing and
+                # the server's answer decides.
+                try:
+                    is_gguf_dir = Path(os.path.expanduser(repo)).is_dir()
+                except OSError:
+                    is_gguf_dir = False
+                if not is_gguf_dir:
+                    if not _direct_gguf_file_is_ready(repo):
+                        _fail(
+                            f"{repo} is incomplete (zero bytes or a split missing shards); "
+                            "re-download or re-copy it before pointing Codex at it."
+                        )
+                    return
             # A remote server's filesystem is not ours to read, and the load
             # takes the .gguf suffix as authoritative without checking that
             # the file is there, so ask the server whether it has one. Its
@@ -2105,6 +2121,33 @@ def _attach_gguf_check_for_codex(
                     f"{candidate} has only incomplete GGUF weights on the server; "
                     "finish or re-copy the download before pointing Codex at it."
                 )
+            # A variantless local load runs detect_gguf_model, which picks from
+            # the directory's own top level; rows that live only in quant
+            # subdirectories need the variant that resolves them, so accepting
+            # this answer as-is would evict for a load that finds nothing.
+            if (
+                local_answer
+                and not variant
+                and variants
+                and all(
+                    isinstance(row, dict)
+                    and isinstance(row.get("filename"), str)
+                    and "/" in row["filename"]
+                    for row in variants
+                )
+            ):
+                offered = ", ".join(
+                    dict.fromkeys(
+                        row["quant"]
+                        for row in variants
+                        if isinstance(row.get("quant"), str) and row["quant"]
+                    )
+                )
+                _fail(
+                    f"{candidate} keeps its GGUF weights in quant subdirectories, which a "
+                    "variantless load cannot pick. Pass --gguf-variant"
+                    + (f" (available: {offered})." if offered else ".")
+                )
             if variant and not _answer_offers_variant(variants, variant, strict = local_answer):
                 _fail_codex_variant_missing(candidate, variant, variants)
             return
@@ -2116,8 +2159,9 @@ def _attach_gguf_check_for_codex(
             # model. Only marker-less names keep the deferral -- older servers
             # classify those as hub ids, and a local hit for the raw name
             # means it may be a server-side model resolved from the server's
-            # own cwd.
-            if not _is_model_path(repo):
+            # own cwd. A server that says resolved_locally has already done
+            # that resolution, so its empty answer settles those names too.
+            if not _is_model_path(repo) and not info.get("resolved_locally"):
                 try:
                     if Path(os.path.expanduser(repo)).exists():
                         return

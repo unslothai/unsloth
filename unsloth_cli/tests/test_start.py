@@ -6577,6 +6577,77 @@ def test_codex_attach_check_probes_direct_paths_on_remote_servers(monkeypatch, c
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf")
 
 
+def test_codex_attach_check_strict_accepts_basename_quant_tokens(monkeypatch):
+    # The loose-file resolver takes any whole quant token of the basename, so
+    # the listing's own default (the other label of the same file) must pass.
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [{"quant": "F16", "filename": "F16-checkpoint-Q4_K_M.gguf"}],
+            "resolved_locally": True,
+        },
+    )
+    start._attach_gguf_check_for_codex(
+        BASE, "sk-test", "/models/F16-checkpoint-Q4_K_M.gguf", "Q4_K_M"
+    )
+
+
+def test_codex_attach_check_honors_resolved_locally_empty_for_raw_names(
+    tmp_path, monkeypatch, capsys
+):
+    # A server that resolved the name locally has already answered for the
+    # same directory the load will take; deferring on CLI existence would let
+    # that GGUF-less directory evict the resident model.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "models" / "qwen").mkdir(parents = True)
+    _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "models/qwen")
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
+    # A legacy answer without the flag keeps the deferral.
+    _fake_variants(monkeypatch, {"variants": []})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "models/qwen")
+
+
+def test_codex_attach_check_requires_a_pickable_row_without_a_variant(monkeypatch, capsys):
+    # detect_gguf_model picks from the directory's top level, so rows that live
+    # only in quant subdirectories need an explicit variant.
+    rows = {
+        "variants": [{"quant": "BF16", "filename": "BF16/model.gguf"}],
+        "resolved_locally": True,
+    }
+    _fake_variants(monkeypatch, rows)
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "./m")
+    err = capsys.readouterr().err
+    assert "quant subdirectories" in err and "BF16" in err
+    # Naming the variant resolves it, and a top-level row needs nothing.
+    _fake_variants(monkeypatch, rows)
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "BF16")
+    _fake_variants(
+        monkeypatch,
+        {"variants": [{"quant": "Q4_K_M", "filename": "m-Q4_K_M.gguf"}], "resolved_locally": True},
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "./m")
+
+
+def test_codex_attach_check_probes_gguf_named_directories(tmp_path, monkeypatch, capsys):
+    # The detector scans a .gguf-named directory instead of trusting the
+    # suffix, so an empty one must not pass on the suffix alone.
+    gguf_dir = tmp_path / "foo.gguf"
+    gguf_dir.mkdir()
+    _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(gguf_dir))
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
+    # One holding weights answers with rows and passes.
+    _fake_variants(
+        monkeypatch,
+        {"variants": [{"quant": "Q4_K_M", "filename": "m-Q4_K_M.gguf"}], "resolved_locally": True},
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(gguf_dir))
+
+
 def test_codex_attach_check_allows_short_shard_like_names(tmp_path, monkeypatch):
     # The load path's split grammar is five digits exactly; a -001-of-002 name
     # loads as an ordinary file, so it must not be judged a torn split.
