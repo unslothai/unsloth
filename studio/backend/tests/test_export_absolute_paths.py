@@ -3,6 +3,7 @@
 
 import importlib.machinery
 import importlib.util
+import shutil
 import sys
 import types
 from pathlib import Path
@@ -270,7 +271,7 @@ def _install_export_backend_stubs(monkeypatch):
     utils_paths.resolve_output_dir = lambda value = None: Path(value or "outputs")
 
 
-def test_gguf_export_cleans_temp_dir_when_post_processing_fails(tmp_path, monkeypatch):
+def test_gguf_export_keeps_a_gguf_it_could_not_relocate(tmp_path, monkeypatch):
     _install_export_backend_stubs(monkeypatch)
     export_mod = _load_module("test_core_export_backend", "core/export/export.py", monkeypatch)
 
@@ -287,9 +288,11 @@ def test_gguf_export_cleans_temp_dir_when_post_processing_fails(tmp_path, monkey
 
     class _Model:
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
-            Path(model_save_path).mkdir(parents = True)
+            Path(model_save_path).mkdir(parents = True, exist_ok = True)
             (Path(model_save_path) / "model.safetensors").write_bytes(b"weights")
-            (cwd / "converted.gguf").write_bytes(b"gguf")
+            output_dir = Path(f"{model_save_path}_gguf")
+            output_dir.mkdir(parents = True, exist_ok = True)
+            (output_dir / "converted.gguf").write_bytes(b"gguf")
 
     backend = export_mod.ExportBackend.__new__(export_mod.ExportBackend)
     backend.current_model = _Model()
@@ -301,6 +304,243 @@ def test_gguf_export_cleans_temp_dir_when_post_processing_fails(tmp_path, monkey
     assert success is False
     assert "move failed" in message
     assert output_path is None
+    # Preserve a completed GGUF when relocation fails.
+    roots = list(save_dir.glob("_tmp_model_*"))
+    assert len(roots) == 1
+    assert (roots[0] / "model_gguf" / "converted.gguf").read_bytes() == b"gguf"
+
+
+def test_gguf_export_fails_when_owned_output_has_no_gguf(tmp_path, monkeypatch):
+    _install_export_backend_stubs(monkeypatch)
+    export_mod = _load_module(
+        "test_core_export_backend_empty_owned_output", "core/export/export.py", monkeypatch
+    )
+
+    save_dir = tmp_path / "export"
+    checkpoint_gguf = tmp_path / "checkpoint_gguf"
+    monkeypatch.setattr(export_mod, "resolve_export_write_dir", lambda _value: save_dir)
+
+    class _Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            checkpoint_gguf.mkdir()
+            (checkpoint_gguf / "misdirected.gguf").write_bytes(b"gguf")
+
+    backend = export_mod.ExportBackend.__new__(export_mod.ExportBackend)
+    backend.current_model = _Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = str(tmp_path / "checkpoint")
+
+    success, message, output_path = backend.export_gguf(str(save_dir), "Q4_K_M")
+
+    assert success is False
+    assert "produced no files" in message
+    assert output_path is None
+    assert (checkpoint_gguf / "misdirected.gguf").read_bytes() == b"gguf"
+    assert not (save_dir / "export_metadata.json").exists()
+    assert list(save_dir.glob("_tmp_model_*")) == []
+
+
+def _require_undeletable_dir_support(tmp_path):
+    """Skip where directory mode bits cannot make cleanup fail."""
+    probe = tmp_path / "_perm_probe"
+    victim = probe / "victim"
+    probe.mkdir()
+    victim.write_bytes(b"x")
+    probe.chmod(0o500)
+    try:
+        victim.unlink()
+    except OSError:
+        return
+    finally:
+        probe.chmod(0o700)
+        shutil.rmtree(probe, ignore_errors = True)
+    pytest.skip("this platform allows deleting files from a read-only directory")
+
+
+def test_gguf_export_survives_real_owned_temp_cleanup_failure(tmp_path, monkeypatch):
+    _require_undeletable_dir_support(tmp_path)
+    _install_export_backend_stubs(monkeypatch)
+    export_mod = _load_module(
+        "test_core_export_backend_cleanup_failure", "core/export/export.py", monkeypatch
+    )
+
+    save_dir = tmp_path / "export"
+    monkeypatch.setattr(export_mod, "resolve_export_write_dir", lambda _value: save_dir)
+    locked_dirs = []
+
+    class _Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output_dir = Path(f"{model_save_path}_gguf")
+            output_dir.mkdir(parents = True, exist_ok = True)
+            (output_dir / "converted.gguf").write_bytes(b"gguf")
+            # A read-only model directory makes the real cleanup fail.
+            merged = Path(model_save_path)
+            merged.mkdir()
+            (merged / "model.safetensors").write_bytes(b"weights")
+            merged.chmod(0o500)
+            locked_dirs.append(merged)
+
+    backend = export_mod.ExportBackend.__new__(export_mod.ExportBackend)
+    backend.current_model = _Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = None
+
+    try:
+        success, message, output_path = backend.export_gguf(str(save_dir), "Q4_K_M")
+    finally:
+        for locked in locked_dirs:
+            locked.chmod(0o700)
+
+    assert success is True, message
+    assert output_path == str(save_dir.resolve())
+    assert (save_dir / "converted.gguf").read_bytes() == b"gguf"
+    # The removable output is gone, but the locked model directory remains.
+    assert len(locked_dirs) == 1
+    model_tmp_root = locked_dirs[0].parent
+    assert not (model_tmp_root / "model_gguf").exists()
+    assert (locked_dirs[0] / "model.safetensors").read_bytes() == b"weights"
+    assert list(save_dir.glob("_tmp_model_*")) == [model_tmp_root]
+
+
+# Both PEFT and non-PEFT exports must preserve an existing checkpoint sibling.
+@pytest.mark.parametrize("merges_into_model_dir", [False, True], ids = ["non_peft", "peft"])
+def test_gguf_export_preserves_unowned_paths(tmp_path, monkeypatch, merges_into_model_dir):
+    _install_export_backend_stubs(monkeypatch)
+    export_mod = _load_module(
+        "test_core_export_backend_owned_temp", "core/export/export.py", monkeypatch
+    )
+
+    cwd = tmp_path / "cwd"
+    save_dir = tmp_path / "export"
+    checkpoint = tmp_path / "Qwen3-8B"
+    checkpoint_gguf = tmp_path / "Qwen3-8B_gguf"
+    cwd.mkdir()
+    checkpoint.mkdir()
+    checkpoint_gguf.mkdir()
+    notes = checkpoint_gguf / "notes.txt"
+    imatrix = checkpoint_gguf / "imatrix.dat"
+    old_gguf = checkpoint_gguf / "old.Q4_K_M.gguf"
+    old_modelfile = checkpoint_gguf / "Modelfile"
+    concurrent_dir = save_dir / "user-created"
+    concurrent_cwd_gguf = cwd / "unrelated.gguf"
+    notes.write_text("keep", encoding = "utf-8")
+    imatrix.write_bytes(b"imatrix")
+    old_gguf.write_bytes(b"old")
+    old_modelfile.write_text("FROM old.Q4_K_M.gguf", encoding = "utf-8")
+    monkeypatch.chdir(cwd)
+    monkeypatch.setattr(export_mod, "resolve_export_write_dir", lambda _value: save_dir)
+
+    class _Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            if merges_into_model_dir:
+                merged = Path(model_save_path)
+                merged.mkdir()
+                (merged / "model.safetensors").write_bytes(b"merged")
+            output_dir = Path(f"{model_save_path}_gguf")
+            output_dir.mkdir(parents = True, exist_ok = True)
+            (output_dir / "new.Q4_K_M.gguf").write_bytes(b"new")
+            (output_dir / "Modelfile").write_text("FROM new.Q4_K_M.gguf", encoding = "utf-8")
+            concurrent_dir.mkdir()
+            (concurrent_dir / "notes.txt").write_text("keep", encoding = "utf-8")
+            concurrent_cwd_gguf.write_bytes(b"unrelated")
+            # Reported files may also appear in the owned-root scan.
+            return {
+                "gguf_directory": str(output_dir),
+                "gguf_files": [str(output_dir / "new.Q4_K_M.gguf")],
+                "modelfile_location": str(output_dir / "Modelfile"),
+            }
+
+    backend = export_mod.ExportBackend.__new__(export_mod.ExportBackend)
+    backend.current_model = _Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = str(checkpoint)
+
+    success, _, output_path = backend.export_gguf(str(save_dir), "Q4_K_M")
+
+    assert success is True
+    assert output_path == str(save_dir.resolve())
+    assert (save_dir / "new.Q4_K_M.gguf").read_bytes() == b"new"
+    assert (save_dir / "Modelfile").read_text(encoding = "utf-8") == "FROM new.Q4_K_M.gguf"
+    assert not (save_dir / "old.Q4_K_M.gguf").exists()
+    assert notes.read_text(encoding = "utf-8") == "keep"
+    assert imatrix.read_bytes() == b"imatrix"
+    assert old_gguf.read_bytes() == b"old"
+    assert old_modelfile.read_text(encoding = "utf-8") == "FROM old.Q4_K_M.gguf"
+    assert (concurrent_dir / "notes.txt").read_text(encoding = "utf-8") == "keep"
+    assert concurrent_cwd_gguf.read_bytes() == b"unrelated"
+    assert list(save_dir.glob("_tmp_model_*")) == []
+
+
+def test_gguf_export_relocates_gguf_written_into_the_model_path(tmp_path, monkeypatch):
+    # MLX writes into the save path and returns no manifest.
+    _install_export_backend_stubs(monkeypatch)
+    export_mod = _load_module(
+        "test_core_export_backend_in_place_output", "core/export/export.py", monkeypatch
+    )
+
+    save_dir = tmp_path / "export"
+    monkeypatch.setattr(export_mod, "resolve_export_write_dir", lambda _value: save_dir)
+
+    class _Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            output_dir = Path(model_save_path)
+            output_dir.mkdir(parents = True, exist_ok = True)
+            (output_dir / "Qwen3-8B.Q4_K_M.gguf").write_bytes(b"converted")
+
+    backend = export_mod.ExportBackend.__new__(export_mod.ExportBackend)
+    backend.current_model = _Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = str(tmp_path / "Qwen3-8B")
+
+    success, message, output_path = backend.export_gguf(str(save_dir), "Q4_K_M")
+
+    assert success is True, message
+    assert output_path == str(save_dir.resolve())
+    assert (save_dir / "Qwen3-8B.Q4_K_M.gguf").read_bytes() == b"converted"
+    assert list(save_dir.glob("_tmp_model_*")) == []
+
+
+def test_gguf_export_relocates_only_reported_files_from_outside_the_owned_root(
+    tmp_path, monkeypatch
+):
+    # Relocate reported files without scanning their unowned directory.
+    _install_export_backend_stubs(monkeypatch)
+    export_mod = _load_module(
+        "test_core_export_backend_unowned_report", "core/export/export.py", monkeypatch
+    )
+
+    save_dir = tmp_path / "export"
+    checkpoint_gguf = tmp_path / "Qwen3-8B_gguf"
+    checkpoint_gguf.mkdir()
+    (checkpoint_gguf / "notes.txt").write_text("keep", encoding = "utf-8")
+    (checkpoint_gguf / "old.Q8_0.gguf").write_bytes(b"old")
+    monkeypatch.setattr(export_mod, "resolve_export_write_dir", lambda _value: save_dir)
+
+    class _Model:
+        def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
+            (checkpoint_gguf / "new.Q4_K_M.gguf").write_bytes(b"new")
+            (checkpoint_gguf / "Modelfile").write_text("FROM new.Q4_K_M.gguf", encoding = "utf-8")
+            return {
+                "gguf_directory": str(checkpoint_gguf),
+                "gguf_files": [str(checkpoint_gguf / "new.Q4_K_M.gguf")],
+                "modelfile_location": str(checkpoint_gguf / "Modelfile"),
+            }
+
+    backend = export_mod.ExportBackend.__new__(export_mod.ExportBackend)
+    backend.current_model = _Model()
+    backend.current_tokenizer = object()
+    backend.current_checkpoint = str(tmp_path / "Qwen3-8B")
+
+    success, message, output_path = backend.export_gguf(str(save_dir), "Q4_K_M")
+
+    assert success is True, message
+    assert output_path == str(save_dir.resolve())
+    assert (save_dir / "new.Q4_K_M.gguf").read_bytes() == b"new"
+    assert (save_dir / "Modelfile").read_text(encoding = "utf-8") == "FROM new.Q4_K_M.gguf"
+    assert not (save_dir / "old.Q8_0.gguf").exists()
+    assert checkpoint_gguf.is_dir()
+    assert (checkpoint_gguf / "notes.txt").read_text(encoding = "utf-8") == "keep"
+    assert (checkpoint_gguf / "old.Q8_0.gguf").read_bytes() == b"old"
     assert list(save_dir.glob("_tmp_model_*")) == []
 
 
