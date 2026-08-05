@@ -451,6 +451,11 @@ class TestHealthHubEndpoint:
             ("https://mirror.example/hf", "https://mirror.example/hf"),
             ("https://mirror.example/hf/", "https://mirror.example/hf"),
             ("https://mirror.example/hf?token=x", "https://mirror.example/hf"),
+            # urlsplit().hostname drops the brackets, and the frontend parses
+            # this with new URL(), which throws on a bare IPv6 literal and then
+            # resolves a mirror card's assets against the public Hub.
+            ("http://[fd00::1]:8080/hf", "http://[fd00::1]:8080/hf"),
+            ("https://[::1]", "https://[::1]"),
             ("", "https://huggingface.co"),
             ("   ", "https://huggingface.co"),
         ],

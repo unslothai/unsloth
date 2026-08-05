@@ -9,7 +9,9 @@ import {
   clearRemoteBackoff,
   fetchWithTimeout,
   getHubPhase,
+  getBrowserOfflineRetryDelayMs,
   getLastHubFailure,
+  isDirectHubOffline,
   isHubFetchError,
   isRemoteNetworkOffline,
   markRemoteNetworkOffline,
@@ -411,5 +413,47 @@ test("Retry clears every feed's window on the origin", async () => {
   assert.equal(isRemoteNetworkOffline(HF), false);
   assert.equal(isRemoteNetworkOffline(HF, "discovery"), false);
   assert.equal(isRemoteNetworkOffline(HF, "other"), false);
+  markRemoteNetworkOnline();
+});
+
+test("a blocked catalog does not suppress the direct asset clients", async () => {
+  markRemoteNetworkOnline();
+  const feedFailure = {
+    kind: "network-opaque" as const,
+    message: "boom",
+    origin: HF,
+    retryable: true,
+  };
+  // A per-path block: /api/models is dead, avatars and raw files answer.
+  markRemoteNetworkOffline(HF, 30_000, feedFailure, "discovery");
+  assert.equal(getHubPhase(HF, "discovery"), "unavailable");
+  assert.equal(
+    isDirectHubOffline(),
+    false,
+    "the quant list and repo card must not go local-only over a dead listing",
+  );
+
+  // Their own failure is what suppresses them, and their own success releases it.
+  markRemoteNetworkOffline(HF, 30_000, feedFailure, "other");
+  assert.equal(isDirectHubOffline(), true);
+  markRemoteNetworkOnline(HF, "other");
+  assert.equal(isDirectHubOffline(), false);
+  markRemoteNetworkOnline();
+});
+
+test("the retry timer wakes on the soonest window, not the longest", async () => {
+  markRemoteNetworkOnline();
+  const failure = {
+    kind: "network-opaque" as const,
+    message: "boom",
+    origin: HF,
+    retryable: true,
+  };
+  markRemoteNetworkOffline(HF, 5_000, failure, "discovery");
+  markRemoteNetworkOffline(HF, 60_000, failure, "other");
+  const delay = getBrowserOfflineRetryDelayMs();
+  // Waking only at 60s would leave the Discover panel rendering "unavailable"
+  // for 55s after its own phase had already moved to "probing".
+  assert.ok(delay <= 5_000, `expected the 5s window, got ${delay}`);
   markRemoteNetworkOnline();
 });

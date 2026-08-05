@@ -318,7 +318,7 @@ export function createHubTransport(
     }
     // Only that the backend can serve us. The origin's own state is left alone:
     // marking it here would re-render consumers mid-flight, and the flag already
-    // suppresses the direct clients (see isHuggingFaceOffline).
+    // suppresses the direct clients (see isDirectHubOffline).
     setHubProxyServing(response.ok);
     if (!response.ok) {
       if (
@@ -446,7 +446,7 @@ export function createHubTransport(
         // phase stays "probing", and this is not a fallback trigger.
         const origin = hubUrlOf(raw)?.origin ?? DEFAULT_HUB_ENDPOINT;
         // No backoff is opened or retired here. fetchWithTimeout already
-        // cleared the origin on this response, and a window opened after it by
+        // cleared this feed's window on the response, and one opened after it by
         // another request is newer evidence than ours: clearing that would
         // defeat the backoff from the auto path and resume direct README and
         // avatar fetches against an origin that just failed for them.

@@ -98,9 +98,11 @@ function emitNetworkStatusChange(): void {
 export function getBrowserOfflineRetryDelayMs(): number {
   // Keyed off the empirical remote-offline TTL, not navigator.onLine, so
   // recovery doesn't stall on platforms where navigator.onLine is stuck false.
+  // The earliest live window, not the latest: the phase reads one feed's, so
+  // waking on the longest would leave it reporting a state it had already left.
   return Math.max(
     0,
-    getRemoteOfflineUntil(HUGGING_FACE_ORIGIN) - Date.now(),
+    getEarliestRemoteOfflineUntil(HUGGING_FACE_ORIGIN) - Date.now(),
   );
 }
 
@@ -132,12 +134,40 @@ function getRemoteOfflineUntil(
   return until;
 }
 
+/** The soonest live window on an origin, or 0 when nothing is backing off. */
+function getEarliestRemoteOfflineUntil(scope: RemoteNetworkScope): number {
+  let until = 0;
+  for (const origin of normalizeScope(scope)) {
+    for (const service of HUB_SERVICES) {
+      const value = offlineUntil(origin, service);
+      if (value > 0 && (until === 0 || value < until)) {
+        until = value;
+      }
+    }
+  }
+  return until;
+}
+
 /** Omit `service` to ask whether anything is backing off this origin. */
 export function isRemoteNetworkOffline(
   scope: RemoteNetworkScope = HUGGING_FACE_ORIGIN,
   service?: HubService,
 ): boolean {
   return getRemoteOfflineUntil(scope, service) > Date.now();
+}
+
+/**
+ * For the clients that fetch repo assets directly (repo cards, owner avatars,
+ * quant listings). They ask whether this browser can reach the Hub for *their*
+ * requests, so a blocked catalog must not suppress them: under a per-path block
+ * the listing can be dead while everything else answers, and their own success
+ * is what clears this.
+ */
+export function isDirectHubOffline(): boolean {
+  if (hubProxyServing || directHubBlocked) {
+    return true;
+  }
+  return isRemoteNetworkOffline(HUGGING_FACE_ORIGIN, "other");
 }
 
 export function isHuggingFaceOffline(): boolean {
@@ -236,8 +266,8 @@ export function markRemoteNetworkOnline(
     emitNetworkStatusChange();
     return;
   }
-  // Reachability is origin-wide, the cause on screen is per feed: a success
-  // retires only its own.
+  // Both the window and the cause are per feed, so a success retires only its
+  // own: under a per-path block one feed recovering says nothing about another.
   const key = failureKey(origin, service);
   const hadWindow = remoteOfflineUntilByKey.delete(key);
   const hadFailure = lastFailureByKey.delete(key);

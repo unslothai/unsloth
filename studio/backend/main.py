@@ -839,10 +839,16 @@ def _hub_endpoint() -> str:
         host = parsed.hostname
         if not host:
             return default
+        host = host.lower()
+        # .hostname strips the brackets an IPv6 literal needs, and the frontend
+        # parses this with new URL(): unbracketed it throws, and the card's
+        # relative assets silently fall back to the public Hub.
+        if ":" in host:
+            host = f"[{host}]"
         port = f":{parsed.port}" if parsed.port is not None else ""
         # Query and fragment are dropped by taking only these parts.
         path = parsed.path.rstrip("/")
-        return f"{parsed.scheme.lower()}://{host.lower()}{port}{path}"
+        return f"{parsed.scheme.lower()}://{host}{port}{path}"
     except Exception:
         return default
 

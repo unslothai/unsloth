@@ -9,7 +9,7 @@ import {
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 import { localPathCacheKey } from "@/features/hub/lib/local-path";
-import { isHuggingFaceOffline } from "@/features/hub/lib/network";
+import { isDirectHubOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { bumpInventoryVersion } from "@/features/hub/stores/inventory-events";
 import type { LocalSource } from "./constants";
@@ -398,7 +398,7 @@ export async function listGgufVariants(
     signal?: AbortSignal;
   },
 ): Promise<GgufVariantsResponse> {
-  const offline = isHuggingFaceOffline();
+  const offline = isDirectHubOffline();
   const localPath = options?.localPath?.trim() || null;
   const preferLocalCache = !!options?.preferLocalCache || offline;
   const signal = options?.signal;

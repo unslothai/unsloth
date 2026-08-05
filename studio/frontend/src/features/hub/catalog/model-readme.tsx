@@ -4,7 +4,7 @@
 import { Spinner } from "@/components/ui/spinner";
 import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { LruMap } from "@/features/hub/lib/lru-map";
-import { isHuggingFaceOffline } from "@/features/hub/lib/network";
+import { isDirectHubOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { cn } from "@/lib/utils";
 import { confirmExternalLink } from "../stores/external-link-confirm";
@@ -405,7 +405,7 @@ export function ModelReadme({
       key: stateKey,
       body: null,
       baseUrl: null,
-      loading: !isHuggingFaceOffline(),
+      loading: !isDirectHubOffline(),
       error: null,
       plugins: null,
     };
