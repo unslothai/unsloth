@@ -2677,7 +2677,10 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
         transformer_resident_override_mib = None,
         **k,
     ):
-        if transformer_resident_override_mib is not None:
+        # Scoped to this backend: begin_load runs on a daemon thread, so an earlier test's load
+        # can still be in flight here, and _plan_memory is patched on the CLASS. Counting every
+        # instance lets that stray thread land in this assertion.
+        if transformer_resident_override_mib is not None and self is backend:
             dense_refit_ran.append(True)
             # GGUF budget fits (real plan -> none); the dense-transformer preflight does not.
             return types.SimpleNamespace(offload_policy = "model")
@@ -3137,7 +3140,10 @@ def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_p
         transformer_resident_override_mib = None,
         **k,
     ):
-        if transformer_resident_override_mib is not None:
+        # Scoped to this backend: begin_load runs on a daemon thread, so an earlier test's load
+        # can still be in flight here, and _plan_memory is patched on the CLASS. Counting every
+        # instance is what made this assert [True, True] on the slower CI runners.
+        if transformer_resident_override_mib is not None and self is backend:
             dense_refit_ran.append(True)
         return orig_plan(self, *a, **k)
 
