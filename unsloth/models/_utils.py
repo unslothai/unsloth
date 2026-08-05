@@ -1139,7 +1139,10 @@ def _st_weighted_subfolder_paths(
         from unsloth_zoo.hf_cache_state import _ST_WEIGHTED_MODULE_TYPES
 
         path = hf_hub_download(
-            model_name, "modules.json", token = token, revision = revision,
+            model_name,
+            "modules.json",
+            token = token,
+            revision = revision,
             cache_dir = cache_dir,
         )
         with open(path, "r", encoding = "utf-8") as f:
@@ -1173,7 +1176,10 @@ def _repo_has_weighted_st_subfolders(
     """Does this repo declare at least one weight-bearing module subfolder?"""
     return bool(
         _st_weighted_subfolder_paths(
-            model_name, token = token, revision = revision, cache_dir = cache_dir,
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
         )
     )
 
@@ -1192,9 +1198,7 @@ def _weight_format_ignore_patterns(extensions, st_module_paths, siblings):
     prefixes = tuple(f"{path}/" for path in st_module_paths)
     return tuple(
         _glob_escape(name)
-        for name in (
-            sibling.rfilename.replace("\\", "/") for sibling in (siblings or [])
-        )
+        for name in (sibling.rfilename.replace("\\", "/") for sibling in (siblings or []))
         if name.endswith(extensions) and not name.startswith(prefixes)
     )
 
@@ -1292,7 +1296,9 @@ def _prefetch_ignore_patterns(
             if has_safetensors:
                 ignore_patterns.extend(
                     _weight_format_ignore_patterns(
-                        (".bin", ".bin.index.json"), st_module_paths, siblings,
+                        (".bin", ".bin.index.json"),
+                        st_module_paths,
+                        siblings,
                     )
                 )
         except Exception:
@@ -1371,7 +1377,10 @@ def maybe_prefetch_hf_snapshot(
         and not (isinstance(subfolder, str) and subfolder.strip("/"))
     ):
         st_module_paths = _st_weighted_subfolder_paths(
-            model_name, token = token, revision = revision, cache_dir = cache_dir,
+            model_name,
+            token = token,
+            revision = revision,
+            cache_dir = cache_dir,
         )
     # tokenizer-only / adapter-only warms allow-list exact files below, so the weight-format ignore
     # list (and its auto-branch model_info call) is skipped.
