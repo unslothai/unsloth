@@ -325,3 +325,19 @@ def test_auto_approval_sees_through_mangled_switches(command):
     # del and git clean are not hard-blocked, so if the high-risk scan misses
     # the //c spelling auto mode approves a destructive payload unprompted.
     assert tools._terminal_is_high_risk(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c start "" rm -rf x',
+        'cmd /c start "Studio" rm -rf x',
+        "cmd /c rm -rf x",
+    ],
+)
+def test_start_scan_survives_non_posix_lexing(monkeypatch, command):
+    # A cmd-only Windows host lexes non-posix, where "" survives as the literal
+    # two-character token '""'. Screening the title slot and the token after it
+    # covers both lexers without special-casing either.
+    monkeypatch.setattr(tools, "_shell_is_posix", lambda: False)
+    assert tools._find_blocked_commands(command)

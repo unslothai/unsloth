@@ -1340,7 +1340,7 @@ def _win_switch(token: str) -> str:
 
 # `start` launches its argument as a program, so that argument is a command
 # position. These switches precede it; the value-taking ones eat a token.
-_START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
+_START_SWITCHES_WITH_VALUE = frozenset({"/d", "/node", "/affinity", "/machine"})
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -6991,7 +6991,7 @@ def _shell_is_posix() -> bool:
 def _get_shell_cmd(command: str) -> list[str]:
     """Return the platform-appropriate shell invocation for a command string."""
     if sys.platform == "win32":
-        # why: the model is told this tool is bash and writes bash. cmd /c runs
+        # The model is told this tool is bash and writes bash. cmd /c runs
         # only the first line of a multi-line command, keeps single quotes
         # literal, and does not understand bash quoting, so a correct script
         # silently half-executes. Use a real bash when the host has one.
