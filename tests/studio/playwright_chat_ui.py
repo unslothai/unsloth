@@ -950,7 +950,13 @@ with sync_playwright() as p:
         page.wait_for_timeout(300)
 
     # ─────────────────────────────────────────────────────
-    # 4. Five chat turns, all non-empty.
+    # 4. A follow-up submitted 100 ms after a normal send must queue behind it.
+    # This targets the interval before assistant-ui paints isRunning: without a
+    # synchronous per-thread reservation the second submit starts immediately,
+    # cancels the first turn, and leaves its assistant bubble empty.
+    # ─────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────
+    # 4b. Five chat turns, all non-empty.
     # ─────────────────────────────────────────────────────
     prompts = [
         "Reply with exactly: hello",
@@ -1050,6 +1056,39 @@ with sync_playwright() as p:
         except Exception:
             shoot(f"04-turn-{idx}-still-streaming")
             raise
+
+    step("rapid submit: 100 ms follow-up queues behind the first turn")
+    rapid_bubbles_before = _bubble_count()
+    composer_form = page.locator('form:has(textarea[aria-label="Message input"])').first
+    composer.fill("Reply with exactly: rapid-first")
+    composer_form.evaluate("form => form.requestSubmit()")
+    page.wait_for_timeout(100)
+    composer.fill("Reply with exactly: rapid-second")
+    composer_form.evaluate("form => form.requestSubmit()")
+
+    # The follow-up must materialize as queued work instead of a second direct
+    # append. This control exists only while that queued item is cancellable.
+    page.wait_for_selector(
+        'button[aria-label="Remove queued prompt 1"]',
+        state = "attached",
+        timeout = 10_000,
+    )
+    page.wait_for_function(
+        """(want) => {
+            const replies = Array.from(
+                document.querySelectorAll('[data-role="assistant"]')
+            ).slice(-2);
+            return replies.length === 2 &&
+                document.querySelectorAll('[data-role="assistant"]').length >= want &&
+                replies.every((reply) => (reply.innerText || '').trim().length > 0) &&
+                !document.querySelector('button[aria-label="Stop generating"]') &&
+                !document.querySelector('button[aria-label="Remove queued prompt 1"]');
+        }""",
+        arg = rapid_bubbles_before + 2,
+        timeout = TURN_TIMEOUT_MS * 2,
+    )
+    shoot("04-rapid-submit-queued")
+    info("OK 100 ms follow-up waited and both assistant turns completed")
 
     for i, p_ in enumerate(prompts, start = 1):
         step(f"turn {i}: {p_!r}")
