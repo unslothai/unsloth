@@ -112,6 +112,7 @@ class TrainingResetRequest(PydanticBaseModel):
 router = APIRouter()
 logger = get_logger(__name__)
 
+
 def _hub_unreachable() -> bool:
     """Bounded, memoised Hub reachability check.
 

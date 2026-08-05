@@ -42,9 +42,9 @@ def test_model_preflight_short_circuits_when_the_hub_is_unreachable(monkeypatch)
 
     # The guard is checked by the caller, so the raw helper still runs; what matters is
     # that the caller never reaches it. Assert the helper is the only slow path.
-    assert calls == [] or elapsed < 5.0, (
-        f"preflight consumed {elapsed:.1f}s against an unreachable Hub"
-    )
+    assert (
+        calls == [] or elapsed < 5.0
+    ), f"preflight consumed {elapsed:.1f}s against an unreachable Hub"
     assert excinfo.value is not None
 
 
@@ -94,9 +94,9 @@ def test_hub_unreachable_fails_open_when_reachable(monkeypatch):
     ],
 )
 def test_missing_tokenizer_artifacts_are_retryable_cache_errors(error):
-    assert training_worker._is_model_cache_artifact_error(error) is True, (
-        f"{type(error).__name__}: {error} must earn a Hub retry, not fail the run"
-    )
+    assert (
+        training_worker._is_model_cache_artifact_error(error) is True
+    ), f"{type(error).__name__}: {error} must earn a Hub retry, not fail the run"
 
 
 @pytest.mark.parametrize(
@@ -109,9 +109,9 @@ def test_missing_tokenizer_artifacts_are_retryable_cache_errors(error):
     ],
 )
 def test_unrelated_failures_are_not_treated_as_cache_errors(error):
-    assert training_worker._is_model_cache_artifact_error(error) is False, (
-        f"{type(error).__name__} is not a cache artifact problem and must not retry"
-    )
+    assert (
+        training_worker._is_model_cache_artifact_error(error) is False
+    ), f"{type(error).__name__} is not a cache artifact problem and must not retry"
 
 
 def test_both_metadata_preflight_legs_consult_the_reachability_guard():
@@ -121,23 +121,19 @@ def test_both_metadata_preflight_legs_consult_the_reachability_guard():
     import inspect
 
     source = inspect.getsource(training_routes)
-    assert source.count("_hub_unreachable()") >= 3, (
-        "expected the guard definition plus both preflight legs to reference it"
-    )
+    assert (
+        source.count("_hub_unreachable()") >= 3
+    ), "expected the guard definition plus both preflight legs to reference it"
 
-    model_leg = source.split("def _reject_untrainable_model_request", 1)[1].split(
-        "\ndef ", 1
-    )[0]
-    assert "_hub_unreachable()" in model_leg, (
-        "the model metadata preflight must short-circuit on an unreachable Hub"
-    )
+    model_leg = source.split("def _reject_untrainable_model_request", 1)[1].split("\ndef ", 1)[0]
+    assert (
+        "_hub_unreachable()" in model_leg
+    ), "the model metadata preflight must short-circuit on an unreachable Hub"
     assert model_leg.index("_hub_unreachable()") < model_leg.index(
         "_remote_untrainable_model_format("
     ), "the guard must be checked before the metadata fetch, not after"
 
-    dataset_leg = source.split("def _preflight_hf_dataset_request", 1)[1].split(
-        "\ndef ", 1
-    )[0]
-    assert "_hub_unreachable()" in dataset_leg, (
-        "the dataset metadata preflight must short-circuit on an unreachable Hub"
-    )
+    dataset_leg = source.split("def _preflight_hf_dataset_request", 1)[1].split("\ndef ", 1)[0]
+    assert (
+        "_hub_unreachable()" in dataset_leg
+    ), "the dataset metadata preflight must short-circuit on an unreachable Hub"
