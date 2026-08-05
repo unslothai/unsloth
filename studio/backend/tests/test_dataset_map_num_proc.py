@@ -232,18 +232,24 @@ def test_num_proc_one_is_not_a_disable_sentinel():
     _require_fork(multiprocess)
     from packaging.version import Version
 
-    pools_built = []
-    real_pool = datasets.arrow_dataset.Pool
+    # Counted at the Pool class rather than at datasets.arrow_dataset.Pool:
+    # 3.x and 4.x do `from multiprocess import Pool`, but 5.x calls `mp.Pool()`
+    # and a spawn context instead, so the module attribute is simply absent
+    # there and patching it is an AttributeError. Every one of those routes
+    # constructs this class.
+    import multiprocess.pool
 
-    def _spy_pool(*args, **kwargs):
+    pools_built = []
+    real_init = multiprocess.pool.Pool.__init__
+
+    def _spy_init(self, *args, **kwargs):
         pools_built.append((args, kwargs))
-        return real_pool(*args, **kwargs)
+        return real_init(self, *args, **kwargs)
 
     dataset = datasets.Dataset.from_dict({"text": [f"row {i}" for i in range(8)]})
     _count = lambda batch: {"n": [len(t) for t in batch["text"]]}  # noqa: E731
 
-    original = datasets.arrow_dataset.Pool
-    datasets.arrow_dataset.Pool = _spy_pool
+    multiprocess.pool.Pool.__init__ = _spy_init
     try:
         dataset.map(_count, batched = True, num_proc = None)
         assert pools_built == [], "num_proc=None must always run in-process"
@@ -251,7 +257,7 @@ def test_num_proc_one_is_not_a_disable_sentinel():
         dataset.map(_count, batched = True, num_proc = 1)
         built_for_one = len(pools_built)
     finally:
-        datasets.arrow_dataset.Pool = original
+        multiprocess.pool.Pool.__init__ = real_init
 
     if Version(datasets.__version__) >= Version("4.1.0"):
         assert built_for_one == 1, (
