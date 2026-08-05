@@ -121,7 +121,9 @@ else {{ Write-Output "RESULT: kept" }}
         capture_output = True,
         text = True,
     )
-    assert "RESULT: kept" in completed.stdout + completed.stderr, completed.stdout + completed.stderr
+    assert "RESULT: kept" in completed.stdout + completed.stderr, (
+        completed.stdout + completed.stderr
+    )
 
 
 def test_the_resolver_is_screened_at_every_entry_point():
