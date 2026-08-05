@@ -526,3 +526,73 @@ class TestResponseSizeCap:
 
     def test_the_cap_still_bounds_memory(self):
         assert discovery._MAX_RESPONSE_BYTES <= 32 * 1024 * 1024
+
+
+class TestReadmeRoute:
+    """The repo card, for a browser that cannot fetch it or a mirror it must not."""
+
+    def _call(self, repo = "Org/Model", branch = "main", resource = "models"):
+        return asyncio.run(
+            discovery.discovery_readme(
+                resource,
+                repo = repo,
+                branch = branch,
+                hf_token = None,
+                current_subject = "tester",
+            )
+        )
+
+    def test_the_host_comes_from_the_endpoint_not_the_caller(self, monkeypatch):
+        monkeypatch.setenv("HF_ENDPOINT", "https://hf-mirror.example")
+        seen = {}
+
+        def _fetch(url, token):
+            seen["url"] = url
+            return 200, b"# card", ""
+
+        monkeypatch.setattr(discovery, "_fetch_upstream", _fetch)
+        self._call()
+        assert seen["url"].startswith("https://hf-mirror.example/Org/Model/raw/main/")
+
+    def test_datasets_take_the_datasets_prefix(self, monkeypatch):
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        seen = {}
+        monkeypatch.setattr(
+            discovery,
+            "_fetch_upstream",
+            lambda url, token: (seen.update(url = url), (200, b"# card", ""))[1],
+        )
+        self._call(resource = "datasets")
+        assert "/datasets/Org/Model/raw/" in seen["url"]
+
+    @pytest.mark.parametrize("branch", ["../../etc/passwd", "main;rm", "HEAD"])
+    def test_only_main_and_master_are_accepted(self, branch):
+        with pytest.raises(HTTPException) as excinfo:
+            self._call(branch = branch)
+        assert excinfo.value.status_code == 400
+
+    def test_a_bad_repo_is_rejected(self):
+        with pytest.raises(HTTPException) as excinfo:
+            self._call(repo = "../../secrets")
+        assert excinfo.value.status_code == 400
+
+    def test_upstream_auth_is_not_surfaced_as_our_own(self, monkeypatch):
+        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (401, b"", ""))
+        with pytest.raises(HTTPException) as excinfo:
+            self._call()
+        assert excinfo.value.status_code == discovery._UPSTREAM_AUTH_STATUS
+
+    def test_a_missing_card_is_a_plain_404(self, monkeypatch):
+        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (404, b"", ""))
+        with pytest.raises(HTTPException) as excinfo:
+            self._call()
+        assert excinfo.value.status_code == 404
+
+    def test_the_card_is_returned_with_the_private_headers(self, monkeypatch):
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token: (200, b"# card", "")
+        )
+        response = self._call()
+        assert response.body == b"# card"
+        assert response.headers.get("cache-control") == "no-store"
+        assert response.headers.get(discovery.HUB_PROXY_MARKER_HEADER.lower()) == "1"

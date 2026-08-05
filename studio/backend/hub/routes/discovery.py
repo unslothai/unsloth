@@ -23,6 +23,7 @@ from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import quote, urlencode
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import Response
 from fastapi.responses import JSONResponse
 
 from auth.authentication import get_current_subject
@@ -420,6 +421,49 @@ async def discovery_info(
         url += "?" + urlencode(pairs)
     payload, _ = await _proxy_get(url, hf_token)
     return JSONResponse(content = payload, headers = dict(_PRIVATE_HEADERS))
+
+
+_README_BRANCH_RE = re.compile(r"^(main|master)$")
+
+
+@router.get("/discovery-readme/{resource}")
+async def discovery_readme(
+    resource: Literal["models", "datasets"],
+    repo: str = Query(..., max_length = 200),
+    branch: str = Query("main", max_length = 16),
+    hf_token: Optional[str] = Depends(get_hf_token),
+    current_subject: str = Depends(get_current_subject),
+):
+    """The repo card, for a browser that cannot fetch it or a mirror it must not.
+
+    Same construction as the other routes: the host comes from hf_endpoint_url()
+    and only the repo and branch are taken from the caller, both validated.
+    """
+    if not is_valid_repo_id(repo):
+        raise HTTPException(
+            status_code = 400,
+            detail = _scrub_detail(f"Invalid repo: {repo!r}", hf_token),
+        )
+    if not _README_BRANCH_RE.match(branch):
+        raise HTTPException(status_code = 400, detail = "Invalid branch")
+
+    base = hf_endpoint_url().rstrip("/")
+    prefix = "datasets/" if resource == "datasets" else ""
+    path = "/".join(quote(part, safe = "") for part in repo.split("/"))
+    url = f"{base}/{prefix}{path}/raw/{branch}/README.md"
+    status, body, _ = await asyncio.to_thread(_fetch_upstream, url, hf_token)
+    if status == 404:
+        raise HTTPException(status_code = 404, detail = "No repo card")
+    if status >= 400:
+        raise HTTPException(
+            status_code = _UPSTREAM_AUTH_STATUS if status in (401, 403) else 502,
+            detail = "Could not read the repo card",
+        )
+    return Response(
+        content = body,
+        media_type = "text/markdown; charset=utf-8",
+        headers = dict(_PRIVATE_HEADERS),
+    )
 
 
 @router.get("/discovery/{resource}")

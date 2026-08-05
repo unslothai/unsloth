@@ -4,6 +4,7 @@
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { fetchWithTimeout } from "@/features/hub/lib/network";
 import { hubProxyFirst } from "@/features/hub/lib/hub-endpoint";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { defaultUrlTransform, type UrlTransform } from "streamdown";
 
@@ -42,6 +43,35 @@ export function readmeBaseUrl(
   return `https://huggingface.co/${readmePrefix(kind)}${repoId}/resolve/${branch}/`;
 }
 
+const README_PROXY_PREFIX = "/api/hub/discovery-readme/";
+
+// Same route, two reasons to need it: a mirror we must not bypass, and a browser
+// that cannot reach the Hub while the backend can.
+async function fetchReadmeViaBackend(
+  repoId: string,
+  kind: ReadmeKind,
+  token: string | null,
+): Promise<FetchedReadme | null> {
+  const { authFetch } = await import("@/features/auth/api");
+  const resource = kind === "dataset" ? "datasets" : "models";
+  let transient = false;
+  for (const branch of ["main", "master"] as const) {
+    const params = new URLSearchParams({ repo: repoId, branch });
+    try {
+      const res = await authFetch(
+        `${README_PROXY_PREFIX}${resource}?${params}`,
+        { headers: hubTokenHeader(token) },
+      );
+      if (res.ok) return { markdown: await res.text(), branch };
+      if (res.status !== 404) transient = true;
+    } catch {
+      transient = true;
+    }
+  }
+  if (transient) throw new Error(`Failed to fetch README for ${repoId}`);
+  return null;
+}
+
 async function fetchReadmeOnce(
   repoId: string,
   kind: ReadmeKind,
@@ -49,9 +79,10 @@ async function fetchReadmeOnce(
 ): Promise<FetchedReadme | null> {
   const prefix = readmePrefix(kind);
   const headers: HeadersInit = {};
-  // Hardcoded public URL: with a mirror configured this would disclose a private
-  // repo name and its token to huggingface.co. No card is better than that.
-  if (hubProxyFirst()) return null;
+  // On a mirror the hardcoded public URL would disclose a private repo name and
+  // its token to huggingface.co, so the card comes from the backend instead,
+  // which resolves the host itself. Coverage ported from #7893.
+  if (hubProxyFirst()) return fetchReadmeViaBackend(repoId, kind, token);
   if (token) headers.Authorization = `Bearer ${token}`;
   let transient = false;
   for (const branch of ["main", "master"] as const) {
