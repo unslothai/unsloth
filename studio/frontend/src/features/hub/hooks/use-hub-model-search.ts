@@ -106,8 +106,7 @@ export interface HfModelResult {
   gated?: false | "auto" | "manual";
   totalParams?: number;
   estimatedSizeBytes?: number;
-  /** Catalog size for a row painted before the listing reports it. Never set
-   * from a Hub response. */
+  /** Catalog size for a row painted before the listing reports it, never from a Hub response. */
   curatedSizeBytes?: number;
   isGguf: boolean;
   baseModel?: string | null;

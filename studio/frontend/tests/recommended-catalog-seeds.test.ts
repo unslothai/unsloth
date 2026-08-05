@@ -44,8 +44,7 @@ const keepVideo = (r: Row) =>
 const ids = (rows: Row[]) => rows.map((r) => r.id);
 
 test("a curated row the listing reports but the filters drop keeps its seed", () => {
-  // The listing reports LTX-2.3 with no pipeline tag, so the task gate rejects
-  // it; the row that already painted must stay.
+  // The task gate rejects LTX-2.3 (no pipeline tag), so its painted row stays.
   const results: Row[] = [
     { id: LTX, isGguf: true, totalParams: LTX_PARAMS },
     { id: OTHER, isGguf: true, pipelineTag: "text-to-video" },
@@ -220,9 +219,9 @@ test("a listing row inherits the curated size of the seed it takes over", () => 
   const card = { memoryTotalGb: 8, systemRamAvailableGb: 0, budgetKnown: true };
   const bnbSeed = seed(BNB);
   assert.equal(bnbSeed.curatedSizeBytes, 8 * 1024 ** 3);
-  // The Hub row carries params only, and the smallest-quant guess assumes a
-  // quant still to come: 6B -> 2.4 GB for a repo that is already 4-bit and 8 GB
-  // resident. Without the handoff the row would flip to fitting.
+  // The Hub row carries params only, and the quant guess assumes a quant still to
+  // come: 6B -> 2.4 GB for a repo already 4-bit and 8 GB resident, so without the
+  // handoff it would flip to fitting.
   const listed: Row = { id: BNB, isGguf: false, totalParams: 6e9 };
   assert.equal(hfModelFitsDevice(listed, card), true);
   assert.equal(hfModelFitsDevice(bnbSeed, card), false);
@@ -275,9 +274,9 @@ test("both search lists judge a curated id the same way", () => {
     inferenceGpu: oneCard,
     taskScoped: true,
   };
-  // The curated list has the id alone; the Hub list has the listing row with
-  // its 6B params. Both are the catalog's 8 GB, past the 5.6 GB budget, so an
-  // id the curated list drops cannot return through the Hub rows below it.
+  // The curated list has the id alone, the Hub list the row with its 6B params.
+  // Both size to the catalog's 8 GB, past the 5.6 GB budget, so an id one drops
+  // cannot return through the other.
   assert.equal(searchRowFitsDevice({ id: BNB }, opts), false);
   assert.equal(searchRowFitsDevice({ id: BNB, totalParams: 6e9 }, opts), false);
 });

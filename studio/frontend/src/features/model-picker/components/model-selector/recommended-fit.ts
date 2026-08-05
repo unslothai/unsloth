@@ -127,10 +127,9 @@ export function fitsDevice(opts: {
  * MLX repos: always the params-based smallest-quant estimate, matching the
  * VRAM badge's quantized-load assumption; their estimatedSizeBytes is the
  * full-precision checkpoint and would wrongly hide models the quantized load
- * path can run. `curatedSizeBytes`, the catalog's own size for that exact
- * artifact, outranks both: real data over estimates. Anything still unsizable
- * is hidden (requireKnown) so over-budget models with no metadata don't slip
- * through. An unknown device budget keeps everything. */
+ * path can run. `curatedSizeBytes` outranks both: real data over estimates.
+ * Anything still unsizable is hidden (requireKnown) so over-budget models with
+ * no metadata don't slip through. An unknown device budget keeps everything. */
 export function hfModelFitsDevice(
   model: {
     id: string;
@@ -168,10 +167,9 @@ export function hfModelFitsDevice(
 }
 
 /** The budget a task-scoped (Images / Video) row may claim. Those loads put the
- * whole pipeline on ONE device -- the backend resolves a bare "cuda", which torch
- * reads as the current device, the lowest visible ordinal -- so fit is judged
- * against that card, never the multi-GPU sum, which would recommend a checkpoint
- * that OOMs where the load lands. Chat can split, so it keeps the sum. */
+ * whole pipeline on ONE device (a bare "cuda", the lowest visible ordinal), so
+ * fit is judged against that card, never the multi-GPU sum, which would
+ * recommend a checkpoint that OOMs where the load lands. Chat keeps the sum. */
 export function loadScopedGpu<
   T extends {
     available: boolean;
@@ -186,10 +184,9 @@ export function loadScopedGpu<
 }
 
 /** One fit predicate for both search lists (curated matches and the Hub rows
- * below them). They render into the same list and the curated list only
- * suppresses ids it kept, so a row it dropped reappears from the Hub list: it
- * must be sized from the same catalog size and judged against the same
- * per-load budget, or the two disagree and the toggle leaks an oversized row. */
+ * below them). The curated list only suppresses ids it kept, so a row it drops
+ * reappears from the Hub list: judge both on the same size and budget, or the
+ * toggle leaks an oversized row. */
 export function searchRowFitsDevice<
   G extends {
     available: boolean;
@@ -226,13 +223,12 @@ export function searchRowFitsDevice<
 }
 
 /** Order Recommended: curated seeds first in catalog order, then the rest of the
- * listing, each id once. A seed hands off only to a row that survived `keep`
- * (the metadata filters), so a painted curated row does not vanish when the
- * listing reports its id with metadata those filters reject. Device fit is
- * judged on whichever row renders, and the taking-over row inherits the seed's
- * curated size: a Hub listing never carries one, so without it a prequantized
- * artifact would flip from the catalog's real size to the params guess (which
- * assumes a quant still to come) the moment the response lands. */
+ * listing, each id once. A seed hands off only to a row that survived `keep`, so
+ * a painted curated row does not vanish when the listing reports it with
+ * metadata the filters reject. Fit is judged on whichever row renders, and the
+ * taking-over row inherits the seed's curated size: a Hub listing carries none,
+ * so a prequantized artifact would otherwise flip to the params guess (which
+ * assumes a quant still to come). */
 export function orderRecommendedRows<
   T extends { id: string; curatedSizeBytes?: number },
 >(opts: {

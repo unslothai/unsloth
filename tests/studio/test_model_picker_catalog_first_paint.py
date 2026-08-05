@@ -4,9 +4,9 @@
 """First-paint contract for the Images / Video model pickers.
 
 Recommended used to render the Hugging Face listing alone, so a task-scoped
-picker whose curated models were already in memory sat on a spinner for a whole
-round trip, and the bottom spinner stayed up for as long as pages remained
-rather than while one was in flight.
+picker sat on a spinner for a round trip with its curated models already in
+memory, and the bottom spinner stayed up while pages remained rather than while
+one was in flight.
 """
 
 from pathlib import Path

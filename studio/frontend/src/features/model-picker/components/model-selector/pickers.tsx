@@ -2377,10 +2377,9 @@ export function HubModelPicker({
         downloads: 0,
         likes: 0,
         isGguf: isKnownGgufRepo(id),
-        // Size from the catalog, not an id "<n>B" guess: the guess is missing
-        // for most curated ids and wrong for others (Wan2.2-TI2V-5B is 30 GB,
-        // not 2), and Recommended lists unsloth repos only, so the 26 outsiders
-        // never get a listing row to correct it.
+        // Size from the catalog, not an id "<n>B" guess: the guess is missing for
+        // most curated ids and wrong for others (Wan2.2-TI2V-5B is 30 GB, not 2),
+        // and non-unsloth ids never get a listing row to correct it.
         curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined,
       }));
   }, [catalog, models, formatFilter, isKnownGgufRepo, isMac, task]);
@@ -2393,8 +2392,7 @@ export function HubModelPicker({
       !isHiddenModelId(r.id) &&
       !isMobileVariant(r.id) &&
       isChatSupported(r) &&
-      // No pick: device-recommended formats (GGUF, plus MLX on Mac). A pick wins,
-      // so Safetensors is not dropped.
+      // No pick: device-recommended formats (GGUF, plus MLX on Mac). A pick wins.
       (formatFilter === "all"
         ? isRecommendableFormat(r.id, r.isGguf, isMac)
         : matchesFormatFilter(r.id, r.isGguf, formatFilter)) &&
@@ -2404,7 +2402,6 @@ export function HubModelPicker({
     // Hub search too. "recommended" always device-filters; the "Fits on device"
     // tick extends that to the other sorts.
     const deviceFiltered = recommendedSort === "recommended" || fitOnDeviceOnly;
-    // A task-scoped load lands on one device, so it may claim that card only.
     const taskScoped = Boolean(task);
     const rowGpu = loadScopedGpu(gpu, taskScoped);
     const rowInferenceGpu = loadScopedGpu(inferenceGpu, taskScoped);
@@ -2412,7 +2409,6 @@ export function HubModelPicker({
       // Downloaded models show regardless of fit.
       downloadedSet.has(r.id.toLowerCase()) ||
       hfModelFitsDevice(r, r.isGguf ? rowInferenceGpu : rowGpu);
-    // Curated rows lead in catalog order, so the list does not reshuffle.
     return orderRecommendedRows({
       seeds: catalogSeedRows,
       results: recommendedSearch.results,
@@ -2875,9 +2871,8 @@ export function HubModelPicker({
     return map;
   }, [results, recommendedSearch.results]);
 
-  // The fit toggle for both search lists. Shared because a curated id the first
-  // list drops is not suppressed from the second, so a divergent size or budget
-  // there would just let it back in as a raw Hub row.
+  // Shared by both search lists so a curated id one drops cannot return via the
+  // other as a raw Hub row.
   const searchRowFits = useCallback(
     (row: {
       id: string;
