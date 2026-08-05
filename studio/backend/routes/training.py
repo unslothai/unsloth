@@ -113,6 +113,14 @@ def _is_finalizing(progress, msg_lower: str) -> bool:
     return total > 0 and step >= total
 
 
+def _run_finished(backend) -> bool:
+    """Whether the run reported terminal, so status/progress stop waiting on the worker
+    process to exit (see TrainingBackend.is_run_finished). getattr-guarded like the other
+    backend reads here: a stand-in without it keeps the old liveness-only behaviour."""
+    check = getattr(backend, "is_run_finished", None)
+    return bool(check()) if callable(check) else False
+
+
 def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
     """Resolve and validate a list of local dataset paths. Returns validated absolute paths."""
     validated = []
@@ -664,7 +672,7 @@ async def reset_training(current_subject: str = Depends(get_current_subject)):
         is_active = backend.is_training_active()
 
         if is_active:
-            if backend._cancel_requested or backend.is_run_finished():
+            if backend._cancel_requested or _run_finished(backend):
                 # Cancel (save=False), or a finished run whose worker is still tearing
                 # down: nothing is left to save, so reap now instead of refusing the
                 # user's return to configuration until the watchdog gets there.
@@ -718,7 +726,7 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
 
         # A finished run whose worker is still tearing down is not training: report the
         # terminal phase now rather than waiting on the process to exit.
-        is_active = backend.is_training_active() and not backend.is_run_finished()
+        is_active = backend.is_training_active() and not _run_finished(backend)
 
         try:
             progress = backend.trainer.get_training_progress()
@@ -871,7 +879,7 @@ async def stream_training_progress(
         def run_active() -> bool:
             """Live for streaming purposes: a run that already reported terminal is done,
             even while its worker is still tearing down (see is_run_finished)."""
-            return backend.is_training_active() and not backend.is_run_finished()
+            return backend.is_training_active() and not _run_finished(backend)
 
         def build_progress(
             step: int,

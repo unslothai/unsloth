@@ -175,3 +175,26 @@ def test_reset_still_refused_mid_run(monkeypatch):
         asyncio.run(rt.reset_training(current_subject = "t"))
     assert exc.value.status_code == 409
     assert b._proc.is_alive() is True, "a live run must never be reaped by reset"
+
+
+def test_surfaces_tolerate_a_backend_without_is_run_finished(monkeypatch):
+    # These routes read the backend defensively (getattr) because stand-in backends are
+    # passed in. A backend lacking the new method must fall back to liveness, not raise.
+    class _Minimal:
+        current_job_id = "job_min"
+        step_history: list = []
+        loss_history: list = []
+        lr_history: list = []
+        eval_loss_history: list = []
+        eval_step_history: list = []
+        eval_enabled = False
+        trainer = None
+        _should_stop = False
+
+        def is_training_active(self):
+            return False
+
+    monkeypatch.setattr(rt, "get_training_backend", lambda: _Minimal())
+    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert st.is_training_running is False
+    assert rt._run_finished(_Minimal()) is False
