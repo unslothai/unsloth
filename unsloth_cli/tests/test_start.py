@@ -6432,7 +6432,14 @@ def test_codex_attach_check_refuses_contradictory_direct_variant(monkeypatch, ca
         BASE, "sk-test", "C:\\models\\bar-Q4_K_M-00001-of-00002.gguf", "Q4_K_M"
     )
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q4_K_M/model.gguf", "Q4_K_M")
-    start._attach_gguf_check_for_codex(BASE, "sk-test", "C:\\models\\UD-Q4_K_XL\\m.gguf", "Q4_K_XL")
+    start._attach_gguf_check_for_codex(
+        BASE, "sk-test", "C:\\models\\UD-Q4_K_XL\\m.gguf", "ud-q4_k_xl"
+    )
+    # The basename wins a disagreement, exactly as the server's resolver reads
+    # it: the parent folder cannot vouch for a quant the file is not.
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q8_0/foo-Q4_K_M.gguf", "Q8_0")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q8_0/foo-Q4_K_M.gguf", "Q4_K_M")
 
 
 @pytest.mark.parametrize(

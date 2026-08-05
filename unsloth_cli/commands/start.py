@@ -1737,6 +1737,42 @@ def _direct_gguf_is_companion(path: str) -> bool:
     return len(parts) > 1 and parts[-2].lower() in _DRAFTER_DIR_KINDS
 
 
+# Mirrors model_config._extract_quant_label's pattern; change in lockstep.
+_QUANT_LABEL_RE = re.compile(
+    r"(UD-)?"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
+    r"|TQ[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K_[A-Z]+"
+    r"|Q[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K"
+    r"|BF16|F16|F32)"
+    r"(-[0-9]+(?:\.[0-9]+)?bpw)?",
+    re.IGNORECASE,
+)
+
+
+def _direct_gguf_variant_labels(path: str) -> tuple:
+    """The labels the server's direct-file resolver accepts for *path*.
+
+    Mirrors _direct_gguf_for_variant: the quant label read from the basename
+    first, the immediate parent only when the basename carries none, plus the
+    shard-stripped stem itself. The basename wins the disagreement -- a
+    Q8_0/foo-Q4_K_M.gguf answers Q4_K_M, so its parent must not vouch for
+    Q8_0 here while the load resolves nothing and evicts.
+    """
+    norm = path.replace("\\", "/").rstrip("/")
+    name = norm.rsplit("/", 1)[-1]
+    stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", name.rsplit(".", 1)[0])
+    match = _QUANT_LABEL_RE.search(stem)
+    if match is None and "/" in norm:
+        match = _QUANT_LABEL_RE.search(norm.rsplit("/", 2)[-2])
+    labels = [stem]
+    if match is not None:
+        labels.append(f"{match.group(1) or ''}{match.group(2)}{match.group(3) or ''}")
+    return tuple(labels)
+
+
 def _answer_offers_variant(variants: list, variant: str) -> bool:
     """Whether a live variants answer can resolve *variant* to a file.
 
@@ -1854,12 +1890,12 @@ def _attach_gguf_check_for_codex(
             _fail_codex_needs_gguf(repo)
         # The file names the one quant it is. A contradictory explicit variant
         # makes _find_local_gguf_by_variant resolve nothing server-side, and
-        # the load then evicts on the transformers path before failing. The
-        # server reads the quant from the immediate parent too (Q4_K_M/model.gguf
-        # loads as Q4_K_M), so judge the same parent/name context it does.
+        # the load then evicts on the transformers path before failing. Accept
+        # exactly the labels the server's direct-file resolver accepts.
         if variant:
-            tail = "/".join(repo.replace("\\", "/").rstrip("/").rsplit("/", 2)[-2:])
-            if not _answer_offers_variant([{"filename": tail}], variant):
+            wanted = str(variant).strip().lower()
+            labels = _direct_gguf_variant_labels(repo)
+            if wanted and all(wanted != label.lower() for label in labels):
                 _fail_codex_variant_missing(repo, variant, [])
         return
     # Mirror the load path's shorthand precedence: the raw name first (it may
