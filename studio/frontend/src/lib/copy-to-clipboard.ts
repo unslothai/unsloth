@@ -5,7 +5,6 @@ import { isTauri } from "@/lib/api-base";
 
 // Native IPC, so it works outside a user gesture (e.g. after an await).
 async function copyWithTauriClipboard(text: string): Promise<boolean> {
-  if (!isTauri) return false;
   try {
     const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
     await writeText(text);
@@ -51,7 +50,9 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     return false;
   }
 
-  if (await copyWithTauriClipboard(text)) {
+  // Gate synchronously so non-Tauri browsers reach the web paths without
+  // yielding out of the user gesture.
+  if (isTauri && (await copyWithTauriClipboard(text))) {
     return true;
   }
 
