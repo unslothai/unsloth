@@ -191,24 +191,34 @@ def test_it_is_wired_into_the_init_sequence():
 def test_the_real_environment_is_left_alone():
     """This machine has torchao 0.17, which still ships the old path. The fix
     must be a no-op there rather than redirecting a working import."""
-    import importlib.util
-    if importlib.util.find_spec("torchao") is None:
-        pytest.skip("torchao not installed")
-    try:
-        has_old = importlib.util.find_spec("torchao.dtypes.nf4tensor") is not None
-    except Exception:
-        has_old = False
-    if not has_old:
-        pytest.skip("this torchao already uses the new layout")
-    import importlib
-    spec = importlib.util.spec_from_file_location(
-        "_if_real", ROOT / "unsloth" / "import_fixes.py")
-    mod = importlib.util.module_from_spec(spec)
-    sys.modules["_if_real"] = mod
-    spec.loader.exec_module(mod)
-    mod.fix_torchao_nf4tensor_move()
-    import torchao.dtypes.nf4tensor as m
-    assert "quantize_" not in getattr(m, "__file__", ""), m.__file__
+    # In a child, like every other case here. Once anything in this session has
+    # imported unsloth the alias is already registered, so find_spec answers for
+    # the alias and an in-process check would read the new layout as the old one.
+    p = subprocess.run(
+        [sys.executable, "-c", textwrap.dedent('''
+            import importlib.util, os, sys
+            if importlib.util.find_spec("torchao") is None:
+                print("SKIP torchao not installed"); raise SystemExit
+            import torchao
+            old = os.path.join(os.path.dirname(torchao.__file__),
+                               "dtypes", "nf4tensor.py")
+            if not os.path.isfile(old):
+                print("SKIP this torchao already uses the new layout"); raise SystemExit
+            spec = importlib.util.spec_from_file_location("_if_real", sys.argv[1])
+            mod = importlib.util.module_from_spec(spec)
+            sys.modules["_if_real"] = mod
+            spec.loader.exec_module(mod)
+            mod.fix_torchao_nf4tensor_move()
+            import torchao.dtypes.nf4tensor as m
+            print("FILE", getattr(m, "__file__", ""))
+        '''), str(ROOT / "unsloth" / "import_fixes.py")],
+        capture_output=True, text=True, timeout=600)
+    assert p.returncode == 0, p.stdout + p.stderr
+    if "SKIP " in p.stdout:
+        pytest.skip(p.stdout.split("SKIP ", 1)[1].strip())
+    line = [l for l in p.stdout.splitlines() if l.startswith("FILE ")]
+    assert line, p.stdout + p.stderr
+    assert "quantize_" not in line[0], line[0]
 
 
 if __name__ == "__main__":

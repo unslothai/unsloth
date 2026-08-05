@@ -241,10 +241,31 @@ def staged(tmp_path):
     return site, fake
 
 
-def _child(code: str, path_entries, timeout=300):
+@pytest.fixture(scope="session")
+def bare_interpreter(tmp_path_factory):
+    """An interpreter whose site-packages is empty.
+
+    PYTHONPATH can shadow a module but cannot un-install one: the child still
+    finds the real torchao's dist-info, and importlib.metadata is exactly what
+    the hook reads. So on a machine that has torchao -- which CI now does --
+    "torchao is absent" is only expressible as a venv without system packages.
+    """
+    venv = tmp_path_factory.mktemp("bare") / "venv"
+    try:
+        subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)],
+                       check=True, capture_output=True, timeout=300)
+    except Exception as exception:
+        pytest.skip(f"cannot build a venv here ({exception})")
+    exe = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+    if not exe.is_file():
+        pytest.skip("venv produced no interpreter")
+    return str(exe)
+
+
+def _child(code: str, path_entries, timeout=300, executable=None):
     env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
     env["PYTHONPATH"] = os.pathsep.join(str(p) for p in path_entries)
-    return subprocess.run([sys.executable, "-c", textwrap.dedent(code)],
+    return subprocess.run([executable or sys.executable, "-c", textwrap.dedent(code)],
                           capture_output=True, text=True, timeout=timeout,
                           env=env)
 
@@ -315,7 +336,7 @@ def test_a_broken_existing_sitecustomize_does_not_kill_the_process(staged,
     assert "STILL OK" in p.stdout, p.stdout + p.stderr
 
 
-def test_it_does_nothing_when_torchao_is_absent(staged, tmp_path):
+def test_it_does_nothing_when_torchao_is_absent(staged, tmp_path, bare_interpreter):
     """No torchao, no patching: torch.nn.functional must be untouched."""
     site, _fake = staged
     bare = tmp_path / "bare"
@@ -329,7 +350,7 @@ def test_it_does_nothing_when_torchao_is_absent(staged, tmp_path):
     p = _child('''
         import torch.nn.functional as F
         print("PATCHED", hasattr(F, "ScalingType"))
-    ''', [site, bare])
+    ''', [site, bare], executable=bare_interpreter)
     assert "PATCHED False" in p.stdout, p.stdout + p.stderr
 
 
