@@ -149,9 +149,9 @@ def test_the_real_error_survives_either_way():
     src = Path(save.__file__).read_text(encoding = "utf-8")
     i = src.index("GGUF conversion failed in Kaggle environment")
     window = src[i - 200 : i + 900]
-    assert window.count("from e") >= 2, (
-        "the original exception must be chained so the traceback survives"
-    )
+    assert (
+        window.count("from e") >= 2
+    ), "the original exception must be chained so the traceback survives"
     assert "GGUF conversion failed: {e}" in window
 
 

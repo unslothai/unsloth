@@ -2901,6 +2901,7 @@ def _offloaded_parameter_hint(model):
         # A diagnostic must never replace the real error with its own.
         return ""
 
+
 def _model_basename(name_or_path, default = "model") -> str:
     """Leaf name of a model id or path, for use as a GGUF filename stem.
 
@@ -2933,6 +2934,7 @@ def _model_basename(name_or_path, default = "model") -> str:
     if not base or base in (".", "..") or (len(base) == 2 and base[1] == ":"):
         return default
     return base
+
 
 @_normalize_tied_weights_keys_for_save
 def unsloth_save_pretrained_gguf(
@@ -4740,9 +4742,9 @@ def _unsloth_save_torchao_with_given_config(
     if push_to_hub:
         assert token is not None, "Unsloth: Please specify a token for uploading!"
 
-    assert torchao_config is not None, (
-        "Unsloth: Please specify a torchao_config for post-training quantization!"
-    )
+    assert (
+        torchao_config is not None
+    ), "Unsloth: Please specify a torchao_config for post-training quantization!"
 
     # first merge the lora weights
     arguments = dict(locals())

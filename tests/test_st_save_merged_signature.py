@@ -50,9 +50,9 @@ def _params(node):
 
 
 def test_both_definitions_exist():
-    assert len(_defs("_save_pretrained_merged", ST_PY)) == 2, (
-        "two closures bind this name; both must be fixed or one model path keeps the old signature"
-    )
+    assert (
+        len(_defs("_save_pretrained_merged", ST_PY)) == 2
+    ), "two closures bind this name; both must be fixed or one model path keeps the old signature"
 
 
 @pytest.mark.parametrize("i", [0, 1])
