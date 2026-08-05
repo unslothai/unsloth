@@ -119,6 +119,14 @@ export function isRemoteNetworkOffline(
 }
 
 export function isHuggingFaceOffline(): boolean {
+  // A serving proxy is itself proof this browser could not fetch the origin, and
+  // the direct fetch deliberately records nothing, so without this the README,
+  // avatar, size and download clients keep hitting the blocked origin and drop
+  // the selected row's metadata. The catalog is unaffected: getHubPhase reports
+  // "available" off the same flag.
+  if (hubProxyServing) {
+    return true;
+  }
   // navigator.onLine is advisory only (false-reports offline on WSL2 / some
   // WebKitGTK/Tauri webviews). The authoritative signal is the empirical
   // remote-offline TTL, set when a real fetch fails and cleared on next success;

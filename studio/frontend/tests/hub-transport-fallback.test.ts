@@ -16,6 +16,7 @@ const { createHubTransport } = await import(
 const {
   HubFetchError,
   getHubPhase,
+  isRemoteNetworkOffline,
   getLastHubFailure,
   isHubProxyServing,
   isHuggingFaceOffline,
@@ -444,12 +445,24 @@ test("a pending fallback is not aborted by an offline re-render", async () => {
     backend: backend.backend,
   });
   await transport(HF_URL, {});
+  // The TTL is the thing that must stay unset: recording it mid-flight
+  // re-renders consumers, and their cleanup aborts the fallback in progress.
   assert.equal(
-    isHuggingFaceOffline(),
+    isRemoteNetworkOffline(HF_ORIGIN),
     false,
     "marking offline before the fallback returns is what cancelled it",
   );
+  assert.equal(getHubPhase(HF_ORIGIN), "available", "the feed is being served");
   assert.equal(backend.calls.length, 1);
+  // Separately, the direct clients must stand down: this browser demonstrably
+  // cannot reach the origin, so a README or avatar fetch would only fail and
+  // drop the selected row's metadata.
+  assert.equal(
+    isHuggingFaceOffline(),
+    true,
+    "a serving proxy is proof the direct route is blocked",
+  );
+  markRemoteNetworkOnline();
 });
 
 test("both routes failing does mark the origin offline", async () => {

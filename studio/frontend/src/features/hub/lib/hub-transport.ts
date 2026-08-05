@@ -260,8 +260,9 @@ export function createHubTransport(
       }
       throw error;
     }
-    // Only that the backend can serve us. The origin's own state is left alone
-    // so the direct clients stay suppressed instead of failing and re-marking.
+    // Only that the backend can serve us. The origin's own state is left alone:
+    // marking it here would re-render consumers mid-flight, and the flag already
+    // suppresses the direct clients (see isHuggingFaceOffline).
     setHubProxyServing(response.ok);
     if (!response.ok) {
       // authFetch resolves on a non-2xx, so without this the cause is dropped
