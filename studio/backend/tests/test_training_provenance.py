@@ -3,6 +3,7 @@
 
 import importlib.util
 import json
+import os
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -531,7 +532,7 @@ def test_exact_model_snapshot_accepts_own_blob_symlink(tmp_path):
     blob = snapshot.parent.parent / "blobs" / "weight-blob"
     blob.parent.mkdir()
     blob.write_bytes(b"weights")
-    (snapshot / "model.safetensors").symlink_to("../../blobs/weight-blob")
+    (snapshot / "model.safetensors").symlink_to(os.path.relpath(blob, snapshot))
 
     assert exact_model_snapshot_path(str(snapshot), "org/model") == str(snapshot.resolve())
 
@@ -552,7 +553,9 @@ def test_exact_model_snapshot_rejects_cross_snapshot_symlink(tmp_path):
     snapshot = _model_snapshot(tmp_path, "org/model", "selected")
     _model_snapshot(tmp_path, "org/model", "other")
     (snapshot / "model.safetensors").unlink()
-    (snapshot / "model.safetensors").symlink_to("../other/model.safetensors")
+    (snapshot / "model.safetensors").symlink_to(
+        os.path.join(os.pardir, "other", "model.safetensors")
+    )
 
     assert exact_model_snapshot_path(str(snapshot), "org/model") is None
 
@@ -612,7 +615,9 @@ def test_exact_dataset_snapshot_rejects_cross_snapshot_symlink(tmp_path):
         "other-commit",
     )
     (snapshot / "train.parquet").unlink()
-    (snapshot / "train.parquet").symlink_to("../other-commit/train.parquet")
+    (snapshot / "train.parquet").symlink_to(
+        os.path.join(os.pardir, "other-commit", "train.parquet")
+    )
 
     assert exact_dataset_snapshot_path(str(snapshot), "org/dataset") is None
 
@@ -752,7 +757,7 @@ def test_loaded_hub_dataset_accepts_snapshot_blob_symlink(tmp_path):
     snapshot.mkdir(parents = True)
     blobs.mkdir()
     (blobs / "payload").write_bytes(b"dataset")
-    (snapshot / "train.parquet").symlink_to("../../blobs/payload")
+    (snapshot / "train.parquet").symlink_to(os.path.relpath(blobs / "payload", snapshot))
     loaded = _loaded_dataset(str(snapshot / "train.parquet"))
 
     assert attest_loaded_dataset("org/dataset", loaded) == (str(snapshot.resolve()), None)
@@ -785,7 +790,9 @@ def test_loaded_hub_dataset_rejects_cross_snapshot_symlink(tmp_path):
         "other-commit",
     )
     (other_snapshot / "validation.parquet").write_bytes(b"validation")
-    (snapshot / "validation.parquet").symlink_to("../other-commit/validation.parquet")
+    (snapshot / "validation.parquet").symlink_to(
+        os.path.join(os.pardir, "other-commit", "validation.parquet")
+    )
     loaded = _loaded_dataset("hf://datasets/org/dataset@dataset-commit/validation.parquet")
 
     assert attest_loaded_dataset("org/dataset", loaded) == (None, "dataset_snapshot_unavailable")

@@ -1474,7 +1474,9 @@ def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):
     assert response.status == "queued"
     assert captured["model_snapshot_path"] == str(old_model)
     assert captured["dataset_snapshot_path"] == str(old_dataset)
-    assert captured["model_local_path"] == str(model_root)
+    # The route posix-normalizes this field (utils/paths/path_utils.py), so compare
+    # against the same shape rather than the platform-native string.
+    assert captured["model_local_path"] == model_root.as_posix()
     assert captured["dataset_local_path"] == str(dataset_root)
     assert captured["load_in_4bit"] is True
     assert captured["require_exact_resume_resources"] is True
