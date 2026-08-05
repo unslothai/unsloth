@@ -3093,12 +3093,13 @@ def _resolve_mtp_drafter(main_gguf_path: str) -> tuple[Optional[str], int]:
     so the estimator's embedded-head path returns None and the reserve reads as
     zero unless we hand it the drafter.
 
-    Scoped to the directory holding the weights, the same way ``_resolve_quant_gguf``
-    scopes itself. One level up is the snapshot root, which spans every revision
-    and quant of the repo -- and for a local path is a directory the user never
-    pointed Studio at. Candidates are sorted so two hosts agree on the answer,
-    and the walk is bounded because this runs on the request path. Never raises:
-    a drafter we cannot find just costs a segment.
+    Matches what ``_download_mtp`` actually fetches: the companion sitting beside
+    the weights, never a nested one. The higher-precision copies under ``MTP/``
+    are for explicit selection and the loader skips them, so pricing one here
+    would charge a drafter the model will not load. Non-recursive for the same
+    reason -- and it keeps a request-path helper off a directory walk. Candidates
+    are sorted so two hosts agree. Never raises: a drafter we cannot find just
+    costs a segment.
     """
     try:
         from core.inference.llama_cpp import _is_mtp_only_drafter_path
@@ -3108,11 +3109,13 @@ def _resolve_mtp_drafter(main_gguf_path: str) -> tuple[Optional[str], int]:
         if not root.is_dir():
             return None, 0
 
-        deadline = time.monotonic() + _DRAFTER_SCAN_TIMEOUT_SECONDS
         drafters = sorted(
             f
-            for f in _iter_gguf_paths(root, deadline)
-            if f != main and _is_mtp_only_drafter_path(str(f))
+            for f in root.iterdir()
+            if f != main
+            and f.is_file()
+            and _is_gguf_filename(f.name)
+            and _is_mtp_only_drafter_path(str(f))
         )
         for f in drafters:
             try:
@@ -3217,15 +3220,32 @@ async def get_kv_cache_estimate(
         spec = None
         if (speculative_type or "").lower() in ("mtp", "mtp+ngram", "auto"):
             try:
-                drafter_path, drafter_bytes = _resolve_mtp_drafter(path)
-                spec = be._estimate_mtp_overhead_bytes(
-                    n_ctx,
-                    draft_cache_type_k = cache_type_kv,
-                    draft_cache_type_v = cache_type_kv,
-                    drafter_path = drafter_path,
-                    draft_weights_bytes = drafter_bytes,
-                    n_parallel = n_parallel,
+                from core.inference.llama_cpp import (
+                    _auto_mode_drops_mtp,
+                    _extract_model_size_b,
                 )
+
+                drafter_path, drafter_bytes = _resolve_mtp_drafter(path)
+                # Auto declines MTP on a sub-3B embedded head, where the
+                # per-token cost regresses; a separate drafter is exempt. Pricing
+                # a reserve the load will not take would overstate the bar and
+                # could warn OOM on a model that fits.
+                if _auto_mode_drops_mtp(
+                    (speculative_type or "").lower(),
+                    _extract_model_size_b(repo_id),
+                    has_separate_drafter = bool(drafter_path),
+                ):
+                    drafter_path = None
+                else:
+                    spec = be._estimate_mtp_overhead_bytes(
+                        n_ctx,
+                        # Draft K/V types are independent of the main cache and
+                        # default to f16 at load; leaving them unset keeps this
+                        # from underpricing a quantized-main-cache setup.
+                        drafter_path = drafter_path,
+                        draft_weights_bytes = drafter_bytes,
+                        n_parallel = n_parallel,
+                    )
             except Exception as e:
                 logger.debug(f"mtp overhead estimate failed for '{repo_id}' {quant}: {e}")
 

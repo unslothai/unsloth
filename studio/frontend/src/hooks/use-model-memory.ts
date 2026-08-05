@@ -10,7 +10,11 @@
  * one. Ten rows of the same model cost one read.
  */
 
-import { estimateKvCache } from "@/features/chat";
+import {
+  estimateKvCache,
+  readPersistedGpuMemoryMode,
+  readPersistedSpeculativeType,
+} from "@/features/chat";
 import {
   normalizeGgufVariantIdentity,
   normalizeModelIdentity,
@@ -153,15 +157,34 @@ function pinnedContext(config: PerModelConfig | undefined): number | undefined {
  * offload layers to CPU, and that total stops being the ceiling the model is
  * judged against -- charting against it would call a 30 GB quant "fits" on a
  * 2x24 GB host pinned to one card. Better to draw nothing than to mislead.
+ *
+ * The "at default" tests mirror `gpuFieldsAtDefault` in per-model-config: note
+ * that a negative gpuLayers is the runtime's Auto value, not an override, so a
+ * truthiness check here would hide the bar for ordinary saved configs. GPU mode
+ * falls back to the standing preference, which is what the loader does when a
+ * model has no override of its own.
  */
 function budgetIsMeaningful(config: PerModelConfig | undefined): boolean {
+  const mode = config?.gpuMemoryMode ?? readPersistedGpuMemoryMode();
+  if (mode === "manual") return false;
   if (!config) return true;
   return (
-    !config.selectedGpuIds?.length &&
-    config.gpuMemoryMode !== "manual" &&
-    !config.gpuLayers &&
-    !config.nCpuMoe
+    config.selectedGpuIds == null &&
+    (config.gpuLayers == null || config.gpuLayers < 0) &&
+    (config.nCpuMoe == null || config.nCpuMoe === 0)
   );
+}
+
+/**
+ * The speculative mode the load will actually use. A null per-model value means
+ * "follow the standing preference", which is where the loader looks too --
+ * sending nothing would omit the draft reserve until a per-model override is
+ * saved.
+ */
+function effectiveSpeculativeType(
+  config: PerModelConfig | undefined,
+): string | undefined {
+  return config?.speculativeType ?? readPersistedSpeculativeType();
 }
 
 async function fetchEstimate(
@@ -176,7 +199,7 @@ async function fetchEstimate(
   const run = estimateKvCache(source.repoId, source.quant, nCtx, {
     cacheTypeKv: config?.kvCacheDtype,
     nParallel: config?.nParallel,
-    speculativeType: config?.speculativeType,
+    speculativeType: effectiveSpeculativeType(config),
   })
     .then((r) => {
       const estimate: Estimate = {
@@ -233,7 +256,7 @@ export function useModelMemory(
       quant,
       nCtx ?? "native",
       config?.kvCacheDtype ?? "",
-      config?.speculativeType ?? "",
+      effectiveSpeculativeType(config) ?? "",
       config?.nParallel ?? 1,
     ].join(" ");
     return {
