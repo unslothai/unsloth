@@ -652,3 +652,56 @@ def test_posix_env_is_unchanged(monkeypatch, tmp_path):
     assert "TEMP" not in env
     assert "TMP" not in env
     assert env["PATH"].split(os.pathsep)[-3:] == ["/usr/local/bin", "/usr/bin", "/bin"]
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # cmd runs control flow of its own, so the program start launches can
+        # sit behind a condition that bash grammar reads as plain arguments.
+        r'cmd /c if exist C:\Windows start "" powershell -Command ls',
+        r'cmd //c if exist C:\Windows start "" pwsh -Command ls',
+        r'cmd /c if not exist C:\nope start "" powershell -Command ls',
+    ],
+)
+def test_start_behind_cmd_control_flow_is_still_screened(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A shell name a program merely prints or searches for is data. Reading
+        # it as a real invocation hard-blocked the payload behind it.
+        'echo "cmd" /c powershell',
+        "echo cmd /c powershell",
+        'printf "%s" "bash" -c "rm -rf x"',
+        'grep -rn cmd /c "src/my dir"',
+    ],
+)
+def test_a_shell_name_in_argument_position_invokes_nothing(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Double-quoted: cmd has no single-quote syntax, so the single-quoted
+        # spelling is only a real invocation on the host that has bash, and it
+        # is covered by the bash-lexer cases elsewhere in this file.
+        'bash -c "rm -rf x"',
+        'env FOO=1 bash -c "rm -rf x"',
+        r'find . -exec bash -c "rm -rf x" \;',
+        '"cmd" /c powershell -Command ls',
+        "cmd /c powershell -Command ls",
+    ],
+)
+def test_a_shell_the_shell_runs_still_screens_its_payload(monkeypatch, command, bash):
+    # The guard above must not cost the nested-shell scan its real cases.
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)

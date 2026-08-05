@@ -1658,6 +1658,19 @@ def _find_blocked_commands(command: str) -> set[str]:
         )
         blocked.update(re.findall(pattern, lowered))
 
+    def _runnable_index(idx: int) -> bool:
+        """True where the shell would execute the word at ``idx``.
+
+        Command position, anywhere inside a `cmd /c` payload (cmd runs control
+        flow of its own), or the child a `find -exec` resolves to. Everything
+        else is data a program merely prints or searches.
+        """
+        return (
+            idx in command_positions
+            or idx in win_c_payloads
+            or any(_exec_child_index(flag + 1)[0] == idx for flag in exec_flag_indexes)
+        )
+
     # Nested shell invocations (bash -c '...', bash -lc '...', cmd /c '...'):
     # on a -c/-/c flag, look back for a shell name (skipping flags) and
     # recursively scan the nested command string.
@@ -1677,7 +1690,12 @@ def _find_blocked_commands(command: str) -> set[str]:
         # Look back past flags for the shell binary. Windows flags and absolute
         # paths both start with /, so only skip short /X flags (not /bin/bash).
         for j in range(i - 1, -1, -1):
-            prev = _cmd_unquote(tokens[j])
+            # A shell name only invokes a shell where the shell would run it.
+            # `echo "cmd" /c powershell` and `printf "%s" bash -c "rm -rf x"`
+            # merely print the name, and reading it as a real invocation hard
+            # blocked the payload behind it.
+            prev_runs = _runnable_index(j)
+            prev = _cmd_unquote(tokens[j]) if prev_runs else tokens[j]
             if prev.startswith("-"):
                 continue  # skip Unix flags like --login, -l
             if is_win_c and prev.startswith("/") and len(prev) <= 3:
@@ -1685,13 +1703,19 @@ def _find_blocked_commands(command: str) -> set[str]:
             prev_base = os.path.basename(prev).lower()
             # Same for the payload: under the cmd lexer `cmd /c "rm -rf x"` is
             # one quoted token, and re-lexing it quoted finds no command.
-            if is_unix_c and prev_base in _SHELLS:
+            if is_unix_c and prev_runs and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(_cmd_unquote(tokens[i + 1]))
-            elif is_win_c and prev_base in _SHELLS_WIN:
+            elif is_win_c and prev_runs and prev_base in _SHELLS_WIN:
                 # `cmd //c start ...` puts start one token past a switch, which
                 # is no command position at all, so the start scan below is told
-                # where cmd hands control over.
-                win_c_payloads.add(i + 1)
+                # where cmd hands control over. The whole payload counts, not
+                # just its first word: cmd runs control flow of its own, and
+                # `cmd /c if exist C:\Windows start "" powershell` puts start
+                # behind an `if` condition that bash grammar reads as arguments.
+                for payload_index in range(i + 1, len(tokens)):
+                    if tokens[payload_index] in _SHELL_SEPARATORS:
+                        break
+                    win_c_payloads.add(payload_index)
                 blocked |= _scan_cmd_payload(_cmd_unquote(tokens[i + 1]))
             break  # stop at first non-flag token
 
@@ -1750,11 +1774,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         # _exec_child_index, not flag + 1: a prefix forwards to its target, so
         # `find . -exec env start "" powershell \;` really runs start and the
         # direct-word test read `env` and stopped.
-        runnable = (
-            i in command_positions
-            or i in win_c_payloads
-            or any(_exec_child_index(flag + 1)[0] == i for flag in exec_flag_indexes)
-        )
+        runnable = _runnable_index(i)
         if titled and runnable and j + 1 < len(tokens):
             blocked |= _scan_cmd_payload(_cmd_unquote(tokens[j + 1]))
 
