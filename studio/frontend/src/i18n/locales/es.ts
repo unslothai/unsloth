@@ -1369,6 +1369,8 @@ export const es = {
         "Número de pasadas completas sobre el conjunto de datos. Pon 0 para ejecutar por pasos máximos.",
       saveSteps: "Pasos entre guardados",
       saveStepsTooltip: "Guarda un checkpoint cada N pasos. 0 para desactivar.",
+      saveStepsNoResumeHint:
+        "No se guardarán checkpoints durante esta ejecución, por lo que no podrá reanudarse si se interrumpe.",
       evalSteps: "Pasos entre evaluaciones",
       evalStepsTooltip:
         "Fracción del total de pasos de entrenamiento entre evaluaciones (0-1). Pon 0 para desactivar la evaluación. P. ej. 0.01 = evaluar cada 1 % de los pasos.",
