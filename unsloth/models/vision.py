@@ -1235,9 +1235,7 @@ class FastBaseModel:
                     )
                     os.environ["UNSLOTH_BFLOAT16_MIXED_PRECISION"] = "1"
             elif dtype == torch.float32:
-                print(
-                    "Unsloth: Using float32 full finetuning."
-                )
+                print("Unsloth: Using float32 full finetuning.")
             else:
                 print(
                     "Unsloth: Float16 full finetuning uses more memory since we upcast weights to float32."

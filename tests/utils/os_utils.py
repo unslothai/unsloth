@@ -126,8 +126,7 @@ def require_python_package(
         _pytest = sys.modules.get("pytest")
         if _pytest is not None:
             _pytest.skip(
-                f"requires the '{package_name}' package "
-                f"(pip install {pip_name})",
+                f"requires the '{package_name}' package (pip install {pip_name})",
                 allow_module_level = True,
             )
         print(f"❌ Error: Python package '{package_name}' is not installed")

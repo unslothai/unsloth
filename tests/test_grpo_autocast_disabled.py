@@ -56,6 +56,7 @@ SRC = RL_REPLACEMENTS.read_text(encoding = "utf-8")
 # the code under test. Claiming the device is present is what lets them run
 # anywhere; nothing here needs a GPU, only torch's own dispatch decisions.
 
+
 class _pretend_cuda:
     """torch.cuda answering as a card without bfloat16, or with it."""
 
@@ -84,19 +85,18 @@ def test_bfloat16_autocast_raises_without_hardware_support():
 
 def test_disabling_autocast_skips_that_check():
     with _pretend_cuda(has_bf16 = False):
-        with torch.amp.autocast(
-            device_type = "cuda", dtype = torch.bfloat16, enabled = False
-        ):
+        with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16, enabled = False):
             pass
 
 
 # ---- _prepare_inputs, which is injected as source ------------------------
 
+
 def _prepare_inputs_snippet() -> str:
     """The `with` header grpo_trainer__prepare_inputs splices into TRL."""
     start = SRC.index('"with torch.inference_mode(), "')
     end = SRC.index('",\n', start)
-    return ast.literal_eval("(" + SRC[start:end + 1] + ")")
+    return ast.literal_eval("(" + SRC[start : end + 1] + ")")
 
 
 def test_the_injected_snippet_is_valid_python():
@@ -115,9 +115,7 @@ def test_the_injected_snippet_is_valid_python():
         ("bf16", True, True),
     ],
 )
-def test_the_injected_snippet_only_autocasts_when_asked(
-    precision, has_bf16, expect_enabled
-):
+def test_the_injected_snippet_only_autocasts_when_asked(precision, has_bf16, expect_enabled):
     """Run the real header and check both that it survives and that it did not
     quietly stop autocasting for everyone else."""
     from contextlib import nullcontext
@@ -127,7 +125,9 @@ def test_the_injected_snippet_only_autocasts_when_asked(
         env["ACCELERATE_MIXED_PRECISION"] = precision
 
     namespace = {
-        "torch": torch, "os": type(sys)("os"), "nullcontext": nullcontext,
+        "torch": torch,
+        "os": type(sys)("os"),
+        "nullcontext": nullcontext,
         "seen": [],
     }
     namespace["os"].environ = env
@@ -141,6 +141,7 @@ def test_the_injected_snippet_only_autocasts_when_asked(
 
 # ---- _get_per_token_logps and friends, which run as ordinary code --------
 
+
 def test_every_autocast_call_passes_enabled():
     """Five call sites share one `self._autocast_dtype`; one left behind would
     still raise, and only on the hardware nobody develops on."""
@@ -152,8 +153,19 @@ def test_every_autocast_call_passes_enabled():
 
 
 def test_the_flag_is_recorded_beside_the_dtype():
-    assert SRC.count("self._autocast_enabled = (") == 2, (
-        "both _autocast_dtype initialisers must set it")
+    """Both `_autocast_dtype` initialisers must record the flag beside it.
+
+    Paired by position rather than by counting a literal spelling: the repo's
+    ruff hook is free to collapse either assignment onto one line, and a test
+    that pins `= (` would fail on formatting alone while a genuinely missing
+    initialiser slipped through.
+    """
+    lines = SRC.splitlines()
+    dtype_at = [i for i, l in enumerate(lines) if "self._autocast_dtype = " in l]
+    flag_at = [i for i, l in enumerate(lines) if "self._autocast_enabled = " in l]
+    assert len(dtype_at) == 4, dtype_at
+    for i in dtype_at:
+        assert any(0 < j - i <= 8 for j in flag_at), (i, lines[i].strip())
 
 
 def test_reading_it_tolerates_an_older_trainer():
@@ -181,10 +193,14 @@ def test_forced_float32_still_autocasts_in_the_injected_header():
     from contextlib import nullcontext
 
     namespace = {
-        "torch": torch, "os": type(sys)("os"), "nullcontext": nullcontext, "seen": [],
+        "torch": torch,
+        "os": type(sys)("os"),
+        "nullcontext": nullcontext,
+        "seen": [],
     }
     namespace["os"].environ = {
-        "ACCELERATE_MIXED_PRECISION": "no", "UNSLOTH_FORCE_FLOAT32": "1",
+        "ACCELERATE_MIXED_PRECISION": "no",
+        "UNSLOTH_FORCE_FLOAT32": "1",
     }
     with _pretend_cuda(has_bf16 = False):
         exec(
@@ -200,7 +216,7 @@ def test_chunk_sizing_reads_the_model_dtype_when_autocast_is_off():
     float32 for an explicit float32 load but bfloat16 for pure bfloat16 full
     finetuning, so the flag alone would double the estimate for the latter."""
     line = next(l for l in SRC.splitlines() if "forward_dtype = (" in l)
-    block = SRC[SRC.index(line):SRC.index(line) + 400]
+    block = SRC[SRC.index(line) : SRC.index(line) + 400]
     assert "_autocast_enabled" in block, block
     assert "lm_head.dtype" in block, block
     assert "dtype_bytes = 16 if forward_dtype in" in block, block
@@ -212,9 +228,14 @@ def test_chunk_sizing_by_execution():
     for head_dtype, expected in ((torch.bfloat16, 16), (torch.float32, 32)):
         scope = {
             "torch": torch,
-            "self": type("T", (), {
-                "_autocast_dtype": torch.bfloat16, "_autocast_enabled": False,
-            })(),
+            "self": type(
+                "T",
+                (),
+                {
+                    "_autocast_dtype": torch.bfloat16,
+                    "_autocast_enabled": False,
+                },
+            )(),
             "lm_head": torch.zeros(2, 2, dtype = head_dtype),
         }
         line = next(l for l in SRC.splitlines() if "forward_dtype = (" in l)

@@ -1381,16 +1381,17 @@ def grpo_trainer__get_per_token_logps(function_name, function):
             )
             # "no" is a real value: full finetuning and an explicit float32 load
             # both set it, and reading it as bfloat16 raises on a T4 or V100.
-            self._autocast_enabled = (
-                os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") != "no"
-            )
+            self._autocast_enabled = os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") != "no"
             if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
                 self._autocast_dtype = torch.float16
                 self._autocast_enabled = True
 
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
-        with torch.amp.autocast(device_type = DEVICE_TYPE, dtype = self._autocast_dtype,
-                                  enabled = getattr(self, "_autocast_enabled", True)):
+        with torch.amp.autocast(
+            device_type = DEVICE_TYPE,
+            dtype = self._autocast_dtype,
+            enabled = getattr(self, "_autocast_enabled", True),
+        ):
             # We add 1 to `logits_to_keep` because the last logits of the sequence is later excluded
             logits = model(
                 input_ids = input_ids,
@@ -1488,9 +1489,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
             # that is the model's own dtype, which is float32 for an explicit
             # float32 load but still bfloat16 for pure bfloat16 full finetuning.
             forward_dtype = (
-                self._autocast_dtype
-                if getattr(self, "_autocast_enabled", True)
-                else lm_head.dtype
+                self._autocast_dtype if getattr(self, "_autocast_enabled", True) else lm_head.dtype
             )
             dtype_bytes = 16 if forward_dtype in [torch.float16, torch.bfloat16] else 32
             total_rows = input_ids.shape[0]
@@ -1758,7 +1757,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         def _pg_run_forward(_pg_layout = _pg_layout, _pg_chunks = _pg_chunks):
                             with _get_inference_mode_context_manager(model):
                                 with torch.amp.autocast(
-                                    device_type = "cuda", dtype = self._autocast_dtype,
+                                    device_type = "cuda",
+                                    dtype = self._autocast_dtype,
                                     enabled = getattr(self, "_autocast_enabled", True),
                                 ):
                                     _pg_hidden = unwrapped_model(
@@ -1891,7 +1891,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                         _pk_ctgt = (_pk_nz_idx[1:, 1] >= _pk_cstart[_pk_nz_idx[1:, 0]]) & _pk_within
                         with _get_inference_mode_context_manager(model):
                             with torch.amp.autocast(
-                                device_type = "cuda", dtype = self._autocast_dtype,
+                                device_type = "cuda",
+                                dtype = self._autocast_dtype,
                                 enabled = getattr(self, "_autocast_enabled", True),
                             ):
                                 # use_cache=False: a KV cache silently disables varlen packing
@@ -1942,7 +1943,8 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                             _pk_ref = torch.zeros_like(_pk_result)
                             with _get_inference_mode_context_manager(model):
                                 with torch.amp.autocast(
-                                    device_type = "cuda", dtype = self._autocast_dtype,
+                                    device_type = "cuda",
+                                    dtype = self._autocast_dtype,
                                     enabled = getattr(self, "_autocast_enabled", True),
                                 ):
                                     for _pk_i in range(total_rows):
@@ -2118,9 +2120,10 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
                     if mm_token_type_ids_chunk is not None:
                         _extra_vision_kwargs["mm_token_type_ids"] = mm_token_type_ids_chunk
                     with torch.amp.autocast(
-                                device_type = "cuda", dtype = self._autocast_dtype,
-                                enabled = getattr(self, "_autocast_enabled", True),
-                            ):
+                        device_type = "cuda",
+                        dtype = self._autocast_dtype,
+                        enabled = getattr(self, "_autocast_enabled", True),
+                    ):
                         if pixel_values is None:
                             outputs = unwrapped_model(
                                 input_ids = input_ids_chunk,
@@ -2388,13 +2391,7 @@ def grpo_trainer_compute_loss(function_name, function):
         _logits_to_keep = logits_to_keep
 
         get_logps_func = (
-            lambda model,
-            input_ids,
-            attention_mask,
-            logits_to_keep,
-            batch_size = None,
-            compute_entropy = False,
-            compute_efficient = False: (
+            lambda model, input_ids, attention_mask, logits_to_keep, batch_size = None, compute_entropy = False, compute_efficient = False: (
                 self._get_per_token_logps(
                     model, input_ids, attention_mask, logits_to_keep, compute_efficient
                 )

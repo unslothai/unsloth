@@ -1968,7 +1968,7 @@ for model_name in model_architectures:
         break
     config_filepath = f"transformers.models.{model_name}.configuration_{model_name}"
     model_filepath = f"transformers.models.{model_name}.modeling_{model_name}"
-    config_filename = f"{model_name.title().replace('_','')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
+    config_filename = f"{model_name.title().replace('_', '')}Config"  # qwen3 arch folder is qwen3_moe but config is Qwen3Config. Need to remove underscore(_) for now
     try:
         exec(f"from {config_filepath} import {config_filename}", globals())
     except:
@@ -2120,8 +2120,8 @@ if DEVICE_TYPE == "cuda":
                 # Stop Flash Attention from importing!
                 import transformers.utils.import_utils
 
-                transformers.utils.import_utils.is_flash_attn_2_available = (
-                    lambda *args, **kwargs: False
+                transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: (
+                    False
                 )
                 import transformers.utils
 
@@ -2165,8 +2165,8 @@ elif DEVICE_TYPE == "hip":
             # Stop Flash Attention from importing!
             import transformers.utils.import_utils
 
-            transformers.utils.import_utils.is_flash_attn_2_available = (
-                lambda *args, **kwargs: False
+            transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: (
+                False
             )
             import transformers.utils
 
@@ -3717,9 +3717,9 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
         raise AttributeError("Couldn't locate output projection (lm_head).")
 
     # (Optional) sanity: shapes should match [vocab, hidden]
-    assert (
-        out_proj.weight.shape == in_emb.weight.shape
-    ), f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
+    assert out_proj.weight.shape == in_emb.weight.shape, (
+        f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
+    )
 
     # 3) Only clone if they are actually tied (shared storage)
     if out_proj.weight.data_ptr() == in_emb.weight.data_ptr():
@@ -3908,8 +3908,8 @@ def _prepare_model_for_qat(
                 weight_dtype = torch.int8,
                 granularity = PerGroup(group_size),
             )
-            filter_fn = (
-                lambda m, _: isinstance(m, torch.nn.Linear)
+            filter_fn = lambda m, _: (
+                isinstance(m, torch.nn.Linear)
                 and m.in_features >= group_size
                 and m.in_features % group_size == 0
             )
