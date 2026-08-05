@@ -2,7 +2,10 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { apiUrl } from "@/lib/api-base";
-import { HUB_HF_TOKEN_HEADER } from "./hub-token-header";
+import {
+  HUB_HF_TOKEN_HEADER,
+  HUB_PROXY_MARKER_HEADER,
+} from "./hub-token-header";
 
 // AUTH_TOKEN_KEY from features/auth/session, read directly from localStorage
 // so this network-layer module stays importable without the auth/store stack.
@@ -216,11 +219,6 @@ const PROXYABLE_ORIGINS: ReadonlySet<string> = new Set([
 // page doesn't pay for a doomed direct attempt plus its timeout.
 const PROXY_PREFER_TTL_MS = 10 * 60_000;
 
-// Set by the hf-proxy route on its own responses. Anything without it came
-// from elsewhere (an older backend's SPA catch-all 404, or an auth rejection)
-// and must not be mistaken for a Hugging Face reply.
-const PROXY_MARKER_HEADER = "X-Unsloth-HF-Proxy";
-
 // Per origin: a datasets-server failure says nothing about huggingface.co.
 const preferProxyUntilByOrigin = new Map<string, number>();
 
@@ -259,7 +257,7 @@ function isUsableProxyResponse(response: Response): boolean {
   if (response.status === 502 || response.status === 504) {
     return false;
   }
-  return response.headers.get(PROXY_MARKER_HEADER) !== null;
+  return response.headers.get(HUB_PROXY_MARKER_HEADER) !== null;
 }
 
 function isProxyableRequest(

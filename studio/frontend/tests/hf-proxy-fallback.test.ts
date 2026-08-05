@@ -311,3 +311,39 @@ test("the proxy preference is per origin", async () => {
   await fetchWithTimeout(HF_URL, {}, 50);
   assert.equal(calls[before].url, HF_URL, "huggingface.co still tries direct first");
 });
+
+test("a hub 401 passed through the proxy is not treated as a dead session", async () => {
+  reset();
+  // huggingface.co answers 401 (not 404) for a private or missing repo, and the
+  // route forwards that verbatim. Routed through authFetch it used to look like
+  // a Studio session failure, which refreshes the session token per lookup and
+  // signs the user out when the refresh fails.
+  let sessionHandled = false;
+  setHubProxyAuthFetch(async (input, init) => {
+    const response = await fetch(input as string, init);
+    if (
+      response.status === 401 &&
+      response.headers.get("X-Unsloth-HF-Proxy") === null
+    ) {
+      sessionHandled = true;
+    }
+    return response;
+  });
+  globalThis.fetch = ((input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.startsWith(PROXY_PREFIX)) {
+      return Promise.resolve(
+        new Response('{"error":"Repo not found"}', {
+          status: 401,
+          headers: { "X-Unsloth-HF-Proxy": "1" },
+        }),
+      );
+    }
+    return Promise.reject(new TypeError("Failed to fetch"));
+  }) as typeof fetch;
+
+  const response = await fetchWithTimeout(HF_URL, {}, 50);
+  assert.equal(response.status, 401);
+  assert.equal(sessionHandled, false, "must not run the session-recovery path");
+  assert.equal(isHuggingFaceOffline(), false);
+});

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { HUB_PROXY_MARKER_HEADER } from "@/features/hub/lib/hub-token-header";
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
@@ -205,6 +206,11 @@ export async function authFetch(
     void redirectToAuth();
     return response;
   }
+  // A 401 stamped by the hf-proxy route is Hugging Face's own (private or
+  // missing repo, which the hub answers 401 for), not a dead Studio session.
+  // Refreshing on it would rotate the session token per lookup, and a failed
+  // refresh would sign the user out because a model was private.
+  if (response.headers.get(HUB_PROXY_MARKER_HEADER) !== null) return response;
   if (response.status !== 401) return response;
 
   const refreshToken = getRefreshToken();
