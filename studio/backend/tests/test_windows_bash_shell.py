@@ -1093,3 +1093,40 @@ def test_nesting_does_not_decide_how_long_the_scan_takes(windows_terminal):
     start = time.monotonic()
     tools._find_blocked_commands('start "" ' * 40 + "echo hi")
     assert time.monotonic() - start < 5
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\tools.v2\\notepad -x"',
+        'cmd /c "C:\\tools.v2\\notepad"',
+    ],
+)
+def test_pathext_makes_the_suffix_optional_on_a_launched_path(windows_terminal, command):
+    # PATHEXT is why `C:\tools\notepad` runs notepad.exe, so a path that never
+    # carries a suffix is still a program. Reading it as anything else sent the
+    # payload through a full re-lex, where the dotted directory matched the
+    # POSIX source builtin and a legitimate launch was refused.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_echo_open_paren_prints_rather_than_groups(monkeypatch):
+    # cmd's `echo(` form prints what follows it. Reading the glued `(` as the
+    # grouping operator opened a command position the shell never opens, and
+    # refused a line that only prints its argument. A cmd shape: under bash the
+    # `(` is that shell's own operator and origin/main reads the line the same
+    # way, so only the cmd lexer is asserted here.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert not tools._find_blocked_commands('cmd /c echo( start "" powershell')
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['cmd /c ( start "" powershell )', '(start "" powershell)'],
+)
+def test_real_cmd_grouping_still_opens_a_command(windows_terminal, command):
+    # An operator GLUED to the word in front of START is a separate, pre-existing
+    # gap (`echo hi&(start ""...` reaches the cmd lexer as one token `hi&(start`),
+    # so it is not asserted here.
+    assert "powershell" in tools._find_blocked_commands(command)

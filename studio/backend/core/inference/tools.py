@@ -1123,6 +1123,14 @@ def _ends_with_cmd_operator(token: str) -> bool:
     """
     if not token or token[-1] not in "&|()":
         return False
+    if token[-1] == "(":
+        # cmd's `echo(` and `rem(` forms print what follows them, and no other
+        # word glued to a `(` opens a group either: real grouping is a `(` of its
+        # own, or one behind another operator. Reading `cmd /c echo( start ""
+        # powershell` as a launch refused a line that only prints it.
+        stem = token.rstrip("(")
+        if stem and stem[-1] not in "&|()^":
+            return False
     # Count the carets IMMEDIATELY before the operator: an odd run escapes it,
     # an even one is escaped carets followed by a live operator.
     carets = len(token[:-1]) - len(token[:-1].rstrip("^"))
@@ -1547,9 +1555,15 @@ def _quoted_program_word(payload: str) -> str:
         if bare.startswith("-") or _is_start_switch(bare):
             break
         program.append(bare)
-        if os.path.splitext(bare)[1].lower() in _WINDOWS_EXE_SUFFIXES:
+        if os.path.splitext(os.path.basename(bare.replace("\\", "/")))[1].lower() in (
+            _WINDOWS_EXE_SUFFIXES
+        ):
             return " ".join(program)
-    return ""
+    # PATHEXT makes the suffix optional, so a path that never carries one is
+    # still a program: `cmd /c "C:\\tools.v2\\notepad -x"` launches notepad.
+    # Without this the payload fell through to a full re-lex, which read the
+    # dotted directory as the POSIX source builtin and refused the launch.
+    return " ".join(program)
 
 
 def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "set[str]":
