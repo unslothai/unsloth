@@ -7,7 +7,8 @@ Models write bash for a shell tool, and every other platform runs bash. ``cmd /c
 executes only the first line of a multi-line command, leaves single quotes in
 the argument, and does not understand bash quoting, so a correct script
 half-executes and reports success. These run on every OS by faking the platform,
-because studio-backend-ci is Linux-only.
+and for the screening tests the Windows blocklist, because studio-backend-ci is
+Linux-only.
 """
 
 import os
@@ -37,11 +38,10 @@ def _clear_bash_cache():
 def _windows_blocklist(monkeypatch):
     """Screen against the Windows blocklist whatever the host is.
 
-    `_BLOCKED_COMMANDS` is built at import time from `sys.platform`, so on the
-    Linux-only studio-backend-ci runner powershell/pwsh are simply not in it.
-    Faking `sys.platform` the way the rest of this file does cannot help here:
-    the set was already bound when the module was imported. Patch the set that
-    `_find_blocked_commands` actually reads on every call instead.
+    `_BLOCKED_COMMANDS` is bound at import from `sys.platform`, so powershell
+    and pwsh are absent on the Linux-only runner, and faking `sys.platform` the
+    way the rest of this file does would be too late. Patch the set that
+    `_find_blocked_commands` reads on every call instead.
     """
     monkeypatch.setattr(
         tools,
