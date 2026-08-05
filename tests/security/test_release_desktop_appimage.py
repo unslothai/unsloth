@@ -25,7 +25,9 @@ def test_release_pins_the_appimage_builder_and_runtime_by_digest():
     assert step["if"] == "matrix.platform == 'ubuntu-22.04'"
     assert "/AppImage/appimagetool/releases/download/1.9.1/" in step["env"]["APPIMAGETOOL_URL"]
     assert len(step["env"]["APPIMAGETOOL_SHA256"]) == 64
-    assert "/AppImage/type2-runtime/releases/download/20251108/" in step["env"]["APPIMAGE_RUNTIME_URL"]
+    assert (
+        "/AppImage/type2-runtime/releases/download/20251108/" in step["env"]["APPIMAGE_RUNTIME_URL"]
+    )
     assert len(step["env"]["APPIMAGE_RUNTIME_SHA256"]) == 64
     assert step["run"].count("sha256sum -c") == 2
 
@@ -48,9 +50,7 @@ def test_linux_build_repackages_the_deb_and_signs_the_final_appimage():
 
 def test_tauri_cannot_build_the_old_bundled_appimage():
     config = yaml.safe_load(
-        (REPO_ROOT / "studio" / "src-tauri" / "tauri.conf.json").read_text(
-            encoding = "utf-8"
-        )
+        (REPO_ROOT / "studio" / "src-tauri" / "tauri.conf.json").read_text(encoding = "utf-8")
     )
     assert "appimage" not in config["bundle"]["targets"]
     assert "appimage" not in config["bundle"]["linux"]
