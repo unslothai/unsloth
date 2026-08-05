@@ -6425,11 +6425,14 @@ def test_codex_attach_check_refuses_contradictory_direct_variant(monkeypatch, ca
     with pytest.raises(typer.Exit):
         start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf", "Q8_0")
     assert "no GGUF variant Q8_0" in capsys.readouterr().err
-    # The file's own quant passes, in any case spelling, shards included.
+    # The file's own quant passes, in any case spelling, shards included, and
+    # the quant may live in the immediate parent dir like the server reads it.
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf", "q4_k_m")
     start._attach_gguf_check_for_codex(
         BASE, "sk-test", "C:\\models\\bar-Q4_K_M-00001-of-00002.gguf", "Q4_K_M"
     )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q4_K_M/model.gguf", "Q4_K_M")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "C:\\models\\UD-Q4_K_XL\\m.gguf", "Q4_K_XL")
 
 
 @pytest.mark.parametrize(

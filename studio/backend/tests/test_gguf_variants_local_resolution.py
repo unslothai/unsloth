@@ -161,6 +161,17 @@ def test_stray_over_indexed_shard_does_not_complete_a_split(in_tmp_cwd):
     assert row.downloaded is False and row.partial is True
 
 
+def test_zero_byte_split_sibling_does_not_complete_a_split(in_tmp_cwd):
+    # The directory scan marks a torn split partial when a sibling is an empty
+    # interrupted copy; the name alone must not count as the shard.
+    shard = in_tmp_cwd / "model-Q4_K_M-00001-of-00002.gguf"
+    shard.write_bytes(b"GGUF")
+    (in_tmp_cwd / "model-Q4_K_M-00002-of-00002.gguf").write_bytes(b"")
+
+    row = _variants(os.fspath(shard)).variants[0]
+    assert row.downloaded is False and row.partial is True
+
+
 def test_zero_byte_direct_gguf_is_partial(in_tmp_cwd):
     # The directory scan treats an empty gguf as incomplete (an interrupted
     # copy), so the direct-file fallback must not call the same bytes ready.

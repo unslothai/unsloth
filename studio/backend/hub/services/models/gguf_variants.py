@@ -578,11 +578,16 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
         re.IGNORECASE,
     )
     try:
-        found = {int(m.group(1)) for p in path.parent.iterdir() if (m := sibling.match(p.name))}
+        found = {
+            int(m.group(1))
+            for p in path.parent.iterdir()
+            if (m := sibling.match(p.name)) and p.is_file() and p.stat().st_size > 0
+        }
     except OSError:
         return True
     # The declared indexes, not a count: a stray over-indexed shard must not
-    # stand in for a missing one.
+    # stand in for a missing one, and a zero-byte sibling is an interrupted
+    # copy the directory scan marks partial too.
     return found >= set(range(1, total + 1))
 
 

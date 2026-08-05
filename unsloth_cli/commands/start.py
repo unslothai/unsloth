@@ -1854,10 +1854,12 @@ def _attach_gguf_check_for_codex(
             _fail_codex_needs_gguf(repo)
         # The file names the one quant it is. A contradictory explicit variant
         # makes _find_local_gguf_by_variant resolve nothing server-side, and
-        # the load then evicts on the transformers path before failing.
+        # the load then evicts on the transformers path before failing. The
+        # server reads the quant from the immediate parent too (Q4_K_M/model.gguf
+        # loads as Q4_K_M), so judge the same parent/name context it does.
         if variant:
-            basename = repo.replace("\\", "/").rsplit("/", 1)[-1]
-            if not _answer_offers_variant([{"filename": basename}], variant):
+            tail = "/".join(repo.replace("\\", "/").rstrip("/").rsplit("/", 2)[-2:])
+            if not _answer_offers_variant([{"filename": tail}], variant):
                 _fail_codex_variant_missing(repo, variant, [])
         return
     # Mirror the load path's shorthand precedence: the raw name first (it may
