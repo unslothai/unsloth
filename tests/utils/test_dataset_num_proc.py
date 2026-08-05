@@ -90,7 +90,14 @@ def dnp(monkeypatch):
     try:
         from unsloth_zoo import hf_xet_tuning
     except Exception:
-        hf_xet_tuning = None
+        # Importing the package can fail long after it has imported this
+        # submodule (__init__ pulls in hf_xet_tuning near the top and only
+        # raises "Please install Unsloth" at the end), and the failure removes
+        # unsloth_zoo from sys.modules while leaving unsloth_zoo.hf_xet_tuning
+        # behind. The module under test reaches it through exactly that cache
+        # entry, so treating the failure as absence would leave the real readers
+        # live on the runner's own /sys/fs/cgroup.
+        hf_xet_tuning = sys.modules.get("unsloth_zoo.hf_xet_tuning")
     if hf_xet_tuning is not None:
         for name, neutral in (
             ("CGROUP_ROOT", Path("/nonexistent-cgroup-root-for-tests")),
@@ -1570,3 +1577,21 @@ def test_the_fallback_does_not_sit_behind_a_torch_import():
             "unsloth.utils.dataset_num_proc" not in source
         ), f"{path.name} reaches it via unsloth.utils"
         assert ".utils.dataset_num_proc" not in source, f"{path.name} reaches it via unsloth.utils"
+
+
+def test_the_fixture_really_neutralises_the_zoo_readers(dnp):
+    """The fixture's patching must survive a package __init__ that raises.
+
+    unsloth_zoo/__init__ imports hf_xet_tuning near the top and can raise at the
+    end, which drops the package from sys.modules but leaves the submodule
+    cached -- and that cache entry is what the policy imports. Patching only on
+    a clean `from unsloth_zoo import hf_xet_tuning` leaves the real readers live
+    on the runner's own /sys/fs/cgroup, so every sizing assertion silently
+    becomes a test of the container's memory limit.
+    """
+    module = sys.modules.get("unsloth_zoo.hf_xet_tuning")
+    if module is None:
+        pytest.skip("unsloth_zoo.hf_xet_tuning is not reachable here")
+    assert str(module.CGROUP_ROOT).startswith("/nonexistent"), module.CGROUP_ROOT
+    assert module._cgroup_v2_dirs() == []
+    assert module._cgroup_v1_dirs("memory") == []
