@@ -1130,3 +1130,32 @@ def test_real_cmd_grouping_still_opens_a_command(windows_terminal, command):
     # gap (`echo hi&(start ""...` reaches the cmd lexer as one token `hi&(start`),
     # so it is not asserted here.
     assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\tools\\notepad rm"',
+        'cmd /c "C:\\tools\\notepad powershell"',
+        'start "" "C:\\tools\\notepad rm"',
+    ],
+)
+def test_a_word_without_a_separator_does_not_continue_a_path(windows_terminal, command):
+    # `C:\Program Files\PowerShell\7\pwsh` and `C:\tools\notepad rm` are the same
+    # list of words: a path holding a space, and a path followed by a file to
+    # open. Joining both read the second as a program named rm and refused a line
+    # that runs notepad. Only a word carrying a separator continues the path.
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\Program Files\\PowerShell\\7\\pwsh"',
+        'cmd /c "C:\\tools\\rm -rf x"',
+        'cmd /c "C:\\tools\\rm"',
+        'cmd /c "C:\\powershell scripts\\pwsh.exe -x"',
+    ],
+)
+def test_a_spaced_or_suffixless_program_path_is_still_read(windows_terminal, command):
+    assert tools._find_blocked_commands(command)

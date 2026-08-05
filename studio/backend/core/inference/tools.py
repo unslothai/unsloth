@@ -1563,7 +1563,12 @@ def _quoted_program_word(payload: str) -> str:
     # still a program: `cmd /c "C:\\tools.v2\\notepad -x"` launches notepad.
     # Without this the payload fell through to a full re-lex, which read the
     # dotted directory as the POSIX source builtin and refused the launch.
-    return " ".join(program)
+    #
+    # Only the FIRST word, unlike the suffixed walk above. A suffix is what says
+    # where a path holding spaces ends, and with none there is nothing to say it:
+    # joining anyway read `C:\\tools\\notepad rm` as one program named rm and
+    # refused a line that runs notepad on a file called rm.
+    return program[0] if program else ""
 
 
 def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "set[str]":
@@ -1590,6 +1595,13 @@ def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "s
         bare = word.strip('"')
         if bare.startswith("-") or _is_start_switch(bare):
             break  # an option ends the path and starts the arguments
+        # Joining words is how a path holding spaces is recovered, and only a
+        # word carrying a SEPARATOR continues one: `C:\Program Files\PowerShell\
+        # 7\pwsh` runs pwsh, while the `rm` of `C:\tools\notepad rm` is a file
+        # notepad is being run on. The two are the same list of words otherwise,
+        # and joining both read the second as a program named rm.
+        if program and "\\" not in bare and "/" not in bare:
+            break
         program.append(bare)
         if os.path.splitext(bare)[1].lower() in _WINDOWS_EXE_SUFFIXES:
             break  # the executable ends it too; the rest are arguments
