@@ -60,6 +60,11 @@ const remoteOfflineUntilByOrigin = new Map<string, number>();
 // apart from the origin state: clearing that would tell the direct clients
 // (README, avatars) the origin is reachable, and their failure would re-mark it.
 let hubProxyServing = false;
+// A direct Hub request this browser could not make but the backend could. Kept
+// separate from hubProxyServing because a repo lookup proves only that, not that
+// the catalog feed is being served: reusing the feed's flag would blank the
+// panel and report the feed available off an unrelated detail-pane success.
+let directHubBlocked = false;
 // The TTL controls when we retry; this controls what we tell the user. Cleared
 // only by a success, so the cause outlives the backoff window.
 const lastFailureByKey = new Map<string, HubFailure>();
@@ -124,7 +129,7 @@ export function isHuggingFaceOffline(): boolean {
   // avatar, size and download clients keep hitting the blocked origin and drop
   // the selected row's metadata. The catalog is unaffected: getHubPhase reports
   // "available" off the same flag.
-  if (hubProxyServing) {
+  if (hubProxyServing || directHubBlocked) {
     return true;
   }
   // navigator.onLine is advisory only (false-reports offline on WSL2 / some
@@ -157,6 +162,20 @@ export function isHubProxyServing(): boolean {
   return hubProxyServing;
 }
 
+/**
+ * Record that a direct Hub request failed here but the backend served it. Only
+ * suppresses the direct clients (README, avatars, size); it says nothing about
+ * the catalog feed, so the phase and the panel are left alone. Cleared by any
+ * direct success, which is the proof the block has lifted.
+ */
+export function setDirectHubBlocked(blocked: boolean): void {
+  if (directHubBlocked === blocked) {
+    return;
+  }
+  directHubBlocked = blocked;
+  emitNetworkStatusChange();
+}
+
 /** Record whether the backend is currently serving Hub content for us. */
 export function setHubProxyServing(serving: boolean): void {
   if (hubProxyServing === serving) {
@@ -181,12 +200,18 @@ export function markRemoteNetworkOnline(
   service: HubService = "discovery",
 ): void {
   if (origin === undefined) {
-    if (remoteOfflineUntilByOrigin.size === 0 && lastFailureByKey.size === 0) {
+    if (
+      remoteOfflineUntilByOrigin.size === 0 &&
+      lastFailureByKey.size === 0 &&
+      !hubProxyServing &&
+      !directHubBlocked
+    ) {
       return;
     }
     remoteOfflineUntilByOrigin.clear();
     lastFailureByKey.clear();
     hubProxyServing = false;
+    directHubBlocked = false;
     emitNetworkStatusChange();
     return;
   }

@@ -7,6 +7,7 @@ import {
   type HubService,
   isHubFetchError,
   markRemoteNetworkOffline,
+  setDirectHubBlocked,
   setHubProxyServing,
 } from "./network";
 import {
@@ -95,10 +96,19 @@ function failureOrigin(failure: HubFailure, raw: string): string {
  * "available" over a dead feed. `origin` is left null so the panel says
  * "Hugging Face" rather than naming the operator's internal mirror.
  */
+/**
+ * Whether the status the browser received is the Hub's own answer. The backend
+ * remaps an upstream 401/403 to 424, so a 424 is the Hub and a 401/403 is
+ * Studio's session; it collapses an upstream 5xx to 502, and any other 5xx is
+ * Studio itself or a proxy in front of it. Only the rest came from the Hub.
+ */
+function isHubAnswer(status?: number): boolean {
+  if (status === undefined) return false;
+  if (status === 424) return true;
+  return status < 500 && status !== 401 && status !== 403;
+}
+
 function proxyOnlyFailure(status?: number): HubFailure {
-  // 424 and 502 are the backend's own remaps (an upstream 401 would log the user
-  // out through authFetch, and 5xx is collapsed), so the code is ours, not the
-  // Hub's. Report what it means instead of attributing the number to the Hub.
   if (status === 424) {
     return {
       kind: "http",
@@ -107,7 +117,15 @@ function proxyOnlyFailure(status?: number): HubFailure {
       retryable: false,
     };
   }
-  if (status === undefined || status === 502) {
+  if (status === 401 || status === 403) {
+    return {
+      kind: "http",
+      message: "This Studio session is no longer signed in.",
+      origin: null,
+      retryable: false,
+    };
+  }
+  if (!isHubAnswer(status)) {
     return {
       kind: "network-opaque",
       message: "The server could not reach Hugging Face.",
@@ -128,14 +146,14 @@ function proxyOnlyFailure(status?: number): HubFailure {
 }
 
 /** A status the Hub itself answered this browser with, so it is the diagnosis. */
-function directHttpFailure(status: number): HubFailure {
+function directHttpFailure(status: number, origin: string): HubFailure {
   return {
     kind: "http",
     message:
       status === 429
         ? "Hugging Face is rate limiting this browser. Try again shortly."
         : `Hugging Face returned ${status}.`,
-    origin: DEFAULT_HUB_ENDPOINT,
+    origin,
     status,
     retryable: status !== 401 && status !== 403,
   };
@@ -316,16 +334,14 @@ export function createHubTransport(
         return response;
       }
       // authFetch resolves on a non-2xx, so without this the cause is dropped
-      // and the panel falls back to its generic wording. An upstream status the
-      // server actually got (424, 429, 4xx) outranks the saved direct failure:
-      // it names something the browser could not see. A 502 is not a diagnosis,
-      // only "the server could not reach it either", so there the direct cause
-      // stays as the more specific of the two.
-      const answered = proxyOnlyFailure(response.status);
+      // and the panel falls back to its generic wording. The Hub's own answer
+      // outranks the saved direct failure: it names something the browser could
+      // not see. Anything else is a fact about our own stack, so there the
+      // direct cause stays as the more specific of the two.
       const failure =
-        answered.kind === "network-opaque" && directFailure
-          ? directFailure
-          : answered;
+        isHubAnswer(response.status) || !directFailure
+          ? proxyOnlyFailure(response.status)
+          : directFailure;
       const origin = directFailure
         ? failureOrigin(directFailure, raw)
         : DEFAULT_HUB_ENDPOINT;
@@ -334,9 +350,12 @@ export function createHubTransport(
     return response;
   };
 
-  // Promote only: a repo that simply does not exist answers 404, and demoting on
-  // that would send the README and avatar clients back at an origin the listing
-  // has already proved unreachable. The listing path owns demotion.
+  // A repo lookup the backend served proves only that this browser cannot reach
+  // the origin, which is what the direct clients need to know. It says nothing
+  // about the catalog feed, so it must not touch the feed's flag: that one
+  // forces the phase to "available" and blanks the panel, and a detail-pane
+  // success would then erase why the catalog failed. Promote only, since a
+  // missing repo answers 404 and that is not the browser recovering.
   const viaInfoBackend = async (
     info: { repo: string; revision: string },
     raw: string,
@@ -345,7 +364,7 @@ export function createHubTransport(
     const req = toInfoRequest(info, raw, resource, init);
     const response = await backend(req.url, req.init);
     if (response.ok) {
-      setHubProxyServing(true);
+      setDirectHubBlocked(true);
     }
     return response;
   };
@@ -369,7 +388,13 @@ export function createHubTransport(
         return direct(input, init, "other");
       }
       try {
-        return await direct(input, init, "other");
+        const response = await direct(input, init, "other");
+        // The browser reached the Hub, so whatever blocked it has lifted. This
+        // is the only clear on the info path: nothing else demotes it, and the
+        // flag has no expiry, so one transient timeout would otherwise keep the
+        // README, avatar and quant clients on cached data for the session.
+        setDirectHubBlocked(false);
+        return response;
       } catch (error) {
         // The same fallback the listing gets. Without it a blocked browser shows
         // a working feed with no metadata on any deep link, pinned publisher or
@@ -399,15 +424,20 @@ export function createHubTransport(
       // The browser fetched the listing itself, so the backend is not serving
       // the feed; a stale flag would force "available" and hide the next failure.
       setHubProxyServing(false);
+      setDirectHubBlocked(false);
       if (!response.ok) {
         // The SDK turns this into an ApiError, and fetchWithTimeout has already
         // cleared the origin on the resolved response, so nothing else records
-        // it and the status never reaches the panel. Not a fallback trigger:
-        // the request did reach the Hub.
+        // it and the status never reaches the panel. The ttl is 0 on purpose: a
+        // status proves the origin IS reachable, so backing off would put the
+        // README, avatar and quant clients into offline mode and stall Load
+        // more over a bad query or a stale token. The cause is recorded, the
+        // phase stays "probing", and this is not a fallback trigger.
+        const origin = hubUrlOf(raw)?.origin ?? DEFAULT_HUB_ENDPOINT;
         markRemoteNetworkOffline(
-          hubUrlOf(raw)?.origin ?? DEFAULT_HUB_ENDPOINT,
-          undefined,
-          directHttpFailure(response.status),
+          origin,
+          0,
+          directHttpFailure(response.status, origin),
           "discovery",
         );
       }

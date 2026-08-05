@@ -727,7 +727,7 @@ test("a stamped 404 is a real Hub answer and is reported", async () => {
   markRemoteNetworkOnline();
 });
 
-test("a served model-info fallback marks the proxy as serving", async () => {
+test("a served model-info fallback suppresses the direct clients", async () => {
   markRemoteNetworkOnline();
   const transport = createHubTransport("models", {
     direct: failWith("csp-blocked"),
@@ -736,11 +736,15 @@ test("a served model-info fallback marks the proxy as serving", async () => {
 
   await transport(MODEL_INFO_URL, {});
   assert.equal(
-    isHubProxyServing(),
+    isHuggingFaceOffline(),
     true,
-    "the flag is what stops README and avatar clients hitting the blocked origin",
+    "this is what stops README and avatar clients hitting the blocked origin",
   );
-  assert.equal(isHuggingFaceOffline(), true);
+  assert.equal(
+    isHubProxyServing(),
+    false,
+    "a repo lookup says nothing about the catalog feed",
+  );
   markRemoteNetworkOnline();
 });
 
@@ -776,6 +780,7 @@ test("the backend's own remap is not attributed to Hugging Face", async () => {
 
   await transport(HF_URL, {});
   const failure = getLastHubFailure(HF_ORIGIN);
+  assert.equal(failure?.kind, "http");
   assert.match(failure?.message ?? "", /rejected the access token/);
   assert.equal(
     failure?.status,
@@ -791,7 +796,12 @@ test("a status the Hub answered directly with reaches the panel", async () => {
   // any resolved response, so without an explicit record the http panel is dead
   // code on the direct path.
   const transport = createHubTransport("models", {
-    direct: async () => new Response("rate limited", { status: 429 }),
+    // fetchWithTimeout clears the origin on any resolved response, so the stub
+    // has to do it too or the ordering the fix depends on is never exercised.
+    direct: async () => {
+      markRemoteNetworkOnline(HF_ORIGIN);
+      return new Response("rate limited", { status: 429 });
+    },
     backend: async () => {
       throw new Error("a real status must not trigger the fallback");
     },
@@ -802,6 +812,75 @@ test("a status the Hub answered directly with reaches the panel", async () => {
   const failure = getLastHubFailure(HF_ORIGIN);
   assert.equal(failure?.kind, "http");
   assert.equal(failure?.status, 429);
+  assert.equal(failure?.origin, HF_ORIGIN, "filed under the key it is read by");
+  // A status proves the origin is reachable, so the cause is recorded without a
+  // backoff: "unavailable" here would stall Load more and push the README,
+  // avatar and quant clients into offline mode over a bad query.
+  assert.equal(getHubPhase(HF_ORIGIN), "probing");
+  assert.equal(isRemoteNetworkOffline(HF_ORIGIN), false);
+  assert.equal(isHuggingFaceOffline(), false);
+  markRemoteNetworkOnline();
+});
+
+test("a proxied detail-pane success does not erase why the catalog failed", async () => {
+  markRemoteNetworkOnline();
+  // The catalog's own feed is down and the panel is naming the cause.
+  markRemoteNetworkOffline(HF_ORIGIN, 30_000, OPAQUE_FAILURE);
   assert.equal(getHubPhase(HF_ORIGIN), "unavailable");
+
+  // A repo the user selected is served by the backend instead. That proves this
+  // browser is blocked, not that the feed came back.
+  const info = createHubTransport("models", {
+    direct: failWith("timeout"),
+    backend: async () => new Response("{}", { status: 200 }),
+  });
+  await info(MODEL_INFO_URL, {});
+
+  assert.equal(
+    getHubPhase(HF_ORIGIN),
+    "unavailable",
+    "a detail-pane request must not report the feed available",
+  );
+  assert.equal(getLastHubFailure(HF_ORIGIN)?.kind, "network-opaque");
+  // ...but the direct clients still have to stay off the blocked origin.
+  assert.equal(isHuggingFaceOffline(), true);
+  markRemoteNetworkOnline();
+});
+
+test("a direct detail-pane success releases the blocked-browser suppression", async () => {
+  markRemoteNetworkOnline();
+  const blocked = createHubTransport("models", {
+    direct: failWith("timeout"),
+    backend: async () => new Response("{}", { status: 200 }),
+  });
+  await blocked(MODEL_INFO_URL, {});
+  assert.equal(isHuggingFaceOffline(), true);
+
+  // The flag has no expiry, so without this a single transient timeout would
+  // keep README, avatars and quant listings on cached data for the session.
+  const recovered = createHubTransport("models", {
+    direct: async () => new Response("{}", { status: 200 }),
+    backend: async () => {
+      throw new Error("the direct route succeeded, so there is nothing to proxy");
+    },
+  });
+  await recovered(MODEL_INFO_URL, {});
+  assert.equal(isHuggingFaceOffline(), false);
+  markRemoteNetworkOnline();
+});
+
+test("a Studio-side 5xx does not outrank the browser's own cause", async () => {
+  markRemoteNetworkOnline();
+  // Only an upstream 5xx is collapsed to 502; a 503 from a proxy in front of
+  // Studio is a fact about our stack, so it must not be read as the Hub's
+  // answer and must not discard the actionable csp-blocked diagnosis.
+  const transport = createHubTransport("models", {
+    direct: failWith("csp-blocked"),
+    backend: async () =>
+      new Response("gateway", { status: 503, headers: { "X-Unsloth-HF-Proxy": "1" } }),
+  });
+
+  await transport(HF_URL, {});
+  assert.equal(getLastHubFailure(HF_ORIGIN)?.kind, "csp-blocked");
   markRemoteNetworkOnline();
 });
