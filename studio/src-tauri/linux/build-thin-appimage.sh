@@ -24,6 +24,34 @@ assert_thin_appdir() {
   fi
 }
 
+stamp_appimage_bundle_type() {
+  local binary_path="$1"
+
+  python3 - "$binary_path" <<'PY'
+import pathlib
+import sys
+
+binary_path = pathlib.Path(sys.argv[1])
+deb_marker = b"__TAURI_BUNDLE_TYPE_VAR_DEB"
+appimage_marker = b"__TAURI_BUNDLE_TYPE_VAR_APP"
+binary = binary_path.read_bytes()
+
+deb_count = binary.count(deb_marker)
+appimage_count = binary.count(appimage_marker)
+if deb_count != 1 or appimage_count != 0:
+    sys.exit(
+        f"Expected exactly one Tauri deb bundle marker and no AppImage marker in "
+        f"{binary_path}; found deb={deb_count}, appimage={appimage_count}"
+    )
+
+binary_path.write_bytes(binary.replace(deb_marker, appimage_marker, 1))
+
+stamped = binary_path.read_bytes()
+if stamped.count(deb_marker) != 0 or stamped.count(appimage_marker) != 1:
+    sys.exit(f"Failed to stamp the Tauri AppImage bundle marker in {binary_path}")
+PY
+}
+
 # Keep the safety check directly executable so its behavior can be covered by
 # a regression test without constructing a deb or downloading the toolchain.
 if [[ $# -eq 2 && "$1" == "--verify-appdir" ]]; then
@@ -77,6 +105,12 @@ for required_path in "$desktop_file" "$icon_file" "$binary_file"; do
     exit 1
   fi
 done
+
+# tauri-bundler stamps the executable copied into a deb so the updater selects
+# the deb installer. This executable is going into an AppImage instead, so
+# stamp the equal-length AppImage marker before packaging it. Without this,
+# the updater downloads the AppImage and then rejects it as an invalid deb.
+stamp_appimage_bundle_type "$binary_file"
 
 ln -s usr/share/applications/Unsloth.desktop "$app_dir/Unsloth.desktop"
 ln -s usr/share/icons/hicolor/128x128/apps/unsloth-studio.png "$app_dir/unsloth-studio.png"

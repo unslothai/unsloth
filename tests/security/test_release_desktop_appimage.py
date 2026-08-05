@@ -43,7 +43,9 @@ def test_linux_build_repackages_the_deb_and_signs_the_final_appimage():
     assert '"createUpdaterArtifacts":false' in build["with"]["args"]
     assert "TAURI_SIGNING_PRIVATE_KEY" not in build.get("env", {})
     assert "build-thin-appimage.sh" in package["run"]
-    assert "tauri signer sign" in package["run"]
+    assert 'tauri signer sign "$appimage" > "$signature"' in package["run"]
+    assert '[[ ! -s "$signature" ]]' in package["run"]
+    assert "f'{appimage}.sig'" in package["run"]
     assert package["env"]["ARTIFACT_PATHS"] == "${{ steps.build_linux.outputs.artifactPaths }}"
     assert stage["env"]["ARTIFACT_PATHS"].startswith(
         "${{ steps.package_linux.outputs.artifactPaths"
@@ -103,7 +105,12 @@ def test_thin_appimage_rejects_a_bundled_host_library(tmp_path):
     assert "libglib-2.0.so.0" in result.stderr
 
 
-def _build_fake_appimage(tmp_path):
+def _build_fake_appimage(
+    tmp_path,
+    *,
+    bundle_markers = 1,
+    check = True,
+):
     package_root = tmp_path / "package"
     control_dir = package_root / "DEBIAN"
     binary_dir = package_root / "usr" / "bin"
@@ -117,6 +124,8 @@ def _build_fake_appimage(tmp_path):
         encoding = "utf-8",
     )
     shutil.copy2("/bin/sh", binary_dir / "unsloth-studio")
+    with (binary_dir / "unsloth-studio").open("ab") as binary:
+        binary.write(b"__TAURI_BUNDLE_TYPE_VAR_DEB" * bundle_markers)
     (desktop_dir / "Unsloth.desktop").write_text("[Desktop Entry]\n", encoding = "utf-8")
     (icon_dir / "unsloth-studio.png").write_bytes(b"test")
 
@@ -150,7 +159,7 @@ chmod +x "$output_path"
     result = subprocess.run(
         [PACKAGER, deb_path, appimagetool, runtime, relative_output],
         cwd = tmp_path,
-        check = True,
+        check = check,
         capture_output = True,
         text = True,
     )
@@ -164,6 +173,26 @@ def test_thin_appimage_resolves_a_relative_output_before_verification(tmp_path):
 
     assert output_path.is_file()
     assert f"Built thin AppImage: {output_path}" in result.stdout
+
+
+def test_thin_appimage_stamps_the_copied_deb_binary_as_an_appimage(tmp_path):
+    _, app_dir, _ = _build_fake_appimage(tmp_path)
+    binary = (app_dir / "usr" / "bin" / "unsloth-studio").read_bytes()
+
+    assert b"__TAURI_BUNDLE_TYPE_VAR_DEB" not in binary
+    assert binary.count(b"__TAURI_BUNDLE_TYPE_VAR_APP") == 1
+
+
+def test_thin_appimage_rejects_an_unexpected_tauri_bundle_marker(tmp_path):
+    for bundle_markers in (0, 2):
+        _, _, result = _build_fake_appimage(
+            tmp_path / str(bundle_markers),
+            bundle_markers = bundle_markers,
+            check = False,
+        )
+
+        assert result.returncode != 0
+        assert "Expected exactly one Tauri deb bundle marker" in result.stderr
 
 
 def test_thin_appimage_preserves_host_xdg_data_dirs(tmp_path):

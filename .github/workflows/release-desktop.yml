@@ -753,7 +753,12 @@ jobs:
             "$RUNNER_TEMP/appimage-tools/appimagetool-x86_64.AppImage" \
             "$RUNNER_TEMP/appimage-tools/runtime-x86_64" \
             "$appimage"
-          npx --prefix studio tauri signer sign "$appimage"
+          signature="${appimage}.sig"
+          npx --prefix studio tauri signer sign "$appimage" > "$signature"
+          if [[ ! -s "$signature" ]]; then
+            echo "Tauri signer did not create a nonempty signature: $signature" >&2
+            exit 1
+          fi
           python3 - <<'PY'
           import json
           import os
