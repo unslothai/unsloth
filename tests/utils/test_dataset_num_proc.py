@@ -1019,9 +1019,7 @@ def test_unrelated_errors_pass_through_untouched(dnp):
     # The identity assertions above hold under `except Exception` as well, since
     # the guard re-raises the same object. This one does not: it carries the
     # dead-worker text, so a widened clause would rewrite it into a RuntimeError.
-    lookalike = ValueError(
-        "One of the subprocesses has abruptly died during map operation."
-    )
+    lookalike = ValueError("One of the subprocesses has abruptly died during map operation.")
     with pytest.raises(ValueError) as caught_other:
         with dnp.map_failure_diagnostics(4):
             raise lookalike
