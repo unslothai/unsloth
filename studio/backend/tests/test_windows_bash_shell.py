@@ -305,10 +305,9 @@ def test_cmd_shellout_is_screened_through_mangled_switches(command):
         "cmd //c start wt",
         "cmd //c dir",
         "start notepad",
-        # `start` outside a cmd payload is data, not a launcher.
+        # `start` away from command position is data, not a launcher.
         "echo start rm",
         "grep start rm file",
-        "start rm",
         # ...including after a cmd payload has ended at a separator.
         "cmd /c dir && echo start rm",
         "cmd /c dir; grep start rm file",
@@ -364,4 +363,25 @@ def test_start_scan_survives_non_posix_lexing(monkeypatch, command):
 )
 def test_top_level_start_launches_when_cmd_is_the_shell(monkeypatch, command, blocked):
     monkeypatch.setattr(tools, "_shell_is_posix", lambda: False)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # Git for Windows ships /usr/bin/start as `"$COMSPEC" //c start ...`,
+        # so start launches through cmd even when bash is the outer shell.
+        ("start rm -rf x", True),
+        ('start "" rm -rf x', True),
+        ("echo hi && start rm -rf x", True),
+        # Each cmd payload is scanned on its own, so a separator ending the
+        # first one does not hide a start in the second.
+        ('cmd /c dir && cmd /c start "" rm -rf x', True),
+        ('cmd /c dir; cmd /c start "" rm -rf x', True),
+        ("cmd /c dir && echo start rm", False),
+        ("echo start rm", False),
+    ],
+)
+def test_start_launches_through_cmd_under_bash(monkeypatch, command, blocked):
+    monkeypatch.setattr(tools, "_shell_is_posix", lambda: True)
     assert bool(tools._find_blocked_commands(command)) is blocked

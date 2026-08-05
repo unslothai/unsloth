@@ -1653,23 +1653,24 @@ def _find_blocked_commands(command: str) -> set[str]:
     # inside a cmd payload: a bare `start` is data (echo start rm), and on
     # POSIX nothing launches it at all.
     start_scan: set[int] = set()
-    if cmd_payload_from:
-        for i in range(min(cmd_payload_from), len(tokens)):
-            # A separator ends the payload; a `start` past it is data again.
+    for payload in cmd_payload_from:
+        # Each payload separately: a separator ends that one, not the scan, so
+        # `cmd /c dir && cmd /c start "" rm` still reaches the second.
+        for i in range(payload, len(tokens)):
             if tokens[i] in _SHELL_SEPARATORS:
                 break
             start_scan.add(i)
-    if not _shell_is_posix():
-        # cmd IS the shell, so the whole command already runs as `cmd /c ...`
-        # and a top-level `start prog` launches for real, with no cmd token to
-        # key on. Command position only: `echo start rm` is still data.
-        start_scan.update(
-            i
-            for i in range(len(tokens))
-            if i == 0
-            or tokens[i - 1] in _SHELL_SEPARATORS
-            or tokens[i - 1] in _SHELL_KEYWORDS_AS_SEP
-        )
+    # A `start` at command position launches through cmd under every shell:
+    # Git for Windows ships /usr/bin/start as a `"$COMSPEC" //c start ...`
+    # wrapper, and with no trusted bash cmd is the shell outright. Command
+    # position is the whole test, so `echo start rm` stays data.
+    start_scan.update(
+        i
+        for i in range(len(tokens))
+        if i == 0
+        or tokens[i - 1] in _SHELL_SEPARATORS
+        or tokens[i - 1] in _SHELL_KEYWORDS_AS_SEP
+    )
     for i in sorted(start_scan):
         if os.path.basename(tokens[i]).lower() not in ("start", "start.exe"):
             continue
