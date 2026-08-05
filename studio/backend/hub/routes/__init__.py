@@ -5,10 +5,12 @@
 
 from hub.routes.inventory import router as inventory_router
 from hub.routes.datasets import router as datasets_router
+from hub.routes.hf_proxy import router as hf_proxy_router
 from hub.routes.token import router as token_router
 
 __all__ = [
     "inventory_router",
     "datasets_router",
+    "hf_proxy_router",
     "token_router",
 ]
