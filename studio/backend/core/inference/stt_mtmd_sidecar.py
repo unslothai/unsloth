@@ -94,6 +94,8 @@ def _transcript_token_budget(audio_seconds: Optional[float]) -> int:
         return _MIN_TRANSCRIPT_TOKENS
     scaled = int(audio_seconds * _TRANSCRIPT_TOKENS_PER_SECOND)
     return max(_MIN_TRANSCRIPT_TOKENS, min(scaled, _MAX_TRANSCRIPT_TOKENS))
+
+
 _SERVER_START_TIMEOUT_SECONDS = 180.0
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
 
