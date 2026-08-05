@@ -7,6 +7,7 @@
 import ast
 import codecs
 import fnmatch
+import functools
 import http.client
 import os
 import signal
@@ -6895,9 +6896,43 @@ def _harden_parent_against_proc_env_leak() -> bool:
     return True
 
 
+# System32\bash.exe and the WindowsApps shim are the WSL launcher, which runs the
+# command inside the WSL filesystem: the sandbox workdir and the blocklist's path
+# checks would both apply to the wrong tree. Only a native Win32 bash is usable.
+_WSL_BASH_MARKERS = ("\\system32\\", "\\windowsapps\\")
+_WIN_BASH_RELATIVE = (r"Git\bin\bash.exe", r"Git\usr\bin\bash.exe")
+
+
+@functools.lru_cache(maxsize = 1)
+def _windows_bash() -> "str | None":
+    """Path to a native Win32 bash, or None when only cmd is available."""
+    for var in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        root = os.environ.get(var)
+        if not root:
+            continue
+        for relative in _WIN_BASH_RELATIVE:
+            candidate = os.path.join(root, relative)
+            if os.path.isfile(candidate):
+                return candidate
+    found = shutil.which("bash")
+    if not found:
+        return None
+    lowered = found.replace("/", "\\").lower()
+    if any(marker in lowered for marker in _WSL_BASH_MARKERS):
+        return None
+    return found
+
+
 def _get_shell_cmd(command: str) -> list[str]:
     """Return the platform-appropriate shell invocation for a command string."""
     if sys.platform == "win32":
+        # why: the model is told this tool is bash and writes bash. cmd /c runs
+        # only the first line of a multi-line command, keeps single quotes
+        # literal, and does not understand bash quoting, so a correct script
+        # silently half-executes. Use a real bash when the host has one.
+        bash = _windows_bash()
+        if bash:
+            return [bash, "-c", command]
         return ["cmd", "/c", command]
     return ["bash", "-c", command]
 
@@ -7003,11 +7038,25 @@ WEB_SEARCH_TOOL = {
 
 # Appended to the python/terminal descriptions: models habitually write to
 # /mnt/data (a ChatGPT code-interpreter path), which does not exist here.
-_SANDBOX_PATHS_NOTE = (
-    " Read and write files using relative paths in the current working "
-    "directory, which persists for this conversation; absolute paths like "
-    "/mnt/data or /tmp/outputs do not exist."
-)
+# why: naming only POSIX paths reads as "you are on Linux", and models then refuse
+# to invoke Windows programs that are in fact available. Saying where the command
+# runs matters for the same reason: without it a model assumes the pipe is its only
+# output and declines to open a window it believes nobody can see.
+if sys.platform == "win32":
+    _SANDBOX_PATHS_NOTE = (
+        " You are on Windows. The shell is bash (Git for Windows), and native "
+        "Windows programs such as powershell.exe are available. Commands run on "
+        "the user's own machine, so a program started detached, for example with "
+        "Start-Process, opens a window on their desktop. Read and write files "
+        "using relative paths in the current working directory, which persists "
+        "for this conversation."
+    )
+else:
+    _SANDBOX_PATHS_NOTE = (
+        " Read and write files using relative paths in the current working "
+        "directory, which persists for this conversation; absolute paths like "
+        "/mnt/data or /tmp/outputs do not exist."
+    )
 
 PYTHON_TOOL = {
     "type": "function",
