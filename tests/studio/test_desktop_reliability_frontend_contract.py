@@ -33,6 +33,9 @@ DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 
 
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
+ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
+IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
+VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
 
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
@@ -510,3 +513,13 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # Must not reveal every sidebar-row-action (project/run/nav rows lack padding).
     assert ".sidebar-row-action {\n\t\t\t@apply opacity-100" not in coarse_block
     assert ".sidebar-row-action.sidebar-touch-reveal" in coarse_block
+
+
+def test_media_pages_clear_the_custom_titlebar():
+    """The chat-style layout gives the media pages no outer inset, so each applies its own."""
+    root = ROOT_ROUTE.read_text(encoding = "utf-8")
+
+    assert "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;" in root
+    for page in (IMAGES_PAGE, VIDEO_PAGE):
+        shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
+        assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
