@@ -568,7 +568,9 @@ with sync_playwright() as p:
                 page.get_by_label("Dictation engine").click()
                 page.get_by_role("option", name = "Local transcription").click()
                 page.get_by_label("Speech recognition model").click()
-                page.get_by_placeholder("Search model").fill("whisper")
+                # By test id: the placeholder is translated, so re-worded copy stops
+                # matching and times out here instead of failing the real assertion.
+                page.get_by_test_id("stt-model-search").fill("whisper")
                 results = page.get_by_test_id("stt-model-results")
                 page.wait_for_function(
                     """() => {
