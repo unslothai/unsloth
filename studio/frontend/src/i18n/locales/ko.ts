@@ -781,10 +781,10 @@ export const ko = {
         title: "모델 선택 설정",
         expandQuantizations: "양자화 펼치기",
         expandQuantizationsDescription:
-          "켬: 기기 내 GGUF 모델의 양자화 옵션을 즉시 표시합니다. 끔: 모델을 클릭하면 양자화 옵션이 표시됩니다.",
+          "켬: ‘On Device’의 GGUF 모델 양자화 옵션을 즉시 표시합니다. 끔: 모델을 클릭하면 양자화 옵션이 표시됩니다.",
         showAllQuantizations: "모든 양자화 표시",
         showAllQuantizationsDescription:
-          "켬: 아직 다운로드하지 않은 항목을 포함해 기기 내 모든 양자화를 표시합니다. 끔: 다운로드한 양자화만 표시합니다.",
+          "켬: 아직 다운로드하지 않은 항목을 포함해 ‘On Device’의 모든 양자화를 표시합니다. 끔: 다운로드한 양자화만 표시합니다.",
       },
       menu: {
         title: "채팅 메뉴",

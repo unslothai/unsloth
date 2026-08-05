@@ -808,10 +808,10 @@ export const fr = {
         title: "Paramètres de sélection du modèle",
         expandQuantizations: "Développer les quantifications",
         expandQuantizationsDescription:
-          "Activé : les modèles GGUF sur l’appareil affichent immédiatement leurs quantifications. Désactivé : cliquez sur un modèle pour afficher ses quantifications.",
+          "Activé : les modèles GGUF de « On Device » affichent immédiatement leurs quantifications. Désactivé : cliquez sur un modèle pour afficher ses quantifications.",
         showAllQuantizations: "Afficher toutes les quantifications",
         showAllQuantizationsDescription:
-          "Activé : affiche toutes les quantifications sur l’appareil, y compris celles qui ne sont pas téléchargées. Désactivé : affiche uniquement les quantifications téléchargées.",
+          "Activé : affiche toutes les quantifications de « On Device », y compris celles qui ne sont pas téléchargées. Désactivé : affiche uniquement les quantifications téléchargées.",
       },
       menu: {
         title: "Menu du chat",

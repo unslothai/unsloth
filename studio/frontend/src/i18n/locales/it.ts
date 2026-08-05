@@ -810,10 +810,10 @@ export const it = {
         title: "Impostazioni di selezione del modello",
         expandQuantizations: "Espandi le quantizzazioni",
         expandQuantizationsDescription:
-          "Attivata: i modelli GGUF presenti sul dispositivo mostrano subito le relative quantizzazioni. Disattivata: fai clic su un modello per visualizzarne le quantizzazioni.",
+          "Attivata: i modelli GGUF in «On Device» mostrano subito le relative quantizzazioni. Disattivata: fai clic su un modello per visualizzarne le quantizzazioni.",
         showAllQuantizations: "Mostra tutte le quantizzazioni",
         showAllQuantizationsDescription:
-          "Attivata: elenca tutte le quantizzazioni presenti sul dispositivo, incluse quelle non scaricate. Disattivata: mostra solo le quantizzazioni scaricate.",
+          "Attivata: elenca tutte le quantizzazioni in «On Device», incluse quelle non scaricate. Disattivata: mostra solo le quantizzazioni scaricate.",
       },
       menu: {
         title: "Menu della chat",
@@ -1419,7 +1419,7 @@ export const it = {
       cancelAction: "Annulla l'addestramento",
       stopTitle: "Ferma l'addestramento",
       stopDescription:
-        "Scegli come fermare il run di addestramento in corso. «Ferma e salva» crea un checkpoint da cui potrai riprendere più tardi; con «Ferma» non potrai riprendere l'addestramento.",
+        "Scegli come fermare il run di addestramento in corso. «Ferma e salva» crea un checkpoint da cui potrai riprendere più tardi; se lo fermi senza salvare non potrai riprendere l'addestramento.",
       stopAction: "Ferma",
       stopping: "Arresto in corso...",
       stopAndSave: "Ferma e salva",

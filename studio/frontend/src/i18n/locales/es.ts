@@ -805,10 +805,10 @@ export const es = {
         title: "Configuración de selección del modelo",
         expandQuantizations: "Expandir las cuantizaciones",
         expandQuantizationsDescription:
-          "Activado: los modelos GGUF de este dispositivo muestran sus cuantizaciones de inmediato. Desactivado: haz clic en un modelo para ver sus cuantizaciones.",
+          "Activado: los modelos GGUF de «On Device» muestran sus cuantizaciones de inmediato. Desactivado: haz clic en un modelo para ver sus cuantizaciones.",
         showAllQuantizations: "Mostrar todas las cuantizaciones",
         showAllQuantizationsDescription:
-          "Activado: muestra todas las cuantizaciones de este dispositivo, incluidas las que no están descargadas. Desactivado: muestra solo las cuantizaciones descargadas.",
+          "Activado: muestra todas las cuantizaciones de «On Device», incluidas las que no están descargadas. Desactivado: muestra solo las cuantizaciones descargadas.",
       },
       menu: {
         title: "Menú del chat",
