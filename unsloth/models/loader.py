@@ -1441,7 +1441,7 @@ class FastModel(FastBaseModel):
         # Text-diffusion slow-path dispatch, factored so both the normal route (below) and the
         # legacy-config fallback (in the AutoConfig except handler) share one call site.
         def _dispatch_diffusion():
-            return FastDiffusionModel.from_pretrained(
+            model, tokenizer = FastDiffusionModel.from_pretrained(
                 model_name = model_name,
                 max_seq_length = max_seq_length,
                 dtype = dtype,
@@ -1455,6 +1455,11 @@ class FastModel(FastBaseModel):
                 revision = base_revision,
                 **kwargs,
             )
+            # Returns before the FORCE_FLOAT32 scan, and no diffusion type is on that list,
+            # so the answer is False. Stamped rather than left unset: the trainer would
+            # otherwise read whatever UNSLOTH_FORCE_FLOAT32 an earlier load wrote.
+            model = _mark_forced_float32(model, False)
+            return _mark_requested_float32(model, user_float32), tokenizer
 
         try:
             model_config = user_config

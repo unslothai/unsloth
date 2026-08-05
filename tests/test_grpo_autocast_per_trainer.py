@@ -330,27 +330,86 @@ def test_a_forced_float32_load_cannot_force_an_unforced_trainer():
     assert _generate(trainer, env, has_bf16 = False) == (False, None)
 
 
+def _own_returns(node):
+    """Returns belonging to `node` itself, not to a function nested inside it."""
+    found = []
+    for child in ast.iter_child_nodes(node):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda, ast.ClassDef)):
+            continue
+        if isinstance(child, ast.Return) and child.value is not None:
+            found.append(child)
+        found.extend(_own_returns(child))
+    return found
+
+
+def _exit_scopes(fn):
+    """(scope, returns) for everything that hands a model back to the caller.
+
+    `return _dispatch_diffusion()` exits through a local helper, so resolve one
+    level of those: the helper is a scope of its own, and it has to answer for
+    itself since the code after it never runs.
+    """
+    helpers = {
+        n.name: n for n in ast.walk(fn) if isinstance(n, ast.FunctionDef) and n is not fn
+    }
+    own, scopes = [], []
+    for ret in _own_returns(fn):
+        call = ret.value
+        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in helpers:
+            helper = helpers[call.func.id]
+            scopes.append((helper, _own_returns(helper)))
+        else:
+            own.append(ret)
+    if own:
+        scopes.append((fn, own))
+    return scopes
+
+
 def test_every_loader_return_path_stamps_the_forced_float32_answer():
     """Not just the paths that can answer True: a path that returns a model of
-    its own has to say so either way, or the trainer falls back to the env."""
+    its own has to say so either way, or the trainer falls back to the env.
+
+    Includes the text-diffusion dispatch, which returns before the FORCE_FLOAT32
+    scan, so nothing further down can answer for it."""
+    seen = 0
     for rel in ("unsloth/models/loader.py", "unsloth/models/vision.py"):
         tree = ast.parse((REPO_ROOT / rel).read_text(encoding = "utf-8"))
         for node in ast.walk(tree):
             if not (isinstance(node, ast.FunctionDef) and node.name == "from_pretrained"):
                 continue
-            calls = [
-                (c.func.id, c.args[0].id)
-                for c in ast.walk(node)
-                if isinstance(c, ast.Call)
-                and isinstance(c.func, ast.Name)
-                and c.func.id in ("_mark_requested_float32", "_mark_forced_float32")
-                and c.args
-                and isinstance(c.args[0], ast.Name)
-            ]
-            requested = {arg for name, arg in calls if name == "_mark_requested_float32"}
-            forced = {arg for name, arg in calls if name == "_mark_forced_float32"}
-            # `delegated` came from another from_pretrained, already stamped there.
-            assert (requested - forced) <= {"delegated"}, (rel, requested, forced)
+            for scope, returns in _exit_scopes(node):
+                calls = [
+                    (c.func.id, c.args[0].id)
+                    for c in ast.walk(scope)
+                    if isinstance(c, ast.Call)
+                    and isinstance(c.func, ast.Name)
+                    and c.func.id in ("_mark_requested_float32", "_mark_forced_float32")
+                    and c.args
+                    and isinstance(c.args[0], ast.Name)
+                ]
+                requested = {arg for name, arg in calls if name == "_mark_requested_float32"}
+                forced = {arg for name, arg in calls if name == "_mark_forced_float32"}
+                # `delegated` came from another from_pretrained, already stamped there.
+                assert (requested - forced) <= {"delegated"}, (rel, requested, forced)
+                for ret in returns:
+                    seen += 1
+                    statement = ast.unparse(ret)
+                    assert "_mark_requested_float32(" in statement, (rel, statement)
+    assert seen >= 6, seen
+
+
+def test_the_diffusion_dispatch_stamps_both_answers():
+    """A DiffusionGemma load leaves FastModel through _dispatch_diffusion, which
+    predates this stamp: unstamped, a T4 float32 load autocasts to float16."""
+    tree = ast.parse((REPO_ROOT / "unsloth/models/loader.py").read_text(encoding = "utf-8"))
+    helper = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_dispatch_diffusion"
+    )
+    body = ast.unparse(helper)
+    assert "_mark_forced_float32(model, False)" in body
+    assert "_mark_requested_float32(model, user_float32)" in body
 
 
 # ---- everything that must NOT change -------------------------------------
