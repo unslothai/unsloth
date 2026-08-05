@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
+import { fetchWithTimeout } from "@/features/hub/lib/network";
 import {
   Tooltip,
   TooltipContent,
@@ -27,10 +28,14 @@ async function fetchPreviews(repo: string): Promise<string[]> {
   if (cached) return cached;
   const p = (async () => {
     try {
-      const res = await fetch(
+      // Same wrapper as the rest of the hub traffic: adds a timeout and the
+      // hf-proxy fallback for browsers that cannot reach datasets-server.
+      const res = await fetchWithTimeout(
         `https://datasets-server.huggingface.co/first-rows?dataset=${encodeURIComponent(
           repo,
         )}&config=default&split=train`,
+        {},
+        15_000,
       );
       if (!res.ok) return [];
       const data = (await res.json()) as {

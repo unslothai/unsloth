@@ -37,10 +37,17 @@ const PROXY_PREFIX = "/api/hub/hf-proxy?url=";
 
 type FetchCall = { url: string; init: RequestInit | undefined };
 
+// The backend stamps every response the hf-proxy route produces, so the stub
+// has to as well; a proxy reply without it means "this backend has no such
+// route", which is a different case entirely (mode "missing-route").
+const PROXY_MARKER_HEADER = "X-Unsloth-HF-Proxy";
+const proxiedResponse = (body: string, status: number) =>
+  new Response(body, { status, headers: { [PROXY_MARKER_HEADER]: "1" } });
+
 /** Install a fetch stub; direct HF calls fail, proxy calls answer per mode. */
 function installFetchStub(behavior: {
   direct: "network-error" | "hang" | "ok";
-  proxy: "ok" | "network-error" | "gateway";
+  proxy: "ok" | "network-error" | "gateway" | "missing-route";
 }): FetchCall[] {
   const calls: FetchCall[] = [];
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
@@ -60,10 +67,21 @@ function installFetchStub(behavior: {
     }
     if (mode === "gateway") {
       return Promise.resolve(
-        new Response('{"detail":"bad gateway"}', { status: 502 }),
+        proxiedResponse('{"detail":"bad gateway"}', 502),
       );
     }
-    return Promise.resolve(new Response("{}", { status: 200 }));
+    if (mode === "missing-route") {
+      // An older Studio backend: the SPA catch-all answers unknown /api paths,
+      // so there is no marker header on the 404.
+      return Promise.resolve(
+        new Response('{"detail":"API endpoint not found"}', { status: 404 }),
+      );
+    }
+    return Promise.resolve(
+      isProxy
+        ? proxiedResponse("{}", 200)
+        : new Response("{}", { status: 200 }),
+    );
   }) as typeof fetch;
   return calls;
 }
@@ -154,7 +172,7 @@ test("a registered session-aware fetch handles proxy auth instead of a raw token
   const authCalls: FetchCall[] = [];
   setHubProxyAuthFetch((input, init) => {
     authCalls.push({ url: String(input), init });
-    return Promise.resolve(new Response("{}", { status: 200 }));
+    return Promise.resolve(proxiedResponse("{}", 200));
   });
   installFetchStub({ direct: "network-error", proxy: "ok" });
 
@@ -180,4 +198,116 @@ test("a caller abort is surfaced, not retried through the proxy", async () => {
   });
   assert.equal(calls.length, 1);
   assert.equal(isHuggingFaceOffline(), false);
+});
+
+test("an older backend without the route is not mistaken for a hub reply", async () => {
+  reset();
+  // A Studio backend that predates /api/hub/hf-proxy answers the SPA
+  // catch-all's 404. Treating that as a Hugging Face response would hand
+  // {"detail":"API endpoint not found"} to @huggingface/hub as a model
+  // listing, report the hub as online, and pin every later request to the
+  // missing route for ten minutes.
+  const calls = installFetchStub({ direct: "network-error", proxy: "missing-route" });
+
+  await assert.rejects(() => fetchWithTimeout(HF_URL, {}, 50), TypeError);
+  assert.equal(isHuggingFaceOffline(), true);
+
+  // Proxy-first must NOT be armed: the next call still tries direct first.
+  const before = calls.length;
+  await assert.rejects(() => fetchWithTimeout(HF_URL, {}, 50), TypeError);
+  assert.equal(calls[before].url, HF_URL);
+});
+
+test("a genuine hub 404 still reaches the caller", async () => {
+  reset();
+  // The mirror image: the proxy DID answer, and Hugging Face said 404 for a
+  // missing repo. That has to pass through untouched, which is why the marker
+  // header exists instead of a status allowlist.
+  globalThis.fetch = ((input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.startsWith(PROXY_PREFIX)) {
+      return Promise.resolve(
+        new Response('{"error":"Repo not found"}', {
+          status: 404,
+          headers: { "X-Unsloth-HF-Proxy": "1" },
+        }),
+      );
+    }
+    return Promise.reject(new TypeError("Failed to fetch"));
+  }) as typeof fetch;
+
+  const response = await fetchWithTimeout(HF_URL, {}, 50);
+  assert.equal(response.status, 404);
+  assert.deepEqual(await response.json(), { error: "Repo not found" });
+  assert.equal(isHuggingFaceOffline(), false);
+});
+
+test("an abort during the proxy fallback surfaces as an abort", async () => {
+  reset();
+  const controller = new AbortController();
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.startsWith(PROXY_PREFIX)) {
+      queueMicrotask(() => controller.abort());
+      return new Promise<Response>((_resolve, reject) => {
+        const fail = () => reject(new DOMException("Aborted", "AbortError"));
+        if (init?.signal?.aborted) return fail();
+        init?.signal?.addEventListener("abort", fail, { once: true });
+      });
+    }
+    return Promise.reject(new TypeError("Failed to fetch"));
+  }) as typeof fetch;
+
+  let caught: unknown;
+  try {
+    await fetchWithTimeout(HF_URL, { signal: controller.signal }, 5_000);
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught instanceof DOMException && caught.name === "AbortError");
+  // A caller changing its mind must never look like the hub going away.
+  assert.equal(isHuggingFaceOffline(), false);
+});
+
+test("one call never spends more than a single proxy attempt", async () => {
+  reset();
+  // Arm proxy-first with a successful fallback...
+  installFetchStub({ direct: "network-error", proxy: "ok" });
+  await fetchWithTimeout(HF_URL, {}, 50);
+
+  // ...then make everything hang. Without a cap this runs proxy, direct,
+  // proxy and burns three times the caller's timeout budget.
+  const legs: string[] = [];
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    legs.push(url.startsWith(PROXY_PREFIX) ? "PROXY" : "DIRECT");
+    return new Promise<Response>((_resolve, reject) => {
+      const fail = () => reject(new DOMException("Aborted", "AbortError"));
+      if (init?.signal?.aborted) return fail();
+      init?.signal?.addEventListener("abort", fail, { once: true });
+    });
+  }) as typeof fetch;
+
+  await assert.rejects(() => fetchWithTimeout(HF_URL, {}, 40));
+  assert.deepEqual(legs, ["PROXY", "DIRECT"]);
+});
+
+test("the proxy preference is per origin", async () => {
+  reset();
+  const calls: FetchCall[] = [];
+  globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input.toString();
+    calls.push({ url, init });
+    return url.startsWith(PROXY_PREFIX)
+      ? Promise.resolve(
+          new Response("{}", { status: 200, headers: { "X-Unsloth-HF-Proxy": "1" } }),
+        )
+      : Promise.reject(new TypeError("Failed to fetch"));
+  }) as typeof fetch;
+
+  // A datasets-server fallback must not reroute huggingface.co traffic.
+  await fetchWithTimeout("https://datasets-server.huggingface.co/size?dataset=x", {}, 50);
+  const before = calls.length;
+  await fetchWithTimeout(HF_URL, {}, 50);
+  assert.equal(calls[before].url, HF_URL, "huggingface.co still tries direct first");
 });

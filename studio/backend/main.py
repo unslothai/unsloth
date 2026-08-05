@@ -1170,7 +1170,9 @@ app.add_middleware(
     allow_headers = ["*"],
     # Link and ETag are not CORS-safelisted, so cross-origin webviews (Tauri)
     # could not read the pagination cursor from /api/hub/hf-proxy responses.
-    expose_headers = ["Link", "ETag"],
+    # X-Unsloth-HF-Proxy distinguishes a proxied hub reply from an older
+    # backend's catch-all response.
+    expose_headers = ["Link", "ETag", "X-Unsloth-HF-Proxy"],
 )
 
 

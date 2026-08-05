@@ -3,6 +3,12 @@
 
 import { useCallback, useEffect, useState } from "react";
 
+import { fetchWithTimeout } from "@/features/hub/lib/network";
+
+// Browser-side hub traffic, so it needs the same timeout and hf-proxy fallback
+// as the rest. This hook gates the training subset/split dropdowns.
+const SPLITS_TIMEOUT_MS = 15_000;
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -107,7 +113,11 @@ export function useHfDatasetSplits(
         headers.Authorization = `Bearer ${accessToken}`;
       }
 
-      const res = await fetch(url, { headers, signal });
+      const res = await fetchWithTimeout(
+        url,
+        { headers, signal },
+        SPLITS_TIMEOUT_MS,
+      );
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(

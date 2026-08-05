@@ -216,10 +216,20 @@ const PROXYABLE_ORIGINS: ReadonlySet<string> = new Set([
 // page doesn't pay for a doomed direct attempt plus its timeout.
 const PROXY_PREFER_TTL_MS = 10 * 60_000;
 
-let preferProxyUntil = 0;
+// Set by the hf-proxy route on its own responses. Anything without it came
+// from elsewhere (an older backend's SPA catch-all 404, or an auth rejection)
+// and must not be mistaken for a Hugging Face reply.
+const PROXY_MARKER_HEADER = "X-Unsloth-HF-Proxy";
+
+// Per origin: a datasets-server failure says nothing about huggingface.co.
+const preferProxyUntilByOrigin = new Map<string, number>();
 
 export function __resetHfProxyPreferenceForTests(): void {
-  preferProxyUntil = 0;
+  preferProxyUntilByOrigin.clear();
+}
+
+function prefersProxy(origin: string): boolean {
+  return (preferProxyUntilByOrigin.get(origin) ?? 0) > Date.now();
 }
 
 type ProxyAuthFetch = (
@@ -237,11 +247,19 @@ export function setHubProxyAuthFetch(fetchImpl: ProxyAuthFetch | null): void {
   proxyAuthFetch = fetchImpl;
 }
 
-// Statuses the backend passthrough emits when it could not reach Hugging Face
-// itself (502 upstream failure, 504 upstream timeout). Such a response means
-// the fallback failed too, not that the hub is reachable.
-function isProxyGatewayError(response: Response): boolean {
-  return response.status === 502 || response.status === 504;
+/**
+ * Did this carry a real Hugging Face reply? False when the passthrough could
+ * not reach the hub (502/504), or when the response never reached the route at
+ * all (older backend's catch-all 404, auth 401/403).
+ *
+ * Status alone cannot decide it: the hub itself returns 404 for a missing repo
+ * and 401/403 for a gated one, and those must pass through. Hence the marker.
+ */
+function isUsableProxyResponse(response: Response): boolean {
+  if (response.status === 502 || response.status === 504) {
+    return false;
+  }
+  return response.headers.get(PROXY_MARKER_HEADER) !== null;
 }
 
 function isProxyableRequest(
@@ -309,22 +327,27 @@ export async function fetchWithTimeout(
     PROXYABLE_ORIGINS.has(origin) &&
     isProxyableRequest(input, init);
 
-  if (canProxy && preferProxyUntil > Date.now()) {
+  // One proxy attempt per call, whichever branch spends it; otherwise a
+  // proxy-first call can run proxy -> direct -> proxy and burn 3x the timeout.
+  let proxyAttempted = false;
+
+  if (canProxy && prefersProxy(origin)) {
+    proxyAttempted = true;
     try {
       const response = await fetchViaBackendProxy(input, init, timeoutMs);
-      if (!isProxyGatewayError(response)) {
+      if (isUsableProxyResponse(response)) {
         markRemoteNetworkOnline(origin);
         return response;
       }
-      // the backend could not reach hugging face either; retry direct below.
-      preferProxyUntil = 0;
+      // unreachable hub, or no hf-proxy route here; retry direct below.
+      preferProxyUntilByOrigin.delete(origin);
     } catch (error) {
       if (init.signal?.aborted) {
         throw error;
       }
       // proxy stopped working; retry direct below and re-arm only on a
       // successful future fallback.
-      preferProxyUntil = 0;
+      preferProxyUntilByOrigin.delete(origin);
     }
   }
 
@@ -336,17 +359,21 @@ export async function fetchWithTimeout(
     return response;
   } catch (error) {
     const timedOut = error instanceof RequestTimeoutError;
-    if (canProxy && (timedOut || isNetworkFetchError(error))) {
+    if (canProxy && !proxyAttempted && (timedOut || isNetworkFetchError(error))) {
       try {
         const response = await fetchViaBackendProxy(input, init, timeoutMs);
-        if (!isProxyGatewayError(response)) {
-          preferProxyUntil = Date.now() + PROXY_PREFER_TTL_MS;
+        if (isUsableProxyResponse(response)) {
+          preferProxyUntilByOrigin.set(origin, Date.now() + PROXY_PREFER_TTL_MS);
           markRemoteNetworkOnline(origin);
           return response;
         }
-        // gateway error: the backend could not reach hugging face either, so
-        // fall through and report the direct failure as usual.
-      } catch {
+        // fallback unavailable or hub unreachable: report the direct failure.
+      } catch (proxyError) {
+        // A caller abort must surface as an abort and must not mark the hub
+        // offline; same guard as the proxy-first branch.
+        if (init.signal?.aborted) {
+          throw proxyError;
+        }
         // both paths failed; report the direct failure below.
       }
     }
