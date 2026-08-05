@@ -140,6 +140,7 @@ interface ModelSelectorProps {
   onFoldersChange?: () => void;
   onPickLocalModel?: () => void | Promise<void>;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onCompareWithBase?: (adapter: LoraModelOption) => void;
   deleteDisabled?: boolean;
   variant?: "outline" | "ghost" | "muted";
   size?: "sm" | "default" | "lg";
@@ -341,6 +342,7 @@ function ModelSelectorContent({
   onPickLocalModel,
   onBrowseHub,
   onModelsChange,
+  onCompareWithBase,
   deleteDisabled,
   className,
   dataTour,
@@ -363,6 +365,7 @@ function ModelSelectorContent({
   onPickLocalModel?: () => void;
   onBrowseHub?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onCompareWithBase?: (adapter: LoraModelOption) => void;
   deleteDisabled?: boolean;
   className?: string;
   dataTour?: string;
@@ -612,6 +615,7 @@ function ModelSelectorContent({
             onFoldersChange={onFoldersChange}
             onBrowseHub={onBrowseHub}
             onModelsChange={onModelsChange}
+            onCompareWithBase={onCompareWithBase}
             onConfigure={openConfigPage}
             deleteDisabled={deleteDisabled}
             onEject={hasSelection && onEject ? onEject : undefined}
@@ -691,6 +695,7 @@ export function ModelSelector({
   onFoldersChange,
   onPickLocalModel,
   onModelsChange,
+  onCompareWithBase,
   deleteDisabled,
   variant = "outline",
   size = "default",
@@ -799,6 +804,11 @@ export function ModelSelector({
     void navigate({ to: "/hub", search: { tab: "discover" } });
   }
 
+  function handleCompareWithBase(adapter: LoraModelOption) {
+    setOpen(false);
+    onCompareWithBase?.(adapter);
+  }
+
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger
@@ -830,6 +840,9 @@ export function ModelSelector({
         // The image tab (the only caller passing `task`) is a self-contained curated + on-device picker, so it omits the "Search Hub" button.
         onBrowseHub={task ? undefined : handleBrowseHub}
         onModelsChange={onModelsChange}
+        onCompareWithBase={
+          onCompareWithBase ? handleCompareWithBase : undefined
+        }
         deleteDisabled={deleteDisabled}
         className={contentClassName}
         dataTour={contentDataTour}

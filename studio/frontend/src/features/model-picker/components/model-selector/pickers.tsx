@@ -71,6 +71,7 @@ import {
   Download01Icon,
   Flag01Icon,
   Folder02Icon,
+  LayoutTwoColumnIcon,
   PinIcon,
   RemoveCircleIcon,
   Search01Icon,
@@ -1847,6 +1848,7 @@ export function HubModelPicker({
   onFoldersChange,
   onBrowseHub,
   onModelsChange,
+  onCompareWithBase,
   onConfigure,
   deleteDisabled = false,
   section = "downloaded",
@@ -1866,6 +1868,7 @@ export function HubModelPicker({
   /** Open the full Hub page to browse more models. */
   onBrowseHub?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onCompareWithBase?: (adapter: LoraModelOption) => void;
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   deleteDisabled?: boolean;
   /** Section shown when not searching. Search spans all sections. */
@@ -4074,6 +4077,7 @@ export function HubModelPicker({
                         loadedModelId={loadedModelId}
                         activeGgufVariant={activeGgufVariant}
                         onSelect={onSelect}
+                        onCompareWithBase={onCompareWithBase}
                         onConfigure={onConfigure}
                         onModelsChange={onModelsChange}
                         deleteDisabled={deleteDisabled}
@@ -5028,6 +5032,7 @@ function FineTunedRows({
   onSelect,
   onConfigure,
   onModelsChange,
+  onCompareWithBase,
   deleteDisabled = false,
   loraModelList,
   expandedGguf,
@@ -5041,6 +5046,7 @@ function FineTunedRows({
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
   onConfigure?: (id: string, meta: ModelSelectorChangeMeta) => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  onCompareWithBase?: (adapter: LoraModelOption) => void;
   deleteDisabled?: boolean;
   loraModelList: ReturnType<typeof useRovingModelList>;
   expandedGguf: string | null;
@@ -5063,6 +5069,8 @@ function FineTunedRows({
         const isExportedGguf = isExported && isGguf;
         const canDelete = canDeleteLoraModel(adapter);
         const isTrainingFull = isTraining && isMerged;
+        const isAdapterLora = !isLocal && !isMerged && !isGguf;
+        const canCompareWithBase = Boolean(onCompareWithBase) && isAdapterLora;
         const isLocalGgufDir =
           isLocal && (isGgufRepo(adapter.id) || isGgufRepo(adapter.name));
         const selectionMeta: ModelSelectorChangeMeta = {
@@ -5141,7 +5149,38 @@ function FineTunedRows({
                   alignMeta="device"
                 />
               </div>
-              <span className={ROW_ACTIONS_CLASS}>
+              <span
+                className={cn(
+                  ROW_ACTIONS_CLASS,
+                  // Third action needs a wider gutter; justify-end keeps the
+                  // delete/gear column aligned with every other row.
+                  canCompareWithBase && "w-[57px]",
+                )}
+              >
+                {canCompareWithBase && (
+                  <Tooltip delayDuration={0}>
+                    <TooltipTrigger asChild={true}>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCompareWithBase?.(adapter);
+                        }}
+                        aria-label={`Compare ${adapter.name} with its base model`}
+                        className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 transition-colors hover:bg-black/5 hover:text-foreground dark:hover:bg-white/10"
+                      >
+                        <HugeiconsIcon
+                          icon={LayoutTwoColumnIcon}
+                          strokeWidth={1.75}
+                          className="size-3"
+                        />
+                      </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="top" className="tooltip-compact">
+                      Compare with base model
+                    </TooltipContent>
+                  </Tooltip>
+                )}
                 {canConfigure && onConfigure && (
                   <ModelLoadSettingsAction
                     ariaLabel={`Inference settings for ${adapter.name}`}

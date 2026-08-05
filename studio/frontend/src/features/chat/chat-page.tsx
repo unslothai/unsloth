@@ -255,6 +255,25 @@ function pickBestLoraForBase(
   return partial ?? sorted[0] ?? null;
 }
 
+function normalizeLoraPath(value: string | null | undefined): string {
+  return value?.trim().replace(/[/\\]+$/, "").toLowerCase() ?? "";
+}
+
+function findLoraByPath(
+  loras: LoraCandidate[],
+  loraPath: string | null,
+): LoraCandidate | null {
+  const normalized = normalizeLoraPath(loraPath);
+  if (!normalized) return null;
+  return (
+    loras.find(
+      (lora) =>
+        lora.exportType === "lora" &&
+        normalizeLoraPath(lora.id) === normalized,
+    ) ?? null
+  );
+}
+
 function messageHasImage(message: MessageRecord): boolean {
   const contentParts = Array.isArray(message.content) ? message.content : [];
   if (contentParts.some((part) => part.type === "image")) {
@@ -530,6 +549,7 @@ const CompareContent = memo(function CompareContent({
   models,
   loraModels,
   externalModels,
+  onCheckpointChange,
   onFoldersChange,
   onModelsChange,
   deleteDisabled,
@@ -540,6 +560,7 @@ const CompareContent = memo(function CompareContent({
   models: ModelOption[];
   loraModels: LoraModelOption[];
   externalModels: ExternalModelOption[];
+  onCheckpointChange?: (id: string, meta: ModelSelectorChangeMeta) => void;
   onFoldersChange?: () => void;
   onModelsChange?: (deletedModel?: DeletedModelRef) => void;
   deleteDisabled?: boolean;
@@ -552,6 +573,13 @@ const CompareContent = memo(function CompareContent({
       pairId={pairId}
       onExitCompare={onExitCompare}
       projectId={projectId}
+      models={models}
+      loraModels={loraModels}
+      externalModels={externalModels}
+      onCheckpointChange={onCheckpointChange}
+      onFoldersChange={onFoldersChange}
+      onModelsChange={onModelsChange}
+      deleteDisabled={deleteDisabled}
     />
   ) : (
     <GeneralCompareContent
@@ -665,15 +693,41 @@ const LoraCompareContent = memo(function LoraCompareContent({
   pairId,
   onExitCompare,
   projectId,
+  models,
+  loraModels,
+  externalModels,
+  onCheckpointChange,
+  onFoldersChange,
+  onModelsChange,
+  deleteDisabled,
 }: {
   pairId: string;
   onExitCompare?: () => void;
   projectId?: string | null;
+  models: ModelOption[];
+  loraModels: LoraModelOption[];
+  externalModels: ExternalModelOption[];
+  onCheckpointChange?: (id: string, meta: ModelSelectorChangeMeta) => void;
+  onFoldersChange?: () => void;
+  onModelsChange?: (deletedModel?: DeletedModelRef) => void;
+  deleteDisabled?: boolean;
 }): ReactElement {
   const handlesRef = useRef<Record<string, CompareHandle>>({});
   const [baseThreadId, setBaseThreadId] = useState<string>();
   const [loraThreadId, setLoraThreadId] = useState<string>();
   const active = useChatActive();
+  const { pinned } = useSidebar();
+  // Controlled so the body-portaled popover can't linger over another tab off-route.
+  const [selectorOpen, setSelectorOpen] = useState(false);
+
+  const checkpoint = useChatRuntimeStore((s) => s.params.checkpoint);
+  const activeAdapter = useChatRuntimeStore((s) =>
+    s.loras.find((lora) => lora.id === s.params.checkpoint),
+  );
+  const baseModelName = activeAdapter
+    ? (models.find((model) => model.id === activeAdapter.baseModel)?.name ??
+      activeAdapter.baseModel)
+    : null;
 
   const compareRunning = useChatRuntimeStore(
     (s) => Object.keys(s.runningByThreadId).length > 0,
@@ -722,10 +776,24 @@ const LoraCompareContent = memo(function LoraCompareContent({
           initialThreadId={baseThreadId}
           handleName="base"
           header={
-            <div className="shrink-0 px-3 py-1.5">
-              <span className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
-                Base Model
-              </span>
+            <div
+              className={cn(
+                "pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start bg-background pt-[var(--studio-chat-header-padding-top,11px)]",
+                pinned
+                  ? "pl-12 pr-3 md:pl-4"
+                  : "pl-12 pr-3 md:pl-[calc(1rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+              )}
+            >
+              <div className="flex h-[var(--studio-chat-control-height,34px)] min-w-0 items-center gap-2">
+                <span className="shrink-0 text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
+                  Base Model
+                </span>
+                {baseModelName ? (
+                  <span className="min-w-0 truncate text-[13px] text-muted-foreground">
+                    {baseModelName}
+                  </span>
+                ) : null}
+              </div>
             </div>
           }
         />
@@ -737,10 +805,24 @@ const LoraCompareContent = memo(function LoraCompareContent({
           handleName="lora"
           borderClassName="border-t border-border/60 md:border-t-0 md:border-l"
           header={
-            <div className="shrink-0 px-3 py-1.5 text-start md:text-end md:pr-[calc(4rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]">
-              <span className="text-ui-10 font-semibold uppercase tracking-wider text-primary">
+            <div className="pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start gap-2 bg-background pl-4 pr-[calc(3rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))] pt-[var(--studio-chat-header-padding-top,11px)]">
+              <span className="flex h-[var(--studio-chat-control-height,34px)] shrink-0 items-center text-ui-10 font-semibold uppercase tracking-wider text-primary">
                 Fine-tuned
               </span>
+              <ModelSelector
+                models={models}
+                loraModels={loraModels}
+                externalModels={externalModels}
+                value={checkpoint}
+                onValueChange={onCheckpointChange}
+                onFoldersChange={onFoldersChange}
+                onModelsChange={onModelsChange}
+                deleteDisabled={deleteDisabled}
+                variant="ghost"
+                className="pointer-events-auto max-w-[80%] !h-[var(--studio-chat-control-height,34px)]"
+                open={active && selectorOpen}
+                onOpenChange={(open) => setSelectorOpen(active && open)}
+              />
             </div>
           }
         />
@@ -2911,6 +2993,34 @@ export function ChatPage({
     });
   }, [currentProjectId, navigate, search]);
 
+  const compareLoraWithBase = useCallback(
+    (adapter: LoraModelOption) => {
+      void (async () => {
+        try {
+          // Same path as a normal row pick, so the adapter's remembered
+          // per-model settings apply here too.
+          await stageOrLoad({
+            id: adapter.id,
+            source: "lora",
+            isLora: true,
+            isDownloaded: true,
+            throwOnError: true,
+          });
+        } catch {
+          return;
+        }
+        // A declined stop-running-chats confirm (or a rival load in flight)
+        // returns without switching, so compare would open on the old
+        // checkpoint. Only enter once this adapter is the live one.
+        if (useChatRuntimeStore.getState().params.checkpoint !== adapter.id) {
+          return;
+        }
+        enterCompare();
+      })();
+    },
+    [stageOrLoad, enterCompare],
+  );
+
   const exitCompare = useCallback(() => {
     // Prefer the explicit save; fall back to the last non-compare view so
     // the composer + menu path also returns where the user started.
@@ -3136,7 +3246,9 @@ export function ChatPage({
         if (canceled) return;
 
         const state = useChatRuntimeStore.getState();
-        const targetLora = pickBestLoraForBase(state.loras, handoff.baseModel);
+        const targetLora = handoff.loraPath
+          ? findLoraByPath(state.loras, handoff.loraPath)
+          : pickBestLoraForBase(state.loras, handoff.baseModel);
         const selectWithConfig = async (
           selection: Pick<SelectedModelInput, "id" | "isLora">,
         ) => {
@@ -3164,6 +3276,17 @@ export function ChatPage({
           navigate({ to: "/chat", search: { compare: crypto.randomUUID() } });
           clearHandoff();
           console.info("[chat-handoff] loaded lora + opened compare");
+          return;
+        }
+
+        if (handoff.loraPath) {
+          console.warn("[chat-handoff] requested adapter not found", {
+            loraPath: handoff.loraPath,
+          });
+          toast.error("Fine-tuned model not found", {
+            description: "It may have been deleted or moved.",
+          });
+          clearHandoff();
           return;
         }
 
@@ -3309,6 +3432,7 @@ export function ChatPage({
                 onFoldersChange={refreshLocalModels}
                 onPickLocalModel={isTauri ? chooseNativeModel : undefined}
                 onModelsChange={refreshModelLists}
+                onCompareWithBase={compareLoraWithBase}
                 deleteDisabled={modelOperationInProgress}
                 variant="ghost"
                 open={active && modelSelectorOpen}
@@ -3527,6 +3651,7 @@ export function ChatPage({
             models={models}
             loraModels={loraModels}
             externalModels={externalModels}
+            onCheckpointChange={handleCheckpointChange}
             onFoldersChange={refreshLocalModels}
             onModelsChange={refreshModelLists}
             deleteDisabled={modelOperationInProgress}
