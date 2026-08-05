@@ -44,13 +44,18 @@ def _guards_target(fn: ast.FunctionDef, target: str) -> bool:
 
     Deliberately strict -- the guard must name the target, compare it against
     None, and return/raise -- so an unrelated `if data is None:` cannot pass.
+    A preceding local alias counts as the target, so hoisting the attribute into
+    a local before the guard stays legal.
     """
+    aliases = {target}
     for node in fn.body:
+        if isinstance(node, ast.Assign) and ast.unparse(node.value) in aliases:
+            aliases.update(ast.unparse(t) for t in node.targets)
         if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
             continue
         names = {ast.unparse(node.test.left)}
         names.update(ast.unparse(c) for c in node.test.comparators)
-        if target not in names:
+        if not names & aliases:
             continue
         if not any(
             isinstance(op, ast.Is) and isinstance(c, ast.Constant) and c.value is None
