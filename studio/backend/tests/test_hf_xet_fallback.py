@@ -752,3 +752,49 @@ def test_a_zoo_that_can_resize_is_asked_for_the_workers_own_cache(monkeypatch):
     )
     assert shim.apply_xet_env({}, "/new/volume/hub") == {}
     assert seen["applied"] is True
+
+
+def test_reused_other_root_is_the_cache_prepared_for_the_http_retry(monkeypatch, tmp_path):
+    """A file reached THROUGH huggingface_hub's import-time root must have THAT root prepared for
+    the HTTP retry. ``cache_dir = None`` means the import-time root to hf_hub_download and the LIVE
+    Studio root to prepare_cache_for_transport, so a bare None purges a cache nothing is being
+    written to: the reused root keeps the Xet partial the HTTP resume appends to, and the live root
+    gets a marker dir for a download that never touches it."""
+    old_root = tmp_path / "old-hub"  # huggingface_hub's import-time root
+    live_root = tmp_path / "live-hub"  # Studio's cache setting, changed mid-session
+    live_root.mkdir(parents = True)
+    repo_dir = old_root / "models--org--model"
+    (repo_dir / "blobs").mkdir(parents = True)
+    partial = repo_dir / "blobs" / "abc123.incomplete"
+    partial.write_bytes(b"\0" * 16)  # the killed Xet attempt's partial
+    snapshot = repo_dir / "snapshots" / "deadbeef"
+    snapshot.mkdir(parents = True)
+    cached = snapshot / FILE
+    cached.write_bytes(b"an older copy of the file")
+
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: _types.SimpleNamespace(hub_cache = live_root),
+    )
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(old_root))
+    monkeypatch.setattr(
+        huggingface_hub,
+        "try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: str(cached) if cache_dir is None else None,
+    )
+
+    def _shared(repo_id, filename, token, **kwargs):
+        # The Xet attempt stalled: the shared layer runs the injected prep before the HTTP retry.
+        kwargs["prepare_for_http_fn"]("model", repo_id)
+        return str(cached)
+
+    monkeypatch.setattr(xf, "_shared_hf_hub_download_with_xet_fallback", _shared)
+
+    xf.hf_hub_download_with_xet_fallback("org/model", FILE, None, reuse_other_cache_root = True)
+
+    assert not partial.exists(), (
+        "the reused root's Xet partial must be purged before the HTTP resume"
+    )
+    assert not (live_root / "models--org--model").exists(), (
+        "the live root is not being written; it must not be marked/created for this download"
+    )

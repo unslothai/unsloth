@@ -604,6 +604,16 @@ def hf_hub_download_with_xet_fallback(
         optional["stall_timeout"] = stall_timeout
     if interval is not None:
         optional["interval"] = interval
+    # The HTTP-retry prep must purge the root the download WRITES, and None does not mean the same
+    # root on both sides: hf_hub_download reads it as huggingface_hub's import-time root, while
+    # prepare_cache_for_transport reads it as Studio's live one, which after a cache-folder change
+    # is a different directory. Resolve it, else the purge runs against a cache nothing is being
+    # written to and the reused root keeps the Xet partial an HTTP resume would append to.
+    prepare_root = cache_dir
+    if prepare_root is None:
+        from huggingface_hub import constants as hf_constants
+
+        prepare_root = str(hf_constants.HF_HUB_CACHE)
     return _shared_hf_hub_download_with_xet_fallback(
         repo_id,
         filename,
@@ -616,7 +626,7 @@ def hf_hub_download_with_xet_fallback(
         on_status = on_status,
         force_download = force_download,
         cache_dir = cache_dir,
-        prepare_for_http_fn = partial(_studio_prepare_for_http, cache_dir = cache_dir),
+        prepare_for_http_fn = partial(_studio_prepare_for_http, cache_dir = prepare_root),
     )
 
 
