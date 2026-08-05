@@ -474,7 +474,13 @@ def _assert_base_repo_accessible(
     try:
         if Path(repo).expanduser().exists():
             return
-    except OSError:  # invalid path characters -> a remote id, not a local path
+    # OSError: invalid path characters -> a remote id, not a local path.
+    # RuntimeError: pathlib raises it, NOT an OSError, when expanduser() cannot resolve the home
+    # directory -- '~someoneelse/models' on any OS, and plain '~/models' under a Windows service
+    # account with no USERPROFILE or a daemon with no HOME. Exactly one forward slash, so both
+    # reach here rather than short-circuiting above, and an escape turns this fail-open probe into
+    # a 500 on a load that has not even started.
+    except (OSError, RuntimeError, ValueError):
         pass
     try:
         from huggingface_hub import HfApi, get_hf_file_metadata, hf_hub_url

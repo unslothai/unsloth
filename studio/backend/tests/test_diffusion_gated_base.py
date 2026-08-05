@@ -11,6 +11,7 @@ its licence page, and every non-access failure falls through so an offline host 
 
 from __future__ import annotations
 
+import os
 import types
 
 import pytest
@@ -204,6 +205,39 @@ def test_local_and_non_repo_bases_are_skipped(monkeypatch, tmp_path):
     _assert_base_repo_accessible(str(local), None)
     _assert_base_repo_accessible("", None)
     _assert_base_repo_accessible("bare-name", None)
+
+
+def test_a_base_whose_home_cannot_be_resolved_fails_open(monkeypatch):
+    # '~someoneelse/models' and a plain '~/models' under a service account with no home both
+    # carry exactly one slash, so they reach the local-path probe instead of short-circuiting,
+    # and pathlib answers an unresolvable home with RuntimeError -- which is NOT an OSError.
+    # This function documents "fails open on any non-access error", so it must fall through to
+    # the Hub probe rather than escaping as a 500 on a load that has not started.
+    probed = _stub_hub(monkeypatch, info = _FakeInfo(False))
+
+    class _NoHomePath:
+        def __init__(self, *a, **k):
+            pass
+
+        def expanduser(self):
+            raise RuntimeError("Could not determine home directory.")
+
+    monkeypatch.setattr("core.inference.diffusion.Path", _NoHomePath)
+
+    _assert_base_repo_accessible("~ghost/my-base", None)
+    # Fell through to the remote probe instead of raising: an open repo costs one metadata call.
+    assert probed == []
+
+
+def test_an_unknown_user_home_base_fails_open_for_real(monkeypatch):
+    # The same failure without stubbing pathlib at all: no such user, so expanduser() raises.
+    # POSIX only -- Windows expanduser() has no user database and silently rewrites '~ghost'
+    # against USERPROFILE's parent, so it never reaches the RuntimeError branch there.
+    if os.name == "nt":
+        pytest.skip("POSIX-only: Windows expanduser() never fails for an unknown user")
+    _stub_hub(monkeypatch, info = _FakeInfo(False))
+
+    _assert_base_repo_accessible("~unsloth-no-such-user-4b1f/my-base", None)
 
 
 def test_download_plan_refuses_a_gated_base_before_listing_files(monkeypatch):
