@@ -886,3 +886,66 @@ def test_an_earlier_pair_does_not_vouch_for_a_later_one(monkeypatch):
     )
     assert not tools._find_blocked_commands('echo ""rm && xargs "" rm')
     assert "powershell" in tools._find_blocked_commands('echo hi && ""cmd /c powershell""')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c powershell&echo ok",
+        "cmd /c powershell|more",
+        "cmd /c powershell&&echo ok",
+    ],
+)
+def test_a_glued_cmd_operator_hides_a_second_command(windows_terminal, command):
+    # cmd needs no whitespace around & or |, so a payload can carry a whole
+    # second command with nothing separating the words. Screened as one program
+    # name, `powershell&echo` matched nothing and the launch went unread.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+def test_the_operator_test_reads_carets():
+    # An odd run of carets hands the operator over as text; an even run is
+    # escaped carets in front of a live one. Asserted on the helper rather than
+    # end to end, because the regex backstop matches a blocked word after any
+    # `&` whether or not a caret escaped it, and does so on main too. That is a
+    # separate false positive, called out in the PR as not fixed here.
+    assert tools._has_bare_cmd_operator("powershell&echo ok")
+    assert tools._has_bare_cmd_operator("a^^&powershell")
+    assert not tools._has_bare_cmd_operator("a^&powershell")
+    assert not tools._has_bare_cmd_operator("plain text")
+
+
+def test_a_caret_continues_a_cmd_line(monkeypatch):
+    # A caret at the end of a cmd line continues it, the way a backslash does
+    # under bash, so START is one more argument of the echo and only prints.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert not tools._find_blocked_commands('cmd /c echo hi ^\nstart "" powershell')
+    # An even run is escaped carets, so the newline still separates.
+    assert tools._find_blocked_commands('cmd /c echo hi ^^\nstart "" powershell')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd //c start "" "C:\\tmp\\rm report.docx"',
+        'cmd //c start "" "C:\\my docs\\curl notes.pdf"',
+    ],
+)
+def test_a_document_path_with_spaces_is_still_a_document(windows_terminal, command):
+    # A quoted document path holds spaces like any other, and re-lexing it as a
+    # command line read `rm report.docx` as the rm builtin. Its suffix is not one
+    # cmd executes, so START opens it through its association.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_a_quoted_command_line_after_start_is_not_a_document(windows_terminal):
+    # The other side: no path and no suffix cmd would associate, so this really
+    # is a command line and must still be lexed.
+    assert "rm" in tools._find_blocked_commands('start "" "rm -rf x"')
+    assert "rm" in tools._find_blocked_commands('start "" "rm -rf x.txt"')

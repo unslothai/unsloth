@@ -1053,6 +1053,37 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
     )
 
 
+def _is_document_target(target: str) -> bool:
+    """Whether START would OPEN ``target`` through its file association rather
+    than execute it.
+
+    A path whose suffix is not one cmd runs is a document, and START is how a
+    shell opens one. Only a path: a bare word carrying a dot is still a program
+    to look up, and `rm -rf x.txt` is a command line rather than a file.
+    """
+    stripped = target.strip('"')
+    if not stripped or not _PATH_FRAGMENT_RE.match(stripped):
+        return False
+    suffix = os.path.splitext(stripped)[1].lower()
+    return bool(suffix) and suffix not in _WINDOWS_EXE_SUFFIXES
+
+
+def _has_bare_cmd_operator(text: str) -> bool:
+    """Whether ``text`` holds a cmd control operator the caret has not escaped.
+
+    cmd needs no whitespace around `&`, `&&`, `||` or `|`, so a word can carry a
+    whole second command behind one. An odd run of carets in front of the
+    operator hands it over as literal text instead.
+    """
+    for index, char in enumerate(text):
+        if char not in "&|":
+            continue
+        carets = len(text[:index]) - len(text[:index].rstrip("^"))
+        if carets % 2 == 0:
+            return True
+    return False
+
+
 def _ends_with_cmd_operator(token: str) -> bool:
     """Whether ``token`` ends in an operator that starts a new command IN CMD.
 
@@ -1087,8 +1118,21 @@ def _newline_command_indexes(text: str, tokens: "list[str]", mode: str) -> "froz
     if "\n" not in text or _NEWLINE_COMMAND_MARK in text:
         return frozenset()
     states = _shell_quote_states(text)
+
+    def _separates(index: int) -> bool:
+        if states[index]:
+            return False  # quoted: data the command receives, not a boundary
+        if mode == "posix":
+            return True
+        # A caret at the end of a cmd line continues it onto the next, the way a
+        # backslash does under bash, so `echo hi ^<newline>start "" prog` is one
+        # command that prints. An even run is escaped carets, which do not.
+        before = text[:index].rstrip(" \t\r")
+        carets = len(before) - len(before.rstrip("^"))
+        return carets % 2 == 0
+
     marked = "".join(
-        f" {_NEWLINE_COMMAND_MARK} " if char == "\n" and not states[index] else char
+        f" {_NEWLINE_COMMAND_MARK} " if char == "\n" and _separates(index) else char
         for index, char in enumerate(text)
     )
     if _NEWLINE_COMMAND_MARK not in marked:
@@ -1567,8 +1611,13 @@ def _find_blocked_commands(command: str) -> set[str]:
         program name, and re-scanning it as a command line reads
         `C:\\tmp\\image.png` as a path followed by the POSIX source builtin,
         which hard-blocks a document launch.
+
+        A cmd operator needs no whitespace around it, so a payload can hold a
+        whole second command with nothing to separate the words:
+        `cmd /c powershell&echo ok` runs powershell and read as one program named
+        `powershell&echo`. That is a command line too, escaped carets aside.
         """
-        if any(char.isspace() or char in "\"'" for char in text):
+        if any(char.isspace() or char in "\"'" for char in text) or _has_bare_cmd_operator(text):
             return _find_blocked_commands(text)
         base = _token_basename(text)
         if base in _BLOCKED_COMMANDS:
@@ -2000,6 +2049,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             # A URL is opened in the default browser, exactly like the document
             # targets above: `start "" https://example.com/powershell` browses,
             # it does not run the last path segment.
+            continue
+        if j < len(tokens) and _is_document_target(_unquote(tokens[j])):
+            # A quoted document path holds spaces like any other, and re-lexing
+            # it as a command line read `C:\tmp\rm report.docx` as the rm builtin
+            # and refused the launch. Its suffix is not one cmd executes, so
+            # START opens it through its association, as it does the URLs above.
             continue
         if j < len(tokens):
             program = _unquote(tokens[j])
