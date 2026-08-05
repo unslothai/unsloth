@@ -3305,9 +3305,15 @@ def test_an_orphan_variant_index_does_not_veto_the_default_weight(
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
 
 
-def test_a_half_landed_variant_shard_set_is_torn_like_the_default_one(tmp_path):
-    """The variant index is the only index here, and it is short a shard, so the component is
-    torn. Matching on ``.index.`` rather than on an ``.index.json`` suffix is what sees it."""
+def test_a_variant_only_component_is_missing_its_denoiser_whole_or_not(tmp_path):
+    """A dtype twin is not the weight a default load asks for, so a bf16 set does not make the
+    component readable -- not half landed, and not even whole.
+
+    ``from_pretrained`` without ``variant`` resolves the plain name and has no fallback to the
+    twin: against a directory holding only ``diffusion_pytorch_model.fp16.safetensors`` diffusers
+    raises ``Error no file named diffusion_pytorch_model.safetensors``. The download plan skips
+    those files for that reason, so a cache holding only them cannot serve this row.
+    """
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3321,6 +3327,20 @@ def test_a_half_landed_variant_shard_set_is_torn_like_the_default_one(tmp_path):
     (
         snapshot / "transformer" / "diffusion_pytorch_model-00002-of-00002.bf16.safetensors"
     ).write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+def test_an_unsharded_dtype_twin_alone_is_not_the_default_weight(tmp_path):
+    """The same rule without an index in sight: the twin a ``variant = "fp16"`` load left in the
+    cache is the only weight here, and the default load this app issues cannot open it."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {"transformer/diffusion_pytorch_model.fp16.safetensors": b"\0" * 256},
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
 
 

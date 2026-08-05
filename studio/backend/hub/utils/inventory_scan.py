@@ -1597,12 +1597,18 @@ def _component_weights_complete(component: Path) -> bool:
     ``.safetensors``, matching on the ``.bin`` suffix, so ``.bin.index.json`` survives while its
     shards never arrive). Unioning would charge those absent shards to a complete safetensors set.
 
-    Unfetched variants behave the same way, hence the ``.index.`` match rather than an
-    ``.index.json`` suffix: diffusers' ``_add_variant`` splits on ``.`` and inserts the variant
-    before the last part, so a bf16 index is
-    ``diffusion_pytorch_model.safetensors.index.bf16.json`` -- the real name
-    ``genmo/mochi-1-preview`` ships beside its default index. A survey that filters on the
-    ``.index.json`` suffix will not see it, which is the same blind spot this match exists to fix.
+    A dtype variant never vouches for the component, whole or not. ``_add_variant`` splits on ``.``
+    and inserts the variant before the last part, so a bf16 set is
+    ``diffusion_pytorch_model.safetensors.index.bf16.json`` over
+    ``diffusion_pytorch_model-00001-of-00002.bf16.safetensors`` -- the real names
+    ``genmo/mochi-1-preview`` ships beside its default weights. A load that passes no ``variant``
+    asks for the plain name and nothing else, and diffusers has no fallback the other way: against
+    a directory holding only the twin it raises ``Error no file named
+    diffusion_pytorch_model.safetensors``. The download plan skips those files for the same reason
+    (``_pipeline_file_downloaded``), so a cache holding only them was filled by something else --
+    a ``from_pretrained(..., variant = "fp16")`` elsewhere -- and is not a pipeline this app can
+    run. They are still walked, rather than ignored, so a variant index claims its own shards and
+    a half-landed twin set cannot pose as the default weight in the loose scan below.
     """
     # iterdir() raises on an unreadable dir, reaching the caller's fail-open guard; glob() would
     # swallow that OSError and read as "no weights".
@@ -1620,11 +1626,13 @@ def _component_weights_complete(component: Path) -> bool:
         shards = _denoiser_index_shards(index)
         if shards is None:
             continue
-        # Same rule the root-weight scanner applies to its own indexes: every name has to resolve
-        # inside the component (``component / "/abs"`` drops the left operand and ``..`` walks out
-        # to a sibling, so a corrupt map could otherwise be satisfied by the vae), be non-empty on
-        # disk, and cover the shard total its own filename declares.
-        if not _index_cannot_serve_its_shards(index, set()):
+        # Only a default-named index answers a default load; a variant one ends in
+        # ``.index.<variant>.json`` and is never resolved, so it claims its shards without ever
+        # vouching. Same rule the root-weight scanner applies to its own indexes otherwise: every
+        # name has to resolve inside the component (``component / "/abs"`` drops the left operand
+        # and ``..`` walks out to a sibling, so a corrupt map could otherwise be satisfied by the
+        # vae), be non-empty on disk, and cover the shard total its own filename declares.
+        if index.name.endswith(".index.json") and not _index_cannot_serve_its_shards(index, set()):
             return True
         claimed |= shards
     # No whole set, so the last thing that could load is a weight NO index claims: an unsharded
@@ -1632,6 +1640,11 @@ def _component_weights_complete(component: Path) -> bool:
     # reading as complete.
     for entry in component.rglob("*"):
         if not entry.is_file() or not entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES):
+            continue
+        # The default name carries one dot; the variant sits in a second one
+        # (``diffusion_pytorch_model.fp16.safetensors``), and a load without ``variant`` asks for
+        # the plain name, so the twin is no more loadable loose than it was through its index.
+        if entry.name.count(".") > 1:
             continue
         try:
             relative = entry.relative_to(component).as_posix()
