@@ -54,10 +54,10 @@ def _env_int(name: str, default: int) -> int:
 _STOP_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_GRACE_S", 15)
 _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
-# Same escalation for a run that ends on its own. The terminal event is the worker's last
-# act (model already on disk), so everything after it is teardown and killing loses
-# nothing. Longer than the stop grace: nobody is waiting on a cancel here.
-_COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S", 60)
+# Backstop for a run that ended on its own: reclaim the GPU from a worker wedged in
+# teardown. Not what unwedges the UI (is_run_finished does, at once), so it is generous --
+# a post-run wandb sync can legitimately take a while and must not be cut short.
+_COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S", 120)
 
 # Watchdog DB finalize: a few short retries so a transient SQLite lock doesn't lose the
 # terminal state, since the watchdog is the sole finalizer once _proc is dropped.
@@ -1221,7 +1221,7 @@ class TrainingBackend:
                 reason,
             )
         else:
-            logger.warning("Stop watchdog force-terminating stuck training worker: %s", reason)
+            logger.warning("Training watchdog force-terminating a worker that will not exit: %s", reason)
         # force_terminate can raise on a wedged child; finalize regardless.
         try:
             self.force_terminate(target_proc = target_proc)
@@ -1577,6 +1577,22 @@ class TrainingBackend:
             # this thread as not-yet-started and spawn yet another pump.
             new_pump.start()
         return True
+
+    def is_run_finished(self) -> bool:
+        """Whether the current run reached its own terminal state (saved and finalized).
+
+        is_training_active() is liveness-based, so it stays true until the worker exits --
+        which can lag by minutes behind a slow teardown (a wandb sync) or never happen at
+        all if the worker wedges, leaving the UI at 100%. Status and progress read this so
+        a finished run reports terminal at once; the GPU admission guards keep using
+        is_training_active(), since a lingering worker still holds its VRAM."""
+        if getattr(self, "_spawn_in_progress", False):
+            return False  # a new run is spawning; _progress is still the old run's
+        with self._lock:
+            if self._start_in_progress:
+                return False
+            p = self._progress
+            return bool(self._complete_seen.is_set() or p.is_completed or p.error)
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""

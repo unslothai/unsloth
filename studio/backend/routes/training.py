@@ -664,9 +664,11 @@ async def reset_training(current_subject: str = Depends(get_current_subject)):
         is_active = backend.is_training_active()
 
         if is_active:
-            if backend._cancel_requested:
-                # Cancel (save=False) requested — force-terminate to reset immediately.
-                logger.info("Force-terminating subprocess for immediate reset (cancel path)")
+            if backend._cancel_requested or backend.is_run_finished():
+                # Cancel (save=False), or a finished run whose worker is still tearing
+                # down: nothing is left to save, so reap now instead of refusing the
+                # user's return to configuration until the watchdog gets there.
+                logger.info("Force-terminating subprocess for immediate reset")
                 backend.force_terminate()
             else:
                 logger.warning("Rejected reset while training active: is_active=%s", is_active)
@@ -714,7 +716,9 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
         backend = get_training_backend()
         job_id: str = getattr(backend, "current_job_id", "") or ""
 
-        is_active = backend.is_training_active()
+        # A finished run whose worker is still tearing down is not training: report the
+        # terminal phase now rather than waiting on the process to exit.
+        is_active = backend.is_training_active() and not backend.is_run_finished()
 
         try:
             progress = backend.trainer.get_training_progress()
@@ -864,6 +868,11 @@ async def stream_training_progress(
         job_id: str = getattr(backend, "current_job_id", "") or ""
 
         # ── Helpers ──────────────────────────────────────────────
+        def run_active() -> bool:
+            """Live for streaming purposes: a run that already reported terminal is done,
+            even while its worker is still tearing down (see is_run_finished)."""
+            return backend.is_training_active() and not backend.is_run_finished()
+
         def build_progress(
             step: int,
             loss: Optional[float],
@@ -962,7 +971,7 @@ async def stream_training_progress(
 
         # ── Initial status (only on fresh connections) ───────────
         if resume_from_step is None:
-            is_active = backend.is_training_active()
+            is_active = run_active()
             tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
             initial_total_steps = getattr(tp, "total_steps", 0) if tp else 0
             initial_epoch = getattr(tp, "epoch", None) if tp else None
@@ -1022,7 +1031,7 @@ async def stream_training_progress(
             backend.step_history
         )
 
-        while backend.is_training_active():
+        while run_active():
             # Client gone: end the generator without falling through to the final
             # "complete" frame, which a buffered/proxy consumer could otherwise read
             # as a finished run while training is still active.

@@ -68,7 +68,7 @@ _stub("utils.paths", _pth)
 # evict it below if we were the one to create the (stub-bound) module instance.
 _TRAINING_PRE_IMPORTED = "core.training.training" in sys.modules
 
-from core.training.training import TrainingBackend
+from core.training.training import TrainingBackend, TrainingProgress as _TP
 
 # Restore every stubbed module so this file never pollutes the shared session.
 for _name in (
@@ -1085,3 +1085,77 @@ def test_pump_loop_exits_when_the_watchdog_drops_the_handle(monkeypatch):
     t.start()
     assert done.wait(timeout = 5), "pump must return cleanly, not die on a dropped handle"
     assert b._pump_running is False
+
+
+# ----------------------------------------------------------------------------
+# (e) A finished run reports terminal at once, without waiting on the worker.
+# ----------------------------------------------------------------------------
+
+
+def _running_backend(job_id = "job_1"):
+    b = TrainingBackend()
+    b.current_job_id = job_id
+    b._proc = _FakeProc(alive = True)
+    b._progress = _TP(is_training = True, status_message = "Training in progress...")
+    b._finalize_run_in_db = lambda **kw: None
+    b._ensure_db_run_created = lambda: None
+    b._start_stop_watchdog = lambda **kw: None
+    return b
+
+
+def test_is_run_finished_false_while_training():
+    b = _running_backend()
+    assert b.is_run_finished() is False
+    assert b.is_training_active() is True
+
+
+def test_is_run_finished_true_once_terminal_even_though_worker_lives():
+    # The whole point: the UI must not wait on a worker wedged in teardown.
+    b = _running_backend()
+    b._handle_event(_complete_event())
+    assert b.is_run_finished() is True
+    assert b.is_training_active() is True, "admission guards still see the live worker"
+
+
+def test_is_run_finished_true_on_error():
+    b = _running_backend()
+    b._handle_event({"type": "error", "error": "boom", "stack": ""})
+    assert b.is_run_finished() is True
+
+
+def test_is_run_finished_untrue_for_a_fresh_backend():
+    assert TrainingBackend().is_run_finished() is False
+
+
+def test_is_run_finished_does_not_leak_into_the_next_run():
+    b = _running_backend()
+    b._handle_event(_complete_event())
+    assert b.is_run_finished() is True
+    # start_training's reset block.
+    b._complete_seen.clear()
+    b._progress = _TP(is_training = True, status_message = "Initializing training...")
+    b.current_job_id = "job_2"
+    b._proc = _FakeProc(alive = True)
+    assert b.is_run_finished() is False
+
+
+def test_is_run_finished_false_during_spawn_and_start_windows():
+    # _progress still holds the previous run until start_training resets it, so these
+    # windows must not report the new run as already finished.
+    b = _running_backend()
+    b._handle_event(_complete_event())
+    b._spawn_in_progress = True
+    assert b.is_run_finished() is False
+    b._spawn_in_progress = False
+    b._start_in_progress = True
+    assert b.is_run_finished() is False
+
+
+def test_is_training_active_still_liveness_only():
+    # Guards for inference/image/video/diffusion/install read this; a lingering worker
+    # still holds its VRAM, so it must keep reporting active.
+    b = _running_backend()
+    b._handle_event(_complete_event())
+    assert b.is_training_active() is True
+    b._proc._alive = False
+    assert b.is_training_active() is False
