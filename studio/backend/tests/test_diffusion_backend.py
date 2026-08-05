@@ -3520,8 +3520,7 @@ def test_the_plan_does_not_force_a_dense_bake_for_disabled_adapters(fake_runtime
     monkeypatch.setattr(
         dmod,
         "resolve_dense_quant_candidate",
-        lambda **kw: forced.append(kw.get("force_dense"))
-        or types.SimpleNamespace(prequant = True),
+        lambda **kw: forced.append(kw.get("force_dense")) or types.SimpleNamespace(prequant = True),
     )
     # Cached, so the decline does not fire and sizing is actually reached.
     _stub_hosted_prequant(monkeypatch, cached = True)
