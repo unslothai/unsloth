@@ -35,6 +35,7 @@ __all__ = [
     "NUM_PROC_ENV_VAR",
     "WORKER_MEMORY_BUDGET_GB",
     "ZOO_MIN_ROWS_FOR_MULTIPROC",
+    "environment_override",
     "get_dataset_num_proc",
     "map_failure_diagnostics",
     "multiprocessing_start_method",
@@ -490,6 +491,19 @@ def _from_environment() -> "tuple[bool, Optional[int]]":
     if value <= 1:
         return True, None
     return True, value
+
+
+def environment_override() -> "tuple[bool, Optional[int]]":
+    """Whether NUM_PROC_ENV_VAR decided the count, and what it asked for.
+
+    ``(was_set_and_valid, value)``, with ``value = None`` meaning "in-process".
+    Public because a caller that layers its own caps on top of this module needs
+    to know whether the hatch chose the answer: the hatch is uncapped by
+    contract, and an unparseable or negative value is *not* the hatch, it is
+    ignored with a warning. Reading the variable directly cannot tell those
+    apart.
+    """
+    return _from_environment()
 
 
 def get_dataset_num_proc(

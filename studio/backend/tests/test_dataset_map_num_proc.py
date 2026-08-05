@@ -528,3 +528,75 @@ def test_no_policy_anywhere_keeps_the_previous_behaviour(monkeypatch):
     monkeypatch.setattr(builtins, "__import__", _no_policy)
     _patch_device(monkeypatch, hw.DeviceType.CPU)
     assert hw.dataset_map_num_proc(4) == 4
+
+
+def test_the_override_is_honoured_after_xpu_init(monkeypatch):
+    """Same contract as the spawn platforms: the hatch is unvetoed.
+
+    The XPU guard exists because fork corrupts the Level-Zero context, but a
+    user who has read the dead-worker message and set this has accepted that.
+    """
+    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy.reset_warning_state()
+    _patch_device(monkeypatch, hw.DeviceType.XPU)
+    _patch_runtime(monkeypatch, "xpu", is_initialized = True)
+
+    monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", "2")
+    assert hw.dataset_map_num_proc(8) == 2
+
+    # Unset, the veto stands at both layers.
+    monkeypatch.delenv("UNSLOTH_DATASET_NUM_PROC")
+    assert hw.dataset_map_num_proc(8) is None
+    assert hw.dataset_map_num_proc(8, serial_as_none = False) == 1
+
+
+@pytest.mark.parametrize("raw", ["-1", "not-a-number"])
+def test_an_ignored_override_does_not_skip_the_studio_caps(monkeypatch, raw):
+    """The policy warns and ignores these, so they are not the hatch.
+
+    Treating any non-empty value as an active override let a typo skip the
+    multi-GPU fork-deadlock cap while contributing nothing in its place.
+    """
+    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy.reset_warning_state()
+    monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
+    monkeypatch.setattr(policy, "_affordable_workers", lambda: 64)
+    _patch_device(monkeypatch, hw.DeviceType.CUDA, visible_gpus = 4)
+
+    monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", raw)
+    assert hw.dataset_map_num_proc(16) == 4
+
+
+def test_the_trainer_leaves_the_ordinary_case_to_the_policy():
+    """The non-audio branch must be None, not a host-derived count.
+
+    ``get_dataset_num_proc`` reads any integer as an explicit request and skips
+    its own auto path, which is the only one that consults this process's CPU
+    affinity and cgroup quota. A count computed from ``os.cpu_count()`` here
+    therefore hides the container from the policy.
+    """
+    import ast
+    from pathlib import Path
+
+    source = (
+        Path(__file__).resolve().parents[1] / "core" / "training" / "trainer.py"
+    ).read_text(encoding = "utf-8")
+
+    calls = [
+        value
+        for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Dict)
+        for key, value in zip(node.keys, node.values)
+        if isinstance(key, ast.Constant)
+        and key.value == "dataset_num_proc"
+        and isinstance(value, ast.Call)
+        and ast.unparse(value.func) == "dataset_map_num_proc"
+    ]
+    assert calls, "the SFTConfig dataset_num_proc entry moved; re-check this guard"
+    for call in calls:
+        requested = ast.unparse(call.args[0])
+        assert "cpu_count" not in requested, (
+            "the ordinary case is being sized from the host CPU count before the "
+            f"policy can see it: {requested}"
+        )
+        assert requested.rstrip().endswith("None"), requested

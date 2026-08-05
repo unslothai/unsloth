@@ -3399,6 +3399,11 @@ def dataset_map_num_proc(
         if callable(is_initialized):
             try:
                 if is_initialized():
+                    # Same reading as the spawn branch above: the hatch is
+                    # unvetoed by contract, so someone who has accepted the
+                    # risk on XPU is not overruled here without a word.
+                    if _num_proc_override_is_set():
+                        return _bounded_by_the_shared_policy(desired, serial_as_none)
                     # Unlike the spawn platforms above, forking is still
                     # available here, so a config ``None`` WOULD be auto-sized
                     # back up and fork the corrupted Level-Zero context this
@@ -3437,10 +3442,26 @@ def _shared_policy():
 
 
 def _num_proc_override_is_set() -> bool:
+    """Whether the escape hatch decided the count, not merely whether it is set.
+
+    The policy ignores an unparseable or negative value with a warning, so
+    reading the variable directly would let ``UNSLOTH_DATASET_NUM_PROC=-1``
+    skip the multi-GPU cap while contributing nothing.
+    """
     policy = _shared_policy()
     if policy is None:
         return False
-    return bool(os.environ.get(policy.NUM_PROC_ENV_VAR, "").strip())
+    parsed = getattr(policy, "environment_override", None)
+    if parsed is None:
+        # A policy that predates the public reader: presence is the best
+        # available answer, and it errs toward honouring the hatch.
+        return bool(os.environ.get(policy.NUM_PROC_ENV_VAR, "").strip())
+    try:
+        was_set, _value = parsed()
+    except Exception as e:
+        logger.debug("dataset_num_proc override unreadable: %s", e)
+        return False
+    return bool(was_set)
 
 
 def _bounded_by_the_shared_policy(
