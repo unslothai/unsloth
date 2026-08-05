@@ -496,7 +496,7 @@ class TestErrorDetailScrubbing:
             raise RuntimeError(
                 "ProxyError('Unable to connect to proxy', NameResolutionError("
                 "\"HTTPSConnection(host='squid.corp.internal', port=3128): "
-                "Failed to resolve\"))"
+                'Failed to resolve"))'
             )
 
         monkeypatch.setattr(discovery, "_fetch_upstream", _boom)
