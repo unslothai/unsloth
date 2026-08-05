@@ -1064,9 +1064,7 @@ def test_the_launched_tail_keeps_its_quoting(windows_terminal):
     # Sliced out of the raw text, not rejoined from tokens: rejoining turns
     # `sed '1e rm -f victim'` into four bare words and the sed scan, which reads
     # that script for an `e`, then finds nothing.
-    assert "rm" in tools._find_blocked_commands(
-        "cmd //c start \"\" sed '1e rm -f victim' input"
-    )
+    assert "rm" in tools._find_blocked_commands("cmd //c start \"\" sed '1e rm -f victim' input")
 
 
 @pytest.mark.parametrize(
