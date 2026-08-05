@@ -380,7 +380,7 @@ _SEPARATOR_CHARS = frozenset("".join(_SHELL_SEPARATORS))
 _QUOTED_SEPARATOR_MARK = "\x00"
 # Characters a newline stand-in may not use: the lexers give these a meaning, so
 # a mark spelled with one would not survive the second lex as a word of its own.
-_NEWLINE_MARK_UNUSABLE = frozenset(' \t\r\n\x0b\x0c"\'\\^;&|()`#')
+_NEWLINE_MARK_UNUSABLE = frozenset(" \t\r\n\x0b\x0c\"'\\^;&|()`#")
 
 
 def _newline_mark(text: str) -> str:
@@ -400,6 +400,8 @@ def _newline_mark(text: str) -> str:
             code += 1
         return chr(code)
     return ""
+
+
 # The characters bash expands a word against the filesystem for, and the
 # placeholder standing in for a QUOTED one during the same second lex.
 _GLOB_CHARS = frozenset("*?[")

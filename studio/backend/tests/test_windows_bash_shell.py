@@ -1442,7 +1442,7 @@ def test_the_newline_marker_cannot_be_exhausted(windows_terminal):
     # that used to disable newline recovery for the whole line. Searched now, so
     # a command holding every previous candidate is still read.
     every_old_marker = "".join(chr(code) for code in (1, 2, 3, 4, 5, 6, 14, 15))
-    command = f"echo {every_old_marker}\nstart \"\" powershell"
+    command = f'echo {every_old_marker}\nstart "" powershell'
     assert "powershell" in tools._find_blocked_commands(command)
 
 
@@ -1463,7 +1463,7 @@ def test_call_is_read_through_glue_and_quoting(windows_cmd_only, command):
 
 @pytest.mark.parametrize(
     "command",
-    ['cmd /c echo "a&call b"', 'cmd /c echo hi^&call powershell', "echo call powershell"],
+    ['cmd /c echo "a&call b"', "cmd /c echo hi^&call powershell", "echo call powershell"],
 )
 def test_call_glue_has_to_be_live(windows_cmd_only, command):
     assert not tools._find_blocked_commands(command)
