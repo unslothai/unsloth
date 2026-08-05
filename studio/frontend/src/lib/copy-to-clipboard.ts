@@ -1,6 +1,21 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { isTauri } from "@/lib/api-base";
+
+// Native IPC, so it works outside a user gesture (e.g. after an await).
+async function copyWithTauriClipboard(text: string): Promise<boolean> {
+  if (!isTauri) return false;
+  try {
+    const { writeText } = await import("@tauri-apps/plugin-clipboard-manager");
+    await writeText(text);
+    return true;
+  } catch (error) {
+    console.warn("Tauri clipboard-manager writeText failed", error);
+    return false;
+  }
+}
+
 /**
  * Synchronous textarea + execCommand copy so it runs in the same user gesture
  * as the click (required by Safari's clipboard security).
@@ -34,6 +49,10 @@ function copyWithExecCommand(text: string): boolean {
 export async function copyToClipboard(text: string): Promise<boolean> {
   if (typeof text !== "string" || text.length === 0) {
     return false;
+  }
+
+  if (await copyWithTauriClipboard(text)) {
+    return true;
   }
 
   // Primary: async Clipboard API
