@@ -1338,6 +1338,22 @@ def _win_switch(token: str) -> str:
     return token[1:] if token.startswith("//") else token
 
 
+def _cmd_unquote(token: str) -> str:
+    """Strip the double quotes the non-posix lexer leaves on a token.
+
+    shlex.split(posix = False) keeps quote marks inside the token, so the
+    `start ""` no-title idiom arrives as the two-character string `""` and a
+    quoted program name never matches a blocked one. cmd.exe itself strips
+    double quotes, so honouring them here is what the shell does; single quotes
+    are left alone because cmd does not treat them as quoting (`'rm'` really is
+    a literal unknown program there, which _token_basename relies on). Identity
+    under posix lexing, where the lexer has already removed them.
+    """
+    while len(token) >= 2 and token.startswith('"') and token.endswith('"'):
+        token = token[1:-1]
+    return token
+
+
 # `start` launches its argument as a program, so that argument is a command
 # position. These switches precede it; the value-taking ones eat a token.
 _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
@@ -1649,20 +1665,20 @@ def _find_blocked_commands(command: str) -> set[str]:
     # `cmd /c start "" prog` puts prog in a command position the scan above
     # sees only as an argument, so screen what start actually launches.
     for i, token in enumerate(tokens):
-        if os.path.basename(token).lower() not in ("start", "start.exe"):
+        if os.path.basename(_cmd_unquote(token)).lower() not in ("start", "start.exe"):
             continue
         j = i + 1
         while j < len(tokens):
-            switch = _win_switch(tokens[j].lower())
+            switch = _win_switch(_cmd_unquote(tokens[j]).lower())
             if not switch.startswith("/"):
                 break
             # /d C:\dir and friends carry their value in the next token.
             j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
         # `start ""` is the idiom for "no title"; anything else is the program.
-        if j < len(tokens) and tokens[j] == "":
+        if j < len(tokens) and _cmd_unquote(tokens[j]) == "":
             j += 1
         if j < len(tokens):
-            blocked |= _find_blocked_commands(tokens[j])
+            blocked |= _find_blocked_commands(_cmd_unquote(tokens[j]))
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The
@@ -6599,6 +6615,10 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         _trusted_git_dir, git_ext = _resolve_trusted_windows_git()
         if _trusted_git_dir:
             path_entries.append(_trusted_git_dir)
+        # The shell's own userland, on the same trust boundary. Appended last so
+        # a Git-shipped python.exe/git.exe cannot shadow the interpreter this
+        # server runs in, which the first PATH entry deliberately pins.
+        path_entries.extend(_windows_bash_userland_dirs())
 
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
@@ -6621,6 +6641,12 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Windows needs SystemRoot for Python/subprocess to work.
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
+        # Windows tempfile / SDKs honour TEMP/TMP, not TMPDIR, so a native
+        # program run from the shell would otherwise fall back to GetTempPath
+        # and write outside the per-session sandbox dir. Matches
+        # _build_bypass_env, which already repoints all three.
+        env["TEMP"] = workdir
+        env["TMP"] = workdir
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
         pathext = ".EXE;.COM"
         if git_ext and git_ext not in (".EXE", ".COM"):
@@ -6977,6 +7003,40 @@ def _windows_bash() -> "str | None":
         if os.path.isfile(candidate) and _is_trusted_windows_bash(candidate):
             return candidate
     return None
+
+
+def _windows_bash_userland_dirs() -> list[str]:
+    """Trusted dirs holding the resolved bash and the POSIX tools beside it.
+
+    `bash -c` is non-login, so it never sources /etc/profile, which is what
+    normally puts Git for Windows' usr\\bin on PATH. _build_safe_env builds PATH
+    from scratch, so without these the terminal description promises bash while
+    ls / cat / grep / sed / head all come back as "command not found" and only
+    builtins work. Both install layouts are covered: bash.exe under Git\\bin and
+    under Git\\usr\\bin put the install root one and two levels up respectively,
+    so both parents are probed and the one that exists wins.
+
+    Every candidate clears _is_trusted_windows_program_dir, the same Program
+    Files boundary as the git entry (#7317), and is canonicalised before use so
+    a junction cannot retarget it after the check. Fails closed: no trusted
+    bash, no entries, and PATH is exactly what it was before.
+    """
+    bash = _windows_bash()
+    if not bash:
+        return []
+    bin_dir = os.path.dirname(bash)
+    candidates = [bin_dir]
+    for root in (os.path.dirname(bin_dir), os.path.dirname(os.path.dirname(bin_dir))):
+        if root:
+            candidates.append(os.path.join(root, "usr", "bin"))
+    dirs: list[str] = []
+    for candidate in candidates:
+        if not os.path.isdir(candidate) or not _is_trusted_windows_program_dir(candidate):
+            continue
+        real = os.path.realpath(candidate)
+        if real not in dirs:
+            dirs.append(real)
+    return dirs
 
 
 def _shell_is_posix() -> bool:

@@ -43,6 +43,27 @@ def _fake_trusted_root(monkeypatch, root):
     monkeypatch.setattr(tools, "_windows_program_roots", lambda: [str(root)])
 
 
+_WIN_BASH = r"C:\Program Files\Git\bin\bash.exe"
+
+
+def _fake_windows_screening(monkeypatch, bash = _WIN_BASH):
+    """Screen a command the way a Windows host would, on any runner.
+
+    Faking sys.platform is not enough for the blocklist: _BLOCKED_COMMANDS is
+    derived from the real platform at import, so powershell/pwsh are absent off
+    Windows and an assertion that a nested shell-out is caught passes on nothing.
+    The win32 union is patched in explicitly, and the resolver with it, since the
+    lexer branch is keyed to the shell that will run the command.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+
+
 def test_posix_shell_is_unchanged(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     assert tools._get_shell_cmd("echo hi") == ["bash", "-c", "echo hi"]
@@ -272,6 +293,18 @@ def test_notes_say_where_commands_run(monkeypatch):
     assert "opens a window on the user's desktop" in tools._build_terminal_shell_note()
 
 
+def test_windows_only_names_are_not_blocked_off_windows():
+    # Why the two tests below have to fake the blocklist as well as the platform:
+    # _BLOCKED_COMMANDS is derived at import, so on the Linux runner powershell
+    # is not a blocked name and `assert _find_blocked_commands(...)` asserts the
+    # empty set. Delete _fake_windows_screening and they go green on nothing.
+    if sys.platform == "win32":
+        pytest.skip("the win32 union is already live on this host")
+    assert "powershell" in tools._BLOCKED_COMMANDS_WIN
+    assert "powershell" not in tools._BLOCKED_COMMANDS
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
 @pytest.mark.parametrize(
     "command",
     [
@@ -284,13 +317,17 @@ def test_notes_say_where_commands_run(monkeypatch):
         r'cmd //c start /d C:/tmp "" powershell -Command ls',
     ],
 )
-def test_cmd_shellout_is_screened_through_mangled_switches(command):
+def test_cmd_shellout_is_screened_through_mangled_switches(monkeypatch, command, bash):
     # Git Bash turns a lone /c into a path, so a model writes //c. That spelling
     # skipped the nested scan, making `cmd //c powershell` reachable where
     # `cmd /c powershell` was blocked, and `start` launches its argument too.
+    # Screened under both shells: the lexer differs between them, the verdict
+    # must not.
+    _fake_windows_screening(monkeypatch, bash = bash)
     assert tools._find_blocked_commands(command)
 
 
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
 @pytest.mark.parametrize(
     "command",
     [
@@ -300,7 +337,94 @@ def test_cmd_shellout_is_screened_through_mangled_switches(command):
         "start notepad",
     ],
 )
-def test_detached_windows_stay_launchable(command):
+def test_detached_windows_stay_launchable(monkeypatch, command, bash):
     # `start` is the only route to a window on the user's desktop, which the
     # terminal description promises, so screening must not blanket-block cmd.
+    # Faked as Windows so this really guards over-blocking: off Windows none of
+    # these names are blocked anyway and the assertion proves nothing.
+    _fake_windows_screening(monkeypatch, bash = bash)
     assert not tools._find_blocked_commands(command)
+
+
+def _fake_git_for_windows(monkeypatch, tmp_path):
+    """A trusted Git for Windows layout under a faked Program Files root."""
+    program_files = tmp_path / "Program Files"
+    bin_dir = program_files / "Git" / "bin"
+    usr_bin = program_files / "Git" / "usr" / "bin"
+    bin_dir.mkdir(parents = True)
+    usr_bin.mkdir(parents = True)
+    (bin_dir / "bash.exe").write_text("")
+    monkeypatch.setattr(sys, "platform", "win32")
+    _fake_trusted_root(monkeypatch, program_files)
+    monkeypatch.setattr(os, "environ", {})
+    monkeypatch.setattr(tools.shutil, "which", lambda _name: None)
+    return bin_dir, usr_bin
+
+
+def test_bash_userland_is_on_the_sandbox_path(monkeypatch, tmp_path):
+    # _build_safe_env builds PATH from scratch and bash -c is non-login, so
+    # nothing sources /etc/profile: without this the description says bash while
+    # ls / cat / grep are all "command not found" and only builtins work.
+    bin_dir, usr_bin = _fake_git_for_windows(monkeypatch, tmp_path)
+    entries = tools._build_safe_env(str(tmp_path / "work"))["PATH"].split(os.pathsep)
+    assert os.path.realpath(bin_dir) in entries
+    assert os.path.realpath(usr_bin) in entries
+    # The interpreter this server runs in stays pinned ahead of a Git-shipped one.
+    assert entries[0] == os.path.dirname(sys.executable)
+
+
+def test_usr_bin_is_found_from_either_install_layout(monkeypatch, tmp_path):
+    # bash.exe ships at Git\bin and at Git\usr\bin, which put the install root
+    # one and two levels up, so both parents have to be probed.
+    _, usr_bin = _fake_git_for_windows(monkeypatch, tmp_path)
+    (usr_bin / "bash.exe").write_text("")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: str(usr_bin / "bash.exe"))
+    assert os.path.realpath(usr_bin) in tools._windows_bash_userland_dirs()
+
+
+def test_untrusted_bash_contributes_no_path_entries(monkeypatch, tmp_path):
+    # Same boundary as the git PATH entry: a user-writable dir would let an
+    # attacker drop ls.exe/grep.exe beside bash and have a bare name run it.
+    shims = tmp_path / "scoop" / "shims"
+    shims.mkdir(parents = True)
+    (shims / "bash.exe").write_text("")
+    monkeypatch.setattr(sys, "platform", "win32")
+    _fake_trusted_root(monkeypatch, tmp_path / "Program Files")
+    monkeypatch.setattr(os, "environ", {"PATH": str(shims)})
+    monkeypatch.setattr(tools.shutil, "which", lambda _name: str(shims / "bash.exe"))
+    assert tools._windows_bash_userland_dirs() == []
+    entries = tools._build_safe_env(str(tmp_path / "work"))["PATH"].split(os.pathsep)
+    assert str(shims) not in entries
+
+
+def test_no_bash_leaves_the_windows_path_exactly_as_it_was(monkeypatch, tmp_path):
+    # The cmd fallback host must see the pre-existing PATH, byte for byte.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    monkeypatch.setattr(os, "environ", {})
+    monkeypatch.setattr(tools.shutil, "which", lambda _name: None)
+    env = tools._build_safe_env(str(tmp_path / "work"))
+    # os.path.join, so the separator is the host's and this reads the same on
+    # the Linux runner as it does on Windows.
+    sysroot = r"C:\Windows"
+    assert env["PATH"] == os.pathsep.join(
+        [os.path.dirname(sys.executable), os.path.join(sysroot, "System32"), sysroot]
+    )
+
+
+def test_windows_repoints_temp_and_tmp_at_the_workdir(monkeypatch, tmp_path):
+    # Windows tempfile / SDKs read TEMP/TMP, not TMPDIR, so a native program run
+    # from the shell fell back to GetTempPath and wrote outside the sandbox.
+    _fake_git_for_windows(monkeypatch, tmp_path)
+    workdir = str(tmp_path / "work")
+    env = tools._build_safe_env(workdir)
+    assert env["TMPDIR"] == env["TEMP"] == env["TMP"] == workdir
+
+
+def test_posix_env_is_unchanged(monkeypatch, tmp_path):
+    # TEMP/TMP are a Windows concern; POSIX keeps exactly the vars it had.
+    monkeypatch.setattr(sys, "platform", "linux")
+    env = tools._build_safe_env(str(tmp_path))
+    assert "TEMP" not in env
+    assert "TMP" not in env
+    assert env["PATH"].split(os.pathsep)[-3:] == ["/usr/local/bin", "/usr/bin", "/bin"]
