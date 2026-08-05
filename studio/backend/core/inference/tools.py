@@ -1061,7 +1061,10 @@ def _path_suffix(path: str) -> str:
     back as `.exe -rf x`. A real suffix carries no whitespace, and calling that
     one a document meant START skipped the line rather than screening it.
     """
-    suffix = os.path.splitext(path)[1].lower()
+    # The basename first, and the separator normalised: os.path.splitext does
+    # not split a backslash off Windows, so a dotted DIRECTORY supplied the
+    # extension and `C:\tools.v2\pwsh` came back with `.v2\pwsh`.
+    suffix = os.path.splitext(os.path.basename(path.replace("\\", "/")))[1].lower()
     return "" if any(char.isspace() for char in suffix) else suffix
 
 
@@ -1526,6 +1529,29 @@ def _is_start_switch(token: str) -> bool:
     return switch.startswith("/") and "/" not in switch[1:]
 
 
+def _quoted_program_word(payload: str) -> str:
+    """The executable ``_blocked_quoted_program`` would read out of ``payload``,
+    or ``""`` when the payload is not that shape.
+
+    Same walk, reported rather than looked up, so a caller can tell "this is a
+    program path with arguments behind it" from "this is a command line" without
+    guessing from the first whitespace-delimited word: a directory name may carry
+    spaces, and `C:\\powershell scripts\\notepad.exe -x` is one program.
+    """
+    words = payload.split()
+    if not words or not _PATH_FRAGMENT_RE.match(words[0].strip('"')):
+        return ""
+    program: "list[str]" = []
+    for word in words:
+        bare = word.strip('"')
+        if bare.startswith("-") or _is_start_switch(bare):
+            break
+        program.append(bare)
+        if os.path.splitext(bare)[1].lower() in _WINDOWS_EXE_SUFFIXES:
+            return " ".join(program)
+    return ""
+
+
 def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "set[str]":
     """Blocked names spelled as an executable PATH that lexing split apart.
 
@@ -1559,12 +1585,17 @@ def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "s
     # launches the same program. Any OTHER suffix names a document opened
     # through its file association, so `My Documents\powershell.docx` is a file
     # that happens to be called powershell, not a shell.
-    stem, ext = os.path.splitext(program[-1])
+    #
+    # The basename comes FIRST. os.path.basename does not split a backslash off
+    # Windows, so splitting the extension off the whole path let a dotted
+    # DIRECTORY supply it: `C:\tools.v2\pwsh` came back with an extension of
+    # `.v2\pwsh`, which is no executable suffix, and the shell went unreported.
+    # %VAR% is expanded before the path is read, so the separator is normalised
+    # rather than assumed.
+    stem, ext = os.path.splitext(os.path.basename(program[-1].replace("\\", "/")))
     if ext and ext.lower() not in _WINDOWS_EXE_SUFFIXES:
         return set()
-    # os.path.basename does not split a backslash off Windows, and %VAR% is
-    # expanded before the path is read.
-    base = os.path.basename(stem.replace("\\", "/")).lower()
+    base = stem.lower()
     return {base} if base in blocked_names else set()
 
 
@@ -1652,12 +1683,14 @@ def _find_blocked_commands(command: str) -> set[str]:
             # notepad.exe` runs notepad and reported the folder it sits in. The
             # recovery below reads the program off the path instead.
             return _blocked_quoted_program(text, _BLOCKED_COMMANDS)
-        words = text.split()
-        if words and _is_program_path(words[0]):
+        if _quoted_program_word(text):
             # A path followed by its own arguments is still a program, not a
             # command line: re-lexing `C:\tools\notepad.exe -x y` matched the
             # POSIX source builtin on the extension dot and refused the launch.
-            return _blocked_quoted_program(words[0], _BLOCKED_COMMANDS)
+            # The recovery reads the whole payload rather than its first word,
+            # because the path may hold spaces of its own and
+            # `C:\powershell scripts\notepad.exe -x` runs notepad.
+            return _blocked_quoted_program(text, _BLOCKED_COMMANDS)
         if any(char.isspace() or char in "\"'" for char in text):
             return _find_blocked_commands(text)
         base = _token_basename(text)
@@ -1727,6 +1760,34 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Built at most once, and only when a quote-only word actually asks: it costs
     # a second lex of every word, and almost no command holds one.
     chunk_cache: "list[list[int] | None]" = []
+
+    def _raw_text_from(index: int) -> str:
+        """The command line from ``tokens[index]`` onward, as the caller wrote it.
+
+        Rejoining the tokens instead would drop the quoting the lexer consumed,
+        turning `sed '1e rm -f victim'` into four bare words, and the sed scan
+        reads that script for an `e`. So the text is sliced, not reconstructed:
+        the word boundary is the shortest prefix that lexes to exactly ``index``
+        tokens. Empty when no prefix does, rather than a wrong guess.
+        """
+        words = command.split()
+        for count in range(len(words) + 1):
+            try:
+                if lex_mode == "posix":
+                    lexer = shlex.shlex(
+                        " ".join(words[:count]), posix = True, punctuation_chars = ";&|()`"
+                    )
+                    lexer.whitespace_split = True
+                    produced = len(list(lexer))
+                elif lex_mode == "cmd":
+                    produced = len(shlex.split(" ".join(words[:count]), posix = False))
+                else:
+                    produced = count
+            except ValueError:
+                continue  # a prefix that cuts a quoted span in half proves nothing
+            if produced == index:
+                return " ".join(words[count:])
+        return ""
 
     def _glued_empty_quotes(index: int) -> bool:
         """Whether ``tokens[index]`` is an empty quoted pair the shell would have
@@ -2121,6 +2182,14 @@ def _find_blocked_commands(command: str) -> set[str]:
             # one, exactly as under `-exec`, so the program it forwards to is
             # published too. Without it `start "" env bash -c "rm -rf x"` named
             # only `env` and the nested-shell lookup declined to read the payload.
+            # What START launches is a command line in its own right, and the
+            # scans keyed to their own token lists -- sed's `e`, find and fd's
+            # -exec -- only ever saw `find` or `sed` in ARGUMENT position here.
+            # Sliced from the raw text through the whitespace map so the quoting
+            # survives: `start "" sed '1e rm -f victim' input` really runs it.
+            tail = _raw_text_from(j)
+            if tail:
+                blocked |= _find_blocked_commands(tail)
             forwarded, _overflowed = _exec_child_index(j)
             if forwarded not in (-1, j):
                 command_indexes.add(forwarded)

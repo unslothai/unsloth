@@ -371,6 +371,9 @@ def test_cmd_shellout_is_screened_through_mangled_switches(windows_terminal, com
 def test_detached_windows_stay_launchable(windows_terminal, command):
     # `start` is the only route to a window on the user's desktop, which the
     # terminal description promises, so screening must not blanket-block cmd.
+    # #7936 added this with its own blocklist fixture; windows_terminal fakes the
+    # same set AND fixes which lexer runs, so the two were folded together rather
+    # than left as one name defined twice, where the second silently won.
     assert not tools._find_blocked_commands(command)
 
 
@@ -967,23 +970,6 @@ def test_a_quoted_command_line_after_start_is_not_a_document(windows_terminal):
 @pytest.mark.parametrize(
     "command",
     [
-        'cmd //c start "" bash -c "bash /c/x.sh"',
-        "cmd //c start wt",
-        "cmd //c dir",
-        "start notepad",
-    ],
-)
-def test_detached_windows_stay_launchable(command, _windows_blocklist):
-    # `start` is the only route to a window on the user's desktop, which the
-    # terminal description promises, so screening must not blanket-block cmd.
-    # The blocklist is faked here too, or the Linux runner asserts this against
-    # a set with no powershell in it and cannot see a blanket block at all.
-    assert not tools._find_blocked_commands(command)
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
         'cmd /c "C:\\powershell scripts\\notepad.exe"',
         'start "" "C:\\powershell scripts\\notepad.exe"',
         'cmd /c "C:\\rm backups\\notepad.exe"',
@@ -1057,3 +1043,56 @@ def test_arguments_after_a_program_path_are_not_a_command(windows_terminal, comm
 def test_an_operator_still_wins_over_the_path_shape(windows_terminal):
     # An operator means a second command follows whatever the first looks like.
     assert "rm" in tools._find_blocked_commands('cmd /c "C:\\tools\\notepad.exe&rm -rf x"')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "start \"\" sed '1e rm -f victim' input",
+        'start "" fd -x rm -rf x',
+        'start "" find . -exec rm -rf x ;',
+    ],
+)
+def test_start_launches_a_command_line_not_just_a_program(windows_terminal, command):
+    # sed's `e` and find/fd's -exec are scanned from their own token lists, and
+    # those only ever saw the tool in ARGUMENT position behind START. What START
+    # launches is a command line in its own right, so it is scanned as one.
+    assert "rm" in tools._find_blocked_commands(command)
+
+
+def test_the_launched_tail_keeps_its_quoting(windows_terminal):
+    # Sliced out of the raw text, not rejoined from tokens: rejoining turns
+    # `sed '1e rm -f victim'` into four bare words and the sed scan, which reads
+    # that script for an `e`, then finds nothing.
+    assert "rm" in tools._find_blocked_commands(
+        "cmd //c start \"\" sed '1e rm -f victim' input"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\tools.v2\\pwsh"',
+        'start "" "C:\\tools.v2\\pwsh"',
+    ],
+)
+def test_a_dotted_directory_does_not_supply_the_extension(windows_terminal, command):
+    # os.path.splitext does not split a backslash off Windows, so splitting the
+    # whole path let the DIRECTORY supply the suffix: `C:\tools.v2\pwsh` came
+    # back with `.v2\pwsh`, no executable suffix, and the shell went unreported.
+    # The basename comes first now, everywhere a suffix is read.
+    assert "pwsh" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\powershell scripts\\notepad.exe -x"',
+        'start "" "C:\\powershell scripts\\notepad.exe -x"',
+    ],
+)
+def test_a_spaced_path_with_arguments_is_recovered_whole(windows_terminal, command):
+    # Reading only the first whitespace-delimited word missed that the directory
+    # itself holds a space, so the payload fell through to a full re-lex and the
+    # folder `powershell scripts` was reported for a line that runs notepad.
+    assert not tools._find_blocked_commands(command)
