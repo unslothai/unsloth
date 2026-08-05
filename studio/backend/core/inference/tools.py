@@ -1341,13 +1341,8 @@ def _win_switch(token: str) -> str:
 def _cmd_unquote(token: str) -> str:
     """Strip the double quotes the non-posix lexer leaves on a token.
 
-    shlex.split(posix = False) keeps quote marks inside the token, so the
-    `start ""` no-title idiom arrives as the two-character string `""` and a
-    quoted program name never matches a blocked one. cmd.exe itself strips
-    double quotes, so honouring them here is what the shell does; single quotes
-    are left alone because cmd does not treat them as quoting (`'rm'` really is
-    a literal unknown program there, which _token_basename relies on). Identity
-    under posix lexing, where the lexer has already removed them.
+    cmd.exe strips them itself, so the `start ""` no-title idiom and quoted
+    program names match. Single quotes stay: cmd does not treat them as quoting.
     """
     while len(token) >= 2 and token.startswith('"') and token.endswith('"'):
         token = token[1:-1]
@@ -1656,9 +1651,8 @@ def _find_blocked_commands(command: str) -> set[str]:
             if is_win_c and prev.startswith("/") and len(prev) <= 3:
                 continue  # skip Windows flags like /s, /q (not /bin/bash)
             prev_base = os.path.basename(prev).lower()
-            # The payload is unquoted for the same reason: under the cmd lexer
-            # `cmd /c "rm -rf x"` arrives as one quoted token, and re-lexing it
-            # with the quotes still attached finds no command at all.
+            # Same for the payload: under the cmd lexer `cmd /c "rm -rf x"` is
+            # one quoted token, and re-lexing it quoted finds no command.
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(_cmd_unquote(tokens[i + 1]))
             elif is_win_c and prev_base in _SHELLS_WIN:
@@ -1680,13 +1674,10 @@ def _find_blocked_commands(command: str) -> set[str]:
         if j >= len(tokens):
             continue
         # `start ["title"] prog`: cmd reads the first argument as a window title
-        # ONLY when it is quoted, so an unquoted token here is the program
-        # itself and the one after it is just an argument. Both `start ""` and
-        # `start "MyWindow"` hide the program one token further on, and only the
-        # empty spelling was screened before. The cmd lexer keeps the quotes on
-        # the token; the posix lexer has already dropped them, so the raw text
-        # is consulted there. Guessing instead (screening both positions
-        # unconditionally) blocks `start explorer .` on the `.` source builtin.
+        # ONLY when quoted, so an unquoted token here is the program and the
+        # next one just its argument. Screening both would block
+        # `start explorer .` on the `.` source builtin. The cmd lexer keeps the
+        # quotes; the posix one drops them, so the raw text is consulted there.
         head = tokens[j]
         if not lexed_posix:
             titled = head.startswith('"')
@@ -6631,9 +6622,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         _trusted_git_dir, git_ext = _resolve_trusted_windows_git()
         if _trusted_git_dir:
             path_entries.append(_trusted_git_dir)
-        # The shell's own userland, on the same trust boundary. Appended last so
-        # a Git-shipped python.exe/git.exe cannot shadow the interpreter this
-        # server runs in, which the first PATH entry deliberately pins.
+        # The shell's own userland, same trust boundary. Last, so a Git-shipped
+        # python.exe/git.exe cannot shadow the interpreter pinned first.
         path_entries.extend(_windows_bash_userland_dirs())
 
     # Deduplicate, preserving order.
@@ -6657,10 +6647,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Windows needs SystemRoot for Python/subprocess to work.
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
-        # Windows tempfile / SDKs honour TEMP/TMP, not TMPDIR, so a native
-        # program run from the shell would otherwise fall back to GetTempPath
-        # and write outside the per-session sandbox dir. Matches
-        # _build_bypass_env, which already repoints all three.
+        # Windows honours TEMP/TMP, not TMPDIR, so a native program would
+        # otherwise fall back to GetTempPath and write outside the sandbox.
         env["TEMP"] = workdir
         env["TMP"] = workdir
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
@@ -7024,18 +7012,13 @@ def _windows_bash() -> "str | None":
 def _windows_bash_userland_dirs() -> list[str]:
     """Trusted dirs holding the resolved bash and the POSIX tools beside it.
 
-    `bash -c` is non-login, so it never sources /etc/profile, which is what
-    normally puts Git for Windows' usr\\bin on PATH. _build_safe_env builds PATH
-    from scratch, so without these the terminal description promises bash while
-    ls / cat / grep / sed / head all come back as "command not found" and only
-    builtins work. Both install layouts are covered: bash.exe under Git\\bin and
-    under Git\\usr\\bin put the install root one and two levels up respectively,
-    so both parents are probed and the one that exists wins.
-
-    Every candidate clears _is_trusted_windows_program_dir, the same Program
-    Files boundary as the git entry (#7317), and is canonicalised before use so
-    a junction cannot retarget it after the check. Fails closed: no trusted
-    bash, no entries, and PATH is exactly what it was before.
+    `bash -c` is non-login, so it never sources /etc/profile, which is what puts
+    Git for Windows' usr\\bin on PATH; without these, ls / cat / grep are all
+    "command not found". bash.exe ships under Git\\bin and Git\\usr\\bin, so the
+    install root is one or two levels up and both parents are probed. Every
+    candidate clears _is_trusted_windows_program_dir, the same Program Files
+    boundary as the git entry (#7317), and is canonicalised so a junction cannot
+    retarget it. Fails closed: no trusted bash, no entries, PATH unchanged.
     """
     bash = _windows_bash()
     if not bash:

@@ -49,11 +49,9 @@ _WIN_BASH = r"C:\Program Files\Git\bin\bash.exe"
 def _fake_windows_screening(monkeypatch, bash = _WIN_BASH):
     """Screen a command the way a Windows host would, on any runner.
 
-    Faking sys.platform is not enough for the blocklist: _BLOCKED_COMMANDS is
-    derived from the real platform at import, so powershell/pwsh are absent off
-    Windows and an assertion that a nested shell-out is caught passes on nothing.
-    The win32 union is patched in explicitly, and the resolver with it, since the
-    lexer branch is keyed to the shell that will run the command.
+    Faking sys.platform is not enough: _BLOCKED_COMMANDS is derived at import,
+    so powershell/pwsh are absent off Windows and the assertions pass on nothing.
+    The bash resolver is patched too, since the lexer branch keys off it.
     """
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
@@ -294,10 +292,9 @@ def test_notes_say_where_commands_run(monkeypatch):
 
 
 def test_windows_only_names_are_not_blocked_off_windows():
-    # Why the two tests below have to fake the blocklist as well as the platform:
-    # _BLOCKED_COMMANDS is derived at import, so on the Linux runner powershell
-    # is not a blocked name and `assert _find_blocked_commands(...)` asserts the
-    # empty set. Delete _fake_windows_screening and they go green on nothing.
+    # Why the tests below fake the blocklist as well as the platform:
+    # _BLOCKED_COMMANDS is derived at import, so off Windows powershell is not
+    # blocked and `assert _find_blocked_commands(...)` asserts the empty set.
     if sys.platform == "win32":
         pytest.skip("the win32 union is already live on this host")
     assert "powershell" in tools._BLOCKED_COMMANDS_WIN
@@ -321,8 +318,7 @@ def test_cmd_shellout_is_screened_through_mangled_switches(monkeypatch, command,
     # Git Bash turns a lone /c into a path, so a model writes //c. That spelling
     # skipped the nested scan, making `cmd //c powershell` reachable where
     # `cmd /c powershell` was blocked, and `start` launches its argument too.
-    # Screened under both shells: the lexer differs between them, the verdict
-    # must not.
+    # Screened under both shells: the lexer differs, the verdict must not.
     _fake_windows_screening(monkeypatch, bash = bash)
     assert tools._find_blocked_commands(command)
 
@@ -340,8 +336,7 @@ def test_cmd_shellout_is_screened_through_mangled_switches(monkeypatch, command,
 def test_detached_windows_stay_launchable(monkeypatch, command, bash):
     # `start` is the only route to a window on the user's desktop, which the
     # terminal description promises, so screening must not blanket-block cmd.
-    # Faked as Windows so this really guards over-blocking: off Windows none of
-    # these names are blocked anyway and the assertion proves nothing.
+    # Faked as Windows; off it none of these names are blocked anyway.
     _fake_windows_screening(monkeypatch, bash = bash)
     assert not tools._find_blocked_commands(command)
 
@@ -350,12 +345,11 @@ def test_detached_windows_stay_launchable(monkeypatch, command, bash):
 @pytest.mark.parametrize(
     "command",
     [
-        # A window title is the other spelling that puts the program one token
-        # further on, and only the empty one used to be screened.
+        # A title is the other spelling that puts the program one token later.
         'cmd //c start "MyWindow" powershell -Command ls',
         'cmd //c start /b "Build" pwsh -Command ls',
-        # The cmd lexer keeps quote marks, so a quoted shell name or payload
-        # never matched the nested-shell scan.
+        # The cmd lexer keeps quote marks, so quoted names and payloads never
+        # matched the nested-shell scan.
         '"cmd" /c powershell -Command ls',
         'cmd /c "powershell -Command ls"',
         'cmd /c "rm -rf x"',
@@ -371,9 +365,8 @@ def test_quoted_shellouts_are_screened(monkeypatch, command, bash):
 @pytest.mark.parametrize(
     "command",
     [
-        # An UNQUOTED first argument is the program, not a title, so the token
-        # after it is an argument. Screening it anyway blocks `.` (the POSIX
-        # source builtin) on a plain "open this folder".
+        # An UNQUOTED first argument is the program, so the token after it is
+        # just an argument; screening it blocks `.` on `start explorer .`.
         "cmd //c start explorer .",
         "cmd //c start code .",
         r"cmd //c start explorer C:\Users\me\project",
@@ -388,8 +381,7 @@ def test_start_arguments_are_not_read_as_commands(monkeypatch, command, bash):
 
 
 def test_posix_start_scan_is_unaffected():
-    # The start scan runs on every platform, so an over-block there would land
-    # on Linux and macOS, where none of this applies.
+    # The start scan runs everywhere, so an over-block lands on Linux and macOS.
     assert not tools._find_blocked_commands("start code .")
     assert not tools._find_blocked_commands("start explorer .")
 
@@ -411,19 +403,17 @@ def _fake_git_for_windows(monkeypatch, tmp_path):
 
 def test_bash_userland_is_on_the_sandbox_path(monkeypatch, tmp_path):
     # _build_safe_env builds PATH from scratch and bash -c is non-login, so
-    # nothing sources /etc/profile: without this the description says bash while
-    # ls / cat / grep are all "command not found" and only builtins work.
+    # nothing sources /etc/profile: without this ls / cat / grep are missing.
     bin_dir, usr_bin = _fake_git_for_windows(monkeypatch, tmp_path)
     entries = tools._build_safe_env(str(tmp_path / "work"))["PATH"].split(os.pathsep)
     assert os.path.realpath(bin_dir) in entries
     assert os.path.realpath(usr_bin) in entries
-    # The interpreter this server runs in stays pinned ahead of a Git-shipped one.
+    # This server's interpreter stays pinned ahead of a Git-shipped one.
     assert entries[0] == os.path.dirname(sys.executable)
 
 
 def test_usr_bin_is_found_from_either_install_layout(monkeypatch, tmp_path):
-    # bash.exe ships at Git\bin and at Git\usr\bin, which put the install root
-    # one and two levels up, so both parents have to be probed.
+    # bash.exe ships at Git\bin and Git\usr\bin, so both parents must be probed.
     _, usr_bin = _fake_git_for_windows(monkeypatch, tmp_path)
     (usr_bin / "bash.exe").write_text("")
     monkeypatch.setattr(tools, "_windows_bash", lambda: str(usr_bin / "bash.exe"))
@@ -432,7 +422,7 @@ def test_usr_bin_is_found_from_either_install_layout(monkeypatch, tmp_path):
 
 def test_untrusted_bash_contributes_no_path_entries(monkeypatch, tmp_path):
     # Same boundary as the git PATH entry: a user-writable dir would let an
-    # attacker drop ls.exe/grep.exe beside bash and have a bare name run it.
+    # attacker drop ls.exe beside bash and have a bare name run it.
     shims = tmp_path / "scoop" / "shims"
     shims.mkdir(parents = True)
     (shims / "bash.exe").write_text("")
@@ -452,8 +442,7 @@ def test_no_bash_leaves_the_windows_path_exactly_as_it_was(monkeypatch, tmp_path
     monkeypatch.setattr(os, "environ", {})
     monkeypatch.setattr(tools.shutil, "which", lambda _name: None)
     env = tools._build_safe_env(str(tmp_path / "work"))
-    # os.path.join, so the separator is the host's and this reads the same on
-    # the Linux runner as it does on Windows.
+    # os.path.join, so this reads the same on a Linux runner as on Windows.
     sysroot = r"C:\Windows"
     assert env["PATH"] == os.pathsep.join(
         [os.path.dirname(sys.executable), os.path.join(sysroot, "System32"), sysroot]
@@ -461,8 +450,8 @@ def test_no_bash_leaves_the_windows_path_exactly_as_it_was(monkeypatch, tmp_path
 
 
 def test_windows_repoints_temp_and_tmp_at_the_workdir(monkeypatch, tmp_path):
-    # Windows tempfile / SDKs read TEMP/TMP, not TMPDIR, so a native program run
-    # from the shell fell back to GetTempPath and wrote outside the sandbox.
+    # Windows reads TEMP/TMP, not TMPDIR, so a native program fell back to
+    # GetTempPath and wrote outside the sandbox.
     _fake_git_for_windows(monkeypatch, tmp_path)
     workdir = str(tmp_path / "work")
     env = tools._build_safe_env(workdir)
