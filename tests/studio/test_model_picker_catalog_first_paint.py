@@ -36,8 +36,7 @@ def test_curated_catalog_becomes_rows_without_a_request():
     # Same format policy as the listing rows, so nothing vanishes when one lands.
     assert "isRecommendableFormat(id, isG, isMac)" in seed
     assert "matchesFormatFilter(id, isG, formatFilter)" in seed
-    # Device fit reads the catalog's own size, not an id "<n>B" guess
-    # (see recommended-catalog-seeds.test.ts).
+    # Device fit reads the catalog size, not an id "<n>B" guess.
     assert "curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined," in seed
 
 
@@ -47,9 +46,8 @@ def test_listing_takes_over_each_id_once_it_reports_it():
     rows_end = source.index("const recommendedMeta = useMemo(", rows_start)
     rows = source[rows_start:rows_end]
 
-    # orderRecommendedRows (see recommended-catalog-seeds.test.ts) hands a seed
-    # over only to a row that survived `keep`: keying on the raw result set
-    # dropped curated rows the filters had rejected, right after they painted.
+    # orderRecommendedRows hands a seed over only to a row that survived `keep`:
+    # keying on the raw result set dropped curated rows the filters rejected.
     assert "return orderRecommendedRows({" in rows
     assert "seeds: catalogSeedRows," in rows
     assert "results: recommendedSearch.results," in rows

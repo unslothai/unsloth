@@ -501,7 +501,8 @@ export function artifactForRepoId(
 
 const BYTES_PER_GB = 1024 ** 3;
 
-/** The curated resident size (bytes) of an exact artifact id, or undefined when the catalog does not size it (every GGUF entry: its quant ladder self-fits). Lets a curated row be judged on catalog data instead of an id "<n>B" guess. */
+/** Curated size (bytes) of an exact artifact id, or undefined when the catalog
+ * does not size it (every GGUF entry: its quant ladder self-fits). */
 export function curatedSizeBytesFor(
   repoId: string,
   catalog: CatalogGroup[],

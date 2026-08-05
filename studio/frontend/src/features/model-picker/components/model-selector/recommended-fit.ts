@@ -127,12 +127,10 @@ export function fitsDevice(opts: {
  * MLX repos: always the params-based smallest-quant estimate, matching the
  * VRAM badge's quantized-load assumption; their estimatedSizeBytes is the
  * full-precision checkpoint and would wrongly hide models the quantized load
- * path can run. A curated row carries `curatedSizeBytes`, the catalog's own
- * measured size for that exact artifact, which outranks both: it is real data,
- * where the others are estimates (and the id guess is absent for 25 of the 26
- * sized catalog artifacts, whose ids carry no "<n>B" token). Anything still
- * unsizable is hidden (requireKnown) so over-budget models with no metadata
- * don't slip through. An unknown device budget keeps everything. */
+ * path can run. `curatedSizeBytes`, the catalog's own size for that exact
+ * artifact, outranks both: real data over estimates. Anything still unsizable
+ * is hidden (requireKnown) so over-budget models with no metadata don't slip
+ * through. An unknown device budget keeps everything. */
 export function hfModelFitsDevice(
   model: {
     id: string;
@@ -170,11 +168,10 @@ export function hfModelFitsDevice(
 }
 
 /** Order Recommended: curated seeds first in catalog order, then the rest of the
- * listing, each id once. `keep` is the listing's metadata filter chain (task,
- * format, hidden ids); a seed hands off only to a row that survived it, so a
- * curated row does not vanish when the response reports its id with metadata the
- * filters reject. Device fit is judged on whichever row renders, so a seed's
- * coarser id-derived size cannot resurrect a model its listing row failed on. */
+ * listing, each id once. A seed hands off only to a row that survived `keep`
+ * (the metadata filters), so a painted curated row does not vanish when the
+ * listing reports its id with metadata those filters reject. Device fit is
+ * judged on whichever row renders. */
 export function orderRecommendedRows<T extends { id: string }>(opts: {
   seeds: readonly T[];
   results: readonly T[];

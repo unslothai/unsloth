@@ -2356,8 +2356,8 @@ export function HubModelPicker({
   const hubRowsShowSize =
     formatFilter === "mlx" || formatFilter === "safetensors";
 
-  // Paint curated rows before any request, so a task-scoped picker does not sit
-  // on a spinner for a round trip; each stands in until the listing reports it.
+  // Paint curated rows before any request, so a task-scoped picker whose models
+  // are already in memory does not sit on a spinner for a round trip.
   const catalogSeedRows = useMemo<HfModelResult[]>(() => {
     if (!task) return [];
     return dedupe(models.map((model) => model.id))
@@ -2375,10 +2375,10 @@ export function HubModelPicker({
         downloads: 0,
         likes: 0,
         isGguf: isKnownGgufRepo(id),
-        // Judge device fit on the catalog's own size. Most curated ids carry no
-        // "<n>B" token, so without it the fit filters read them as unsized and
-        // requireKnown hid them; the ones outside the unsloth listing (SDXL,
-        // FLUX bf16, Wan, ...) never get a row to correct that.
+        // Size from the catalog, not an id "<n>B" guess: the guess is missing
+        // for most curated ids and wrong for others (Wan2.2-TI2V-5B is 30 GB,
+        // not 2), and Recommended lists unsloth repos only, so the 26 outsiders
+        // never get a listing row to correct it.
         curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined,
       }));
   }, [catalog, models, formatFilter, isKnownGgufRepo, isMac, task]);
@@ -2388,27 +2388,25 @@ export function HubModelPicker({
   // downloaded models stay visible (badged), never hidden.
   const recommendedRows = useMemo(() => {
     const keep = (r: HfModelResult) =>
-      // Never list mobile-targeted builds in the Unsloth section.
       !isHiddenModelId(r.id) &&
       !isMobileVariant(r.id) &&
       isChatSupported(r) &&
-      // With no format picked, show the device-recommended ones (GGUF, plus MLX
-      // on Mac); otherwise honor the pick so Safetensors is not dropped.
+      // No pick: device-recommended formats (GGUF, plus MLX on Mac). A pick wins,
+      // so Safetensors is not dropped.
       (formatFilter === "all"
         ? isRecommendableFormat(r.id, r.isGguf, isMac)
         : matchesFormatFilter(r.id, r.isGguf, formatFilter)) &&
-      // Task-scoped pages load single-file GGUF; as with recommendedIds, curated
-      // artifacts load in any format (bf16 / bnb-4bit / fp8), so allow those too.
+      // Task pages load single-file GGUF, plus curated artifacts in any format.
       (!task || r.isGguf || Boolean(catalog && artifactForRepoId(r.id, catalog)));
-    // Members would render under their canonical group row, which does not exist yet (see recommendedIds): filtering here removed curated models from Hub
-    // search too. The "recommended" sort always applies the device-fit filter; the shared "Fits on device" tick extends it to the other sorts.
+    // Members are not filtered here (see recommendedIds): it dropped them from
+    // Hub search too. "recommended" always device-filters; the "Fits on device"
+    // tick extends that to the other sorts.
     const deviceFiltered = recommendedSort === "recommended" || fitOnDeviceOnly;
     const fits = (r: HfModelResult) =>
-      // Downloaded models always show, regardless of device fit.
+      // Downloaded models show regardless of fit.
       downloadedSet.has(r.id.toLowerCase()) ||
       hfModelFitsDevice(r, r.isGguf ? inferenceGpu : gpu);
-    // Curated rows lead, in catalog order, so the list does not reshuffle as
-    // pages land.
+    // Curated rows lead in catalog order, so the list does not reshuffle.
     return orderRecommendedRows({
       seeds: catalogSeedRows,
       results: recommendedSearch.results,

@@ -42,8 +42,8 @@ const keepVideo = (r: Row) =>
 const ids = (rows: Row[]) => rows.map((r) => r.id);
 
 test("a curated row the listing reports but the filters drop keeps its seed", () => {
-  // The response carries LTX-2.3 with no pipeline tag, so the task gate rejects
-  // it; the row that already painted must stay rather than vanish.
+  // The listing reports LTX-2.3 with no pipeline tag, so the task gate rejects
+  // it; the row that already painted must stay.
   const results: Row[] = [
     { id: LTX, isGguf: true, totalParams: LTX_PARAMS },
     { id: OTHER, isGguf: true, pipelineTag: "text-to-video" },
@@ -78,7 +78,7 @@ test("a listing row that passes the filters takes over its seed, in catalog orde
     fits: () => true,
   });
   assert.deepEqual(ids(out), [LTX, KLEIN, OTHER]);
-  // The listing's row (params, size, capability icons), not the bare seed.
+  // The listing's row, not the bare seed.
   assert.equal(out[0], listedLtx);
 });
 
@@ -129,8 +129,8 @@ test("device fit is judged on whichever row renders", () => {
 
 test("an unlisted seed is sized from its id, and hidden when it cannot be", () => {
   const small = { memoryTotalGb: 6, systemRamAvailableGb: 0, budgetKnown: true };
-  // "LTX-2.3" has no "<n>B" token, so requireKnown hides the unsizable seed;
-  // "klein-9B" reads as 9B -> 3.6 GB, inside the 4.2 GB budget.
+  // "LTX-2.3" has no "<n>B" token, so requireKnown hides it; "klein-9B" reads
+  // as 9B -> 3.6 GB, inside the 4.2 GB budget.
   assert.equal(hfModelFitsDevice(SEEDS[0], small), false);
   assert.equal(hfModelFitsDevice(SEEDS[1], small), true);
   assert.deepEqual(
@@ -147,11 +147,11 @@ test("an unlisted seed is sized from its id, and hidden when it cannot be", () =
   );
 });
 
-// Neither of these is unsloth-owned, and Recommended lists `owner: unsloth`
-// only, so their seed is the only row they ever get.
+// Neither is unsloth-owned, and Recommended lists `owner: unsloth` only, so
+// their seed is the only row they ever get.
 const SDXL = "stabilityai/sdxl-turbo";
 const WAN = "Wan-AI/Wan2.2-TI2V-5B-Diffusers";
-// The seed rows the picker builds: catalog size, no listing metadata.
+// A seed row as the picker builds it: catalog size, no listing metadata.
 const seed = (id: string, catalog = IMAGE_CATALOG): Row => ({
   id,
   isGguf: false,
@@ -163,8 +163,8 @@ test("a catalog-sized seed is judged on the catalog size, not on its id", () => 
   const card = { memoryTotalGb: 24, systemRamAvailableGb: 0, budgetKnown: true };
   const sdxl = seed(SDXL);
   const wan = seed(WAN, VIDEO_CATALOG);
-  // SDXL Turbo is 8 GB in the catalog but its id has no "<n>B" token, so the id
-  // guess cannot size it at all; Wan 2.2 TI2V is 30 GB but "5B" reads as 2 GB.
+  // SDXL Turbo is 8 GB but its id has no "<n>B" token to guess from; Wan 2.2
+  // TI2V is 30 GB, and its "5B" reads as 2 GB.
   assert.equal(sdxl.curatedSizeBytes, 8 * 1024 ** 3);
   assert.equal(wan.curatedSizeBytes, 30 * 1024 ** 3);
   assert.equal(hfModelFitsDevice(sdxl, card), true);
@@ -185,12 +185,11 @@ test("a catalog-sized seed is judged on the catalog size, not on its id", () => 
 
 test("a listing row still overrides the catalog size it seeded with", () => {
   const card = { memoryTotalGb: 24, systemRamAvailableGb: 0, budgetKnown: true };
-  // GGUF groups carry no catalog size (the quant ladder self-fits), so an
-  // unsized GGUF seed stays hidden exactly as before this change.
+  // GGUF groups carry no catalog size, so an unsized GGUF seed stays hidden.
   assert.equal(curatedSizeBytesFor(LTX, VIDEO_CATALOG), undefined);
   assert.equal(hfModelFitsDevice({ id: LTX, isGguf: true }, card), false);
-  // And where a row does arrive, it is the row that is measured: klein-9B seeds
-  // as a fit, then its listing row cuts it on real metadata.
+  // Where a row arrives it is the one measured: klein-9B seeds as a fit, then
+  // its listing row cuts it on real metadata.
   const listedKlein: Row = {
     id: KLEIN,
     isGguf: true,
