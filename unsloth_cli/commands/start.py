@@ -1862,6 +1862,12 @@ def _answer_offers_variant(
             return True
         if isinstance(quant, str) and quant.strip().lower() == wanted:
             return True
+        if isinstance(filename, str):
+            # The local resolver also accepts the exact shard-stripped stem as
+            # a label, so strict mode still honors that full-name spelling.
+            stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", filename.rsplit(".", 1)[0]).lower()
+            if wanted in (stem, stem.rsplit("/", 1)[-1]):
+                return True
         if strict:
             if not isinstance(quant, str):
                 return True
@@ -2003,21 +2009,33 @@ def _attach_gguf_check_for_codex(
             # model down (llama.cpp kills the old process, then downloads), so
             # a quant this answer cannot serve is settled here. Local answers
             # are judged strictly: the local resolver takes exact labels only,
-            # so the looser filename-token tier is for hub answers alone.
+            # so the looser filename-token tier is for hub answers alone. The
+            # server says which one answered (resolved_locally); path syntax
+            # and bare names cover servers that predate the field.
             if variant and not _answer_offers_variant(
-                variants, variant, strict = _is_model_path(candidate)
+                variants,
+                variant,
+                strict = bool(info.get("resolved_locally"))
+                or _is_model_path(candidate)
+                or "/" not in candidate,
             ):
                 _fail_codex_variant_missing(candidate, variant, variants)
             return
         if isinstance(variants, list):
-            # Older servers classify marker-less relative paths as hub ids; a
-            # local hit for the raw name means it may be a server-side model
-            # the server would resolve from its own cwd, so defer.
-            try:
-                if Path(os.path.expanduser(repo)).exists():
+            # Explicit local syntax is resolved locally by every server
+            # version, so its live empty answer settles the load: deferring
+            # here would let /api/inference/load take the same GGUF-less
+            # directory down the transformers path and evict the resident
+            # model. Only marker-less names keep the deferral -- older servers
+            # classify those as hub ids, and a local hit for the raw name
+            # means it may be a server-side model resolved from the server's
+            # own cwd.
+            if not _is_model_path(repo):
+                try:
+                    if Path(os.path.expanduser(repo)).exists():
+                        return
+                except OSError:
                     return
-            except OSError:
-                return
             _fail_codex_needs_gguf(candidate)
 
 

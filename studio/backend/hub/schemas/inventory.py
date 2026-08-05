@@ -57,6 +57,10 @@ class GgufVariantsResponse(BaseModel):
     default_variant: Optional[str] = Field(
         None, description = "Recommended default quantization variant"
     )
+    resolved_locally: bool = Field(
+        False,
+        description = "Whether this answer came from resolving repo_id as a local path",
+    )
 
 
 class LocalModelCapabilities(BaseModel):

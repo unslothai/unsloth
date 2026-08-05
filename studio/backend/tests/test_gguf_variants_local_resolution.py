@@ -28,6 +28,9 @@ def test_markerless_relative_dir_resolves_locally(in_tmp_cwd):
 
     response = _variants("models/qwen")
     assert [v.quant for v in response.variants] == ["Q4_K_M"]
+    # The answer says it came from local resolution, so the CLI gate can match
+    # it with the local resolver's exact labels.
+    assert response.resolved_locally is True
 
 
 def test_direct_gguf_file_is_a_loadable_variant(in_tmp_cwd):

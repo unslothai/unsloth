@@ -816,7 +816,12 @@ async def get_gguf_variants_answer(
                 complete = None if size > 0 and _direct_gguf_split_is_whole(local_target) else set()
             answered_from[0] = repo_id
             answered_locally[0] = True
-            return _local_response(repo_id, variants, has_vision, complete)
+            # Surface the resolution so the CLI gate can match a local answer
+            # with the local resolver's exact labels instead of guessing from
+            # the id's shape (a one-slash id can be either).
+            return _local_response(repo_id, variants, has_vision, complete).model_copy(
+                update = {"resolved_locally": True}
+            )
 
         # Reject invalid remote repo_ids up front (like download/delete) so a
         # malformed id returns 400 instead of a 500 from the HF client.

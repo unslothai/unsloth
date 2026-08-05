@@ -6450,6 +6450,50 @@ def test_codex_attach_check_asks_server_for_foreign_direct_variant(monkeypatch, 
         start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q8_0/foo-Q4_K_M.gguf", "Q8_0")
 
 
+def test_codex_attach_check_fails_live_empty_explicit_paths(tmp_path, monkeypatch, capsys):
+    # Every server version resolves explicit local syntax locally, so a live
+    # empty answer settles the load; deferring on CLI-side existence would let
+    # the load take the same GGUF-less directory down the transformers path.
+    _fake_variants(monkeypatch, {"variants": []})
+    target = tmp_path / "hf-dir"
+    target.mkdir()
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(target))
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
+
+
+def test_codex_attach_check_still_defers_existing_raw_names(tmp_path, monkeypatch):
+    # Marker-less names keep the deferral: older servers classify them as hub
+    # ids, so a CLI-side hit may be a server-side model.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "my-model-dir").mkdir()
+    _fake_variants(monkeypatch, {"variants": []})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "my-model-dir")
+
+
+def test_codex_attach_check_strictness_follows_the_server_answer(monkeypatch):
+    # A one-slash id can be a hub repo or a server-cwd directory; the answer
+    # says which, and a local answer takes exact labels only.
+    rows = [{"quant": "Q4_K_M", "filename": "model-Q4_K_M.gguf"}]
+    _fake_variants(monkeypatch, {"variants": rows, "resolved_locally": True})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "models/qwen", "Q4")
+    _fake_variants(monkeypatch, {"variants": rows})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "models/qwen", "Q4")
+
+
+def test_codex_attach_check_strict_accepts_the_full_stem(monkeypatch):
+    # The local resolver accepts the exact shard-stripped stem as a label too.
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [{"quant": "Q4_K_M", "filename": "model-Q4_K_M.gguf"}],
+            "resolved_locally": True,
+        },
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "model-Q4_K_M")
+
+
 def test_codex_attach_check_local_answers_take_exact_labels_only(monkeypatch):
     # The local resolver accepts exact labels only, so a local answer must not
     # let the filename-token tier vouch for a shorter quant; hub answers keep
