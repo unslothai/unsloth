@@ -1159,3 +1159,24 @@ def test_is_training_active_still_liveness_only():
     assert b.is_training_active() is True
     b._proc._alive = False
     assert b.is_training_active() is False
+
+
+def test_is_run_finished_false_across_an_xet_respawn():
+    # A model-load stall terminates the worker and the pump respawns it over HTTP. The
+    # run is still going, so the UI must not flip to a terminal phase in that window.
+    b = _running_backend()
+    b._in_model_load = True
+    b._handle_event({"type": "stall", "message": "no progress"})
+    assert b._needs_xet_respawn is True
+    assert b._progress.error is None
+    assert b.is_run_finished() is False
+
+
+def test_is_run_finished_true_when_a_stall_is_unrecoverable():
+    # Already fell back to HTTP: the stall is terminal, so the UI should say so.
+    b = _running_backend()
+    b._in_model_load = True
+    b._xet_fallback_used = True
+    b._handle_event({"type": "stall", "message": "no progress"})
+    assert b._needs_xet_respawn is False
+    assert b.is_run_finished() is True
