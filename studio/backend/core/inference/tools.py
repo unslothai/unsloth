@@ -1351,9 +1351,13 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # punctuation_chars splits separators into their own tokens, so command
     # position is detected even in `echo done; rm -rf x` (no whitespace).
-    lexed_posix = sys.platform != "win32"
+    # Keyed to the shell that will actually run this, not to the OS: on a
+    # Windows host with bash the non-posix lexer never split on `;`, so the
+    # command after a control-flow keyword stayed unread and
+    # `if true; then rm -rf x; fi` came back with nothing blocked.
+    lexed_posix = _shell_is_posix()
     try:
-        if sys.platform == "win32":
+        if not lexed_posix:
             tokens = shlex.split(command, posix = False)
         else:
             lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
@@ -1363,10 +1367,10 @@ def _find_blocked_commands(command: str) -> set[str]:
         tokens = command.split()
         lexed_posix = False
     # Which separator tokens the shell only produced because the quoting was
-    # stripped. The non-posix (Windows) lexer KEEPS the quote marks, so a quoted
+    # stripped. The non-posix (cmd) lexer KEEPS the quote marks, so a quoted
     # `';'` never looks like a separator there and nothing has to be recovered;
     # the split() fallback has no quoting model at all, so it reports nothing
-    # either and both platforms reach the same verdict.
+    # either and both shells reach the same verdict.
     quoted_separators = (
         _quoted_separator_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
     )
@@ -4433,8 +4437,8 @@ _HIGH_RISK_COMMANDS = frozenset(
         "blkdiscard",
         "chattr",
         "truncate",
-        # Windows cmd.exe built-ins that delete files / trees (the terminal
-        # executor runs `cmd /c` there, and these are not in _BLOCKED_COMMANDS_WIN)
+        # Windows cmd.exe built-ins that delete files / trees (reachable when the
+        # terminal executor falls back to `cmd /c`; not in _BLOCKED_COMMANDS_WIN)
         "del",
         "erase",
         "rd",
@@ -6900,27 +6904,54 @@ def _harden_parent_against_proc_env_leak() -> bool:
 # command inside the WSL filesystem: the sandbox workdir and the blocklist's path
 # checks would both apply to the wrong tree. Only a native Win32 bash is usable.
 _WSL_BASH_MARKERS = ("\\system32\\", "\\windowsapps\\")
-_WIN_BASH_RELATIVE = (r"Git\bin\bash.exe", r"Git\usr\bin\bash.exe")
+# os.path.join, not a literal `Git\bin\...`, so the probe uses the host
+# separator and the resolver stays testable on POSIX.
+_WIN_BASH_RELATIVE = (
+    os.path.join("Git", "bin", "bash.exe"),
+    os.path.join("Git", "usr", "bin", "bash.exe"),
+)
+
+
+def _is_trusted_windows_bash(path: str) -> bool:
+    """True when ``path`` is a native Win32 bash under a system install root.
+
+    The shell runs every sandboxed command, so an untrusted one defeats the
+    PATH / PATHEXT / NoDefaultCurrentDirectoryInExePath hardening in
+    _build_safe_env: a bash.exe in a user-writable dir (Scoop, a per-user Git,
+    a project checkout) would execute attacker-controlled code for a command
+    that already passed the blocklist. Same Program Files trust boundary as
+    the sandbox git PATH entry (#7317), and fails closed.
+    """
+    lowered = path.replace("/", "\\").lower()
+    if any(marker in lowered for marker in _WSL_BASH_MARKERS):
+        return False
+    return _is_trusted_windows_program_dir(os.path.dirname(path))
 
 
 @functools.lru_cache(maxsize = 1)
 def _windows_bash() -> "str | None":
-    """Path to a native Win32 bash, or None when only cmd is available."""
-    for var in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
-        root = os.environ.get(var)
-        if not root:
-            continue
-        for relative in _WIN_BASH_RELATIVE:
-            candidate = os.path.join(root, relative)
-            if os.path.isfile(candidate):
-                return candidate
-    found = shutil.which("bash")
-    if not found:
-        return None
-    lowered = found.replace("/", "\\").lower()
-    if any(marker in lowered for marker in _WSL_BASH_MARKERS):
-        return None
-    return found
+    """Path to a trusted native Win32 bash, or None when only cmd is available."""
+    candidates: list[str] = []
+    for root in _windows_program_roots():
+        candidates.extend(os.path.join(root, relative) for relative in _WIN_BASH_RELATIVE)
+    # shutil.which returns only the FIRST PATH match, which may be an untrusted
+    # shim; scan the rest too so it cannot mask a trusted Git install (#7317).
+    primary = shutil.which("bash")
+    if primary:
+        candidates.append(primary)
+    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if entry and os.path.isabs(entry):
+            candidates.append(os.path.join(entry, "bash.exe"))
+    for candidate in candidates:
+        if os.path.isfile(candidate) and _is_trusted_windows_bash(candidate):
+            return candidate
+    return None
+
+
+def _shell_is_posix() -> bool:
+    """True when the shell that will run a command parses POSIX syntax."""
+    return sys.platform != "win32" or _windows_bash() is not None
 
 
 def _get_shell_cmd(command: str) -> list[str]:
@@ -7041,22 +7072,45 @@ WEB_SEARCH_TOOL = {
 # why: naming only POSIX paths reads as "you are on Linux", and models then refuse
 # to invoke Windows programs that are in fact available. Saying where the command
 # runs matters for the same reason: without it a model assumes the pipe is its only
-# output and declines to open a window it believes nobody can see.
-if sys.platform == "win32":
-    _SANDBOX_PATHS_NOTE = (
-        " You are on Windows. The shell is bash (Git for Windows), and native "
-        "Windows programs such as powershell.exe are available. Commands run on "
-        "the user's own machine, so a program started detached, for example with "
-        "Start-Process, opens a window on their desktop. Read and write files "
-        "using relative paths in the current working directory, which persists "
-        "for this conversation."
+# output and declines to open a window it believes nobody can see. No program is
+# named: powershell/pwsh are on the sandbox blocklist, so recommending one hands
+# back a hard block instead of a command.
+_WIN_CWD_NOTE = (
+    " Read and write files using relative paths in the current working "
+    "directory, which persists for this conversation."
+)
+
+
+def _build_sandbox_paths_note() -> str:
+    """The platform note appended to the python/terminal tool descriptions.
+
+    On Windows the shell depends on whether the host has a trusted bash, so the
+    note is built from the resolver rather than assumed: telling a model it has
+    bash when _get_shell_cmd fell back to cmd reintroduces the multi-line
+    half-execution this note exists to prevent.
+    """
+    if sys.platform != "win32":
+        return (
+            " Read and write files using relative paths in the current working "
+            "directory, which persists for this conversation; absolute paths like "
+            "/mnt/data or /tmp/outputs do not exist."
+        )
+    if _windows_bash():
+        return (
+            " You are on Windows. The shell is bash (Git for Windows), and native "
+            "Windows programs are available. Commands run on the user's own "
+            "machine, so a program you start detached opens a window on their "
+            "desktop." + _WIN_CWD_NOTE
+        )
+    return (
+        " You are on Windows and the shell is cmd, not bash: send one command per "
+        "call, chain with &&, and do not use bash syntax such as multi-line loops "
+        "or single-quoted arguments. Commands run on the user's own machine, so a "
+        "program you start detached opens a window on their desktop." + _WIN_CWD_NOTE
     )
-else:
-    _SANDBOX_PATHS_NOTE = (
-        " Read and write files using relative paths in the current working "
-        "directory, which persists for this conversation; absolute paths like "
-        "/mnt/data or /tmp/outputs do not exist."
-    )
+
+
+_SANDBOX_PATHS_NOTE = _build_sandbox_paths_note()
 
 PYTHON_TOOL = {
     "type": "function",

@@ -33,6 +33,16 @@ def _clear_bash_cache():
     cached.cache_clear()
 
 
+def _fake_trusted_root(monkeypatch, root):
+    """Point the Program Files trust check at ``root``.
+
+    _windows_program_roots goes through SHGetKnownFolderPath, absent off
+    Windows. The roots are faked here rather than %ProgramFiles%, which the
+    resolver deliberately does not read (a caller could relocate the boundary).
+    """
+    monkeypatch.setattr(tools, "_windows_program_roots", lambda: [str(root)])
+
+
 def test_posix_shell_is_unchanged(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
     assert tools._get_shell_cmd("echo hi") == ["bash", "-c", "echo hi"]
@@ -58,9 +68,41 @@ def test_prefers_git_for_windows_over_path(monkeypatch, tmp_path):
     git_bash = tmp_path / "Git" / "bin" / "bash.exe"
     git_bash.parent.mkdir(parents = True)
     git_bash.write_text("")
-    monkeypatch.setattr(os, "environ", {"ProgramW6432": str(tmp_path)})
+    _fake_trusted_root(monkeypatch, tmp_path)
+    monkeypatch.setattr(os, "environ", {})
     monkeypatch.setattr(tools.shutil, "which", lambda _name: r"C:\somewhere\else\bash.exe")
     assert tools._windows_bash() == str(git_bash)
+
+
+def test_untrusted_path_bash_is_rejected(monkeypatch, tmp_path):
+    # A bash in a user-writable dir (Scoop, a per-user Git, a project checkout)
+    # would run every sandboxed command, defeating the PATH/PATHEXT hardening in
+    # _build_safe_env: the command passed the blocklist, then the shell itself is
+    # attacker-controlled. cmd is worse to write for but stays trusted.
+    scoop_bash = tmp_path / "scoop" / "shims" / "bash.exe"
+    scoop_bash.parent.mkdir(parents = True)
+    scoop_bash.write_text("")
+    _fake_trusted_root(monkeypatch, tmp_path / "Program Files")
+    monkeypatch.setattr(os, "environ", {"PATH": str(scoop_bash.parent)})
+    monkeypatch.setattr(tools.shutil, "which", lambda _name: str(scoop_bash))
+    assert tools._windows_bash() is None
+
+
+def test_trusted_path_bash_behind_an_untrusted_shim_is_found(monkeypatch, tmp_path):
+    # shutil.which stops at the first hit, so a user shim early on PATH used to
+    # decide the answer for a host that does have a trusted bash.
+    shim = tmp_path / "shims" / "bash.exe"
+    shim.parent.mkdir(parents = True)
+    shim.write_text("")
+    trusted_dir = tmp_path / "Program Files" / "Git" / "bin"
+    trusted_dir.mkdir(parents = True)
+    (trusted_dir / "bash.exe").write_text("")
+    _fake_trusted_root(monkeypatch, tmp_path / "Program Files")
+    monkeypatch.setattr(
+        os, "environ", {"PATH": os.pathsep.join([str(shim.parent), str(trusted_dir)])}
+    )
+    monkeypatch.setattr(tools.shutil, "which", lambda _name: str(shim))
+    assert tools._windows_bash() == str(trusted_dir / "bash.exe")
 
 
 @pytest.mark.parametrize(
@@ -73,16 +115,45 @@ def test_prefers_git_for_windows_over_path(monkeypatch, tmp_path):
 )
 def test_wsl_launcher_is_rejected(monkeypatch, wsl_path):
     # WSL's bash runs in a different filesystem, so the sandbox workdir would not
-    # apply. Falling back to cmd is worse but stays inside the sandbox.
+    # apply. Falling back to cmd is worse but stays inside the sandbox. The dir
+    # is trusted here so the marker is the only thing that can reject these.
+    monkeypatch.setattr(tools, "_is_trusted_windows_program_dir", lambda _dir: True)
+    assert tools._is_trusted_windows_bash(wsl_path) is False
+
+
+def test_windowsapps_under_program_files_is_still_rejected(monkeypatch, tmp_path):
+    # A store package installs under Program Files, so the trust check alone
+    # would accept the WSL shim there.
+    store_bash = tmp_path / "WindowsApps" / "bash.exe"
+    store_bash.parent.mkdir(parents = True)
+    store_bash.write_text("")
+    _fake_trusted_root(monkeypatch, tmp_path)
     monkeypatch.setattr(os, "environ", {})
-    monkeypatch.setattr(tools.shutil, "which", lambda _name: wsl_path)
+    monkeypatch.setattr(tools.shutil, "which", lambda _name: str(store_bash))
     assert tools._windows_bash() is None
 
 
 def test_no_bash_anywhere_returns_none(monkeypatch):
+    monkeypatch.setattr(tools, "_windows_program_roots", lambda: [])
     monkeypatch.setattr(os, "environ", {})
     monkeypatch.setattr(tools.shutil, "which", lambda _name: None)
     assert tools._windows_bash() is None
+
+
+def test_blocklist_lexes_bash_syntax_when_the_shell_is_bash(monkeypatch):
+    # The scan is keyed to the shell, not the OS: the non-posix lexer never
+    # splits on `;`, so a blocked command after a control-flow keyword stayed in
+    # argument position and `if true; then rm -rf x; fi` really ran under bash.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert "rm" in tools._find_blocked_commands("if true; then rm -rf x; fi")
+    assert "curl" in tools._find_blocked_commands("for i in 1; do curl http://x; done")
+
+
+def test_blocklist_still_catches_the_plain_form_under_cmd(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert "rm" in tools._find_blocked_commands("rm -rf x")
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason = "Windows shell behaviour")
@@ -116,6 +187,30 @@ def test_paths_note_names_the_real_platform():
         assert "/mnt/data" in note
 
 
+def test_paths_note_names_the_shell_that_will_run(monkeypatch):
+    # Telling a model it has bash on a host that fell back to cmd reintroduces
+    # the multi-line half-execution this note exists to prevent.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert "bash" in tools._build_sandbox_paths_note()
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    cmd_note = tools._build_sandbox_paths_note()
+    assert "cmd, not bash" in cmd_note
+    assert "one command per call" in cmd_note
+
+
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+def test_paths_note_never_recommends_a_blocked_program(monkeypatch, bash):
+    # powershell/pwsh are in _BLOCKED_COMMANDS_WIN, so a sandboxed user who
+    # follows the prompt gets a hard block instead of a command.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    note = tools._build_sandbox_paths_note().lower()
+    for program in tools._BLOCKED_COMMANDS_WIN:
+        assert program not in note
+    assert "start-process" not in note
+
+
 def test_terminal_tool_description_carries_the_note():
     description = tools.TERMINAL_TOOL["function"]["description"]
     assert tools._SANDBOX_PATHS_NOTE in description
@@ -127,4 +222,4 @@ def test_paths_note_says_where_commands_run():
     # cannot see, and hand back manual instructions instead.
     note = tools._SANDBOX_PATHS_NOTE
     assert "user's own machine" in note
-    assert "Start-Process" in note
+    assert "opens a window on their desktop" in note
