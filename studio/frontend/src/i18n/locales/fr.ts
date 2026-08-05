@@ -1904,6 +1904,7 @@ export const fr = {
         loadingDataset: "Chargement du jeu de données",
         configuring: "Configuration",
         training: "Entraînement",
+        finalizing: "Enregistrement du modèle",
         completed: "Terminé",
         error: "Erreur",
         stopped: "Arrêté",

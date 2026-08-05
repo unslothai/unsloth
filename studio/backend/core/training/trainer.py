@@ -35,7 +35,6 @@ if sys.platform in ("win32", "darwin"):
 import torch
 from utils.hardware import (
     clear_gpu_cache,
-    safe_num_proc,
     dataset_map_num_proc,
     get_device_map,
     raise_if_offloaded,
@@ -3524,10 +3523,20 @@ class UnslothTrainer:
                 "output_dir": output_dir,
                 "report_to": _build_report_targets(training_args),
                 "include_num_input_tokens_seen": True,  # Enable token counting
+                # serial_as_none = False: this is a config boundary, not a map()
+                # call site. The audio paths ask for 1 to keep dataset workers
+                # off a process holding audio/CUDA state, and a config `None`
+                # reads as "auto-size me" downstream, which turns that request
+                # into a full worker set instead.
+                # None, not a count, for the ordinary case: the shared policy
+                # sizes an auto request from this process's CPU affinity and
+                # cgroup quota, while any integer computed here comes from the
+                # host's os.cpu_count() and reads as an explicit request that
+                # skips that. Studio's own caps still apply to whatever it
+                # chooses.
                 "dataset_num_proc": dataset_map_num_proc(
-                    1
-                    if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used)
-                    else max(1, (os.cpu_count() or 1) // 4)
+                    1 if (self.is_audio or self.is_audio_vlm or self._cuda_audio_used) else None,
+                    serial_as_none = False,
                 ),
                 "max_seq_length": training_args.get("max_seq_length", 2048),
             }

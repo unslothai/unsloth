@@ -184,6 +184,21 @@ def _stop_training_if_active(backend, *, save: bool, expected_job_id: Optional[s
     return is_active, stopped
 
 
+def _is_finalizing(progress, msg_lower: str) -> bool:
+    """Worker alive past the last step, `complete` not yet drained.
+
+    The post-training save emits no step updates, so the bar sat at 100% labelled
+    "training" for its whole duration, indistinguishable from a hang. Non-terminal
+    by design: the last step means the optimizer loop ended, not that the save
+    succeeded, so completion still comes solely from is_completed.
+    """
+    if any(k in msg_lower for k in ("saving", "merging")):
+        return True
+    total = getattr(progress, "total_steps", 0) or 0
+    step = getattr(progress, "step", 0) or 0
+    return total > 0 and step >= total
+
+
 def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
     """Resolve and validate a list of local dataset paths. Returns validated absolute paths."""
     validated = []
@@ -1779,6 +1794,8 @@ def _build_training_status(
             phase = "loading_model"
         elif any(k in msg_lower for k in ["preparing", "initializing", "configuring"]):
             phase = "configuring"
+        elif _is_finalizing(progress, msg_lower):
+            phase = "finalizing"
         else:
             phase = "training"
     elif trainer_stopped:

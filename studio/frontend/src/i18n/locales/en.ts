@@ -1814,6 +1814,7 @@ export const en = {
         loadingDataset: "Loading dataset",
         configuring: "Configuring",
         training: "Training",
+        finalizing: "Saving model",
         completed: "Completed",
         error: "Error",
         stopped: "Stopped",

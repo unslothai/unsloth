@@ -667,6 +667,7 @@ class TrainingStatus(BaseModel):
         "loading_dataset",
         "configuring",
         "training",
+        "finalizing",
         "completed",
         "error",
         "stopped",

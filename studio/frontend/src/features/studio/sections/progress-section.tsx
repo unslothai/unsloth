@@ -69,6 +69,7 @@ const phaseLabelKeys = {
   loading_dataset: "studio.progress.phase.loadingDataset",
   configuring: "studio.progress.phase.configuring",
   training: "studio.progress.phase.training",
+  finalizing: "studio.progress.phase.finalizing",
   completed: "studio.progress.phase.completed",
   error: "studio.progress.phase.error",
   stopped: "studio.progress.phase.stopped",

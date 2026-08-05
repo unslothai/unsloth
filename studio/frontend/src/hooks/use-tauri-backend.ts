@@ -11,6 +11,12 @@ import {
   clearTauriAuthFailure,
   getTauriAuthFailure,
 } from "@/features/auth";
+import {
+  INITIAL_STARTUP_MESSAGE,
+  SERVER_STARTUP_MESSAGE,
+  startupMessageFromLog,
+  type StartupMessage,
+} from "@/components/tauri/startup-messages";
 
 export type BackendStatus =
   | "checking"
@@ -114,6 +120,9 @@ export function useTauriBackend() {
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
   const [elevationPackages, setElevationPackages] = useState<string[]>([]);
   const [progressDetail, setProgressDetail] = useState<string | null>(null);
+  const [startupMessage, setStartupMessage] = useState<StartupMessage>(
+    INITIAL_STARTUP_MESSAGE,
+  );
   // Track seen step names to deduplicate (Strict Mode, event replay, etc.)
   const seenStepsRef = useRef(new Set<string>());
   // True when we attached to a server we didn't spawn (can't stop it)
@@ -215,6 +224,7 @@ export function useTauriBackend() {
           setApiBase(preflight.port);
           portRef.current = preflight.port;
           setIsExternalServer(true);
+          setStartupMessage(SERVER_STARTUP_MESSAGE);
           setRunningStatus();
           startExternalServerPoll(preflight.port);
           return;
@@ -228,6 +238,7 @@ export function useTauriBackend() {
           portRef.current = preflight.port;
           setIsExternalServer(false);
           stopExternalServerPoll();
+          setStartupMessage(SERVER_STARTUP_MESSAGE);
           setRunningStatus();
           return;
         case "managed_ready":
@@ -270,6 +281,7 @@ export function useTauriBackend() {
       return;
     }
     startingRef.current = true;
+    setStartupMessage(INITIAL_STARTUP_MESSAGE);
     portRef.current = null;
     startTimedOutRef.current = false;
 
@@ -581,6 +593,7 @@ export function useTauriBackend() {
 
       register<string>("server-log", (e) => {
         setLogs((prev) => [...prev.slice(-499), e.payload]);
+        setStartupMessage((current) => startupMessageFromLog(current, e.payload));
       });
 
       register<void>("tray-toggle-server", () => {
@@ -628,7 +641,7 @@ export function useTauriBackend() {
 
   return {
     status, logs, error, isExternalServer,
-    currentStepIndex, progressDetail, elevationPackages,
+    currentStepIndex, progressDetail, startupMessage, elevationPackages,
     startServer, stopServer, startInstall,
     retry, retryInstall, approveElevation, copyDiagnostics,
   };
