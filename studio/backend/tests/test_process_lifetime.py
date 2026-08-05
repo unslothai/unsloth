@@ -184,10 +184,26 @@ def test_bind_exits_when_the_creator_is_already_gone(monkeypatch):
     assert exited == [1]
 
 
-def test_bind_falls_back_outside_a_multiprocessing_worker(monkeypatch):
-    # No creator to consult: keep the historical "reparented to init" heuristic.
+def test_bind_only_arms_pdeathsig_outside_a_multiprocessing_worker(monkeypatch):
+    # No creator to consult and nothing orphaned: arm PDEATHSIG, decide nothing.
     seen, exited = _bind_with_parent(monkeypatch, None)
-    assert seen == [None]
+    assert seen == [os.getppid()]
+    assert exited == []
+
+
+def test_bind_keeps_a_non_worker_whose_parent_is_pid_1(monkeypatch):
+    # Runs the REAL hook, not a stub: a non-worker under a container init sees
+    # getppid() == 1, and the bare fallback killed it outright with no output.
+    import ctypes
+    import multiprocessing
+
+    exited = []
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: type("L", (), {"prctl": lambda *_: 0})())
+    monkeypatch.setattr(pl.os, "getppid", lambda: 1)
+    monkeypatch.setattr(pl.os, "_exit", lambda code: exited.append(code))
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+    pl.bind_current_process_to_parent_lifetime()
     assert exited == []
 
 

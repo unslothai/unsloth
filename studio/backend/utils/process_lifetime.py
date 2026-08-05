@@ -189,13 +189,17 @@ def bind_current_process_to_parent_lifetime() -> None:
     except Exception:
         pass
     if parent is None:
-        _pdeathsig_preexec(None)  # not a worker: keep the getppid() == 1 heuristic
+        # No creator to consult and nothing orphaned, so only arm PDEATHSIG. The
+        # bare getppid() == 1 test would kill a process whose parent legitimately
+        # IS pid 1, which is #7886 reached through this entrypoint.
+        _pdeathsig_preexec(os.getppid())
         return
     # PDEATHSIG binds to the kernel parent; "orphaned" comes from the creator's
-    # sentinel, not a pid compare, since getppid() is the creator only under
-    # fork/spawn -- under forkserver it is the fork server, so comparing would kill
-    # every healthy worker. The sentinel is exact for all three and survives pid
-    # reuse. A forkserver creator dying later stays uncovered, as it is on main.
+    # sentinel, not a pid compare, since under forkserver the kernel parent is the
+    # fork server and comparing would kill every healthy worker. The sentinel is
+    # exact under spawn and forkserver; under fork a sibling can inherit the
+    # creator's write end and read stale-alive, but PDEATHSIG already covers fork.
+    # A forkserver creator dying later stays uncovered, as it is on main.
     _pdeathsig_preexec(os.getppid())
     try:
         if not parent.is_alive():
