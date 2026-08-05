@@ -108,7 +108,7 @@ fn set_training_active(state: tauri::State<'_, TrainingActivityState>, active: b
     }
 }
 
-/// Ask before quitting mid-training (true to proceed). Tray Quit only, as below.
+/// Ask before quitting mid-training (true to proceed). request_quit only, as below.
 fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -133,7 +133,7 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
 }
 
 /// Ask before quitting mid-install (true to proceed): `cleanup_child_processes` SIGTERMs the
-/// installer, leaving a venv that looks healthy but cannot start. Tray Quit only, since
+/// installer, leaving a venv that looks healthy but cannot start. request_quit only, since
 /// RunEvent::Exit must never block on a dialog nobody can answer.
 fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
@@ -285,6 +285,26 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// Confirm, reap the backend, then exit. Always off the caller's thread: the
+/// confirmations block, and neither a tray callback nor the window event loop
+/// may. Exiting before the tree is reaped would orphan the backend.
+fn request_quit(app: &tauri::AppHandle) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        if !confirm_quit_during_install(&app) {
+            return;
+        }
+        if !confirm_quit_during_update(&app) {
+            return;
+        }
+        if !confirm_quit_during_training(&app) {
+            return;
+        }
+        cleanup_child_processes(&app);
+        app.exit(0);
+    });
+}
+
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let open = MenuItemBuilder::with_id("open", "Open Unsloth").build(app)?;
     let toggle = MenuItemBuilder::with_id("toggle", "Start/Stop Server").build(app)?;
@@ -302,26 +322,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
             "toggle" => {
                 let _ = app.emit("tray-toggle-server", ());
             }
-            "quit" => {
-                // Run cleanup off the menu callback, but only exit after the
-                // backend tree has been reaped. Exiting first can terminate this
-                // process while a detached cleanup thread is still waiting,
-                // leaving the backend orphaned.
-                let app_handle = app.clone();
-                std::thread::spawn(move || {
-                    if !confirm_quit_during_install(&app_handle) {
-                        return;
-                    }
-                    if !confirm_quit_during_update(&app_handle) {
-                        return;
-                    }
-                    if !confirm_quit_during_training(&app_handle) {
-                        return;
-                    }
-                    cleanup_child_processes(&app_handle);
-                    app_handle.exit(0);
-                });
-            }
+            "quit" => request_quit(app),
             _ => {}
         })
         .on_tray_icon_event(|tray, event| {
@@ -436,14 +437,18 @@ fn main() {
                     .note_dropped_paths(paths);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Hide window instead of closing, because this is a tray app.
-                // Processes keep running so the backend stays available.
-                // Full cleanup happens via:
-                //   - Tray "Quit" menu item (explicit user action)
-                //   - The Unix termination signal listener (logout, kill, Ctrl-C)
-                //   - RunEvent::Exit, for framework-driven exits
-                let _ = window.hide();
+                // Never close directly: both paths below need the window alive,
+                // one to reopen from the tray, the other to parent a dialog.
                 api.prevent_close();
+                if cfg!(target_os = "macos") {
+                    // Closing a window leaves the app in the Dock; Reopen restores it.
+                    let _ = window.hide();
+                } else {
+                    // Elsewhere the close button means quit, so take the same
+                    // guarded path as the tray item rather than hiding a process
+                    // tree the user believes they just closed.
+                    request_quit(window.app_handle());
+                }
             }
         })
         .build(tauri::generate_context!())
