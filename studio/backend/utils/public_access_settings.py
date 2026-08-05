@@ -186,6 +186,7 @@ def public_access_status(app_state) -> dict:
     ready = bool(getattr(app_state, "public_access_ready", False))
     owner = status["managed_by"]
     state = status["state"]
+    stop_pending = bool(status.get("stop_pending"))
     block_reason = None
     if not ready:
         block_reason = "server_starting"
@@ -201,8 +202,8 @@ def public_access_status(app_state) -> dict:
         block_reason = f"{owner}_managed"
 
     controllable = block_reason is None
-    can_start = controllable and not stopping and state in {"off", "error"}
-    can_stop = owner == "settings" and state in {"starting", "online"}
+    can_start = controllable and not stopping and not stop_pending and state in {"off", "error"}
+    can_stop = owner == "settings" and (stop_pending or state in {"starting", "online"})
     error = status["error"]
     if error not in {
         None,
@@ -321,6 +322,8 @@ def stop_public_access(app_state) -> dict:
                     _stop_worker_admission = current
             try:
                 stop_studio_tunnel(admission = current)
+                if get_studio_tunnel_status().get("stop_pending"):
+                    _open_public_access_stop_response_admission()
             except Exception:
                 _open_public_access_stop_response_admission()
                 raise

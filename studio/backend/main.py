@@ -393,9 +393,13 @@ def _load_desktop_owner() -> dict[str, str] | None:
 _DESKTOP_OWNER = _load_desktop_owner()
 
 # The Tauri desktop app runs the backend on the owner's own machine, so local
-# stdio MCP servers are safe there. setdefault lets an explicit "0" opt out.
+# stdio MCP servers are safe there. Track this as an automatic loopback default
+# so publishing a runtime tunnel can suspend it without overriding an explicit
+# operator opt-in or opt-out.
 if _DESKTOP_OWNER:
-    os.environ.setdefault("UNSLOTH_STUDIO_ALLOW_STDIO_MCP", "1")
+    from utils.host_policy import apply_stdio_mcp_loopback_default as _apply_desktop_stdio_default
+    _apply_desktop_stdio_default("127.0.0.1")
+    del _apply_desktop_stdio_default
 
 
 def _desktop_owner() -> dict[str, str] | None:
@@ -1134,13 +1138,28 @@ async def _recipes_redirect(rest: str = ""):
 
 from utils.host_policy import cors_origins_for_mode  # noqa: E402
 
+
+class PublicAccessCORSMiddleware(CORSMiddleware):
+    """Allow remote browser origins only while a Cloudflare URL is published."""
+
+    def __init__(self, cors_app, *, public_access_state, **kwargs):
+        self.public_access_state = public_access_state
+        super().__init__(cors_app, **kwargs)
+
+    def is_allowed_origin(self, origin: str) -> bool:
+        return bool(
+            getattr(self.public_access_state, "cloudflare_url", None)
+        ) or super().is_allowed_origin(origin)
+
+
 _cors_origins = cors_origins_for_mode(
     api_only = os.environ.get("UNSLOTH_API_ONLY") == "1",
     secure = os.environ.get("UNSLOTH_SECURE") == "1",
 )
 
 app.add_middleware(
-    CORSMiddleware,
+    PublicAccessCORSMiddleware,
+    public_access_state = app.state,
     allow_origins = _cors_origins,
     allow_credentials = True,
     allow_methods = ["*"],

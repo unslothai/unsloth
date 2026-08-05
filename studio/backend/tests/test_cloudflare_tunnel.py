@@ -319,6 +319,66 @@ def test_stop_terminates_process():
     t.stop()
 
 
+def test_runtime_callback_covers_process_start_through_stop(monkeypatch):
+    events = []
+    starts_admitted = []
+    ct.set_studio_tunnel_runtime_callback(events.append)
+
+    class _ObservedPopen(_FakePopen):
+        stdout = None
+        block_termination = True
+
+        def terminate(self):
+            assert events[-1] is True
+            if self.block_termination:
+                ct.start_studio_tunnel(8081, managed_by = "settings")
+                raise OSError("termination unavailable")
+            super().terminate()
+
+    fake = _ObservedPopen()
+
+    def fake_popen(*_args, **_kwargs):
+        assert events[-1] is True
+        return fake
+
+    class _NoReaderThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    monkeypatch.setattr(ct.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(ct.threading, "Thread", _NoReaderThread)
+    monkeypatch.setattr(ct, "ensure_cloudflared", lambda: starts_admitted.append(True))
+    try:
+        tunnel = ct.CloudflareTunnel(8080, "/bin/cloudflared")
+        tunnel.start()
+        assert events[-1] is True
+        ct._active_tunnel = tunnel
+        ct._tunnel_state = "online"
+        ct._tunnel_owner = "settings"
+        ct._tunnel_port = 8080
+        ct._tunnel_state = "stopping"
+        ct._active_tunnel_exited(tunnel)
+        assert ct.get_studio_tunnel_status()["state"] == "stopping"
+        ct._tunnel_state = "online"
+        ct._active_tunnel_exited(tunnel)
+        assert events[-1] is True
+        assert starts_admitted == []
+        assert ct._active_tunnel is tunnel
+        assert ct.get_studio_tunnel_status()["state"] == "error"
+        assert ct.get_studio_tunnel_status()["stop_pending"] is True
+        fake.block_termination = False
+        ct.stop_studio_tunnel()
+        assert events[-1] is False
+        assert ct.get_studio_tunnel_status()["state"] == "off"
+        ct._retain_studio_tunnel_for_stop(tunnel)
+        assert ct._tunnels_pending_stop_snapshot() == ()
+    finally:
+        ct.set_studio_tunnel_runtime_callback(None)
+
+
 def test_start_after_stop_does_not_spawn(monkeypatch):
     # If stop() lands before start() (a concurrent shutdown in the caller's
     # register->start window), start() must NOT spawn a cloudflared process --

@@ -80,6 +80,29 @@ def test_enabled_intent_blocks_only_selected_launch_path(
     assert status["can_start"] is can_start
 
 
+def test_failed_stop_remains_retryable(monkeypatch):
+    monkeypatch.setattr(public_access, "_start_worker", None)
+    monkeypatch.setattr(public_access, "_stop_worker", None)
+    monkeypatch.setattr(public_access, "get_public_access_auto_start", lambda: False)
+    monkeypatch.setattr(public_access, "_admin_password_ready", lambda: True)
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "get_studio_tunnel_status",
+        lambda: {
+            "state": "error",
+            "url": None,
+            "error": None,
+            "managed_by": "settings",
+            "stop_pending": True,
+        },
+    )
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
+    status = public_access.public_access_status(_state())
+    assert status["can_start"] is False and status["can_stop"] is True
+    source = Path(public_access.__file__).read_text()
+    assert 'if get_studio_tunnel_status().get("stop_pending"):' in source
+
+
 def test_workers_and_stops_are_scoped_to_backend_lifecycle(monkeypatch):
     public_access._start_worker = public_access._stop_worker = None
     public_access._start_worker_admission = public_access._stop_worker_admission = None

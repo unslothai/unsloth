@@ -261,6 +261,13 @@ def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
         time.sleep(min(_PUBLIC_PROBE_RETRY_DELAY, remaining))
 
 
+def _process_exited(proc: subprocess.Popen) -> bool:
+    try:
+        return proc.poll() is not None
+    except Exception:
+        return False
+
+
 class CloudflareTunnel:
     """A cloudflared quick tunnel to http://localhost:<port>. Best-effort throughout.
 
@@ -289,6 +296,7 @@ class CloudflareTunnel:
         self.error: Optional[str] = None
         self.on_exit: Optional[Callable[["CloudflareTunnel"], None]] = None
         self._reader_exited = False
+        self._runtime_active = False
 
     def start(self) -> None:
         cmd = [
@@ -306,18 +314,23 @@ class CloudflareTunnel:
             # orphan a process nobody owns, so refuse.
             if self._stopped:
                 return
-            proc = subprocess.Popen(
-                cmd,
-                stdout = subprocess.PIPE,
-                stderr = subprocess.STDOUT,
-                stdin = subprocess.DEVNULL,
-                text = True,
-                encoding = "utf-8",
-                errors = "replace",
-                bufsize = 1,
-                **_windows_hidden_kwargs(),
-                **_lifetime_kwargs(),
-            )
+            _set_studio_tunnel_runtime_active(self, True)
+            try:
+                proc = subprocess.Popen(
+                    cmd,
+                    stdout = subprocess.PIPE,
+                    stderr = subprocess.STDOUT,
+                    stdin = subprocess.DEVNULL,
+                    text = True,
+                    encoding = "utf-8",
+                    errors = "replace",
+                    bufsize = 1,
+                    **_windows_hidden_kwargs(),
+                    **_lifetime_kwargs(),
+                )
+            except Exception:
+                _set_studio_tunnel_runtime_active(self, False)
+                raise
             self._proc = proc
         threading.Thread(
             target = self._reader, args = (proc,), name = "cloudflared-reader", daemon = True
@@ -354,6 +367,8 @@ class CloudflareTunnel:
             with self._lock:
                 self._reader_exited = True
                 callback = self.on_exit
+            if _process_exited(proc):
+                _set_studio_tunnel_runtime_active(self, False)
             if callback is not None:
                 callback(self)
 
@@ -366,14 +381,17 @@ class CloudflareTunnel:
         self._ready_event.wait(timeout)
         return self.url if self.ready else None
 
-    def stop(self) -> None:
-        """Terminate the tunnel. Idempotent and safe to call from a signal handler."""
+    def stop(self) -> bool:
+        """Terminate the tunnel and report whether process exit was confirmed."""
         with self._lock:
             # Mark stopped so a start() racing behind us refuses to spawn.
             self._stopped = True
             proc, self._proc = self._proc, None
         if proc is None:
-            return
+            active = _studio_tunnel_runtime_active(self)
+            if active:
+                _retain_studio_tunnel_for_stop(self)
+            return not active
         try:
             if proc.poll() is None:
                 proc.terminate()
@@ -387,6 +405,17 @@ class CloudflareTunnel:
                         pass
         except Exception:
             pass
+        if _process_exited(proc):
+            _set_studio_tunnel_runtime_active(self, False)
+            return True
+        else:
+            # Preserve both the stop handle and the fail-closed trust state when
+            # termination could not be confirmed. A later stop can retry.
+            with self._lock:
+                if self._proc is None:
+                    self._proc = proc
+            _retain_studio_tunnel_for_stop(self)
+            return False
 
     def is_running(self) -> bool:
         with self._lock:
@@ -433,7 +462,54 @@ _tunnel_url: Optional[str] = None
 _tunnel_error: Optional[str] = None
 _tunnel_port: Optional[int] = None
 _tunnel_url_callback: Optional[Callable[[Optional[str]], None]] = None
+_tunnel_runtime_callback: Optional[Callable[[bool], None]] = None
+_tunnel_runtime_lock = threading.Lock()
+_tunnel_runtime_count = 0
+_tunnels_pending_stop = set()
 _TUNNEL_OWNERS = frozenset({"launch", "settings", "colab"})
+
+
+def _set_studio_tunnel_runtime_active(tunnel: CloudflareTunnel, active: bool) -> None:
+    global _tunnel_runtime_count
+    with _tunnel_runtime_lock:
+        if not active:
+            _tunnels_pending_stop.discard(tunnel)
+        if tunnel._runtime_active == active:
+            return
+        tunnel._runtime_active = active
+        _tunnel_runtime_count += 1 if active else -1
+        if _tunnel_runtime_callback is not None:
+            try:
+                _tunnel_runtime_callback(_tunnel_runtime_count > 0)
+            except Exception:
+                pass
+
+
+def _studio_tunnel_runtime_active(tunnel: CloudflareTunnel) -> bool:
+    with _tunnel_runtime_lock:
+        return tunnel._runtime_active
+
+
+def _retain_studio_tunnel_for_stop(tunnel: CloudflareTunnel) -> None:
+    with _tunnel_runtime_lock:
+        if tunnel._runtime_active:
+            _tunnels_pending_stop.add(tunnel)
+
+
+def _tunnels_pending_stop_snapshot() -> tuple:
+    with _tunnel_runtime_lock:
+        return tuple(_tunnels_pending_stop)
+
+
+def set_studio_tunnel_runtime_callback(callback: Optional[Callable[[bool], None]]) -> None:
+    global _tunnel_runtime_callback
+    with _tunnel_runtime_lock:
+        _tunnel_runtime_callback = callback
+        if callback is not None:
+            try:
+                callback(_tunnel_runtime_count > 0)
+            except Exception:
+                pass
 
 
 def open_studio_tunnel_lifecycle() -> None:
@@ -483,6 +559,7 @@ def get_studio_tunnel_status() -> dict:
             "url": _tunnel_url,
             "error": _tunnel_error,
             "port": _tunnel_port,
+            "stop_pending": bool(_tunnels_pending_stop_snapshot()),
         }
 
 
@@ -499,15 +576,38 @@ def _set_failed(generation: int, owner: str, port: int, error: str) -> None:
 
 
 def _active_tunnel_exited(tunnel: CloudflareTunnel) -> None:
-    global _active_tunnel, _tunnel_state, _tunnel_url, _tunnel_error
+    global _active_tunnel, _tunnel_state, _tunnel_owner
+    global _tunnel_url, _tunnel_error, _tunnel_port
     with _active_lock:
         if _active_tunnel is not tunnel:
             return
-        _active_tunnel = None
-        _tunnel_state = "error"
+        if _tunnel_state == "stopping":
+            return
+        generation = _tunnel_generation
+        exit_owner, exit_port = _tunnel_owner, _tunnel_port
+        exit_error = tunnel.error or "cloudflared exited"
+        _tunnel_state = "stopping"
         _set_tunnel_url_locked(None)
-        _tunnel_error = tunnel.error or "cloudflared exited"
-    tunnel.stop()
+        _tunnel_error = None
+    stopped = tunnel.stop() is not False
+    with _active_lock:
+        stopped = stopped or not _studio_tunnel_runtime_active(tunnel)
+        if not stopped and (_active_tunnel is None or _active_tunnel is tunnel):
+            _active_tunnel = tunnel
+            _tunnel_state = "error"
+            _tunnel_owner = exit_owner
+            _tunnel_error = "cloudflared could not be stopped"
+            _tunnel_port = exit_port
+        elif generation == _tunnel_generation:
+            _active_tunnel = None
+            _tunnel_state = "error"
+            _tunnel_error = exit_error
+        elif stopped and _active_tunnel is tunnel:
+            _active_tunnel = None
+            _tunnel_state = "off"
+            _tunnel_owner = None
+            _tunnel_error = None
+            _tunnel_port = None
 
 
 def _set_online_locked(url: str) -> None:
@@ -539,7 +639,7 @@ def start_studio_tunnel(
     if managed_by not in _TUNNEL_OWNERS:
         raise ValueError(f"Unknown Cloudflare tunnel owner: {managed_by}")
     with _active_lock:
-        if not _accepting_starts:
+        if not _accepting_starts or _tunnel_state == "stopping" or _tunnels_pending_stop_snapshot():
             return None
         if admission is not None and admission != (_tunnel_lifecycle, _tunnel_generation):
             return None
@@ -556,6 +656,8 @@ def start_studio_tunnel(
             if (
                 not _accepting_starts
                 or requested_generation != _tunnel_generation
+                or _tunnel_state == "stopping"
+                or _tunnels_pending_stop_snapshot()
                 or (admission is not None and admission != (_tunnel_lifecycle, _tunnel_generation))
             ):
                 return None
@@ -568,8 +670,13 @@ def start_studio_tunnel(
             _set_tunnel_url_locked(None)
             _tunnel_error = None
             _tunnel_port = port
-        if prior_at_start is not None:
-            prior_at_start.stop()
+        if prior_at_start is not None and prior_at_start.stop() is False:
+            with _active_lock:
+                if generation == _tunnel_generation:
+                    _active_tunnel = prior_at_start
+                    _tunnel_state = "error"
+                    _tunnel_error = "cloudflared could not be stopped"
+            return None
 
         binary = ensure_cloudflared()
         if not binary:
@@ -583,8 +690,13 @@ def start_studio_tunnel(
                     return None
                 tunnel = CloudflareTunnel(port, binary, protocol = protocol)
                 prior, _active_tunnel = _active_tunnel, tunnel
-            if prior is not None:
-                prior.stop()
+            if prior is not None and prior.stop() is False:
+                with _active_lock:
+                    if generation == _tunnel_generation and _active_tunnel is tunnel:
+                        _active_tunnel = prior
+                        _tunnel_state = "error"
+                        _tunnel_error = "cloudflared could not be stopped"
+                return None
             registered = False
             try:
                 tunnel.start()
@@ -633,9 +745,30 @@ def start_studio_tunnel(
             with _active_lock:
                 was_active = _active_tunnel is tunnel
                 if was_active:
-                    _active_tunnel = None
-            tunnel.stop()
+                    _tunnel_state = "stopping"
+            stopped = tunnel.stop() is not False
+            with _active_lock:
+                stopped = stopped or not _studio_tunnel_runtime_active(tunnel)
+                if _shutdown_requested and _active_tunnel is tunnel:
+                    if stopped:
+                        _active_tunnel = None
+                        _tunnel_state = "off"
+                        _tunnel_owner = None
+                        _tunnel_error = None
+                        _tunnel_port = None
+                    else:
+                        _tunnel_state = "error"
+                        _tunnel_error = "cloudflared could not be stopped"
+                elif generation == _tunnel_generation and _active_tunnel is tunnel:
+                    if stopped:
+                        _active_tunnel = None
+                    else:
+                        _active_tunnel = tunnel
+                        _tunnel_state = "error"
+                        _tunnel_error = "cloudflared could not be stopped"
             if not was_active:
+                return None
+            if not stopped:
                 return None
             if not saw_url:
                 _set_failed(generation, managed_by, port, "cloudflared did not produce a URL")
@@ -654,22 +787,35 @@ def stop_studio_tunnel(*, admission: Optional[Tuple[int, int]] = None) -> None:
     with _active_lock:
         if admission is not None and admission != (_tunnel_lifecycle, _tunnel_generation):
             return
+        if _tunnel_state == "stopping":
+            _shutdown_requested = True
+            _tunnel_generation += 1
+            return
         # Latch so an in-flight start_studio_tunnel won't start a fresh tunnel
         # (e.g. its http2 retry) after we have already torn down.
         _shutdown_requested = True
         _tunnel_generation += 1
         stop_generation = _tunnel_generation
-        tunnel, _active_tunnel = _active_tunnel, None
-        _tunnel_state = "stopping" if tunnel is not None else "off"
+        tunnel = _active_tunnel
+        pending = _tunnels_pending_stop_snapshot()
+        tunnels = list(dict.fromkeys(((tunnel,) if tunnel is not None else ()) + pending))
+        _tunnel_state = "stopping" if tunnels else "off"
         _set_tunnel_url_locked(None)
         _tunnel_error = None
-    if tunnel is not None:
-        tunnel.stop()
+    for candidate in tunnels:
+        candidate.stop()
     with _active_lock:
-        if stop_generation == _tunnel_generation:
-            _tunnel_state = "off"
-            _tunnel_owner = None
-            _tunnel_port = None
+        if stop_generation == _tunnel_generation or _tunnel_state == "stopping":
+            pending = _tunnels_pending_stop_snapshot()
+            if pending:
+                _active_tunnel = pending[0]
+                _tunnel_state = "error"
+                _tunnel_error = "cloudflared could not be stopped"
+            else:
+                _active_tunnel = None
+                _tunnel_state = "off"
+                _tunnel_owner = None
+                _tunnel_port = None
 
 
 def close_studio_tunnel_lifecycle() -> None:

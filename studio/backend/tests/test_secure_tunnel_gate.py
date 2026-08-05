@@ -246,11 +246,46 @@ def test_cors_origins_for_mode(api_only, secure, expected):
         assert origins == expected
 
 
+def test_api_only_cors_tracks_published_public_url():
+    from types import SimpleNamespace
+
+    from starlette.datastructures import Headers
+
+    from main import PublicAccessCORSMiddleware
+
+    state = SimpleNamespace(cloudflare_url = None)
+    middleware = PublicAccessCORSMiddleware(
+        lambda *_: None,
+        public_access_state = state,
+        allow_origins = ["tauri://localhost"],
+        allow_credentials = True,
+        allow_methods = ["*"],
+        allow_headers = ["*"],
+    )
+    request = Headers(
+        {
+            "origin": "https://browser-client.example",
+            "access-control-request-method": "POST",
+            "access-control-request-headers": "authorization,content-type",
+        }
+    )
+    assert middleware.preflight_response(request).status_code == 400
+    state.cloudflare_url = "https://public.trycloudflare.com"
+    response = middleware.preflight_response(request)
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "https://browser-client.example"
+    state.cloudflare_url = None
+    assert middleware.preflight_response(request).status_code == 400
+
+
 def test_run_server_exports_secure_env_for_cors():
     # run_server must export UNSLOTH_SECURE before importing main so the CORS
     # profile can tell remote secure serving from local Tauri use.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert 'os.environ["UNSLOTH_SECURE"] = "1"' in src
+    assert "set_studio_tunnel_runtime_callback(set_public_connector_active)" in src
+    main_src = (_BACKEND / "main.py").read_text()
+    assert "PublicAccessCORSMiddleware,\n    public_access_state = app.state" in main_src
 
 
 def test_run_server_emit_tauri_port_defaults_on():

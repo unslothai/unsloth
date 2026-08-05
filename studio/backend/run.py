@@ -2127,8 +2127,13 @@ def run_server(
                 parent_pid = int(owner_pid) if owner_pid.isdigit() else None,
             )
 
-    from cloudflare_tunnel import set_studio_tunnel_url_callback
+    from cloudflare_tunnel import (
+        set_studio_tunnel_runtime_callback,
+        set_studio_tunnel_url_callback,
+    )
+    from utils.host_policy import set_public_connector_active
 
+    set_studio_tunnel_runtime_callback(set_public_connector_active)
     set_studio_tunnel_url_callback(lambda url: _publish_cloudflare_url(app.state, url))
     app.state.public_access_ready = True
 
