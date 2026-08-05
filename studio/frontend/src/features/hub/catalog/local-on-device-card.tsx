@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   Popover,
   PopoverContent,
@@ -110,7 +111,10 @@ interface LocalOnDeviceCardProps {
    * it came from this card's selector or was derived from the resident model, which
    * decides whether a fresher status read may override it.
    */
-  onOpenSettings?: (ggufVariant: string | null, quantIsUserPicked: boolean) => void;
+  onOpenSettings?: (
+    ggufVariant: string | null,
+    quantIsUserPicked: boolean,
+  ) => void;
 }
 
 function formatAdapterLabel(
@@ -618,6 +622,17 @@ export function LocalOnDeviceCard({
               <PathInfoButton path={path} />
             </div>
           </div>
+          {/* Split view has the width for the full picture, so the card charts
+              the quant it resolved rather than only naming its size. */}
+          {repoId && selectedQuant ? (
+            <ModelMemoryBarFor
+              repoId={repoId}
+              quant={selectedQuant}
+              sizeBytes={selectedVariant?.size_bytes}
+              gpuGb={gpuGb}
+              className="mt-2"
+            />
+          ) : null}
           {onTrain && HUB_POST_DOWNLOAD_ACTIONS_VISIBLE && (
             <div
               aria-hidden="true"

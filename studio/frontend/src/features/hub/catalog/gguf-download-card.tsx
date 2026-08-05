@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { ModelMemoryBarFor } from "@/components/model-memory-bar";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -24,6 +25,7 @@ import { getCachedModelPath, revealCachedModel } from "@/features/chat";
 import { pinKey, usePinnedModelsStore } from "@/features/model-picker";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
+import { type GgufFitClass, classifyGgufFit } from "@/lib/gguf-fit";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 import {
@@ -56,7 +58,6 @@ import {
 import { useOnlineStatus } from "../hooks/use-online-status";
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
 import { formatBytes } from "../lib/format";
-import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
 import {
   ggufFilenamesMatch,
   ggufSelectionOverrideMatchesIntent,
@@ -1154,6 +1155,18 @@ export function GgufDownloadCard({
           )}
         </button>
       </DownloadCard>
+      {/* Only a quant actually on disk gets charted: an undownloaded one has no
+          weights to measure, and the fit badge already tiers those. */}
+      {selected?.downloaded ? (
+        <ModelMemoryBarFor
+          repoId={repoId}
+          quant={selected.quant}
+          sizeBytes={selected.size_bytes}
+          gpuGb={gpuGb}
+          showReadout={true}
+          className="px-1"
+        />
+      ) : null}
       {refreshError && (
         <button
           type="button"

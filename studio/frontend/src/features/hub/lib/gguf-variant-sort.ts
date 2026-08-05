@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import type { GgufVariantDetail } from "@/features/hub/inventory";
-import { classifyGgufFit } from "@/features/hub/lib/gguf-fit";
+import { classifyGgufFit } from "@/lib/gguf-fit";
 import { ggufVariantsMatch } from "@/features/hub/lib/model-identity";
 
 type GgufVariantResources = {
