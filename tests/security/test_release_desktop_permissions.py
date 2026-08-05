@@ -82,10 +82,14 @@ def test_publishing_draft_advances_updater_without_rebuilding():
     assert any("desktop-latest" in step.get("run", "") for step in job["steps"])
     assert any("gh release delete-asset" in step.get("run", "") for step in job["steps"])
 
-    download = next(step for step in job["steps"] if step.get("name") == "Download updater metadata")
+    download = next(
+        step for step in job["steps"] if step.get("name") == "Download updater metadata"
+    )
     assert "HTTP 404" in download["run"]
     assert "desktop-current" not in download["run"] or "|| true" not in download["run"]
 
-    validate = next(step for step in job["steps"] if step.get("name") == "Validate updater metadata")
+    validate = next(
+        step for step in job["steps"] if step.get("name") == "Validate updater metadata"
+    )
     assert "source-release.json" in validate["run"]
     assert "bundle_name not in release_assets" in validate["run"]
