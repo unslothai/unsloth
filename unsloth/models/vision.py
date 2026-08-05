@@ -311,17 +311,30 @@ def _embeddings_are_tied(input_embeddings, output_embeddings):
     return w_in is w_out or w_in.data_ptr() == w_out.data_ptr()
 
 
+def _offload_embedding_unsupported_platform():
+    # Offloaded embeddings do not work on Windows or WSL.
+    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
+        return "WSL"
+    if os.name == "nt":
+        return "Windows"
+    return None
+
+
 def _resolve_offload_embedding(model, offload_embedding):
-    """Turn `offload_embedding` off where it cannot help instead of failing the
-    load: it is a VRAM optimisation, not a correctness switch. WSL and Windows
-    pass through, since the offload block skips those platforms anyway.
+    """Report `offload_embedding` as True only when the offload will really run.
+
+    It is a VRAM optimisation, not a correctness switch, so turn it off where it
+    cannot help instead of failing the load. The result also gates
+    `_attach_bnb_multidevice_hooks`, which must still run whenever no offload
+    happens, so every "no offload" case has to answer False, including the
+    platforms that skip the offload block outright.
     """
     if not offload_embedding:
         return False
-    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
-        return offload_embedding
-    if os.name == "nt":
-        return offload_embedding
+    platform_name = _offload_embedding_unsupported_platform()
+    if platform_name is not None:
+        print(f"Unsloth: Not offloading embeddings; offloading is unsupported on {platform_name}.")
+        return False
     try:
         in_embed = model.get_input_embeddings()
         out_embed = (
@@ -1370,31 +1383,24 @@ class FastBaseModel:
                     model.fast_generate = make_fast_generate_wrapper(model.generate)
                     model.fast_generate_batches = error_out_no_vllm
                 if offload_embedding:
-                    if bool(os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP")):
-                        # WSL doesn't work with offloaded embeddings
-                        pass
-                    elif os.name == "nt":
-                        # Windows doesn't work with offloaded embeddings
-                        pass
-                    else:
-                        embed_tokens = model.get_input_embeddings()
-                        out_embed = (
-                            model.get_output_embeddings()
-                            if hasattr(model, "get_output_embeddings")
-                            else None
-                        )
-                        # Tied embeddings were screened out above.
-                        nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
-                        ngb = round(nbytes / 1024 / 1024 / 1024, 2)
-                        print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
-                        _embed_device = embed_tokens.weight.device  # decoder device, before offload
-                        embed_tokens.to("cpu")
+                    # Unsupported platforms and tied embeddings were screened out above.
+                    embed_tokens = model.get_input_embeddings()
+                    out_embed = (
+                        model.get_output_embeddings()
+                        if hasattr(model, "get_output_embeddings")
+                        else None
+                    )
+                    nbytes = embed_tokens.weight.numel() * embed_tokens.weight.itemsize
+                    ngb = round(nbytes / 1024 / 1024 / 1024, 2)
+                    print(f"Unsloth: Offloading embeddings to RAM to save {ngb} GB.")
+                    _embed_device = embed_tokens.weight.device  # decoder device, before offload
+                    embed_tokens.to("cpu")
 
-                        # Device-safe embedding offload.
-                        _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
-                        # Must free GPU memory otherwise will not free!
-                        clean_gpu_cache()
-                        gc.collect()
+                    # Device-safe embedding offload.
+                    _install_offload_embedding_hooks(embed_tokens, out_embed, _embed_device)
+                    # Must free GPU memory otherwise will not free!
+                    clean_gpu_cache()
+                    gc.collect()
             else:
                 from unsloth_zoo.vllm_utils import (
                     load_vllm,

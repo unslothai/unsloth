@@ -5,9 +5,15 @@ NotImplementedError and abort the load. It is a VRAM optimisation, not a
 correctness switch, so it should turn itself off instead, as the fast_inference
 case a few lines earlier already does. Two shipped notebooks (NeMo-Gym-Sudoku,
 NeMo-Gym-Multi-Environment) died this way on unsloth/Qwen2.5-1.5B-Instruct.
+
+Every platform-dependent branch is driven explicitly, so the same assertions
+hold on Linux, macOS, Windows and WSL: the host's own os.name never decides the
+expected value.
 """
 
 import ast, os
+from contextlib import contextmanager
+
 import torch
 import torch.nn as nn
 
@@ -30,8 +36,37 @@ def _load(*names):
     return ns
 
 
-_NS = _load("_embeddings_are_tied", "_resolve_offload_embedding")
+_NS = _load(
+    "_embeddings_are_tied",
+    "_offload_embedding_unsupported_platform",
+    "_resolve_offload_embedding",
+)
 resolve = _NS["_resolve_offload_embedding"]
+unsupported_platform = _NS["_offload_embedding_unsupported_platform"]
+
+_WSL_VARS = ("WSL_DISTRO_NAME", "WSL_INTEROP")
+
+
+@contextmanager
+def _as_platform(os_name, wsl = False):
+    """Drive the platform inputs directly instead of trusting the host's."""
+    saved_env = {v: os.environ.get(v) for v in _WSL_VARS}
+    saved_name = os.name
+    for v in _WSL_VARS:
+        os.environ.pop(v, None)
+    if wsl:
+        os.environ["WSL_DISTRO_NAME"] = "Ubuntu"
+    # os.name is read by pathlib, so keep the window as small as possible.
+    os.name = os_name
+    try:
+        yield
+    finally:
+        os.name = saved_name
+        for v, old in saved_env.items():
+            if old is None:
+                os.environ.pop(v, None)
+            else:
+                os.environ[v] = old
 
 
 class _Model:
@@ -67,43 +102,57 @@ def _untied_model():
 
 
 def test_disabled_stays_disabled():
-    assert resolve(_untied_model(), False) is False
-    assert resolve(_tied_model(), False) is False
+    for os_name, wsl in (("posix", False), ("nt", False), ("posix", True)):
+        with _as_platform(os_name, wsl = wsl):
+            assert resolve(_untied_model(), False) is False
+            assert resolve(_tied_model(), False) is False
 
 
 def test_untied_model_keeps_offload():
-    assert resolve(_untied_model(), True) is True
+    with _as_platform("posix"):
+        assert resolve(_untied_model(), True) is True
 
 
 def test_tied_model_disables_offload_instead_of_raising():
-    assert resolve(_tied_model(), True) is False
+    with _as_platform("posix"):
+        assert resolve(_tied_model(), True) is False
 
 
 def test_opaque_model_leaves_request_alone():
     # Cannot inspect it, so do not guess, and do not crash.
-    assert resolve(_Opaque(), True) is True
+    with _as_platform("posix"):
+        assert resolve(_Opaque(), True) is True
 
 
-def test_wsl_and_windows_are_untouched():
-    # These platforms skip the offload block entirely.
-    for var in ("WSL_DISTRO_NAME", "WSL_INTEROP"):
-        old = os.environ.get(var)
-        os.environ[var] = "1"
-        try:
-            assert resolve(_tied_model(), True) is True
-            assert resolve(_Opaque(), True) is True
-        finally:
-            if old is None:
-                os.environ.pop(var, None)
-            else:
-                os.environ[var] = old
+def test_wsl_and_windows_disable_offload():
+    # Neither platform can offload, and the flag also gates the multi-device
+    # hook attach, so it has to read False rather than pass through.
+    for var in _WSL_VARS:
+        with _as_platform("posix"):
+            os.environ[var] = "1"
+            assert unsupported_platform() == "WSL"
+            assert resolve(_tied_model(), True) is False
+            assert resolve(_untied_model(), True) is False
+            assert resolve(_Opaque(), True) is False
 
-    old_name = os.name
-    try:
-        os.name = "nt"
-        assert resolve(_tied_model(), True) is True
-    finally:
-        os.name = old_name
+    with _as_platform("nt"):
+        assert unsupported_platform() == "Windows"
+        assert resolve(_tied_model(), True) is False
+        assert resolve(_untied_model(), True) is False
+        assert resolve(_Opaque(), True) is False
+
+    with _as_platform("posix"):
+        assert unsupported_platform() is None
+
+
+def test_platform_gate_lives_in_one_place():
+    # The offload block used to re-test os.name itself; the two copies drifted
+    # apart and only Windows noticed. _resolve_offload_embedding owns it now.
+    helper = _SRC[_SRC.index("def _offload_embedding_unsupported_platform(") :]
+    helper = helper[: helper.index("\n\n\ndef ")]
+    for probe in ('os.name == "nt"', "WSL_DISTRO_NAME", "WSL_INTEROP"):
+        assert _SRC.count(probe) == 1, f"{probe} must be tested in exactly one place"
+        assert probe in helper, f"{probe} belongs in _offload_embedding_unsupported_platform"
 
 
 def test_resolved_before_multidevice_hooks():
