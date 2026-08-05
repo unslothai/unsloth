@@ -20,6 +20,7 @@ checkpoint region across two compile modes and the backward then dies with
 settle that debt where no region is half-packed, and the top of
 `Trainer.training_step` is that point.
 """
+
 import pytest
 
 pytest.importorskip("transformers")
@@ -41,16 +42,20 @@ def FakeTrainer():
     accumulation source rewrite skips it and the test sees only the settler.
     A fresh class per test keeps the patch's install-once flag honest.
     """
+
     class _FakeTrainer:
         def training_step(self, model, inputs):
             return "stepped"
+
     return _FakeTrainer
 
 
 def test_training_step_settles_pending_eager_fallbacks(FakeTrainer, monkeypatch):
     calls = []
     monkeypatch.setattr(
-        utils, "apply_pending_eager_fallbacks", lambda: calls.append(1),
+        utils,
+        "apply_pending_eager_fallbacks",
+        lambda: calls.append(1),
     )
     patch_gradient_accumulation_fix(FakeTrainer)
 
@@ -62,6 +67,7 @@ def test_training_step_settles_pending_eager_fallbacks(FakeTrainer, monkeypatch)
 def test_a_settler_failure_never_breaks_the_step(FakeTrainer, monkeypatch):
     def _boom():
         raise RuntimeError("no")
+
     monkeypatch.setattr(utils, "apply_pending_eager_fallbacks", _boom)
     patch_gradient_accumulation_fix(FakeTrainer)
     assert FakeTrainer().training_step("model", "inputs") == "stepped"
