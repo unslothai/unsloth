@@ -304,9 +304,7 @@ def test_only_one_place_reads_the_shared_forced_float32_flag():
 
 def test_a_model_without_the_stamp_keeps_the_old_environment_answer():
     env = {"UNSLOTH_FORCE_FLOAT32": "1"}
-    trainer = _build_trainer(
-        env, torch.float32, bf16_supported = False, mark_forced_float32 = False
-    )
+    trainer = _build_trainer(env, torch.float32, bf16_supported = False, mark_forced_float32 = False)
     assert not hasattr(trainer.model, "_unsloth_forced_float32")
     assert _generate(trainer, env, has_bf16 = False) == (True, torch.float16)
 
@@ -349,13 +347,15 @@ def _exit_scopes(fn):
     level of those: the helper is a scope of its own, and it has to answer for
     itself since the code after it never runs.
     """
-    helpers = {
-        n.name: n for n in ast.walk(fn) if isinstance(n, ast.FunctionDef) and n is not fn
-    }
+    helpers = {n.name: n for n in ast.walk(fn) if isinstance(n, ast.FunctionDef) and n is not fn}
     own, scopes = [], []
     for ret in _own_returns(fn):
         call = ret.value
-        if isinstance(call, ast.Call) and isinstance(call.func, ast.Name) and call.func.id in helpers:
+        if (
+            isinstance(call, ast.Call)
+            and isinstance(call.func, ast.Name)
+            and call.func.id in helpers
+        ):
             helper = helpers[call.func.id]
             scopes.append((helper, _own_returns(helper)))
         else:
