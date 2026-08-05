@@ -658,7 +658,7 @@ def test_pruning_messages_preserves_runs_whose_user_message_survives(research_ho
 
 
 @pytest.mark.parametrize("removed_id", ["user-1", "assistant-1"])
-def test_pruning_rejects_deleting_research_turn_messages(research_home, removed_id):
+def test_pruning_skips_research_turn_messages(research_home, removed_id):
     _create()
     plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
     research_db.approve("run-1", 1, plan["planHash"])
@@ -670,18 +670,16 @@ def test_pruning_rejects_deleting_research_turn_messages(research_home, removed_
         if message["id"] != removed_id
     ]
 
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "cannot be deleted"):
-        studio_db.sync_chat_messages("thread-1", survivors, prune_missing = True)
+    studio_db.sync_chat_messages("thread-1", survivors, prune_missing = True)
 
     assert research_db.get_run("run-1") is not None
     assert research_db.has_thread_claim("thread-1") is True
-    assert studio_db.get_chat_message("thread-1", "user-1") is not None
+    assert studio_db.get_chat_message("thread-1", removed_id) is not None
 
 
-def test_sync_rejects_editing_research_message_but_allows_noop(research_home):
+def test_sync_ignores_client_edits_to_research_messages(research_home):
     _create()
     unchanged = studio_db.list_chat_messages("thread-1")
-    # Re-syncing identical content is a no-op and must still be allowed.
     studio_db.sync_chat_messages("thread-1", unchanged)
     edited = [
         {**message, "content": [{"type": "text", "text": "HIJACKED"}]}
@@ -689,11 +687,49 @@ def test_sync_rejects_editing_research_message_but_allows_noop(research_home):
         else message
         for message in unchanged
     ]
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
-        studio_db.sync_chat_messages("thread-1", edited)
+    studio_db.sync_chat_messages("thread-1", edited)
     assert studio_db.get_chat_message("thread-1", "user-1")["content"] == [
         {"type": "text", "text": "What changed?"}
     ]
+
+
+def test_autosave_round_trip_with_client_drift_saves_other_messages(research_home):
+    # The frontend bulk autosave re-serializes loaded messages lossily (drops user
+    # metadata, adds client-only research fields, placeholder empty content). That
+    # drift must not 409 the batch or roll back unrelated messages.
+    _create()
+    replayed = []
+    for message in studio_db.list_chat_messages("thread-1"):
+        replayed.append(
+            {
+                **message,
+                "content": message["content"] or [{"type": "text", "text": ""}],
+                "metadata": {
+                    **(message.get("metadata") or {}),
+                    "researchRun": {"id": "run-1", "status": "planning"},
+                    "serverRevision": 7,
+                }
+                if message["role"] == "assistant"
+                else None,
+            }
+        )
+    replayed.append(
+        {
+            "id": "followup",
+            "threadId": "thread-1",
+            "parentId": "assistant-1",
+            "role": "user",
+            "content": [{"type": "text", "text": "And then?"}],
+            "createdAt": 4,
+        }
+    )
+
+    studio_db.sync_chat_messages("thread-1", replayed)
+
+    assert studio_db.get_chat_message("thread-1", "followup") is not None
+    assistant = studio_db.get_chat_message("thread-1", "assistant-1")
+    assert assistant["content"] == []
+    assert "researchRun" not in (assistant.get("metadata") or {})
 
 
 def test_upsert_rejects_client_edit_but_allows_internal_writer(research_home):
@@ -713,7 +749,7 @@ def test_upsert_rejects_client_edit_but_allows_internal_writer(research_home):
     assert studio_db.get_chat_message("thread-1", "assistant-1") is not None
 
 
-def test_sync_rejects_changing_research_message_attachments(research_home):
+def test_sync_ignores_research_message_attachment_changes(research_home):
     _create()
     messages = studio_db.list_chat_messages("thread-1")
     edited = [
@@ -722,23 +758,21 @@ def test_sync_rejects_changing_research_message_attachments(research_home):
         else message
         for message in messages
     ]
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
-        studio_db.sync_chat_messages("thread-1", edited)
+    studio_db.sync_chat_messages("thread-1", edited)
+    assert studio_db.get_chat_message("thread-1", "user-1").get("attachments") is None
 
 
-def test_sync_rejects_reordering_research_message_via_created_at(research_home):
+def test_sync_ignores_research_message_created_at_changes(research_home):
     _create()
     messages = studio_db.list_chat_messages("thread-1")
-    # Same body, different timestamp: this would silently reorder the server-managed prompt/response
-    # pair (messages are ordered by created_at), so the guard must reject it.
+    # A changed timestamp would silently reorder the server-managed prompt/response
+    # pair (messages are ordered by created_at), so the server's value wins.
     edited = [
         {**message, "createdAt": 999999} if message["id"] == "user-1" else message
         for message in messages
     ]
-    with pytest.raises(studio_db.ChatMessageProtectedError, match = "server-managed"):
-        studio_db.sync_chat_messages("thread-1", edited)
-    # A faithful re-sync (unchanged createdAt) is still a no-op and must be allowed.
-    studio_db.sync_chat_messages("thread-1", messages)
+    studio_db.sync_chat_messages("thread-1", edited)
+    assert studio_db.get_chat_message("thread-1", "user-1")["createdAt"] == 2
 
 
 def test_delete_thread_cancels_active_research_run(research_home):
