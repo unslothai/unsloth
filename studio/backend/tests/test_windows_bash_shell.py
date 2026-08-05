@@ -476,9 +476,7 @@ def test_bash_userland_outranks_the_system32_dos_twins(monkeypatch, tmp_path):
     assert path.index(os.path.realpath(usr_bin)) < path.index(system32)
     # ...and the interpreter still outranks the userland, so a Git-shipped
     # python.exe cannot shadow the environment this server runs in.
-    assert path.index(os.path.dirname(sys.executable)) < path.index(
-        os.path.realpath(usr_bin)
-    )
+    assert path.index(os.path.dirname(sys.executable)) < path.index(os.path.realpath(usr_bin))
 
 
 def test_usr_bin_is_found_from_either_install_layout(monkeypatch, tmp_path):

@@ -1694,9 +1694,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             # `start 'My Window' prog` therefore still reads as a title, and
             # the raw double-quoted spelling is kept as it was.
             titled = (
-                head == ""
-                or any(char in head for char in ' \t\n\r"')
-                or '"%s"' % head in command
+                head == "" or any(char in head for char in ' \t\n\r"') or '"%s"' % head in command
             )
         # The head is screened WHATEVER `titled` says. It is a heuristic under
         # the posix lexer, and a false positive there must cost an over-block,
