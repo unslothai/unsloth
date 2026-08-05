@@ -37,6 +37,23 @@ assert_contains "the ownership guard checks readability before blaming ownership
 assert_contains "an unverifiable tree is never described as not ours" \
     "$SETUP_SH" "Unsloth cannot confirm this folder is its own install while it is unreadable"
 
+# The custom-home ownership guard does not cover the default cache, so verify
+# the prebuilt path rejects an unsearchable default cache before Python runs.
+PREBUILT_BLOCK="$(awk '/substep "installing prebuilt llama.cpp\.\.\."/,/_PREBUILT_CMD=\(/' "$SETUP_SH")"
+if printf '%s' "$PREBUILT_BLOCK" | grep -qF '_studio_dir_unsearchable "$LLAMA_CPP_DIR"' &&
+   printf '%s' "$PREBUILT_BLOCK" | grep -qF '_path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"'; then
+    ok "the default-home prebuilt install stops on an unsearchable tree"
+else
+    bad "the default-home prebuilt install stops on an unsearchable tree"
+fi
+# Run the custom-home ownership guard first to preserve its cautious wording.
+if [ "$(printf '%s' "$PREBUILT_BLOCK" | grep -n '_assert_studio_owned_or_absent' | cut -d: -f1 | head -1)" -lt \
+     "$(printf '%s' "$PREBUILT_BLOCK" | grep -n '_studio_dir_unsearchable' | cut -d: -f1 | head -1)" ]; then
+    ok "the ownership guard still reports a custom home first"
+else
+    bad "the ownership guard still reports a custom home first"
+fi
+
 echo ""
 echo "=== setup.sh: neither destructive replace runs blind ==="
 
