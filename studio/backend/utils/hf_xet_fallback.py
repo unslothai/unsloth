@@ -612,7 +612,6 @@ def hf_hub_download_with_xet_fallback(
     prepare_root = cache_dir
     if prepare_root is None:
         from huggingface_hub import constants as hf_constants
-
         prepare_root = str(hf_constants.HF_HUB_CACHE)
     return _shared_hf_hub_download_with_xet_fallback(
         repo_id,

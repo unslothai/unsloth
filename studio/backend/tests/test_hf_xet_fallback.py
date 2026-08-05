@@ -792,9 +792,11 @@ def test_reused_other_root_is_the_cache_prepared_for_the_http_retry(monkeypatch,
 
     xf.hf_hub_download_with_xet_fallback("org/model", FILE, None, reuse_other_cache_root = True)
 
-    assert not partial.exists(), (
-        "the reused root's Xet partial must be purged before the HTTP resume"
-    )
-    assert not (live_root / "models--org--model").exists(), (
+    assert (
+        not partial.exists()
+    ), "the reused root's Xet partial must be purged before the HTTP resume"
+    assert not (
+        live_root / "models--org--model"
+    ).exists(), (
         "the live root is not being written; it must not be marked/created for this download"
     )
