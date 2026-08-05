@@ -1863,6 +1863,11 @@ def _direct_gguf_file_is_ready(path: str) -> bool:
 
     try:
         p = Path(os.path.expanduser(path))
+        # A broken symlink is fully visible to this process; the extension
+        # alone still classifies it as a GGUF load, which fails after the
+        # teardown.
+        if p.is_symlink() and not p.exists():
+            return False
         if not p.is_file():
             return True
         if p.stat().st_size == 0:
@@ -1903,6 +1908,10 @@ def _answer_offers_variant(
     for row in variants:
         if not isinstance(row, dict):
             return True
+        # A torn local row proves a load llama cannot serve, so its labels do
+        # not vouch in strict mode; hub partials stay resumable and count.
+        if strict and row.get("partial") is True:
+            continue
         quant = row.get("quant")
         filename = row.get("filename")
         if not isinstance(quant, str) and not isinstance(filename, str):

@@ -6530,6 +6530,38 @@ def test_codex_attach_check_strict_rejects_nested_basename_labels(monkeypatch):
         start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "model")
 
 
+def test_codex_attach_check_rejects_a_requested_torn_local_variant(monkeypatch):
+    # A torn local row's labels do not vouch: llama would be handed the
+    # incomplete split after teardown. The complete sibling still answers.
+    rows = {
+        "variants": [
+            {"quant": "Q8_0", "partial": False},
+            {"quant": "Q4_K_M", "partial": True},
+        ],
+        "resolved_locally": True,
+    }
+    _fake_variants(monkeypatch, rows)
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "Q4_K_M")
+    _fake_variants(monkeypatch, rows)
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "Q8_0")
+
+
+def test_codex_attach_check_rejects_broken_direct_symlinks(tmp_path, monkeypatch, capsys):
+    # A broken symlink is visible to this process, and the extension alone
+    # still classifies it as a GGUF load that fails after the teardown.
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: pytest.fail("a direct .gguf file needs no variants probe"),
+    )
+    link = tmp_path / "gone-Q4_K_M.gguf"
+    link.symlink_to(tmp_path / "missing-target.gguf")
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(link))
+    assert "incomplete" in capsys.readouterr().err
+
+
 def test_codex_attach_check_fails_all_partial_local_answers(monkeypatch, capsys):
     # A local answer of only torn rows proves a load llama cannot serve; a hub
     # answer keeps passing because the downloader resumes hub partials.
