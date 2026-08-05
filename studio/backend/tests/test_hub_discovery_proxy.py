@@ -565,6 +565,26 @@ class TestReadmeRoute:
         self._call()
         assert seen["url"].startswith("https://hf-mirror.example/Org/Model/raw/main/")
 
+    def test_a_connection_failure_is_stamped_not_a_500(self, monkeypatch):
+        """The search and info routes map these; without it this one 500s raw."""
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+
+        def _fetch(url, token):
+            raise OSError("HTTPSConnectionPool(host='huggingface.co', port=443)")
+
+        monkeypatch.setattr(discovery, "_fetch_upstream", _fetch)
+        response = self._call()
+        assert response.status_code == 502
+        assert response.headers.get(discovery.HUB_PROXY_MARKER_HEADER) == "1"
+        # And the host is not handed back: on a mirror it is the operator's.
+        assert "huggingface.co" not in json.loads(response.body)["detail"]
+
+    def test_a_rejected_repo_is_stamped_too(self, monkeypatch):
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        response = self._call(repo = "../etc/passwd")
+        assert response.status_code == 400
+        assert response.headers.get(discovery.HUB_PROXY_MARKER_HEADER) == "1"
+
     def test_datasets_take_the_datasets_prefix(self, monkeypatch):
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
         seen = {}

@@ -377,7 +377,9 @@ function takeCspViolation(
     cspViolationsByOrigin.delete(origin);
     return null;
   }
-  cspViolationsByOrigin.delete(origin);
+  // Kept for the rest of its TTL rather than consumed. Concurrent requests to
+  // one origin fail under one policy, so consuming it let the second be
+  // classified network-opaque and overwrite the more actionable diagnosis.
   return { effectiveDirective: hit.effectiveDirective };
 }
 

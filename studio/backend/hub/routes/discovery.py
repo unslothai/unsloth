@@ -322,6 +322,20 @@ def _scrub_detail(message: str, hf_token: Optional[str]) -> str:
     return _HOST_IN_MESSAGE_RE.sub("host='<host>'", cleaned)
 
 
+def _upstream_error(e: Exception, hf_token: Optional[str]) -> HTTPException:
+    """DNS, TLS, proxy and connection failures -> a scrubbed status we can stamp."""
+    scrubbed = _scrub_detail(str(e), hf_token)
+    mapped = hf_error_status(e)
+    if mapped in (401, 403):
+        return HTTPException(status_code = _UPSTREAM_AUTH_STATUS, detail = scrubbed)
+    if mapped is not None:
+        return HTTPException(status_code = mapped, detail = scrubbed)
+    return HTTPException(
+        status_code = 502,
+        detail = "Could not reach Hugging Face: " + scrubbed,
+    )
+
+
 async def _proxy_get(url: str, hf_token: Optional[str]) -> tuple:
     """Fetch upstream and map every failure mode -> (payload, link_header)."""
     try:
@@ -329,16 +343,7 @@ async def _proxy_get(url: str, hf_token: Optional[str]) -> tuple:
     except HTTPException:
         raise
     except Exception as e:
-        scrubbed = _scrub_detail(str(e), hf_token)
-        mapped = hf_error_status(e)
-        if mapped in (401, 403):
-            raise HTTPException(status_code = _UPSTREAM_AUTH_STATUS, detail = scrubbed)
-        if mapped is not None:
-            raise HTTPException(status_code = mapped, detail = scrubbed)
-        raise HTTPException(
-            status_code = 502,
-            detail = "Could not reach Hugging Face: " + scrubbed,
-        )
+        raise _upstream_error(e, hf_token)
 
     if status in (301, 302, 303, 307, 308):
         raise HTTPException(
@@ -456,12 +461,12 @@ async def discovery_readme(
     and only the repo and branch are taken from the caller, both validated.
     """
     if not is_valid_repo_id(repo):
-        raise HTTPException(
+        return _stamped(HTTPException(
             status_code = 400,
             detail = _scrub_detail(f"Invalid repo: {repo!r}", hf_token),
-        )
+        ))
     if not _README_BRANCH_RE.match(branch):
-        raise HTTPException(status_code = 400, detail = "Invalid branch")
+        return _stamped(HTTPException(status_code = 400, detail = "Invalid branch"))
 
     base = hf_endpoint_url().rstrip("/")
     prefix = "datasets/" if resource == "datasets" else ""
@@ -471,6 +476,11 @@ async def discovery_readme(
         status, body, _ = await asyncio.to_thread(_fetch_upstream, url, hf_token)
     except HTTPException as e:
         return _stamped(e)
+    except Exception as e:
+        # The search and info routes get this from _proxy_get. Without it a DNS,
+        # TLS or connection failure here escapes as an unstamped 500 carrying an
+        # unscrubbed message, which reads as a Studio crash.
+        return _stamped(_upstream_error(e, hf_token))
     if status == 404:
         return _stamped(HTTPException(status_code = 404, detail = "No repo card"))
     if status >= 400:

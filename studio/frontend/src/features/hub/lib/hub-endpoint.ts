@@ -21,6 +21,17 @@ export function hubProxyFirst(): boolean {
   }
 }
 
+/** The configured Hub origin, with no trailing slash. Falls back to the Hub's. */
+export function hubEndpointOrigin(): string {
+  try {
+    const endpoint = usePlatformStore.getState().hubEndpoint;
+    if (!endpoint) return DEFAULT_HUB_ENDPOINT;
+    return new URL(endpoint).origin;
+  } catch {
+    return DEFAULT_HUB_ENDPOINT;
+  }
+}
+
 const DEFAULT_PORTS: Record<string, string> = { "http:": "80", "https:": "443" };
 
 function originKey(raw: string): string {

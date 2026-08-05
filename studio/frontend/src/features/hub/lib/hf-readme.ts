@@ -2,8 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { LruMap } from "@/features/hub/lib/lru-map";
-import { fetchWithTimeout } from "@/features/hub/lib/network";
-import { hubProxyFirst } from "@/features/hub/lib/hub-endpoint";
+import {
+  fetchWithTimeout,
+  isHubProxyServing,
+} from "@/features/hub/lib/network";
+import {
+  hubEndpointOrigin,
+  hubProxyFirst,
+} from "@/features/hub/lib/hub-endpoint";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { defaultUrlTransform, type UrlTransform } from "streamdown";
@@ -35,12 +41,25 @@ function readmePrefix(kind: ReadmeKind): string {
   return kind === "dataset" ? "datasets/" : "";
 }
 
+// Relative images and links in the card resolve against this. Hardcoding the
+// public Hub would send a mirror user's private repo path there and 404 every
+// asset, so it follows the configured endpoint.
 export function readmeBaseUrl(
   repoId: string,
   kind: ReadmeKind,
   branch: "main" | "master" = "main",
 ): string {
-  return `https://huggingface.co/${readmePrefix(kind)}${repoId}/resolve/${branch}/`;
+  return `${hubEndpointOrigin()}/${readmePrefix(kind)}${repoId}/resolve/${branch}/`;
+}
+
+/**
+ * Whether the card has to come from the backend: a mirror the browser must not
+ * bypass, or a browser that cannot reach the Hub while the backend demonstrably
+ * can. Exported because the card's load effect is gated on connectivity, and
+ * this route works when the direct one does not.
+ */
+export function readmeViaBackend(): boolean {
+  return hubProxyFirst() || isHubProxyServing();
 }
 
 const README_PROXY_PREFIX = "/api/hub/discovery-readme/";
@@ -82,7 +101,7 @@ async function fetchReadmeOnce(
   // On a mirror the hardcoded public URL would disclose a private repo name and
   // its token to huggingface.co, so the card comes from the backend instead,
   // which resolves the host itself. Coverage ported from #7893.
-  if (hubProxyFirst()) return fetchReadmeViaBackend(repoId, kind, token);
+  if (readmeViaBackend()) return fetchReadmeViaBackend(repoId, kind, token);
   if (token) headers.Authorization = `Bearer ${token}`;
   let transient = false;
   for (const branch of ["main", "master"] as const) {

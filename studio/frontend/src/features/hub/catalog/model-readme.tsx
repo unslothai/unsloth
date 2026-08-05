@@ -26,6 +26,7 @@ import {
   createReadmeUrlTransform,
   fetchReadme,
   readmeBaseUrl,
+  readmeViaBackend,
   stripChromeHeadings,
   stripFrontmatter,
 } from "../lib/hf-readme";
@@ -439,7 +440,10 @@ export function ModelReadme({
 
   useEffect(() => {
     let canceled = false;
-    if (!online) return;
+    // "Offline" here means this browser cannot reach the Hub, which is exactly
+    // when the backend route can: skipping it would leave a mirror or a blocked
+    // browser showing the unavailable card over a card we can fetch.
+    if (!online && !readmeViaBackend()) return;
     void loadReadmeFromCache({
       cacheKey: stateKey,
       repoId,
