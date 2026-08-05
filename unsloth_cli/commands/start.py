@@ -1790,18 +1790,14 @@ def _direct_gguf_file_is_ready(path: str) -> bool:
     it as a readable non-empty file. Anything unknowable reports ready, so a
     path this process cannot judge never blocks the load.
     """
-    try:
-        p = Path(os.path.expanduser(path))
-        if not p.is_file():
-            return True
-        if p.stat().st_size == 0:
-            return False
-        match = _DIRECT_SPLIT_FILE_RE.match(p.name.rsplit(".", 1)[0])
+
+    def _split_set_complete(candidate: Path) -> Optional[bool]:
+        match = _DIRECT_SPLIT_FILE_RE.match(candidate.name.rsplit(".", 1)[0])
         if match is None:
-            return True
+            return None
         total = int(match.group("total"))
         if not 1 < total <= 1000:
-            return True
+            return None
         sibling = re.compile(
             re.escape(match.group("stem"))
             + r"-(\d{"
@@ -1813,15 +1809,35 @@ def _direct_gguf_file_is_ready(path: str) -> bool:
         )
         found = {
             int(m.group(1))
-            for q in p.parent.iterdir()
+            for q in candidate.parent.iterdir()
             if (m := sibling.match(q.name)) and q.is_file() and q.stat().st_size > 0
         }
         return found >= set(range(1, total + 1))
+
+    try:
+        p = Path(os.path.expanduser(path))
+        if not p.is_file():
+            return True
+        if p.stat().st_size == 0:
+            return False
+        whole = _split_set_complete(p)
+        if whole is not False:
+            return True
+        # Mirror _local_gguf_load_path: an incomplete nominal set still loads
+        # when the shard is a symlink whose target sits with the full set.
+        if p.is_symlink():
+            target = p.resolve()
+            return _split_set_complete(target) is not False
+        return False
     except OSError:
         return True
 
 
-def _answer_offers_variant(variants: list, variant: str) -> bool:
+def _answer_offers_variant(
+    variants: list,
+    variant: str,
+    strict: bool = False,
+) -> bool:
     """Whether a live variants answer can resolve *variant* to a file.
 
     Mirrors llama.cpp's own resolution -- the quant label first, then the
@@ -1829,6 +1845,9 @@ def _answer_offers_variant(variants: list, variant: str) -> bool:
     as loose as that resolution gets: a label differing by a separator resolves
     to nothing there either. A row carrying neither field vouches for the
     request, so a sparser answer never blocks a load this gate cannot disprove.
+    ``strict`` drops the filename-token tier: the LOCAL resolver accepts only
+    the exact labels, so a local answer must not vouch for a shorter token
+    (Q4 inside model-Q4_K_M.gguf) that the load would resolve to nothing.
     """
     wanted = str(variant).strip().lower()
     if not wanted:
@@ -1843,6 +1862,10 @@ def _answer_offers_variant(variants: list, variant: str) -> bool:
             return True
         if isinstance(quant, str) and quant.strip().lower() == wanted:
             return True
+        if strict:
+            if not isinstance(quant, str):
+                return True
+            continue
         if isinstance(filename, str) and token.search(filename.lower()):
             return True
     return False
@@ -1945,16 +1968,17 @@ def _attach_gguf_check_for_codex(
                 f"{repo} is incomplete (zero bytes or a split missing shards); "
                 "re-download or re-copy it before pointing Codex at it."
             )
-        # The file names the one quant it is. A contradictory explicit variant
-        # makes _find_local_gguf_by_variant resolve nothing server-side, and
-        # the load then evicts on the transformers path before failing. Accept
-        # exactly the labels the server's direct-file resolver accepts.
-        if variant:
-            wanted = str(variant).strip().lower()
-            labels = _direct_gguf_variant_labels(repo)
-            if wanted and all(wanted != label.lower() for label in labels):
-                _fail_codex_variant_missing(repo, variant, [])
-        return
+        # The file names the one quant it is, so its own labels settle a
+        # matching explicit variant without a probe. A different quant is not
+        # necessarily wrong: a marked parent serves sibling quants through
+        # _find_local_gguf_by_variant, and the server's listing is that
+        # parent's answer on old and new servers alike -- so fall through to
+        # the probe instead of failing on the file's name alone.
+        wanted = str(variant).strip().lower() if variant else ""
+        if not wanted or any(
+            wanted == label.lower() for label in _direct_gguf_variant_labels(repo)
+        ):
+            return
     # Mirror the load path's shorthand precedence: the raw name first (it may
     # be a directory relative to the server's cwd), then the unsloth/<name>
     # canonical form the load falls back to only when the raw name resolves to
@@ -1977,8 +2001,12 @@ def _attach_gguf_check_for_codex(
         if isinstance(variants, list) and variants:
             # The load resolves the quant only after it has torn the resident
             # model down (llama.cpp kills the old process, then downloads), so
-            # a quant this answer cannot serve is settled here.
-            if variant and not _answer_offers_variant(variants, variant):
+            # a quant this answer cannot serve is settled here. Local answers
+            # are judged strictly: the local resolver takes exact labels only,
+            # so the looser filename-token tier is for hub answers alone.
+            if variant and not _answer_offers_variant(
+                variants, variant, strict = _is_model_path(candidate)
+            ):
                 _fail_codex_variant_missing(candidate, variant, variants)
             return
         if isinstance(variants, list):

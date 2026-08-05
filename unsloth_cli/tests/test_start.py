@@ -6414,19 +6414,15 @@ def test_codex_attach_check_skips_direct_gguf_files(monkeypatch):
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/dflash/Qwen-DFlash-Q4_K_M.gguf")
 
 
-def test_codex_attach_check_refuses_contradictory_direct_variant(monkeypatch, capsys):
-    # A direct file names the one quant it is; a contradictory explicit variant
-    # makes the server resolve nothing and the load evicts before failing.
+def test_codex_attach_check_direct_variant_matches_without_probe(monkeypatch):
+    # A variant the file itself names settles locally, in any case spelling,
+    # shards included, the quant read from the parent when the basename has
+    # none, and the extractor's last-segment fallback for quant-less names.
     monkeypatch.setattr(
         start,
         "_http_json",
-        lambda *a, **k: pytest.fail("a direct .gguf file needs no variants probe"),
+        lambda *a, **k: pytest.fail("the file's own label needs no variants probe"),
     )
-    with pytest.raises(typer.Exit):
-        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf", "Q8_0")
-    assert "no GGUF variant Q8_0" in capsys.readouterr().err
-    # The file's own quant passes, in any case spelling, shards included, and
-    # the quant may live in the immediate parent dir like the server reads it.
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf", "q4_k_m")
     start._attach_gguf_check_for_codex(
         BASE, "sk-test", "C:\\models\\bar-Q4_K_M-00001-of-00002.gguf", "Q4_K_M"
@@ -6435,13 +6431,35 @@ def test_codex_attach_check_refuses_contradictory_direct_variant(monkeypatch, ca
     start._attach_gguf_check_for_codex(
         BASE, "sk-test", "C:\\models\\UD-Q4_K_XL\\m.gguf", "ud-q4_k_xl"
     )
-    # The basename wins a disagreement, exactly as the server's resolver reads
-    # it: the parent folder cannot vouch for a quant the file is not.
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-bar.gguf", "bar")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q8_0/foo-Q4_K_M.gguf", "Q4_K_M")
+
+
+def test_codex_attach_check_asks_server_for_foreign_direct_variant(monkeypatch, capsys):
+    # A quant that is not the file's own label is the marked parent's business:
+    # the server's listing carries the sibling quants, so a live answer with
+    # the quant passes and one without it fails before the load can evict.
+    _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M"}, {"quant": "Q8_0"}]})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/m/model-Q4_K_M.gguf", "Q8_0")
+    _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M"}]})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf", "Q8_0")
+    assert "no GGUF variant Q8_0" in capsys.readouterr().err
+    # The parent folder cannot vouch for a quant the file is not.
     with pytest.raises(typer.Exit):
         start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q8_0/foo-Q4_K_M.gguf", "Q8_0")
-    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q8_0/foo-Q4_K_M.gguf", "Q4_K_M")
-    # A quant-less basename answers the extractor's last-segment fallback.
-    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-bar.gguf", "bar")
+
+
+def test_codex_attach_check_local_answers_take_exact_labels_only(monkeypatch):
+    # The local resolver accepts exact labels only, so a local answer must not
+    # let the filename-token tier vouch for a shorter quant; hub answers keep
+    # the looser tier that llama's own hub matching applies.
+    rows = {"variants": [{"quant": "Q4_K_M", "filename": "model-Q4_K_M.gguf"}]}
+    _fake_variants(monkeypatch, rows)
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "Q4")
+    _fake_variants(monkeypatch, rows)
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "unsloth/Qwen3-0.6B-GGUF", "Q4")
 
 
 def test_codex_attach_check_rejects_incomplete_direct_files(tmp_path, monkeypatch, capsys):
@@ -6467,6 +6485,30 @@ def test_codex_attach_check_rejects_incomplete_direct_files(tmp_path, monkeypatc
     (tmp_path / "m-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF")
     start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(shard))
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/nonexistent/other-Q4_K_M.gguf")
+
+
+def test_codex_attach_check_accepts_symlinked_split_shards(tmp_path, monkeypatch):
+    # The load path resolves an incomplete nominal set through the symlink to
+    # the target's colocated shards, so the readiness check does the same.
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: pytest.fail("a direct .gguf file needs no variants probe"),
+    )
+    real = tmp_path / "real"
+    real.mkdir()
+    (real / "m-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
+    (real / "m-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF")
+    links = tmp_path / "links"
+    links.mkdir()
+    link = links / "m-Q4_K_M-00001-of-00002.gguf"
+    link.symlink_to(real / "m-Q4_K_M-00001-of-00002.gguf")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(link))
+
+    # A target set that is itself torn still fails.
+    (real / "m-Q4_K_M-00002-of-00002.gguf").unlink()
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(link))
 
 
 @pytest.mark.parametrize(
