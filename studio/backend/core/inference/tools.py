@@ -1763,6 +1763,18 @@ def _find_blocked_commands(command: str) -> set[str]:
                     else:
                         blocked |= _blocked_matching_glob(payload_base)
                 blocked |= _scan_cmd_payload(_cmd_unquote(tokens[i + 1]))
+                if not _cmd_unquote(tokens[i + 1]):
+                    # `cmd /c ""prog" args"` is the documented way to quote a
+                    # program path holding spaces, and cmd strips the outer
+                    # pair and runs the rest as one string. The cmd lexer ends
+                    # the first token at the doubled quote, so the payload read
+                    # as EMPTY and prog was never screened.
+                    # cmd drops the outer pair and leaves the inner quoting to
+                    # the program, and the lexer already ended a token on every
+                    # one of those marks, so drop them all rather than re-pair
+                    # them: over-quoting here would cost a missed screen.
+                    blocked |= _find_blocked_commands(
+                        " ".join(word.replace('"', "") for word in tokens[i + 1:]))
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
@@ -1807,7 +1819,23 @@ def _find_blocked_commands(command: str) -> set[str]:
         # where testing the word right after the flag read `env` and stopped.
         runnable = _runnable_index(i)
         if titled and runnable and j + 1 < len(tokens):
-            blocked |= _scan_cmd_payload(_cmd_unquote(tokens[j + 1]))
+            k = j + 1
+            # Switches may also FOLLOW the title: the documented shape is
+            # `START ["title"] [switches] command`, so `start "" /b powershell`
+            # put /b where the program was expected and the scan stopped there.
+            while k < len(tokens):
+                switch = _win_switch(_cmd_unquote(tokens[k]).lower())
+                if not switch.startswith("/"):
+                    break
+                k += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
+            if k < len(tokens):
+                blocked |= _scan_cmd_payload(_cmd_unquote(tokens[k]))
+                # start launches a COMMAND LINE, not just a program, so the
+                # child may be a shell of its own: `start "" cmd /c powershell`
+                # reaches powershell through a nested cmd that this pass had
+                # already walked past. Re-scanning the remainder re-runs every
+                # pass over it, which screens that nesting to any depth.
+                blocked |= _find_blocked_commands(" ".join(tokens[k:]))
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

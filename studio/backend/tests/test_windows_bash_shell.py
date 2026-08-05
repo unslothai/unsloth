@@ -685,6 +685,57 @@ def test_a_shell_name_in_argument_position_invokes_nothing(monkeypatch, command,
 @pytest.mark.parametrize(
     "command",
     [
+        # start launches a command LINE, so its child can be a shell in turn.
+        'cmd //c start "" cmd /c powershell -Command ls',
+        'cmd //c start "" cmd //c powershell -Command ls',
+        "start \"\" cmd /c rm -rf x",
+        # `START ["title"] [switches] command`: switches follow the title too,
+        # and reading only the word after it stopped on /b or /d.
+        'cmd //c start "" /b powershell -Command ls',
+        'start "" /min /b pwsh -c ls',
+    ],
+)
+def test_a_start_child_is_screened_past_its_title_and_switches(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The documented way to quote a program path holding spaces. The cmd
+        # lexer ends the first token on the doubled quote, so the payload read
+        # as empty and what cmd actually runs went unscreened.
+        'cmd /c ""powershell" -Command ls"',
+        'cmd //c ""powershell" -Command ls"',
+    ],
+)
+def test_a_doubled_quote_cmd_payload_is_screened(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Reaching past the title must not read an argument as the program.
+        'start "" notepad "my file.txt"',
+        'start "" /b wt -d .',
+        'cmd //c start "" explorer .',
+        'cmd //c start "" bash -c "bash /c/x.sh"',
+    ],
+)
+def test_reaching_past_a_start_title_still_launches_nothing(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
         # Double-quoted: cmd has no single-quote syntax, so that spelling is a
         # real invocation only on the bash host, covered elsewhere here.
         'bash -c "rm -rf x"',
