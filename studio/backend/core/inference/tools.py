@@ -1173,6 +1173,33 @@ def _unquoted_glob_indexes(text: str, tokens: "list[str]", punctuation: str) -> 
     )
 
 
+def _token_was_quoted(command: str, tokens: "list[str]", index: int, lexed_posix: bool) -> bool:
+    """Whether ``tokens[index]`` was written with quotes around it.
+
+    cmd reads `start`'s first argument as a window title only when it is quoted,
+    which is what separates `start "" prog` and `start "t" prog` -- a title with
+    the program behind it -- from `start prog arg`, where the second token is
+    just an argument. Screening an argument as if it were a command position is
+    not harmless: the recursive scan re-anchors its command-boundary regex at
+    the start of the token, so `start notepad rm.txt` reported `rm` even though
+    the same word in the same place on a full line does not match.
+
+    The non-POSIX lexer keeps the quotes, so the token answers for itself. The
+    POSIX one strips them, so the text is lexed a second time without stripping
+    and the two are lined up one-to-one, reporting nothing when they do not
+    align -- the same technique as _quoted_separator_indexes.
+    """
+    if not lexed_posix:
+        return tokens[index].startswith(('"', "'"))
+    try:
+        raw = shlex.split(command, posix = False)
+    except ValueError:
+        return False
+    if len(raw) != len(tokens) or index >= len(raw):
+        return False
+    return raw[index].startswith(('"', "'"))
+
+
 def _xargs_replacement(tokens: "list[str]", start: int, end: int) -> str:
     """The placeholder the xargs word at ``start`` substitutes into the command
     words behind it, or "" when it replaces nothing. GNU xargs takes it attached
@@ -1667,18 +1694,18 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
             # /d C:\dir and friends carry their value in the next token.
             j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
-        # `start "title" prog` is the documented form, so the program may be the
-        # token after the title rather than the title itself. Screen both instead
-        # of deciding which is which: cmd only treats the first quoted argument as
-        # a title when something follows it, the POSIX lexer strips those quotes
-        # while the non-POSIX one keeps them, and guessing wrong leaves the
-        # program unscreened. Matching `== ""` did exactly that twice -- it saw
-        # neither `start "" prog` on a Windows host without Git Bash (where the
-        # token arrives as a literal `""`) nor any non-empty title on either.
+        # `start "title" prog` is the documented form: cmd reads a quoted first
+        # argument as the window title, but only when something follows it, so
+        # the program is the token behind it. Matching `== ""` instead saw
+        # neither `start "" prog` on a Windows host without Git Bash -- where the
+        # non-POSIX lexer keeps the quotes and the token arrives as a literal
+        # `""` -- nor any non-empty title on either lexer, and left the program
+        # in both unscreened.
         if j < len(tokens):
-            blocked |= _find_blocked_commands(tokens[j])
-        if j + 1 < len(tokens):
-            blocked |= _find_blocked_commands(tokens[j + 1])
+            if j + 1 < len(tokens) and _token_was_quoted(command, tokens, j, lexed_posix):
+                blocked |= _find_blocked_commands(tokens[j + 1])
+            else:
+                blocked |= _find_blocked_commands(tokens[j])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

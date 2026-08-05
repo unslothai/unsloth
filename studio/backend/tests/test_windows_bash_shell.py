@@ -320,6 +320,28 @@ def test_start_screens_the_program_behind_a_window_title(monkeypatch, bash, comm
     assert tools._find_blocked_commands(command)
 
 
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "start notepad rm.txt",
+        "start excel curl.csv",
+        'start "" notepad rm.txt',
+        'start "rm.txt" notepad',
+    ],
+)
+def test_start_arguments_are_not_screened_as_commands(monkeypatch, bash, command):
+    # An unquoted first token is the program and the rest are its arguments, so
+    # only a quoted title moves the scan along. Screening an argument is not
+    # harmless: the recursive scan re-anchors its command-boundary regex at the
+    # start of the token, so `rm.txt` reported `rm` where the same word in the
+    # same place on a full line does not match. A quoted title is data too, and
+    # is not screened either.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert not tools._find_blocked_commands(command)
+
+
 @pytest.mark.parametrize(
     "command",
     [
