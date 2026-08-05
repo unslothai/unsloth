@@ -26,7 +26,6 @@ if str(backend_path) not in sys.path:
 try:
     from core.training import get_training_backend
     from core.training.resume import (
-        can_resume_run,
         current_training_backend,
         run_state_allows_resume,
         find_resumable_run,
@@ -44,7 +43,6 @@ except ImportError:
         sys.path.insert(0, str(parent_backend))
     from core.training import get_training_backend
     from core.training.resume import (
-        can_resume_run,
         current_training_backend,
         run_state_allows_resume,
         find_resumable_run,
