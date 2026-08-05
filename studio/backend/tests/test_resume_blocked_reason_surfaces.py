@@ -137,6 +137,6 @@ def test_the_client_prefers_the_server_reason():
 
     guard = source.split("if (!(detail.run.can_resume && outputDir))", 1)[1][:400]
     assert "detail.run.resume_blocked_reason" in guard
-    assert guard.index("resume_blocked_reason") < guard.index("RESUME_UNAVAILABLE_ERROR"), (
-        "the server's reason must take precedence over the generic string"
-    )
+    assert guard.index("resume_blocked_reason") < guard.index(
+        "RESUME_UNAVAILABLE_ERROR"
+    ), "the server's reason must take precedence over the generic string"
