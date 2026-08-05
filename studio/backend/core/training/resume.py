@@ -40,8 +40,10 @@ def current_training_backend() -> "str | None":
     from utils.hardware import hardware as _hw
 
     if _hw.DEVICE is None:
+        # ensure_hardware_detected respects the background warm's lock, so a
+        # cold call never races it into a second probe.
         try:
-            _hw.detect_hardware()
+            _hw.ensure_hardware_detected()
         except Exception:
             return None
     if _hw.CHAT_ONLY:
@@ -341,7 +343,10 @@ def _uses_s3_dataset(run: dict) -> bool:
     return config.get("dataset_source") == "s3" or "s3_dataset" in config
 
 
-def can_resume_run(run: dict) -> bool:
+def run_state_allows_resume(run: dict) -> bool:
+    """Run-record half of resumability; callers with their own validated
+    checkpoint use this alone so the capped sibling scan cannot veto an
+    explicitly targeted checkpoint."""
     if run.get("resumed_later"):
         return False
     # Set when a stop-and-save failed to write a current-step checkpoint.
@@ -353,7 +358,7 @@ def can_resume_run(run: dict) -> bool:
     status = run.get("status")
     if status == "error":
         # A save-time crash can report final_step == total_steps with no artifacts; checkpoint state alone decides resumability.
-        return has_resume_state(run.get("output_dir"))
+        return True
 
     final_step = run.get("final_step")
     total_steps = run.get("total_steps")
@@ -363,4 +368,8 @@ def can_resume_run(run: dict) -> bool:
         or total_steps <= 0
         or final_step < total_steps
     )
-    return status == "stopped" and has_remaining_steps and has_resume_state(run.get("output_dir"))
+    return status == "stopped" and has_remaining_steps
+
+
+def can_resume_run(run: dict) -> bool:
+    return run_state_allows_resume(run) and has_resume_state(run.get("output_dir"))

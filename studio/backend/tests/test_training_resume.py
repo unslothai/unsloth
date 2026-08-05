@@ -699,7 +699,7 @@ def test_start_validates_the_resume_checkpoint_against_the_studio_backend(monkey
     backend.start_training.return_value = True
     monkeypatch.setattr(training_routes, "get_training_backend", lambda: backend)
     monkeypatch.setattr(training_routes, "find_resumable_run", lambda _dir: {"id": "run-mlx"})
-    monkeypatch.setattr(training_routes, "can_resume_run", lambda _run: True)
+    monkeypatch.setattr(training_routes, "run_state_allows_resume", lambda _run: True)
     monkeypatch.setattr(training_routes, "current_training_backend", lambda: "pt")
 
     app = FastAPI()
@@ -795,3 +795,17 @@ def test_has_resume_state_is_false_without_a_usable_backend(tmp_path, monkeypatc
     _write_checkpoint(run, 5)
     monkeypatch.setattr(resume, "current_training_backend", lambda: None)
     assert resume.has_resume_state(str(run)) is False
+
+
+def test_explicit_newer_checkpoint_bypasses_a_stale_rewind_cap(monkeypatch, tmp_path):
+    # The capped checkpoint is gone; an explicitly requested newer valid
+    # checkpoint must resolve instead of the parent scan vetoing the request.
+    monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path))
+    out = tmp_path / "outputs" / "run_y"
+    rewound = _write_checkpoint(out, 5)
+    newer = _write_checkpoint(out, 10)
+    resume.record_resume_rewind(str(rewound), backend = "pt")
+    import shutil
+
+    shutil.rmtree(rewound)
+    assert resume.get_resume_checkpoint_path(str(newer), backend = "pt") == str(newer)

@@ -28,6 +28,7 @@ try:
     from core.training.resume import (
         can_resume_run,
         current_training_backend,
+        run_state_allows_resume,
         find_resumable_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
@@ -45,6 +46,7 @@ except ImportError:
     from core.training.resume import (
         can_resume_run,
         current_training_backend,
+        run_state_allows_resume,
         find_resumable_run,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
@@ -270,12 +272,11 @@ async def start_training(
                 validation_message = str(e)
                 raise HTTPException(status_code = 400, detail = validation_message)
 
-            resume_run = find_resumable_run(resume_output_dir)
-            if not resume_run or not can_resume_run(resume_run):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state.",
-                )
+            # Warm detection off the loop: the sync resolution below must never
+            # cold-probe torch/MLX on the event loop.
+            from utils.hardware.hardware import ensure_hardware_detected
+
+            await asyncio.to_thread(ensure_hardware_detected)
             # Validate against the backend this host trains with: an MLX bundle cannot
             # resume a PyTorch run (or the reverse), and that must fail here rather
             # than after model and dataset loading.
@@ -288,13 +289,22 @@ async def start_training(
                     status_code = 400,
                     detail = "Training is unavailable on this host, so the run cannot be resumed.",
                 )
+            # Resolve the requested target first: an explicit checkpoint-N wins
+            # over the capped sibling scan, so a valid newer checkpoint can
+            # re-adopt its timeline even when the capped one is gone.
             resume_checkpoint = get_resume_checkpoint_path(
-                resume_output_dir, backend = resume_backend
+                request.resume_from_checkpoint, backend = resume_backend
             )
             if not resume_checkpoint:
                 raise HTTPException(
                     status_code = 400,
                     detail = "Resume checkpoint must include saved trainer state for this training backend.",
+                )
+            resume_run = find_resumable_run(resume_output_dir)
+            if not resume_run or not run_state_allows_resume(resume_run):
+                raise HTTPException(
+                    status_code = 400,
+                    detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state.",
                 )
             request.resume_from_checkpoint = resume_checkpoint
             # New files continue in the run dir even when a checkpoint-N was targeted.

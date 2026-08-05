@@ -5,6 +5,7 @@
 Training history API routes — browse, view, and delete past training runs.
 """
 
+import asyncio
 import json
 from typing import Optional
 
@@ -60,6 +61,11 @@ async def list_training_runs(
     current_subject: str = Depends(get_current_subject),
 ):
     """List training runs, newest first."""
+    # can_resume consults the training backend; warm detection off the loop so
+    # a cold launch cannot freeze unrelated requests while torch/MLX probe.
+    from utils.hardware.hardware import ensure_hardware_detected
+
+    await asyncio.to_thread(ensure_hardware_detected)
     result = list_runs(limit = limit, offset = offset)
     sharing_on = get_preview_sharing_enabled()
     return TrainingRunListResponse(
@@ -80,6 +86,9 @@ async def list_training_runs(
 @router.get("/runs/{run_id}", response_model = TrainingRunDetailResponse)
 async def get_training_run_detail(run_id: str, current_subject: str = Depends(get_current_subject)):
     """Get a single training run with full config and metrics."""
+    from utils.hardware.hardware import ensure_hardware_detected
+
+    await asyncio.to_thread(ensure_hardware_detected)
     run = get_run(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
@@ -112,6 +121,9 @@ async def update_training_run(
     current_subject: str = Depends(get_current_subject),
 ):
     """Update mutable fields on a training run (currently only display_name)."""
+    from utils.hardware.hardware import ensure_hardware_detected
+
+    await asyncio.to_thread(ensure_hardware_detected)
     run = get_run(run_id)
     if run is None:
         raise HTTPException(status_code = 404, detail = f"Run {run_id} not found")
