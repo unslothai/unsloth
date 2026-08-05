@@ -29,6 +29,7 @@ const {
   fetchWithTimeout,
   isHuggingFaceOffline,
   markRemoteNetworkOnline,
+  setHubProxyAuthFetch,
 } = await import("../src/features/hub/lib/network.ts");
 
 const HF_URL = "https://huggingface.co/api/models?limit=20";
@@ -36,10 +37,10 @@ const PROXY_PREFIX = "/api/hub/hf-proxy?url=";
 
 type FetchCall = { url: string; init: RequestInit | undefined };
 
-/** Install a fetch stub; direct HF calls fail, proxy calls answer 200. */
+/** Install a fetch stub; direct HF calls fail, proxy calls answer per mode. */
 function installFetchStub(behavior: {
   direct: "network-error" | "hang" | "ok";
-  proxy: "ok" | "network-error";
+  proxy: "ok" | "network-error" | "gateway";
 }): FetchCall[] {
   const calls: FetchCall[] = [];
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
@@ -57,6 +58,11 @@ function installFetchStub(behavior: {
         );
       });
     }
+    if (mode === "gateway") {
+      return Promise.resolve(
+        new Response('{"detail":"bad gateway"}', { status: 502 }),
+      );
+    }
     return Promise.resolve(new Response("{}", { status: 200 }));
   }) as typeof fetch;
   return calls;
@@ -64,6 +70,7 @@ function installFetchStub(behavior: {
 
 function reset(): void {
   __resetHfProxyPreferenceForTests();
+  setHubProxyAuthFetch(null);
   markRemoteNetworkOnline();
   store.clear();
 }
@@ -125,6 +132,40 @@ test("non-hub origins never fall back to the proxy", async () => {
 
   await assert.rejects(fetchWithTimeout("https://example.com/data"), TypeError);
   assert.equal(calls.length, 1);
+});
+
+test("a proxy gateway error is not cached as a healthy fallback", async () => {
+  reset();
+  const calls = installFetchStub({ direct: "network-error", proxy: "gateway" });
+
+  await assert.rejects(fetchWithTimeout(HF_URL), TypeError);
+  assert.equal(isHuggingFaceOffline(), true);
+
+  // proxy-first must not be armed: the next attempt goes direct again
+  markRemoteNetworkOnline();
+  const callsBefore = calls.length;
+  await assert.rejects(fetchWithTimeout(HF_URL), TypeError);
+  assert.equal(calls[callsBefore].url, HF_URL);
+});
+
+test("a registered session-aware fetch handles proxy auth instead of a raw token", async () => {
+  reset();
+  store.set("unsloth_auth_token", "stale-token");
+  const authCalls: FetchCall[] = [];
+  setHubProxyAuthFetch((input, init) => {
+    authCalls.push({ url: String(input), init });
+    return Promise.resolve(new Response("{}", { status: 200 }));
+  });
+  installFetchStub({ direct: "network-error", proxy: "ok" });
+
+  const response = await fetchWithTimeout(HF_URL);
+
+  assert.equal(response.status, 200);
+  assert.equal(authCalls.length, 1);
+  assert.ok(authCalls[0].url.startsWith(PROXY_PREFIX));
+  // authFetch owns the session header; network.ts must not preset a stale one
+  const headers = new Headers(authCalls[0].init?.headers);
+  assert.equal(headers.get("Authorization"), null);
 });
 
 test("a caller abort is surfaced, not retried through the proxy", async () => {

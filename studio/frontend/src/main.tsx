@@ -7,7 +7,13 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import { App } from "./app/app";
 import { fetchDeviceType } from "./config/env";
+import { authFetch } from "./features/auth";
+import { setHubProxyAuthFetch } from "./features/hub";
 import { initializeLocale } from "./i18n";
+
+// Route hub-proxy fallback requests through the session-aware fetch so an
+// expired access token is refresh-retried instead of failing the proxy call.
+setHubProxyAuthFetch(authFetch);
 
 const globalCrypto = globalThis.crypto as Crypto | undefined;
 

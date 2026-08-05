@@ -172,6 +172,7 @@ async function runFetchWithTimeout(
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1],
   timeoutMs: number,
+  fetchImpl: typeof fetch = fetch,
 ): Promise<Response> {
   const parentSignal = init?.signal;
   const controller = new AbortController();
@@ -189,7 +190,7 @@ async function runFetchWithTimeout(
   }
 
   try {
-    return await fetch(input, { ...init, signal: controller.signal });
+    return await fetchImpl(input, { ...init, signal: controller.signal });
   } catch (error) {
     if (timedOut) {
       throw new RequestTimeoutError();
@@ -219,6 +220,28 @@ let preferProxyUntil = 0;
 
 export function __resetHfProxyPreferenceForTests(): void {
   preferProxyUntil = 0;
+}
+
+type ProxyAuthFetch = (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response>;
+
+// The session-aware fetch (authFetch) lives in the auth feature, whose module
+// graph this network-layer leaf must not import. The app entry registers it at
+// startup so proxied requests get 401-refresh-retry handling; unregistered
+// (tests, early calls) the fallback sends the stored session token directly.
+let proxyAuthFetch: ProxyAuthFetch | null = null;
+
+export function setHubProxyAuthFetch(fetchImpl: ProxyAuthFetch | null): void {
+  proxyAuthFetch = fetchImpl;
+}
+
+// Statuses the backend passthrough emits when it could not reach Hugging Face
+// itself (502 upstream failure, 504 upstream timeout). Such a response means
+// the fallback failed too, not that the hub is reachable.
+function isProxyGatewayError(response: Response): boolean {
+  return response.status === 502 || response.status === 504;
 }
 
 function isProxyableRequest(
@@ -252,13 +275,22 @@ function fetchViaBackendProxy(
   if (hfAuthorization?.toLowerCase().startsWith("bearer ")) {
     headers.set(HUB_HF_TOKEN_HEADER, hfAuthorization.slice("bearer ".length));
   }
+  const proxyUrl = apiUrl(
+    `${HF_PROXY_PATH}?url=${encodeURIComponent(rawUrlFromFetchInput(input))}`,
+  );
+  if (proxyAuthFetch) {
+    // authFetch attaches the session token and refresh-retries a 401 itself.
+    return runFetchWithTimeout(
+      proxyUrl,
+      { method: "GET", headers, signal: init?.signal },
+      timeoutMs,
+      proxyAuthFetch as typeof fetch,
+    );
+  }
   const sessionToken = getSessionToken();
   if (sessionToken) {
     headers.set("Authorization", `Bearer ${sessionToken}`);
   }
-  const proxyUrl = apiUrl(
-    `${HF_PROXY_PATH}?url=${encodeURIComponent(rawUrlFromFetchInput(input))}`,
-  );
   return runFetchWithTimeout(
     proxyUrl,
     { method: "GET", headers, signal: init?.signal },
@@ -280,8 +312,12 @@ export async function fetchWithTimeout(
   if (canProxy && preferProxyUntil > Date.now()) {
     try {
       const response = await fetchViaBackendProxy(input, init, timeoutMs);
-      markRemoteNetworkOnline(origin);
-      return response;
+      if (!isProxyGatewayError(response)) {
+        markRemoteNetworkOnline(origin);
+        return response;
+      }
+      // the backend could not reach hugging face either; retry direct below.
+      preferProxyUntil = 0;
     } catch (error) {
       if (init.signal?.aborted) {
         throw error;
@@ -303,9 +339,13 @@ export async function fetchWithTimeout(
     if (canProxy && (timedOut || isNetworkFetchError(error))) {
       try {
         const response = await fetchViaBackendProxy(input, init, timeoutMs);
-        preferProxyUntil = Date.now() + PROXY_PREFER_TTL_MS;
-        markRemoteNetworkOnline(origin);
-        return response;
+        if (!isProxyGatewayError(response)) {
+          preferProxyUntil = Date.now() + PROXY_PREFER_TTL_MS;
+          markRemoteNetworkOnline(origin);
+          return response;
+        }
+        // gateway error: the backend could not reach hugging face either, so
+        // fall through and report the direct failure as usual.
       } catch {
         // both paths failed; report the direct failure below.
       }

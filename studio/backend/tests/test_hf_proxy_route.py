@@ -75,6 +75,32 @@ def test_forwarded_response_headers_keeps_only_client_facing_headers():
     }
 
 
+class _FakeStream:
+    """Async context manager mimicking httpx's streaming response."""
+
+    def __init__(self, upstream):
+        self._upstream = upstream
+
+    async def __aenter__(self):
+        return self._upstream
+
+    async def __aexit__(self, *exc_info):
+        return False
+
+
+class _FakeUpstream:
+    def __init__(self, content, status_code, headers):
+        self._content = content
+        self.status_code = status_code
+        self.headers = headers
+
+    async def aiter_bytes(self):
+        # two chunks so the size cap is exercised mid-stream, not only at the end
+        half = max(1, len(self._content) // 2)
+        for start in range(0, len(self._content), half):
+            yield self._content[start : start + half]
+
+
 class _FakeAsyncClient:
     """Stands in for httpx.AsyncClient; records the upstream request."""
 
@@ -89,16 +115,20 @@ class _FakeAsyncClient:
     async def __aexit__(self, *exc_info):
         return False
 
-    async def get(
-        self,
-        url,
-        headers = None,
-    ):
+    def stream(self, method, url, headers = None):
         _FakeAsyncClient.last_request = (url, headers or {})
         outcome = _FakeAsyncClient.outcome
         if isinstance(outcome, Exception):
-            raise outcome
-        return outcome
+
+            class _RaisingStream:
+                async def __aenter__(self):
+                    raise outcome
+
+                async def __aexit__(self, *exc_info):
+                    return False
+
+            return _RaisingStream()
+        return _FakeStream(outcome)
 
 
 def _proxy(url, hf_token = None):
@@ -112,7 +142,7 @@ def _proxy(url, hf_token = None):
 
 
 def test_proxy_forwards_hf_token_and_upstream_response(monkeypatch):
-    upstream = types.SimpleNamespace(
+    upstream = _FakeUpstream(
         content = b'{"models": []}',
         status_code = 200,
         headers = httpx.Headers({"content-type": "application/json"}),
@@ -130,7 +160,7 @@ def test_proxy_forwards_hf_token_and_upstream_response(monkeypatch):
 
 
 def test_proxy_passes_through_upstream_error_status(monkeypatch):
-    upstream = types.SimpleNamespace(
+    upstream = _FakeUpstream(
         content = b'{"error": "gated"}',
         status_code = 401,
         headers = httpx.Headers({"content-type": "application/json"}),
@@ -143,6 +173,20 @@ def test_proxy_passes_through_upstream_error_status(monkeypatch):
     _url, headers = _FakeAsyncClient.last_request
     assert "Authorization" not in headers
     assert response.status_code == 401
+
+
+def test_proxy_rejects_oversized_body_mid_stream(monkeypatch):
+    upstream = _FakeUpstream(
+        content = b"x" * (hf_proxy.MAX_PROXY_RESPONSE_BYTES + 1),
+        status_code = 200,
+        headers = httpx.Headers({"content-type": "application/octet-stream"}),
+    )
+    _FakeAsyncClient.outcome = upstream
+    monkeypatch.setattr(hf_proxy.httpx, "AsyncClient", _FakeAsyncClient)
+
+    with pytest.raises(HTTPException) as exc_info:
+        _proxy("https://huggingface.co/api/models")
+    assert exc_info.value.status_code == 502
 
 
 def test_proxy_maps_timeout_to_504(monkeypatch):

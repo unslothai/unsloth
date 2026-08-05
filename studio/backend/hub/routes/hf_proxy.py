@@ -83,15 +83,25 @@ async def proxy_hugging_face_get(
             follow_redirects = True,
             timeout = PROXY_TIMEOUT_SECONDS,
         ) as client:
-            upstream = await client.get(target, headers = request_headers)
+            # stream so the size cap aborts an oversized body (e.g. a resolve/
+            # weights url on an allowed host) instead of buffering it in full.
+            async with client.stream("GET", target, headers = request_headers) as upstream:
+                body = bytearray()
+                async for chunk in upstream.aiter_bytes():
+                    body.extend(chunk)
+                    if len(body) > MAX_PROXY_RESPONSE_BYTES:
+                        raise HTTPException(
+                            status_code = 502,
+                            detail = "Upstream response too large to proxy",
+                        )
+                status_code = upstream.status_code
+                response_headers = forwarded_response_headers(upstream.headers)
     except httpx.TimeoutException:
         raise HTTPException(status_code = 504, detail = "Hugging Face request timed out")
     except httpx.HTTPError:
         raise HTTPException(status_code = 502, detail = "Could not reach Hugging Face")
-    if len(upstream.content) > MAX_PROXY_RESPONSE_BYTES:
-        raise HTTPException(status_code = 502, detail = "Upstream response too large to proxy")
     return Response(
-        content = upstream.content,
-        status_code = upstream.status_code,
-        headers = forwarded_response_headers(upstream.headers),
+        content = bytes(body),
+        status_code = status_code,
+        headers = response_headers,
     )
