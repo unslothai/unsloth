@@ -475,7 +475,9 @@ def test_a_busy_transcription_is_a_retry_not_a_server_error(monkeypatch):
     def busy(*args, **kwargs):
         raise SttModelBusyError("The dictation model changed. Try again.")
 
-    monkeypatch.setattr(ri, "_stt_sidecar_for", lambda engine: type("S", (), {"transcribe": busy})())
+    monkeypatch.setattr(
+        ri, "_stt_sidecar_for", lambda engine: type("S", (), {"transcribe": busy})()
+    )
     monkeypatch.setattr(ri, "_resolve_serving_stt_engine", lambda engine: "mtmd")
 
     with pytest.raises(HTTPException) as excinfo:
