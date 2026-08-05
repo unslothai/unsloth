@@ -125,7 +125,9 @@ def _cached_main_revision(repo: str) -> Optional[str]:
     from core.inference.stt_sidecar import _repo_cache_dir
 
     try:
-        revision = (_repo_cache_dir(repo) / "refs" / "main").read_text("utf-8").strip()
+        revision = (
+            (_repo_cache_dir(repo) / "refs" / "main").read_text(encoding = "utf-8").strip()
+        )
     except OSError:
         return None
     return revision or None

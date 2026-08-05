@@ -8097,15 +8097,27 @@ def _stt_download_module(engine: str):
 
 
 def _stt_sidecar_for(engine: str):
-    if engine == "mtmd":
-        from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
-        return get_mtmd_stt_sidecar()
-    if engine == "gguf":
-        from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
-        return get_ggml_stt_sidecar()
-    from core.inference.stt_sidecar import get_stt_sidecar
+    """The sidecar serving an engine. One resolver, shared with the orchestrator."""
+    from core.inference import stt_registry
 
-    return get_stt_sidecar()
+    return stt_registry.sidecar_for(engine)
+
+
+def _stt_lifecycle() -> tuple:
+    """(load, unload) for dictation models, off the orchestrator when it exists.
+
+    Same object Model Hub loads a chat model with, so one thing knows everything
+    resident. Its methods only forward to `stt_registry`, so a cold process
+    calls that directly rather than constructing an orchestrator (which blocks
+    on hardware detection) to load a model that never touches the chat worker.
+    """
+    from core.inference import stt_registry
+    from core.inference.orchestrator import peek_inference_backend
+
+    backend = peek_inference_backend()
+    if backend is None:
+        return stt_registry.load, stt_registry.unload
+    return backend.load_stt_model, backend.unload_stt_model
 
 
 @studio_router.get("/audio/stt/status")
@@ -8267,9 +8279,11 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
         get_stt_sidecar,
     )
 
-    sidecar = _stt_sidecar_for(_resolve_serving_stt_engine(payload.engine))
+    engine = _resolve_serving_stt_engine(payload.engine)
+    sidecar = _stt_sidecar_for(engine)
+    load_stt, _ = _stt_lifecycle()
     try:
-        await asyncio.to_thread(sidecar.load, payload.model)
+        await asyncio.to_thread(load_stt, payload.model, engine)
     except SttModelNotDownloadedError as e:
         raise HTTPException(status_code = 409, detail = str(e))
     except SttUnavailableError as e:
@@ -8316,21 +8330,16 @@ async def stt_unload(
     settings always frees whichever backend was resident.
     """
     if engine is None:
-        engines = ["transformers", "gguf", "mtmd"]
+        engines = None
     else:
         # Use the serving resolver: a "gguf" pick without whisper-server is
         # actually served by the Transformers fallback, so unload must target
         # that same engine or the resident model is never freed.
         engines = [_resolve_serving_stt_engine(engine)]
-    # Attempt every engine even if one raises, so failing to unload one never
-    # skips freeing the other (both can be resident after a switch).
-    failed: list[str] = []
-    for name in engines:
-        try:
-            await asyncio.to_thread(_stt_sidecar_for(name).unload)
-        except Exception as exc:  # noqa: BLE001 - report after attempting all engines
-            logger.warning("Failed to unload STT engine '%s': %s", name, exc)
-            failed.append(name)
+    # Every engine is attempted even if one raises, so failing to free one never
+    # skips the other (both can be resident after a switch).
+    _, unload_stt = _stt_lifecycle()
+    failed: list[str] = await asyncio.to_thread(unload_stt, engines)
     if failed:
         raise HTTPException(
             status_code = 500,

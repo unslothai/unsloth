@@ -145,7 +145,9 @@ def test_gguf_unload_targets_transformers_fallback_without_whisper_server(monkey
         def unload(self):
             calls.append(self.name)
 
-    monkeypatch.setattr(ri, "_stt_sidecar_for", lambda name: _Sidecar(name))
+    from core.inference import stt_registry
+
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: _Sidecar(name))
 
     resp = asyncio.run(ri.stt_unload(engine = "gguf", current_subject = "tester"))
     assert resp.status_code == 200
@@ -167,7 +169,9 @@ def test_unload_all_attempts_every_backend_even_when_one_fails(monkeypatch):
             if self.name == "transformers":
                 raise RuntimeError("boom")
 
-    monkeypatch.setattr(ri, "_stt_sidecar_for", lambda name: _Sidecar(name))
+    from core.inference import stt_registry
+
+    monkeypatch.setattr(stt_registry, "sidecar_for", lambda name: _Sidecar(name))
 
     with pytest.raises(HTTPException) as excinfo:
         asyncio.run(ri.stt_unload(engine = None, current_subject = "tester"))
