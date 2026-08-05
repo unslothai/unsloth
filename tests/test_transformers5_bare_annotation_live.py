@@ -90,15 +90,20 @@ def test_the_failure_is_real_without_the_fix(unpatched):
     if _transformers_configs_are_kw_only(PretrainedConfig):
         pytest.skip(
             f"transformers {transformers.__version__} passes kw_only=True "
-            f"(5.6.0+), so the ordering rule this fix works around is gone"
+            f"(5.5.1+), so the ordering rule this fix works around is gone"
         )
     with pytest.raises(TypeError, match="non-default argument"):
         _build("unpatched")
 
 
 def test_the_fix_stands_down_when_transformers_handles_it():
-    """5.6.0 added kw_only=True and fixed this upstream. Patching anyway would
-    be an untested monkey patch on every config subclass for no benefit."""
+    """kw_only=True fixed this upstream. Patching anyway would be an untested
+    monkey patch on every config subclass for no benefit.
+
+    5.5.1, not 5.6.0: the change was backported, landing on the 5.5 release
+    branch at 5.5.1 and on main at 5.6.0. Since 5.6.0 is the next release after
+    the 5.5.x line, a single >= 5.5.1 threshold covers both.
+    """
     from unsloth.import_fixes import (
         _transformers_configs_are_kw_only,
         fix_transformers5_bare_annotation_configs,
@@ -106,7 +111,7 @@ def test_the_fix_stands_down_when_transformers_handles_it():
     from transformers.configuration_utils import PretrainedConfig
 
     kw_only = _transformers_configs_are_kw_only(PretrainedConfig)
-    expected = Version(transformers.__version__) >= Version("5.6.0")
+    expected = Version(transformers.__version__) >= Version("5.5.1")
     assert kw_only == expected, (
         f"transformers {transformers.__version__}: probe says kw_only={kw_only}"
     )
