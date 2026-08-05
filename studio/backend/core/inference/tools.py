@@ -1366,6 +1366,9 @@ _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 
 # What a word has to end in before a path is read as naming a program.
 _WINDOWS_EXE_SUFFIXES = frozenset({".exe", ".com", ".bat", ".cmd"})
+# A drive letter or a separator: how a payload that OPENS with a program path
+# is told from one whose command word was lexed normally.
+_PATH_FRAGMENT_RE = re.compile(r"^(?:[A-Za-z]:|\.{0,2}[/\\])")
 
 
 def _is_start_switch(token: str) -> bool:
@@ -1381,23 +1384,28 @@ def _is_start_switch(token: str) -> bool:
 
 
 def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "set[str]":
-    """Blocked names spelled as an executable PATH inside a cmd payload.
+    """Blocked names spelled as an executable PATH that lexing split apart.
 
     `cmd /c "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command ls` names one
     program whose path holds spaces, so re-lexing the payload reads
     `C:\\Program` as the command word and leaves pwsh in argument position.
-    Anchored on the executable suffix so a word that merely mentions a path,
-    `ls /usr/bin/rm`, is still an argument.
+
+    Only a payload OPENING with a path fragment can be that shape. Anything else
+    already had its command word lexed normally, and reading further would take
+    `echo C:\\tmp\\pwsh.exe` for a launch when the path is only being printed.
+    The walk stops at the first executable for the same reason: what follows it
+    is arguments.
     """
-    found: "set[str]" = set()
-    for word in payload.split():
+    words = payload.split()
+    if not words or not _PATH_FRAGMENT_RE.match(words[0].strip("\"'")):
+        return set()
+    for word in words:
         stem, ext = os.path.splitext(word.strip("\"'"))
         if ext.lower() not in _WINDOWS_EXE_SUFFIXES:
             continue
         base = os.path.basename(stem.replace("\\", "/")).lower()
-        if base in blocked_names:
-            found.add(base)
-    return found
+        return {base} if base in blocked_names else set()
+    return set()
 
 
 def _is_start_title(token: str, lexed_posix: bool) -> bool:
@@ -1727,6 +1735,15 @@ def _find_blocked_commands(command: str) -> set[str]:
             elif is_win_c and prev_base in _SHELLS_WIN:
                 payload = _unquote(tokens[i + 1])
                 blocked |= _find_blocked_commands(payload)
+                bare = _unwrap_quotes(payload)
+                if bare != payload:
+                    # Git Bash keeps cmd's own quotes: `cmd //c '"powershell
+                    # -Command ls"'` reaches cmd as one quoted string, which cmd
+                    # unquotes and runs. Scanned IN ADDITION to the quoted form,
+                    # never instead of it, because the two spans of `""rm -rf
+                    # x""` are what stop that one collapsing into a single word.
+                    blocked |= _find_blocked_commands(bare)
+                    blocked |= _blocked_quoted_program(bare, _BLOCKED_COMMANDS)
                 # A program path holding spaces survives lexing as one quoted
                 # word, so re-lexing it reads only its first path segment.
                 blocked |= _blocked_quoted_program(payload, _BLOCKED_COMMANDS)
@@ -1762,7 +1779,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             else:
                 break
         if j < len(tokens):
-            blocked |= _find_blocked_commands(_unquote(tokens[j]))
+            program = _unquote(tokens[j])
+            blocked |= _find_blocked_commands(program)
+            # Same split-path shape as the /c payload: START documents a title
+            # followed by the program, and `start "" "C:\Program Files\...
+            # \pwsh.exe"` is one quoted word until it is re-lexed.
+            blocked |= _blocked_quoted_program(program, _BLOCKED_COMMANDS)
             if (
                 lexed_posix
                 and not titled

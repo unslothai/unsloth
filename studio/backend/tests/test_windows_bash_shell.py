@@ -323,6 +323,8 @@ def windows_terminal(request, monkeypatch):
         # A program path holding spaces is ONE quoted word, so re-lexing it
         # reads `C:\Program` and leaves the executable in argument position.
         r'cmd /c "C:\Program Files\PowerShell\7\pwsh.exe" -Command ls',
+        # START reaches the same shape behind its title.
+        r'cmd //c start "" "C:\Program Files\PowerShell\7\pwsh.exe" -Command ls',
     ],
 )
 def test_cmd_shellout_is_screened_through_mangled_switches(windows_terminal, command):
@@ -413,6 +415,37 @@ def test_the_s_switch_payload_keeps_a_spaced_program_path(monkeypatch):
     )
     # A path named in passing is still an argument, not a program.
     assert not tools._find_blocked_commands(r'cmd /c "ls /usr/bin/rm"')
+
+
+def test_git_bash_hands_cmd_its_own_quotes(monkeypatch):
+    # Under Git Bash the outer posix lexer strips only the shell's quoting, so
+    # cmd's own pair survives into the payload and cmd unquotes and runs it.
+    # Scanned in ADDITION to the quoted form, never instead: the two spans of
+    # `""rm -rf x""` are what keep that one from collapsing to a single word.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert tools._find_blocked_commands("""cmd //c '"powershell -Command ls"'""")
+    assert "rm" in tools._find_blocked_commands("""cmd /c '""rm -rf x""'""")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        r'cmd /c "echo C:\tmp\pwsh.exe"',
+        r'cmd /c "dir C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"',
+        r'cmd /c "ls /usr/bin/rm"',
+    ],
+)
+def test_a_path_named_in_passing_is_not_a_program(windows_terminal, command):
+    # The split-path recovery reads the program a payload OPENS with. Scanning
+    # every word for an executable suffix instead turns printing or listing a
+    # PowerShell path into a hard block.
+    assert not tools._find_blocked_commands(command)
 
 
 def test_cmd_reads_a_one_word_start_title(monkeypatch):
