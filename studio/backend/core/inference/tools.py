@@ -1210,9 +1210,7 @@ def _start_title_indexes(tokens: "list[str]", lexed_posix: bool) -> "frozenset[i
     'title', which is how a benign rm.txt came to be blocked as a command.
     """
     if not lexed_posix:
-        return frozenset(
-            index for index, token in enumerate(tokens) if token.startswith('"')
-        )
+        return frozenset(index for index, token in enumerate(tokens) if token.startswith('"'))
     return frozenset(
         index
         for index, token in enumerate(tokens)

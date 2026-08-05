@@ -438,7 +438,9 @@ def test_cmd_has_no_single_quote_syntax(monkeypatch, command):
     assert not tools._find_blocked_commands(command)
 
 
-@pytest.mark.parametrize("command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"])
+@pytest.mark.parametrize(
+    "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
+)
 def test_windows_only_names_are_not_hard_blocked_off_windows(monkeypatch, command):
     # The Windows set is a hard refusal; off Windows these stay a prompt instead
     # (tests/test_permission_mode.py). Nothing asserted that, so dropping the
