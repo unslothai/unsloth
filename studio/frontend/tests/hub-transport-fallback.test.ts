@@ -884,3 +884,54 @@ test("a Studio-side 5xx does not outrank the browser's own cause", async () => {
   assert.equal(getLastHubFailure(HF_ORIGIN)?.kind, "csp-blocked");
   markRemoteNetworkOnline();
 });
+
+test("an answer retires a backoff a concurrent failure had just opened", async () => {
+  markRemoteNetworkOnline();
+  const transport = createHubTransport("models", {
+    direct: async () => {
+      markRemoteNetworkOnline(HF_ORIGIN);
+      // The picker runs two listings at once, so the other one's failure can be
+      // recorded between this response resolving and the transport recording
+      // its status. markRemoteNetworkOffline will not shorten that window.
+      markRemoteNetworkOffline(HF_ORIGIN, 30_000, OPAQUE_FAILURE);
+      return new Response("not found", { status: 404 });
+    },
+    backend: async () => {
+      throw new Error("a real status must not trigger the fallback");
+    },
+  });
+
+  await transport(HF_URL, {});
+  assert.equal(getLastHubFailure(HF_ORIGIN)?.status, 404);
+  assert.equal(
+    getHubPhase(HF_ORIGIN),
+    "probing",
+    "the origin answered, so it must not stay marked unreachable",
+  );
+  markRemoteNetworkOnline();
+});
+
+test("an older backend's SPA 404 is recognised on the info route too", async () => {
+  markRemoteNetworkOnline();
+  let backendCalls = 0;
+  const transport = createHubTransport("models", {
+    direct: failWith("network-opaque"),
+    // No marker: the catch-all answered, so this backend has no info route.
+    backend: async () => {
+      backendCalls += 1;
+      return new Response("<!doctype html>", { status: 404 });
+    },
+  });
+
+  const res = await transport(MODEL_INFO_URL, {});
+  assert.equal(res.status, 404);
+  assert.equal(
+    isHubProxyServing(),
+    false,
+    "a missing route is not the backend serving us",
+  );
+  // And the route is not offered again, rather than reporting the repo gone.
+  await assert.rejects(transport(MODEL_INFO_URL, {}));
+  assert.equal(backendCalls, 1, "no point re-asking a backend that has no route");
+  markRemoteNetworkOnline();
+});

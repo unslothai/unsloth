@@ -6,6 +6,7 @@ import {
   type HubFailure,
   type HubService,
   isHubFetchError,
+  clearRemoteBackoff,
   markRemoteNetworkOffline,
   setDirectHubBlocked,
   setHubProxyServing,
@@ -363,6 +364,17 @@ export function createHubTransport(
   ): Promise<Response> => {
     const req = toInfoRequest(info, raw, resource, init);
     const response = await backend(req.url, req.init);
+    if (
+      response.status === 404 &&
+      response.headers.get(HUB_PROXY_MARKER_HEADER) === null
+    ) {
+      // Same version skew the listing handles: an unmarked 404 is the SPA
+      // catch-all, not a missing repo, so stop offering the route rather than
+      // reporting the repo gone and retrying a proxy that is not there.
+      proxyUnavailable = true;
+      useProxy = false;
+      return response;
+    }
     if (response.ok) {
       setDirectHubBlocked(true);
     }
@@ -434,6 +446,11 @@ export function createHubTransport(
         // more over a bad query or a stale token. The cause is recorded, the
         // phase stays "probing", and this is not a fallback trigger.
         const origin = hubUrlOf(raw)?.origin ?? DEFAULT_HUB_ENDPOINT;
+        // An answer proves the origin is reachable, so retire any window first.
+        // markRemoteNetworkOffline will not shorten a longer one, and a
+        // concurrent listing's failure can be marked between this response
+        // resolving and this line, which would leave the phase "unavailable".
+        clearRemoteBackoff(origin);
         markRemoteNetworkOffline(
           origin,
           0,

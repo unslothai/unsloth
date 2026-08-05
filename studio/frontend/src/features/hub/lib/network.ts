@@ -162,6 +162,10 @@ export function isHubProxyServing(): boolean {
   return hubProxyServing;
 }
 
+export function isDirectHubBlocked(): boolean {
+  return directHubBlocked;
+}
+
 /**
  * Record that a direct Hub request failed here but the backend served it. Only
  * suppresses the direct clients (README, avatars, size); it says nothing about

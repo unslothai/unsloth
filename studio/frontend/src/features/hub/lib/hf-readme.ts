@@ -4,6 +4,7 @@
 import { LruMap } from "@/features/hub/lib/lru-map";
 import {
   fetchWithTimeout,
+  isDirectHubBlocked,
   isHubProxyServing,
 } from "@/features/hub/lib/network";
 import {
@@ -59,7 +60,10 @@ export function readmeBaseUrl(
  * this route works when the direct one does not.
  */
 export function readmeViaBackend(): boolean {
-  return hubProxyFirst() || isHubProxyServing();
+  // isDirectHubBlocked covers the deep link, pinned publisher and detail pane:
+  // those never run a listing, so the only proof the backend can reach the Hub
+  // is their own model-info fallback.
+  return hubProxyFirst() || isHubProxyServing() || isDirectHubBlocked();
 }
 
 const README_PROXY_PREFIX = "/api/hub/discovery-readme/";
@@ -135,7 +139,11 @@ export function fetchReadme(
   kind: ReadmeKind = "model",
   token: string | null = null,
 ): Promise<FetchedReadme | null> {
-  const key = `${kind}::${repoId}::${fingerprintToken(token)}`;
+  // The route is part of the identity: a direct attempt that failed before the
+  // backend was proven caches a 30s rejection, and without this every
+  // backend-capable retry gets that rejection back instead of the card.
+  const via = readmeViaBackend() ? "backend" : "direct";
+  const key = `${kind}::${repoId}::${fingerprintToken(token)}::${via}`;
   const cached = cache.get(key);
   if (cached && Date.now() < cached.staleAt) return cached.promise;
 
