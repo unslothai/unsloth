@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: AGPL-3.0-only
-# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 """The terminal tool must run bash on Windows, not cmd.
 
@@ -150,6 +150,16 @@ def test_blocklist_lexes_bash_syntax_when_the_shell_is_bash(monkeypatch):
     assert "curl" in tools._find_blocked_commands("for i in 1; do curl http://x; done")
 
 
+@pytest.mark.parametrize("command", ["'rm' -rf x", '"rm" -rf x', "echo hi; 'rm' -rf x"])
+def test_blocklist_sees_through_quoting_when_the_shell_is_bash(monkeypatch, command):
+    # The non-posix lexer keeps the quote marks and _token_basename strips only
+    # meta-chars, so `'rm'` never matched `rm`. Harmless in front of cmd, where
+    # it is a literal unknown program; under bash it really deletes.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert "rm" in tools._find_blocked_commands(command)
+
+
 def test_blocklist_still_catches_the_plain_form_under_cmd(monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: None)
@@ -187,39 +197,59 @@ def test_paths_note_names_the_real_platform():
         assert "/mnt/data" in note
 
 
-def test_paths_note_names_the_shell_that_will_run(monkeypatch):
+def test_shell_note_names_the_shell_that_will_run(monkeypatch):
     # Telling a model it has bash on a host that fell back to cmd reintroduces
     # the multi-line half-execution this note exists to prevent.
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
-    assert "bash" in tools._build_sandbox_paths_note()
+    assert "The shell is bash" in tools._build_terminal_shell_note()
     monkeypatch.setattr(tools, "_windows_bash", lambda: None)
-    cmd_note = tools._build_sandbox_paths_note()
+    cmd_note = tools._build_terminal_shell_note()
     assert "cmd, not bash" in cmd_note
     assert "one command per call" in cmd_note
 
 
+def test_posix_shell_note_is_empty(monkeypatch):
+    # The POSIX descriptions are unchanged by this PR.
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert tools._build_terminal_shell_note() == ""
+
+
 @pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
-def test_paths_note_never_recommends_a_blocked_program(monkeypatch, bash):
+def test_notes_never_recommend_a_blocked_program(monkeypatch, bash):
     # powershell/pwsh are in _BLOCKED_COMMANDS_WIN, so a sandboxed user who
-    # follows the prompt gets a hard block instead of a command.
+    # follows the prompt gets a hard block instead of a command. `cmd /c start`
+    # is not blocked, which makes naming it worse: it advertises the gap.
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
-    note = tools._build_sandbox_paths_note().lower()
+    text = (tools._build_sandbox_paths_note() + tools._build_terminal_shell_note()).lower()
     for program in tools._BLOCKED_COMMANDS_WIN:
-        assert program not in note
-    assert "start-process" not in note
+        assert program not in text
+    assert "start-process" not in text
+    assert "/c start" not in text
 
 
-def test_terminal_tool_description_carries_the_note():
+def test_terminal_tool_description_carries_both_notes():
     description = tools.TERMINAL_TOOL["function"]["description"]
     assert tools._SANDBOX_PATHS_NOTE in description
+    assert tools._TERMINAL_SHELL_NOTE in description
 
 
-@pytest.mark.skipif(sys.platform != "win32", reason = "Windows-only wording")
-def test_paths_note_says_where_commands_run():
+def test_python_tool_description_omits_the_shell():
+    # The shell note on the python description would point a model at
+    # subprocess/os.system as a way around the terminal blocklist, and none of
+    # it applies to the python sandbox anyway.
+    description = tools.PYTHON_TOOL["function"]["description"]
+    assert tools._SANDBOX_PATHS_NOTE in description
+    assert "shell" not in description.lower()
+    if sys.platform == "win32":
+        assert tools._TERMINAL_SHELL_NOTE not in description
+
+
+def test_notes_say_where_commands_run(monkeypatch):
     # Without this, models decline to launch a window they believe the user
     # cannot see, and hand back manual instructions instead.
-    note = tools._SANDBOX_PATHS_NOTE
-    assert "user's own machine" in note
-    assert "opens a window on their desktop" in note
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert "user's own machine" in tools._build_sandbox_paths_note()
+    assert "opens a window on the user's desktop" in tools._build_terminal_shell_note()

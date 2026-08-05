@@ -7070,11 +7070,9 @@ WEB_SEARCH_TOOL = {
 # Appended to the python/terminal descriptions: models habitually write to
 # /mnt/data (a ChatGPT code-interpreter path), which does not exist here.
 # why: naming only POSIX paths reads as "you are on Linux", and models then refuse
-# to invoke Windows programs that are in fact available. Saying where the command
-# runs matters for the same reason: without it a model assumes the pipe is its only
-# output and declines to open a window it believes nobody can see. No program is
-# named: powershell/pwsh are on the sandbox blocklist, so recommending one hands
-# back a hard block instead of a command.
+# to invoke Windows programs that are in fact available. Saying where the code
+# runs matters for the same reason: without it a model assumes the pipe is its
+# only output and declines to open a window it believes nobody can see.
 _WIN_CWD_NOTE = (
     " Read and write files using relative paths in the current working "
     "directory, which persists for this conversation."
@@ -7082,35 +7080,44 @@ _WIN_CWD_NOTE = (
 
 
 def _build_sandbox_paths_note() -> str:
-    """The platform note appended to the python/terminal tool descriptions.
-
-    On Windows the shell depends on whether the host has a trusted bash, so the
-    note is built from the resolver rather than assumed: telling a model it has
-    bash when _get_shell_cmd fell back to cmd reintroduces the multi-line
-    half-execution this note exists to prevent.
-    """
+    """Platform and working-directory note, on BOTH tool descriptions."""
     if sys.platform != "win32":
         return (
             " Read and write files using relative paths in the current working "
             "directory, which persists for this conversation; absolute paths like "
             "/mnt/data or /tmp/outputs do not exist."
         )
+    return " You are on Windows, and this runs on the user's own machine." + _WIN_CWD_NOTE
+
+
+def _build_terminal_shell_note() -> str:
+    """Shell-specific note, on the TERMINAL description only.
+
+    Which shell runs is read from the resolver, not assumed: telling a model it
+    has bash on a host where _get_shell_cmd fell back to cmd reintroduces the
+    multi-line half-execution this note exists to prevent. It stays off the
+    python description because none of it applies to the python sandbox, and
+    naming a shell there invites subprocess/os.system as a way past the terminal
+    blocklist. No program is named either: powershell/pwsh are on that blocklist
+    and `cmd /c start` is not, so recommending one hands back a hard block and
+    recommending the other advertises the gap.
+    """
+    if sys.platform != "win32":
+        return ""
     if _windows_bash():
         return (
-            " You are on Windows. The shell is bash (Git for Windows), and native "
-            "Windows programs are available. Commands run on the user's own "
-            "machine, so a program you start detached opens a window on their "
-            "desktop." + _WIN_CWD_NOTE
+            " The shell is bash (Git for Windows), and native Windows programs are "
+            "available; a program you start detached opens a window on the user's "
+            "desktop."
         )
     return (
-        " You are on Windows and the shell is cmd, not bash: send one command per "
-        "call, chain with &&, and do not use bash syntax such as multi-line loops "
-        "or single-quoted arguments. Commands run on the user's own machine, so a "
-        "program you start detached opens a window on their desktop." + _WIN_CWD_NOTE
+        " The shell is cmd, not bash: send one command per call, chain with &&, and "
+        "do not use bash syntax such as multi-line loops or single-quoted arguments."
     )
 
 
 _SANDBOX_PATHS_NOTE = _build_sandbox_paths_note()
+_TERMINAL_SHELL_NOTE = _build_terminal_shell_note()
 
 PYTHON_TOOL = {
     "type": "function",
@@ -7135,7 +7142,9 @@ TERMINAL_TOOL = {
     "type": "function",
     "function": {
         "name": "terminal",
-        "description": "Execute a terminal command and return stdout/stderr." + _SANDBOX_PATHS_NOTE,
+        "description": "Execute a terminal command and return stdout/stderr."
+        + _SANDBOX_PATHS_NOTE
+        + _TERMINAL_SHELL_NOTE,
         "parameters": {
             "type": "object",
             "properties": {
