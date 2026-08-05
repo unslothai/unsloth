@@ -394,6 +394,14 @@ def test_cmd_runs_only_double_quotes(monkeypatch):
     assert not tools._find_blocked_commands("cmd /c 'powershell -Command ls'")
     assert not tools._find_blocked_commands("cmd //c start '' powershell -Command ls")
     assert tools._find_blocked_commands('cmd /c "powershell -Command ls"')
+    # The path recovery follows the same rule, or it reconstructs a program out
+    # of a path cmd would look for literally, single quotes and all.
+    assert not tools._find_blocked_commands(
+        r"cmd /c 'C:\Program Files\PowerShell\7\pwsh.exe' -Command ls"
+    )
+    assert tools._find_blocked_commands(
+        r'cmd /c "C:\Program Files\PowerShell\7\pwsh.exe" -Command ls'
+    )
 
 
 def test_a_drive_path_after_start_is_the_program_not_a_switch(windows_terminal):
@@ -421,6 +429,17 @@ def test_the_s_switch_payload_keeps_a_spaced_program_path(monkeypatch):
     )
     # A path named in passing is still an argument, not a program.
     assert not tools._find_blocked_commands(r'cmd /c "ls /usr/bin/rm"')
+
+
+def test_a_full_path_still_names_the_nested_shell(windows_terminal):
+    # os.path.basename leaves a backslash path whole off Windows, so
+    # `C:\Windows\System32\cmd.exe` matched no shell and the second /c payload
+    # was never read. Asserting the program, not merely that something was
+    # blocked: the previous revision reported the POSIX source builtin here,
+    # which would have kept this test green for the wrong reason.
+    assert "powershell" in tools._find_blocked_commands(
+        r'cmd /c "C:\Windows\System32\cmd.exe" /c powershell -Command ls'
+    )
 
 
 def test_git_bash_hands_cmd_its_own_quotes(monkeypatch):
