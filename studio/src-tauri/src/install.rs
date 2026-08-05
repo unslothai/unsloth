@@ -193,6 +193,43 @@ fn is_elevation_request(code: i32, packages: &[String]) -> bool {
     code == 2 && !packages.is_empty()
 }
 
+/// Windows PowerShell 5.1 applies `RemoteSigned` authorization differently to
+/// Win32 verbatim paths (`\\?\C:\...`) than to their ordinary drive/UNC forms.
+/// Tauri may return a verbatim resource path, so convert only the two lossless
+/// filesystem forms PowerShell understands before passing a script to `-File`.
+#[cfg(windows)]
+fn powershell_script_path(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let verbatim_unc: Vec<u16> = r"\\?\UNC\".encode_utf16().collect();
+    let verbatim: Vec<u16> = r"\\?\".encode_utf16().collect();
+
+    let normalized = if wide.starts_with(&verbatim_unc) {
+        let mut value: Vec<u16> = r"\\".encode_utf16().collect();
+        value.extend_from_slice(&wide[verbatim_unc.len()..]);
+        value
+    } else {
+        let drive = wide.get(verbatim.len()).copied();
+        let is_ascii_drive = drive.is_some_and(|value| {
+            (b'A' as u16..=b'Z' as u16).contains(&value)
+                || (b'a' as u16..=b'z' as u16).contains(&value)
+        });
+        if wide.starts_with(&verbatim)
+            && is_ascii_drive
+            && wide.get(verbatim.len() + 1) == Some(&(b':' as u16))
+            && wide.get(verbatim.len() + 2) == Some(&(b'\\' as u16))
+        {
+            wide[verbatim.len()..].to_vec()
+        } else {
+            return path.to_path_buf();
+        }
+    };
+
+    PathBuf::from(OsString::from_wide(&normalized))
+}
+
 // ── Script Resolution ──
 
 /// Returns (script_path, args) depending on dev vs production mode.
@@ -336,7 +373,7 @@ fn spawn_script(
         "RemoteSigned",
         "-File",
     ])
-    .arg(script)
+    .arg(powershell_script_path(script))
     .args(args)
     .current_dir(&work_dir)
     .stdout(Stdio::piped())
@@ -1065,6 +1102,27 @@ fn capped_output_text(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_script_path_normalizes_verbatim_filesystem_paths() {
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\C:\Users\Owner\install.ps1")),
+            PathBuf::from(r"C:\Users\Owner\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\UNC\server\share\install.ps1")),
+            PathBuf::from(r"\\server\share\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"C:\Users\Owner\install.ps1")),
+            PathBuf::from(r"C:\Users\Owner\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\Volume{1234}\install.ps1")),
+            PathBuf::from(r"\\?\Volume{1234}\install.ps1")
+        );
+    }
 
     #[test]
     fn elevated_output_cap_is_utf8_boundary_safe() {
