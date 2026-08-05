@@ -367,12 +367,13 @@ jobs:
         # against simulated CPU counts and memory so the result is identical on
         # a 4-vCPU runner and a 192-core box.
         #
-        # The Studio file runs here rather than in studio-backend-ci: that job
-        # installs studio.txt, which carries no unsloth_zoo, so every case that
-        # reaches the shared policy importorskips away -- 14 of 32, and with no
-        # policy installed the survivors fall back to the pre-PR safe_num_proc,
-        # so they would pass with the whole wiring deleted. This job has the
-        # editable unsloth_zoo those cases need.
+        # The Studio file runs here rather than in studio-backend-ci, which
+        # installs studio.txt and so has no unsloth_zoo at all. Note the policy
+        # module is not on unsloth_zoo main either until the companion PR lands,
+        # and this job clones UNSLOTH_ZOO_REF (main by default) -- so those cases
+        # reach the policy through _shared_policy, which falls back to this
+        # repo's own copy. Skipping instead would leave the 14 cases that matter
+        # green while the wiring they guard was inert.
         run: |
           python -m pytest -v --tb=short \
             tests/utils/test_dataset_num_proc.py \

@@ -511,8 +511,12 @@ def _rl_serial_as_none(tree, source, trainer_file):
     """
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "_serial_as_none":
+            # Parenthesised for the same reason as the sibling below: a
+            # formatter may reflow the ternary, and the segment's continuation
+            # lines are an IndentationError on their own.
             return eval(  # noqa: S307
-                ast.get_source_segment(source, node.value), {"trainer_file": trainer_file}
+                "(" + ast.get_source_segment(source, node.value) + ")",
+                {"trainer_file": trainer_file},
             )
     raise AssertionError("_serial_as_none assignment not found in unsloth/models/rl.py")
 
@@ -1629,3 +1633,48 @@ def test_the_fixture_really_neutralises_the_zoo_readers(dnp):
     assert str(module.CGROUP_ROOT).startswith("/nonexistent"), module.CGROUP_ROOT
     assert module._cgroup_v2_dirs() == []
     assert module._cgroup_v1_dirs("memory") == []
+
+
+def test_the_unaided_reader_picks_its_own_v1_line_too(monkeypatch, dnp, tmp_path):
+    """The other half of the scan: a v1 line that is not the first line.
+
+    The hybrid case above puts the memory controller first, so taking line 0
+    would still land on it. Here a pids line comes first and the memory
+    controller sits at a different path, which is what a Slurm step looks like:
+    reading line 0 walks a directory that does not exist and loses the ceiling
+    the step was given.
+    """
+    _no_hf_xet_tuning(monkeypatch)
+    v2_leaf = tmp_path / "user.slice" / "app.scope"
+    v2_leaf.mkdir(parents = True)
+    (v2_leaf / "memory.max").write_text("8589934592\n")
+    (v2_leaf / "memory.current").write_text("6442450944\n")
+    # 4GB capped, 3 spent: 1GB free, which is less than the v2 side's 2GB.
+    v1_leaf = tmp_path / "memory" / "slurm" / "job_1"
+    v1_leaf.mkdir(parents = True)
+    (v1_leaf / "memory.limit_in_bytes").write_text("4294967296\n")
+    (v1_leaf / "memory.usage_in_bytes").write_text("3221225472\n")
+
+    monkeypatch.setattr(dnp, "CGROUP_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        dnp,
+        "_proc_self_cgroup",
+        lambda: [
+            "11:pids:/user.slice/user-1000.slice/session-3.scope",
+            "10:memory:/slurm/job_1",
+            "0::/user.slice/app.scope",
+        ],
+    )
+    assert dnp._cgroup_free_bytes() == 1024**3
+
+
+def test_the_hatch_wins_on_a_small_split_too(monkeypatch, dnp):
+    """A split under the threshold is where the resolver would otherwise stand
+    down, and standing down there would silently discard the count a user set
+    by hand to get workers on a small dataset."""
+    _force_start_method(monkeypatch, dnp, "fork")
+    _force_stdlib_start_method(monkeypatch, dnp, "fork")
+    monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "16")
+
+    small = type("t", (), {"train_dataset": _Split(100)})()
+    assert dnp.resolve_responses_only_num_proc(small, None) == 16

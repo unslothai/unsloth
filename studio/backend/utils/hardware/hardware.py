@@ -3417,15 +3417,24 @@ def dataset_map_num_proc(
     return _bounded_by_the_shared_policy(desired, serial_as_none)
 
 
+# sys.modules key for the copy loaded off disk below. Not "unsloth.dataset_num_proc":
+# that name belongs to the package, and claiming it would make a later real import
+# of unsloth return this module instead.
+_LOCAL_POLICY_MODULE = "unsloth_studio_local_dataset_num_proc"
+
+
 def _shared_policy():
     """The shared num_proc policy module, or None on an installation without it.
 
     The Zoo owns it. ``unsloth.dataset_num_proc`` is a byte-identical fallback
-    for a Zoo that predates the module, but it is only used when the training
-    package is already imported: importing it here would make *hardware
-    detection* patch torch and load the model stack, and the callers that reach
-    this line (format conversion, chat templates, the trainer) all run in a
-    process that has imported unsloth already.
+    for a Zoo that predates the module. ``import unsloth.dataset_num_proc``
+    would run the package __init__, which patches torch and loads the model
+    stack -- unacceptable from inside hardware detection -- so that form is used
+    only when the package is already imported. Otherwise the file is loaded
+    straight off disk, which is safe because the module is stdlib-only by
+    design: the API process reaches format conversion without importing unsloth
+    at all, and leaving it with no policy there is what the 2GB container with
+    eight cores used to hit.
     """
     try:
         import unsloth_zoo.dataset_num_proc as policy
@@ -3438,6 +3447,31 @@ def _shared_policy():
             return policy
         except Exception as e:
             logger.debug("local dataset_num_proc fallback unavailable: %s", e)
+            return None
+    # Memoised through sys.modules: the policy warns once per process about a
+    # vetoed count, and re-executing the file on every map() call would reset
+    # that and re-read the cgroup tree each time.
+    cached = sys.modules.get(_LOCAL_POLICY_MODULE)
+    if cached is not None:
+        return cached
+    try:
+        import importlib.util
+
+        # find_spec does not execute a top-level package, so this locates
+        # unsloth/ without importing it.
+        package = importlib.util.find_spec("unsloth")
+        if package is None or not package.submodule_search_locations:
+            return None
+        path = Path(list(package.submodule_search_locations)[0]) / "dataset_num_proc.py"
+        if not path.is_file():
+            return None
+        spec = importlib.util.spec_from_file_location(_LOCAL_POLICY_MODULE, path)
+        policy = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(policy)
+        sys.modules[_LOCAL_POLICY_MODULE] = policy
+        return policy
+    except Exception as e:
+        logger.debug("local dataset_num_proc fallback unavailable: %s", e)
     return None
 
 

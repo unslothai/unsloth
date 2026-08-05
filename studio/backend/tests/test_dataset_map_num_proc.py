@@ -55,9 +55,8 @@ def _memory_headroom(monkeypatch):
     ``dataset_map_num_proc(4) == 4`` quietly becomes a test of the clamp. The
     cases that are about the clamp pin their own value afterwards, which wins.
     """
-    try:
-        import unsloth_zoo.dataset_num_proc as policy
-    except ImportError:
+    policy = hw._shared_policy()
+    if policy is None:
         return
     monkeypatch.setattr(policy, "_affordable_workers", lambda: 64)
 
@@ -72,6 +71,21 @@ def _require_fork(multiprocess):
     """
     if _HOST_PLATFORM == "win32" or "fork" not in multiprocess.get_all_start_methods():
         pytest.skip("needs fork to build a real worker pool")
+
+
+def _policy_or_skip():
+    """The policy module the production code will actually consult.
+
+    Not `importorskip("unsloth_zoo.dataset_num_proc")`: that module only exists
+    in the companion zoo PR, so on CI -- which clones unsloth_zoo main -- every
+    case that reached the policy skipped, and the ones that stayed exercised the
+    pre-PR path. `_shared_policy` finds this repo's own fallback copy, and
+    returning the same object it uses is also what makes monkeypatching it bite.
+    """
+    policy = hw._shared_policy()
+    if policy is None:
+        pytest.skip("no dataset_num_proc policy on this installation")
+    return policy
 
 
 def _patch_device(
@@ -258,7 +272,7 @@ def test_a_low_memory_host_gets_no_workers(monkeypatch):
     tokenizer workers to Dataset.map, which is the OOM the policy exists to stop.
     """
     _patch_device(monkeypatch, hw.DeviceType.CPU)
-    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy = _policy_or_skip()
     monkeypatch.setattr(policy, "_affordable_workers", lambda: 0)
     monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
     assert hw.dataset_map_num_proc(8) is None
@@ -266,7 +280,7 @@ def test_a_low_memory_host_gets_no_workers(monkeypatch):
 
 def test_the_memory_clamp_reduces_rather_than_refuses(monkeypatch):
     _patch_device(monkeypatch, hw.DeviceType.CPU)
-    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy = _policy_or_skip()
     monkeypatch.setattr(policy, "_affordable_workers", lambda: 3)
     monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
     assert hw.dataset_map_num_proc(8) == 3
@@ -275,7 +289,7 @@ def test_the_memory_clamp_reduces_rather_than_refuses(monkeypatch):
 def test_the_env_override_reaches_these_callers(monkeypatch):
     # The cap's log line used to advertise this on a path that never read it.
     _patch_device(monkeypatch, hw.DeviceType.CPU)
-    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy = _policy_or_skip()
     monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
     policy.reset_warning_state()
 
@@ -336,7 +350,7 @@ def test_a_serial_request_survives_the_config_round_trip(monkeypatch):
     # The map-site half of this needs the policy: without it
     # _bounded_by_the_shared_policy returns the count unchanged by design, so a
     # runner with no unsloth_zoo reads 1 rather than None.
-    pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    _policy_or_skip()
     _patch_device(monkeypatch, hw.DeviceType.CPU)
     assert hw.dataset_map_num_proc(1, serial_as_none = False) == 1
     # The map-site default is what turns it back into "no pool" at the call.
@@ -345,7 +359,7 @@ def test_a_serial_request_survives_the_config_round_trip(monkeypatch):
 
 def test_the_config_value_is_still_in_process_after_the_layer_reads_it(monkeypatch):
     """End to end: what Studio stores, read back the way the SFT config layer reads it."""
-    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy = _policy_or_skip()
     _patch_device(monkeypatch, hw.DeviceType.CPU)
 
     stored = hw.dataset_map_num_proc(1, serial_as_none = False)
@@ -384,7 +398,7 @@ def test_spawn_platforms_keep_none_at_either_layer(monkeypatch, platform):
 
 def test_every_other_caller_keeps_the_map_site_default(monkeypatch):
     """Only the config boundary opts in; the seven map-site callers must not."""
-    pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    _policy_or_skip()
     _patch_device(monkeypatch, hw.DeviceType.CPU)
     assert hw.dataset_map_num_proc(1) is None
     assert hw.dataset_map_num_proc(4) == 4
@@ -440,7 +454,7 @@ def test_an_auto_request_is_sized_by_the_policy_not_by_the_host_cpu_count(monkey
     mask and the cgroup quota, so a 2-core container on a 64-core box asked for
     ``cpu_count // 3`` workers and was bounded only by memory.
     """
-    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy = _policy_or_skip()
     _patch_device(monkeypatch, hw.DeviceType.CPU)
     monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
     monkeypatch.setattr(policy, "_usable_cpus", lambda: 2)
@@ -453,7 +467,7 @@ def test_an_auto_request_is_sized_by_the_policy_not_by_the_host_cpu_count(monkey
 
 def test_studio_caps_still_apply_to_a_policy_chosen_count(monkeypatch):
     """The multi-GPU fork-deadlock cap is knowledge the policy does not have."""
-    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy = _policy_or_skip()
     _patch_device(monkeypatch, hw.DeviceType.CUDA, visible_gpus = 2)
     monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
     monkeypatch.setattr(policy, "_usable_cpus", lambda: 64)
@@ -471,7 +485,7 @@ def test_the_override_is_honoured_on_spawn_platforms(monkeypatch, platform):
     A user who has read the dead-worker message and set this has accepted spawn
     workers; silently ignoring it makes the documented remedy a no-op.
     """
-    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy = _policy_or_skip()
     policy.reset_warning_state()
     monkeypatch.setattr(sys, "platform", platform)
     monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", "2")
@@ -484,7 +498,7 @@ def test_the_override_is_honoured_on_spawn_platforms(monkeypatch, platform):
 
 def test_the_override_is_not_capped_by_the_studio_heuristics(monkeypatch):
     """Uncapped by contract, including by the multi-GPU cap Studio adds after."""
-    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy = _policy_or_skip()
     policy.reset_warning_state()
     _patch_device(monkeypatch, hw.DeviceType.CUDA, visible_gpus = 4)
     monkeypatch.setenv("UNSLOTH_DATASET_NUM_PROC", "16")
@@ -551,7 +565,7 @@ def test_the_override_is_honoured_after_xpu_init(monkeypatch):
     The XPU guard exists because fork corrupts the Level-Zero context, but a
     user who has read the dead-worker message and set this has accepted that.
     """
-    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy = _policy_or_skip()
     policy.reset_warning_state()
     _patch_device(monkeypatch, hw.DeviceType.XPU)
     _patch_runtime(monkeypatch, "xpu", is_initialized = True)
@@ -572,7 +586,7 @@ def test_an_ignored_override_does_not_skip_the_studio_caps(monkeypatch, raw):
     Treating any non-empty value as an active override let a typo skip the
     multi-GPU fork-deadlock cap while contributing nothing in its place.
     """
-    policy = pytest.importorskip("unsloth_zoo.dataset_num_proc")
+    policy = _policy_or_skip()
     policy.reset_warning_state()
     monkeypatch.setattr(policy, "multiprocessing_start_method", lambda: "fork")
     monkeypatch.setattr(policy, "_affordable_workers", lambda: 64)
