@@ -161,9 +161,11 @@ export function ApiKeysTab() {
           </p>
         ) : (
           <div className="hover-scrollbar flex max-h-72 min-w-0 flex-col overflow-y-auto pr-1 [scrollbar-gutter:stable]">
-            {keys.map((k) => (
-              <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
-            ))}
+            <div className="overlay-scrollbar-gutter">
+              {keys.map((k) => (
+                <ApiKeyRow key={k.id} apiKey={k} onRevoke={setRevokeTarget} />
+              ))}
+            </div>
           </div>
         )}
       </section>
