@@ -328,6 +328,41 @@ class TestTrainingRawSupport(unittest.TestCase):
         with self.assertRaises(ValueError):
             _coerce_optional_nonneg_float("max_grad_leaf_norm", -1)
 
+        # inf clears >= 0 but never binds, so it would train unclipped while
+        # the config reports a threshold. Same hazard on all three knobs.
+        for name in ("max_grad_norm", "max_grad_value", "max_grad_leaf_norm"):
+            for bad in (float("inf"), float("-inf"), float("nan")):
+                with self.assertRaises(ValueError):
+                    _coerce_optional_nonneg_float(name, bad)
+
+    def test_mlx_clip_knobs_reject_non_finite_at_every_layer(self):
+        # The schema, the normalizer and the worker each guard the three clip
+        # knobs, because raw worker callers reach none of the layers above them.
+        import math
+
+        from pydantic import ValidationError
+
+        from core.training.worker import _resolve_mlx_max_grad_norm
+        from models.training import TrainingStartRequest
+
+        for field in ("max_grad_norm", "max_grad_value", "max_grad_leaf_norm"):
+            for bad in (float("inf"), float("nan")):
+                with self.assertRaises(ValidationError):
+                    TrainingStartRequest(
+                        model_name = "unsloth/test",
+                        training_type = "LoRA/QLoRA",
+                        format_type = "auto",
+                        **{field: bad},
+                    )
+
+        with self.assertRaises(ValueError):
+            _resolve_mlx_max_grad_norm(float("inf"))
+
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+        for name in ("max_grad_value", "max_grad_leaf_norm"):
+            self.assertIn(f"if {name} < 0 or not math.isfinite({name}):", source)
+        self.assertTrue(math.isfinite(_resolve_mlx_max_grad_norm(None)))
+
     def test_mlx_worker_feature_detects_optional_mlx_config_fields(self):
         # `cast_norm_output_to_input_dtype`, `dataset_order`,
         # `max_grad_leaf_norm`, and `append_eos` ship in the paired

@@ -414,10 +414,9 @@ class TrainingStartRequest(BaseModel):
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
     weight_decay: float = Field(0.001, description = "Weight decay")
-    # Finite as well as non-negative: JSON accepts 1e309 (and FastAPI's parser
-    # the Infinity literal), which floats to inf and satisfies a ge-only
-    # constraint. An inf threshold never binds, so the run trains unclipped
-    # while the config reports clipping.
+    # All three clip knobs are finite as well as non-negative: JSON 1e309 (and
+    # FastAPI's Infinity literal) floats to inf, which clears ge=0 but never
+    # binds, so the run would train unclipped while reporting a threshold.
     max_grad_norm: Optional[float] = Field(
         None,
         ge = 0,
@@ -433,6 +432,7 @@ class TrainingStartRequest(BaseModel):
     max_grad_value: Optional[float] = Field(
         None,
         ge = 0,
+        allow_inf_nan = False,
         description = (
             "MLX-only elementwise gradient value clipping threshold. "
             "If unset, MLX uses its runtime default."
@@ -441,6 +441,7 @@ class TrainingStartRequest(BaseModel):
     max_grad_leaf_norm: Optional[float] = Field(
         None,
         ge = 0,
+        allow_inf_nan = False,
         description = (
             "MLX-only proportional per-parameter gradient norm cap. "
             "Preserves each tensor's gradient direction without global norm "

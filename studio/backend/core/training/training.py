@@ -109,15 +109,19 @@ def _coerce_optional_bool(value, default: bool) -> bool:
 
 
 def _coerce_optional_nonneg_float(name: str, value):
-    """Reject negatives; HTTP `ge=0` doesn't cover raw `**kwargs` callers."""
+    """Reject negatives and non-finite; HTTP `ge=0` misses raw `**kwargs` callers.
+
+    inf clears `ge=0` but never binds, so the run would train unclipped while
+    the config reports a threshold.
+    """
     if value is None:
         return None
     try:
         coerced = float(value)
     except (TypeError, ValueError):
         raise ValueError(f"Unsloth: {name}={value!r} must be a non-negative float or None.")
-    if coerced < 0:
-        raise ValueError(f"Unsloth: {name}={coerced} must be >= 0.")
+    if coerced < 0 or not math.isfinite(coerced):
+        raise ValueError(f"Unsloth: {name}={coerced} must be finite and >= 0.")
     return coerced
 
 

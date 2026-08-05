@@ -1513,12 +1513,10 @@ def _resolve_mlx_output_dir(config, model_name):
 def _resolve_mlx_max_grad_norm(value):
     """Global-norm clip threshold for MLX runs; None selects the default.
 
-    1.0 is what the CUDA text path trains with (TRL's SFTConfig default) and
-    what the public MLX API applies when no clipping knob is given, so an
-    unset value lands on the same threshold everywhere. CUDA's vision branch
-    uses 0.3, which is not mirrored here. Explicit 0 turns global-norm
-    clipping off, which leaves MLX's per-parameter clipping in force unless
-    max_grad_leaf_norm is also set to 0.
+    1.0 matches the CUDA text path (TRL's SFTConfig default) and the public MLX
+    API, so unset lands on the same threshold everywhere; CUDA's vision 0.3 is
+    not mirrored. Explicit 0 turns global-norm clipping off but leaves MLX's
+    per-parameter clipping in force unless max_grad_leaf_norm is also 0.
     """
     if value is None:
         return 1.0
@@ -1528,8 +1526,7 @@ def _resolve_mlx_max_grad_norm(value):
         raise ValueError(
             f"Unsloth MLX: max_grad_norm={value!r} must be a non-negative float or None."
         )
-    # inf satisfies a >= 0 check but never binds, so the run would train
-    # unclipped while reporting a threshold.
+    # inf clears a >= 0 check but never binds, so the run would train unclipped.
     if value < 0 or not math.isfinite(value):
         raise ValueError(
             f"Unsloth MLX: max_grad_norm={value} must be a finite value >= 0 "
@@ -1995,17 +1992,17 @@ def _run_mlx_training(event_queue, stop_queue, config):
     max_grad_value = config.get("max_grad_value")
     if max_grad_value is not None:
         max_grad_value = float(max_grad_value)
-        if max_grad_value < 0:
+        if max_grad_value < 0 or not math.isfinite(max_grad_value):
             raise ValueError(
-                f"Unsloth MLX: max_grad_value={max_grad_value} must be >= 0 "
+                f"Unsloth MLX: max_grad_value={max_grad_value} must be finite and >= 0 "
                 "(0 or None disables elementwise clipping)."
             )
     max_grad_leaf_norm = config.get("max_grad_leaf_norm")
     if max_grad_leaf_norm is not None:
         max_grad_leaf_norm = float(max_grad_leaf_norm)
-        if max_grad_leaf_norm < 0:
+        if max_grad_leaf_norm < 0 or not math.isfinite(max_grad_leaf_norm):
             raise ValueError(
-                f"Unsloth MLX: max_grad_leaf_norm={max_grad_leaf_norm} must be >= 0 "
+                f"Unsloth MLX: max_grad_leaf_norm={max_grad_leaf_norm} must be finite and >= 0 "
                 "(0 or None disables proportional leaf-norm clipping)."
             )
     weight_decay = config.get("weight_decay", 0.001)
