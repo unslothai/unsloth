@@ -1604,8 +1604,8 @@ def _component_weights_complete(component: Path) -> bool:
     for the plain name and has no fallback the other way, and the download plan skips those files
     for the same reason, so a cache holding only them was filled by something else.
 
-    Both kinds are still walked, so they claim their shards and a half-landed set cannot pose as
-    the default weight in the loose scan below.
+    So with no selected index there are exactly two names left, the pair ``_get_model_file`` is
+    handed, and every other weight in the directory is one ``from_pretrained`` never resolves.
     """
     # iterdir() raises on an unreadable dir, reaching the caller's fail-open guard; glob() would
     # swallow that OSError and read as "no weights".
@@ -1615,45 +1615,21 @@ def _component_weights_complete(component: Path) -> bool:
     # loader's own test, so a dangling snapshot symlink is absent to both.
     selected = component / _SELECTED_DENOISER_INDEX
     if selected.is_file():
-        return not _index_cannot_serve_its_shards(selected, set())
-    claimed: set[str] = set()
-    for index in component.glob("*.json"):
-        if ".index." not in index.name:
-            continue
-        # An unreadable index cannot prove incompleteness.
-        shards = _denoiser_index_shards(index)
-        if shards is None:
-            continue
-        # Nothing left here vouches for the component -- the one resolved name answered above --
-        # but it still claims its shards, so a half-landed set cannot pose as a loose weight.
-        claimed |= shards
-    # The last thing that could load is a weight NO index claims: an unsharded default beside an
-    # orphan variant index.
-    for entry in component.rglob("*"):
-        if not entry.is_file() or not entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES):
-            continue
-        # The default name carries one dot, the variant a second
-        # (``diffusion_pytorch_model.fp16.safetensors``), and a default load asks for the plain one.
-        if entry.name.count(".") > 1:
-            continue
-        # A numbered shard is only ever reached THROUGH an index, so one no index claimed is not a
-        # loose weight but the wreckage of a set whose index never landed (or landed dangling) --
-        # which the claimed-name skip cannot catch, there being no readable index to claim it.
-        if _WEIGHT_SHARD_RE.search(entry.name):
-            continue
-        try:
-            relative = entry.relative_to(component).as_posix()
-        except ValueError:  # not under the component after symlink resolution
-            continue
-        # An ignored index does not get to speak for the one name a default load resolves. Every
-        # index that reached ``claimed`` is one ``_fetch_index_file`` never builds, so a stale or
-        # malformed map of its own naming ``diffusion_pytorch_model.safetensors`` would otherwise
-        # hide the very file ``_get_model_file`` opens, and a loadable component would read torn.
-        if relative in _DEFAULT_DENOISER_WEIGHTS:
-            return True
-        if relative not in claimed and entry.name not in claimed:
-            return True
-    return False
+        if _index_cannot_serve_its_shards(selected, set()):
+            return False
+        # The loader opens exactly what ``weight_map`` lists and reads each one as a checkpoint,
+        # so a map naming something that is not a weight file -- a ``config.json`` a corrupt fetch
+        # left behind -- fails at load however present that file is.
+        shards = _denoiser_index_shards(selected)
+        return bool(shards) and all(
+            name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES) for name in shards
+        )
+    # No index, so the component is not sharded to the loader either, and ``_get_model_file`` is
+    # asked for the safetensors default and then the ``.bin`` under it and opens nothing else. A
+    # weight under any other name is one ``from_pretrained`` never resolves: a numbered shard is
+    # reachable only THROUGH an index, a dtype twin only under a matching ``variant``, and a
+    # ``model.safetensors`` or adapter sidecar never at all.
+    return any((component / name).is_file() for name in _DEFAULT_DENOISER_WEIGHTS)
 
 
 def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:

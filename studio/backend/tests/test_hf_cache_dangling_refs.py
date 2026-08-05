@@ -3420,6 +3420,40 @@ def test_an_ignored_index_cannot_claim_the_default_weight(default_name, tmp_path
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
 
 
+def test_a_weight_under_a_name_the_loader_never_asks_for_does_not_count(tmp_path):
+    """With no index the component is unsharded to the loader too, and ``_get_model_file`` is
+    handed ``diffusion_pytorch_model.safetensors`` and then the ``.bin`` under it and opens nothing
+    else. A transformers-style ``model.safetensors``, or an adapter sidecar, is never resolved."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/model.safetensors": b"\0" * 256,
+            "transformer/adapter_model.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (snapshot / "transformer" / "diffusion_pytorch_model.bin").write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_selected_index_naming_a_non_weight_file_is_not_a_checkpoint(tmp_path):
+    """The loader reads every mapped name as a checkpoint, so a map pointing at the ``config.json``
+    beside it fails at load however present that file is."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/config.json": b"{}",
+            "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                {"weight_map": {"a": "config.json"}}
+            ).encode(),
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
 def test_an_unsharded_dtype_twin_alone_is_not_the_default_weight(tmp_path):
     """The same rule with no index in sight: the twin a ``variant = "fp16"`` load left behind is
     the only weight here, and the default load this app issues cannot open it."""
