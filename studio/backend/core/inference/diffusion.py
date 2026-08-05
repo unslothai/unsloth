@@ -970,14 +970,31 @@ class DiffusionBackend:
             )
         # Base repo (VAE / text-encoder / scheduler); list comes from the estimate.
         snapshot_root: Optional[str] = None
+        # reuse_other_cache_root resolves EACH file through whichever root holds it, so a moved
+        # cache can serve the manifest from the old root while the companions download into the
+        # live one. Returning the manifest's snapshot then points from_pretrained at a directory
+        # the rest of the files are not in, failing a load that would have worked off the hub id.
+        roots: set[str] = set()
         for rfilename in base_files:
             if cancel.is_set():
                 raise RuntimeError("Cancelled")
             local = hf_hub_download_with_xet_fallback(
                 base, rfilename, hf_token, cancel_event = cancel, reuse_other_cache_root = True
             )
+            # The snapshot dir is the resolved path minus the file's own relative path, so a
+            # subfolder entry yields the same root as a top-level one. Not resolve()d: that would
+            # follow the symlink into blobs/ and leave the snapshot tree entirely.
+            try:
+                root = str(Path(local).parents[len(Path(rfilename).parts) - 1])
+            except (IndexError, ValueError, OSError):
+                root = ""
+            roots.add(root)
             if rfilename == "model_index.json":
-                snapshot_root = str(Path(local).parent)
+                snapshot_root = root or None
+        # Only hand back a snapshot the whole prefetched set actually lives in; otherwise fall
+        # back to the hub id, which resolves each file through its own root as before.
+        if snapshot_root is not None and roots != {snapshot_root}:
+            return None
         return snapshot_root
 
     def validate_load_request(

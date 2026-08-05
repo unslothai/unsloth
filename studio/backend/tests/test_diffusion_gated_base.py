@@ -768,6 +768,77 @@ def test_the_prefetch_reuses_a_base_asset_cached_under_the_other_root(monkeypatc
     ]
 
 
+def _stub_split_download(monkeypatch, per_file):
+    """Resolve each companion to the exact path ``per_file`` names, so a test can put the manifest
+    and the rest of the base under DIFFERENT cache roots the way a mid-session cache move does."""
+    import utils.hf_xet_fallback as X
+
+    monkeypatch.setattr(
+        X,
+        "_shared_hf_hub_download_with_xet_fallback",
+        lambda repo_id, filename, token, **k: per_file[filename],
+    )
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: types.SimpleNamespace(hub_cache = "/live-hub"),
+    )
+
+
+def test_a_prefetch_split_across_roots_hands_back_no_snapshot(monkeypatch):
+    """Per-file root reuse can serve the manifest from the old root while the companions download
+    into the live one. The manifest's snapshot dir then does not contain them, so returning it
+    would point from_pretrained at a tree missing the VAE and fail a load that the plain hub id
+    completes. Falling back to the hub id costs nothing: it resolves each file through its own
+    root, which is how the files got here."""
+    old = "/old-hub/models--bfl--base/snapshots/" + "a" * 40
+    live = "/live-hub/models--bfl--base/snapshots/" + "a" * 40
+    _stub_split_download(
+        monkeypatch,
+        {
+            "model_index.json": f"{old}/model_index.json",
+            "vae/diffusion_pytorch_model.safetensors": (
+                f"{live}/vae/diffusion_pytorch_model.safetensors"
+            ),
+        },
+    )
+    assert (
+        DiffusionBackend()._prefetch_files(
+            "unsloth/FLUX.1-dev-GGUF",
+            None,
+            "bfl/base",
+            ["model_index.json", "vae/diffusion_pytorch_model.safetensors"],
+            None,
+        )
+        is None
+    )
+
+
+def test_a_prefetch_wholly_in_one_root_still_hands_back_that_snapshot(monkeypatch):
+    """The other side, so the guard above cannot be satisfied by never returning a snapshot: when
+    every prefetched file does live in the manifest's snapshot, the loader is still handed it. A
+    subfolder entry resolves to the same root as a top-level one."""
+    root = "/old-hub/models--bfl--base/snapshots/" + "a" * 40
+    _stub_split_download(
+        monkeypatch,
+        {
+            "model_index.json": f"{root}/model_index.json",
+            "vae/diffusion_pytorch_model.safetensors": (
+                f"{root}/vae/diffusion_pytorch_model.safetensors"
+            ),
+        },
+    )
+    assert (
+        DiffusionBackend()._prefetch_files(
+            "unsloth/FLUX.1-dev-GGUF",
+            None,
+            "bfl/base",
+            ["model_index.json", "vae/diffusion_pytorch_model.safetensors"],
+            None,
+        )
+        == root
+    )
+
+
 def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypatch, tmp_path):
     """The prefetch reuse above only covers a base the size estimate could list, and the estimate
     comes from the very ``model_info`` call whose 401 earned the cache escape: a private base, or a
