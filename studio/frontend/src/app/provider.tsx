@@ -57,6 +57,17 @@ const MINIMUM_APP_WINDOW_SIZE: LogicalWindowSize = {
   width: MIN_WINDOW_WIDTH,
   height: MIN_WINDOW_HEIGHT,
 };
+// Keep in step with MOBILE_BREAKPOINT in hooks/use-mobile.ts.
+const MIN_DESKTOP_LAYOUT_WIDTH = 768;
+
+// Logical px needed per CSS px. devicePixelRatio already includes the display
+// scale, so anything left over is webview zoom, which Windows text scaling
+// adds. 1 when there is none.
+function logicalPerCssPx(monitorScale: number): number {
+  if (typeof window === "undefined" || !(monitorScale > 0)) return 1;
+  const ratio = window.devicePixelRatio / monitorScale;
+  return Number.isFinite(ratio) && ratio > 1 ? ratio : 1;
+}
 
 async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, LogicalSize } = await import(
@@ -154,7 +165,18 @@ async function applyAppWindowLayout(
       const scale = monitor.scaleFactor;
       const screenW = monitor.size.width / scale;
       const screenH = monitor.size.height / scale;
-      finalW = Math.max(MIN_WINDOW_WIDTH, Math.round(screenW * 0.75));
+      finalW = Math.max(
+        MIN_WINDOW_WIDTH,
+        Math.round(screenW * 0.75),
+        // Windows text scaling zooms the webview on top of the display scale,
+        // so logical px buy fewer CSS px and the window opens under the
+        // sidebar's mobile breakpoint. Ratio is 1 without it, so this is a
+        // no-op elsewhere. Never exceed the screen.
+        Math.min(
+          Math.round(MIN_DESKTOP_LAYOUT_WIDTH * logicalPerCssPx(scale)),
+          Math.round(screenW),
+        ),
+      );
       const targetH = Math.max(MIN_WINDOW_HEIGHT, Math.round(finalW / 1.618));
       finalH = Math.min(targetH, Math.round(screenH * 0.85));
     }
