@@ -1184,9 +1184,7 @@ def _skip_start_switches(tokens: "list[str]", index: int) -> int:
     return index
 
 
-def _quoted_token_indexes(
-    command: str, tokens: "list[str]", lexed_posix: bool
-) -> "frozenset[int]":
+def _quoted_token_indexes(command: str, tokens: "list[str]", lexed_posix: bool) -> "frozenset[int]":
     """Indexes of ``tokens`` that were written with quotes around them.
 
     cmd reads `start`'s first argument as a window title only when it is quoted,
@@ -1219,9 +1217,7 @@ def _quoted_token_indexes(
         return frozenset()
     if len(raw) != len(tokens):
         return frozenset()
-    return frozenset(
-        index for index, token in enumerate(raw) if token.startswith(('"', "'"))
-    )
+    return frozenset(index for index, token in enumerate(raw) if token.startswith(('"', "'")))
 
 
 def _xargs_replacement(tokens: "list[str]", start: int, end: int) -> str:
