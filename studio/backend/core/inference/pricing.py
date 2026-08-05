@@ -64,23 +64,9 @@ OPENAI_PRICING: dict[str, dict[str, float]] = {
 
 MINIMAX_PRICING: dict[str, dict[str, float]] = {
     "MiniMax-M3": {
-        "input_per_mtok": 0.3,
-        "output_per_mtok": 1.2,
-        "cache_read_per_mtok": 0.06,
-        "cache_write_per_mtok": 0.0,
-        "long_context_threshold_exclusive": 512_000,
-        "long_context_input_per_mtok": 0.6,
-        "long_context_output_per_mtok": 2.4,
-        "long_context_cache_read_per_mtok": 0.12,
-        "long_context_cache_write_per_mtok": 0.0,
-        "priority_input_per_mtok": 0.45,
-        "priority_output_per_mtok": 1.8,
-        "priority_cache_read_per_mtok": 0.09,
-        "priority_cache_write_per_mtok": 0.0,
-        "priority_long_context_input_per_mtok": 0.9,
-        "priority_long_context_output_per_mtok": 3.6,
-        "priority_long_context_cache_read_per_mtok": 0.18,
-        "priority_long_context_cache_write_per_mtok": 0.0,
+        "input_per_mtok": 0.6,
+        "output_per_mtok": 2.4,
+        "cache_read_per_mtok": 0.12,
     },
     "MiniMax-M2.7": {
         "input_per_mtok": 0.3,

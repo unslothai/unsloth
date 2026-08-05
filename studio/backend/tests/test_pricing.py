@@ -309,46 +309,20 @@ def test_openai_unlisted_model_priced_false_not_zero_default():
         assert out["billable_output_tokens"] == 1_000_000, model
 
 
-# ── MiniMax model, cache, context, and service tiers ────────────────
+# ── MiniMax model and cache pricing ─────────────────────────────────
 
 
-def test_minimax_m3_standard_and_long_context_tiers():
-    at_boundary = calculate_cost(
-        "minimax",
-        "MiniMax-M3",
-        {"input_tokens": 512_000, "output_tokens": 1_000_000},
-    )
-    above_boundary = calculate_cost(
-        "minimax",
-        "MiniMax-M3",
-        {"input_tokens": 512_001, "output_tokens": 1_000_000},
-    )
+def test_minimax_m3_uses_documented_flat_rates():
+    for input_tokens in (100_000, 1_000_000):
+        out = calculate_cost(
+            "minimax",
+            "MiniMax-M3",
+            {"input_tokens": input_tokens, "output_tokens": 1_000_000},
+        )
 
-    assert _isclose(at_boundary["input_usd"], 512_000 / 1_000_000.0 * 0.3)
-    assert _isclose(at_boundary["output_usd"], 1.2)
-    assert "long-context" not in at_boundary["model_priced"]
-    assert _isclose(above_boundary["input_usd"], 512_001 / 1_000_000.0 * 0.6)
-    assert _isclose(above_boundary["output_usd"], 2.4)
-    assert "long-context >512000" in above_boundary["model_priced"]
-
-
-def test_minimax_m3_priority_long_context_tier_preserves_all_rates():
-    out = calculate_cost(
-        "minimax",
-        "MiniMax-M3",
-        {
-            "input_tokens": 1_000_000,
-            "output_tokens": 1_000_000,
-            "input_tokens_details": {"cached_tokens": 500_000},
-            "service_tier": "priority",
-        },
-    )
-
-    assert _isclose(out["input_usd"], 0.5 * 0.9)
-    assert _isclose(out["cache_read_usd"], 0.5 * 0.18)
-    assert _isclose(out["output_usd"], 3.6)
-    assert "priority" in out["model_priced"]
-    assert "long-context >512000" in out["model_priced"]
+        assert _isclose(out["input_usd"], input_tokens / 1_000_000.0 * 0.6)
+        assert _isclose(out["output_usd"], 2.4)
+        assert "long-context" not in out["model_priced"]
 
 
 def test_minimax_m27_anthropic_cache_prices_are_absolute():
@@ -381,8 +355,8 @@ def test_minimax_m3_openai_cache_read_is_not_double_billed():
     )
 
     assert out["billable_input_tokens"] == 100_000
-    assert _isclose(out["input_usd"], 20_000 / 1_000_000.0 * 0.3)
-    assert _isclose(out["cache_read_usd"], 80_000 / 1_000_000.0 * 0.06)
+    assert _isclose(out["input_usd"], 20_000 / 1_000_000.0 * 0.6)
+    assert _isclose(out["cache_read_usd"], 80_000 / 1_000_000.0 * 0.12)
     assert out["cache_write_usd"] == 0.0
 
 
@@ -540,9 +514,10 @@ def test_snapshot_contains_provider_buckets_and_multipliers():
     assert gpt55["long_context_output_per_mtok"] == 45.0
     assert m["models"] == MINIMAX_PRICING
     m3 = m["models"]["MiniMax-M3"]
-    assert m3["long_context_threshold_exclusive"] == 512_000
-    assert m3["priority_long_context_input_per_mtok"] == 0.9
-    assert m3["priority_long_context_output_per_mtok"] == 3.6
+    assert m3["input_per_mtok"] == 0.6
+    assert m3["output_per_mtok"] == 2.4
+    assert m3["cache_read_per_mtok"] == 0.12
+    assert "cache_write_per_mtok" not in m3
 
 
 # ── longest-prefix match: dated mini variant must not collide with the
