@@ -451,7 +451,7 @@ def _assert_base_repo_accessible(
     base_repo: str,
     hf_token: Optional[str],
     probe_file: str = "model_index.json",
-) -> None:
+) -> Optional[str]:
     """Fail up front, with the licence URL, when a companion base cannot be read.
 
     The Hub gates the BYTE endpoint only, so ``model_info`` answers anonymously for gated FLUX /
@@ -462,18 +462,25 @@ def _assert_base_repo_accessible(
 
     ``probe_file`` is that file: the pipeline manifest for a diffusers base, but the native plan
     passes its own asset name, since a repo it reads only for a VAE has no manifest cached and
-    would be refused for a load that works today."""
+    would be refused for a load that works today.
+
+    Returns the base's local snapshot dir when an ACCESS verdict was excused by a copy that lives
+    only under huggingface_hub's import-time cache root, so the caller can load the base straight
+    off disk; None otherwise. The metadata failure that earns that escape also empties the size
+    estimate, so the prefetch stages nothing to reuse, and ``from_pretrained`` is pinned to
+    ``hub_cache_dir()`` and cannot see the other root -- it would re-raise the bare Hub auth error
+    the escape exists to avoid."""
     repo = (base_repo or "").strip()
     # Only a remote 'org/name' can be gated; a local base is already on disk.
     if not repo or repo.count("/") != 1:
-        return
+        return None
     # Blank to None, as load_pipeline does later. build_hf_headers sends any str verbatim, so ""
     # becomes a literal "Bearer " that answers 401 invalid-credentials, and the 401 handling below
     # would turn an open base into a hard access error. None means "use the cached login".
     hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
     try:
         if Path(repo).expanduser().exists():
-            return
+            return None
     # OSError: invalid path characters -> a remote id, not a local path.
     # RuntimeError: pathlib raises it, NOT an OSError, when expanduser() cannot resolve the home
     # directory -- '~someoneelse/models' on any OS, and plain '~/models' under a Windows service
@@ -490,7 +497,12 @@ def _assert_base_repo_accessible(
             RepositoryNotFoundError,
         )
     except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
-        return
+        return None
+
+    # Set when only huggingface_hub's import-time root holds the copy that excuses the verdict; the
+    # snapshot dir is handed back so the caller can load the base from disk instead of through the
+    # live root, which is where a from_pretrained pinned to hub_cache_dir() would look and miss.
+    other_root_snapshot: Optional[str] = None
 
     # A base already on disk needs no Hub access, so refusing one can only block a load that works
     # today: hf_hub_download catches the gated/401 HEAD and returns the cached pointer ("let's
@@ -509,11 +521,18 @@ def _assert_base_repo_accessible(
         now passes the preflight and dies mid-download on the bare token error. That is the
         pre-preflight behaviour, so the excuse costs a better message in a partial-download case
         and never blocks a load -- the opposite trade of refusing every cached base outright."""
+        nonlocal other_root_snapshot
         try:
             from huggingface_hub import try_to_load_from_cache
             for root in (hub_cache_dir(), None):
                 # Only a str is a cached path; a miss is None and an absent file is a sentinel.
-                if isinstance(try_to_load_from_cache(repo, probe_file, cache_dir = root), str):
+                hit = try_to_load_from_cache(repo, probe_file, cache_dir = root)
+                if isinstance(hit, str):
+                    # The live root is tried first, so landing here on None means only the
+                    # import-time one has it. One level up is the snapshot dir -- true only for a
+                    # top-level probe, so a subfolder name yields nothing rather than a wrong root.
+                    if root is None and "/" not in probe_file:
+                        other_root_snapshot = str(Path(hit).parent)
                     return True
         except Exception:  # noqa: BLE001 — a cache we cannot read is not an access verdict
             pass
@@ -533,7 +552,7 @@ def _assert_base_repo_accessible(
         gated = getattr(HfApi().model_info(repo, token = hf_token), "gated", None)
     except GatedRepoError:  # a gated repo can also withhold its metadata
         if _already_downloaded():
-            return
+            return other_root_snapshot
         raise ValueError(_repo_access_message(repo, gated = True)) from None
     except RepositoryNotFoundError as exc:
         # 401 and 404 both arrive here: hf_raise_for_status folds "private and gated repos if user
@@ -545,18 +564,20 @@ def _assert_base_repo_accessible(
         # un-renamed by a stale copy on disk, and the size estimate swallows that 404 into a
         # zero-byte plan. An error carrying no response reads as neither, so it raises: fail safe.
         if _is_auth_error(exc) and _already_downloaded():
-            return
+            return other_root_snapshot
         raise ValueError(_repo_access_message(repo, gated = False)) from None
     except HfHubHTTPError as exc:
         if not _is_auth_error(exc):
-            return  # a 5xx or rate limit is not an access verdict
+            return None  # a 5xx or rate limit is not an access verdict
         if _already_downloaded():
-            return
+            return other_root_snapshot
         raise ValueError(_repo_access_message(repo, gated = False)) from None
     except Exception:  # noqa: BLE001 — offline / transient: the download surfaces any real error
-        return
+        return None
+    # Nothing to carry: model_info answered, so the size estimate lists the base files and the
+    # prefetch already resolves each one through whichever root holds it.
     if not gated or _already_downloaded():
-        return
+        return None
     try:
         # A metadata HEAD, never hf_hub_download: a cached manifest makes the download return the
         # cached pointer (the 401 HEAD is kept as head_call_error), so a stale token would pass the
@@ -566,10 +587,11 @@ def _assert_base_repo_accessible(
         raise ValueError(_repo_access_message(repo, gated = True)) from None
     except HfHubHTTPError as exc:
         if not _is_auth_error(exc):
-            return
+            return None
         raise ValueError(_repo_access_message(repo, gated = True)) from None
     except Exception:  # noqa: BLE001 — no manifest / offline / transient is not an access verdict
-        return
+        return None
+    return None
 
 
 @dataclass(frozen = True)
@@ -1182,7 +1204,9 @@ class DiffusionBackend:
                     kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
                 )
             # Same preflight the plan runs: catch a gated base here, not 15 GiB into the prefetch.
-            _assert_base_repo_accessible(base, kwargs.get("hf_token"))
+            # It hands back a snapshot dir when it excused the base off a copy only huggingface_hub's
+            # import-time root holds, which the pinned from_pretrained below could not reach.
+            base_snapshot = _assert_base_repo_accessible(base, kwargs.get("hf_token"))
             kwargs["base_repo"] = base
             # The pre-cast encoder replaces these weights, so skip their dense shards. Same resolver as the injection.
             te_prequant_files = self._te_prequant_plan_files(
@@ -1210,13 +1234,20 @@ class DiffusionBackend:
                     self._loading.base_repo = base
                     self._loading.expected_bytes = expected
             # Download outside the lock so unload/an eviction can preempt the pull.
-            kwargs["_base_local_dir"] = self._prefetch_files(
-                kwargs["repo_id"],
-                kwargs.get("gguf_filename"),
-                base,
-                base_files,
-                kwargs.get("hf_token"),
-                cancel_event = cancel_event,
+            # The carried snapshot is the fallback, never the override: it only ever fires when the
+            # estimate came back empty, since the base metadata that fills it is the same call whose
+            # failure earned the escape. Without it the load ends on the bare Hub auth error even
+            # though every byte is already on disk.
+            kwargs["_base_local_dir"] = (
+                self._prefetch_files(
+                    kwargs["repo_id"],
+                    kwargs.get("gguf_filename"),
+                    base,
+                    base_files,
+                    kwargs.get("hf_token"),
+                    cancel_event = cancel_event,
+                )
+                or base_snapshot
             )
             self.load_pipeline(**kwargs)
             with self._lock:

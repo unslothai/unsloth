@@ -771,6 +771,95 @@ def test_the_prefetch_reuses_a_base_asset_cached_under_the_other_root(monkeypatc
     ]
 
 
+def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypatch, tmp_path):
+    """The prefetch reuse above only covers a base the size estimate could list, and the estimate
+    is built from the very ``model_info`` call whose 401 earned the cache escape: a private base, or
+    a stale token on any base, leaves ``base_files`` empty, so nothing is staged and the escape has
+    nothing to hand ``from_pretrained``, which is pinned to the live root and re-raises the bare Hub
+    auth error over a base that is completely on disk. The preflight carries the snapshot it
+    accepted so the load reads it straight off disk instead."""
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    private = "unsloth/private-base"
+    snapshot = tmp_path / "other-hub" / "models--unsloth--private-base" / "snapshots" / ("c" * 40)
+    snapshot.mkdir(parents = True)
+    (snapshot / "model_index.json").write_text("{}")
+
+    backend = DiffusionBackend()
+    monkeypatch.setattr(
+        "core.inference.diffusion.detect_family_for_pick",
+        lambda *a, **k: types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False),
+    )
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: private)
+    # Studio's cache folder was changed: the live root holds none of it.
+    monkeypatch.setattr(
+        "core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path / "live-hub")
+    )
+    _stub_hub(
+        monkeypatch,
+        model_info_error = _hub_http_error(RepositoryNotFoundError, "401 Client Error.", 401),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: (
+            str(snapshot / filename) if cache_dir is None and repo_id == private else None
+        ),
+    )
+    staged: list = []
+
+    def _prefetch(
+        self,
+        repo_id,
+        gguf_filename,
+        base,
+        base_files,
+        hf_token,
+        cancel_event = None,
+    ):
+        staged.append(base_files)
+        return None
+
+    monkeypatch.setattr(DiffusionBackend, "_prefetch_files", _prefetch)
+    loaded: dict = {}
+    monkeypatch.setattr(DiffusionBackend, "load_pipeline", lambda self, **k: loaded.update(k))
+    backend._loading = _LoadingState(repo_id = "unsloth/FLUX.1-dev-GGUF", base_repo = private)
+
+    backend._run_load(
+        repo_id = "unsloth/FLUX.1-dev-GGUF",
+        gguf_filename = "flux1-dev-Q4_K_M.gguf",
+        hf_token = "expired-token",
+        _load_token = backend._load_token,
+    )
+
+    # The 401 the escape forgave is the same call the estimate needs, so it stages nothing.
+    assert staged == [[]]
+    # ...and the load still reaches the base, through the root that actually holds it.
+    assert loaded["_base_local_dir"] == str(snapshot)
+    assert backend._loading is None
+
+
+def test_a_base_excused_by_the_live_root_carries_no_snapshot(monkeypatch, tmp_path):
+    """The other side: a copy under the root the loader already reads needs no escort. Returning one
+    would pin ``from_pretrained`` to a local dir it never asked for, so a partially cached base
+    could no longer finish its own download."""
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    private = "unsloth/private-base"
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path / "live"))
+    _stub_hub(
+        monkeypatch,
+        model_info_error = _hub_http_error(RepositoryNotFoundError, "401 Client Error.", 401),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: (
+            f"{tmp_path}/live/snap/{filename}" if cache_dir is not None else None
+        ),
+    )
+
+    assert _assert_base_repo_accessible(private, "expired-token") is None
+
+
 def test_the_native_fetch_reuses_a_base_asset_cached_under_the_other_root(monkeypatch, tmp_path):
     """Same for the native sd.cpp loader, whose preflight grants the same two-root escape."""
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend
