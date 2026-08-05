@@ -531,6 +531,22 @@ def _mark_empty_dir_cleanables(
     return response.model_copy(update = {"variants": variants})
 
 
+def _direct_gguf_loads(path: Path) -> bool:
+    """Whether the load path takes *path* itself as the model.
+
+    ``detect_gguf_model`` refuses the companions -- mmproj, an MTP/dspark
+    drafter -- and big-endian builds, reading the name together with its
+    immediate parent, so a row for one of those would offer a load that
+    cannot happen. Judge them the same way.
+    """
+    context = f"{path.parent.name}/{path.name}"
+    return not (
+        _is_mmproj_filename(path.name)
+        or _is_mtp_drafter_path(context)
+        or is_big_endian_gguf_path(context, extract_quant_label(context))
+    )
+
+
 def _complete_quants_under(snapshot: str):
     """Quants whose shards are all present under *snapshot*, or None if unknown.
 
@@ -720,7 +736,12 @@ async def get_gguf_variants_answer(
             variants, has_vision = list_local_gguf_variants(repo_id)
             # The load id is this path, so a quant offered here has to resolve here.
             complete = _complete_quants_under(repo_id)
-            if not variants and local_target.is_file() and local_target.suffix.lower() == ".gguf":
+            if (
+                not variants
+                and local_target.is_file()
+                and local_target.suffix.lower() == ".gguf"
+                and _direct_gguf_loads(local_target)
+            ):
                 # A .gguf file whose parent carries no config/adapter/export
                 # marker is skipped by the directory scan but still loads via
                 # detect_gguf_model; only then fall back to the file itself, so

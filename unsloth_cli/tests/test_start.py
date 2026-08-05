@@ -6230,12 +6230,49 @@ def test_codex_attach_check_passes_on_variants(monkeypatch):
     assert "repo_id=unsloth%2FQwen3-0.6B-GGUF" in urls[0]
 
 
+def test_codex_attach_check_rejects_unavailable_variant(monkeypatch, capsys):
+    # llama.cpp kills the resident server before it resolves the quant, so a
+    # typo'd quant on a real GGUF repo evicts and then fails the download.
+    _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M"}, {"quant": "Q8_0"}]})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "unsloth/Qwen3-0.6B-GGUF:Q4_KM")
+    err = capsys.readouterr().err
+    assert "no GGUF variant Q4_KM" in err
+    assert "Q4_K_M, Q8_0" in err
+
+
+@pytest.mark.parametrize(
+    "requested,rows",
+    [
+        # Case-insensitive, exactly as the load path compares quant labels.
+        ("q4_k_m", [{"quant": "Q4_K_M"}]),
+        # The load path falls back to a whole-token filename match, so a quant
+        # that is only part of a longer label still resolves.
+        ("Q4_K_XL", [{"quant": "UD-Q4_K_XL", "filename": "Qwen3-0.6B-UD-Q4_K_XL.gguf"}]),
+        # An answer that carries neither field cannot disprove anything.
+        ("Q4_K_M", [{"size_bytes": 1}]),
+    ],
+)
+def test_codex_attach_check_passes_resolvable_variants(monkeypatch, requested, rows):
+    _fake_variants(monkeypatch, {"variants": rows})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", f"unsloth/Qwen3-0.6B-GGUF:{requested}")
+
+
+def test_codex_attach_check_takes_the_variant_from_the_caller(monkeypatch):
+    # `--gguf-variant` never reaches the identifier, and _connect strips
+    # `repo:QUANT` before the gate runs, so the quant arrives as an argument.
+    _fake_variants(monkeypatch, {"variants": [{"quant": "Q8_0"}]})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "unsloth/Qwen3-0.6B-GGUF", "Q4_K_M")
+
+
 def test_codex_attach_check_defers_on_server_error(monkeypatch):
     _fake_variants(
         monkeypatch,
         urllib.error.HTTPError(f"{BASE}/api/models/gguf-variants", 404, "nope", None, None),
     )
     start._attach_gguf_check_for_codex(BASE, "sk-test", "mlx-community/Qwen3-0.6B-4bit")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "unsloth/Qwen3-0.6B-GGUF:Q4_K_M")
 
 
 def test_codex_attach_check_skips_without_model(monkeypatch):
@@ -6299,6 +6336,32 @@ def test_codex_attach_rejects_before_load(fake_studio, monkeypatch):
     )
     assert result.exit_code == 1
     assert "Codex needs a GGUF model" in result.output
+
+
+def test_codex_attach_rejects_unavailable_variant_before_load(fake_studio, monkeypatch):
+    inner = start._http_json
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/gguf-variants" in url:
+            return {"variants": [{"quant": "Q4_K_M"}]}
+        if url.endswith("/api/inference/load"):
+            pytest.fail("a quant the repo does not have must not evict the resident model")
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(
+        start.start_app,
+        ["codex", "--model", "unsloth/Qwen3-0.6B-GGUF:Q4_KM", "--no-launch"],
+    )
+    assert result.exit_code == 1
+    assert "no GGUF variant Q4_KM" in result.output
 
 
 def test_codex_attach_reuses_resident_model_without_preload_probe(fake_studio, monkeypatch):

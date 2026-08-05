@@ -69,3 +69,43 @@ def test_direct_gguf_file_in_marked_dir_still_lists_siblings(in_tmp_cwd):
     assert response.has_vision is True
     # A marked parent is still scanned for completeness, so whole quants stay ready.
     assert all(v.downloaded for v in response.variants)
+
+
+@pytest.mark.parametrize(
+    "relpath",
+    [
+        "mmproj-F16.gguf",
+        "mtp-model-Q4_K_M.gguf",
+        "MTP/model-Q8_0-MTP.gguf",
+        "dspark/dspark-model-Q8_0.gguf",
+        "stories260K-be.gguf",
+    ],
+)
+def test_direct_auxiliary_gguf_file_is_not_a_variant(in_tmp_cwd, relpath):
+    # detect_gguf_model refuses the companions and big-endian builds, so a row
+    # for one would offer a load that cannot happen.
+    from utils.models.model_config import detect_gguf_model
+
+    target = in_tmp_cwd / relpath
+    target.parent.mkdir(parents = True, exist_ok = True)
+    target.write_bytes(b"GGUF")
+
+    assert detect_gguf_model(os.fspath(target)) is None
+    assert _variants(os.fspath(target)).variants == []
+
+
+def test_direct_gguf_file_quant_round_trips_through_the_load_path(in_tmp_cwd):
+    # Clients echo the selected quant back as gguf_variant, so the quant this
+    # endpoint advertises has to resolve for the same identifier -- otherwise
+    # the file loads without a variant and fails with the one just offered.
+    from utils.models.model_config import ModelConfig
+
+    gguf = in_tmp_cwd / "foo-Q4_K_M.gguf"
+    gguf.write_bytes(b"GGUF")
+
+    quant = _variants(os.fspath(gguf)).variants[0].quant
+    config = ModelConfig.from_identifier(os.fspath(gguf), gguf_variant = quant)
+    assert config is not None and config.is_gguf
+    assert config.gguf_file == os.fspath(gguf)
+    # A quant the file is not stays unresolved rather than loading other weights.
+    assert ModelConfig.from_identifier(os.fspath(gguf), gguf_variant = "Q8_0").is_gguf is False

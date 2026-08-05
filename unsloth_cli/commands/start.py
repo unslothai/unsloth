@@ -1564,7 +1564,7 @@ def _resolve_model(
         # GGUF advertised as a bare basename that collides with a non-GGUF
         # unsloth/<name>).
         if preload_check is not None:
-            preload_check(base, key, requested)
+            preload_check(base, key, requested, load.gguf_variant)
         active = next((m for m in models if m.get("loaded") is not False), None)
         active_id = active.get("id") if active else None
         if active_id and not _model_id_matches(
@@ -1714,6 +1714,45 @@ def _is_auxiliary_gguf(filename: str) -> bool:
     return not parents and stem.endswith(("-be", "_be"))
 
 
+def _answer_offers_variant(variants: list, variant: str) -> bool:
+    """Whether a live variants answer can resolve *variant* to a file.
+
+    Mirrors llama.cpp's own resolution -- the quant label first, then the
+    whole-token filename match it falls back to -- case-insensitively, which is
+    as loose as that resolution gets: a label differing by a separator resolves
+    to nothing there either. A row carrying neither field vouches for the
+    request, so a sparser answer never blocks a load this gate cannot disprove.
+    """
+    wanted = str(variant).strip().lower()
+    if not wanted:
+        return True
+    token = re.compile(r"(?<![a-z0-9])" + re.escape(wanted) + r"(?![a-z0-9])")
+    for row in variants:
+        if not isinstance(row, dict):
+            return True
+        quant = row.get("quant")
+        filename = row.get("filename")
+        if not isinstance(quant, str) and not isinstance(filename, str):
+            return True
+        if isinstance(quant, str) and quant.strip().lower() == wanted:
+            return True
+        if isinstance(filename, str) and token.search(filename.lower()):
+            return True
+    return False
+
+
+def _fail_codex_variant_missing(model_id: str, variant: str, variants: list) -> NoReturn:
+    offered = [
+        row.get("quant")
+        for row in variants
+        if isinstance(row, dict) and isinstance(row.get("quant"), str) and row.get("quant")
+    ]
+    message = f"{model_id} has no GGUF variant {variant}."
+    if offered:
+        message += " Available: " + ", ".join(dict.fromkeys(offered))
+    _fail(message)
+
+
 def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
     message = f"Codex needs a GGUF model served by llama-server, but {model_id} is not one."
     guess = f"{model_id}-GGUF"
@@ -1758,14 +1797,22 @@ def _preflight_codex_gguf(
         _fail_codex_needs_gguf(repo)
 
 
-def _attach_gguf_check_for_codex(base: str, key: str, model: Optional[str]) -> None:
+def _attach_gguf_check_for_codex(
+    base: str,
+    key: str,
+    model: Optional[str],
+    variant: Optional[str] = None,
+) -> None:
     # Attach path: the server resolves the identifier with its own cwd, cache
     # and token, so ask it for the GGUF variants before the load evicts the
     # resident model. An empty list from a live answer is definitive; any
     # error (including an older server without the endpoint) defers.
     if not model:
         return
-    repo, _ = _split_repo_variant(model)
+    repo, inline_variant = _split_repo_variant(model)
+    # `--model repo:QUANT` is split before the gate runs, so the caller passes
+    # the quant on; a direct call still reads it off the identifier.
+    variant = variant or inline_variant
     # A .gguf filesystem path is GGUF by definition; only the hub-id shape
     # (owner/name.gguf, which the server also treats as a repo) gets probed.
     if repo.lower().endswith(".gguf") and not (
@@ -1795,6 +1842,11 @@ def _attach_gguf_check_for_codex(base: str, key: str, model: Optional[str]) -> N
             continue
         variants = info.get("variants") if isinstance(info, dict) else None
         if isinstance(variants, list) and variants:
+            # The load resolves the quant only after it has torn the resident
+            # model down (llama.cpp kills the old process, then downloads), so
+            # a quant this answer cannot serve is settled here.
+            if variant and not _answer_offers_variant(variants, variant):
+                _fail_codex_variant_missing(candidate, variant, variants)
             return
         if isinstance(variants, list):
             # Older servers classify marker-less relative paths as hub ids; a

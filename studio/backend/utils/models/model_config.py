@@ -2304,6 +2304,31 @@ def list_local_gguf_variants(
     return variants, has_vision
 
 
+def _direct_gguf_for_variant(
+    path: str,
+    variant: str,
+    model_root: Optional[str] = None,
+) -> Optional[str]:
+    """A loose ``.gguf`` file resolved by the quant it already is, or None.
+
+    ``_resolve_gguf_dir`` holds a file with no marked parent back, so the
+    variant-less load takes the file itself (``detect_gguf_model``) while a
+    request naming that same file's quant used to resolve to nothing -- the
+    identifier loaded without a variant and failed with it. Only the file's
+    own label matches, so a request for a different quant still finds
+    nothing, and detect_gguf_model still refuses the companions.
+    """
+    f = Path(path).expanduser()
+    if f.suffix.lower() != ".gguf" or not f.is_file():
+        return None
+    context = f"{f.parent.name}/{f.name}"
+    quant = _extract_quant_label(context)
+    fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", f.name.rsplit(".", 1)[0])
+    if variant not in (quant, fallback_variant):
+        return None
+    return detect_gguf_model(str(f), model_root)
+
+
 def _find_local_gguf_by_variant(
     directory: str,
     variant: str,
@@ -2318,7 +2343,7 @@ def _find_local_gguf_by_variant(
     """
     p = _resolve_gguf_dir(Path(directory))
     if p is None:
-        return None
+        return _direct_gguf_for_variant(directory, variant, model_root)
     root = (
         Path(os.path.abspath(Path(model_root).expanduser()))
         if model_root is not None
