@@ -79,6 +79,9 @@ function sanitizePersistedJob(value: unknown): ManagedDownload | null {
     ...(isResolvedTransport(value.transport)
       ? { transport: value.transport }
       : {}),
+    ...(isResolvedTransport(value.cancelTransport)
+      ? { cancelTransport: value.cancelTransport }
+      : {}),
   };
 }
 
@@ -119,6 +122,12 @@ function toPersistedJob(
       : {}),
     ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
     ...(job.transport !== undefined ? { transport: job.transport } : {}),
+    // Alongside the transport, never instead of it: a fallback run reads as
+    // plain HTTP without this and the reloaded card offers Pause for a stop
+    // that leaves a restart-only partial.
+    ...(job.cancelTransport !== undefined
+      ? { cancelTransport: job.cancelTransport }
+      : {}),
   };
 }
 

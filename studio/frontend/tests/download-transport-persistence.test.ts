@@ -21,7 +21,11 @@ Object.assign(globalThis.window, {
   },
 });
 
-function persistedJob(repoId: string, transport: unknown) {
+function persistedJob(
+  repoId: string,
+  transport: unknown,
+  cancelTransport?: unknown,
+) {
   return {
     key: `model:${repoId}`,
     kind: "model",
@@ -35,6 +39,7 @@ function persistedJob(repoId: string, transport: unknown) {
     error: null,
     startedAt: 1,
     transport,
+    ...(cancelTransport === undefined ? {} : { cancelTransport }),
   };
 }
 
@@ -45,6 +50,8 @@ store.set(
       jobs: {
         http: persistedJob("org/http-model", "http"),
         invalid: persistedJob("org/auto-model", "auto"),
+        fallback: persistedJob("org/fallback-model", "http", "xet"),
+        badMarker: persistedJob("org/bad-marker-model", "http", "auto"),
       },
       conflicts: {},
     },
@@ -93,4 +100,48 @@ test("the active transport is written with the persisted job", () => {
 
   const persisted = JSON.parse(store.get(PERSIST_KEY) ?? "null");
   assert.equal(persisted.state.jobs[key].transport, "xet");
+});
+
+test("a fallback run's cancel marker survives the reload too", () => {
+  // Without it the restored job reads as plain HTTP and offers Pause for a
+  // stop that leaves a restart-only partial.
+  const jobs = getState().jobs;
+  const job = jobs[jobKeyOf("model", "org/fallback-model", null)];
+  assert.equal(job?.transport, "http");
+  assert.equal(job?.cancelTransport, "xet");
+});
+
+test("an unresolved persisted marker is dropped, not trusted", () => {
+  const jobs = getState().jobs;
+  assert.equal(
+    jobs[jobKeyOf("model", "org/bad-marker-model", null)]?.cancelTransport,
+    undefined,
+  );
+});
+
+test("the cancel marker is written with the persisted job", () => {
+  const key = jobKeyOf("model", "org/retry-model", null);
+  putJob({
+    key,
+    kind: "model",
+    repoId: "org/retry-model",
+    variant: null,
+    state: "running",
+    downloadedBytes: 10,
+    completedBytes: 0,
+    completeOnDisk: false,
+    expectedBytes: 100,
+    fraction: 0.1,
+    bytesPerSec: 0,
+    error: null,
+    startedAt: 3,
+    transport: "http",
+    cancelTransport: "xet",
+  });
+  assert.ok(flushPersistedState);
+  flushPersistedState();
+
+  const persisted = JSON.parse(store.get(PERSIST_KEY) ?? "null");
+  assert.equal(persisted.state.jobs[key].transport, "http");
+  assert.equal(persisted.state.jobs[key].cancelTransport, "xet");
 });
