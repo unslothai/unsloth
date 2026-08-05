@@ -1022,3 +1022,38 @@ def test_cmd_has_no_semicolon_separator(monkeypatch):
     # Under bash the same line really does open a command.
     monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
     assert "powershell" in tools._find_blocked_commands('echo ; start "" powershell')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\tools\\rm.exe -rf x"',
+        'start "" "C:\\tools\\rm.exe -rf x"',
+        'cmd /c "C:\\tools\\pwsh.exe -Command ls"',
+    ],
+)
+def test_a_program_path_with_arguments_is_still_read(windows_terminal, command):
+    # os.path.splitext keeps everything after the last dot, so this path plus its
+    # arguments came back with a suffix of `.exe -rf x`. Calling that a document
+    # meant START skipped the line rather than screening it. A real suffix
+    # carries no whitespace.
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\tools\\notepad.exe -x y"',
+        'start "" "C:\\tools\\notepad.exe -x y"',
+    ],
+)
+def test_arguments_after_a_program_path_are_not_a_command(windows_terminal, command):
+    # The other half: a path followed by its own arguments is still a program.
+    # Re-lexing it as a command line matched the POSIX source builtin on the
+    # extension dot and refused an ordinary launch.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_an_operator_still_wins_over_the_path_shape(windows_terminal):
+    # An operator means a second command follows whatever the first looks like.
+    assert "rm" in tools._find_blocked_commands('cmd /c "C:\\tools\\notepad.exe&rm -rf x"')

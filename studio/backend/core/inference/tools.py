@@ -1053,6 +1053,18 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
     )
 
 
+def _path_suffix(path: str) -> str:
+    """The lowercased extension of ``path``, or ``""`` when it has none.
+
+    os.path.splitext splits at the last dot and keeps everything after it, so a
+    command line reads as one enormous suffix: `C:\\tools\\rm.exe -rf x` came
+    back as `.exe -rf x`. A real suffix carries no whitespace, and calling that
+    one a document meant START skipped the line rather than screening it.
+    """
+    suffix = os.path.splitext(path)[1].lower()
+    return "" if any(char.isspace() for char in suffix) else suffix
+
+
 def _is_program_path(target: str) -> bool:
     """Whether ``target`` is a path to an executable rather than a command line.
 
@@ -1063,7 +1075,7 @@ def _is_program_path(target: str) -> bool:
     stripped = target.strip('"')
     if not stripped or not _PATH_FRAGMENT_RE.match(stripped):
         return False
-    return os.path.splitext(stripped)[1].lower() in _WINDOWS_EXE_SUFFIXES
+    return _path_suffix(stripped) in _WINDOWS_EXE_SUFFIXES
 
 
 def _is_document_target(target: str) -> bool:
@@ -1077,7 +1089,7 @@ def _is_document_target(target: str) -> bool:
     stripped = target.strip('"')
     if not stripped or not _PATH_FRAGMENT_RE.match(stripped):
         return False
-    suffix = os.path.splitext(stripped)[1].lower()
+    suffix = _path_suffix(stripped)
     return bool(suffix) and suffix not in _WINDOWS_EXE_SUFFIXES
 
 
@@ -1630,13 +1642,23 @@ def _find_blocked_commands(command: str) -> set[str]:
         `cmd /c powershell&echo ok` runs powershell and read as one program named
         `powershell&echo`. That is a command line too, escaped carets aside.
         """
+        if _has_bare_cmd_operator(text):
+            # An operator means a second command follows, whatever the first one
+            # looks like, so the whole line is read.
+            return _find_blocked_commands(text)
         if _is_program_path(text):
             # A program path holds spaces like any other, and re-lexing one reads
             # its directory components as words: `C:\powershell scripts\
             # notepad.exe` runs notepad and reported the folder it sits in. The
             # recovery below reads the program off the path instead.
             return _blocked_quoted_program(text, _BLOCKED_COMMANDS)
-        if any(char.isspace() or char in "\"'" for char in text) or _has_bare_cmd_operator(text):
+        words = text.split()
+        if words and _is_program_path(words[0]):
+            # A path followed by its own arguments is still a program, not a
+            # command line: re-lexing `C:\tools\notepad.exe -x y` matched the
+            # POSIX source builtin on the extension dot and refused the launch.
+            return _blocked_quoted_program(words[0], _BLOCKED_COMMANDS)
+        if any(char.isspace() or char in "\"'" for char in text):
             return _find_blocked_commands(text)
         base = _token_basename(text)
         if base in _BLOCKED_COMMANDS:
