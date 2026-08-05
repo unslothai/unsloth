@@ -317,6 +317,30 @@ _MODEL_SNAPSHOT_WEIGHTS = (
 )
 
 
+def _with_load_subdirs(model_name: str, names: tuple[str, ...]) -> tuple[str, ...]:
+    """Extend snapshot filenames with the subdirectories a load actually reads.
+
+    Spark-TTS / BiCodec keep the trainable model under ``<snapshot>/LLM``, so such a
+    snapshot carries no root-level ``config.json`` and no root-level weights. The remote
+    preflight already expands those load roots via ``load_scan_target``; mirroring it
+    here keeps the cached path in agreement, otherwise a perfectly good cache resolves
+    to None and the start route rejects it as hf_model_not_cached_offline.
+    """
+    try:
+        from utils.security import security_load_subdirs
+        subdirs = security_load_subdirs(model_name)
+    except Exception:
+        return names
+    if not subdirs:
+        return names
+    return names + tuple(
+        f"{subdir.strip('/')}/{name}"
+        for subdir in subdirs
+        if subdir
+        for name in names
+    )
+
+
 def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optional[str]:
     from hub.utils.hf_cache_state import (
         iter_repo_cache_dirs,
@@ -324,13 +348,15 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
     )
 
     repo_id = canonical_model_repo_id(model_name)
+    metadata_names = _with_load_subdirs(model_name, _MODEL_SNAPSHOT_METADATA)
+    weight_names = _with_load_subdirs(model_name, _MODEL_SNAPSHOT_WEIGHTS)
     # Pass 1 demands metadata AND weights, so neither a metadata-only refs/main
     # revision nor a newer weights-only fetch can displace a complete sibling.
     # Pass 2 keeps the old metadata-only behaviour for caches that never held
     # weights, so nothing that resolved before stops resolving now.
     passes: tuple[dict[str, Any], ...] = (
-        {"required_groups": (_MODEL_SNAPSHOT_METADATA, _MODEL_SNAPSHOT_WEIGHTS)},
-        {"metadata_filenames": _MODEL_SNAPSHOT_METADATA},
+        {"required_groups": (metadata_names, weight_names)},
+        {"metadata_filenames": metadata_names},
     )
     if local_path:
         for kwargs in passes:
@@ -372,7 +398,10 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
 
         pinned_repo_id = config.get("actual_model_repo_id") or canonical_model_repo_id(model_name)
         pin = latest_snapshot_from_cache_path(
-            requested_pin, "model", pinned_repo_id, _MODEL_SNAPSHOT_METADATA
+            requested_pin,
+            "model",
+            pinned_repo_id,
+            _with_load_subdirs(model_name, _MODEL_SNAPSHOT_METADATA),
         )
         if pin is None:
             if config.get("require_exact_resume_resources") or config.get(
@@ -402,7 +431,7 @@ def _apply_model_cache_pin(config: dict[str, Any], warnings: list[str]) -> None:
             requested_pin,
             "model",
             pinned_repo_id,
-            _MODEL_SNAPSHOT_METADATA,
+            _with_load_subdirs(model_name, _MODEL_SNAPSHOT_METADATA),
         )
         config["model_snapshot_path"] = pin
         if pin is None:
