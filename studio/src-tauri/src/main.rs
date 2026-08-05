@@ -133,6 +133,95 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
+/// Two more states only the renderer knows about, mirrored here for the same reason: Hub
+/// downloads, which the backend runs but only the frontend download manager tracks, and the
+/// Tauri shell self-update, which `update::is_update_running` stops covering the moment
+/// `downloadAndInstall` takes over from `start_backend_update`.
+#[derive(Default)]
+pub struct RendererActivity {
+    pub downloads: bool,
+    pub shell_update: bool,
+}
+
+pub type RendererActivityState = std::sync::Arc<std::sync::Mutex<RendererActivity>>;
+
+fn new_renderer_activity_state() -> RendererActivityState {
+    std::sync::Arc::new(std::sync::Mutex::new(RendererActivity::default()))
+}
+
+/// The command body, minus the `tauri::State` wrapper, so the tests can drive it directly.
+fn apply_renderer_activity(state: &RendererActivityState, kind: &str, active: bool) {
+    if let Ok(mut activity) = state.lock() {
+        match kind {
+            "downloads" => activity.downloads = active,
+            "shell_update" => activity.shell_update = active,
+            // An unknown kind is a renderer/Rust mismatch, never a reason to flip a flag.
+            _ => {}
+        }
+    }
+}
+
+#[tauri::command]
+fn set_renderer_activity(state: tauri::State<'_, RendererActivityState>, kind: &str, active: bool) {
+    apply_renderer_activity(state.inner(), kind, active);
+}
+
+/// Ask before quitting mid shell update (true to proceed). request_quit only, as below.
+fn confirm_quit_during_shell_update(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let Some(state) = app.try_state::<RendererActivityState>() else {
+        return true;
+    };
+    if !state
+        .lock()
+        .map(|activity| activity.shell_update)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    app.dialog()
+        .message(
+            "The app update is still installing. Quitting now interrupts the \
+             installer part-way and can leave the app half-updated.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Update in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep updating".to_string(),
+        ))
+        .blocking_show()
+}
+
+/// Ask before quitting mid-download (true to proceed). request_quit only, as below.
+fn confirm_quit_during_downloads(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let Some(state) = app.try_state::<RendererActivityState>() else {
+        return true;
+    };
+    if !state
+        .lock()
+        .map(|activity| activity.downloads)
+        .unwrap_or(false)
+    {
+        return true;
+    }
+    app.dialog()
+        .message(
+            "Downloads are still running. Quitting now stops the backend and \
+             cancels the downloads in progress.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Downloads in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep downloading".to_string(),
+        ))
+        .blocking_show()
+}
+
 /// Ask before quitting mid-install (true to proceed): `cleanup_child_processes` SIGTERMs the
 /// installer, leaving a venv that looks healthy but cannot start. request_quit only, since
 /// RunEvent::Exit must never block on a dialog nobody can answer.
@@ -324,7 +413,13 @@ fn request_quit(app: &tauri::AppHandle) {
             if !confirm_quit_during_update(&app) {
                 return;
             }
+            if !confirm_quit_during_shell_update(&app) {
+                return;
+            }
             if !confirm_quit_during_training(&app) {
+                return;
+            }
+            if !confirm_quit_during_downloads(&app) {
                 return;
             }
             cleanup_child_processes(&app);
@@ -400,12 +495,14 @@ fn main() {
         .manage(diagnostics::new_diagnostics_state())
         .manage(install::new_install_state())
         .manage(new_training_activity_state())
+        .manage(new_renderer_activity_state())
         .manage(native_intents::new_native_intake_state())
         .manage(new_backend_state())
         .manage(process::new_shutdown_flag())
         .manage(update::new_update_state())
         .invoke_handler(tauri::generate_handler![
             set_training_active,
+            set_renderer_activity,
             app_layout::has_initialized_app_window_layout,
             app_layout::mark_app_window_layout_initialized,
             app_layout::reset_app_window_layout_initialized,
@@ -530,5 +627,51 @@ mod tests {
             begin_quit().is_some(),
             "a panicking quit must release the guard"
         );
+    }
+
+    fn renderer_activity(state: &RendererActivityState) -> (bool, bool) {
+        let activity = state.lock().expect("the activity mutex must not be poisoned");
+        (activity.downloads, activity.shell_update)
+    }
+
+    #[test]
+    fn renderer_activity_starts_clear_and_round_trips_each_kind() {
+        let state = new_renderer_activity_state();
+        assert_eq!(renderer_activity(&state), (false, false));
+
+        apply_renderer_activity(&state, "downloads", true);
+        assert_eq!(renderer_activity(&state), (true, false));
+        apply_renderer_activity(&state, "downloads", false);
+        assert_eq!(renderer_activity(&state), (false, false));
+
+        apply_renderer_activity(&state, "shell_update", true);
+        assert_eq!(renderer_activity(&state), (false, true));
+        apply_renderer_activity(&state, "shell_update", false);
+        assert_eq!(renderer_activity(&state), (false, false));
+    }
+
+    #[test]
+    fn renderer_activity_kinds_are_independent() {
+        let state = new_renderer_activity_state();
+
+        apply_renderer_activity(&state, "downloads", true);
+        apply_renderer_activity(&state, "shell_update", true);
+        assert_eq!(renderer_activity(&state), (true, true));
+
+        // Downloads finishing must not clear an update that is still installing.
+        apply_renderer_activity(&state, "downloads", false);
+        assert_eq!(renderer_activity(&state), (false, true));
+    }
+
+    #[test]
+    fn renderer_activity_ignores_an_unknown_kind() {
+        let state = new_renderer_activity_state();
+        apply_renderer_activity(&state, "shell_update", true);
+
+        // A renderer/Rust mismatch must never flip a flag it did not name.
+        apply_renderer_activity(&state, "training", true);
+        apply_renderer_activity(&state, "", false);
+        apply_renderer_activity(&state, "Downloads", true);
+        assert_eq!(renderer_activity(&state), (false, true));
     }
 }
