@@ -182,19 +182,25 @@ def bind_current_process_to_parent_lifetime() -> None:
     PR_SET_PDEATHSIG for them -- the child must do it itself at startup."""
     if not _is_linux():
         return
-    # multiprocessing records the pid of the process that created this worker,
-    # which the spawn and fork contexts (the only ones Unsloth uses) both make
-    # its direct parent. Passing it keeps the orphan check off the "reparented
-    # to init" fallback, which kills every worker of a pid-1 parent (#7886).
-    owner_pid = None
+    parent = None
     try:
         import multiprocessing
         parent = multiprocessing.parent_process()
-        if parent is not None:
-            owner_pid = parent.pid
     except Exception:
         pass
-    _pdeathsig_preexec(owner_pid)
+    if parent is None:
+        _pdeathsig_preexec(None)  # not a worker: keep the getppid() == 1 heuristic
+        return
+    # PDEATHSIG binds to the kernel parent, but "orphaned" comes from the creator's
+    # sentinel, not a pid compare: getppid() is the creator only under fork/spawn,
+    # while under forkserver it is the fork server, so comparing would kill every
+    # healthy worker. The sentinel is exact for all three and survives pid reuse.
+    _pdeathsig_preexec(os.getppid())
+    try:
+        if not parent.is_alive():
+            os._exit(1)
+    except Exception:
+        pass
 
 
 def compose_preexec(

@@ -157,25 +157,47 @@ def test_pdeathsig_exits_when_reparented_away_from_the_owner(monkeypatch):
         _run_preexec(monkeypatch, owner_pid = 4242, getppid = 1)
 
 
-def test_bind_passes_the_creating_process_pid(monkeypatch):
-    # multiprocessing workers get no preexec_fn, so they read the creator's pid
-    # from multiprocessing itself; None outside a worker keeps the fallback.
+def _bind_with_parent(monkeypatch, parent):
     import multiprocessing
 
-    seen = []
+    seen, exited = [], []
     monkeypatch.setattr(pl, "_is_linux", lambda: True)
     monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda owner: seen.append(owner))
+    monkeypatch.setattr(pl.os, "_exit", lambda code: exited.append(code))
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: parent)
+    pl.bind_current_process_to_parent_lifetime()
+    return seen, exited
 
-    monkeypatch.setattr(multiprocessing, "parent_process", lambda: _FakeParent(4242))
-    pl.bind_current_process_to_parent_lifetime()
-    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
-    pl.bind_current_process_to_parent_lifetime()
-    assert seen == [4242, None]
+
+def test_bind_keeps_a_worker_whose_creator_is_alive(monkeypatch):
+    # The orphan decision comes from the creator's sentinel, not a pid compare:
+    # under forkserver the kernel parent is the fork server, so comparing pids
+    # would read every healthy worker as orphaned and kill it before its target.
+    seen, exited = _bind_with_parent(monkeypatch, _FakeParent(4242, alive = True))
+    assert seen == [os.getppid()]  # PDEATHSIG still bound to the kernel parent
+    assert exited == []
+
+
+def test_bind_exits_when_the_creator_is_already_gone(monkeypatch):
+    seen, exited = _bind_with_parent(monkeypatch, _FakeParent(4242, alive = False))
+    assert seen == [os.getppid()]
+    assert exited == [1]
+
+
+def test_bind_falls_back_outside_a_multiprocessing_worker(monkeypatch):
+    # No creator to consult: keep the historical "reparented to init" heuristic.
+    seen, exited = _bind_with_parent(monkeypatch, None)
+    assert seen == [None]
+    assert exited == []
 
 
 class _FakeParent:
-    def __init__(self, pid):
+    def __init__(self, pid, alive = True):
         self.pid = pid
+        self._alive = alive
+
+    def is_alive(self):
+        return self._alive
 
 
 # ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──
