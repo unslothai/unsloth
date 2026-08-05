@@ -2030,25 +2030,28 @@ def _attach_gguf_check_for_codex(
         # keeps the shapes it does load.
         if _direct_gguf_is_big_endian(repo):
             _fail_codex_needs_gguf(repo)
-        # On a loopback attach this process sees the server's filesystem, so an
-        # incomplete file is failed here: the server classifies the extension
-        # as a GGUF load and llama-server only finds the missing bytes or
-        # shards after the resident model is torn down.
-        if is_loopback_url(base) and not _direct_gguf_file_is_ready(repo):
-            _fail(
-                f"{repo} is incomplete (zero bytes or a split missing shards); "
-                "re-download or re-copy it before pointing Codex at it."
-            )
         # The file names the one quant it is, so its own labels settle a
         # matching explicit variant without a probe. A different quant is not
         # necessarily wrong: a marked parent serves sibling quants through
         # _find_local_gguf_by_variant, and the server's listing is that
         # parent's answer on old and new servers alike -- so fall through to
-        # the probe instead of failing on the file's name alone.
+        # the probe instead of failing on the file's name alone. The probe's
+        # strict matching also judges the sibling's own row (torn rows do not
+        # vouch), so the named file's bytes only matter when the load would
+        # use this very file.
         wanted = str(variant).strip().lower() if variant else ""
         if not wanted or any(
             wanted == label.lower() for label in _direct_gguf_variant_labels(repo)
         ):
+            # On a loopback attach this process sees the server's filesystem,
+            # so an incomplete file is failed here: the server classifies the
+            # extension as a GGUF load and llama-server only finds the missing
+            # bytes or shards after the resident model is torn down.
+            if is_loopback_url(base) and not _direct_gguf_file_is_ready(repo):
+                _fail(
+                    f"{repo} is incomplete (zero bytes or a split missing shards); "
+                    "re-download or re-copy it before pointing Codex at it."
+                )
             return
     # Mirror the load path's shorthand precedence: the raw name first (it may
     # be a directory relative to the server's cwd), then the unsloth/<name>

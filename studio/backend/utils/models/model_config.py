@@ -2383,9 +2383,12 @@ def _find_local_gguf_by_variant(
             continue
         quant = _extract_quant_label(rel)
         fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
-        if not _variant_matches(variant, quant, fallback_variant) or _is_big_endian_gguf_path(
-            rel, quant
-        ):
+        # Listings advertise the hub-style bpw-stripped spelling; accept it
+        # here like the direct-file resolver does.
+        stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
+        if not _variant_matches(
+            variant, quant, fallback_variant, stripped
+        ) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)
     matches.sort()

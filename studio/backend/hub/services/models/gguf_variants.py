@@ -540,11 +540,17 @@ def _direct_gguf_loads(path: Path) -> bool:
     immediate parent, so a row for one of those would offer a load that
     cannot happen. Judge them the same way.
     """
+    # The load extractor, not the hub one: detect_gguf_model passes its own
+    # quant into the big-endian check, and the two disagree on shapes like
+    # F16-be-checkpoint-Q4_K_M (first-token vs preferred-quant), which would
+    # flip the exemption and advertise a load the detector refuses.
+    from utils.models.model_config import _extract_quant_label
+
     context = f"{path.parent.name}/{path.name}"
     return not (
         _is_mmproj_filename(path.name)
         or _is_mtp_drafter_path(context)
-        or is_big_endian_gguf_path(context, extract_quant_label(context))
+        or is_big_endian_gguf_path(context, _extract_quant_label(context))
     )
 
 

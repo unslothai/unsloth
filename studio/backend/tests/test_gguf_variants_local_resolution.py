@@ -150,6 +150,32 @@ def test_direct_gguf_label_is_the_load_resolvers_label(in_tmp_cwd):
     assert config.gguf_file == os.fspath(gguf)
 
 
+def test_marked_dir_resolves_the_bpw_stripped_label(in_tmp_cwd):
+    # Listings advertise the hub-style stripped spelling; the directory
+    # resolver accepts it like the direct-file resolver does.
+    from utils.models.model_config import ModelConfig
+
+    marked = in_tmp_cwd / "m"
+    marked.mkdir()
+    (marked / "config.json").write_text("{}")
+    (marked / "model-IQ4_XS-3.53bpw.gguf").write_bytes(b"GGUF")
+
+    config = ModelConfig.from_identifier(os.fspath(marked), gguf_variant = "IQ4_XS")
+    assert config is not None and config.is_gguf
+
+
+def test_direct_big_endian_check_uses_the_load_extractor(in_tmp_cwd):
+    # detect_gguf_model refuses this shape (its extractor reads F16 before the
+    # be marker), so the endpoint must not advertise it as loadable.
+    from utils.models.model_config import detect_gguf_model
+
+    gguf = in_tmp_cwd / "F16-be-checkpoint-Q4_K_M.gguf"
+    gguf.write_bytes(b"GGUF")
+
+    assert detect_gguf_model(os.fspath(gguf)) is None
+    assert _variants(os.fspath(gguf)).variants == []
+
+
 def test_direct_gguf_bpw_label_round_trips_through_the_load_path(in_tmp_cwd):
     # The hub-side extractor drops the bpw modifier, so the advertised quant is
     # the shorter label; echoing it back must still resolve this same file.
