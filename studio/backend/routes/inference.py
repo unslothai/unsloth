@@ -1700,9 +1700,11 @@ def _discard_task_outcome(task: asyncio.Task) -> None:
 def _release_admission(admission_lease = None, tracker = None) -> None:
     """Give back the process-wide llama-server slot and the cancel-registry entry.
 
-    Synchronous and called before a stream's teardown awaits, not after: the generation is
-    already finished upstream by then, and both are shared by every client, so anything that
-    stalls between here and the end of teardown must not keep holding them. #7617
+    Must run *after* the upstream response is closed, never before. On the disconnect path
+    the stream's finally is entered by a CancelledError thrown into the generator while
+    llama-server is still decoding; closing ``resp`` is what actually stops it, so handing
+    the slot back first would admit a second request past --parallel. Safe to leave behind
+    the closes only because every teardown await is bounded. #7617
     """
     try:
         if admission_lease is not None:
@@ -16992,15 +16994,17 @@ async def _anthropic_passthrough_stream(
                     yield event
                 return
         finally:
-            # Same shape as the OpenAI passthrough: exit the tracker before the teardown
-            # awaits so a close-time stall cannot keep the cancel-registry entry alive.
-            _release_admission(tracker = _tracker)
-            await _aclose_stream_resources(
-                watchers = (cancel_watcher, disconnect_watcher),
-                iterator = lines_iter,
-                resp = resp,
-                client = client,
-            )
+            # Same shape as the OpenAI passthrough: the tracker exits after the closes,
+            # and the teardown awaits are bounded so it cannot be held indefinitely.
+            try:
+                await _aclose_stream_resources(
+                    watchers = (cancel_watcher, disconnect_watcher),
+                    iterator = lines_iter,
+                    resp = resp,
+                    client = client,
+                )
+            finally:
+                _release_admission(tracker = _tracker)
 
         for line in emitter.finish():
             yield line
@@ -17899,11 +17903,12 @@ async def _openai_passthrough_stream_admitted(
                 # llama-server subprocess crashed / starting / unreachable.
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
-                # the outer handler releases too, but both are idempotent and nothing
-                # process-wide should be held across the closes below. #7617
-                _release_admission(admission_lease, _tracker)
-                await _aclose_send_task(send_task)
-                await _aclose_stream_resources(resp = resp, client = client)
+                # the outer handler releases too, but _release_admission is idempotent.
+                try:
+                    await _aclose_send_task(send_task)
+                    await _aclose_stream_resources(resp = resp, client = client)
+                finally:
+                    _release_admission(admission_lease, _tracker)
                 raise HTTPException(
                     status_code = 502,
                     detail = _friendly_error(e),
@@ -17914,9 +17919,11 @@ async def _openai_passthrough_stream_admitted(
                 if cancel_event is not None:
                     cancel_event.set()
                 api_monitor.finish(monitor_id, "cancelled")
-                _release_admission(admission_lease, _tracker)
-                await _aclose_send_task(send_task)
-                await _aclose_stream_resources(client = client)
+                try:
+                    await _aclose_send_task(send_task)
+                    await _aclose_stream_resources(client = client)
+                finally:
+                    _release_admission(admission_lease, _tracker)
                 return _SameTaskStreamingResponse(
                     iter(()),
                     media_type = "text/event-stream",
@@ -18451,26 +18458,31 @@ async def _openai_passthrough_stream_admitted(
                 err = _openai_stream_error_chunk(e)
                 yield _openai_stream_error_sse(err)
             finally:
-                # Free the slot and the cancel-registry entry before any teardown await:
-                # llama-server has already released its own slot by here, and holding ours
-                # across the closes let one wedged teardown starve every client. #7617
-                _release_admission(admission_lease, _tracker)
-                await _aclose_send_task(send_task)
-                await _aclose_stream_resources(
-                    watchers = (cancel_watcher, disconnect_watcher),
-                    iterator = lines_iter,
-                    resp = resp,
-                    client = client,
-                )
+                # Close the upstream stream first: on the disconnect path llama-server is
+                # still decoding until resp is closed, so releasing the slot before that
+                # would admit a second request past --parallel. Holding it across these
+                # closes is safe now only because every await in them is bounded. #7617
+                try:
+                    await _aclose_send_task(send_task)
+                    await _aclose_stream_resources(
+                        watchers = (cancel_watcher, disconnect_watcher),
+                        iterator = lines_iter,
+                        resp = resp,
+                        client = client,
+                    )
+                finally:
+                    _release_admission(admission_lease, _tracker)
 
         async def _unstarted_cleanup() -> None:
             # Client disconnected before the body stream started, so _stream()'s
             # finally never ran. Release the eagerly-opened upstream resp/client
             # and the cancel-registry entry here; the watchers and line iterator
             # are created inside _stream(), so there is nothing else to close.
-            _release_admission(admission_lease, _tracker)
-            await _aclose_send_task(send_task)
-            await _aclose_stream_resources(resp = resp, client = client)
+            try:
+                await _aclose_send_task(send_task)
+                await _aclose_stream_resources(resp = resp, client = client)
+            finally:
+                _release_admission(admission_lease, _tracker)
 
         return _SameTaskStreamingResponse(
             _stream(),
@@ -18490,9 +18502,11 @@ async def _openai_passthrough_stream_admitted(
         else:
             detail = exc.detail if isinstance(exc, HTTPException) else _friendly_error(exc)
             api_monitor.fail(monitor_id, str(detail))
-        _release_admission(admission_lease, _tracker)
-        await _aclose_send_task(send_task)
-        await _aclose_stream_resources(resp = resp, client = client)
+        try:
+            await _aclose_send_task(send_task)
+            await _aclose_stream_resources(resp = resp, client = client)
+        finally:
+            _release_admission(admission_lease, _tracker)
         raise
 
 

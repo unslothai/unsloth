@@ -263,31 +263,49 @@ def _first_index(block, names):
     "func_name",
     ["_openai_passthrough_stream_admitted", "_anthropic_passthrough_stream"],
 )
-def test_admission_is_released_before_any_teardown_await(func_name):
-    """A wedged teardown must never keep the process-wide slot or registry entry.
+def test_admission_is_released_after_the_upstream_stream_is_closed(func_name):
+    """The slot must be handed back only once the upstream response is closed.
 
-    The lease and the cancel tracker are shared by every client, so once they sat behind
-    the teardown awaits a single stuck close starved every session until Studio restarted.
+    On the disconnect path the stream's finally is entered by a CancelledError thrown into
+    the generator while llama-server is still decoding; closing resp is what stops it, so
+    releasing first admits another request past --parallel. The release must still always
+    run, from the finally of the same try, which is bounded only because every teardown
+    await is.
     """
     func = getattr(inference_route, func_name)
     tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
 
-    checked = 0
+    # a release must never sit ahead of a close in the same block
     for block in _blocks(tree):
-        teardown_at = _first_index(block, _TEARDOWN_CALLS)
-        if teardown_at is None:
-            continue
         release_at = _first_index(block, ("_release_admission",))
-        assert release_at is not None, (
-            f"{func_name}: teardown block has no _release_admission() before it:\n"
+        teardown_at = _first_index(block, _TEARDOWN_CALLS)
+        if release_at is None or teardown_at is None:
+            continue
+        assert teardown_at < release_at, (
+            f"{func_name}: _release_admission() runs before the upstream closes; on a "
+            f"disconnect that hands the slot back while llama-server is still decoding:\n"
             + "\n".join(ast.unparse(stmt) for stmt in block)
         )
-        assert (
-            release_at < teardown_at
-        ), f"{func_name}: _release_admission() must precede the teardown awaits"
-        checked += 1
 
-    assert checked, f"{func_name}: found no teardown block to check"
+    # and every close must be inside a try whose finally does release, so a stalled
+    # close cannot drop the lease entirely
+    releasing = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Try) and _first_index(
+            node.finalbody, ("_release_admission",)
+        ) is not None:
+            releasing.update(id(stmt) for stmt in node.body)
+
+    teardowns = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Expr) and _called_name(node) in _TEARDOWN_CALLS
+    ]
+    assert teardowns, f"{func_name}: found no teardown await to check"
+    for node in teardowns:
+        assert id(node) in releasing, (
+            f"{func_name}: teardown await is not in the body of a try that releases "
+            f"admission in its finally:\n{ast.unparse(node)}"
+        )
 
 
 def test_release_admission_exits_the_tracker_even_if_the_lease_release_raises():
