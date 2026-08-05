@@ -1538,6 +1538,7 @@ export const hi = {
         loadingDataset: "डेटासेट लोड हो रहा है",
         configuring: "कॉन्फ़िगर हो रहा है",
         training: "ट्रेनिंग हो रही है",
+        finalizing: "मॉडल सेव हो रहा है",
         completed: "पूर्ण",
         error: "त्रुटि",
         stopped: "रोका गया",

@@ -7,8 +7,7 @@ Models write bash for a shell tool, and every other platform runs bash. ``cmd /c
 executes only the first line of a multi-line command, leaves single quotes in
 the argument, and does not understand bash quoting, so a correct script
 half-executes and reports success. These run on every OS by faking the platform,
-and for the screening tests the Windows blocklist, because studio-backend-ci is
-Linux-only.
+because studio-backend-ci is Linux-only.
 """
 
 import os
@@ -32,22 +31,6 @@ def _clear_bash_cache():
     cached.cache_clear()
     yield
     cached.cache_clear()
-
-
-@pytest.fixture
-def _windows_blocklist(monkeypatch):
-    """Screen against the Windows blocklist whatever the host is.
-
-    `_BLOCKED_COMMANDS` is bound at import from `sys.platform`, so powershell
-    and pwsh are absent on the Linux-only runner, and faking `sys.platform` the
-    way the rest of this file does would be too late. Patch the set that
-    `_find_blocked_commands` reads on every call instead.
-    """
-    monkeypatch.setattr(
-        tools,
-        "_BLOCKED_COMMANDS",
-        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
-    )
 
 
 def _fake_trusted_root(monkeypatch, root):
@@ -289,6 +272,17 @@ def test_notes_say_where_commands_run(monkeypatch):
     assert "opens a window on the user's desktop" in tools._build_terminal_shell_note()
 
 
+@pytest.fixture
+def _windows_blocklist(monkeypatch):
+    # _BLOCKED_COMMANDS resolves the Windows names at import, so patching
+    # sys.platform is too late; fake the resolved set instead.
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -320,4 +314,6 @@ def test_cmd_shellout_is_screened_through_mangled_switches(command, _windows_blo
 def test_detached_windows_stay_launchable(command, _windows_blocklist):
     # `start` is the only route to a window on the user's desktop, which the
     # terminal description promises, so screening must not blanket-block cmd.
+    # The blocklist is faked here too, or the Linux runner asserts this against
+    # a set with no powershell in it and cannot see a blanket block at all.
     assert not tools._find_blocked_commands(command)
