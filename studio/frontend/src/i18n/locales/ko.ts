@@ -1511,6 +1511,7 @@ export const ko = {
         loadingDataset: "데이터셋 로딩 중",
         configuring: "구성 중",
         training: "학습 중",
+        finalizing: "모델 저장 중",
         completed: "완료됨",
         error: "오류",
         stopped: "중지됨",

@@ -1564,6 +1564,7 @@ export const it = {
         loadingDataset: "Caricamento del dataset",
         configuring: "Configurazione",
         training: "Addestramento",
+        finalizing: "Salvataggio del modello",
         completed: "Completato",
         error: "Errore",
         stopped: "Fermato",

@@ -1564,6 +1564,7 @@ export const es = {
         loadingDataset: "Cargando conjunto de datos",
         configuring: "Configurando",
         training: "Entrenando",
+        finalizing: "Guardando modelo",
         completed: "Completado",
         error: "Error",
         stopped: "Detenido",
