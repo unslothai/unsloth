@@ -35,18 +35,19 @@ import torch
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC_PATH = ROOT / "unsloth" / "trainer.py"
-SRC = SRC_PATH.read_text(encoding="utf-8")
+SRC = SRC_PATH.read_text(encoding = "utf-8")
 
 
 def _load(*names):
     """Exec the named top-level functions from trainer.py in a bare namespace."""
     tree = ast.parse(SRC)
-    wanted = [n for n in tree.body
-              if isinstance(n, ast.FunctionDef) and n.name in names]
+    wanted = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in names]
     missing = set(names) - {n.name for n in wanted}
     assert not missing, f"not found in trainer.py: {sorted(missing)}"
     ns = {
-        "torch": torch, "inspect": inspect, "dataclasses": dataclasses,
+        "torch": torch,
+        "inspect": inspect,
+        "dataclasses": dataclasses,
         "wraps": wraps,
     }
     try:
@@ -55,7 +56,7 @@ def _load(*names):
         ns["trl"], ns["Version"] = trl, Version
     except Exception:  # pragma: no cover - only used by the integration tests
         pass
-    exec(compile(ast.Module(body=wanted, type_ignores=[]), str(SRC_PATH), "exec"), ns)
+    exec(compile(ast.Module(body = wanted, type_ignores = []), str(SRC_PATH), "exec"), ns)
     return ns
 
 
@@ -67,6 +68,7 @@ class _Bare(torch.nn.Module):
 
 
 # ---- the behaviour ---------------------------------------------------------
+
 
 def test_a_module_without_the_attribute_gets_a_dict():
     m = _Bare()
@@ -130,6 +132,7 @@ def test_running_twice_is_idempotent():
 
 # ---- what it deliberately does not touch -----------------------------------
 
+
 @pytest.mark.parametrize("value", [None, "Qwen/Qwen2.5-1.5B", 7, object()])
 def test_non_modules_are_left_alone_without_raising(value):
     """trl accepts a repo id string and builds the model itself. Attaching an
@@ -141,6 +144,7 @@ def test_non_modules_are_left_alone_without_raising(value):
 
 def test_a_model_that_refuses_the_assignment_does_not_raise():
     """Whatever that model's problem is, trl should report it, not us."""
+
     class _Locked(torch.nn.Module):
         def __setattr__(self, name, value):
             if name == "warnings_issued":
@@ -152,6 +156,7 @@ def test_a_model_that_refuses_the_assignment_does_not_raise():
 
 # ---- through the real wrapper, against a trl-shaped trainer ----------------
 
+
 @dataclasses.dataclass
 class _FakeConfig:
     learning_rate: float = 1e-4
@@ -160,15 +165,21 @@ class _FakeConfig:
 class _FakeTrainer:
     """The first three lines of trl's GRPOTrainer.__init__, in effect."""
 
-    def __init__(self, model = None, args = None, **kwargs):
+    def __init__(
+        self,
+        model = None,
+        args = None,
+        **kwargs,
+    ):
         model.warnings_issued["estimate_tokens"] = True
         self.model = model
         self.args = args
 
 
 def _wrapped():
-    ns = _load("_ensure_warnings_issued", "_resolve_trainer_params",
-               "_backwards_compatible_trainer")
+    ns = _load(
+        "_ensure_warnings_issued", "_resolve_trainer_params", "_backwards_compatible_trainer"
+    )
     if "trl" not in ns:
         pytest.skip("trl not installed")
 
@@ -182,7 +193,7 @@ def _wrapped():
 def test_the_unwrapped_trainer_reproduces_the_reported_failure():
     """Without this, the tests below could pass against a bug that no longer
     exists and nobody would notice."""
-    with pytest.raises(AttributeError, match="warnings_issued"):
+    with pytest.raises(AttributeError, match = "warnings_issued"):
         _FakeTrainer(_Bare())
 
 
@@ -211,13 +222,18 @@ def test_no_model_at_all_still_reaches_the_wrapped_init():
 
 # ---- the source, so the fix cannot be half-applied -------------------------
 
+
 def _new_init_body():
     tree = ast.parse(SRC)
     for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "new_init" and \
-                any(isinstance(p, ast.FunctionDef) and
-                    p.name == "_backwards_compatible_trainer"
-                    for p in ast.walk(tree)):
+        if (
+            isinstance(node, ast.FunctionDef)
+            and node.name == "new_init"
+            and any(
+                isinstance(p, ast.FunctionDef) and p.name == "_backwards_compatible_trainer"
+                for p in ast.walk(tree)
+            )
+        ):
             src = ast.get_source_segment(SRC, node)
             if src and "original_init(self" in src:
                 return src
@@ -239,8 +255,10 @@ def test_the_guard_is_outside_the_version_branch():
         if isinstance(node, ast.FunctionDef) and node.name == "new_init":
             for stmt in node.body:  # top level of new_init only
                 for sub in ast.walk(stmt):
-                    if isinstance(sub, ast.Call) and \
-                            getattr(sub.func, "id", None) == "_ensure_warnings_issued":
+                    if (
+                        isinstance(sub, ast.Call)
+                        and getattr(sub.func, "id", None) == "_ensure_warnings_issued"
+                    ):
                         found.append(type(stmt).__name__)
     assert "Expr" in found, f"guard is nested, not a top-level statement: {found}"
 
@@ -248,12 +266,13 @@ def test_the_guard_is_outside_the_version_branch():
 def test_the_generated_compiled_guard_is_still_there():
     """This change adds a second guard on the eager path. It must not have been
     made by moving the compiled one, which would regress the default path."""
-    rl = (ROOT / "unsloth" / "models" / "rl.py").read_text(encoding="utf-8")
+    rl = (ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
     assert "warnings_issued_check" in rl
     assert "model.warnings_issued = {}" in rl
 
 
 # ---- the upstream facts this rests on --------------------------------------
+
 
 def test_trl_still_writes_the_attribute_unconditionally():
     """If trl ever guards it themselves, this whole file can go."""
@@ -261,7 +280,7 @@ def test_trl_still_writes_the_attribute_unconditionally():
     grpo = Path(trl.__file__).parent / "trainer" / "grpo_trainer.py"
     if not grpo.exists():
         pytest.skip("trl layout changed")
-    text = grpo.read_text(encoding="utf-8")
+    text = grpo.read_text(encoding = "utf-8")
     assert 'model.warnings_issued["estimate_tokens"] = True' in text
 
 
@@ -272,8 +291,7 @@ def test_the_installed_transformers_tells_us_which_side_of_5_1_we_are_on():
     transformers = pytest.importorskip("transformers")
     import transformers.modeling_utils as mu
 
-    ships_it = "self.warnings_issued = {}" in \
-        Path(mu.__file__).read_text(encoding="utf-8")
+    ships_it = "self.warnings_issued = {}" in Path(mu.__file__).read_text(encoding = "utf-8")
     version = tuple(int(x) for x in transformers.__version__.split(".")[:2])
     if version >= (5, 1):
         assert not ships_it, "5.1+ reinstated it; re-check whether this is needed"
@@ -291,14 +309,15 @@ def test_every_trl_trainer_that_writes_it_goes_through_the_wrapper():
     import trl.trainer
 
     names = dir(trl.trainer)
-    wrapped = {x[: -len("Trainer")] for x in names if x.endswith("Trainer")} & \
-              {x[: -len("Config")] for x in names if x.endswith("Config")}
+    wrapped = {x[: -len("Trainer")] for x in names if x.endswith("Trainer")} & {
+        x[: -len("Config")] for x in names if x.endswith("Config")
+    }
 
     root = Path(trl.__file__).parent
     writers = set()
     for path in root.rglob("*_trainer.py"):
         try:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_text(encoding = "utf-8")
         except OSError:
             continue
         if 'model.warnings_issued["estimate_tokens"] = True' in text:

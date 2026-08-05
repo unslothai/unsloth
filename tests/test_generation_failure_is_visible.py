@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-SRC = (ROOT / "unsloth" / "models" / "rl.py").read_text(encoding="utf-8")
+SRC = (ROOT / "unsloth" / "models" / "rl.py").read_text(encoding = "utf-8")
 
 
 def _handler():
@@ -62,10 +62,10 @@ def test_the_benign_case_never_reaches_the_handler():
             break
     else:
         raise AssertionError("impl not found")
-    head = body[:body.index("Patch for vLLM") + 2000] if "Patch for vLLM" in body else body[:2000]
+    head = body[: body.index("Patch for vLLM") + 2000] if "Patch for vLLM" in body else body[:2000]
     assert "Could not import trl.trainer" in head
     i = head.index("Could not import trl.trainer")
-    assert "return" in head[i:i + 200], "the benign path must return, not raise"
+    assert "return" in head[i : i + 200], "the benign path must return, not raise"
 
 
 if __name__ == "__main__":
