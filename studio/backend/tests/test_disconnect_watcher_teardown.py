@@ -113,9 +113,9 @@ def test_aclose_stream_resources_is_not_blocked_by_a_wedged_watcher(monkeypatch)
             assert finished, "teardown blocked on a watcher that ignores cancel()"
             assert stopped == [watcher], "the watcher must go through the bounded stop"
             assert not watcher.done(), "watcher should have been abandoned, not awaited"
-            assert iterator.closed and resp.closed and client.closed, (
-                "teardown must still close the upstream resources after abandoning it"
-            )
+            assert (
+                iterator.closed and resp.closed and client.closed
+            ), "teardown must still close the upstream resources after abandoning it"
         finally:
             await _release(release, [watcher, teardown])
 
@@ -133,7 +133,11 @@ def test_send_stream_preheader_finally_is_not_blocked_by_a_wedged_watcher(monkey
         sent = httpx.Response(200)
 
         class _Client:
-            async def send(self, req, stream = False):
+            async def send(
+                self,
+                req,
+                stream = False,
+            ):
                 return sent
 
             async def aclose(self):
@@ -278,9 +282,9 @@ def test_admission_is_released_before_any_teardown_await(func_name):
             f"{func_name}: teardown block has no _release_admission() before it:\n"
             + "\n".join(ast.unparse(stmt) for stmt in block)
         )
-        assert release_at < teardown_at, (
-            f"{func_name}: _release_admission() must precede the teardown awaits"
-        )
+        assert (
+            release_at < teardown_at
+        ), f"{func_name}: _release_admission() must precede the teardown awaits"
         checked += 1
 
     assert checked, f"{func_name}: found no teardown block to check"

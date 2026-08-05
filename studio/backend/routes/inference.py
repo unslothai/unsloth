@@ -1750,9 +1750,7 @@ async def _send_stream_with_preheader_cancel(
         # bounded like every other teardown await: the client is already closed, so an
         # abandoned send owns nothing and its result is drained by the callback. #7617
         send_task.cancel()
-        done, _pending = await asyncio.wait(
-            {send_task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S
-        )
+        done, _pending = await asyncio.wait({send_task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S)
         if not done:
             send_task.add_done_callback(_discard_task_outcome)
             return
@@ -17835,9 +17833,7 @@ async def _openai_passthrough_stream_admitted(
         # bounded: the send polls Request.is_disconnected() before dispatch, which can
         # swallow cancel(). abandoning it is safe because the caller closes the per-request
         # client right after, which tears down whatever response it later produces. #7617
-        done, _pending = await asyncio.wait(
-            {task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S
-        )
+        done, _pending = await asyncio.wait({task}, timeout = _TEARDOWN_TASK_STOP_TIMEOUT_S)
         if not done:
             task.add_done_callback(_discard_task_outcome)
             return
