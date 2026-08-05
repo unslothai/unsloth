@@ -1505,7 +1505,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   );
 
   return (
-    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    // The chat-style layout gives this page no outer top inset, so clear the custom
+    // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
+    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the controls column below. Load progress shows in a toast. */}
       <div className="flex h-[48px] shrink-0 items-start justify-between pl-6 pr-2 pt-[11px]">
         <div className="flex items-center gap-3">
