@@ -1527,8 +1527,7 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
         with (snapshot / "model_index.json").open("r", encoding = "utf-8") as fh:
             manifest = json.load(fh)
     except (OSError, ValueError, RecursionError):
-        # RecursionError: json.load on deeply nested input, and neither a ValueError nor an
-        # OSError, so it would escape the caller's fail-open guard.
+        # RecursionError: deeply nested json, otherwise escapes the caller's fail-open guard.
         return None
     if not isinstance(manifest, dict):
         return None
@@ -1539,12 +1538,10 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
         name = key.lower()
         if name != "unet" and "transformer" not in name:
             continue
-        # A declared component is the ["diffusers", "FluxTransformer2DModel"] pair, and its
-        # directory is the key. A [null, null] pair means deliberately absent (Wan 2.2's 5B
-        # sibling declares transformer_2 that way and ships no such directory). Anything else is a
-        # custom manifest that does not follow the pair convention and whose directory this cannot
-        # infer -- ACE-STEP maps "transformer" to {"config": "ace_step_transformer/config.json"}
-        # -- so it is left to the loader rather than demanded at a directory that will not exist.
+        # A component is a [library, class] pair whose directory is the key; [null, null] means
+        # deliberately absent (Wan 2.2's 5B transformer_2). Anything else names no directory this
+        # can infer -- ACE-STEP maps "transformer" to {"config": "ace_step_transformer/config.json"}
+        # -- so leave it to the loader instead of demanding a directory that will not exist.
         if not isinstance(value, (list, tuple)) or not any(v for v in value):
             continue
         found.append(key)
@@ -1571,8 +1568,8 @@ def _component_weights_complete(component: Path) -> bool:
     before the last part, so a bf16 index is
     ``diffusion_pytorch_model.safetensors.index.bf16.json``.
     """
-    # glob() swallows the OSError an unreadable directory raises, which would read as "no weights"
-    # instead of reaching the caller's fail-open guard. iterdir() raises it.
+    # iterdir() raises on an unreadable dir, reaching the caller's fail-open guard; glob() would
+    # swallow that OSError and read as "no weights".
     next(component.iterdir(), None)
     claimed: set[str] = set()
     for index in component.glob("*.json"):
@@ -1594,8 +1591,8 @@ def _component_weights_complete(component: Path) -> bool:
             return True
         claimed |= shards
     # No whole set, so the last thing that could load is a weight NO index claims: an unsharded
-    # default beside an orphan variant index. Skipping the claimed names is what stops a half-landed
-    # set, whose files are exactly the ones an index named, from reading as complete.
+    # default beside an orphan variant index. Skipping claimed names stops a half-landed set from
+    # reading as complete.
     for entry in component.rglob("*"):
         if not entry.is_file() or not entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES):
             continue
@@ -1628,15 +1625,14 @@ def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
         root = Path(snapshot)
         declared = _manifest_denoiser_components(root)
         if declared is not None:
-            # all(()) is True: a manifest that declares no denoiser under either spelling has none
-            # this check can prove absent, so it reads complete rather than being hunted for a
-            # transformer/ or unet/ its pipeline class never had.
+            # all(()) is True: a manifest declaring no denoiser has none this check can prove
+            # absent, so it reads complete rather than being hunted for one it never had.
             return not all(
                 (root / name).is_dir() and _component_weights_complete(root / name)
                 for name in declared
             )
         # Unreadable manifest: either fixed name will do, since a UNet pipeline has no
-        # transformer/ and a DiT one has no unet/.
+        # transformer/ and a DiT one no unet/.
         return not any(
             (root / name).is_dir() and _component_weights_complete(root / name)
             for name in _DENOISER_DIRS

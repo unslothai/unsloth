@@ -3178,8 +3178,8 @@ _FLUX_INDEX = {
     "vae": ["diffusers", "AutoencoderKL"],
     "safety_checker": [None, None],
 }
-# Both trimmed from the real manifests: CalamitousFelicitousness/Ideogram-4-bf16-Diffusers and
-# Wan-AI/Wan2.2-T2V-A14B-Diffusers, each of which ships two fully sharded denoiser directories.
+# Trimmed from the real manifests of CalamitousFelicitousness/Ideogram-4-bf16-Diffusers and
+# Wan-AI/Wan2.2-T2V-A14B-Diffusers, which each ship two sharded denoiser directories.
 _IDEOGRAM_INDEX = {
     "_class_name": "Ideogram4Pipeline",
     "transformer": ["diffusers", "Ideogram4Transformer2DModel"],
@@ -3192,11 +3192,11 @@ _WAN_INDEX = {
     "transformer_2": ["diffusers", "WanTransformer3DModel"],
     "vae": ["diffusers", "AutoencoderKLWan"],
 }
-# Wan-AI/Wan2.2-TI2V-5B-Diffusers: the single-expert sibling declares the second slot and fills it
-# with [null, null], and ships no transformer_2/ at all.
+# Wan-AI/Wan2.2-TI2V-5B-Diffusers: the single-expert sibling declares transformer_2 as
+# [null, null] and ships no such directory.
 _WAN_SINGLE_EXPERT_INDEX = dict(_WAN_INDEX, transformer_2 = [None, None])
-# stabilityai/stable-cascade calls its denoiser "decoder"; Wuerstchen, Kandinsky and Shap-E use
-# "decoder"/"prior". No key here matches either fixed name.
+# Stable Cascade, Wuerstchen, Kandinsky and Shap-E call theirs "decoder"/"prior", so no key here
+# matches either fixed name.
 _CASCADE_INDEX = {
     "_class_name": "StableCascadeDecoderPipeline",
     "decoder": ["diffusers", "StableCascadeUNet"],
@@ -3279,8 +3279,7 @@ def test_neither_format_being_whole_is_still_torn(tmp_path):
 
 
 # diffusers' _add_variant inserts the variant before the LAST extension, so a bf16 shard index is
-# named "...safetensors.index.bf16.json" (genmo/mochi-1-preview ships exactly that beside the
-# default one), not "...bf16.safetensors.index.json".
+# "...safetensors.index.bf16.json", not "...bf16.safetensors.index.json".
 _VARIANT_INDEX_NAME = "diffusion_pytorch_model.safetensors.index.bf16.json"
 
 
