@@ -3330,6 +3330,82 @@ def test_a_variant_only_component_is_missing_its_denoiser_whole_or_not(tmp_path)
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
 
 
+@pytest.mark.parametrize("whole_suffix", [".safetensors", ".bin"])
+def test_a_corrupt_selected_index_hides_the_whole_weight_beside_it(whole_suffix, tmp_path):
+    """An unreadable selected index is the failure, not an absence of evidence.
+
+    ``is_sharded`` is set from that file merely existing, so ``_get_checkpoint_shard_files`` then
+    parses it and raises, and neither the ``except IOError`` branch nor the pickle fallback under
+    it is reachable once sharded. The complete weight sitting beside it is never opened.
+    """
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": b"{not json",
+            f"transformer/diffusion_pytorch_model{whole_suffix}": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+def test_a_sharded_bin_set_is_not_what_a_default_load_resolves(tmp_path):
+    """``.bin`` shards behind their own index answer no default load.
+
+    ``use_safetensors`` unset coerces to True, so ``_fetch_index_file`` builds the safetensors
+    index name and nothing else; with no index found the loader asks for the UNSHARDED
+    ``diffusion_pytorch_model.bin``, which a sharded set does not provide.
+    """
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.bin.index.json": _dual_format_shard_index(".bin"),
+            "transformer/diffusion_pytorch_model-00001-of-00002.bin": b"\0" * 256,
+            "transformer/diffusion_pytorch_model-00002-of-00002.bin": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+def test_the_legacy_variant_index_spelling_does_not_vouch_either(tmp_path):
+    """``_fetch_index_file_legacy`` spells the variant BEFORE ``.index``, so a deprecated fp16 set
+    is ``diffusion_pytorch_model.safetensors.fp16.index.json`` -- a name ending in ``.index.json``
+    that a load passing no ``variant`` still never resolves."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.fp16.index.json": (
+                _dual_format_shard_index(".fp16.safetensors")
+            ),
+            "transformer/diffusion_pytorch_model-00001-of-00002.fp16.safetensors": b"\0" * 256,
+            "transformer/diffusion_pytorch_model-00002-of-00002.fp16.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+def test_shards_whose_index_never_landed_do_not_stand_in_for_the_whole_weight(tmp_path):
+    """A numbered shard is only ever reached THROUGH an index: with ``is_sharded`` false the loader
+    asks for the unsharded name and nothing else. So a complete shard set whose index is missing --
+    or, as here, present in the snapshot only as a blob symlink the cache already collected -- is
+    wreckage, not a loose weight."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            "transformer/diffusion_pytorch_model-00002-of-00002.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    dangling = snapshot / "transformer" / "diffusion_pytorch_model.safetensors.index.json"
+    dangling.symlink_to(tmp_path / "blobs" / "collected")
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
 def test_an_unsharded_dtype_twin_alone_is_not_the_default_weight(tmp_path):
     """The same rule without an index in sight: the twin a ``variant = "fp16"`` load left in the
     cache is the only weight here, and the default load this app issues cannot open it."""
@@ -3550,11 +3626,21 @@ def test_a_multi_denoiser_pipeline_needs_every_denoiser_it_declares(manifest, se
 
 
 @pytest.mark.parametrize(
-    "target", ["model_index.json", "transformer/diffusion_pytorch_model.safetensors.index.json"]
+    "target, missing",
+    [
+        ("model_index.json", False),
+        ("transformer/diffusion_pytorch_model.safetensors.index.json", True),
+    ],
 )
-def test_json_too_deep_to_parse_reports_not_missing_rather_than_raising(target, tmp_path):
+def test_json_too_deep_to_parse_is_contained_rather_than_raising(target, missing, tmp_path):
     """json.load raises RecursionError, which is neither a ValueError nor an OSError, so an
-    unguarded parse would escape past the caller and drop the row from the scan entirely."""
+    unguarded parse would escape past the caller and drop the row from the scan entirely.
+
+    Contained is not the same as ignored, and which one it is depends on the file. An unreadable
+    MANIFEST proves nothing about the denoiser, so the row stays. An unreadable SELECTED INDEX is
+    the failure itself: diffusers marks the component sharded on that file existing and then
+    parses it with the same json module, so the whole weight lying beside it is never opened.
+    """
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3563,7 +3649,7 @@ def test_json_too_deep_to_parse_reports_not_missing_rather_than_raising(target, 
             target: b"[" * 20000 + b"]" * 20000,
         },
     )
-    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is missing
 
 
 def test_an_unreadable_manifest_keeps_the_fixed_denoiser_pair(tmp_path):

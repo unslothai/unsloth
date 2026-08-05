@@ -1077,7 +1077,11 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
             return True
         with index_path.open(encoding = "utf-8") as handle:
             index = json.load(handle)
-    except (OSError, UnicodeDecodeError, ValueError):
+    except (OSError, UnicodeDecodeError, ValueError, RecursionError):
+        # RecursionError: deeply nested json, which is neither ValueError nor OSError and would
+        # otherwise escape every caller's fail-open guard. The loader parses the index with the
+        # same json module inside ``_get_checkpoint_shard_files``, so one too deep to parse there
+        # cannot serve its shards here either.
         return True
     weight_map = index.get("weight_map") if isinstance(index, dict) else None
     if not isinstance(weight_map, dict) or not weight_map:
@@ -1582,20 +1586,23 @@ def _component_weights_complete(component: Path) -> bool:
     ``*.index.json`` naming every shard, and a fetch that landed shard 1 of 2 alone satisfies a
     first-match test while failing at load.
 
-    One index is not judged on its own, though: ``_SELECTED_DENOISER_INDEX`` is the only sharded
-    name diffusers resolves here, and a component carrying it is sharded, so the ``.bin`` set beside
-    it is never opened -- ``_get_checkpoint_shard_files`` raises FileNotFoundError on the first
-    missing shard, and both the ``except IOError`` and the pickle fallback below it are gated on
-    ``not is_sharded``. Readable-and-short there is therefore the whole answer. Unreadable is not:
-    that stays no-evidence, so a corrupt index cannot hide the whole weight beside it.
+    ``_SELECTED_DENOISER_INDEX`` decides the whole question on its own whenever it EXISTS.
+    It is the only sharded name diffusers resolves here, its mere presence makes the component
+    sharded, and everything after that is unconditional: ``_get_checkpoint_shard_files`` parses it
+    and opens exactly what it maps, while both the ``except IOError`` branch and the pickle
+    fallback below it are gated on ``not is_sharded``. So a short set fails, and so does an index
+    too corrupt to parse -- the whole weight beside it is never opened either way.
 
-    Every OTHER index is judged on its OWN shard set, not on the union, because one satisfied index
-    is all the loader needs. Some repos are simply published that way: ``stablediffusionapi/sdrealdream``
-    ships ``unet/`` with two safetensors shards, a matching index, and a ``.bin.index.json`` naming
-    two ``.bin`` shards that exist nowhere in the repo. Our own plan manufactures the same shape
-    (``core/inference/diffusion.py`` drops a ``.bin`` whose directory also has a picked
-    ``.safetensors``, matching on the ``.bin`` suffix, so ``.bin.index.json`` survives while its
-    shards never arrive). Unioning would charge those absent shards to a complete safetensors set.
+    Every OTHER index vouches for nothing, whatever its shard set looks like, because a default
+    load never opens it: ``_fetch_index_file`` builds the safetensors name only, and the
+    non-sharded fallback under it asks for the UNSHARDED ``diffusion_pytorch_model.bin``, never a
+    ``.bin.index.json`` set beside it. Some repos are published with exactly that leftover:
+    ``stablediffusionapi/sdrealdream`` ships ``unet/`` with two safetensors shards, a matching
+    index, and a ``.bin.index.json`` naming two ``.bin`` shards that exist nowhere in the repo.
+    Our own plan manufactures the same shape (``core/inference/diffusion.py`` drops a ``.bin``
+    whose directory also has a picked ``.safetensors``, matching on the ``.bin`` suffix, so
+    ``.bin.index.json`` survives while its shards never arrive). Those indexes are still walked,
+    so they claim their shards and a half-landed set cannot pose as the default weight below.
 
     A dtype variant never vouches for the component, whole or not. ``_add_variant`` splits on ``.``
     and inserts the variant before the last part, so a bf16 set is
@@ -1614,9 +1621,14 @@ def _component_weights_complete(component: Path) -> bool:
     # swallow that OSError and read as "no weights".
     next(component.iterdir(), None)
     # Selected before every other weight here and never fallen back from, so nothing beside it can
-    # vouch for the component once it is readable and short.
+    # vouch for the component once it EXISTS. Existence is the whole gate diffusers applies --
+    # ``is_sharded`` comes from ``index_file.is_file()`` alone -- and everything after it is
+    # unconditional: ``_get_checkpoint_shard_files`` parses the index and raises, while both the
+    # ``except IOError`` branch and the pickle fallback under it are gated on ``not is_sharded``.
+    # So an index we cannot read is not no-evidence here, it IS the failure. ``is_file()`` is the
+    # loader's own test, dangling snapshot symlink included: absent to both, so both fall through.
     selected = component / _SELECTED_DENOISER_INDEX
-    if _denoiser_index_shards(selected) is not None:
+    if selected.is_file():
         return not _index_cannot_serve_its_shards(selected, set())
     claimed: set[str] = set()
     for index in component.glob("*.json"):
@@ -1626,14 +1638,13 @@ def _component_weights_complete(component: Path) -> bool:
         shards = _denoiser_index_shards(index)
         if shards is None:
             continue
-        # Only a default-named index answers a default load; a variant one ends in
-        # ``.index.<variant>.json`` and is never resolved, so it claims its shards without ever
-        # vouching. Same rule the root-weight scanner applies to its own indexes otherwise: every
-        # name has to resolve inside the component (``component / "/abs"`` drops the left operand
-        # and ``..`` walks out to a sibling, so a corrupt map could otherwise be satisfied by the
-        # vae), be non-empty on disk, and cover the shard total its own filename declares.
-        if index.name.endswith(".index.json") and not _index_cannot_serve_its_shards(index, set()):
-            return True
+        # Nothing reaching here vouches for the component. The one sharded name a default load
+        # resolves is ``_SELECTED_DENOISER_INDEX``, and it already answered above if it was there
+        # at all; what is left is the ``.bin`` twin and the variant spellings, none of which
+        # ``_fetch_index_file`` ever builds -- it takes the safetensors name only, and the
+        # non-sharded fallback under it asks for the UNSHARDED ``diffusion_pytorch_model.bin``,
+        # never the sharded set beside it. They still claim their shards, so a half-landed set
+        # cannot pose as the default weight in the loose scan below.
         claimed |= shards
     # No whole set, so the last thing that could load is a weight NO index claims: an unsharded
     # default beside an orphan variant index. Skipping claimed names stops a half-landed set from
@@ -1645,6 +1656,13 @@ def _component_weights_complete(component: Path) -> bool:
         # (``diffusion_pytorch_model.fp16.safetensors``), and a load without ``variant`` asks for
         # the plain name, so the twin is no more loadable loose than it was through its index.
         if entry.name.count(".") > 1:
+            continue
+        # A numbered shard is only ever reached THROUGH an index: with ``is_sharded`` false the
+        # loader asks ``_get_model_file`` for the unsharded name and nothing else. So a shard no
+        # index claimed is not a loose weight, it is the wreckage of a set whose index never
+        # landed (or landed as a dangling blob symlink) -- which the claimed-name skip below
+        # cannot catch, precisely because there was no readable index to claim it.
+        if _WEIGHT_SHARD_RE.search(entry.name):
             continue
         try:
             relative = entry.relative_to(component).as_posix()
