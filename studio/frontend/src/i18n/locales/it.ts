@@ -50,6 +50,11 @@ export const it = {
       projects: "Progetti",
       train: "Addestra",
       recipes: "Ricette",
+      images: "Immagini",
+      video: "Video",
+      more: "Altro",
+      customizeSidebar: "Personalizza la barra laterale",
+      newBadge: "Novità",
       export: "Esporta",
       recents: "Recenti",
       noChatsYet: "Ancora nessuna chat",
@@ -153,10 +158,20 @@ export const it = {
         sttNotDownloaded: "Non scaricato",
         sttDownloadStatusFailed: "Impossibile verificare lo stato del download",
         sttDownload: "Scarica",
+        sttDownloadConfirmTitle: "Vuoi scaricare {model}?",
+        sttDownloadConfirmBody:
+          "La dettatura locale funziona completamente offline, ma prima ha bisogno del modello vocale {model}. Occupa circa {size} e viene scaricato una sola volta nella tua cache di Hugging Face.",
+        sttDownloadConfirmBodyUnsized:
+          "La dettatura locale funziona completamente offline, ma prima ha bisogno del modello vocale {model}. Viene scaricato una sola volta nella tua cache di Hugging Face.",
+        sttOpenVoiceSettings: "Apri le impostazioni Voce",
+        sttDownloadStarted: "Download di {model} in corso",
         sttDownloading: "Download in corso… {progress}%",
         sttCancelDownload: "Annulla",
         sttCancellingDownload: "Annullamento…",
+        sttCancelDownloadFailed: "Impossibile annullare il download",
         sttDownloadComplete: "Modello di riconoscimento vocale scaricato",
+        sttModelReady: "{model} è pronto per la dettatura",
+        sttRecommended: "Consigliato",
         sttDownloadFailed:
           "Impossibile scaricare il modello di riconoscimento vocale",
         sttLoad: "Carica",
@@ -615,6 +630,14 @@ export const it = {
         compactSidebar: "Fissa la barra laterale per impostazione predefinita",
         compactSidebarDescription:
           "Mantieni la barra laterale espansa invece di ridurla a icone.",
+      },
+      sidebarNav: {
+        title: "Navigazione della barra laterale",
+        description:
+          "Fissa e riordina le schede della barra laterale. Le schede non fissate vengono raccolte nel menu «Altro»; se ne resta una sola non fissata viene nascosta invece di creare un menu con una voce sola. «Nuova chat» resta sempre al suo posto.",
+        dragToReorder: "Trascina per riordinare",
+        pinToSidebar: "Fissa {name} nella barra laterale",
+        moreHolds: "Altro ({count})",
       },
       sidebarMenu: {
         title: "Menu della barra laterale",

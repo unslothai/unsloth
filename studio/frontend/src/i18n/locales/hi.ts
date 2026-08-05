@@ -53,6 +53,11 @@ export const hi = {
       projects: "प्रोजेक्ट",
       train: "ट्रेनिंग",
       recipes: "रेसिपी",
+      images: "इमेज",
+      video: "वीडियो",
+      more: "अधिक",
+      customizeSidebar: "साइडबार कस्टमाइज़ करें",
+      newBadge: "नया",
       export: "एक्सपोर्ट",
       recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",
@@ -151,10 +156,20 @@ export const hi = {
         sttNotDownloaded: "डाउनलोड नहीं हुआ",
         sttDownloadStatusFailed: "डाउनलोड स्थिति जाँची नहीं जा सकी",
         sttDownload: "डाउनलोड करें",
+        sttDownloadConfirmTitle: "{model} डाउनलोड करें?",
+        sttDownloadConfirmBody:
+          "लोकल डिक्टेशन पूरी तरह ऑफ़लाइन चलता है, लेकिन इसके लिए पहले {model} स्पीच मॉडल चाहिए। यह लगभग {size} का है और आपके Hugging Face कैश में एक ही बार डाउनलोड होता है।",
+        sttDownloadConfirmBodyUnsized:
+          "लोकल डिक्टेशन पूरी तरह ऑफ़लाइन चलता है, लेकिन इसके लिए पहले {model} स्पीच मॉडल चाहिए। यह आपके Hugging Face कैश में एक ही बार डाउनलोड होता है।",
+        sttOpenVoiceSettings: "आवाज़ सेटिंग्स खोलें",
+        sttDownloadStarted: "{model} डाउनलोड हो रहा है",
         sttDownloading: "डाउनलोड हो रहा है… {progress}%",
         sttCancelDownload: "रद्द करें",
         sttCancellingDownload: "रद्द हो रहा है…",
+        sttCancelDownloadFailed: "डाउनलोड रद्द नहीं किया जा सका",
         sttDownloadComplete: "स्पीच रिकग्निशन मॉडल डाउनलोड हो गया",
+        sttModelReady: "{model} डिक्टेशन के लिए तैयार है",
+        sttRecommended: "अनुशंसित",
         sttDownloadFailed: "स्पीच रिकग्निशन मॉडल डाउनलोड नहीं हो सका",
         sttLoad: "लोड करें",
         sttUnload: "अनलोड करें",
@@ -599,6 +614,14 @@ export const hi = {
         compactSidebar: "साइडबार को डिफ़ॉल्ट रूप से पिन करें",
         compactSidebarDescription:
           "साइडबार को आइकन में संक्षिप्त करने के बजाय विस्तारित रखें।",
+      },
+      sidebarNav: {
+        title: "साइडबार नेविगेशन",
+        description:
+          "साइडबार के टैब पिन करें और उनका क्रम बदलें। जो टैब पिन नहीं हैं वे “अधिक” मेन्यू में इकट्ठा हो जाते हैं; यदि सिर्फ़ एक ही टैब पिन नहीं है तो एक आइटम वाला मेन्यू बनाने के बजाय उसे छिपा दिया जाता है। नई चैट अपनी जगह पर तय रहती है।",
+        dragToReorder: "क्रम बदलने के लिए खींचें",
+        pinToSidebar: "{name} को साइडबार में पिन करें",
+        moreHolds: "अधिक ({count})",
       },
       sidebarMenu: {
         title: "साइडबार मेन्यू",

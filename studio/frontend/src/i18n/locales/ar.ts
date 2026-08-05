@@ -53,6 +53,11 @@ export const ar = {
       projects: "المشاريع",
       train: "تدريب",
       recipes: "الوصفات",
+      images: "الصور",
+      video: "الفيديو",
+      more: "المزيد",
+      customizeSidebar: "تخصيص الشريط الجانبي",
+      newBadge: "جديد",
       export: "تصدير",
       recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
@@ -151,10 +156,20 @@ export const ar = {
         sttNotDownloaded: "لم يُنزَّل",
         sttDownloadStatusFailed: "تعذّر التحقق من حالة التنزيل",
         sttDownload: "تنزيل",
+        sttDownloadConfirmTitle: "تنزيل {model}؟",
+        sttDownloadConfirmBody:
+          "يعمل الإملاء المحلي دون اتصال تمامًا، لكنه يحتاج أولاً إلى نموذج الكلام {model}. حجمه {size} تقريبًا، ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
+        sttDownloadConfirmBodyUnsized:
+          "يعمل الإملاء المحلي دون اتصال تمامًا، لكنه يحتاج أولاً إلى نموذج الكلام {model}. ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
+        sttOpenVoiceSettings: "فتح إعدادات الصوت",
+        sttDownloadStarted: "جارٍ تنزيل {model}",
         sttDownloading: "جارٍ التنزيل… {progress}%",
         sttCancelDownload: "إلغاء",
         sttCancellingDownload: "جارٍ الإلغاء…",
+        sttCancelDownloadFailed: "تعذّر إلغاء التنزيل",
         sttDownloadComplete: "تم تنزيل نموذج التعرّف على الكلام",
+        sttModelReady: "{model} جاهز للإملاء",
+        sttRecommended: "موصى به",
         sttDownloadFailed: "تعذّر تنزيل نموذج التعرّف على الكلام",
         sttLoad: "تحميل",
         sttUnload: "تفريغ النموذج من الذاكرة",
@@ -599,6 +614,14 @@ export const ar = {
         compactSidebar: "تثبيت الشريط الجانبي افتراضيًا",
         compactSidebarDescription:
           "إبقاء الشريط الجانبي موسّعًا بدلاً من طيّه إلى أيقونات.",
+      },
+      sidebarNav: {
+        title: "التنقّل في الشريط الجانبي",
+        description:
+          "ثبّت علامات تبويب الشريط الجانبي وأعد ترتيبها. تتجمّع العلامات غير المثبّتة في قائمة «المزيد»؛ وإذا بقيت علامة واحدة غير مثبّتة فتُخفى بدلاً من إنشاء قائمة بعنصر واحد. تبقى «محادثة جديدة» ثابتة.",
+        dragToReorder: "اسحب لإعادة الترتيب",
+        pinToSidebar: "تثبيت {name} في الشريط الجانبي",
+        moreHolds: "المزيد ({count})",
       },
       sidebarMenu: {
         title: "قائمة الشريط الجانبي",

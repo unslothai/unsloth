@@ -6,7 +6,13 @@
 // - All non-English keys must exist in en (no extras).
 // - Placeholder set must match per leaf between en and the overlay.
 //
-// Run: npx tsx src/i18n/check-parity.ts
+// --strict additionally fails on missing keys and names them. The runtime
+// fallback still covers a gap, but it renders English inside a translated UI,
+// and without a gate that silently accumulates: the overlays were repaired to
+// full parity twice in three days and had drifted to 18 missing keys each
+// within a day of the second pass.
+//
+// Run: npx tsx src/i18n/check-parity.ts [--strict]
 
 import { en } from "./locales/en.ts";
 import { zhCN } from "./locales/zh-CN.ts";
@@ -110,7 +116,9 @@ const overlays: Record<string, Tree> = {
   ko: ko as unknown as Tree,
   it: it as unknown as Tree,
 };
+const strict = process.argv.includes("--strict");
 let anyError = false;
+let anyMissing = false;
 
 for (const [locale, overlay] of Object.entries(overlays)) {
   const errors: string[] = [];
@@ -120,6 +128,13 @@ for (const [locale, overlay] of Object.entries(overlays)) {
 
   console.log(`\n=== ${locale} ===`);
   console.log(`Missing keys (will fall back to en): ${missing.length}`);
+  if (missing.length > 0) {
+    anyMissing = true;
+    // Name them either way: the count alone does not say what to translate.
+    for (const k of missing) {
+      console.log(`  - ${k}`);
+    }
+  }
   if (errors.length) {
     anyError = true;
     console.error(`Errors (${errors.length}):`);
@@ -130,4 +145,11 @@ for (const [locale, overlay] of Object.entries(overlays)) {
 }
 
 if (anyError) process.exit(1);
+if (strict && anyMissing) {
+  console.error(
+    "\nMissing keys above. Add them to every overlay, or run without --strict " +
+      "to accept the English fallback.",
+  );
+  process.exit(1);
+}
 console.log("\nAll locale overlays pass parity.");
