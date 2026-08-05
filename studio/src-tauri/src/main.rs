@@ -32,11 +32,10 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
-/// Serializes the exit paths that must reap the backend: `request_quit` (the tray
-/// "Quit" item and, outside macOS, the window close button), the Unix termination
-/// signal listener, and `RunEvent::Exit`. Exactly one path
-/// runs cleanup; the others block until it is done, so the process never exits
-/// out from under a cleanup that is still killing the backend tree.
+/// Serializes the exit paths that must reap the backend: `request_quit` (tray "Quit"
+/// and, outside macOS, the close button), the Unix signal listener, and `RunEvent::Exit`.
+/// Exactly one runs cleanup; the others block until it is done, so the process never
+/// exits out from under a cleanup that is still killing the backend tree.
 static TERMINATION_CLEANUP: Once = Once::new();
 
 #[tauri::command]
@@ -287,14 +286,12 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-/// One quit confirmation at a time. The dialogs are shown asynchronously and are
-/// not parented to the window, so the window stays clickable while one is up;
-/// without this, every further press of a close button that now means "quit"
-/// would stack another dialog on another thread.
+/// One quit confirmation at a time. The dialogs are async and not parented to the
+/// window, so without this every further close-button press would stack another one.
 static QUIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-/// Clears the flag on cancel and on panic alike, so a quit that unwinds cannot
-/// leave the close button inert for the rest of the session.
+/// Clears the flag on cancel and on panic alike, so an unwinding quit cannot leave
+/// the close button inert for the rest of the session.
 struct QuitGuard;
 
 impl Drop for QuitGuard {
@@ -307,17 +304,16 @@ fn begin_quit() -> Option<QuitGuard> {
     (!QUIT_IN_PROGRESS.swap(true, Ordering::SeqCst)).then_some(QuitGuard)
 }
 
-/// Confirm, reap the backend, then exit. Always off the caller's thread: the
-/// confirmations block, and neither a tray callback nor the window event loop
-/// may. Exiting before the tree is reaped would orphan the backend.
+/// Confirm, reap the backend, then exit. Always off the caller's thread: the confirmations
+/// block, and neither a tray callback nor the window event loop may. Exiting before the
+/// tree is reaped would orphan the backend.
 fn request_quit(app: &tauri::AppHandle) {
     let Some(guard) = begin_quit() else {
         info!("Quit already awaiting confirmation, ignoring the repeat request");
         return;
     };
     let app = app.clone();
-    // The guard moves into the closure, so a failed spawn drops it and the next
-    // request retries rather than finding the quit path permanently closed.
+    // The guard moves into the closure, so a failed spawn drops it and the next request retries.
     let spawned = std::thread::Builder::new()
         .name("request-quit".to_string())
         .spawn(move || {
@@ -471,17 +467,15 @@ fn main() {
                     .note_dropped_paths(paths);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Never close directly. This is the only window, so closing it would
-                // drive the app to exit before the backend has been reaped; macOS
-                // additionally needs it alive to reopen from the tray or the Dock.
+                // Never close directly: this is the only window, so closing it would exit
+                // before the backend is reaped, and macOS needs it alive to reopen.
                 api.prevent_close();
                 if cfg!(target_os = "macos") {
                     // Closing a window leaves the app in the Dock; Reopen restores it.
                     let _ = window.hide();
                 } else {
-                    // Elsewhere the close button means quit, so take the same
-                    // guarded path as the tray item rather than hiding a process
-                    // tree the user believes they just closed.
+                    // Elsewhere the close button means quit: same guarded path as the tray
+                    // item, rather than hiding a tree the user believes they just closed.
                     request_quit(window.app_handle());
                 }
             }
@@ -509,8 +503,7 @@ fn main() {
 mod tests {
     use super::*;
 
-    // One test rather than three: `QUIT_IN_PROGRESS` is process-global and cargo
-    // runs tests on parallel threads.
+    // One test, not three: `QUIT_IN_PROGRESS` is process-global and cargo tests run in parallel.
     #[test]
     fn quit_guard_admits_one_quit_and_always_re_arms() {
         assert!(!QUIT_IN_PROGRESS.load(Ordering::SeqCst));
