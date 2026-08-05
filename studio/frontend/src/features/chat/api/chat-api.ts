@@ -421,6 +421,8 @@ export interface DownloadProgressResponse {
   downloaded_bytes: number;
   expected_bytes: number;
   progress: number;
+  /** True only after the backend verifies the revision manifest on disk. */
+  complete_on_disk: boolean;
   /**
    * On-disk path of the snapshot dir (or cache repo root if no snapshot yet).
    * Null when nothing has been written to the cache for this repo.

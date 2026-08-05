@@ -760,6 +760,14 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
             # Always present: an explicit null tells the client to drop a cached
             # path (stop without save clears the run's output_dir).
             details["output_dir"] = getattr(backend, "_output_dir", None) or None
+            # During model load this is the repo Unsloth resolved internally,
+            # which can differ from the model selected in Studio (for example a
+            # base repo resolving to an optimized -unsloth-bnb-4bit repo).
+            details["model_download_repo_id"] = (
+                getattr(backend, "_model_download_repo_id", None)
+                if getattr(backend, "_in_model_load", False)
+                else None
+            )
 
         # Metric history for chart recovery after SSE reconnection.
         metric_history = None

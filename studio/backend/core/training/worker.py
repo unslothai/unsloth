@@ -3151,14 +3151,6 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         _send_status(event_queue, "Loading model...")
         from utils.hf_xet_fallback import start_watchdog
 
-        event_queue.put({"type": "model_load_started", "ts": time.time()})
-        _load_watchdog_stop = start_watchdog(
-            repo_ids = [model_name],
-            on_stall = lambda msg: event_queue.put(
-                {"type": "stall", "message": msg, "ts": time.time()}
-            ),
-            xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
-        )
         # Latest-sidecar models load 16-bit here too: bnb 4-bit feeds quantized
         # expert weights into unvalidated paths (same flip as the chat worker).
         _train_load_in_4bit = config["load_in_4bit"]
@@ -3172,7 +3164,81 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                     model_name,
                 )
 
+        # Unsloth may transparently replace a requested base repo with its
+        # pre-quantized training repo. Tell the parent which HF cache is actually
+        # about to change so Studio does not keep polling the already-complete
+        # requested repo while the resolved weights download.
+        model_download_repo_id = model_name
+        if "/" in model_name and not os.path.exists(os.path.expanduser(model_name)):
+            try:
+                from unsloth.device_type import (
+                    ALLOW_BITSANDBYTES,
+                    ALLOW_PREQUANTIZED_MODELS,
+                )
+                from unsloth.models.loader import _strip_unsloth_bnb_4bit_suffix
+                from unsloth.models.loader_utils import (
+                    BAD_MAPPINGS,
+                    FLOAT_TO_INT_MAPPER,
+                    INT_TO_FLOAT_MAPPER,
+                    MAP_TO_UNSLOTH_16bit,
+                    get_model_name,
+                )
+
+                # Only call the installed mapper for known names. get_model_name
+                # probes GitHub when a name is unknown; the loader will do that
+                # itself, so probing here too would add a duplicate network wait.
+                model_key = model_name.lower()
+                known_to_installed_mapper = any(
+                    model_key in mapping
+                    for mapping in (
+                        FLOAT_TO_INT_MAPPER,
+                        INT_TO_FLOAT_MAPPER,
+                        MAP_TO_UNSLOTH_16bit,
+                        BAD_MAPPINGS,
+                    )
+                )
+                if known_to_installed_mapper:
+                    effective_load_in_4bit = (
+                        _train_load_in_4bit and ALLOW_BITSANDBYTES
+                    )
+                    model_download_repo_id = get_model_name(
+                        model_name,
+                        load_in_4bit = effective_load_in_4bit,
+                        token = hf_token,
+                        trust_remote_code = config.get("trust_remote_code", False),
+                    )
+                    if (
+                        not ALLOW_PREQUANTIZED_MODELS
+                        and model_download_repo_id.lower().endswith(
+                            ("-unsloth-bnb-4bit", "-bnb-4bit")
+                        )
+                    ):
+                        model_download_repo_id = _strip_unsloth_bnb_4bit_suffix(
+                            model_download_repo_id
+                        )
+            except Exception as exc:
+                logger.warning(
+                    "Could not resolve training download repo for %s: %s",
+                    model_name,
+                    exc,
+                )
+                model_download_repo_id = model_name
+
+        _load_watchdog_stop = start_watchdog(
+            repo_ids = [model_download_repo_id],
+            on_stall = lambda msg: event_queue.put(
+                {"type": "stall", "message": msg, "ts": time.time()}
+            ),
+            xet_disabled = os.environ.get("HF_HUB_DISABLE_XET") == "1",
+        )
         try:
+            event_queue.put(
+                {
+                    "type": "model_load_started",
+                    "repo_id": model_download_repo_id,
+                    "ts": time.time(),
+                }
+            )
             success = trainer.load_model(
                 model_name = model_name,
                 max_seq_length = config["max_seq_length"],

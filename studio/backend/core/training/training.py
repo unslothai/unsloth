@@ -821,6 +821,7 @@ class TrainingBackend:
         # Xet -> HTTP model-load fallback state (config kept for the respawn).
         self._last_full_config: Optional[dict] = None
         self._in_model_load: bool = False
+        self._model_download_repo_id: Optional[str] = None
         self._xet_fallback_used: bool = False
         self._needs_xet_respawn: bool = False
 
@@ -1035,6 +1036,7 @@ class TrainingBackend:
             self._last_full_config = config
             self._last_hf_cache_env = cache_env
             self._in_model_load = False
+            self._model_download_repo_id = None
             self._xet_fallback_used = False
             self._needs_xet_respawn = False
 
@@ -1814,10 +1816,15 @@ class TrainingBackend:
         if etype == "model_load_started":
             with self._lock:
                 self._in_model_load = True
+                repo_id = event.get("repo_id")
+                self._model_download_repo_id = (
+                    repo_id if isinstance(repo_id, str) and repo_id.strip() else None
+                )
             return
         if etype == "model_load_completed":
             with self._lock:
                 self._in_model_load = False
+                self._model_download_repo_id = None
             return
         if etype == "stall":
             self._handle_stall_event(event)
