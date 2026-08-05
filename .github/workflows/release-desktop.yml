@@ -27,7 +27,7 @@ on:
         type: string
         required: false
       draft:
-        description: 'Create as draft release; draft runs do not advance desktop-latest updater channel'
+        description: 'Create as draft; publishing it later advances desktop-latest without rebuilding'
         type: boolean
         default: true
 
@@ -1319,7 +1319,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/desktop-release-assets"/* --clobber
+          signature_assets="$(
+            gh release view "$DESKTOP_RELEASE_TAG" --json assets \
+              --jq '.assets[].name | select(endswith(".sig"))'
+          )"
+          while IFS= read -r asset_name; do
+            [[ -z "$asset_name" ]] || gh release delete-asset "$DESKTOP_RELEASE_TAG" "$asset_name" --yes
+          done <<< "$signature_assets"
+
+          release_assets=()
+          for asset in "$RUNNER_TEMP/desktop-release-assets"/*; do
+            [[ "$asset" == *.sig ]] || release_assets+=("$asset")
+          done
+          gh release upload "$DESKTOP_RELEASE_TAG" "${release_assets[@]}" --clobber
 
       - name: Generate and publish versioned updater metadata
         shell: bash
