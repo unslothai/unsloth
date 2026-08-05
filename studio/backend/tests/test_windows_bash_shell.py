@@ -1435,3 +1435,44 @@ def test_a_directory_named_like_a_command_is_not_the_program(windows_terminal, c
     # The other side: when the path DOES end in an executable, that is what runs,
     # so the folder it sits in is not screened as the program.
     assert not tools._find_blocked_commands(command)
+
+
+def test_the_newline_marker_cannot_be_exhausted(windows_terminal):
+    # Any fixed set of markers is one an author can include in full, and doing
+    # that used to disable newline recovery for the whole line. Searched now, so
+    # a command holding every previous candidate is still read.
+    every_old_marker = "".join(chr(code) for code in (1, 2, 3, 4, 5, 6, 14, 15))
+    command = f"echo {every_old_marker}\nstart \"\" powershell"
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c echo hi&call powershell",
+        "cmd /c echo hi & call powershell",
+        'call "powershell" -Command ls',
+        'cmd /c call "powershell" -Command ls',
+    ],
+)
+def test_call_is_read_through_glue_and_quoting(windows_cmd_only, command):
+    # cmd needs no whitespace around its operators, and it strips its own quote
+    # marks before resolving the program, so all four of these run PowerShell.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['cmd /c echo "a&call b"', 'cmd /c echo hi^&call powershell', "echo call powershell"],
+)
+def test_call_glue_has_to_be_live(windows_cmd_only, command):
+    assert not tools._find_blocked_commands(command)
+
+
+def test_newline_scanning_does_not_reread_the_line(windows_cmd_only):
+    # Counting the caret run by copying the prefix and stripping it re-read the
+    # whole line per newline, which is quadratic in the command.
+    script = "\n".join("echo line %d ^" % index for index in range(20000))
+    started = time.monotonic()
+    tools._find_blocked_commands(script)
+    assert time.monotonic() - started < 5

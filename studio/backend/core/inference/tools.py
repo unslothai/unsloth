@@ -378,10 +378,28 @@ _SEPARATOR_CHARS = frozenset("".join(_SHELL_SEPARATORS))
 # non-whitespace, non-quote, non-punctuation_chars character serves, so the
 # masked text splits into the same words and the token lists line up.
 _QUOTED_SEPARATOR_MARK = "\x00"
-# Stand-ins for a newline during the second lex. Several, because the command is
-# the caller's text: a literal \x01 in it used to disable newline recovery for
-# the whole line, which is a boundary an author could delete by including one.
-_NEWLINE_COMMAND_MARKS = ("\x01", "\x02", "\x03", "\x04", "\x05", "\x06", "\x0e", "\x0f")
+# Characters a newline stand-in may not use: the lexers give these a meaning, so
+# a mark spelled with one would not survive the second lex as a word of its own.
+_NEWLINE_MARK_UNUSABLE = frozenset(' \t\r\n\x0b\x0c"\'\\^;&|()`#')
+
+
+def _newline_mark(text: str) -> str:
+    """A character to stand in for a newline during the second lex.
+
+    Searched rather than chosen from a fixed set: the command is the caller's
+    text, so any finite list of marks is one an author can include in full, and
+    doing that used to disable newline recovery for the whole line. A text of
+    length n holds at most n distinct characters, so a search bounded by its own
+    length always finds one it does not contain.
+    """
+    present = set(text)
+    code = 1
+    limit = len(present) + len(_NEWLINE_MARK_UNUSABLE) + 2
+    for _ in range(limit):
+        while chr(code) in _NEWLINE_MARK_UNUSABLE or chr(code) in present:
+            code += 1
+        return chr(code)
+    return ""
 # The characters bash expands a word against the filesystem for, and the
 # placeholder standing in for a QUOTED one during the same second lex.
 _GLOB_CHARS = frozenset("*?[")
@@ -1176,7 +1194,7 @@ def _newline_command_indexes(text: str, tokens: "list[str]", mode: str) -> "froz
     """
     if "\n" not in text:
         return frozenset()
-    mark = next((candidate for candidate in _NEWLINE_COMMAND_MARKS if candidate not in text), "")
+    mark = _newline_mark(text)
     if not mark:
         return frozenset()
     states = _shell_quote_states(text)
@@ -1189,8 +1207,17 @@ def _newline_command_indexes(text: str, tokens: "list[str]", mode: str) -> "froz
         # A caret at the end of a cmd line continues it onto the next, the way a
         # backslash does under bash, so `echo hi ^<newline>start "" prog` is one
         # command that prints. An even run is escaped carets, which do not.
-        before = text[:index].rstrip(" \t\r")
-        carets = len(before) - len(before.rstrip("^"))
+        #
+        # Walked backwards from the newline rather than by copying the prefix and
+        # stripping it: doing that per newline re-read the whole line each time,
+        # which is quadratic in the command and cost a second on a 280 KB script.
+        position = index - 1
+        while position >= 0 and text[position] in " \t\r":
+            position -= 1
+        carets = 0
+        while position >= 0 and text[position] == "^":
+            carets += 1
+            position -= 1
         return carets % 2 == 0
 
     marked = "".join(
@@ -1858,6 +1885,8 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # Built at most once, and only when a quote-only word actually asks: it costs
     # a second lex of every word, and almost no command holds one.
+    screened_indexes: "set[int]" = set()
+    call_child_indexes: "set[int]" = set()
     chunk_cache: "list[list[int] | None]" = []
     offsets_cache: "list[int] | None" = None
 
@@ -2074,7 +2103,11 @@ def _find_blocked_commands(command: str) -> set[str]:
             # it, so `""cmd /c powershell""` runs cmd. Spending command position
             # on the empty word left that program in argument position.
             continue
-        base = _token_basename(token)
+        # Unquoted first under the cmd lexer, which keeps the marks: cmd strips
+        # them before resolving the program, so `call "powershell" -Command ls`
+        # and `"rm" -rf x` run the same thing their bare spellings do.
+        base = _token_basename(_unquote(token))
+        screened_indexes.add(token_index)
         # Every word this loop reaches is one the shell would RUN, wrappers and
         # assignment prefixes already stepped over. The walks below decide the
         # same question and cannot redo it from the token list alone.
@@ -2216,21 +2249,20 @@ def _find_blocked_commands(command: str) -> set[str]:
             return True
         return bool(index) and not lexed_posix and _ends_with_cmd_operator(previous)
 
-    def _is_start_word(token: str) -> bool:
-        """Whether ``token`` is a START the shell will run.
+    def _live_operator_tail(token: str) -> str:
+        """What ``token`` starts a new command with, or ``""`` if it does not.
 
         cmd needs no whitespace around its operators, so `echo ok&&start ""
-        powershell` really launches, and that lexer hands the whole thing back
-        as one token `ok&&start`. The operator is only live when it is neither
-        inside a quoted span nor escaped by an odd run of carets, which is what
-        keeps `echo "a&start b"` and `echo hi^&start ...` as text.
+        powershell` really launches and `echo hi&call powershell` really calls,
+        while that lexer hands each back as one token. The operator is only live
+        when it is neither inside a quoted span nor escaped by an odd run of
+        carets, which is what keeps `echo "a&start b"` and `echo hi^&start ...`
+        as the text they print.
         """
-        if _token_basename(token) == "start":
-            return True
         if lexed_posix:
             # The posix lexer splits its own separators into tokens, so a `&`
             # still glued to a word was quoted and is not an operator at all.
-            return False
+            return ""
         quotes = 0
         last = -1
         for position, char in enumerate(token):
@@ -2241,7 +2273,14 @@ def _find_blocked_commands(command: str) -> set[str]:
                 carets = len(before) - len(before.rstrip("^"))
                 if carets % 2 == 0:
                     last = position
-        return last >= 0 and _token_basename(token[last + 1 :]) == "start"
+        return token[last + 1 :] if last >= 0 else ""
+
+    def _is_start_word(token: str) -> bool:
+        """Whether ``token`` is a START the shell will run."""
+        if _token_basename(token) == "start":
+            return True
+        tail = _live_operator_tail(token)
+        return bool(tail) and _token_basename(tail) == "start"
 
     def _start_is_run(i: int) -> bool:
         """Whether the START at ``tokens[i]`` is one the shell runs."""
@@ -2303,6 +2342,17 @@ def _find_blocked_commands(command: str) -> set[str]:
     for _pass in range(len(tokens)):
         discovered = len(command_indexes)
         for i, token in enumerate(tokens):
+            tail = _live_operator_tail(token)
+            if (
+                tail
+                and i + 1 < len(tokens)
+                and _token_basename(_unwrap_quotes(tail)) in _CMD_ONLY_PREFIXES
+            ):
+                # The operator in front of it is the command boundary, so what
+                # CALL forwards to is a command position: cmd runs
+                # `echo hi&call powershell`.
+                command_indexes.add(i + 1)
+                call_child_indexes.add(i + 1)
             if _is_start_word(token) and _start_is_run(i):
                 target, _title_at = _start_target(i)
                 if target < len(tokens):
@@ -2359,9 +2409,25 @@ def _find_blocked_commands(command: str) -> set[str]:
                     ):
                         payload += 1
                         command_indexes.add(payload)
+                        call_child_indexes.add(payload)
                 break
         if len(command_indexes) == discovered:
             break
+    # The walk that reads command names ran before this fixpoint, so what CALL
+    # forwards to has never been looked up: `cmd /c echo hi&call powershell`
+    # published the powershell and named nothing. Only CALL's children, because
+    # the other positions published here are ones the walks below screen on their
+    # own terms, and a URL or document target is deliberately not a program.
+    # Quotes are dropped first: cmd keeps them and resolves what is behind them,
+    # so `call "powershell" -Command ls` runs the same shell.
+    for index in sorted(call_child_indexes):
+        if index >= len(tokens) or index in screened_indexes:
+            continue
+        published = _token_basename(_unquote(tokens[index]))
+        if published in _BLOCKED_COMMANDS:
+            blocked.add(published)
+        else:
+            blocked |= _blocked_matching_glob(published)
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
     # sees only as an argument, so screen what start actually launches.
