@@ -1165,12 +1165,12 @@ jobs:
           suffix_names = (
               ('.app.tar.gz.sig', f'{base_name}-ARM64.app.tar.gz.sig'),
               ('.app.tar.gz', f'{base_name}-ARM64.app.tar.gz'),
-              ('.AppImage.sig', f'{base_name}-Ubuntu.AppImage.sig'),
-              ('.AppImage', f'{base_name}-Ubuntu.AppImage'),
+              ('.AppImage.sig', f'{base_name}-Linux.AppImage.sig'),
+              ('.AppImage', f'{base_name}-Linux.AppImage'),
               ('-setup.exe.sig', f'{base_name}-Windows.exe.sig'),
               ('-setup.exe', f'{base_name}-Windows.exe'),
               ('.dmg', f'{base_name}-MacOS.dmg'),
-              ('.deb', f'{base_name}-Linux.deb'),
+              ('.deb', f'{base_name}-Ubuntu.deb'),
           )
           staged = []
           for raw_path in artifact_paths:
@@ -1251,9 +1251,9 @@ jobs:
               f'{base_name}-MacOS.dmg',
               f'{base_name}-ARM64.app.tar.gz',
               f'{base_name}-ARM64.app.tar.gz.sig',
-              f'{base_name}-Ubuntu.AppImage',
-              f'{base_name}-Ubuntu.AppImage.sig',
-              f'{base_name}-Linux.deb',
+              f'{base_name}-Linux.AppImage',
+              f'{base_name}-Linux.AppImage.sig',
+              f'{base_name}-Ubuntu.deb',
               f'{base_name}-Windows.exe',
               f'{base_name}-Windows.exe.sig',
           }
