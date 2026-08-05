@@ -88,8 +88,7 @@ def test_normalize_skips_streams_that_already_exist():
     """Replacing a live console would break Colab, Tauri and pytest capture."""
     fn = _top_level_fn("_normalize_standard_streams")
     assert any(
-        isinstance(n, ast.If) and "is not None" in ast.unparse(n.test)
-        for n in ast.walk(fn)
+        isinstance(n, ast.If) and "is not None" in ast.unparse(n.test) for n in ast.walk(fn)
     ), "_normalize_standard_streams overwrites streams that are already present"
 
 
@@ -111,13 +110,13 @@ def test_tee_stream_guards_flush_and_close_too():
     for name in ("flush", "close"):
         fn = methods.get(name)
         assert fn is not None, f"_TeeStream has no {name}()"
-        assert _guards_target(fn, "self._stream"), (
-            f"{name}() does not early-return on a None wrapped stream"
-        )
+        assert _guards_target(
+            fn, "self._stream"
+        ), f"{name}() does not early-return on a None wrapped stream"
 
 
 def test_harden_console_close_accepts_none():
     """_harden_console_close(None) must be a no-op (never read .close on None)."""
-    assert _guards_target(_top_level_fn("_harden_console_close"), "stream"), (
-        "_harden_console_close does not early-return on a None stream"
-    )
+    assert _guards_target(
+        _top_level_fn("_harden_console_close"), "stream"
+    ), "_harden_console_close does not early-return on a None stream"
