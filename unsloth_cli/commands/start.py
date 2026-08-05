@@ -2028,11 +2028,23 @@ def _attach_gguf_check_for_codex(
     variant = variant or inline_variant
     # A .gguf filesystem path is GGUF by definition; only the hub-id shape
     # (owner/name.gguf, which the server also treats as a repo) gets probed.
-    if repo.lower().endswith(".gguf") and not (
-        repo.count("/") == 1
-        and not repo.startswith(("/", ".", "~"))
-        and ":" not in repo
-        and "\\" not in repo
+    # A bare foo.gguf that names no local file is not a path either: the load
+    # canonicalizes it to unsloth/foo.gguf, so it takes the shorthand route.
+    bare_missing_gguf = False
+    if repo.lower().endswith(".gguf") and not _is_model_path(repo.rsplit(".", 1)[0]):
+        try:
+            bare_missing_gguf = not Path(os.path.expanduser(repo)).exists()
+        except OSError:
+            bare_missing_gguf = False
+    if (
+        repo.lower().endswith(".gguf")
+        and not bare_missing_gguf
+        and not (
+            repo.count("/") == 1
+            and not repo.startswith(("/", ".", "~"))
+            and ":" not in repo
+            and "\\" not in repo
+        )
     ):
         # A companion or big-endian build is the exception: detect_gguf_model
         # refuses mmproj files, the separate-file drafters and those builds, so
@@ -2097,7 +2109,7 @@ def _attach_gguf_check_for_codex(
     # in the server's cwd passes the gate and evicts the resident model. Only an
     # error (an older server, an unreachable hub) falls through to the next form.
     candidates = [repo]
-    if "/" not in repo and not _is_model_path(repo):
+    if "/" not in repo and (not _is_model_path(repo) or bare_missing_gguf):
         candidates.append(f"unsloth/{repo}")
     for candidate in candidates:
         try:
@@ -2140,6 +2152,23 @@ def _attach_gguf_check_for_codex(
                     f"{candidate} has only incomplete GGUF weights on the server; "
                     "finish or re-copy the download before pointing Codex at it."
                 )
+            # The server can answer the gate's actual question with the load
+            # resolver itself. When it does, that settles the round: no
+            # filename grammar of ours can be more right than the code that
+            # performs the load, and every mirror below is only for servers
+            # that predate these fields.
+            offered = info.get("loadable_variants")
+            if variant and isinstance(offered, list):
+                wanted_variant = str(variant).strip().lower()
+                if not any(
+                    isinstance(q, str) and q.strip().lower() == wanted_variant for q in offered
+                ):
+                    _fail_codex_variant_missing(candidate, variant, variants)
+                return
+            if not variant and isinstance(info.get("loadable"), bool):
+                if not info["loadable"]:
+                    _fail_codex_needs_gguf(candidate)
+                return
             # A variantless local load runs detect_gguf_model, which picks from
             # the directory's own top level; rows that live only in quant
             # subdirectories need the variant that resolves them, so accepting
@@ -2180,6 +2209,11 @@ def _attach_gguf_check_for_codex(
             # means it may be a server-side model resolved from the server's
             # own cwd. A server that says resolved_locally has already done
             # that resolution, so its empty answer settles those names too.
+            # A bare foo.gguf that names no local file is only the spelling the
+            # load canonicalizes; its own empty answer settles nothing until
+            # the canonical form has answered too.
+            if bare_missing_gguf and candidate != candidates[-1]:
+                continue
             if not _is_model_path(repo) and not info.get("resolved_locally"):
                 try:
                     if Path(os.path.expanduser(repo)).exists():

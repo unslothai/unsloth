@@ -6608,6 +6608,76 @@ def test_codex_attach_check_defers_companion_paths_with_a_variant(monkeypatch, c
     assert "Codex needs a GGUF model" in capsys.readouterr().err
 
 
+def test_codex_attach_check_trusts_the_servers_loadable_answer(monkeypatch, capsys):
+    # The server can answer with the load resolver itself; when it does, that
+    # settles the round and no filename grammar of ours overrides it.
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [{"quant": "BF16", "filename": "BF16/model.gguf"}],
+            "resolved_locally": True,
+            "loadable_variants": ["BF16"],
+            "loadable": False,
+        },
+    )
+    # Naming the quant works even though every row is nested...
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "BF16")
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [{"quant": "BF16", "filename": "BF16/model.gguf"}],
+            "resolved_locally": True,
+            "loadable_variants": ["BF16"],
+            "loadable": False,
+        },
+    )
+    # ...and a variantless load, which cannot pick it, is refused.
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "./m")
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
+    # A quant the load would not serve is refused even though a row lists it.
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [{"quant": "Q8_0", "filename": "m-Q8_0-00001-of-00002.gguf"}],
+            "resolved_locally": True,
+            "loadable_variants": [],
+            "loadable": False,
+        },
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "Q8_0")
+
+
+def test_codex_attach_check_probes_missing_bare_gguf_shorthands(tmp_path, monkeypatch, capsys):
+    # A bare foo.gguf naming no local file is not a path: the load
+    # canonicalizes it to unsloth/foo.gguf, so the gate follows it there.
+    monkeypatch.chdir(tmp_path)
+    urls = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        urls.append(url)
+        return {"variants": []}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "foo.gguf")
+    assert any("repo_id=unsloth%2Ffoo.gguf" in url for url in urls)
+    # A file that does exist is still the direct path it names.
+    (tmp_path / "real-Q4_K_M.gguf").write_bytes(b"GGUF")
+    monkeypatch.setattr(
+        start, "_http_json", lambda *a, **k: pytest.fail("an existing file needs no probe")
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "real-Q4_K_M.gguf")
+
+
 def test_codex_attach_check_treats_gguf_suffixed_hub_ids_as_remote(monkeypatch):
     # owner/name.gguf is a repo, not a path: the remote load scans siblings
     # recursively and matches loosely, so local-only rules must not apply.

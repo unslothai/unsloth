@@ -306,6 +306,41 @@ def test_torn_direct_split_is_not_offered_as_downloaded(in_tmp_cwd):
     assert whole.downloaded is True and whole.partial is False
 
 
+def test_local_answers_report_what_a_load_would_serve(in_tmp_cwd):
+    # The gate's real question, answered by the loader plus the two ways a
+    # resolvable path still fails llama-server: empty bytes and a torn split.
+    def _mk(name, *files):
+        d = in_tmp_cwd / name
+        d.mkdir()
+        (d / "config.json").write_text("{}")
+        for rel, data in files:
+            target = d / rel
+            target.parent.mkdir(parents = True, exist_ok = True)
+            target.write_bytes(data)
+        return _variants(os.fspath(d))
+
+    ready = _mk("ready", ("m-Q4_K_M.gguf", b"GGUF"))
+    assert ready.loadable is True and ready.loadable_variants == ["Q4_K_M"]
+
+    empty = _mk("empty", ("m-Q4_K_M.gguf", b""))
+    assert empty.loadable is False and empty.loadable_variants == []
+
+    torn = _mk("torn", ("m-Q8_0-00001-of-00002.gguf", b"GGUF"))
+    assert torn.loadable is False and torn.loadable_variants == []
+
+    whole = _mk(
+        "whole",
+        ("m-Q8_0-00001-of-00002.gguf", b"GGUF"),
+        ("m-Q8_0-00002-of-00002.gguf", b"GGUF"),
+    )
+    assert whole.loadable is True and whole.loadable_variants == ["Q8_0"]
+
+    # Weights only under a quant subdirectory: the variantless pick finds
+    # nothing, but naming the quant resolves them.
+    nested = _mk("nested", ("BF16/model.gguf", b"GGUF"))
+    assert nested.loadable is False and nested.loadable_variants == ["BF16"]
+
+
 def test_short_shard_like_name_in_a_directory_reads_ready(in_tmp_cwd):
     # The cache scan's looser split grammar would call this a torn set, but the
     # load treats a -001-of-002 name as an ordinary file and opens it.
@@ -325,6 +360,41 @@ def test_short_shard_like_name_in_a_directory_reads_ready(in_tmp_cwd):
     (torn / "m-Q8_0-00001-of-00002.gguf").write_bytes(b"GGUF")
     torn_row = _variants(os.fspath(torn)).variants[0]
     assert torn_row.downloaded is False and torn_row.partial is True
+
+
+def test_parent_quant_short_shard_reads_ready(in_tmp_cwd):
+    # The label comes from the snapshot-relative path, so a quant named by the
+    # parent directory is honored; a zero-byte file stays partial either way.
+    (in_tmp_cwd / "config.json").write_text("{}")
+    (in_tmp_cwd / "Q4_K_M").mkdir()
+    (in_tmp_cwd / "Q4_K_M" / "model-001-of-002.gguf").write_bytes(b"GGUF")
+
+    row = _variants(os.fspath(in_tmp_cwd)).variants[0]
+    assert row.quant == "Q4_K_M"
+    assert row.downloaded is True and row.partial is False
+
+    empty = in_tmp_cwd / "empty"
+    empty.mkdir()
+    (empty / "config.json").write_text("{}")
+    (empty / "model-Q8_0-001-of-002.gguf").write_bytes(b"")
+    empty_row = _variants(os.fspath(empty)).variants[0]
+    assert empty_row.downloaded is False and empty_row.partial is True
+
+
+def test_aliased_split_symlink_uses_the_target_name(in_tmp_cwd):
+    # _local_gguf_load_path names the siblings from the target, so an alias
+    # whose stem differs still loads the real set.
+    real = in_tmp_cwd / "real"
+    real.mkdir()
+    (real / "model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
+    (real / "model-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF")
+    links = in_tmp_cwd / "links"
+    links.mkdir()
+    alias = links / "alias-Q4_K_M-00001-of-00002.gguf"
+    alias.symlink_to(real / "model-Q4_K_M-00001-of-00002.gguf")
+
+    row = _variants(os.fspath(alias)).variants[0]
+    assert row.downloaded is True and row.partial is False
 
 
 def test_symlinked_split_follows_its_target_set(in_tmp_cwd):
