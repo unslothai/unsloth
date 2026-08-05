@@ -4,9 +4,9 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isTooltipLayerBlocked } from "../src/components/ui/tooltip-modal-layer.ts";
+import { isBlockedByActiveModal } from "../src/components/ui/tooltip-modal-layer.ts";
 
-function tooltipLayer(pointerEvents: string): HTMLElement {
+function element(pointerEvents: string): HTMLElement {
   return {
     ownerDocument: {
       defaultView: {
@@ -16,10 +16,17 @@ function tooltipLayer(pointerEvents: string): HTMLElement {
   } as unknown as HTMLElement;
 }
 
-test("a tooltip below the active modal is blocked", () => {
-  assert.equal(isTooltipLayerBlocked(tooltipLayer("none")), true);
+test("a trigger below the active modal is blocked", () => {
+  assert.equal(isBlockedByActiveModal(element("none")), true);
 });
 
-test("a tooltip inside the active modal remains available", () => {
-  assert.equal(isTooltipLayerBlocked(tooltipLayer("auto")), false);
+test("a trigger inside the active modal remains available", () => {
+  assert.equal(isBlockedByActiveModal(element("auto")), false);
+});
+
+test("a detached view answers no rather than throwing", () => {
+  const orphan = {
+    ownerDocument: { defaultView: null },
+  } as unknown as HTMLElement;
+  assert.equal(isBlockedByActiveModal(orphan), false);
 });

@@ -12,17 +12,14 @@ import {
 } from "react";
 import type * as React from "react";
 
-import { isTooltipLayerBlocked } from "@/components/ui/tooltip-modal-layer";
+import { isBlockedByActiveModal } from "@/components/ui/tooltip-modal-layer";
 import { cn } from "@/lib/utils";
 
 type ToggleFn = () => void;
 const TooltipToggleCtx = createContext<ToggleFn | null>(null);
-type TooltipContentElement = React.ComponentRef<
-  typeof TooltipPrimitive.Content
->;
-const TooltipContentElementCtx = createContext<
-  (element: TooltipContentElement | null) => void
->(() => undefined);
+const TooltipTriggerElementCtx = createContext<(element: HTMLElement | null) => void>(
+  () => undefined,
+);
 
 // Radix sets body pointer-events to none while a modal layer is up. That is also
 // when a hovered trigger stops receiving pointerleave, so a tooltip already on
@@ -86,34 +83,31 @@ function assignRef<T>(ref: React.Ref<T> | undefined, value: T | null): void {
 
 type ModalBlockStore = {
   getSnapshot: () => boolean;
-  setContentElement: (element: TooltipContentElement | null) => void;
+  setTriggerElement: (element: HTMLElement | null) => void;
   subscribe: (listener: () => void) => () => void;
 };
 
-function createModalBlockStore(releasePin: () => void): ModalBlockStore {
-  let contentElement: TooltipContentElement | null = null;
+function createModalBlockStore(): ModalBlockStore {
+  let triggerElement: HTMLElement | null = null;
   let blocked = false;
   let unsubscribeModalLayer: (() => void) | null = null;
   const listeners = new Set<() => void>();
 
   const update = () => {
-    // Preserve `true` after forced closure unmounts the content. Releasing it
-    // here would hand control back to Radix's still-open hover state.
-    const next = !getModalLayer()
-      ? false
-      : contentElement
-        ? isTooltipLayerBlocked(contentElement)
-        : blocked;
+    // No trigger to ask (a child that drops the ref) falls back to the whole
+    // modal: leaving it shut beats leaving it stranded over the dialog.
+    const next =
+      getModalLayer() &&
+      (triggerElement === null || isBlockedByActiveModal(triggerElement));
     if (next === blocked) return;
     blocked = next;
-    if (blocked) releasePin();
     for (const listener of listeners) listener();
   };
 
   return {
     getSnapshot: () => blocked,
-    setContentElement: (element) => {
-      contentElement = element;
+    setTriggerElement: (element) => {
+      triggerElement = element;
       update();
     },
     subscribe: (listener) => {
@@ -175,19 +169,22 @@ function Tooltip({
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
   const isControlled = controlledOpen !== undefined;
+  // Radix's own open state is never handed back once a modal forces the
+  // tooltip shut, so hover is tracked here and `open` is always supplied.
+  // Falling back to `undefined` would re-expose a `true` from before the
+  // dialog, with the pointer somewhere else entirely.
+  const [hoverOpen, setHoverOpen] = useState(false);
   const [clickOpen, setClickOpen] = useState(false);
-  const [modalBlockStore] = useState(() =>
-    createModalBlockStore(() => setClickOpen(false)),
-  );
-  const modalBlock = useSyncExternalStore(
+  const [modalBlockStore] = useState(createModalBlockStore);
+  const blocked = useSyncExternalStore(
     modalBlockStore.subscribe,
     modalBlockStore.getSnapshot,
     getServerModalBlock,
   );
-  const blockedByModal = !isControlled && modalBlock;
 
   const onOpenChange = useCallback(
     (nextOpen: boolean) => {
+      setHoverOpen(nextOpen);
       if (!nextOpen) setClickOpen(false);
       controlledOnOpenChange?.(nextOpen);
     },
@@ -197,6 +194,16 @@ function Tooltip({
   const toggle = useCallback(() => {
     setClickOpen((prev) => !prev);
   }, []);
+
+  // Drop what is open when a modal takes over, so closing the dialog does not
+  // bring the tooltip back on its own. Owners of a controlled tooltip are told,
+  // since their state (a `hovered` flag) never sees the pointerleave either.
+  useEffect(() => {
+    if (!blocked) return;
+    setHoverOpen(false);
+    setClickOpen(false);
+    controlledOnOpenChange?.(false);
+  }, [blocked, controlledOnOpenChange]);
 
   // A pin must not outlive its interaction: once a dialog covers the trigger,
   // pointerleave never fires and Radix can no longer close it. Presses on a
@@ -229,35 +236,40 @@ function Tooltip({
   }, [clickOpen]);
 
   return (
-    // Controlled tooltips own their open state; pinning would never render.
-    <TooltipContentElementCtx.Provider
-      value={modalBlockStore.setContentElement}
-    >
+    <TooltipTriggerElementCtx.Provider value={modalBlockStore.setTriggerElement}>
       <TooltipToggleCtx.Provider value={isControlled ? null : toggle}>
         <TooltipPrimitive.Root
           data-slot="tooltip"
-          // false, not undefined: a hovered tooltip outside the active modal
-          // must stay shut until that modal closes.
+          // Always a boolean, so Radix keeps no separate open state that could
+          // survive a modal and resurface after it closes.
           open={
-            isControlled
-              ? controlledOpen
-              : blockedByModal
-                ? false
-                : clickOpen || undefined
+            blocked ? false : isControlled ? controlledOpen : hoverOpen || clickOpen
           }
           onOpenChange={onOpenChange}
           {...props}
         />
       </TooltipToggleCtx.Provider>
-    </TooltipContentElementCtx.Provider>
+    </TooltipTriggerElementCtx.Provider>
   );
 }
 
 function TooltipTrigger({
   onClick,
+  ref,
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Trigger>) {
   const toggle = useContext(TooltipToggleCtx);
+  const setTriggerElement = useContext(TooltipTriggerElementCtx);
+
+  // The trigger says which layer this tooltip belongs to, and unlike the
+  // content it is mounted the whole time, so the answer never goes missing.
+  const triggerRef = useCallback(
+    (el: HTMLElement | null) => {
+      assignRef(ref, el);
+      setTriggerElement(el);
+    },
+    [ref, setTriggerElement],
+  );
 
   const handleClick = useCallback(
     (e: React.MouseEvent<HTMLButtonElement>) => {
@@ -279,6 +291,7 @@ function TooltipTrigger({
 
   return (
     <TooltipPrimitive.Trigger
+      ref={triggerRef}
       data-slot="tooltip-trigger"
       onClick={handleClick}
       {...props}
@@ -302,15 +315,13 @@ function TooltipContent({
 }: React.ComponentProps<typeof TooltipPrimitive.Content> & {
   variant?: TooltipVariant;
 }) {
-  const setContentElement = useContext(TooltipContentElementCtx);
   // Single-line compact tooltips render as a full pill; wrapped ones keep
   // the squarer corners so tall pills do not look like capsules. A ref
   // callback measures on mount: Radix mounts the portal content without
   // re-rendering this wrapper, so an effect here would never see the node.
   const contentRef = useCallback(
-    (el: TooltipContentElement | null) => {
+    (el: React.ComponentRef<typeof TooltipPrimitive.Content> | null) => {
       assignRef(ref, el);
-      setContentElement(el);
       if (!el || variant !== "default") return;
       const cs = getComputedStyle(el);
       const lineHeight = Number.parseFloat(cs.lineHeight) || 16;
@@ -320,7 +331,7 @@ function TooltipContent({
         Number.parseFloat(cs.paddingBottom);
       el.classList.toggle("rounded-full!", innerHeight < lineHeight * 1.5);
     },
-    [ref, setContentElement, variant],
+    [ref, variant],
   );
   return (
     <TooltipPrimitive.Portal>
