@@ -42,16 +42,20 @@ resolve = _NS["_resolve_offload_embedding"]
 class _Model:
     def __init__(self, emb, out):
         self._emb, self._out = emb, out
+
     def get_input_embeddings(self):
         return self._emb
+
     def get_output_embeddings(self):
         return self._out
 
 
 class _Opaque:
     """Some architectures refuse to expose embeddings."""
+
     def get_input_embeddings(self):
         raise NotImplementedError("no embeddings here")
+
     def get_output_embeddings(self):
         return None
 
@@ -95,8 +99,10 @@ def test_wsl_and_windows_are_untouched():
             assert resolve(_tied_model(), True) is True
             assert resolve(_Opaque(), True) is True
         finally:
-            if old is None: os.environ.pop(var, None)
-            else: os.environ[var] = old
+            if old is None:
+                os.environ.pop(var, None)
+            else:
+                os.environ[var] = old
 
     old_name = os.name
     try:

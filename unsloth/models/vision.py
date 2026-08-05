@@ -331,8 +331,7 @@ def _resolve_offload_embedding(model, offload_embedding):
     try:
         in_embed = model.get_input_embeddings()
         out_embed = (
-            model.get_output_embeddings()
-            if hasattr(model, "get_output_embeddings") else None
+            model.get_output_embeddings() if hasattr(model, "get_output_embeddings") else None
         )
     except Exception:
         # An architecture that refuses to expose its embeddings cannot be
@@ -1346,7 +1345,8 @@ class FastBaseModel:
                 # early while offload_embedding is still True; resolving this
                 # later would silently skip hook attachment for tied models.
                 offload_embedding = _resolve_offload_embedding(
-                    model, offload_embedding,
+                    model,
+                    offload_embedding,
                 )
 
                 # Attach dispatch hooks for bnb multi-device loads.

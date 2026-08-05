@@ -27,7 +27,8 @@ IMPORT_FIXES = REPO_ROOT / "unsloth" / "import_fixes.py"
 
 def _load_module():
     spec = importlib.util.spec_from_file_location(
-        "_unsloth_import_fixes_dataclass_under_test", IMPORT_FIXES)
+        "_unsloth_import_fixes_dataclass_under_test", IMPORT_FIXES
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -47,7 +48,7 @@ def test_an_inherited_default_is_not_shadowed():
         window: int = 7
 
     class Child(Base):
-        window: int          # re-annotated, no assignment
+        window: int  # re-annotated, no assignment
 
     assert _backfill_dataclass_defaults(Child) == []
     assert Child.window == 7
@@ -60,7 +61,7 @@ def test_a_genuinely_new_field_is_still_backfilled():
         window: int = 7
 
     class Child(Base):
-        vision_config: object    # new, and bare: the case that raises
+        vision_config: object  # new, and bare: the case that raises
 
     assert _backfill_dataclass_defaults(Child) == ["vision_config"]
     assert Child.vision_config is None
@@ -83,12 +84,14 @@ def test_an_inherited_method_of_the_same_name_counts_too():
 
 class _KwOnlyConfig:
     """Stands in for transformers 5.5.1+, whose hook passes kw_only=True."""
+
     def __init_subclass__(cls, **kwargs):
-        _fake_dataclass(cls, kw_only=True)
+        _fake_dataclass(cls, kw_only = True)
 
 
 class _OrderedConfig:
     """Stands in for 5.4.0 to 5.5.0, whose hook does not."""
+
     def __init_subclass__(cls, **kwargs):
         _fake_dataclass(cls)
 
@@ -104,11 +107,14 @@ def _config_without_readable_source():
     the class object is fine, `inspect.getsource` is what fails.
     """
     namespace = {}
-    exec(compile(
-        "class Config:\n"
-        "    def __init_subclass__(cls, **kwargs):\n"
-        "        pass\n",
-        "<unsloth-test-no-source-on-disk>", "exec"), namespace)
+    exec(
+        compile(
+            "class Config:\n    def __init_subclass__(cls, **kwargs):\n        pass\n",
+            "<unsloth-test-no-source-on-disk>",
+            "exec",
+        ),
+        namespace,
+    )
     return namespace["Config"]
 
 
@@ -139,8 +145,7 @@ def test_unreadable_source_inside_the_window_still_patches(monkeypatch):
     """5.4.0 to 5.5.0 is where the fix is needed, source readable or not."""
     for version in ("5.4.0", "5.5.0", "5.5.0.post1"):
         _pretend_transformers_is(monkeypatch, version)
-        assert not _transformers_configs_are_kw_only(
-            _config_without_readable_source()), version
+        assert not _transformers_configs_are_kw_only(_config_without_readable_source()), version
 
 
 def test_an_unreadable_version_does_not_raise(monkeypatch):
@@ -149,8 +154,7 @@ def test_an_unreadable_version_does_not_raise(monkeypatch):
     a probe either. No evidence of the window means stand down."""
     for version in ("not-a-version", "", None):
         _pretend_transformers_is(monkeypatch, version)
-        assert _transformers_configs_are_kw_only(
-            _config_without_readable_source()), repr(version)
+        assert _transformers_configs_are_kw_only(_config_without_readable_source()), repr(version)
     monkeypatch.setitem(sys.modules, "transformers", None)
     assert _transformers_configs_are_kw_only(_config_without_readable_source())
 

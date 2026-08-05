@@ -43,7 +43,7 @@ def _load_backport():
 backport = _load_backport()
 
 # The three decision points, verbatim from trl 0.22.2 sft_trainer.py.
-TRL_022_EXCERPT = textwrap.dedent('''\
+TRL_022_EXCERPT = textwrap.dedent("""\
     class SFTTrainer:
         def __init__(self, train_dataset, args, data_collator, model):
             dataset_sample = next(iter(train_dataset))
@@ -58,22 +58,24 @@ TRL_022_EXCERPT = textwrap.dedent('''\
             )
             if not skip_prepare_dataset:
                 train_dataset = self._prepare_dataset(train_dataset)
-''')
+""")
 
 # TRL 0.24.0+ already computes the flag itself.
-TRL_MODERN_EXCERPT = textwrap.dedent('''\
+TRL_MODERN_EXCERPT = textwrap.dedent("""\
     class SFTTrainer:
         def __init__(self, train_dataset, args, data_collator, model):
             dataset_sample = next(iter(train_dataset))
             self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample
             if data_collator is None and not self._is_vision_dataset:
                 data_collator = DataCollatorForLanguageModeling()
-''')
+""")
 
 
 def test_patches_all_three_decision_points_on_022():
     out = backport(TRL_022_EXCERPT)
-    assert 'self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample' in out
+    assert (
+        'self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample' in out
+    )
     assert "if data_collator is None and not (self._is_vlm and self._is_vision_dataset):" in out
     assert "elif data_collator is None and self._is_vlm and self._is_vision_dataset:" in out
     assert "or (self._is_vlm and self._is_vision_dataset)" in out
@@ -116,7 +118,7 @@ def _installed_trl_sft_source():
 def test_installed_trl_source_survives_the_patch():
     src = _installed_trl_sft_source()
     out = backport(src)
-    ast.parse(out)   # must stay valid whether or not it was patched
+    ast.parse(out)  # must stay valid whether or not it was patched
     if 'self._is_vision_dataset = "image" in dataset_sample' in src:
         assert out == src, "modern TRL must not be rewritten"
     else:

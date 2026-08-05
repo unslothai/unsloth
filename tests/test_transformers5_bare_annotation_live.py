@@ -34,7 +34,7 @@ from packaging.version import Version  # noqa: E402
 
 pytestmark = pytest.mark.skipif(
     Version(transformers.__version__) < Version("5.0.0"),
-    reason="transformers 4.x does not convert config subclasses to dataclasses",
+    reason = "transformers 4.x does not convert config subclasses to dataclasses",
 )
 
 
@@ -47,7 +47,7 @@ def _build(tag):
 
     class DeepseekVL2Config(PretrainedConfig):
         model_type = f"deepseek_vl_v2_{tag}"
-        vision_config: VisionEncoderConfig       # no default: the trigger
+        vision_config: VisionEncoderConfig  # no default: the trigger
 
     return DeepseekVL2Config
 
@@ -63,6 +63,7 @@ def unpatched():
     import unsloth  # noqa: F401 - installs the patch we are about to remove
 
     from transformers.configuration_utils import PretrainedConfig
+
     saved = PretrainedConfig.__dict__.get("__init_subclass__")
     flag = getattr(PretrainedConfig, "_unsloth_patched_init_subclass", False)
     inner = getattr(saved, "__func__", saved)
@@ -92,7 +93,7 @@ def test_the_failure_is_real_without_the_fix(unpatched):
             f"transformers {transformers.__version__} passes kw_only=True "
             f"(5.5.1+), so the ordering rule this fix works around is gone"
         )
-    with pytest.raises(TypeError, match="non-default argument"):
+    with pytest.raises(TypeError, match = "non-default argument"):
         _build("unpatched")
 
 
@@ -125,6 +126,7 @@ def test_the_fix_stands_down_when_transformers_handles_it():
 
 def test_the_fix_lets_it_import():
     from unsloth.import_fixes import fix_transformers5_bare_annotation_configs
+
     fix_transformers5_bare_annotation_configs()
     cls = _build("patched")
     assert cls.__name__ == "DeepseekVL2Config"
@@ -133,6 +135,7 @@ def test_the_fix_lets_it_import():
 def test_applying_twice_is_a_no_op():
     from unsloth.import_fixes import fix_transformers5_bare_annotation_configs
     from transformers.configuration_utils import PretrainedConfig
+
     fix_transformers5_bare_annotation_configs()
     first = PretrainedConfig.__dict__.get("__init_subclass__")
     fix_transformers5_bare_annotation_configs()
@@ -144,12 +147,17 @@ def test_ordinary_configs_are_unaffected():
     overwhelming majority that were always fine."""
     from unsloth.import_fixes import fix_transformers5_bare_annotation_configs
     from transformers.configuration_utils import PretrainedConfig
+
     fix_transformers5_bare_annotation_configs()
 
     class Ordinary(PretrainedConfig):
         model_type = "ordinary_probe"
 
-        def __init__(self, hidden_size = 16, **kwargs):
+        def __init__(
+            self,
+            hidden_size = 16,
+            **kwargs,
+        ):
             self.hidden_size = hidden_size
             super().__init__(**kwargs)
 
@@ -160,8 +168,10 @@ def test_ordinary_configs_are_unaffected():
 
 def test_a_real_model_config_still_loads():
     from unsloth.import_fixes import fix_transformers5_bare_annotation_configs
+
     fix_transformers5_bare_annotation_configs()
     from transformers import LlamaConfig
+
     cfg = LlamaConfig(hidden_size = 64, num_hidden_layers = 2)
     assert cfg.hidden_size == 64
 

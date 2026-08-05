@@ -33,7 +33,8 @@ CORE = "transformers.core_model_loading"
 
 def _load_module():
     spec = importlib.util.spec_from_file_location(
-        "_unsloth_import_fixes_backfill_under_test", IMPORT_FIXES)
+        "_unsloth_import_fixes_backfill_under_test", IMPORT_FIXES
+    )
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -48,8 +49,10 @@ def _restore_modules():
     saved = {k: sys.modules.get(k) for k in (CONV, CORE)}
     yield
     for k, v in saved.items():
-        if v is None: sys.modules.pop(k, None)
-        else: sys.modules[k] = v
+        if v is None:
+            sys.modules.pop(k, None)
+        else:
+            sys.modules[k] = v
 
 
 def _fake_real_module(name, **attrs):
@@ -81,8 +84,8 @@ def test_backfilled_pattern_supports_copy_like_peft_does():
     pattern = sys.modules[CONV]._MODEL_TO_CONVERSION_PATTERN
     assert isinstance(pattern, dict)
     copied = pattern.copy()
-    copied["llama"] = object()          # peft assigns by key at module top
-    assert pattern == {}                 # copy must not alias
+    copied["llama"] = object()  # peft assigns by key at module top
+    assert pattern == {}  # copy must not alias
 
 
 def test_complete_module_is_left_alone():
@@ -146,15 +149,17 @@ def test_required_symbols_match_peft_import_list():
 
 
 def test_a_missing_mapping_function_is_announced():
-    _fake_real_module(CONV, _MODEL_TO_CONVERSION_PATTERN = {"real": 1},
-                      get_checkpoint_conversion_mapping = lambda *a: "real")
+    _fake_real_module(
+        CONV,
+        _MODEL_TO_CONVERSION_PATTERN = {"real": 1},
+        get_checkpoint_conversion_mapping = lambda *a: "real",
+    )
     with pytest.warns(RuntimeWarning, match = "get_model_conversion_mapping"):
         assert backfill(CONV) == ("get_model_conversion_mapping",)
 
 
 def test_a_missing_conversion_class_is_announced():
-    _fake_real_module(CORE, **{s: object() for s in
-                               FIXES._PEFT_REQUIRED_SYMBOLS[CORE][1:]})
+    _fake_real_module(CORE, **{s: object() for s in FIXES._PEFT_REQUIRED_SYMBOLS[CORE][1:]})
     with pytest.warns(RuntimeWarning, match = "Concatenate"):
         backfill(CORE)
 
@@ -164,8 +169,11 @@ def test_only_the_pattern_is_quiet():
     name ever seen missing. Warning about it would be noise on every load."""
     import warnings
 
-    _fake_real_module(CONV, get_checkpoint_conversion_mapping = lambda *a: None,
-                      get_model_conversion_mapping = lambda *a: None)
+    _fake_real_module(
+        CONV,
+        get_checkpoint_conversion_mapping = lambda *a: None,
+        get_model_conversion_mapping = lambda *a: None,
+    )
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert backfill(CONV) == ("_MODEL_TO_CONVERSION_PATTERN",)
@@ -173,9 +181,7 @@ def test_only_the_pattern_is_quiet():
 
 def test_a_complete_module_says_nothing():
     import warnings
-
-    _fake_real_module(CONV, **{s: object()
-                               for s in FIXES._PEFT_REQUIRED_SYMBOLS[CONV]})
+    _fake_real_module(CONV, **{s: object() for s in FIXES._PEFT_REQUIRED_SYMBOLS[CONV]})
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         assert backfill(CONV) == ()

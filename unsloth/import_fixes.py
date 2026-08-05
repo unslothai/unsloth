@@ -439,8 +439,11 @@ def _backfill_dataclass_defaults(cls):
     own_annotations = cls.__dict__.get("__annotations__") or {}
     backfilled = []
     for name, annotation in own_annotations.items():
-        text = annotation if isinstance(annotation, str) else \
-            (getattr(annotation, "__name__", "") or repr(annotation))
+        text = (
+            annotation
+            if isinstance(annotation, str)
+            else (getattr(annotation, "__name__", "") or repr(annotation))
+        )
         if "ClassVar" in text or "InitVar" in text:
             continue
         # hasattr, not cls.__dict__: dataclass reads the default with getattr,
@@ -480,7 +483,10 @@ def _transformers_configs_are_kw_only(PretrainedConfig):
     if hook is None:
         return False
     try:
-        return "kw_only=True" in inspect.getsource(hook)
+        # Whitespace-tolerant: a formatter is free to write `kw_only = True`,
+        # and a literal substring test would then read an install that needs
+        # nothing as one that needs patching.
+        return re.search(r"\bkw_only\s*=\s*True", inspect.getsource(hook)) is not None
     except Exception:
         pass
     return not _transformers_needs_bare_annotation_fix()
@@ -497,6 +503,7 @@ def _transformers_needs_bare_annotation_fix():
     """
     try:
         import transformers
+
         # TrueVersion, not this module's Version(): that wrapper raises on
         # anything its regex cannot match, and it rewrites pre-release
         # suffixes upwards, which moves builds across the window edges.
