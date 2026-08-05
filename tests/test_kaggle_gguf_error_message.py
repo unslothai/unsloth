@@ -19,7 +19,9 @@ missing tokenizer and a bad quant method all told the user to free up space.
 """
 
 import os
+import shutil
 import sys
+from collections import namedtuple
 from pathlib import Path
 
 import pytest
@@ -28,6 +30,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 save = pytest.importorskip("unsloth.save")
 _looks_like_disk = save._gguf_failure_looks_like_disk
+
+_Usage = namedtuple("_Usage", ("total", "used", "free"))
+
+
+@pytest.fixture
+def plenty_of_free_space(monkeypatch):
+    """State the premise the "not a disk problem" tests are written under.
+
+    `_gguf_failure_looks_like_disk` has a second, independent signal: a
+    filesystem with less than `_DISK_HEADROOM_BYTES` (2GiB) free is a disk
+    failure whatever the exception says. It probes `save_directory` and then
+    `os.getcwd()`, so on a host whose working directory is that full, every
+    "this is NOT a disk problem" test inverts and fails for a reason that has
+    nothing to do with the message it is asserting about.
+
+    Report ample space so the message is the only signal left, which is what
+    those tests are about ("a broken quantizer with 19GB free is not a disk
+    problem", save.py). The real threshold is left alone, so the comparison
+    still runs and a nonsensical headroom would still be caught.
+    """
+    real_disk_usage = shutil.disk_usage
+    ample = _Usage(total = 100 * 1024 ** 3, used = 1 * 1024 ** 3,
+                   free = 99 * 1024 ** 3)
+
+    def plenty(path):
+        # Keep the real failure modes; only the numbers are ours.
+        real_disk_usage(path)
+        return ample
+
+    monkeypatch.setattr(shutil, "disk_usage", plenty)
+    return ample
 
 
 # ---- failures that ARE about disk -----------------------------------------
@@ -54,6 +87,7 @@ def test_the_check_is_case_insensitive():
 
 # ---- failures that are NOT about disk -------------------------------------
 
+@pytest.mark.usefixtures("plenty_of_free_space")
 def test_an_unconvertible_architecture_is_not_a_disk_problem():
     """The bert_classification case."""
     exc = NotImplementedError(
@@ -61,11 +95,13 @@ def test_an_unconvertible_architecture_is_not_a_disk_problem():
     assert _looks_like_disk(exc, os.getcwd()) is False
 
 
+@pytest.mark.usefixtures("plenty_of_free_space")
 def test_a_missing_tokenizer_is_not_a_disk_problem():
     exc = ValueError("Unsloth: Saving to GGUF must have a tokenizer.")
     assert _looks_like_disk(exc, os.getcwd()) is False
 
 
+@pytest.mark.usefixtures("plenty_of_free_space")
 def test_a_bad_quant_method_is_not_a_disk_problem():
     exc = RuntimeError("Unknown quantization method: q9_k_xxl")
     assert _looks_like_disk(exc, os.getcwd()) is False
@@ -252,6 +288,7 @@ def test_no_kaggle_disk_message_is_left_ungated():
     assert not ungated, f"20GB disk message still ungated at lines {ungated}"
 
 
+@pytest.mark.usefixtures("plenty_of_free_space")
 def test_a_broken_quantizer_is_not_a_disk_problem():
     """The failure the inner quantize handler used to blame on disk."""
     exc = RuntimeError("llama-quantize: unknown quantization type")
