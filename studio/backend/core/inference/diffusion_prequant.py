@@ -473,8 +473,11 @@ def _config_cache_roots(checkpoint_path: str, cache_dir: Optional[str]) -> tuple
     import os
 
     try:
-        root = os.path.realpath(cache_dir)
-        real = os.path.realpath(checkpoint_path)
+        # normcase before comparing: Windows paths are case-insensitive and accept either
+        # separator, so a plain startswith says "not under the live root" on nothing more than
+        # C:\Users vs c:\users and silently reverses the order below. It is identity on POSIX.
+        root = os.path.normcase(os.path.realpath(cache_dir))
+        real = os.path.normcase(os.path.realpath(checkpoint_path))
         under_live = real == root or real.startswith(root + os.sep)
     except Exception:  # noqa: BLE001 — an unresolvable path keeps today's order
         under_live = True
