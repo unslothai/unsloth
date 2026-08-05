@@ -34,7 +34,7 @@ test("relative assets resolve against the configured endpoint", async () => {
   assert.notEqual(at, -1);
   const body = src.slice(at, src.indexOf("\n}", at));
   assert.ok(
-    body.includes("hubEndpointOrigin()"),
+    body.includes("hubEndpointBase()"),
     "a hardcoded Hub sends a mirror user's repo path to the public one",
   );
   // No literal scheme at all, which also rules out any other hardcoded host.
@@ -72,4 +72,16 @@ test("the component's own cache is scoped to the route as well", async () => {
   assert.ok(body.includes("::${via}`"), "the route belongs in the key");
   assert.ok(body.includes("via]"), "and in the memo's dependencies");
   assert.match(src, /const via = online && !readmeViaBackend\(\)/);
+});
+
+test("a subpath mirror keeps its prefix in the asset base", async () => {
+  const src = await read("../src/features/hub/lib/hub-endpoint.ts");
+  const at = src.indexOf("export function hubEndpointBase");
+  assert.notEqual(at, -1);
+  const body = src.slice(at, src.indexOf("\n}", at));
+  // The backend builds its URLs from the whole of HF_ENDPOINT, so dropping the
+  // path here resolved every relative asset one directory too high on a mirror
+  // mounted at, say, https://mirror.example/hf.
+  assert.ok(!body.includes(".origin"), "the path is part of the endpoint");
+  assert.ok(body.includes(".href"));
 });

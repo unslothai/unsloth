@@ -55,7 +55,10 @@ export function isHubFetchError(error: unknown): error is HubFetchError {
   return error instanceof HubFetchError;
 }
 
-const remoteOfflineUntilByOrigin = new Map<string, number>();
+// Keyed like the failures, not by origin alone. A block can be per-path, so an
+// avatar succeeding does not prove the listing works: an origin-wide window let
+// that success retire the feed's backoff and resume probing a still-dead feed.
+const remoteOfflineUntilByKey = new Map<string, number>();
 // Set when the backend serves Hub content this browser could not fetch. Kept
 // apart from the origin state: clearing that would tell the direct clients
 // (README, avatars) the origin is reachable, and their failure would re-mark it.
@@ -74,6 +77,8 @@ const lastFailureByKey = new Map<string, HubFailure>();
  * reads discovery's own history: an avatar result, good or bad, cannot move it.
  */
 export type HubService = "discovery" | "other";
+
+const HUB_SERVICES: readonly HubService[] = ["discovery", "other"];
 
 function failureKey(origin: string, service: HubService): string {
   return `${service}|${origin}`;
@@ -103,24 +108,36 @@ function normalizeScope(scope: RemoteNetworkScope): readonly string[] {
   return typeof scope === "string" ? [scope] : scope;
 }
 
-function getRemoteOfflineUntil(scope: RemoteNetworkScope): number {
-  const now = Date.now();
+function offlineUntil(origin: string, service: HubService): number {
+  const key = failureKey(origin, service);
+  const value = remoteOfflineUntilByKey.get(key) ?? 0;
+  if (value <= Date.now()) {
+    remoteOfflineUntilByKey.delete(key);
+    return 0;
+  }
+  return value;
+}
+
+function getRemoteOfflineUntil(
+  scope: RemoteNetworkScope,
+  service?: HubService,
+): number {
+  const services = service ? [service] : HUB_SERVICES;
   let until = 0;
   for (const origin of normalizeScope(scope)) {
-    const value = remoteOfflineUntilByOrigin.get(origin) ?? 0;
-    if (value <= now) {
-      remoteOfflineUntilByOrigin.delete(origin);
-      continue;
+    for (const s of services) {
+      until = Math.max(until, offlineUntil(origin, s));
     }
-    until = Math.max(until, value);
   }
   return until;
 }
 
+/** Omit `service` to ask whether anything is backing off this origin. */
 export function isRemoteNetworkOffline(
   scope: RemoteNetworkScope = HUGGING_FACE_ORIGIN,
+  service?: HubService,
 ): boolean {
-  return getRemoteOfflineUntil(scope) > Date.now();
+  return getRemoteOfflineUntil(scope, service) > Date.now();
 }
 
 export function isHuggingFaceOffline(): boolean {
@@ -155,7 +172,7 @@ export function getHubPhase(
   if (!lastFailureByKey.has(failureKey(origin, service))) {
     return "available";
   }
-  return isRemoteNetworkOffline(origin) ? "unavailable" : "probing";
+  return isRemoteNetworkOffline(origin, service) ? "unavailable" : "probing";
 }
 
 export function isHubProxyServing(): boolean {
@@ -205,14 +222,14 @@ export function markRemoteNetworkOnline(
 ): void {
   if (origin === undefined) {
     if (
-      remoteOfflineUntilByOrigin.size === 0 &&
+      remoteOfflineUntilByKey.size === 0 &&
       lastFailureByKey.size === 0 &&
       !hubProxyServing &&
       !directHubBlocked
     ) {
       return;
     }
-    remoteOfflineUntilByOrigin.clear();
+    remoteOfflineUntilByKey.clear();
     lastFailureByKey.clear();
     hubProxyServing = false;
     directHubBlocked = false;
@@ -221,8 +238,9 @@ export function markRemoteNetworkOnline(
   }
   // Reachability is origin-wide, the cause on screen is per feed: a success
   // retires only its own.
-  const hadWindow = remoteOfflineUntilByOrigin.delete(origin);
-  const hadFailure = lastFailureByKey.delete(failureKey(origin, service));
+  const key = failureKey(origin, service);
+  const hadWindow = remoteOfflineUntilByKey.delete(key);
+  const hadFailure = lastFailureByKey.delete(key);
   if (!hadWindow && !hadFailure) {
     return;
   }
@@ -241,10 +259,10 @@ export function markRemoteNetworkOffline(
       : HUGGING_FACE_ORIGIN;
   const ttl = typeof originOrTtl === "number" ? originOrTtl : ttlMs;
   const nextUntil = Date.now() + ttl;
-  const previousUntil = remoteOfflineUntilByOrigin.get(origin) ?? 0;
+  const key = failureKey(origin, service);
+  const previousUntil = remoteOfflineUntilByKey.get(key) ?? 0;
   // Always record the newest cause even when the existing backoff window is
   // longer, otherwise the panel keeps describing a stale first failure.
-  const key = failureKey(origin, service);
   const failureChanged =
     failure !== undefined && lastFailureByKey.get(key)?.kind !== failure.kind;
   if (failure !== undefined) {
@@ -256,7 +274,7 @@ export function markRemoteNetworkOffline(
     }
     return;
   }
-  remoteOfflineUntilByOrigin.set(origin, nextUntil);
+  remoteOfflineUntilByKey.set(key, nextUntil);
   emitNetworkStatusChange();
 }
 
@@ -264,7 +282,12 @@ export function markRemoteNetworkOffline(
 export function clearRemoteBackoff(
   origin: string = HUGGING_FACE_ORIGIN,
 ): void {
-  if (!remoteOfflineUntilByOrigin.delete(origin)) {
+  // An explicit Retry tests the network now, so every feed's window goes.
+  let cleared = false;
+  for (const service of HUB_SERVICES) {
+    cleared = remoteOfflineUntilByKey.delete(failureKey(origin, service)) || cleared;
+  }
+  if (!cleared) {
     return;
   }
   emitNetworkStatusChange();

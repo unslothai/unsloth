@@ -8,7 +8,7 @@ import {
   isHubProxyServing,
 } from "@/features/hub/lib/network";
 import {
-  hubEndpointOrigin,
+  hubEndpointBase,
   hubProxyFirst,
 } from "@/features/hub/lib/hub-endpoint";
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
@@ -50,7 +50,7 @@ export function readmeBaseUrl(
   kind: ReadmeKind,
   branch: "main" | "master" = "main",
 ): string {
-  return `${hubEndpointOrigin()}/${readmePrefix(kind)}${repoId}/resolve/${branch}/`;
+  return `${hubEndpointBase()}/${readmePrefix(kind)}${repoId}/resolve/${branch}/`;
 }
 
 /**

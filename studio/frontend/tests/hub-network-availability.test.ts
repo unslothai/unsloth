@@ -11,6 +11,7 @@ import {
   getHubPhase,
   getLastHubFailure,
   isHubFetchError,
+  isRemoteNetworkOffline,
   markRemoteNetworkOffline,
   markRemoteNetworkOnline,
   sanitizeHubErrorMessage,
@@ -366,4 +367,49 @@ test("a blocked avatar path never pins the catalog at probing", async () => {
     "a successful empty search must render the empty state, not a stale error",
   );
   assert.equal(getLastHubFailure(HF), null);
+});
+
+test("an auxiliary success does not retire the feed's backoff", async () => {
+  markRemoteNetworkOnline();
+  const feedFailure = {
+    kind: "network-opaque" as const,
+    message: "boom",
+    origin: HF,
+    retryable: true,
+  };
+  markRemoteNetworkOffline(HF, 30_000, feedFailure, "discovery");
+  assert.equal(getHubPhase(HF, "discovery"), "unavailable");
+
+  // A block can be per-path: an avatar or dataset-size request can succeed
+  // while /api/models stays blocked, and that is service "other". An
+  // origin-wide window let it retire the feed's backoff, so Load more resumed
+  // probing a feed whose own failure was still recorded.
+  markRemoteNetworkOnline(HF, "other");
+  assert.equal(
+    getHubPhase(HF, "discovery"),
+    "unavailable",
+    "the feed's own window is the one that gates the feed",
+  );
+  assert.equal(getLastHubFailure(HF, "discovery")?.kind, "network-opaque");
+  markRemoteNetworkOnline();
+});
+
+test("Retry clears every feed's window on the origin", async () => {
+  markRemoteNetworkOnline();
+  const failure = {
+    kind: "network-opaque" as const,
+    message: "boom",
+    origin: HF,
+    retryable: true,
+  };
+  markRemoteNetworkOffline(HF, 30_000, failure, "discovery");
+  markRemoteNetworkOffline(HF, 30_000, failure, "other");
+  assert.equal(isRemoteNetworkOffline(HF), true);
+
+  clearRemoteBackoff(HF);
+  // An explicit click means "test the network now", for every client.
+  assert.equal(isRemoteNetworkOffline(HF), false);
+  assert.equal(isRemoteNetworkOffline(HF, "discovery"), false);
+  assert.equal(isRemoteNetworkOffline(HF, "other"), false);
+  markRemoteNetworkOnline();
 });

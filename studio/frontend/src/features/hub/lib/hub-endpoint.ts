@@ -21,12 +21,17 @@ export function hubProxyFirst(): boolean {
   }
 }
 
-/** The configured Hub origin, with no trailing slash. Falls back to the Hub's. */
-export function hubEndpointOrigin(): string {
+/**
+ * The configured Hub endpoint, trailing slash removed. The path is kept: the
+ * backend builds its URLs from the whole of HF_ENDPOINT, so a subpath-mounted
+ * mirror (https://mirror.example/hf) would otherwise have every relative asset
+ * resolved one directory too high.
+ */
+export function hubEndpointBase(): string {
   try {
     const endpoint = usePlatformStore.getState().hubEndpoint;
     if (!endpoint) return DEFAULT_HUB_ENDPOINT;
-    return new URL(endpoint).origin;
+    return new URL(endpoint).href.replace(/\/+$/, "");
   } catch {
     return DEFAULT_HUB_ENDPOINT;
   }
