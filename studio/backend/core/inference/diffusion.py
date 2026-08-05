@@ -834,7 +834,9 @@ class DiffusionBackend:
                 requested = mode,
                 base_repo = kwargs.get("base_repo"),
                 prequant_path = kwargs.get("transformer_prequant_path"),
-                force_dense = bool(kwargs.get("loras")),
+                # Same rule as the decline above it: an all-zero list bakes nothing, so sizing
+                # it as a dense bake stages transformer/ shards the load will not read.
+                force_dense = _has_active_lora(kwargs.get("loras")),
                 logger = None,
             )
             # A prequant loads a small checkpoint, so widening defeats the savings and can disk-full.
@@ -1679,7 +1681,7 @@ class DiffusionBackend:
                             base_repo = base,
                             prequant_path = transformer_prequant_path,
                             # A LoRA bake skips the prequant shortcut, so size for the dense build it will run.
-                            force_dense = bool(loras),
+                            force_dense = _has_active_lora(loras),
                             logger = logger,
                         )
                         if candidate is not None:
@@ -1737,7 +1739,7 @@ class DiffusionBackend:
                         prequant = (
                             # A LoRA bake skips the prequant shortcut, so gate the fast path as if no prequant existed.
                             None
-                            if loras
+                            if _has_active_lora(loras)
                             else usable_prequant_source(
                                 fam,
                                 scheme,
@@ -1813,7 +1815,7 @@ class DiffusionBackend:
                     pipe is None
                     and kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
-                    and any(w != 0 for (_lid, w) in (loras or ()))
+                    and _has_active_lora(loras)
                 ):
                     # Adapters were requested BAKED but that build failed, and the GGUF fallback cannot carry them; fail loudly.
                     raise RuntimeError(
@@ -3028,7 +3030,7 @@ class DiffusionBackend:
 
                 # Deferred speed auto: engage the compile profile on the 3rd image. Best-effort; a failure stays eager and never retries.
                 # NOT when a LoRA is requested: a compiled transformer rejects LoRA, breaking every LoRA generation on this load.
-                lora_requested = any(w != 0 for (_id, w) in (loras or []))
+                lora_requested = _has_active_lora(loras)
                 # Also stay eager while a PRIOR generation's adapters are attached: compiling would bake them in permanently.
                 loras_attached = bool(getattr(state.pipe, "_unsloth_loras", ()))
                 if (

@@ -3507,6 +3507,31 @@ def test_the_dense_builder_skips_the_prequant_only_for_a_real_bake(
     assert bool(consulted) is consults_prequant
 
 
+def test_the_plan_does_not_force_a_dense_bake_for_disabled_adapters(fake_runtime, monkeypatch):
+    # The gate above stopped calling it a bake, but the candidate sizing right below still passed
+    # force_dense on the raw list, so the plan sized a dense LoRA bake and staged the base repo
+    # transformer/ shards while the load ran the cached prequant. Both must read the same rule.
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    fam = detect_family("unsloth/Z-Image-GGUF")
+    forced: list = []
+    monkeypatch.setattr(
+        dmod,
+        "resolve_dense_quant_candidate",
+        lambda **kw: forced.append(kw.get("force_dense"))
+        or types.SimpleNamespace(prequant = True),
+    )
+    # Cached, so the decline does not fire and sizing is actually reached.
+    _stub_hosted_prequant(monkeypatch, cached = True)
+
+    backend._dense_quant_prefetch_needed(fam, {"loras": [("adapter", 0.0)]})
+    backend._dense_quant_prefetch_needed(fam, {"loras": [("adapter", 0.8)]})
+
+    assert forced == [False, True]
+
+
 def test_the_plan_reads_pydantic_lora_specs_as_the_load_reads_tuples(fake_runtime, monkeypatch):
     # /images/load converts to (id, weight) tuples but /images/download-plan passes the LoraSpec
     # models through, and unpacking a pydantic model yields its (field, value) pairs, so a plain
