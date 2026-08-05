@@ -71,10 +71,7 @@ def test_thin_appimage_never_injects_a_partial_desktop_runtime():
         "libnghttp2.so",
     ):
         assert library in script
-    assert (
-        "sudo apt install libayatana-appindicator3-1 libwebkit2gtk-4.1-0 libgtk-3-0"
-        in script
-    )
+    assert "sudo apt install libayatana-appindicator3-1 libwebkit2gtk-4.1-0 libgtk-3-0" in script
     assert "zenity --error" in script
     assert "xmessage -center" in script
 
