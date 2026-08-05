@@ -89,7 +89,11 @@ class _FakeAsyncClient:
     async def __aexit__(self, *exc_info):
         return False
 
-    async def get(self, url, headers = None):
+    async def get(
+        self,
+        url,
+        headers = None,
+    ):
         _FakeAsyncClient.last_request = (url, headers or {})
         outcome = _FakeAsyncClient.outcome
         if isinstance(outcome, Exception):
