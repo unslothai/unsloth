@@ -2066,8 +2066,10 @@ export function AppSidebar() {
                         );
                       })}
                       {/* Way out of the flyout: jump straight to the control that
-                          decides what lives here vs. on the sidebar itself. */}
-                      <DropdownMenuSeparator className="mx-1! my-1.5! h-0! border-t border-border/70 bg-transparent! dark:border-white/15" />
+                          decides what lives here vs. on the sidebar itself.
+                          my-1 matches the menu's own p-1, so the gap either side
+                          of the rule equals the one under the last row. */}
+                      <DropdownMenuSeparator className="mx-1! my-1! h-0! border-t border-border/70 bg-transparent! dark:border-white/15" />
                       <DropdownMenuItem
                         onSelect={() =>
                           useSettingsDialogStore
