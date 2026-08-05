@@ -1365,6 +1365,20 @@ def _unwrap_quotes(token: str) -> str:
 _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 
 
+def _is_start_title(token: str, lexed_posix: bool) -> bool:
+    """Whether ``token`` is START's window title rather than the program it runs.
+
+    Documented as `start <"title"> ... [<command>]`: a quoted first argument is
+    always the title, which is why `start ""` is the idiom for launching a
+    quoted path. The posix lexer has already dropped the quote marks, so only
+    the empty-title spelling is still recognisable there and the caller screens
+    one token further on instead.
+    """
+    if lexed_posix:
+        return token == ""
+    return len(token) >= 2 and token[0] == '"' == token[-1]
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -1685,17 +1699,29 @@ def _find_blocked_commands(command: str) -> set[str]:
         if os.path.basename(token).lower() not in ("start", "start.exe"):
             continue
         j = i + 1
+        titled = False
         while j < len(tokens):
             switch = _win_switch(tokens[j].lower())
-            if not switch.startswith("/"):
+            if switch.startswith("/"):
+                # /d C:\dir and friends carry their value in the next token.
+                j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
+            elif not titled and _is_start_title(tokens[j], lexed_posix):
+                # START takes its window title as a QUOTED first argument, so
+                # the program is the token behind it. Only the `""` idiom was
+                # stepped over, which read `start "job" powershell` as a program
+                # named job and left powershell in argument position.
+                titled = True
+                j += 1
+            else:
                 break
-            # /d C:\dir and friends carry their value in the next token.
-            j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
-        # `start ""` is the idiom for "no title"; anything else is the program.
-        if j < len(tokens) and _unquote(tokens[j]) == "":
-            j += 1
         if j < len(tokens):
             blocked |= _find_blocked_commands(_unquote(tokens[j]))
+            if lexed_posix and not titled and j + 1 < len(tokens):
+                # Posix only: shlex dropped the quote marks, so a title cannot be
+                # told from a program and the word behind it is screened too.
+                # Under cmd the marks survive, and a token without them IS the
+                # program, so guessing there would block an ordinary argument.
+                blocked |= _find_blocked_commands(tokens[j + 1])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

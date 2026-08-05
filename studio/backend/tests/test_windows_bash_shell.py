@@ -312,6 +312,11 @@ def windows_terminal(request, monkeypatch):
         # start quotes the shell it launches too, and the leading quote hid that
         # token from the shell-name lookup, so nothing recursed into the tail.
         'cmd //c start "" "cmd" /c powershell -Command ls',
+        # A quoted first argument is START's window title whatever it holds, so
+        # the program is one token further on than the `""` idiom implies.
+        'cmd //c start "job" powershell -Command ls',
+        'cmd //c start "my window" pwsh -Command ls',
+        'cmd //c start /b "job" powershell -Command ls',
     ],
 )
 def test_cmd_shellout_is_screened_through_mangled_switches(windows_terminal, command):
@@ -329,6 +334,9 @@ def test_cmd_shellout_is_screened_through_mangled_switches(windows_terminal, com
         "cmd //c start wt",
         "cmd //c dir",
         "start notepad",
+        # Skipping the title must not start blocking an ordinary argument.
+        "cmd //c start notepad readme.txt",
+        'cmd //c start "job" notepad',
     ],
 )
 def test_detached_windows_stay_launchable(windows_terminal, command):
