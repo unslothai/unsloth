@@ -677,6 +677,27 @@ def test_pruning_skips_research_turn_messages(research_home, removed_id):
     assert studio_db.get_chat_message("thread-1", removed_id) is not None
 
 
+@pytest.mark.parametrize("removed_id", ["user-1", "assistant-1"])
+def test_pruning_exempts_research_messages_even_when_updates_allowed(research_home, removed_id):
+    _create()
+    plan = research_db.set_plan("run-1", _plan(), expected_revision = 0)
+    research_db.approve("run-1", 1, plan["planHash"])
+    research_db.claim_next("worker-1")
+    research_db.finish("run-1", "worker-1", "completed")
+    survivors = [
+        message
+        for message in studio_db.list_chat_messages("thread-1")
+        if message["id"] != removed_id
+    ]
+
+    studio_db.sync_chat_messages(
+        "thread-1", survivors, prune_missing = True, allow_research_update = True
+    )
+
+    assert research_db.get_run("run-1") is not None
+    assert studio_db.get_chat_message("thread-1", removed_id) is not None
+
+
 def test_sync_ignores_client_edits_to_research_messages(research_home):
     _create()
     unchanged = studio_db.list_chat_messages("thread-1")
