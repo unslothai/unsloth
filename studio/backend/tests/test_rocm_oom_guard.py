@@ -18,7 +18,13 @@ from types import SimpleNamespace
 
 import pytest
 
-from core.training.worker import _rocm_classify_unified_memory
+from core.training.worker import (
+    _UNIFIED_OS_RESERVE_BYTES,
+    _rocm_classify_unified_memory,
+    _rocm_memory_fraction,
+)
+
+GIB = 1024**3
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -203,9 +209,9 @@ class TestDeviceNameFallback:
         props = _props(name = device_name)
         gcn, is_unified = _rocm_classify_unified_memory(props)
         assert gcn == ""
-        assert (
-            is_unified is False
-        ), f"discrete device {device_name!r} should NOT be classified as unified-memory"
+        assert is_unified is False, (
+            f"discrete device {device_name!r} should NOT be classified as unified-memory"
+        )
 
     def test_empty_name_returns_false(self) -> None:
         """Absent name must not crash and must default to discrete."""
@@ -221,33 +227,88 @@ class TestDeviceNameFallback:
         assert is_unified is False
 
 
-# ── Fraction selection (source-pinned) ───────────────────────────────────────
+# ── Fraction selection ───────────────────────────────────────────────────────
 
 
 _WORKER_PY = Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py"
 
 
 class TestMemFractionSelection:
-    """Pin the per-platform fraction policy in worker.py section 1g.
+    """Pin the per-platform fraction policy (_rocm_memory_fraction).
 
     On native Windows, torch.cuda.mem_get_info's total is the WDDM budget
     the driver grants HIP -- the OS share of RAM is already outside it, so
-    a 0.80 cap double-taxes (field report: 48.49 GiB budget -> '38.79 GiB
+    a sub-1.0 cap double-taxes (field report: 48.49 GiB budget -> '38.79 GiB
     allowed' OOM denying a 47.29 GiB load that fit in free memory). 1.0
     removes the double-tax; current AMD Windows wheels enforce only
     sub-1.0 fractions, so it behaves like torch's uncapped default with
     WDDM arbitrating residency (measured on gfx1151)."""
 
     def test_unified_win32_uses_budget_exact_fraction(self) -> None:
-        source = _WORKER_PY.read_text(encoding = "utf-8")
-        assert '1.0 if sys.platform == "win32" else 0.80' in source
+        assert _rocm_memory_fraction(128 * GIB, True, "win32") == 1.0
 
     def test_discrete_keeps_090(self) -> None:
-        source = _WORKER_PY.read_text(encoding = "utf-8")
-        assert "_mem_fraction = 0.90" in source
+        assert _rocm_memory_fraction(24 * GIB, False, "linux") == 0.90
+        assert _rocm_memory_fraction(128 * GIB, False, "linux") == 0.90
 
     def test_win32_unified_logs_vgm_hint(self) -> None:
         """Users must learn the WDDM budget is raisable (BIOS UMA / AMD
         Software Variable Graphics Memory) instead of assuming a bug."""
         source = _WORKER_PY.read_text(encoding = "utf-8")
         assert "Variable Graphics Memory" in source
+
+
+class TestUnifiedLinuxReserve:
+    """Linux unified pools reserve a bounded amount, not a flat 20% (#7878).
+
+    A flat 0.80 withheld ~25 GiB on a 128 GiB Strix Halo. The reserve is
+    min(20% of total, 16 GiB), so the 20% arm still wins below the 80 GiB
+    crossover and those hosts keep exactly the historical cap."""
+
+    @pytest.mark.parametrize("pool_gib", [8, 16, 32, 64, 80])
+    def test_at_or_below_crossover_is_unchanged(self, pool_gib: int) -> None:
+        # 20% * total <= 16 GiB here, so the percentage arm wins and the cap
+        # is bit-identical to the pre-#7878 flat 0.80.
+        assert _rocm_memory_fraction(pool_gib * GIB, True, "linux") == pytest.approx(0.80)
+
+    def test_large_pool_reserves_the_constant_not_a_percentage(self) -> None:
+        total = 128 * GIB
+        fraction = _rocm_memory_fraction(total, True, "linux")
+        assert total - fraction * total == pytest.approx(_UNIFIED_OS_RESERVE_BYTES)
+        assert fraction == pytest.approx(0.875)
+
+    def test_never_reaches_the_090_recorded_as_starving(self) -> None:
+        # #5301 recorded 0.90 on a 128 GiB pool as OS-starving; a 16 GiB
+        # reserve stays under it for every pool a shipping APU can have.
+        for pool_gib in (96, 128, 156):
+            assert _rocm_memory_fraction(pool_gib * GIB, True, "linux") < 0.90
+
+    def test_fraction_is_monotonic_and_floored_at_080(self) -> None:
+        seen = [_rocm_memory_fraction(g * GIB, True, "linux") for g in range(4, 260, 4)]
+        assert all(f >= 0.80 for f in seen)
+        assert seen == sorted(seen)
+
+    def test_missing_total_falls_back_to_historical_cap(self) -> None:
+        # Some AMD SDK wheels report no total; must not divide by zero.
+        assert _rocm_memory_fraction(0, True, "linux") == pytest.approx(0.80)
+        assert _rocm_memory_fraction(-1, True, "linux") == pytest.approx(0.80)
+
+
+class TestMemFractionEnvOverride:
+    """UNSLOTH_ROCM_MEM_FRACTION is the escape hatch for hosts the formula
+    gets wrong. Bad values are ignored, never fatal -- a typo in an env var
+    must not take down a training run."""
+
+    def test_override_wins_over_computed(self) -> None:
+        assert _rocm_memory_fraction(128 * GIB, True, "linux", "0.95") == 0.95
+
+    def test_override_applies_to_discrete_and_win32(self) -> None:
+        assert _rocm_memory_fraction(24 * GIB, False, "linux", "0.5") == 0.5
+        assert _rocm_memory_fraction(128 * GIB, True, "win32", "0.75") == 0.75
+
+    @pytest.mark.parametrize("bad", ["", "abc", "0", "0.0", "-0.5", "1.5", "  "])
+    def test_unusable_values_fall_through(self, bad: str) -> None:
+        assert _rocm_memory_fraction(128 * GIB, True, "linux", bad) == pytest.approx(0.875)
+
+    def test_one_is_accepted(self) -> None:
+        assert _rocm_memory_fraction(128 * GIB, True, "linux", "1.0") == 1.0
