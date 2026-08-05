@@ -229,10 +229,27 @@ def test_notes_never_recommend_a_blocked_program(monkeypatch, bash):
     assert "/c start" not in text
 
 
-def test_terminal_tool_description_carries_both_notes():
+def test_terminal_tool_description_is_the_two_notes_appended():
+    # _TERMINAL_SHELL_NOTE is "" off Windows, so `note in description` proves
+    # nothing about the shell half there. Compare the whole string instead, which
+    # at least pins the composition, and cover the note's own content below.
     description = tools.TERMINAL_TOOL["function"]["description"]
-    assert tools._SANDBOX_PATHS_NOTE in description
-    assert tools._TERMINAL_SHELL_NOTE in description
+    assert description == (
+        "Execute a terminal command and return stdout/stderr."
+        + tools._SANDBOX_PATHS_NOTE
+        + tools._TERMINAL_SHELL_NOTE
+    )
+
+
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+def test_windows_shell_note_is_never_empty(monkeypatch, bash):
+    # The half the test above cannot reach on a Linux runner: whichever shell the
+    # resolver lands on, the terminal description gains a sentence naming it.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    note = tools._build_terminal_shell_note()
+    assert note.startswith(" The shell is ")
+    assert note not in tools._build_sandbox_paths_note()
 
 
 def test_python_tool_description_omits_the_shell():

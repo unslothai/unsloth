@@ -7067,27 +7067,28 @@ WEB_SEARCH_TOOL = {
     },
 }
 
-# Appended to the python/terminal descriptions: models habitually write to
-# /mnt/data (a ChatGPT code-interpreter path), which does not exist here.
-# why: naming only POSIX paths reads as "you are on Linux", and models then refuse
-# to invoke Windows programs that are in fact available. Saying where the code
-# runs matters for the same reason: without it a model assumes the pipe is its
-# only output and declines to open a window it believes nobody can see.
-_WIN_CWD_NOTE = (
-    " Read and write files using relative paths in the current working "
-    "directory, which persists for this conversation."
-)
-
 
 def _build_sandbox_paths_note() -> str:
-    """Platform and working-directory note, on BOTH tool descriptions."""
+    """Platform and working-directory note, on BOTH tool descriptions.
+
+    Models habitually write to /mnt/data, a ChatGPT code-interpreter path that
+    does not exist here, so the POSIX text names it. Naming only POSIX paths on
+    Windows reads as "you are on Linux" and models then refuse to invoke Windows
+    programs that are in fact available, so that text says where the code runs
+    instead: without it a model assumes the pipe is its only output and declines
+    to open a window it believes nobody can see.
+    """
     if sys.platform != "win32":
         return (
             " Read and write files using relative paths in the current working "
             "directory, which persists for this conversation; absolute paths like "
             "/mnt/data or /tmp/outputs do not exist."
         )
-    return " You are on Windows, and this runs on the user's own machine." + _WIN_CWD_NOTE
+    return (
+        " You are on Windows, and this runs on the user's own machine. Read and "
+        "write files using relative paths in the current working directory, which "
+        "persists for this conversation."
+    )
 
 
 def _build_terminal_shell_note() -> str:
