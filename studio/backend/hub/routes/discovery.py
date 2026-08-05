@@ -497,9 +497,7 @@ async def discovery_search(
     try:
         pairs = build_discovery_query(request.query_params)
     except DiscoveryQueryError as e:
-        return _stamped(
-            HTTPException(status_code = 400, detail = _scrub_detail(str(e), hf_token))
-        )
+        return _stamped(HTTPException(status_code = 400, detail = _scrub_detail(str(e), hf_token)))
 
     url = build_upstream_url(resource, pairs)
 

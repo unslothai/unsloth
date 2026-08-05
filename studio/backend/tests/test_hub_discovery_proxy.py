@@ -612,9 +612,7 @@ class TestEveryResponseCarriesTheMarker:
     """
 
     def _listing(self, monkeypatch, status):
-        monkeypatch.setattr(
-            discovery, "_fetch_upstream", lambda url, token: (status, b"{}", "")
-        )
+        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (status, b"{}", ""))
         return asyncio.run(
             discovery.discovery_search(
                 "models",
