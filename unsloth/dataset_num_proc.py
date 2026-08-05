@@ -584,8 +584,9 @@ def map_failure_diagnostics(num_proc: Optional[int]) -> "Iterator[None]":
             f"model. The most common cause is the out-of-memory killer.\n"
             f"  Retry with {NUM_PROC_ENV_VAR}=0 for the fewest workers this path "
             f"can use, or {NUM_PROC_ENV_VAR}=<n> to choose a count. That is "
-            f"in-process everywhere except train_on_responses_only on a split "
-            f"over {ZOO_MIN_ROWS_FOR_MULTIPROC:,} rows, where it is one worker: "
+            f"in-process everywhere, though on an unsloth_zoo older than the one "
+            f"that reads 1 as in-process, train_on_responses_only still forks a "
+            f"single worker on a split over {ZOO_MIN_ROWS_FOR_MULTIPROC:,} rows: "
             f"a bare None there reads as 'size it for me'.\n"
             f"  Original error: {exception}"
         ) from exception
@@ -642,8 +643,9 @@ def _serial_for_the_zoo(value: Optional[int]) -> Optional[int]:
 
     ``None`` only means "no workers" to ``train_on_responses_only`` while its own
     check refuses them too. When it would not, ``1`` is the smallest request it
-    honours verbatim: still a ``Pool(1)`` on ``datasets`` >= 4.1, but one child
-    instead of the ``cpu_count + 4`` its auto path would have chosen.
+    honours verbatim, and that helper now reads ``1`` as in-process; on a release
+    that predates this it is a ``Pool(1)``, still one child rather than the
+    ``cpu_count + 4`` its auto path would have chosen.
     """
     if value is not None or not _zoo_auto_sizer_forks():
         return value
@@ -669,8 +671,8 @@ def resolve_responses_only_num_proc(trainer, num_proc):
     * **Serial is the config-layer sentinel, not the call-site one.** That helper
       reads ``None`` as "size it for me", so on ``fork`` handing it ``None``
       would *inflate* the count rather than remove it; ``1`` is the closest
-      expressible request, and one forked worker is not the OOM this guards
-      against. Under spawn the trade flips -- each ``Pool(1)`` child re-imports
+      expressible request, and it is in-process on any release that reads it as
+      such. Under spawn the trade flips -- each ``Pool(1)`` child re-imports
       the user's ``__main__`` (#3211 / #3397), while ``None`` is safe because its
       auto path vetoes non-fork itself. That is exactly what
       ``serial_as_none = False`` encodes, so defer to it -- then re-check with
@@ -690,10 +692,10 @@ def resolve_responses_only_num_proc(trainer, num_proc):
         resolved = get_dataset_num_proc(num_proc, serial_as_none = False)
         if resolved == 1 and small:
             # Serial, and every split is under the threshold, so the helper's own
-            # guard runs each of them in-process -- which is more serial than the
-            # 1 expressible here, and the only place a serial request can be met
-            # exactly. Reaching this with UNSLOTH_DATASET_NUM_PROC=0 and a config
-            # sentinel of 1 was the escape hatch still building a Pool(1).
+            # guard runs each of them in-process, which an older unsloth_zoo
+            # would not do for the 1 expressible here: reaching this with
+            # UNSLOTH_DATASET_NUM_PROC=0 and a config sentinel of 1 was the
+            # escape hatch still building a Pool(1) there.
             return None
         return _serial_for_the_zoo(resolved)
 

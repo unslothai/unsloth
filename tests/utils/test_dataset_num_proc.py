@@ -62,6 +62,31 @@ def dnp(monkeypatch):
     # so every assertion expecting a worker count is really about a forking
     # platform. Platform tests set their own value afterwards, which wins.
     monkeypatch.setattr(module.sys, "platform", "linux")
+    # Pin the memory ceiling too, at its two sources rather than at the reader,
+    # so the memory tests can still patch either and win. Every count this
+    # module returns is clamped by free RAM and by the cgroup budget, so on a
+    # memory-limited runner a test about the start method or about an explicit
+    # value silently becomes a test of the clamp instead:
+    # `get_dataset_num_proc(6) == 6` returns 4 in a small container.
+    try:
+        import psutil
+        monkeypatch.setattr(
+            psutil, "virtual_memory", lambda: type("m", (), {"available": 1024 * 1024**3})()
+        )
+    except ImportError:
+        pass
+    # Point both cgroup readers at a path that does not exist rather than
+    # stubbing the readers themselves, so the tests that are about those
+    # readers can still install a fixture tree and win.
+    monkeypatch.setattr(module, "CGROUP_ROOT", "/nonexistent-cgroup-root-for-tests")
+    try:
+        from pathlib import Path
+        from unsloth_zoo import hf_xet_tuning
+        monkeypatch.setattr(
+            hf_xet_tuning, "CGROUP_ROOT", Path("/nonexistent-cgroup-root-for-tests")
+        )
+    except Exception:
+        pass
     return module
 
 
@@ -1006,20 +1031,22 @@ def test_studio_bounds_its_own_computed_worker_count(dnp):
 
 
 def test_the_recovery_advice_does_not_promise_more_than_it_delivers(dnp):
-    """UNSLOTH_DATASET_NUM_PROC=0 is not in-process on every path.
+    """UNSLOTH_DATASET_NUM_PROC=0 is not in-process on every installation.
 
     The dead-worker message is the one place a user is told what to do next, so
     it has to be true. On fork, train_on_responses_only over the Zoo's threshold
-    gets ``1`` -- a bare None would read as "size it for me" -- which
-    ``datasets`` >= 4.1 turns into a Pool(1). Saying "tokenize in-process"
-    flatly was wrong for exactly the large-dataset runs that die.
+    gets ``1`` -- a bare None would read as "size it for me". The Zoo release
+    that ships with this reads that ``1`` as in-process, but an older one turns
+    it into a Pool(1), and generated code runs against whichever Zoo is
+    installed. Saying "tokenize in-process" flatly was wrong for exactly the
+    large-dataset runs that die.
     """
     with pytest.raises(RuntimeError) as excinfo:
         with dnp.map_failure_diagnostics(8):
             raise RuntimeError("One of the subprocesses has abruptly died during map operation.")
     message = str(excinfo.value)
     assert f"{dnp.NUM_PROC_ENV_VAR}=0" in message
-    assert "one worker" in message, "the exception to in-process has to be stated"
+    assert "single worker" in message, "the exception to in-process has to be stated"
     assert "train_on_responses_only" in message, "and which path it applies to"
     assert f"{dnp.ZOO_MIN_ROWS_FOR_MULTIPROC:,}" in message, "and above which size"
 
