@@ -1339,15 +1339,23 @@ def _win_switch(token: str) -> str:
 
 
 def _unwrap_quotes(token: str) -> str:
-    """Drop one surrounding quote pair, which shlex(posix = False) keeps.
+    """Drop one surrounding double-quote pair, which shlex(posix = False) keeps.
 
     That non-posix lexer is the one a Windows host with no trusted bash uses, so
     `cmd /c "powershell -Command ls"` recursed into `"powershell` and `start ""`
     never matched the empty-title idiom, leaving both command positions
-    unscreened. Unwrapping only widens what is screened, so the posix path, with
-    no quotes left to drop, reaches the same verdict.
+    unscreened.
+
+    Only `"`, because cmd has no other quoting: it runs `'powershell ...'` as a
+    program literally named `'powershell`, so stripping `'` here would block a
+    line cmd could never execute.
+
+    Callers must apply this ONLY on the non-posix path (see _unquote). The posix
+    lexer has already removed the delimiters, so a pair still attached is the
+    nested command's own syntax, and re-parsing without it reads a quoted word
+    as a command line.
     """
-    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
+    if len(token) >= 2 and token[0] == '"' == token[-1]:
         return token[1:-1]
     return token
 
@@ -1390,11 +1398,20 @@ def _find_blocked_commands(command: str) -> set[str]:
     except ValueError:
         tokens = command.split()
         lexed_posix = False
+
     # Which separator tokens the shell only produced because the quoting was
     # stripped. The non-posix (cmd) lexer KEEPS the quote marks, so a quoted
     # `';'` never looks like a separator there and nothing has to be recovered;
     # the split() fallback has no quoting model at all, so it reports nothing
     # either and both shells reach the same verdict.
+    def _unquote(tok: str) -> str:
+        # Quote marks survive lexing only under cmd. On the posix path shlex has
+        # already eaten the delimiters, so stripping another pair would turn a
+        # quoted word into a command line: `bash -c '""rm -rf x""'` lexes to
+        # `rm -rf x` and is blocked, but unwrapped it becomes the single word
+        # `rm -rf x` and sails through. bash really runs that.
+        return tok if lexed_posix else _unwrap_quotes(tok)
+
     quoted_separators = (
         _quoted_separator_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
     )
@@ -1653,11 +1670,13 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue  # skip Unix flags like --login, -l
             if is_win_c and prev.startswith("/") and len(prev) <= 3:
                 continue  # skip Windows flags like /s, /q (not /bin/bash)
-            prev_base = os.path.basename(prev).lower()
+            # `start "" "cmd" /c prog` quotes the shell name too, and a leading
+            # quote hid it from this lookup, so nothing recursed into prog.
+            prev_base = os.path.basename(_unquote(prev)).lower()
             if is_unix_c and prev_base in _SHELLS:
-                blocked |= _find_blocked_commands(_unwrap_quotes(tokens[i + 1]))
+                blocked |= _find_blocked_commands(_unquote(tokens[i + 1]))
             elif is_win_c and prev_base in _SHELLS_WIN:
-                blocked |= _find_blocked_commands(_unwrap_quotes(tokens[i + 1]))
+                blocked |= _find_blocked_commands(_unquote(tokens[i + 1]))
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
@@ -1673,10 +1692,10 @@ def _find_blocked_commands(command: str) -> set[str]:
             # /d C:\dir and friends carry their value in the next token.
             j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
         # `start ""` is the idiom for "no title"; anything else is the program.
-        if j < len(tokens) and _unwrap_quotes(tokens[j]) == "":
+        if j < len(tokens) and _unquote(tokens[j]) == "":
             j += 1
         if j < len(tokens):
-            blocked |= _find_blocked_commands(_unwrap_quotes(tokens[j]))
+            blocked |= _find_blocked_commands(_unquote(tokens[j]))
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The
