@@ -549,7 +549,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                 if (
                   _datasetCheckController === controller &&
                   claimDatasetCacheRecheck(
-                    datasetCacheRecheckKey(datasetName, split),
+                    datasetCacheRecheckKey({
+                      dataset: datasetName,
+                      subset: requestedCacheIdentity.subset,
+                      split,
+                      streaming: requestedCacheIdentity.streaming,
+                    }),
                   )
                 ) {
                   runDatasetCheck(datasetName, split, {

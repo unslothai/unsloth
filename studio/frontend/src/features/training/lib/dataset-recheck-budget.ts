@@ -10,7 +10,7 @@
  * sizeBytes, so a dataset that is still downloading invalidates every in-flight check.
  * Unbounded, that pair never converges (unslothai/unsloth#7853).
  *
- * The budget is keyed on the selection so switching dataset or split starts fresh.
+ * The budget is keyed on the selection so picking a different one starts fresh.
  */
 
 export const DATASET_CACHE_RECHECK_LIMIT = 3;
@@ -18,9 +18,32 @@ export const DATASET_CACHE_RECHECK_LIMIT = 3;
 let currentKey: string | null = null;
 let attempts = 0;
 
-export function datasetCacheRecheckKey(datasetName: string, split: string): string {
-  // "::" cannot appear in a split name, so keys cannot collide across selections.
-  return `${datasetName}::${split}`;
+/**
+ * Identity of a dataset *selection*, mirroring the four user-chosen dimensions of
+ * DatasetCacheUsabilityIdentity. Keying on fewer fields makes a genuinely different
+ * selection inherit an exhausted budget and lose its local-cache preference.
+ *
+ * cachePath is deliberately excluded even though the usability identity carries it: it
+ * is derived state that moves as a download populates the cache, so keying on it would
+ * hand a churning inventory a fresh budget on every change and re-arm the very
+ * non-terminating loop this module exists to bound (unslothai/unsloth#7853).
+ */
+export interface DatasetRecheckSelection {
+  dataset: string;
+  subset: string | null;
+  split: string;
+  streaming: boolean;
+}
+
+export function datasetCacheRecheckKey(selection: DatasetRecheckSelection): string {
+  // JSON encoding rather than a separator: no delimiter can collide with a name that
+  // happens to contain it, and null is distinguishable from the string "null".
+  return JSON.stringify([
+    selection.dataset,
+    selection.subset,
+    selection.split,
+    selection.streaming,
+  ]);
 }
 
 /** True while the selection still has re-checks left; consumes one. */

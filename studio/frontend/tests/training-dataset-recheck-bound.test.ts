@@ -40,7 +40,12 @@ function driveStoreRetryLoop(
   resetDatasetCacheRecheckBudget();
   const tracker = new DatasetCacheRejectionTracker();
   const identity = usabilityIdentity();
-  const key = datasetCacheRecheckKey("Org/Data", "train");
+  const key = datasetCacheRecheckKey({
+    dataset: "Org/Data",
+    subset: "default",
+    split: "train",
+    streaming: false,
+  });
   let sizeBytes = 128;
   let requests = 0;
 
@@ -96,21 +101,73 @@ test("a churning cache inventory cannot drive unbounded dataset re-checks", () =
   );
 });
 
-test("switching dataset selection starts a fresh re-check budget", () => {
-  resetDatasetCacheRecheckBudget();
-  const first = datasetCacheRecheckKey("Org/Data", "train");
-  const second = datasetCacheRecheckKey("Org/Data", "validation");
+function selection(overrides: Record<string, unknown> = {}) {
+  return {
+    dataset: "Org/Data",
+    subset: "default",
+    split: "train",
+    streaming: false,
+    ...overrides,
+  } as Parameters<typeof datasetCacheRecheckKey>[0];
+}
 
+/** Drain the budget for `key`, returning how many claims it granted. */
+function drain(key: string): number {
   let drained = 0;
   // Bounded so an unbounded budget fails the assertion instead of hanging the suite.
-  while (drained < 50 && claimDatasetCacheRecheck(first)) {
+  while (drained < 50 && claimDatasetCacheRecheck(key)) {
     drained += 1;
   }
   assert.ok(drained < 50, `budget never exhausted after ${drained} claims`);
-  assert.equal(claimDatasetCacheRecheck(first), false);
+  assert.equal(claimDatasetCacheRecheck(key), false);
+  return drained;
+}
+
+test("switching dataset selection starts a fresh re-check budget", () => {
+  resetDatasetCacheRecheckBudget();
+  drain(datasetCacheRecheckKey(selection()));
   assert.equal(
-    claimDatasetCacheRecheck(second),
+    claimDatasetCacheRecheck(
+      datasetCacheRecheckKey(selection({ split: "validation" })),
+    ),
     true,
     "a new selection must not inherit the exhausted budget",
+  );
+});
+
+// Regression guard: the budget key originally used only dataset + split, so changing
+// either of the other two user-chosen dimensions silently inherited an exhausted budget
+// and dropped the local-cache preference for a genuinely different selection.
+for (const [label, override] of [
+  ["subset", { subset: "fr" }],
+  ["streaming mode", { streaming: true }],
+] as const) {
+  test(`changing ${label} starts a fresh re-check budget`, () => {
+    resetDatasetCacheRecheckBudget();
+    drain(datasetCacheRecheckKey(selection()));
+    assert.equal(
+      claimDatasetCacheRecheck(datasetCacheRecheckKey(selection(override))),
+      true,
+      `changing ${label} must not inherit the exhausted budget`,
+    );
+  });
+}
+
+test("a moving cache path does NOT refresh the budget", () => {
+  // The inverse guard. cachePath is derived state that advances while a dataset
+  // downloads; if it fed the key, every poll would mint a fresh budget and re-arm the
+  // non-terminating loop of #7853. Keying on the selection alone keeps the bound.
+  resetDatasetCacheRecheckBudget();
+  const key = datasetCacheRecheckKey(selection());
+  drain(key);
+  assert.equal(
+    datasetCacheRecheckKey(selection()),
+    key,
+    "the key must not vary with anything outside the selection",
+  );
+  assert.equal(
+    claimDatasetCacheRecheck(key),
+    false,
+    "the budget must stay exhausted regardless of cache-path churn",
   );
 });
