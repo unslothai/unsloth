@@ -554,6 +554,12 @@ class MtmdSttSidecar:
             cancel_event = threading.Event()
             self._load_cancel_event = cancel_event
             self._loading = True
+            # Re-read last: _release_locked() reaps the old server, which can
+            # take seconds, and training admission that already passed its own
+            # check cannot come back to cancel this load. Publishing _loading
+            # first covers the other order, so between them every training start
+            # either cancels this load or is seen by it.
+            training = _training_active()
         try:
             sock, port = self._reserve_free_port()
             cmd = [

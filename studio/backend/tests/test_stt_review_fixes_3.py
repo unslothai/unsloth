@@ -548,3 +548,58 @@ def test_a_startup_cancelled_for_training_is_retryable_not_unavailable(spawned, 
     assert raised and isinstance(raised[0], mtmd_mod.SttLoadCancelledError)
     # Not the 501 class: the route separates them by exception type.
     assert not isinstance(raised[0], mtmd_mod.SttUnavailableError)
+
+
+def test_training_that_starts_while_the_old_server_is_reaped_still_pins_the_cpu(
+    spawned, monkeypatch
+):
+    """Reaping the previous server can take seconds, and training admission that
+    already ran cannot come back to cancel this load, so the offload flags have
+    to read training last rather than from the snapshot taken before the reap."""
+    commands = []
+    training = {"active": False}
+    real_reap = mtmd_mod._reap
+
+    def capture(cmd, **kwargs):
+        commands.append([str(a) for a in cmd])
+        return _FakeProcess()
+
+    def reap_then_train(process):
+        # The run that was admitted while this load waited on the reap.
+        training["active"] = True
+        real_reap(process)
+
+    monkeypatch.setattr(mtmd_mod.subprocess, "Popen", capture)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(mtmd_mod, "_training_active", lambda: training["active"])
+
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("qwen3-asr-0.6b")
+    assert commands[0][commands[0].index("-ngl") + 1] == "99", "nothing was training yet"
+
+    monkeypatch.setattr(mtmd_mod, "_reap", reap_then_train)
+    sidecar.load("qwen3-asr-1.7b")
+
+    cmd = commands[1]
+    assert cmd[cmd.index("-ngl") + 1] == "0", "spawned onto VRAM the training run had claimed"
+    assert "--no-mmproj-offload" in cmd, "the projector would still have been offloaded"
+    sidecar.unload()
+
+
+def test_a_load_is_cancellable_before_it_decides_where_to_run(spawned, monkeypatch):
+    """The other order: admission arriving after the snapshot must find a load
+    it can cancel, so _loading is published before training is read."""
+    seen = []
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+
+    def training_active():
+        seen.append(sidecar.is_loading())
+        return False
+
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(mtmd_mod, "_training_active", training_active)
+
+    sidecar.load("qwen3-asr-0.6b")
+
+    assert seen[-1] is True, "the deciding read happened while nothing could cancel the load"
+    sidecar.unload()

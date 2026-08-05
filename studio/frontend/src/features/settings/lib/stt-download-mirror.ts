@@ -20,6 +20,7 @@ import {
   sttModelName,
   useVoiceSettingsStore,
 } from "../stores/voice-settings-store";
+import { SttDownloadTrackers } from "./stt-download-trackers";
 
 /**
  * Shows a dictation model download in the shared download panel, and loads the
@@ -32,17 +33,10 @@ const POLL_MS = 750;
 // the first poll would read "not downloading" and call it finished.
 const START_GRACE_MS = 8_000;
 
-let timer: number | null = null;
-let trackedModel: SttModel | null = null;
+const trackers = new SttDownloadTrackers();
 
 function jobKey(model: SttModel): string {
   return `stt:${model}`;
-}
-
-function stop(): void {
-  if (timer !== null) window.clearInterval(timer);
-  timer = null;
-  trackedModel = null;
 }
 
 async function loadAndAnnounce(model: SttModel): Promise<void> {
@@ -66,7 +60,7 @@ function settle(
   error?: string | null,
 ): void {
   finishExternalJob(jobKey(model), outcome, error);
-  stop();
+  trackers.stop(model);
   // Only warm what the user is still pointed at. Selecting another model, or
   // leaving local dictation, during the download means this one is not wanted
   // and loading it would undo the unload that switch performed.
@@ -88,7 +82,7 @@ async function poll(model: SttModel, startedAt: number): Promise<void> {
     // A dropped poll is not a failed download; the next one decides.
     return;
   }
-  if (trackedModel !== model) return;
+  if (!trackers.has(model)) return;
 
   const engine = sttEngineStatusFor(status, model);
   const download = engine?.download;
@@ -125,17 +119,14 @@ async function poll(model: SttModel, startedAt: number): Promise<void> {
 /** Whether a download is already mirrored, so a poller can adopt one that
  * started before this page load without duplicating the row. */
 export function isTrackingSttDownload(model: SttModel): boolean {
-  return trackedModel === model;
+  return trackers.has(model);
 }
 
 /**
- * Mirror an already-started download of `model` into the panel. Replaces any
- * previous tracking, since only one STT download runs at a time.
+ * Mirror an already-started download of `model` into the panel. Any other
+ * model's download keeps its own row: switching models does not stop it.
  */
 export function trackSttDownload(model: SttModel): void {
-  if (trackedModel) finishExternalJob(jobKey(trackedModel), "cancelled");
-  stop();
-  trackedModel = model;
   startExternalJob({
     key: jobKey(model),
     repoId: getSttModelRepo(model),
@@ -156,8 +147,9 @@ export function trackSttDownload(model: SttModel): void {
     },
   });
   const startedAt = Date.now();
-  timer = window.setInterval(() => {
+  const timer = window.setInterval(() => {
     void poll(model, startedAt);
   }, POLL_MS);
+  trackers.start(model, () => window.clearInterval(timer));
   void poll(model, startedAt);
 }
