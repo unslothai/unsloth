@@ -3081,6 +3081,38 @@ class TestDetectWindowsGfxArch:
                 result = stack_mod._detect_windows_gfx_arch()
         assert result == "gfx1036"
 
+    def test_cuda_visible_devices_indexes_the_enumeration(self, monkeypatch):
+        # The pin check and the index resolver must read the same three masks.
+        # When they disagree, CUDA_VISIBLE_DEVICES=1 suppresses the shadowing skip
+        # (it counts as a pin) while the index still lands on GPU 0, so the user
+        # gets the iGPU's wheels for the very device they masked away.
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1200\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1200"
+
+    def test_cuda_visible_devices_index_matches_the_other_masks(self, monkeypatch):
+        # _pick_visible_index must treat all three spellings identically, including
+        # the comma-list and out-of-range fallbacks.
+        for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(_var, raising = False)
+        for _value, _expected in (
+            ("1", 1),
+            ("1,0", 1),
+            ("7", 0),
+            ("-1", 0),
+            ("", 0),
+            ("GPU-abc", 0),
+        ):
+            monkeypatch.setenv("CUDA_VISIBLE_DEVICES", _value)
+            assert stack_mod._pick_visible_index(2) == _expected, _value
+
     def test_empty_cuda_visible_devices_is_not_a_pin(self, monkeypatch):
         # "" and "-1" mean "no mask", not "the user chose GPU 0", so the
         # shadowing-iGPU skip must still apply.
@@ -3266,6 +3298,19 @@ class TestSetupPs1ShadowingParity:
         block = source[source.index("$wmiGpus = @(Get-WmiObject Win32_VideoController") :]
         block = block[: block.index("$ROCmGpuLabel = $script:ROCmGpuLabels[0]")]
         assert "Select-Object -First 1" not in block
+
+    def test_index_picks_read_the_same_masks_as_the_pin_check(self):
+        # Resolve-ShadowingGfxPick honours CUDA_VISIBLE_DEVICES as a pin, so both
+        # sites that turn a mask into an index have to read it too -- otherwise the
+        # skip is suppressed while the index still resolves to GPU 0.
+        source = self._setup_ps1()
+        assert "$_hipVisIdx = if (" in source
+        hip_idx = source[source.index("$_hipVisIdx = if (") :]
+        hip_idx = hip_idx[: hip_idx.index("\n")]
+        assert "CUDA_VISIBLE_DEVICES" in hip_idx
+        smi_idx = source[source.index("$visGpu = if (") :]
+        smi_idx = smi_idx[: smi_idx.index("$gpuIdx = 0")]
+        assert "CUDA_VISIBLE_DEVICES" in smi_idx
 
     def test_name_inference_runs_the_shadowing_pick(self):
         # Every AMD adapter name gets an arch, then the same preference chooses.
@@ -5025,8 +5070,8 @@ class TestApplyHostOverrides:
         assert out.rocm_gfx_target == "gfx1200"
 
     def test_forwarded_gfx_does_not_clobber_probed_arch(self, monkeypatch):
-        # setup.ps1's pick is not fully visible-device aware (ignores CUDA_VISIBLE_DEVICES,
-        # amd-smi branch drops comma masks), so when it resolved the host's OTHER physical
+        # setup.ps1's pick is not fully visible-device aware (its amd-smi branch drops
+        # comma masks), so when it resolved the host's OTHER physical
         # GPU it must not replace the arch detect_host() picked for the visible one.
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         host = rocm_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1100", "gfx1010"])

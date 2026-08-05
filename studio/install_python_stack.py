@@ -672,10 +672,16 @@ def _visible_devices_pinned() -> bool:
 
 
 def _pick_visible_index(num_tokens: int) -> int:
-    """Resolve HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES to an index into a
-    list of length num_tokens. Returns 0 (first GPU) for unset, empty, '-1',
-    UUID-style, or out-of-range values."""
-    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+    """Resolve HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES
+    to an index into a list of length num_tokens. Returns 0 (first GPU) for
+    unset, empty, '-1', UUID-style, or out-of-range values.
+
+    The three masks must match `_visible_devices_pinned()` exactly. Reading one
+    fewer here means a CUDA_VISIBLE_DEVICES=1 host counts as pinned -- so the
+    shadowing skip is suppressed -- while the index still resolves to GPU 0, and
+    the probes that enumerate every GPU regardless of the masks (amd-smi, WMI)
+    then install the leading iGPU's wheels for a device the user masked away."""
+    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         _val = os.environ.get(_env)
         if _val is None:
             continue
@@ -702,8 +708,10 @@ def _detect_windows_gfx_arch() -> str | None:
     return early and `studio update` cannot repair a CPU-only venv.
 
     On multi-GPU hosts, detected gfx tokens are deduplicated (preserving
-    enumeration order) and HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES picks
-    which to install for. The first GPU is used when no env var is set.
+    enumeration order) and HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES /
+    CUDA_VISIBLE_DEVICES picks which to install for. Without a mask, the
+    first GPU is used -- except when it is a shadowing iGPU leading the
+    enumeration, in which case the discrete GPU is preferred (issue #7776).
     """
     # 1. Explicit override (matches PowerShell installer's env-var path).
     _override = os.environ.get("UNSLOTH_ROCM_GFX_ARCH")

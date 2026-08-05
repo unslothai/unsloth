@@ -1660,7 +1660,8 @@ if (-not $HasNvidiaSmi) {
                 # Once the arch is printed, keep the ROCm wheel path.
                 $HasROCm = $true
                 $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
-                $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
+                # All three masks, matching Resolve-ShadowingGfxPick's pin check.
+                $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } elseif ($env:CUDA_VISIBLE_DEVICES -match '^\d') { [int]($env:CUDA_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                 if ($_hipAllArches.Count -gt 0) {
                     $script:ROCmGfxArch = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
                     $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $_hipAllArches
@@ -1719,13 +1720,17 @@ if (-not $HasNvidiaSmi) {
                         # Resolve which GPU index is runtime-visible.  When a single
                         # integer index is set, use it; fall back to index 0 otherwise
                         # (comma-separated lists or unset → first GPU, same as before).
+                        # Same three masks as Resolve-ShadowingGfxPick's pin check --
+                        # amd-smi lists every GPU regardless of them, so an index that
+                        # ignores CUDA_VISIBLE_DEVICES lands on the wrong card.
                         $visGpu = if ($env:HIP_VISIBLE_DEVICES) { $env:HIP_VISIBLE_DEVICES }
                                   elseif ($env:ROCR_VISIBLE_DEVICES) { $env:ROCR_VISIBLE_DEVICES }
+                                  elseif ($env:CUDA_VISIBLE_DEVICES) { $env:CUDA_VISIBLE_DEVICES }
                                   else { $null }
                         $gpuIdx = 0
                         if ($visGpu -match '^\s*(\d+)\s*$') { $gpuIdx = [int]$Matches[1] }
                         if ($gpuIdx -ge $allGfxArches.Count) {
-                            substep "[WARN] HIP/ROCR_VISIBLE_DEVICES index $gpuIdx is out of range ($($allGfxArches.Count) GPU(s) detected); defaulting to GPU 0 for arch selection" "Yellow"
+                            substep "[WARN] HIP/ROCR/CUDA_VISIBLE_DEVICES index $gpuIdx is out of range ($($allGfxArches.Count) GPU(s) detected); defaulting to GPU 0 for arch selection" "Yellow"
                             $gpuIdx = 0
                         }
                         $script:ROCmGfxArch = $allGfxArches[$gpuIdx]
