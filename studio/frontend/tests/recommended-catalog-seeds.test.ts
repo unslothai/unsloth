@@ -13,6 +13,7 @@ import {
   hfModelFitsDevice,
   loadScopedGpu,
   orderRecommendedRows,
+  searchRowFitsDevice,
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 
 interface Row {
@@ -256,6 +257,56 @@ test("a task row is sized against the device the load lands on", () => {
   const sdxl = seed(SDXL);
   assert.equal(hfModelFitsDevice(sdxl, twoCards), true);
   assert.equal(hfModelFitsDevice(sdxl, loadScopedGpu(twoCards, true)), false);
+});
+
+test("both search lists judge a curated id the same way", () => {
+  const oneCard = {
+    available: true,
+    budgetKnown: true,
+    memoryTotalGb: 8,
+    maxDeviceMemoryGb: 8,
+    loadDeviceMemoryGb: 8,
+    systemRamAvailableGb: 0,
+  };
+  const opts = {
+    isGguf: false,
+    curatedSizeBytes: curatedSizeBytesFor(BNB, IMAGE_CATALOG),
+    gpu: oneCard,
+    inferenceGpu: oneCard,
+    taskScoped: true,
+  };
+  // The curated list has the id alone; the Hub list has the listing row with
+  // its 6B params. Both are the catalog's 8 GB, past the 5.6 GB budget, so an
+  // id the curated list drops cannot return through the Hub rows below it.
+  assert.equal(searchRowFitsDevice({ id: BNB }, opts), false);
+  assert.equal(searchRowFitsDevice({ id: BNB, totalParams: 6e9 }, opts), false);
+});
+
+test("a search row is sized against the device a task load lands on", () => {
+  const twoCards = {
+    available: true,
+    budgetKnown: true,
+    memoryTotalGb: 16,
+    maxDeviceMemoryGb: 8,
+    loadDeviceMemoryGb: 8,
+    systemRamAvailableGb: 0,
+  };
+  const opts = {
+    isGguf: false,
+    curatedSizeBytes: curatedSizeBytesFor(SDXL, IMAGE_CATALOG),
+    gpu: twoCards,
+    inferenceGpu: twoCards,
+  };
+  // 8 GB fits the 11.2 GB aggregate a chat load may split across, but not the
+  // 5.6 GB of the single card an image pipeline lands on.
+  assert.equal(
+    searchRowFitsDevice({ id: SDXL }, { ...opts, taskScoped: false }),
+    true,
+  );
+  assert.equal(
+    searchRowFitsDevice({ id: SDXL }, { ...opts, taskScoped: true }),
+    false,
+  );
 });
 
 test("a GPU-less host keeps its unified-memory budget", () => {

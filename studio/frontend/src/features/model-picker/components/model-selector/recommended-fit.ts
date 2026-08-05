@@ -185,6 +185,46 @@ export function loadScopedGpu<
   return deviceGb > 0 ? { ...gpu, memoryTotalGb: deviceGb } : gpu;
 }
 
+/** One fit predicate for both search lists (curated matches and the Hub rows
+ * below them). They render into the same list and the curated list only
+ * suppresses ids it kept, so a row it dropped reappears from the Hub list: it
+ * must be sized from the same catalog size and judged against the same
+ * per-load budget, or the two disagree and the toggle leaks an oversized row. */
+export function searchRowFitsDevice<
+  G extends {
+    available: boolean;
+    memoryTotalGb: number;
+    maxDeviceMemoryGb: number;
+    loadDeviceMemoryGb: number;
+    systemRamAvailableGb: number;
+    budgetKnown?: boolean;
+  },
+>(
+  row: {
+    id: string;
+    totalParams?: number;
+    estimatedSizeBytes?: number;
+    curatedSizeBytes?: number;
+  },
+  opts: {
+    isGguf: boolean;
+    curatedSizeBytes?: number;
+    gpu: G;
+    inferenceGpu: G;
+    taskScoped: boolean;
+  },
+): boolean {
+  const source = opts.isGguf ? opts.inferenceGpu : opts.gpu;
+  return hfModelFitsDevice(
+    {
+      ...row,
+      isGguf: opts.isGguf,
+      curatedSizeBytes: row.curatedSizeBytes ?? opts.curatedSizeBytes,
+    },
+    loadScopedGpu(source, opts.taskScoped),
+  );
+}
+
 /** Order Recommended: curated seeds first in catalog order, then the rest of the
  * listing, each id once. A seed hands off only to a row that survived `keep`
  * (the metadata filters), so a painted curated row does not vanish when the

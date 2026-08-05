@@ -123,6 +123,7 @@ import {
   matchesFormatFilter,
   orderRecommendedRows,
   paramsFromId,
+  searchRowFitsDevice,
 } from "./recommended-fit";
 import {
   ggufVariantsMatchForPicker,
@@ -2874,6 +2875,41 @@ export function HubModelPicker({
     return map;
   }, [results, recommendedSearch.results]);
 
+  // The fit toggle for both search lists. Shared because a curated id the first
+  // list drops is not suppressed from the second, so a divergent size or budget
+  // there would just let it back in as a raw Hub row.
+  const searchRowFits = useCallback(
+    (row: {
+      id: string;
+      totalParams?: number;
+      estimatedSizeBytes?: number;
+      curatedSizeBytes?: number;
+    }) =>
+      searchRowFitsDevice(
+        {
+          ...row,
+          totalParams: row.totalParams ?? recommendedParamCountById.get(row.id),
+        },
+        {
+          isGguf: isKnownGgufRepo(row.id),
+          curatedSizeBytes: catalog
+            ? curatedSizeBytesFor(row.id, catalog)
+            : undefined,
+          gpu,
+          inferenceGpu,
+          taskScoped: Boolean(task),
+        },
+      ),
+    [
+      catalog,
+      gpu,
+      inferenceGpu,
+      isKnownGgufRepo,
+      recommendedParamCountById,
+      task,
+    ],
+  );
+
   // Recommended models that match the current search query
   const filteredRecommendedIds = useMemo(() => {
     if (!showHfSection) return [];
@@ -2890,20 +2926,7 @@ export function HubModelPicker({
           (id) =>
             !fitOnDeviceOnly ||
             downloadedSet.has(id.toLowerCase()) ||
-            hfModelFitsDevice(
-              {
-                id,
-                totalParams: recommendedParamCountById.get(id),
-                isGguf: isKnownGgufRepo(id),
-                curatedSizeBytes: catalog
-                  ? curatedSizeBytesFor(id, catalog)
-                  : undefined,
-              },
-              loadScopedGpu(
-                isKnownGgufRepo(id) ? inferenceGpu : gpu,
-                Boolean(task),
-              ),
-            ),
+            searchRowFits({ id }),
         )
     );
   }, [
@@ -2914,11 +2937,7 @@ export function HubModelPicker({
     isKnownGgufRepo,
     fitOnDeviceOnly,
     downloadedSet,
-    recommendedParamCountById,
-    gpu,
-    inferenceGpu,
-    catalog,
-    task,
+    searchRowFits,
   ]);
 
   const recommendedSet = useMemo(
@@ -2936,7 +2955,7 @@ export function HubModelPicker({
           (r) =>
             !fitOnDeviceOnly ||
             downloadedSet.has(r.id.toLowerCase()) ||
-            hfModelFitsDevice(r, r.isGguf ? inferenceGpu : gpu),
+            searchRowFits(r),
         )
         .map((result) => result.id)
         .filter((id) => !isHiddenModelId(id))
@@ -2964,8 +2983,7 @@ export function HubModelPicker({
     formatFilter,
     fitOnDeviceOnly,
     downloadedSet,
-    gpu,
-    inferenceGpu,
+    searchRowFits,
     isMac,
   ]);
 
