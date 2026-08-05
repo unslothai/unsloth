@@ -1715,7 +1715,7 @@ export function AppSidebar() {
         className={cn(
           "relative",
           usesDesktopTitlebar
-            ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+6px)]"
+            ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+17px)]"
             : "pl-3 pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0",
         )}
       >
@@ -1849,11 +1849,12 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      {/* Uniform pl-1.5 pr-1.75 keeps every hover pill the same width, inset from the edge. */}
+      {/* Paired padding shifts Tauri's primary pills left without changing width. */}
       <SidebarGroup
         className={cn(
-          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 shrink-0 transition-[padding]",
-          usesDesktopTitlebar ? "pt-3" : "pt-[9px]",
+          "group-data-[collapsible=icon]:px-0 shrink-0 transition-[padding]",
+          usesDesktopTitlebar ? "pl-[5px] pr-2" : "pl-1.5 pr-1.75",
+          usesDesktopTitlebar ? "pt-[11px]" : "pt-[9px]",
           // Scrolled: New Chat is pinned, give a little gap below it.
           scrolled ? "pb-[5px]" : "pb-px",
         )}
@@ -1940,7 +1941,13 @@ export function AppSidebar() {
           scrolled && "is-scrolled",
         )}
       >
-        <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 py-0 shrink-0">
+        <SidebarGroup
+          data-tour="navbar"
+          className={cn(
+            "group-data-[collapsible=icon]:px-0 py-0 shrink-0",
+            usesDesktopTitlebar ? "pl-[5px] pr-2" : "pl-1.5 pr-1.75",
+          )}
+        >
 
           <SidebarGroupContent>
             <SidebarMenu>
@@ -2245,14 +2252,27 @@ export function AppSidebar() {
         {!isStudioRoute && !showTrainingRecents && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
+              <SidebarGroupLabel
+                className={cn(
+                  "sidebar-sticky-label sidebar-sticky-label-following",
+                  scrolled && "is-scrolled",
+                  usesDesktopTitlebar && "translate-x-[2px]",
+                )}
+                asChild
+              >
                 <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                   {t("shell.navigation.recents")}
                   <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className="pl-1.5 pr-1.75">
+                <SidebarGroupContent
+                  className={
+                    usesDesktopTitlebar
+                      ? "pl-2 pr-[5px]"
+                      : "pl-1.5 pr-1.75"
+                  }
+                >
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -2378,7 +2398,7 @@ export function AppSidebar() {
 
       <SidebarFooter
         className={cn(
-          "relative pb-3 group-data-[collapsible=icon]:px-0",
+          "relative pb-[11px] group-data-[collapsible=icon]:px-0",
           // Tighter top with the update card so the fade hugs it; fuller top
           // for the profile on its own.
           showUpdateCard ? "pt-1.5" : "pt-2.5",
