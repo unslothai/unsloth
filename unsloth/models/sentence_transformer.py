@@ -1684,8 +1684,11 @@ class FastSentenceTransformer(FastModel):
 
             # Add save methods
             def _save_pretrained_merged(
-                self, save_directory, tokenizer = None,
-                save_method = "merged_16bit", **save_kwargs,
+                self,
+                save_directory,
+                tokenizer = None,
+                save_method = "merged_16bit",
+                **save_kwargs,
             ):
                 # `tokenizer` and `save_method` are positional to match
                 # FastLanguageModel.save_pretrained_merged(dir, tokenizer,
@@ -1881,8 +1884,11 @@ class FastSentenceTransformer(FastModel):
         st_model.no_modules = no_modules
 
         def _save_pretrained_merged(
-            self, save_directory, tokenizer = None,
-            save_method = "merged_16bit", **kwargs,
+            self,
+            save_directory,
+            tokenizer = None,
+            save_method = "merged_16bit",
+            **kwargs,
         ):
             # Positional to match FastLanguageModel.save_pretrained_merged;
             # see the note on the other definition above. This path forwards to

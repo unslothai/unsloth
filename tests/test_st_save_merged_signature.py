@@ -39,8 +39,9 @@ def _defs(name, path):
     tested the wrong one.
     """
     src = path.read_text(encoding = "utf-8")
-    found = [n for n in ast.walk(ast.parse(src))
-             if isinstance(n, ast.FunctionDef) and n.name == name]
+    found = [
+        n for n in ast.walk(ast.parse(src)) if isinstance(n, ast.FunctionDef) and n.name == name
+    ]
     return sorted(found, key = lambda n: n.lineno)
 
 
@@ -50,15 +51,14 @@ def _params(node):
 
 def test_both_definitions_exist():
     assert len(_defs("_save_pretrained_merged", ST_PY)) == 2, (
-        "two closures bind this name; both must be fixed or one model path "
-        "keeps the old signature")
+        "two closures bind this name; both must be fixed or one model path keeps the old signature"
+    )
 
 
 @pytest.mark.parametrize("i", [0, 1])
 def test_signature_matches_fastlanguagemodel(i):
     node = _defs("_save_pretrained_merged", ST_PY)[i]
-    assert _params(node)[:4] == ["self", "save_directory", "tokenizer",
-                                 "save_method"]
+    assert _params(node)[:4] == ["self", "save_directory", "tokenizer", "save_method"]
 
 
 @pytest.mark.parametrize("i", [0, 1])
@@ -70,9 +70,9 @@ def test_still_accepts_arbitrary_keywords(i):
 @pytest.mark.parametrize("i", [0, 1])
 def test_defaults_keep_the_old_keyword_call_working(i):
     node = _defs("_save_pretrained_merged", ST_PY)[i]
-    defaults = {a.arg: d for a, d in
-                zip(node.args.args[-len(node.args.defaults):],
-                    node.args.defaults)}
+    defaults = {
+        a.arg: d for a, d in zip(node.args.args[-len(node.args.defaults) :], node.args.defaults)
+    }
     assert isinstance(defaults["tokenizer"], ast.Constant)
     assert defaults["tokenizer"].value is None
     assert defaults["save_method"].value == "merged_16bit"
@@ -83,11 +83,11 @@ def test_the_reference_signature_is_what_we_matched():
     two have to move with it, and the test should say so."""
     node = _defs("unsloth_save_pretrained_merged", SAVE_PY)
     assert node, "unsloth_save_pretrained_merged not found"
-    assert _params(node[0])[:4] == ["self", "save_directory", "tokenizer",
-                                    "save_method"]
+    assert _params(node[0])[:4] == ["self", "save_directory", "tokenizer", "save_method"]
 
 
 # ---- save_method is honoured, not swallowed -------------------------------
+
 
 def test_merge_and_unload_path_refuses_an_unsupported_method():
     src = ST_PY.read_text(encoding = "utf-8")
@@ -116,11 +116,11 @@ def test_an_explicit_tokenizer_is_not_shadowed_by_kwargs(i):
 
 # ---- behavioural check with a stand-in ------------------------------------
 
+
 def _extract_helper(name):
     """Pull a module-level helper out by source, so nothing imports unsloth."""
     src = ST_PY.read_text(encoding = "utf-8")
-    node = [n for n in ast.parse(src).body
-            if isinstance(n, ast.FunctionDef) and n.name == name]
+    node = [n for n in ast.parse(src).body if isinstance(n, ast.FunctionDef) and n.name == name]
     assert node, f"{name} not found in sentence_transformer.py"
     ns = {}
     exec(ast.get_source_segment(src, node[0]), ns)
@@ -135,14 +135,15 @@ def _extract(i):
     src = ST_PY.read_text(encoding = "utf-8")
     node = _defs("_save_pretrained_merged", ST_PY)[i]
     import textwrap
+
     branding = []
     ns = {
         "os": __import__("os"),
         "print": lambda *a, **k: None,
         "_normalize_save_method": _normalize_save_method,
         "FastSentenceTransformer": type(
-            "F", (), {"_add_unsloth_branding":
-                      staticmethod(lambda d: branding.append(d))}),
+            "F", (), {"_add_unsloth_branding": staticmethod(lambda d: branding.append(d))}
+        ),
     }
     exec(textwrap.dedent(ast.get_source_segment(src, node)), ns)
     return ns["_save_pretrained_merged"], branding
@@ -158,6 +159,7 @@ class _Tok:
 
 class _Inner:
     """The wrapped transformer, whose LoRA gets merged away."""
+
     def __init__(self):
         self.merged = False
         self.saved = []
@@ -182,6 +184,7 @@ class _Module:
 class _FakeST:
     """A SentenceTransformer stand-in: a sequence of modules, module 0 of
     which wraps the transformer."""
+
     def __init__(self, no_modules = False):
         self.tokenizer = _Tok()
         self.saved = []
@@ -246,6 +249,7 @@ def test_unsupported_save_method_raises_not_implemented(tmp_path):
 
 # ---- the no_modules fallback honours save_method too -----------------------
 
+
 def test_no_modules_fallback_refuses_an_unsupported_method(tmp_path):
     """That branch drops save_method and merges unconditionally, so "lora"
     would return full weights for a request to write adapters."""
@@ -276,11 +280,12 @@ def test_the_forwarding_path_still_accepts_lora(tmp_path):
 
 # ---- spellings mean the same thing as in unsloth_save_model ----------------
 
+
 def test_the_reference_normalizes_before_validating():
     """Guards the premise: save.py lowercases and strips spaces first."""
     body = ast.get_source_segment(
-        SAVE_PY.read_text(encoding = "utf-8"),
-        _defs("unsloth_save_model", SAVE_PY)[0])
+        SAVE_PY.read_text(encoding = "utf-8"), _defs("unsloth_save_model", SAVE_PY)[0]
+    )
     assert 'save_method.lower().replace(" ", "_")' in body
 
 

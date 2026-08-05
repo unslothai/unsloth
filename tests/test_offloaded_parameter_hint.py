@@ -42,10 +42,11 @@ class _Model:
 
 
 def _p(device):
-    return torch.nn.Parameter(torch.zeros(2, device=device), requires_grad=False)
+    return torch.nn.Parameter(torch.zeros(2, device = device), requires_grad = False)
 
 
 # ---- fires when it should --------------------------------------------------
+
 
 def test_a_meta_parameter_produces_a_hint():
     m = _Model([("model.layers.0.mlp.down_proj.weight", _p("meta"))])
@@ -84,6 +85,7 @@ def test_a_mix_of_real_and_meta_still_fires():
 
 # ---- stays silent when it should ------------------------------------------
 
+
 def test_a_fully_resident_model_gets_no_hint():
     """The mislabelling risk. An unrelated save failure must not be blamed
     on an offload that never happened."""
@@ -98,6 +100,7 @@ def test_a_model_with_no_parameters_gets_no_hint():
 def test_a_model_without_named_parameters_gets_no_hint():
     class Odd:
         pass
+
     assert _offloaded_parameter_hint(Odd()) == ""
 
 
@@ -107,22 +110,25 @@ def test_none_gets_no_hint():
 
 def test_a_raising_named_parameters_gets_no_hint():
     """A diagnostic must never replace the real error with its own."""
+
     class Boom:
         def named_parameters(self):
             raise RuntimeError("model is in a bad state")
+
     assert _offloaded_parameter_hint(Boom()) == ""
 
 
 def test_a_parameter_with_no_device_does_not_crash():
     class NoDevice:
         device = None
+
     m = _Model([("weird", NoDevice())])
     assert _offloaded_parameter_hint(m) == ""
 
 
 # ---- wiring ---------------------------------------------------------------
 
-SRC = (ROOT / "unsloth" / "save.py").read_text(encoding="utf-8")
+SRC = (ROOT / "unsloth" / "save.py").read_text(encoding = "utf-8")
 
 
 def test_both_save_failure_paths_use_it():
@@ -132,17 +138,21 @@ def test_both_save_failure_paths_use_it():
 
 
 def test_the_original_error_is_still_reported():
-    """The hint is added TO the error, never instead of it."""
-    for anchor in ('f"Failed to save/merge model: {e}"',
-                   'f"Failed to save model: {e}"'):
+    """The hint is added TO the error, never instead of it.
+
+    Anchored on the message text alone, not on a whole string literal: the
+    repo's ruff hook may merge the hint into the same f-string or split it out
+    again, and either shape satisfies what this is actually checking.
+    """
+    for anchor in ("Failed to save/merge model: {e}", "Failed to save model: {e}"):
         i = SRC.index(anchor)
-        assert "_offloaded_parameter_hint" in SRC[i:i + 200]
+        assert "_offloaded_parameter_hint" in SRC[i : i + 200]
 
 
 def test_it_still_raises_runtimeerror():
     """Callers catch RuntimeError; changing the type would break them."""
     i = SRC.index("_offloaded_parameter_hint(self)")
-    assert "raise RuntimeError(" in SRC[max(0, i - 300):i]
+    assert "raise RuntimeError(" in SRC[max(0, i - 300) : i]
 
 
 if __name__ == "__main__":

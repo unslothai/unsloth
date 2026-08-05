@@ -531,8 +531,7 @@ def _preserve_sentencepiece_tokenizer_assets(
                     json.dump(tokenizer_config, file, indent = 2, ensure_ascii = False)
                     file.write("\n")
                 logger.warning_once(
-                    f"Unsloth: Restored added_tokens_decoder metadata in "
-                    f"{tokenizer_config_path}."
+                    f"Unsloth: Restored added_tokens_decoder metadata in {tokenizer_config_path}."
                 )
 
     tokenizer_model = os.path.join(save_directory, "tokenizer.model")
@@ -581,7 +580,7 @@ def _preserve_sentencepiece_tokenizer_assets(
     if not os.path.isfile(tokenizer_model) and downloaded_path is not None:
         shutil.copy2(downloaded_path, tokenizer_model)
         logger.warning_once(
-            f"Unsloth: Preserved sentencepiece asset `tokenizer.model` in " f"{save_directory}."
+            f"Unsloth: Preserved sentencepiece asset `tokenizer.model` in {save_directory}."
         )
 
 
@@ -1158,8 +1157,8 @@ def unsloth_save_model(
     max_ram = int(max(0, max_ram) * maximum_memory_usage)
     print(
         f"Unsloth: Will use up to "
-        f"{round(max_ram/1024/1024/1024, 2)} out of "
-        f"{round(psutil.virtual_memory().total/1024/1024/1024, 2)} RAM for saving."
+        f"{round(max_ram / 1024 / 1024 / 1024, 2)} out of "
+        f"{round(psutil.virtual_memory().total / 1024 / 1024 / 1024, 2)} RAM for saving."
     )
 
     # Move temporary_location to /tmp in Kaggle
@@ -1727,7 +1726,7 @@ def install_llama_cpp_old(version = -10):
         import time
 
         for i in range(30):
-            print(f"**[WARNING]** Deleting llama.cpp directory... {30-i} seconds left.")
+            print(f"**[WARNING]** Deleting llama.cpp directory... {30 - i} seconds left.")
             time.sleep(1)
 
         shutil.rmtree("llama.cpp", ignore_errors = True)
@@ -1747,7 +1746,7 @@ def install_llama_cpp_old(version = -10):
         # Try using MAKE
         commands = [
             "make clean -C llama.cpp",
-            f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
+            f"make all -j{(psutil.cpu_count() or 1) * 2} -C llama.cpp",
         ]
         use_cmake = try_execute(commands) == "CMAKE"
 
@@ -1755,7 +1754,7 @@ def install_llama_cpp_old(version = -10):
         # Use CMAKE
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
-            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1) * 2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
@@ -1799,7 +1798,7 @@ def install_llama_cpp_blocking(use_cuda = False):
             # https://github.com/ggerganov/llama.cpp/issues/7062
             # Weirdly GPU conversion for GGUF breaks??
             # f"{use_cuda} make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
-            f"make all -j{(psutil.cpu_count() or 1)*2} -C llama.cpp",
+            f"make all -j{(psutil.cpu_count() or 1) * 2} -C llama.cpp",
         ]
         use_cmake = try_execute(commands) == "CMAKE"
 
@@ -1807,7 +1806,7 @@ def install_llama_cpp_blocking(use_cuda = False):
         # Use CMAKE
         commands = [
             f"cmake llama.cpp -B llama.cpp/build -DBUILD_SHARED_LIBS=OFF -DGGML_CUDA=OFF {CURL_FLAG}",
-            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1)*2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
+            f"cmake --build llama.cpp/build --config Release -j{(psutil.cpu_count() or 1) * 2} --clean-first --target {' '.join(LLAMA_CPP_TARGETS)}",
             "cp llama.cpp/build/bin/llama-* llama.cpp",
             "rm -rf llama.cpp/build",
         ]
@@ -2041,8 +2040,7 @@ def save_to_gguf(
                 )
             else:
                 raise RuntimeError(
-                    f"Unsloth: Conversion failed for {file}\n"
-                    "Please check disk space and try again."
+                    f"Unsloth: Conversion failed for {file}\nPlease check disk space and try again."
                 )
 
     # Move initial GGUF files into a dedicated _gguf directory
@@ -2109,9 +2107,7 @@ def save_to_gguf(
                 # Same gate as above: a broken quantizer with 19GB free is not
                 # a disk problem, and the outer handler cannot undo an
                 # explanation already baked into this message.
-                if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(
-                    e, gguf_directory
-                ):
+                if IS_KAGGLE_ENVIRONMENT and _gguf_failure_looks_like_disk(e, gguf_directory):
                     raise RuntimeError(
                         f"Unsloth: Quantization failed for {output_location}\n"
                         "You are in a Kaggle environment, which might be the reason this is failing.\n"
@@ -3062,15 +3058,13 @@ def unsloth_save_pretrained_gguf(
     is_peft_model = isinstance(self, PeftModelForCausalLM) or isinstance(self, PeftModel)
 
     if is_peft_model:
-        print(f'Unsloth: Merging model weights to {"mxfp4" if is_gpt_oss else "16-bit"} format...')
+        print(f"Unsloth: Merging model weights to {'mxfp4' if is_gpt_oss else '16-bit'} format...")
         try:
             # Call unsloth_generic_save directly (it's in the same file)
             unsloth_generic_save(**arguments)
 
         except Exception as e:
-            raise RuntimeError(
-                f"Failed to save/merge model: {e}"
-                f"{_offloaded_parameter_hint(self)}")
+            raise RuntimeError(f"Failed to save/merge model: {e}{_offloaded_parameter_hint(self)}")
     else:
         # Non-PEFT model: checkpoint files already exist; point save_to_gguf
         # at the original path instead of re-saving to a temp subdir.
@@ -3093,9 +3087,7 @@ def unsloth_save_pretrained_gguf(
                 if tokenizer is not None:
                     tokenizer.save_pretrained(save_directory)
             except Exception as e:
-                raise RuntimeError(
-                    f"Failed to save model: {e}"
-                    f"{_offloaded_parameter_hint(self)}")
+                raise RuntimeError(f"Failed to save model: {e}{_offloaded_parameter_hint(self)}")
 
     if is_processor:
         tokenizer = tokenizer.tokenizer
@@ -3278,7 +3270,7 @@ _DISK_FULL_PATTERNS = (
 
 # Kaggle allows 20GB. Below this headroom a failed conversion is plausibly
 # about space; above it, blaming disk sends the user nowhere useful.
-_DISK_HEADROOM_BYTES = 2 * 1024 ** 3
+_DISK_HEADROOM_BYTES = 2 * 1024**3
 
 # A SIGKILLed child is 128 + 9 to a shell, so llama-quantize (run through
 # `shell = True`) surfaces as "returned non-zero exit status 137" with no
@@ -4720,9 +4712,9 @@ def _unsloth_save_torchao_with_given_config(
     if push_to_hub:
         assert token is not None, "Unsloth: Please specify a token for uploading!"
 
-    assert (
-        torchao_config is not None
-    ), "Unsloth: Please specify a torchao_config for post-training quantization!"
+    assert torchao_config is not None, (
+        "Unsloth: Please specify a torchao_config for post-training quantization!"
+    )
 
     # first merge the lora weights
     arguments = dict(locals())

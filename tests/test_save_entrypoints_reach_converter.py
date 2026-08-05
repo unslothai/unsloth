@@ -29,7 +29,7 @@ import pytest
 SAVE_PY = Path(__file__).resolve().parents[1] / "unsloth" / "save.py"
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture(scope = "module")
 def tree():
     return ast.parse(SAVE_PY.read_text(encoding = "utf-8"))
 
@@ -55,6 +55,7 @@ def _calls(node):
 
 # ---- the property that broke -------------------------------------------
 
+
 def test_save_pretrained_gguf_calls_the_converter(tree):
     """The whole purpose of the function. Without this call it is an
     expensive no-op that reports success."""
@@ -76,30 +77,30 @@ def test_the_gguf_conversion_is_not_dead_code(tree):
     """
     fn = _func(tree, "unsloth_save_pretrained_gguf")
     assert "save_to_gguf" in _calls(fn)
-    for owner in (n for n in ast.walk(tree)
-                  if isinstance(n, ast.FunctionDef) and n is not fn):
+    for owner in (n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n is not fn):
         if owner.name == "save_to_gguf":
             continue
         assert not _unreachable_calls(owner, "save_to_gguf"), (
             f"a save_to_gguf call is stranded as dead code inside "
-            f"{owner.name} (line {owner.lineno})")
+            f"{owner.name} (line {owner.lineno})"
+        )
 
 
 # ---- the general shape --------------------------------------------------
+
 
 def _unreachable(body):
     """Statements following an unconditional terminator in one block."""
     for i, stmt in enumerate(body):
         if isinstance(stmt, (ast.Return, ast.Raise, ast.Continue, ast.Break)):
-            return body[i + 1:]
+            return body[i + 1 :]
     return []
 
 
 def _unreachable_calls(fn, name):
     for stmt in _unreachable(fn.body):
         for sub in ast.walk(stmt):
-            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) \
-               and sub.func.id == name:
+            if isinstance(sub, ast.Call) and isinstance(sub.func, ast.Name) and sub.func.id == name:
                 return True
     return False
 
@@ -117,8 +118,9 @@ def test_no_function_in_save_py_has_a_stranded_body(tree):
         # A lone trailing `pass` is this codebase's block terminator idiom.
         stranded = [s for s in stranded if not isinstance(s, ast.Pass)]
         if stranded:
-            offenders.append(f"{fn.name} (line {fn.lineno} -> dead code at "
-                             f"line {stranded[0].lineno})")
+            offenders.append(
+                f"{fn.name} (line {fn.lineno} -> dead code at line {stranded[0].lineno})"
+            )
     assert not offenders, "stranded function bodies:\n  " + "\n  ".join(offenders)
 
 
@@ -133,14 +135,17 @@ def test_the_disk_helper_is_a_module_level_function(tree):
 def test_the_disk_helper_is_actually_used(tree):
     """It exists to narrow the Kaggle disk claim; if nothing calls it, that
     claim has silently gone back to being unconditional."""
-    assert "_gguf_failure_looks_like_disk" in _calls(
-        _func(tree, "unsloth_save_pretrained_gguf"))
+    assert "_gguf_failure_looks_like_disk" in _calls(_func(tree, "unsloth_save_pretrained_gguf"))
 
 
 def test_module_still_parses_and_defines_the_public_entry_points(tree):
     names = {n.name for n in tree.body if isinstance(n, ast.FunctionDef)}
-    for required in ("save_to_gguf", "unsloth_save_pretrained_gguf",
-                     "unsloth_push_to_hub_gguf", "unsloth_generic_save"):
+    for required in (
+        "save_to_gguf",
+        "unsloth_save_pretrained_gguf",
+        "unsloth_push_to_hub_gguf",
+        "unsloth_generic_save",
+    ):
         assert required in names, required
 
 
