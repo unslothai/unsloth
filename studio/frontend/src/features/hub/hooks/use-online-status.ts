@@ -12,7 +12,7 @@ import {
   isHuggingFaceOffline,
   subscribeNetworkStatus,
 } from "@/features/hub/lib/network";
-import { useSyncExternalStore } from "react";
+import { useCallback, useSyncExternalStore } from "react";
 
 function getOnlineSnapshot(): boolean {
   return !isHuggingFaceOffline();
@@ -73,10 +73,16 @@ function getDirectOnlineSnapshot(): boolean {
  * block can be per-path, and their own failures are what suppress them, which
  * is also what lets their own success bring them back.
  */
-export function useDirectHubOnline(): boolean {
+export function useDirectHubOnline(origin?: string): boolean {
+  // Pass the origin the caller actually fetches: a client gated on a window its
+  // own failures never arm can neither back off nor recover.
+  const getSnapshot = useCallback(
+    () => (origin === undefined ? getDirectOnlineSnapshot() : !isDirectHubOffline(origin)),
+    [origin],
+  );
   return useSyncExternalStore(
     subscribeOnlineStatus,
-    getDirectOnlineSnapshot,
+    getSnapshot,
     getServerOnlineSnapshot,
   );
 }

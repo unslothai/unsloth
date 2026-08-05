@@ -16,34 +16,55 @@ function read(path: string): Promise<string> {
   return readFile(new URL(path, import.meta.url), "utf8");
 }
 
-const DIRECT_FETCHERS = [
-  "../src/features/hub/lib/hf-owner-avatar.ts",
-  "../src/features/hub/hooks/use-dataset-size.ts",
-  "../src/features/hub/catalog/model-readme.tsx",
+// gate file -> the module that issues its fetch, and the origin that fetch
+// targets. Both halves have to line up or the window is unreachable.
+const DIRECT_CLIENTS = [
+  {
+    gate: "../src/features/hub/lib/hf-owner-avatar.ts",
+    fetcher: "../src/features/hub/lib/hf-owner-avatar.ts",
+    origin: undefined,
+  },
+  {
+    gate: "../src/features/hub/catalog/model-readme.tsx",
+    fetcher: "../src/features/hub/lib/hf-readme.ts",
+    origin: undefined,
+  },
+  {
+    gate: "../src/features/hub/hooks/use-dataset-size.ts",
+    fetcher: "../src/features/hub/lib/dataset-size.ts",
+    origin: "DATASETS_SERVER_ORIGIN",
+  },
 ];
 
-test("every direct asset fetcher records its failures as 'other'", async () => {
-  for (const path of DIRECT_FETCHERS) {
-    const src = await read(path);
-    const producer =
-      src.includes('service: "other"') ||
-      src.includes("fetchReadme") ||
-      src.includes("fetchDatasetSize");
-    assert.ok(producer, `${path} must arm the window it is gated on`);
+test("the module behind each gate really tags its failures 'other'", async () => {
+  for (const { gate, fetcher } of DIRECT_CLIENTS) {
+    const src = await read(fetcher);
+    // Asserted on the module that calls fetchWithTimeout, not on the gate: the
+    // gate merely imports it, so a name check there passes on the import line
+    // alone and pins nothing.
+    assert.ok(
+      src.includes('service: "other"'),
+      `${fetcher} arms no "other" window, so ${gate} could never back off`,
+    );
   }
 });
 
-test("and gates itself on that window, not the origin-wide flag", async () => {
-  for (const path of DIRECT_FETCHERS) {
-    const src = await read(path);
+test("and each gate reads the origin its own fetch targets", async () => {
+  for (const { gate, origin } of DIRECT_CLIENTS) {
+    const src = await read(gate);
     assert.ok(
       src.includes("useDirectHubOnline"),
-      `${path} must keep fetching when only the catalog listing is blocked`,
+      `${gate} must keep fetching when only the catalog listing is blocked`,
     );
     assert.ok(
       !/\buseOnlineStatus\b/.test(src),
-      `${path} would stop fetching over a dead listing, and never re-arm`,
+      `${gate} would stop fetching over a dead listing, and never re-arm`,
     );
+    if (origin) {
+      // The default is the Hub's origin, which this client never fetches, so it
+      // would read a window nothing it does can arm or clear.
+      assert.match(src, new RegExp(`useDirectHubOnline\\(${origin}\\)`), gate);
+    }
   }
 });
 

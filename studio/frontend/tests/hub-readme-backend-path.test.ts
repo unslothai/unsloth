@@ -43,7 +43,7 @@ test("relative assets resolve against the configured endpoint", async () => {
 
 test("the card's load effect is not gated off when the backend can serve it", async () => {
   const src = await read("../src/features/hub/catalog/model-readme.tsx");
-  // online is !isHuggingFaceOffline(), which the proxy sets true precisely when
+  // online is !isDirectHubOffline(), which the proxy sets true precisely when
   // the backend route is the one that works. Gating on it alone showed the
   // unavailable card over a card we could fetch.
   assert.match(src, /if \(!online && !readmeViaBackend\(\)\) return;/);

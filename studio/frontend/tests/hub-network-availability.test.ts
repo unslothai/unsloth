@@ -424,13 +424,16 @@ test("a blocked catalog does not suppress the direct asset clients", async () =>
     origin: HF,
     retryable: true,
   };
-  // A per-path block: /api/models is dead, avatars and raw files answer.
+  // A per-path block: /api/models is dead, avatars and raw files answer. The
+  // quant list is deliberately not on this predicate: it is served by our own
+  // backend, whose reachability a browser-side block says nothing about, and it
+  // arms no window here, so it stays on the origin-wide flag.
   markRemoteNetworkOffline(HF, 30_000, feedFailure, "discovery");
   assert.equal(getHubPhase(HF, "discovery"), "unavailable");
   assert.equal(
     isDirectHubOffline(),
     false,
-    "the quant list and repo card must not go local-only over a dead listing",
+    "the repo card must not go local-only over a dead listing",
   );
 
   // Their own failure is what suppresses them, and their own success releases it.

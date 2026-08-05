@@ -11,6 +11,7 @@ const REMOTE_OFFLINE_TTL_MS = 30_000;
 // Keep optional services such as datasets-server separate so an outage there
 // cannot make the whole Hub appear offline.
 const HUGGING_FACE_ORIGIN = "https://huggingface.co";
+export const DATASETS_SERVER_ORIGIN = "https://datasets-server.huggingface.co";
 const noopUnsubscribe = () => undefined;
 
 type RemoteNetworkScope = string | readonly string[];
@@ -163,11 +164,15 @@ export function isRemoteNetworkOffline(
  * the listing can be dead while everything else answers, and their own success
  * is what clears this.
  */
-export function isDirectHubOffline(): boolean {
+export function isDirectHubOffline(
+  origin: string = HUGGING_FACE_ORIGIN,
+): boolean {
+  // The flags are about this browser reaching the Hub at all, which is the same
+  // block class that would stop datasets-server, so they apply to any origin.
   if (hubProxyServing || directHubBlocked) {
     return true;
   }
-  return isRemoteNetworkOffline(HUGGING_FACE_ORIGIN, "other");
+  return isRemoteNetworkOffline(origin, "other");
 }
 
 export function isHuggingFaceOffline(): boolean {
