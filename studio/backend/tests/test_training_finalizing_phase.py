@@ -156,9 +156,9 @@ def test_completion_still_comes_only_from_is_completed():
     assert completed_branch, "no completed branch found"
     preceding = fn_src[: completed_branch.start()]
     # The guard immediately governing `completed` must still be is_completed.
-    assert "is_completed" in preceding.rsplit("elif", 1)[-1], (
-        "the `completed` phase is no longer gated on progress.is_completed"
-    )
+    assert (
+        "is_completed" in preceding.rsplit("elif", 1)[-1]
+    ), "the `completed` phase is no longer gated on progress.is_completed"
     # And `finalizing` must sit inside the is_active branch, never after it.
     assert fn_src.index('phase = "finalizing"') < completed_branch.start()
 

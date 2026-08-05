@@ -66,9 +66,9 @@ def test_an_unresumable_status_explains_itself(resources_available):
     blocker = resource_provenance_resume_blocker(config)
 
     assert blocker, "a refused resume must carry a reason"
-    assert "checkpoint" not in blocker.lower(), (
-        "the checkpoint is intact here; naming it sends the user after the wrong thing"
-    )
+    assert (
+        "checkpoint" not in blocker.lower()
+    ), "the checkpoint is intact here; naming it sends the user after the wrong thing"
     assert "failed" in blocker
     assert resource_provenance_allows_resume(config) is False
 
