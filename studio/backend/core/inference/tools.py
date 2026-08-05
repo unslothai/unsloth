@@ -2159,24 +2159,29 @@ def _find_blocked_commands(command: str) -> set[str]:
             # shell sees only as an argument. Gated on the shell itself being
             # run, exactly as the payload scan below is, so a shell NAMED in
             # passing still publishes nothing.
+            # Read exactly as the payload scan reads it: a unix -c belongs to a
+            # unix shell, a windows /c to cmd, and only /c steps over a short
+            # /x flag. Publishing a position that scan would not read is a
+            # command position nothing justifies.
             tok_lower = token.lower()
-            is_c = tok_lower == "-c" or (
+            is_unix_c = tok_lower == "-c" or (
                 tok_lower.startswith("-")
                 and tok_lower.endswith("c")
                 and not tok_lower.startswith("--")
             )
-            is_c = is_c or _win_switch(tok_lower) in ("/c", "/k")
-            if not is_c or i < 1 or i + 1 >= len(tokens):
+            is_win_c = _win_switch(tok_lower) in ("/c", "/k")
+            if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
                 continue
             for j in range(i - 1, -1, -1):
                 prev = tokens[j]
                 if prev.startswith("-"):
                     continue
-                if prev.startswith("/") and len(prev) <= 3:
+                if is_win_c and prev.startswith("/") and len(prev) <= 3:
                     continue
                 if j not in command_indexes:
                     break
-                if _token_basename(_unquote(prev).replace("\\", "/")) in _SHELLS | _SHELLS_WIN:
+                prev_base = _token_basename(_unquote(prev).replace("\\", "/"))
+                if (is_unix_c and prev_base in _SHELLS) or (is_win_c and prev_base in _SHELLS_WIN):
                     command_indexes.add(i + 1)
                 break
         if len(command_indexes) == discovered:
