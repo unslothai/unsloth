@@ -871,3 +871,18 @@ def test_an_empty_pair_is_read_by_where_it_sits(monkeypatch):
     assert "powershell" in tools._find_blocked_commands('cmd //c start "" ""cmd /c powershell""')
     assert not tools._find_blocked_commands('xargs "" rm')
     assert not tools._find_blocked_commands('find . -exec "" rm ;')
+
+
+def test_an_earlier_pair_does_not_vouch_for_a_later_one(monkeypatch):
+    # Gluing is a fact about one position, so it is asked positionally. Searching
+    # the line for the two spellings joined let the `""rm` echoes here vouch for
+    # the `"" rm` after them, which is a separate command that runs nothing.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert not tools._find_blocked_commands('echo ""rm && xargs "" rm')
+    assert "powershell" in tools._find_blocked_commands('echo hi && ""cmd /c powershell""')

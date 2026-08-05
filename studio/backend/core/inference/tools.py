@@ -1609,6 +1609,35 @@ def _find_blocked_commands(command: str) -> set[str]:
             base = stem
         return base
 
+    def _whitespace_chunks() -> "list[int] | None":
+        """For each token, the index of the whitespace-delimited word it came
+        from, or ``None`` when the two passes do not line up.
+
+        Lexing each word on its own and counting what it yields is enough to
+        recover the boundaries the token list threw away, and the total is
+        checked against the real lex so a word that lexes differently in
+        isolation reports nothing rather than a wrong answer.
+        """
+        owners: "list[int]" = []
+        for position, chunk in enumerate(command.split()):
+            try:
+                if lex_mode == "posix":
+                    lexer = shlex.shlex(chunk, posix = True, punctuation_chars = ";&|()`")
+                    lexer.whitespace_split = True
+                    produced = len(list(lexer))
+                elif lex_mode == "cmd":
+                    produced = len(shlex.split(chunk, posix = False))
+                else:
+                    produced = 1
+            except ValueError:
+                return None
+            owners.extend([position] * produced)
+        return owners if len(owners) == len(tokens) else None
+
+    # Built at most once, and only when a quote-only word actually asks: it costs
+    # a second lex of every word, and almost no command holds one.
+    chunk_cache: "list[list[int] | None]" = []
+
     def _glued_empty_quotes(index: int) -> bool:
         """Whether ``tokens[index]`` is an empty quoted pair the shell would have
         collapsed INTO the word after it.
@@ -1621,9 +1650,18 @@ def _find_blocked_commands(command: str) -> set[str]:
         whitespace between them, which only the raw text still has.
         """
         token = tokens[index]
-        if not token or token.strip('"'):
+        if not token or token.strip('"') or index + 1 >= len(tokens):
             return False
-        return index + 1 < len(tokens) and token + tokens[index + 1] in command
+        if not chunk_cache:
+            chunk_cache.append(_whitespace_chunks())
+        chunk_of = chunk_cache[0]
+        if chunk_of is None:
+            return False
+        # Same whitespace-delimited word means the shell never separated them.
+        # Asked positionally rather than by searching the line for the two
+        # spellings joined: an earlier `echo ""rm` would otherwise vouch for a
+        # later `xargs "" rm`, which is a different command entirely.
+        return chunk_of[index] == chunk_of[index + 1]
 
     def _exec_child_index(start: int) -> "tuple[int, bool]":
         """The command a `find -exec` actually runs, as ``(index, overflowed)``;
