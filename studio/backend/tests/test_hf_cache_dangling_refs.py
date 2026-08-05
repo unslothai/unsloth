@@ -3397,6 +3397,29 @@ def test_shards_whose_index_never_landed_do_not_stand_in_for_the_whole_weight(tm
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
 
 
+@pytest.mark.parametrize(
+    "default_name", ["diffusion_pytorch_model.safetensors", "diffusion_pytorch_model.bin"]
+)
+def test_an_ignored_index_cannot_claim_the_default_weight(default_name, tmp_path):
+    """A map naming the file a default load opens does not hide it.
+
+    Every index that gets to claim shards here is one ``_fetch_index_file`` never builds, so a
+    stale or malformed ``.bin`` map naming the default weight would otherwise suppress the only
+    file ``_get_model_file`` asks for and report a loadable component torn.
+    """
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            f"transformer/{default_name}": b"\0" * 256,
+            "transformer/diffusion_pytorch_model.bin.index.json": json.dumps(
+                {"weight_map": {"a": default_name}}
+            ).encode(),
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
 def test_an_unsharded_dtype_twin_alone_is_not_the_default_weight(tmp_path):
     """The same rule with no index in sight: the twin a ``variant = "fp16"`` load left behind is
     the only weight here, and the default load this app issues cannot open it."""

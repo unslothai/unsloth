@@ -1499,6 +1499,11 @@ def _current_revisions(repo_info):
 # check so the two cannot drift into disagreeing about the same directory.
 _DENOISER_DIRS = ("transformer", "unet")
 _DENOISER_WEIGHT_SUFFIXES = (".safetensors", ".bin")
+# The two names a default load can end up opening at the component root: the safetensors one
+# _get_model_file is asked for first, and the .bin the pickle fallback under it drops to.
+_DEFAULT_DENOISER_WEIGHTS = frozenset(
+    f"diffusion_pytorch_model{suffix}" for suffix in _DENOISER_WEIGHT_SUFFIXES
+)
 # The one sharded index a default load resolves: use_safetensors unset coerces to True, and
 # _fetch_index_file then builds only _add_variant(SAFE_WEIGHTS_INDEX_NAME, variant), so with
 # variant unset this exact name. Our load path passes neither (core/inference/{diffusion,video}.py).
@@ -1640,6 +1645,12 @@ def _component_weights_complete(component: Path) -> bool:
             relative = entry.relative_to(component).as_posix()
         except ValueError:  # not under the component after symlink resolution
             continue
+        # An ignored index does not get to speak for the one name a default load resolves. Every
+        # index that reached ``claimed`` is one ``_fetch_index_file`` never builds, so a stale or
+        # malformed map of its own naming ``diffusion_pytorch_model.safetensors`` would otherwise
+        # hide the very file ``_get_model_file`` opens, and a loadable component would read torn.
+        if relative in _DEFAULT_DENOISER_WEIGHTS:
+            return True
         if relative not in claimed and entry.name not in claimed:
             return True
     return False
