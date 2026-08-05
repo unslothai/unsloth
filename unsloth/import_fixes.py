@@ -493,25 +493,31 @@ def _transformers_configs_are_kw_only(PretrainedConfig):
 
 
 def _transformers_needs_bare_annotation_fix():
-    """Is transformers inside 5.4.0 to 5.5.0, the only window that has the
-    dataclass ordering rule and no `kw_only=True`?
+    """Does defining a bare-annotation config subclass actually raise here?
 
-    A version this cannot read or parse answers False. Without positive
-    evidence that the install needs the patch, the better failure is the loud
-    `TypeError` the patch would have prevented, not a config that quietly
-    accepts a missing required field.
+    Asked by trying it, not by version. The rule arrived in 5.4.0 and
+    `kw_only=True` retired it in 5.5.1, but that was a backport (5.5 branch and
+    main separately), so a version window mislabels any distro that carries it
+    early or late, and says nothing about a future release that brings it back.
+
+    Without positive evidence the install needs patching, answer False: the
+    better failure is the loud `TypeError` the patch would have prevented, not
+    a config that quietly accepts a missing required field.
     """
     try:
-        import transformers
-
-        # TrueVersion, not this module's Version(): that wrapper raises on
-        # anything its regex cannot match, and it rewrites pre-release
-        # suffixes upwards, which moves builds across the window edges.
-        installed = TrueVersion(str(transformers.__version__))
+        from transformers.configuration_utils import PretrainedConfig
     except Exception:
         return False
-    # Half open: 5.5.0.post1 and other 5.5.0 rebuilds still need the fix.
-    return TrueVersion("5.4.0") <= installed < TrueVersion("5.5.1")
+    try:
+        # Exactly the shape vLLM defines: a default, then a bare annotation.
+        # `__init_subclass__` is what raises, so creating the class is the probe.
+        type("_UnslothProbeConfig", (PretrainedConfig,),
+             {"__annotations__": {"a": int, "b": int}, "a": 0})
+    except TypeError:
+        return True
+    except Exception:
+        return False
+    return False
 
 
 def fix_transformers5_bare_annotation_configs():

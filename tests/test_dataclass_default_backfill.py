@@ -37,6 +37,7 @@ def _load_module():
 _MODULE = _load_module()
 _backfill_dataclass_defaults = _MODULE._backfill_dataclass_defaults
 _transformers_configs_are_kw_only = _MODULE._transformers_configs_are_kw_only
+ifx = _MODULE  # the module itself, for monkeypatching its internals
 
 
 def test_an_inherited_default_is_not_shadowed():
@@ -141,11 +142,41 @@ def test_unreadable_source_on_5_5_1_stands_down(monkeypatch):
     assert _transformers_configs_are_kw_only(_config_without_readable_source())
 
 
-def test_unreadable_source_inside_the_window_still_patches(monkeypatch):
-    """5.4.0 to 5.5.0 is where the fix is needed, source readable or not."""
-    for version in ("5.4.0", "5.5.0", "5.5.0.post1"):
+def test_unreadable_source_falls_back_to_probing_the_behaviour(monkeypatch):
+    """With no source to read, ask the installed transformers by trying it.
+
+    Deliberately not a version check: the ordering rule was backported, so a
+    number labels the wrong builds. A config that raises needs the fix.
+    """
+    monkeypatch.setattr(
+        ifx, "_transformers_needs_bare_annotation_fix", lambda: True,
+    )
+    assert not _transformers_configs_are_kw_only(_config_without_readable_source())
+    monkeypatch.setattr(
+        ifx, "_transformers_needs_bare_annotation_fix", lambda: False,
+    )
+    assert _transformers_configs_are_kw_only(_config_without_readable_source())
+
+
+def test_the_probe_answers_from_the_class_not_the_version(monkeypatch):
+    """The regression this replaced: faking `transformers.__version__` used to
+    change the answer. It must not, or a backported install is mislabelled."""
+    for version in ("5.4.0", "5.5.0", "5.5.0.post1", "4.57.6", "9.9.9"):
         _pretend_transformers_is(monkeypatch, version)
-        assert not _transformers_configs_are_kw_only(_config_without_readable_source()), version
+        assert ifx._transformers_needs_bare_annotation_fix() is False, version
+
+
+def test_the_probe_detects_a_config_that_raises(monkeypatch):
+    """A transformers whose `__init_subclass__` rejects the bare-annotation
+    shape is exactly what the fix exists for, whatever it calls itself."""
+    class Raising:
+        def __init_subclass__(cls, **kwargs):
+            raise TypeError("non-default argument follows default argument")
+
+    module = types.ModuleType("transformers.configuration_utils")
+    module.PretrainedConfig = Raising
+    monkeypatch.setitem(sys.modules, "transformers.configuration_utils", module)
+    assert ifx._transformers_needs_bare_annotation_fix() is True
 
 
 def test_an_unreadable_version_does_not_raise(monkeypatch):
