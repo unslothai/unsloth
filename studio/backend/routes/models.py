@@ -3191,6 +3191,7 @@ async def get_gguf_variants(
                     downloaded = bool(v.downloaded),
                     update_available = bool(getattr(v, "update_available", False)),
                     partial = bool(getattr(v, "partial", False)),
+                    cleanable = bool(getattr(v, "cleanable", False)),
                 )
                 for v in response.variants
             ],

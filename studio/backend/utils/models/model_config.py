@@ -1868,13 +1868,28 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
                 continue
             gguf_files.append(f)
         gguf_files.sort(key = lambda f: f.stat().st_size, reverse = True)
+
         # A torn split sorts by its lone shard's size and cannot load; prefer
         # any complete candidate, keeping the old pick when nothing is whole.
-        whole = [
-            f
-            for f in gguf_files
-            if _GGUF_SPLIT_FILE_RE.match(f.name) is None or _colocated_first_split_shard(f)[1]
-        ]
+        def _split_is_whole(f: Path) -> bool:
+            if _GGUF_SPLIT_FILE_RE.match(f.name) is None:
+                return True
+            if _colocated_first_split_shard(f)[1]:
+                return True
+            # _local_gguf_load_path follows a shard symlink and launches the
+            # target's set, so the alias's own empty directory proves nothing.
+            try:
+                if not f.is_symlink():
+                    return False
+                target = f.resolve()
+            except OSError:
+                return True
+            return (
+                _GGUF_SPLIT_FILE_RE.match(target.name) is None
+                or _colocated_first_split_shard(target)[1]
+            )
+
+        whole = [f for f in gguf_files if _split_is_whole(f)]
         if whole:
             gguf_files = whole
         if gguf_files:

@@ -528,7 +528,11 @@ def _mark_empty_dir_cleanables(
             variants[i] = v.model_copy(update = {"partial": True})
     for key, label in sorted(empty_by_key.items()):
         if key not in listed:
-            variants.append(GgufVariantDetail(filename = f"{label}.gguf", quant = label, partial = True))
+            variants.append(
+                GgufVariantDetail(
+                    filename = f"{label}.gguf", quant = label, partial = True, cleanable = True
+                )
+            )
     return response.model_copy(update = {"variants": variants})
 
 
@@ -595,12 +599,19 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
             if (m := pattern.match(p.name)) and p.is_file() and p.stat().st_size > 0
         }
 
-    def _pattern_for(name: str):
-        """The sibling pattern for *name*, or None when it is not a split."""
-        m = _DIRECT_SPLIT_RE.match(name.rsplit(".", 1)[0])
-        if m is None or int(m.group("total")) != total:
-            return None
-        return re.compile(
+    def _target_set_is_whole(target: Path) -> bool:
+        """Whether the symlink target's own declared set is beside it.
+
+        The target names its own shard grammar and total, which need not match
+        the alias's: the load launches whatever the target declares.
+        """
+        m = _DIRECT_SPLIT_RE.match(target.name.rsplit(".", 1)[0])
+        if m is None:
+            # A link that names a split but points at an ordinary file; the
+            # load launches that file as-is, so nothing is missing.
+            return True
+        target_total = int(m.group("total"))
+        pattern = re.compile(
             re.escape(m.group("stem"))
             + r"-(\d{"
             + str(len(m.group("index")))
@@ -609,19 +620,15 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
             + r"\.gguf$",
             re.IGNORECASE,
         )
+        return _indexes_beside(target, pattern) >= set(range(1, target_total + 1))
 
     try:
         found = _indexes_beside(path, sibling)
         if not found >= set(range(1, total + 1)) and path.is_symlink():
             # _local_gguf_load_path names the target's siblings from the
-            # TARGET, so an alias whose stem differs still loads its real set.
-            target = path.resolve()
-            target_pattern = _pattern_for(target.name)
-            if target_pattern is None:
-                # The link names a split but points at an ordinary file, which
-                # _local_gguf_load_path launches as-is; nothing to complete.
-                return True
-            found |= _indexes_beside(target, target_pattern)
+            # TARGET, so an alias whose stem or total differs still loads its
+            # real set -- and a torn target set is still torn.
+            return _target_set_is_whole(path.resolve())
     except OSError:
         return True
     # The declared indexes, not a count: a stray over-indexed shard must not

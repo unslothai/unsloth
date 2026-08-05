@@ -1846,7 +1846,7 @@ def _direct_gguf_file_is_ready(path: str) -> bool:
         if match is None:
             return None
         total = int(match.group("total"))
-        if not 1 < total <= 1000:
+        if total < 2:
             return None
         sibling = re.compile(
             re.escape(match.group("stem"))
@@ -2111,6 +2111,27 @@ def _attach_gguf_check_for_codex(
         except Exception:
             continue
         variants = info.get("variants") if isinstance(info, dict) else None
+        if isinstance(variants, list):
+            # A cleanable row is an empty leftover <quant>/ folder the listing
+            # itself does not have: it offers a delete, never weights, so it
+            # cannot stand in for an answer that a load would find something.
+            variants = [
+                row for row in variants if not (isinstance(row, dict) and row.get("cleanable"))
+            ]
+        # The load uses a bare single-segment name only when it resolves
+        # locally; otherwise it canonicalizes to unsloth/<name>. So a raw
+        # answer the server itself calls non-local settles nothing about the
+        # model that will actually load, empty or not. Only a server that
+        # reports the flag can tell us that: without it the raw answer is the
+        # server's own resolution and still the best evidence there is.
+        if (
+            "/" not in candidate
+            and candidate != candidates[-1]
+            and isinstance(info, dict)
+            and "resolved_locally" in info
+            and not info["resolved_locally"]
+        ):
+            continue
         if isinstance(variants, list) and variants:
             # The load resolves the quant only after it has torn the resident
             # model down (llama.cpp kills the old process, then downloads), so

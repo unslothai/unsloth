@@ -6600,6 +6600,52 @@ def test_codex_attach_check_defers_companion_paths_with_a_variant(monkeypatch, c
     assert "Codex needs a GGUF model" in capsys.readouterr().err
 
 
+def test_codex_attach_check_ignores_cleanable_only_answers(monkeypatch, capsys):
+    # A cleanable row offers deleting an empty leftover folder; the listing has
+    # no such weights, so it cannot prove the load would find any.
+    _fake_variants(
+        monkeypatch,
+        {"variants": [{"quant": "Q4_K_M", "partial": True, "cleanable": True}]},
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "owner/no-gguf")
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
+    # A real listed row beside it still answers.
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [
+                {"quant": "Q8_0", "partial": True, "cleanable": True},
+                {"quant": "Q4_K_M"},
+            ]
+        },
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "owner/has-gguf")
+
+
+def test_codex_attach_check_follows_bare_names_the_server_calls_remote(monkeypatch):
+    # The load uses a bare name only when it resolves locally, so an answer the
+    # server itself marks non-local must not settle the shorthand.
+    urls = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        urls.append(url)
+        if "unsloth" in url:
+            return {"variants": [{"quant": "Q4_K_M"}], "resolved_locally": False}
+        return {"variants": [], "resolved_locally": False}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "Qwen3-0.6B-GGUF")
+    assert len(urls) == 2 and "unsloth%2FQwen3-0.6B-GGUF" in urls[1]
+
+
 def test_codex_attach_check_trusts_the_servers_loadable_answer(monkeypatch, capsys):
     # The server can answer with the load resolver itself; when it does, that
     # settles the round and no filename grammar of ours overrides it.

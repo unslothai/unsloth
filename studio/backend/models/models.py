@@ -149,6 +149,11 @@ class GgufVariantDetail(BaseModel):
         "already computes it; carry it through so callers can hide a quant whose shards "
         "are incomplete instead of offering one that cannot load.",
     )
+    cleanable: bool = Field(
+        False,
+        description = "Row exists only to offer deleting an empty leftover <quant>/ folder; "
+        "the listing has no such weights, so it never proves a load would find any.",
+    )
 
 
 class GgufVariantsResponse(BaseModel):

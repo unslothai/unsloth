@@ -34,6 +34,13 @@ class GgufVariantDetail(BaseModel):
         False,
         description = "Whether this variant has an in-progress (.incomplete) blob in cache",
     )
+    cleanable: bool = Field(
+        False,
+        description = (
+            "Row exists only to offer deleting an empty leftover <quant>/ folder; the "
+            "listing has no such weights, so it never proves a load would find any"
+        ),
+    )
     partial_transport: Optional[str] = Field(
         None,
         description = (

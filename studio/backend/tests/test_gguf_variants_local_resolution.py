@@ -386,6 +386,45 @@ def test_parent_quant_short_shard_reads_ready(in_tmp_cwd):
     assert empty_row.downloaded is False and empty_row.partial is True
 
 
+def test_symlinked_split_target_with_a_different_total_is_checked(in_tmp_cwd):
+    # The target declares its own grammar and total; the load launches that
+    # set, so a torn target is torn however the alias is spelled.
+    real = in_tmp_cwd / "real"
+    real.mkdir()
+    (real / "m-Q4_K_M-00001-of-00003.gguf").write_bytes(b"GGUF")
+    links = in_tmp_cwd / "links"
+    links.mkdir()
+    alias = links / "alias-Q4_K_M-00001-of-00002.gguf"
+    alias.symlink_to(real / "m-Q4_K_M-00001-of-00003.gguf")
+
+    torn = _variants(os.fspath(alias)).variants[0]
+    assert torn.downloaded is False and torn.partial is True
+
+    # Completing the target's own set makes it ready.
+    (real / "m-Q4_K_M-00002-of-00003.gguf").write_bytes(b"GGUF")
+    (real / "m-Q4_K_M-00003-of-00003.gguf").write_bytes(b"GGUF")
+    whole = _variants(os.fspath(alias)).variants[0]
+    assert whole.downloaded is True and whole.partial is False
+
+
+def test_variantless_pick_keeps_a_symlinked_whole_split(in_tmp_cwd):
+    # A shard symlink whose target set is complete is loadable, so it must stay
+    # a candidate rather than being dropped for another quant.
+    from utils.models.model_config import detect_gguf_model
+
+    real = in_tmp_cwd / "real"
+    real.mkdir()
+    (real / "big-Q8_0-00001-of-00002.gguf").write_bytes(b"GGUF" * 100)
+    (real / "big-Q8_0-00002-of-00002.gguf").write_bytes(b"GGUF" * 100)
+    marked = in_tmp_cwd / "m"
+    marked.mkdir()
+    (marked / "config.json").write_text("{}")
+    (marked / "small-Q4_K_M.gguf").write_bytes(b"GGUF")
+    (marked / "big-Q8_0-00001-of-00002.gguf").symlink_to(real / "big-Q8_0-00001-of-00002.gguf")
+
+    assert detect_gguf_model(os.fspath(marked)).endswith("big-Q8_0-00001-of-00002.gguf")
+
+
 def test_split_named_symlink_to_a_plain_target_is_ready(in_tmp_cwd):
     # The load follows the link and launches the ordinary target, so the
     # alias's split-shaped name completes nothing.
