@@ -837,10 +837,19 @@ class DiffusionBackend:
         if not isinstance(try_to_load_from_cache(repo_id, gguf_filename, cache_dir = cache_dir), str):
             # Same other-root reuse as the pre-quant checkpoint: a copy under the import-time root
             # is one hf_hub_download will not look for, and re-fetching it is the download this
-            # pins the root to avoid.
+            # pins the root to avoid. Reached THROUGH that root rather than returned raw, so the
+            # ref is still resolved and a republished GGUF under the same name is picked up; the
+            # blob is reused, so nothing is re-fetched when it has not changed, and offline the
+            # HEAD failure is swallowed and the cached pointer comes back anyway. Any other
+            # failure falls back to the path already found, so this cannot break a working load.
             elsewhere = try_to_load_from_cache(repo_id, gguf_filename, cache_dir = None)
             if isinstance(elsewhere, str) and Path(elsewhere).is_file():
-                return elsewhere
+                try:
+                    return hf_hub_download(
+                        repo_id, gguf_filename, token = hf_token, cache_dir = None
+                    )
+                except Exception:  # noqa: BLE001 — revalidation is a bonus, never a new failure
+                    return elsewhere
         return hf_hub_download(repo_id, gguf_filename, token = hf_token, cache_dir = cache_dir)
 
     def _dense_quant_prefetch_needed(self, fam: DiffusionFamily, kwargs: dict) -> bool:

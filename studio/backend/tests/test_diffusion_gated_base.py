@@ -498,7 +498,9 @@ def test_the_gguf_is_resolved_against_the_live_cache_root(monkeypatch, tmp_path)
     b._resolve_gguf_path("unsloth/Z-Image-Turbo-GGUF", "z.gguf", None)
     assert calls == [str(live)]
 
-    # A copy under the OTHER root is reused rather than re-fetched: pinning alone would miss it.
+    # A copy under the OTHER root is reached THROUGH that root, not returned raw: the blob is
+    # reused so nothing is re-fetched, but the ref still resolves, so a republished GGUF under the
+    # same filename is picked up instead of pinned forever.
     other = tmp_path / "other" / "z.gguf"
     other.parent.mkdir(parents = True)
     other.write_bytes(b"gguf")
@@ -507,8 +509,16 @@ def test_the_gguf_is_resolved_against_the_live_cache_root(monkeypatch, tmp_path)
         "huggingface_hub.try_to_load_from_cache",
         lambda repo_id, filename, cache_dir = None, **k: None if cache_dir else str(other),
     )
+    b._resolve_gguf_path("unsloth/Z-Image-Turbo-GGUF", "z.gguf", None)
+    assert calls == [None]  # revalidated through the root holding the copy, never the live one
+
+    # Revalidation is a bonus, never a new failure: offline, the path already found is returned.
+    calls.clear()
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("offline")),
+    )
     assert b._resolve_gguf_path("unsloth/Z-Image-Turbo-GGUF", "z.gguf", None) == str(other)
-    assert calls == []  # not one byte re-downloaded
 
 
 def test_a_private_but_already_downloaded_base_is_not_refused(monkeypatch):
