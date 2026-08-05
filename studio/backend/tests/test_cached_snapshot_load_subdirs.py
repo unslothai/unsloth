@@ -35,7 +35,11 @@ def cache_root(tmp_path, monkeypatch):
     return root
 
 
-def _snapshot(cache_root, repo_id: str, revision: str = "a" * 40):
+def _snapshot(
+    cache_root,
+    repo_id: str,
+    revision: str = "a" * 40,
+):
     """Build a real models--org--name/snapshots/<rev> cache layout."""
     repo_dir = cache_root / f"models--{repo_id.replace('/', '--')}"
     snapshot = repo_dir / "snapshots" / revision
@@ -64,9 +68,7 @@ def bicodec_subdirs(monkeypatch):
     return fake_subdirs
 
 
-def test_a_cached_bicodec_snapshot_resolves_from_its_llm_load_root(
-    cache_root, bicodec_subdirs
-):
+def test_a_cached_bicodec_snapshot_resolves_from_its_llm_load_root(cache_root, bicodec_subdirs):
     _, snapshot = _snapshot(cache_root, _REPO)
     # Exactly the real layout: nothing loadable at the root, everything under LLM/.
     (snapshot / "config.yaml").write_text("sample_rate: 16000\n")
@@ -84,27 +86,18 @@ def test_a_cached_bicodec_snapshot_resolves_from_its_llm_load_root(
 def test_the_pin_helper_expands_only_for_a_subdir_loading_repo(bicodec_subdirs):
     names = ("config.json",)
 
-    assert training_mod._with_load_subdirs(_REPO, names) == (
-        "config.json",
-        "LLM/config.json",
-    )
+    assert training_mod._with_load_subdirs(_REPO, names) == ("config.json", "LLM/config.json")
     assert training_mod._with_load_subdirs(_PLAIN_REPO, names) == names
 
 
-def test_an_ordinary_root_loading_snapshot_is_unaffected(
-    cache_root, bicodec_subdirs
-):
+def test_an_ordinary_root_loading_snapshot_is_unaffected(cache_root, bicodec_subdirs):
     _, snapshot = _snapshot(cache_root, _PLAIN_REPO)
     _write_model(snapshot)
 
-    assert training_mod._resolve_model_snapshot(_PLAIN_REPO, str(snapshot)) == str(
-        snapshot
-    )
+    assert training_mod._resolve_model_snapshot(_PLAIN_REPO, str(snapshot)) == str(snapshot)
 
 
-def test_a_snapshot_with_neither_root_nor_subdir_weights_still_fails(
-    cache_root, bicodec_subdirs
-):
+def test_a_snapshot_with_neither_root_nor_subdir_weights_still_fails(cache_root, bicodec_subdirs):
     """The widening must not turn "nothing usable here" into a false positive."""
     _, snapshot = _snapshot(cache_root, _REPO)
     (snapshot / "config.yaml").write_text("sample_rate: 16000\n")
@@ -113,9 +106,7 @@ def test_a_snapshot_with_neither_root_nor_subdir_weights_still_fails(
     assert training_mod._resolve_model_snapshot(_REPO, str(snapshot)) is None
 
 
-def test_a_subdir_snapshot_survives_the_metadata_only_second_pass(
-    cache_root, bicodec_subdirs
-):
+def test_a_subdir_snapshot_survives_the_metadata_only_second_pass(cache_root, bicodec_subdirs):
     """Pass 2 keeps caches that never held weights resolvable; subdirs count there too."""
     _, snapshot = _snapshot(cache_root, _REPO)
     _write_model(snapshot / "LLM", weights = False)
@@ -136,6 +127,4 @@ def test_load_subdir_lookup_failure_degrades_to_root_only(cache_root, monkeypatc
 
     _, snapshot = _snapshot(cache_root, _PLAIN_REPO)
     _write_model(snapshot)
-    assert training_mod._resolve_model_snapshot(_PLAIN_REPO, str(snapshot)) == str(
-        snapshot
-    )
+    assert training_mod._resolve_model_snapshot(_PLAIN_REPO, str(snapshot)) == str(snapshot)

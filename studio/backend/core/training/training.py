@@ -334,10 +334,7 @@ def _with_load_subdirs(model_name: str, names: tuple[str, ...]) -> tuple[str, ..
     if not subdirs:
         return names
     return names + tuple(
-        f"{subdir.strip('/')}/{name}"
-        for subdir in subdirs
-        if subdir
-        for name in names
+        f"{subdir.strip('/')}/{name}" for subdir in subdirs if subdir for name in names
     )
 
 
