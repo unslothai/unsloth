@@ -3,23 +3,40 @@
 
 import { getActiveGenerations } from "../api/chat-api";
 import { useChatRuntimeStore } from "../stores/chat-runtime-store";
+import { usePromptQueueUI } from "../stores/prompt-queue-ui-store";
 import {
   type StopRunningChatsEffect,
   useStopRunningChatsDialogStore,
 } from "../stores/stop-running-chats-dialog-store";
 import { listStoredChatThreads } from "./chat-history-storage";
+import { listLocalPreStreamRunReservations } from "./pre-stream-run-reservation";
 
 export interface StopRunningChatsDecision {
   /** False when the user chose to keep generating; the caller must not load. */
   proceed: boolean;
   /** Pass as `force_cancel_active`. True only after an explicit confirmation, so the backend's 409 still guards every other caller. */
   forceCancelActive: boolean;
+  /** Local-model prompt queues to stop immediately before the model-changing request. */
+  promptQueueThreadIds: string[];
+  /** Accepted local sends that have not reached the running map yet. */
+  preStreamRunTokens: symbol[];
+}
+
+export function getLocalPromptQueueThreadIds(): string[] {
+  return [
+    ...new Set(
+      Object.entries(usePromptQueueUI.getState().byThreadId)
+        .filter(([, entry]) => entry.local)
+        .map(([threadId]) => threadId),
+    ),
+  ];
 }
 
 /**
- * Gate a model load / reload on the chats still generating: they share one llama-server,
- * so a reload ends all of them. Ask first, then let the backend cancel them once the load
- * is past preflight. External-provider chats are left out of both.
+ * Gate a model load / reload on local chats still generating or queued: they share one
+ * llama-server, so a reload ends all of them. Ask first, then let the backend cancel active
+ * runs and return the pending queue targets for the caller to stop after preflight.
+ * External-provider chats and queues are left out of both.
  */
 export async function confirmStopRunningChatsIfNeeded(
   action = "Loading a different model",
@@ -32,7 +49,45 @@ export async function confirmStopRunningChatsIfNeeded(
   let running = Object.entries(runningByThreadId)
     .filter(([threadId, on]) => on && localRunByThreadId[threadId])
     .map(([threadId]) => threadId);
-  let count = running.length;
+  const preStreamRuns = listLocalPreStreamRunReservations();
+  const preStreamRunTokens = preStreamRuns.map(({ token }) => token);
+  let unnamedPreStreamRuns = 0;
+  const runningIds = new Set(running);
+  for (const { threadIds } of preStreamRuns) {
+    if (threadIds.some((id) => runningIds.has(id))) {
+      continue;
+    }
+    if (threadIds.length > 0) {
+      running.push(threadIds[0]);
+      for (const threadId of threadIds) {
+        runningIds.add(threadId);
+      }
+    } else {
+      unnamedPreStreamRuns += 1;
+    }
+  }
+  const promptQueueThreadIds = getLocalPromptQueueThreadIds();
+  const promptQueuesByThreadId = usePromptQueueUI.getState().byThreadId;
+  const aliasesByQueuedRun = new Map<string, string[]>();
+  for (const threadId of promptQueueThreadIds) {
+    const entry = promptQueuesByThreadId[threadId];
+    if (!entry) {
+      continue;
+    }
+    const aliases = aliasesByQueuedRun.get(entry.runId) ?? [];
+    aliases.push(threadId);
+    aliasesByQueuedRun.set(entry.runId, aliases);
+  }
+  for (const aliases of aliasesByQueuedRun.values()) {
+    if (aliases.some((threadId) => runningIds.has(threadId))) {
+      continue;
+    }
+    const threadId = aliases[0];
+    running.push(threadId);
+    runningIds.add(threadId);
+  }
+  running = [...new Set(running)];
+  let count = running.length + unnamedPreStreamRuns;
   let hasNonChat = false;
 
   // Always merge the backend snapshot: runningByThreadId is this tab's memory, empty after a
@@ -52,8 +107,8 @@ export async function confirmStopRunningChatsIfNeeded(
     // id to merge, so add those back or the prompt names fewer chats than will stop.
     const unnamed = entries.filter((entry) => !entry.thread_id).length;
     count = entries.length
-      ? running.length + unnamed
-      : Math.max(active.count ?? 0, running.length);
+      ? running.length + unnamed + unnamedPreStreamRuns
+      : Math.max(active.count ?? 0, running.length) + unnamedPreStreamRuns;
     // Embeddings / completions / audio share the model but are not conversations, so the
     // prompt must not offer to stop chats that do not exist.
     hasNonChat = entries.some((entry) => (entry.kind ?? "chat") !== "chat");
@@ -62,7 +117,12 @@ export async function confirmStopRunningChatsIfNeeded(
   }
 
   if (count === 0) {
-    return { proceed: true, forceCancelActive: false };
+    return {
+      proceed: true,
+      forceCancelActive: false,
+      promptQueueThreadIds: [],
+      preStreamRunTokens: [],
+    };
   }
 
   let titles: string[] = [];
@@ -91,10 +151,20 @@ export async function confirmStopRunningChatsIfNeeded(
     .requestConfirm({ count, titles, action, hasNonChat, effect });
 
   if (!confirmed) {
-    return { proceed: false, forceCancelActive: false };
+    return {
+      proceed: false,
+      forceCancelActive: false,
+      promptQueueThreadIds: [],
+      preStreamRunTokens: [],
+    };
   }
 
   // Deliberately no local stop: the backend holds the cancel until the load clears preflight,
   // so stopping now would truncate every chat even for a rejected load.
-  return { proceed: true, forceCancelActive: true };
+  return {
+    proceed: true,
+    forceCancelActive: true,
+    promptQueueThreadIds,
+    preStreamRunTokens,
+  };
 }

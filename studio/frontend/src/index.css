@@ -2516,6 +2516,11 @@ html[data-chat-font] .aui-root {
 	padding-right: 48px !important;
 }
 
+/* Toast buttons are pills, matching the dialog actions they stand in for. */
+[data-sonner-toast] [data-button] {
+	border-radius: 9999px !important;
+}
+
 /* Loading toast keeps its own vertical padding from #7683. */
 [data-sonner-toast][data-styled='true'].chat-model-load-toast {
 	display: flex !important;

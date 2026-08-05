@@ -1108,6 +1108,35 @@ def test_progress_counts_only_selected_blobs_and_caps_incomplete_files(monkeypat
     assert status["bytes_done"] == 30
 
 
+class _FakeDownloadProcess:
+    """Stands in for the worker subprocess: immediate success."""
+
+    returncode = 0
+
+    def poll(self):
+        return 0
+
+    def communicate(self):
+        return (None, b"")
+
+
+def _worker_args(args) -> dict:
+    """Parse the download worker's argv into the fields tests assert on."""
+    parsed: dict = {"allow_patterns": []}
+    remaining = iter(args)
+    for flag in remaining:
+        value = next(remaining)
+        if flag == "--repo-id":
+            parsed["repo_id"] = value
+        elif flag == "--revision":
+            parsed["revision"] = value
+        elif flag == "--filename":
+            parsed["filename"] = value
+        elif flag == "--allow-pattern":
+            parsed["allow_patterns"].append(value)
+    return parsed
+
+
 def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_path):
     revision = "e" * 40
     calls = []
@@ -1127,12 +1156,13 @@ def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_p
             calls.append(("info", repo, kwargs))
             return SimpleNamespace(sha = revision, siblings = siblings)
 
-    def fake_snapshot_download(**kwargs):
-        calls.append(("snapshot", kwargs))
-        return str(tmp_path)
+    def fake_spawn_download(args, hf_token = None):
+        calls.append(("snapshot", _worker_args(args)))
+        return _FakeDownloadProcess()
 
     monkeypatch.setattr("huggingface_hub.HfApi", FakeApi)
-    monkeypatch.setattr("huggingface_hub.snapshot_download", fake_snapshot_download)
+    # The transfer runs in a worker process, so assert on its argv.
+    monkeypatch.setattr("core.inference.stt_download_worker.spawn_download", fake_spawn_download)
     monkeypatch.setattr(
         "huggingface_hub.hf_hub_download",
         lambda **_kwargs: pytest.fail("unsharded selection must not load an index"),
@@ -1163,6 +1193,7 @@ def test_download_status_is_idle_before_any_download():
         "downloading": False,
         "model": None,
         "error": None,
+        "cancelled": False,
         "bytes_total": None,
         "bytes_done": None,
     }

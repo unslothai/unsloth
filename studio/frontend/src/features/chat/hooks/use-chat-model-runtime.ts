@@ -31,6 +31,9 @@ import {
 } from "../api/chat-api";
 import { formatEta, formatRate } from "../utils/format-transfer";
 import { confirmStopRunningChatsIfNeeded } from "../utils/confirm-stop-running-chats";
+import { requestLocalPromptQueueStop } from "../utils/prompt-queue-boundary";
+import { cancelPreStreamRunReservations } from "../utils/pre-stream-run-reservation";
+import type { ModelLifecycleLease } from "../utils/model-lifecycle-gate";
 import {
   GPU_LAYERS_AUTO,
   isLocalModelPath,
@@ -425,6 +428,7 @@ export function useChatModelRuntime() {
   const loadAttemptRef = useRef(0);
   const loadToastDismissedRef = useRef(false);
   const cancelUnloadPendingRef = useRef(false);
+  const loadLifecycleLeaseRef = useRef<ModelLifecycleLease | null>(null);
 
   const setLoadToastDismissedState = useCallback((dismissed: boolean) => {
     loadToastDismissedRef.current = dismissed;
@@ -443,7 +447,11 @@ export function useChatModelRuntime() {
       useChatRuntimeStore.getState().clearLoadingModelPick(pickOf(inFlight));
     }
     if (!cancelUnloadPendingRef.current) {
-      useChatRuntimeStore.getState().setModelLoading(false);
+      const lease = loadLifecycleLeaseRef.current;
+      loadLifecycleLeaseRef.current = null;
+      if (lease !== null) {
+        useChatRuntimeStore.getState().endModelLoading(lease);
+      }
     }
   }, [setLoadToastDismissedState]);
 
@@ -490,7 +498,6 @@ export function useChatModelRuntime() {
         : "The current download may still finish in the background.",
     });
     cancelUnloadPendingRef.current = true;
-    useChatRuntimeStore.getState().setModelLoading(true);
     void (async () => {
       try {
         // Unforced on purpose: a chat may stream on the PREVIOUS model and must not be killed by
@@ -504,7 +511,11 @@ export function useChatModelRuntime() {
       } finally {
         cancelUnloadPendingRef.current = false;
         if (!loadingModelRef.current) {
-          useChatRuntimeStore.getState().setModelLoading(false);
+          const lease = loadLifecycleLeaseRef.current;
+          loadLifecycleLeaseRef.current = null;
+          if (lease !== null) {
+            useChatRuntimeStore.getState().endModelLoading(lease);
+          }
         }
       }
     })();
@@ -622,20 +633,59 @@ export function useChatModelRuntime() {
         }
       }
 
+      // Block queue materialization before taking the cancellation snapshot.
+      // A queue that appears while the dialog is open must not be stopped
+      // without having been included in the user's confirmation.
+      const lifecycleLease = useChatRuntimeStore
+        .getState()
+        .beginModelLoading();
+      if (lifecycleLease === null) {
+        restorePreviousConfig();
+        toast.info("A model is loading", {
+          description: "Wait for it to finish or cancel it first.",
+        });
+        return;
+      }
+      loadLifecycleLeaseRef.current = lifecycleLease;
+      const releasePreflightLifecycleLease = () => {
+        if (loadLifecycleLeaseRef.current !== lifecycleLease) {
+          return;
+        }
+        loadLifecycleLeaseRef.current = null;
+        useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
+      };
+
       // Every chat decodes on the llama-server this load replaces, so ask first, then allow the
       // cancel; the 409 gate stays armed for callers that never confirmed.
-      const stopDecision = await confirmStopRunningChatsIfNeeded(
-        forceReload ? "Applying these settings" : "Loading a different model",
-      );
+      let stopDecision: Awaited<
+        ReturnType<typeof confirmStopRunningChatsIfNeeded>
+      >;
+      try {
+        stopDecision = await confirmStopRunningChatsIfNeeded(
+          forceReload ? "Applying these settings" : "Loading a different model",
+        );
+      } catch (error) {
+        releasePreflightLifecycleLease();
+        throw error;
+      }
       if (!stopDecision.proceed) {
+        releasePreflightLifecycleLease();
         if (typeof selection !== "string" && selection.previousConfig) {
           applyPerModelConfigToRuntime(selection.previousConfig);
         }
         return;
       }
-      // Re-check: the confirm above awaits a GET, so a pick in that window would start a rival
-      // load over the same refs. Nothing awaits before the reservation below.
-      if (bailIfLoadInFlight()) return;
+      // Re-check the tracked picker for a load that was already starting when
+      // this lifecycle lease was acquired.
+      try {
+        if (bailIfLoadInFlight()) {
+          releasePreflightLifecycleLease();
+          return;
+        }
+      } catch (error) {
+        releasePreflightLifecycleLease();
+        throw error;
+      }
       const forceCancelActive = stopDecision.forceCancelActive;
 
       const explicitIsLora =
@@ -702,7 +752,6 @@ export function useChatModelRuntime() {
         nativePathToken: nativePathToken ?? null,
       };
       setLoadingModel(loadInfo);
-      useChatRuntimeStore.getState().setModelLoading(true);
       useChatRuntimeStore.getState().setLoadingModelPick(pickOf(loadInfo));
       setLoadProgress(
         isDownloaded || isCachedLora
@@ -984,6 +1033,8 @@ export function useChatModelRuntime() {
               ? (await consumeNativePathToken(nativePathToken, "load-model")).nativePathLease
               : undefined;
 
+            cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+            requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
             if (currentCheckpoint) {
               // With chats generating, skip this preliminary unload: it cancels them ahead of /load's
               // preflight, so a rejected target truncates replies for a model that never loads
@@ -1089,6 +1140,10 @@ export function useChatModelRuntime() {
             );
             const effectiveChatTemplateOverride =
               loadChatTemplateOverride?.trim() ? loadChatTemplateOverride : null;
+            // A queue can be created while the preliminary unload is pending.
+            // Stop a second time at the final boundary so no prompt captured
+            // against the outgoing checkpoint survives into the new backend.
+            requestLocalPromptQueueStop();
             const loadResponse = await loadModel({
               model_path: loadPath,
               nativePathLease: loadNativePathLease,
@@ -1795,7 +1850,15 @@ export function useChatModelRuntime() {
       await refresh();
       return true;
     }
+    let lifecycleLease: ModelLifecycleLease | null = null;
     try {
+      // Block queue materialization before taking the confirmation snapshot.
+      // Otherwise a queue can appear while the dialog is open and be stopped
+      // by the unload even though the user never confirmed stopping it.
+      lifecycleLease = useChatRuntimeStore.getState().beginModelLoading();
+      if (lifecycleLease === null) {
+        return false;
+      }
       // Ejecting tears down llama-server, so every chat stops. Same prompt, but it
       // leaves no model loaded, so it must not be worded as a reload.
       const stopDecision = await confirmStopRunningChatsIfNeeded(
@@ -1803,14 +1866,15 @@ export function useChatModelRuntime() {
         "unload",
       );
       if (!stopDecision.proceed) return false;
-      // Same window as selectModel: a load may have started during the confirm.
-      if (bailIfLoading()) return false;
 
       async function performUnload(): Promise<void> {
+        cancelPreStreamRunReservations(stopDecision.preStreamRunTokens);
+        requestLocalPromptQueueStop(stopDecision.promptQueueThreadIds);
         await unloadModel({
           model_path: params.checkpoint,
           force_cancel_active: stopDecision.forceCancelActive,
         });
+        requestLocalPromptQueueStop();
         clearCheckpoint();
         await refresh();
       }
@@ -1830,6 +1894,10 @@ export function useChatModelRuntime() {
         error instanceof Error ? error.message : "Failed to unload model";
       setModelsError(message);
       return false;
+    } finally {
+      if (lifecycleLease !== null) {
+        useChatRuntimeStore.getState().endModelLoading(lifecycleLease);
+      }
     }
   }, [clearCheckpoint, params.checkpoint, refresh, setModelsError]);
 

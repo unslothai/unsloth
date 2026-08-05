@@ -21,7 +21,9 @@ const HIDDEN_NEEDLES = [
 ];
 const HIDDEN_STT_REPOS = new Set([
   // Transformers safetensors repos and their whisper.cpp GGUF companions
-  // (unslothai/whisper-*-GGUF): STT-only, never chat models.
+  // (unslothai/whisper-*-GGUF): STT-only, never chat models. The Qwen3-ASR
+  // GGUFs are here for the same reason: llama.cpp will load one as a chat
+  // model, where it only answers with transcripts.
   "unsloth/whisper-tiny",
   "unsloth/whisper-base",
   "unsloth/whisper-small",
@@ -32,6 +34,8 @@ const HIDDEN_STT_REPOS = new Set([
   "unslothai/whisper-small-gguf",
   "unslothai/whisper-large-v3-turbo-gguf",
   "unslothai/whisper-large-v3-gguf",
+  "unslothai/qwen3-asr-0.6b-gguf",
+  "unslothai/qwen3-asr-1.7b-gguf",
 ]);
 const HIDDEN_STT_CACHE_NAMES = [...HIDDEN_STT_REPOS].map((repo) =>
   repo.replace("/", "--"),

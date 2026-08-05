@@ -12,6 +12,7 @@ import {
   type ActiveModelDownload,
   type DownloadJobState,
 } from "./api";
+import { cancelExternalJob, isExternalJob } from "./external-jobs";
 import {
   CANCELLED_LINGER_MS,
   CANCEL_WATCHDOG_MS,
@@ -841,6 +842,11 @@ async function probeCancelOutcome(
 export async function cancelJob(key: string): Promise<void> {
   const job = getState().jobs[key];
   if (!job) return;
+  // Another subsystem owns this transfer; it does the cancelling.
+  if (isExternalJob(key)) {
+    await cancelExternalJob(key);
+    return;
+  }
   const rt = runtimeRegistry.runtimes.get(key);
   const cancelEpoch = rt?.epoch ?? 0;
   if (rt) rt.cancelRequested = true;
