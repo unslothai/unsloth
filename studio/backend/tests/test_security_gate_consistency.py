@@ -85,9 +85,7 @@ def test_capability_detection_caches_are_token_aware():
         stripped = line.strip()
         if "_detection_cache:" in stripped and stripped.endswith("= {}"):
             key = stripped.split("Dict[", 1)[-1].split(",", 1)[0].strip()
-            if not (
-                "Dict[Tuple" in stripped or "Dict[tuple" in stripped or key in tuple_aliases
-            ):
+            if not ("Dict[Tuple" in stripped or "Dict[tuple" in stripped or key in tuple_aliases):
                 offenders.append(stripped)
     assert not offenders, (
         "A capability cache must be keyed by (model, token_fingerprint), not the bare "
