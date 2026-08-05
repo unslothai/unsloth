@@ -304,12 +304,14 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
 _MODEL_SNAPSHOT_METADATA = ("config.json", "adapter_config.json")
 # refs/main can point at a revision that only ever fetched metadata, so prefer a
 # snapshot that actually carries weights before falling back to a metadata match.
+# Keep this in step with _MODEL_WEIGHT_CANDIDATES in routes/training.py plus the
+# adapter names that route handles on its own branch: selecting a snapshot the
+# start route then rejects reproduces the very 400 this ordering exists to avoid.
 _MODEL_SNAPSHOT_WEIGHTS = (
     "model.safetensors",
     "model.safetensors.index.json",
     "pytorch_model.bin",
     "pytorch_model.bin.index.json",
-    "consolidated.safetensors",
     "adapter_model.safetensors",
     "adapter_model.bin",
 )
@@ -322,20 +324,27 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
     )
 
     repo_id = canonical_model_repo_id(model_name)
-    metadata_sets = (_MODEL_SNAPSHOT_WEIGHTS, _MODEL_SNAPSHOT_METADATA)
+    # Pass 1 demands metadata AND weights, so neither a metadata-only refs/main
+    # revision nor a newer weights-only fetch can displace a complete sibling.
+    # Pass 2 keeps the old metadata-only behaviour for caches that never held
+    # weights, so nothing that resolved before stops resolving now.
+    passes: tuple[dict[str, Any], ...] = (
+        {"required_groups": (_MODEL_SNAPSHOT_METADATA, _MODEL_SNAPSHOT_WEIGHTS)},
+        {"metadata_filenames": _MODEL_SNAPSHOT_METADATA},
+    )
     if local_path:
-        for metadata in metadata_sets:
-            snapshot = latest_snapshot_from_cache_path(local_path, "model", repo_id, metadata)
+        for kwargs in passes:
+            snapshot = latest_snapshot_from_cache_path(local_path, "model", repo_id, **kwargs)
             if snapshot:
                 return snapshot
         return None
-    for metadata in metadata_sets:
+    for kwargs in passes:
         for repo_dir in iter_repo_cache_dirs("model", repo_id):
             snapshot = latest_snapshot_from_cache_path(
                 str(repo_dir),
                 "model",
                 repo_id,
-                metadata,
+                **kwargs,
             )
             if snapshot:
                 return snapshot

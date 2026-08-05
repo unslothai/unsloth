@@ -256,6 +256,7 @@ def latest_snapshot_from_cache_path(
     repo_type: str,
     repo_id: str,
     metadata_filenames: tuple[str, ...] = (),
+    required_groups: tuple[tuple[str, ...], ...] = (),
 ) -> Optional[str]:
     validated = validated_repo_cache_path(local_path, repo_type, repo_id)
     if validated is None:
@@ -264,6 +265,12 @@ def latest_snapshot_from_cache_path(
     try:
 
         def has_metadata(path: Path) -> bool:
+            # required_groups is an AND of ORs: the snapshot must carry at least one
+            # file from every group. That is what "loadable" means for a model, where
+            # metadata alone or weights alone is not enough.
+            for group in required_groups:
+                if not any((path / name).is_file() for name in group):
+                    return False
             if not metadata_filenames:
                 return True
             return any((path / name).is_file() for name in metadata_filenames)

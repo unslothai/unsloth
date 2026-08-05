@@ -1886,7 +1886,7 @@ def test_resolve_model_snapshot_keeps_selected_cache_path_strict(monkeypatch):
     fallback_snapshot = "/cache-b/models--unsloth--test/snapshots/rev"
     resolved_paths = []
 
-    def resolve_snapshot(local_path, *_args):
+    def resolve_snapshot(local_path, *_args, **_kwargs):
         resolved_paths.append(local_path)
         return fallback_snapshot if local_path == str(fallback_path) else None
 

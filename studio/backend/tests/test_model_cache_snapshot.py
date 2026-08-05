@@ -260,3 +260,40 @@ def test_training_pin_still_falls_back_to_metadata_only_snapshots(tmp_path):
     metadata_only = _snapshot(repo_root, "commit-metadata", ("config.json",))
 
     assert _resolve_model_snapshot("Org/Model", str(repo_root)) == str(metadata_only.resolve())
+
+
+def test_training_pin_skips_a_weights_only_snapshot_without_metadata(tmp_path):
+    # A newer weights-only fetch (interrupted download, or an allow_patterns pull that
+    # never took config.json) must not displace an older complete sibling: the start
+    # route rejects a snapshot with no loader metadata, so picking it 400s a run that
+    # used to work.
+    from core.training.training import _resolve_model_snapshot
+
+    repo_root = _model_repo(tmp_path, "Org/Model")
+    complete = _snapshot(repo_root, "commit-complete", ("config.json", "model.safetensors"))
+    weights_only = _snapshot(repo_root, "commit-weights", ("model.safetensors",))
+    past = time.time() - 3600
+    os.utime(complete, (past, past))
+
+    resolved = _resolve_model_snapshot("Org/Model", str(repo_root))
+
+    assert resolved == str(complete.resolve())
+    assert resolved != str(weights_only.resolve())
+
+
+def test_training_pin_ignores_weight_names_the_start_route_rejects(tmp_path):
+    # consolidated.safetensors has no transformers loader path and is not in
+    # _MODEL_WEIGHT_CANDIDATES, so treating it as "has weights" selects a snapshot the
+    # start route then rejects with "no trainable weights".
+    from core.training.training import _resolve_model_snapshot
+
+    repo_root = _model_repo(tmp_path, "Org/Model")
+    loadable = _snapshot(repo_root, "commit-loadable", ("config.json", "model.safetensors"))
+    consolidated = _snapshot(repo_root, "commit-consolidated", ("config.json", "consolidated.safetensors"))
+    past = time.time() - 3600
+    os.utime(loadable, (past, past))
+
+    resolved = _resolve_model_snapshot("Org/Model", str(repo_root))
+
+    assert resolved == str(loadable.resolve())
+    assert resolved != str(consolidated.resolve())
