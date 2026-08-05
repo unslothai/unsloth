@@ -342,11 +342,16 @@ def _whisper_server_child_env(binary: str) -> dict[str, str]:
 def _cached_model_path(model_id: str) -> Optional[str]:
     """Path of a fully downloaded GGML file in the shared HF cache, else None."""
     from huggingface_hub import hf_hub_download
+
+    from core.inference.stt_sidecar import _active_hf_hub_cache
     try:
         return hf_hub_download(
             repo_id = GGML_STT_REPOS[model_id],
             filename = GGML_STT_MODELS[model_id],
             local_files_only = True,
+            # The worker spawns with get_hf_cache_paths(), so a cache relocated
+            # in Studio settings is written there and has to be read there too.
+            cache_dir = str(_active_hf_hub_cache()),
         )
     except Exception:
         return None
@@ -398,17 +403,15 @@ class _GgmlDownloadState:
         etag, else the largest in-flight blob.
         """
         try:
-            from huggingface_hub.constants import HF_HUB_CACHE
+            from core.inference.stt_sidecar import _repo_cache_dir
 
             # Caller may hold the non-reentrant self._lock; bare reads are safe.
             model_id = self._model_id
             if not model_id:
                 return None
-            repo_dir = (
-                Path(HF_HUB_CACHE)
-                / f"models--{GGML_STT_REPOS[model_id].replace('/', '--')}"
-                / "blobs"
-            )
+            # The active cache, not the import-time constant: the worker writes
+            # to whichever one Studio settings point at.
+            repo_dir = _repo_cache_dir(GGML_STT_REPOS[model_id]) / "blobs"
             if not repo_dir.is_dir():
                 return None
             etag = self._etag

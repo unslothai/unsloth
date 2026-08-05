@@ -374,3 +374,90 @@ def test_the_cached_lookup_uses_studios_configured_cache(monkeypatch, tmp_path):
     assert mtmd_mod._cached_file("qwen3-asr-0.6b", "Qwen3-ASR-0.6B-Q8_0.gguf")
     assert seen["cache_dir"] == str(tmp_path)
     assert seen["local_files_only"] is True
+
+
+def test_a_server_started_for_training_goes_back_to_the_gpu_after(spawned, monkeypatch):
+    """-ngl 0 was sticky: the same model matched, so dictation stayed on CPU
+    until the keep-alive expired."""
+    commands = []
+
+    def capture(cmd, **kwargs):
+        commands.append([str(a) for a in cmd])
+        return _FakeProcess()
+
+    monkeypatch.setattr(mtmd_mod.subprocess, "Popen", capture)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+
+    training = {"active": True}
+    monkeypatch.setattr(mtmd_mod, "_training_active", lambda: training["active"])
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("qwen3-asr-0.6b")
+    assert commands[0][commands[0].index("-ngl") + 1] == "0"
+
+    # Still training: the same server is reused, no restart.
+    sidecar.load("qwen3-asr-0.6b")
+    assert len(commands) == 1
+
+    training["active"] = False
+    sidecar.load("qwen3-asr-0.6b")
+    assert len(commands) == 2, "the CPU-only server was never replaced"
+    assert commands[1][commands[1].index("-ngl") + 1] == "99"
+    assert "--no-mmproj-offload" not in commands[1]
+    sidecar.unload()
+
+
+def test_a_running_transcription_outranks_the_offload_upgrade(spawned, monkeypatch):
+    """Swapping to the GPU is an optimisation; it must not kill a request."""
+    commands = []
+
+    def capture(cmd, **kwargs):
+        commands.append([str(a) for a in cmd])
+        return _FakeProcess()
+
+    monkeypatch.setattr(mtmd_mod.subprocess, "Popen", capture)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+
+    training = {"active": True}
+    monkeypatch.setattr(mtmd_mod, "_training_active", lambda: training["active"])
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    sidecar.load("qwen3-asr-0.6b")
+
+    training["active"] = False
+    with sidecar._lock:
+        sidecar._active_requests = 1
+    sidecar.load("qwen3-asr-0.6b")
+    assert len(commands) == 1, "an in-flight transcription was torn down for -ngl"
+
+    with sidecar._lock:
+        sidecar._active_requests = 0
+    sidecar.load("qwen3-asr-0.6b")
+    assert len(commands) == 2, "the upgrade should happen once the request is done"
+    sidecar.unload()
+
+
+def test_audio_is_never_sent_to_a_server_another_client_swapped_in(spawned, monkeypatch):
+    """load() returns before the request slot is taken, so the model can change
+    in between and the port read would be the other server's."""
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(mtmd_mod, "_decode_audio_bounded", lambda audio: b"\x00\x00" * 16000)
+    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
+
+    posted = []
+    monkeypatch.setattr(
+        MtmdSttSidecar,
+        "_post_transcribe",
+        lambda self, port, model_id, wav, seconds = None: posted.append((port, model_id)) or "hi",
+    )
+
+    def swap_after_load(self, model = None):
+        # Stands in for another client switching the singleton in the gap.
+        with self._lock:
+            self._process = _FakeProcess()
+            self._port = 65000
+            self._model_id = "qwen3-asr-1.7b"
+
+    monkeypatch.setattr(MtmdSttSidecar, "load", swap_after_load)
+    with pytest.raises(mtmd_mod.SttModelBusyError):
+        sidecar.transcribe(b"audio", model = "qwen3-asr-0.6b")
+    assert posted == [], "audio went to the model the other client loaded"

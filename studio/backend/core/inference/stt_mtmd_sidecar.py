@@ -372,6 +372,9 @@ class MtmdSttSidecar:
         # Published as soon as Popen returns, so a startup can be preempted
         # before _process is assigned (readiness takes up to three minutes).
         self._starting_process: Optional[subprocess.Popen] = None
+        # Whether the resident server was launched with the GPU pinned off for
+        # training. Kept so a dictation after the run does not stay on CPU.
+        self._gpu_disabled = False
         self._load_cancel_event: Optional[threading.Event] = None
         self._update_in_progress = False
         self._keep_alive_seconds = keep_alive_seconds
@@ -525,9 +528,17 @@ class MtmdSttSidecar:
 
     def _load_locked(self, model_id: str, binary: str) -> None:
         with self._lock:
+            training = _training_active()
             if self._process_alive() and self._model_id == model_id:
-                self._schedule_idle_unload_locked()
-                return
+                # Same model, so only the offload mode can differ: a server
+                # started at -ngl 0 during training would otherwise serve every
+                # later dictation on CPU. Restarting for that is an
+                # optimisation, never worth killing a running transcription
+                # for, so an in-flight request keeps the server it has and the
+                # next idle load picks the GPU back up.
+                if self._gpu_disabled == training or self._active_requests:
+                    self._schedule_idle_unload_locked()
+                    return
             # Before the release: a 409 for a model that is not downloaded
             # must not cost the user the server they were already using.
             model_path, mmproj_path = self._ensure_model_downloaded(model_id)
@@ -544,9 +555,6 @@ class MtmdSttSidecar:
             self._loading = True
         try:
             sock, port = self._reserve_free_port()
-            # Read once: two calls could disagree and leave the projector on the
-            # GPU while the main model was pinned off it.
-            training = _training_active()
             cmd = [
                 binary,
                 "-m",
@@ -604,6 +612,7 @@ class MtmdSttSidecar:
                 self._process = process
                 self._port = port
                 self._model_id = model_id
+                self._gpu_disabled = training
                 self._generation += 1
                 self._schedule_idle_unload_locked()
         finally:
@@ -657,8 +666,16 @@ class MtmdSttSidecar:
         self.load(model_id)
         with self._lock:
             port = self._port
-            if port is None:
+            if port is None or not self._process_alive():
                 raise SttUnavailableError("The dictation server is not running.")
+            # Another client can switch models in the gap between that load
+            # returning and this lock, and the port read here would then be its
+            # server. Refuse rather than transcribe on the wrong model.
+            if self._model_id != model_id:
+                raise SttModelBusyError(
+                    "The dictation model changed while this recording was being "
+                    "prepared. Try again."
+                )
             # Long audio can outlast the keep-alive, and _post_transcribe runs
             # outside the lock, so disarm the timer rather than let it kill
             # llama-server mid-request and throw the dictation away.
