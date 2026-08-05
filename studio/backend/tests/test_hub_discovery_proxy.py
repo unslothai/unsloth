@@ -531,7 +531,12 @@ class TestResponseSizeCap:
 class TestReadmeRoute:
     """The repo card, for a browser that cannot fetch it or a mirror it must not."""
 
-    def _call(self, repo = "Org/Model", branch = "main", resource = "models"):
+    def _call(
+        self,
+        repo = "Org/Model",
+        branch = "main",
+        resource = "models",
+    ):
         return asyncio.run(
             discovery.discovery_readme(
                 resource,
@@ -589,9 +594,7 @@ class TestReadmeRoute:
         assert excinfo.value.status_code == 404
 
     def test_the_card_is_returned_with_the_private_headers(self, monkeypatch):
-        monkeypatch.setattr(
-            discovery, "_fetch_upstream", lambda url, token: (200, b"# card", "")
-        )
+        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (200, b"# card", ""))
         response = self._call()
         assert response.body == b"# card"
         assert response.headers.get("cache-control") == "no-store"
