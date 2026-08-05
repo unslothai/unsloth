@@ -12,7 +12,7 @@ pub(crate) const DESKTOP_MANAGEABILITY_VERSION: u16 = 2;
 pub(crate) const DESKTOP_BACKEND_MANAGEABILITY_VERSION: u16 = 1;
 // Explicit backend package minimum, not the desktop app Cargo version: backend
 // and app releases can diverge. When bumping, verify this package exists on PyPI.
-pub(super) const MIN_DESKTOP_BACKEND_VERSION: &str = "2026.5.3";
+pub(super) const MIN_DESKTOP_BACKEND_VERSION: &str = "2026.8.4";
 
 #[derive(Debug, Eq, PartialEq)]
 pub(super) struct ParsedVersion {
@@ -168,4 +168,34 @@ pub(crate) fn backend_version_stale_reason(version: Option<&str>) -> Option<Stri
         }
         Some(_) => Some("desktop_backend_version_too_old".to_string()),
     }
+}
+
+// The backend package this build was released against. The release workflow
+// stamps it from the same pypi_version the updater manifest carries; local and
+// CI builds leave it unset, so the floor above stays the only gate there.
+pub(super) fn expected_backend_version() -> &'static str {
+    option_env!("UNSLOTH_DESKTOP_BACKEND_VERSION").unwrap_or(MIN_DESKTOP_BACKEND_VERSION)
+}
+
+pub(super) fn backend_version_outdated_reason(
+    version: Option<&str>,
+    expected: &str,
+) -> Option<String> {
+    if let Some(reason) = backend_version_stale_reason(version) {
+        return Some(reason);
+    }
+    // Anything unparseable here already cleared the floor (`dev` in a debug
+    // build), so leave that judgement where it was made.
+    let actual = version.and_then(parse_version)?;
+    let expected = parse_version(expected)?;
+    (compare_versions(&actual, &expected) == Ordering::Less)
+        .then(|| "desktop_backend_version_outdated".to_string())
+}
+
+// Managed venv only. ~/.unsloth/studio is shared with the CLI installer, so a
+// venv can clear the floor and still predate this app forever; repairing it is
+// the only way forward. A running backend keeps the floor alone, so one that is
+// merely older stays adoptable and stoppable.
+pub(super) fn managed_backend_version_stale_reason(version: Option<&str>) -> Option<String> {
+    backend_version_outdated_reason(version, expected_backend_version())
 }

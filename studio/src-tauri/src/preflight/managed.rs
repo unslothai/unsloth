@@ -1,6 +1,6 @@
 use super::types::ManagedProbe;
 use super::version::{
-    backend_version_stale_reason, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
+    managed_backend_version_stale_reason, DESKTOP_MANAGEABILITY_VERSION, DESKTOP_PROTOCOL_VERSION,
 };
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
@@ -450,7 +450,7 @@ fn desktop_capability_stale_reason(capability: &DesktopCapability) -> Option<Str
                 .unwrap_or_else(|| "studio_install_incomplete".to_string()),
         );
     }
-    backend_version_stale_reason(capability.version.as_deref())
+    managed_backend_version_stale_reason(capability.version.as_deref())
 }
 
 fn desktop_capability_ready(capability: &DesktopCapability) -> bool {
@@ -544,6 +544,7 @@ pub async fn managed_install_ready() -> bool {
 
 #[cfg(test)]
 mod tests {
+    use super::super::version::MIN_DESKTOP_BACKEND_VERSION;
     use super::*;
 
     fn healthy_capability() -> DesktopCapability {
@@ -556,7 +557,7 @@ mod tests {
             desktop_auth_stale_reason: None,
             studio_install_ok: Some(true),
             studio_install_reason: None,
-            version: Some("2026.7.5".to_string()),
+            version: Some(MIN_DESKTOP_BACKEND_VERSION.to_string()),
         }
     }
 
@@ -564,6 +565,19 @@ mod tests {
     fn complete_install_is_ready() {
         assert_eq!(desktop_capability_stale_reason(&healthy_capability()), None);
         assert!(desktop_capability_ready(&healthy_capability()));
+    }
+
+    #[test]
+    fn a_venv_behind_the_desktop_backend_version_is_stale() {
+        // The CLI installer shares this venv, so its package version is the only
+        // thing that pulls an old-but-launchable install forward through repair.
+        let mut capability = healthy_capability();
+        capability.version = Some("2026.5.2".to_string());
+        assert_eq!(
+            desktop_capability_stale_reason(&capability).as_deref(),
+            Some("desktop_backend_version_too_old")
+        );
+        assert!(!desktop_capability_ready(&capability));
     }
 
     #[test]
