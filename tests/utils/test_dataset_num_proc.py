@@ -75,18 +75,31 @@ def dnp(monkeypatch):
         )
     except ImportError:
         pass
-    # Point both cgroup readers at a path that does not exist rather than
-    # stubbing the readers themselves, so the tests that are about those
-    # readers can still install a fixture tree and win.
+    # Point this module's cgroup reader at a path that does not exist rather than
+    # stubbing the reader itself, so the tests that are about it can still
+    # install a fixture tree and win.
     monkeypatch.setattr(module, "CGROUP_ROOT", "/nonexistent-cgroup-root-for-tests")
+    # unsloth_zoo's readers are neutralised by name instead, and without
+    # requiring the name to be there: pinning hf_xet_tuning.CGROUP_ROOT alone
+    # only works on a zoo that has that global. An older zoo still exposes the
+    # private dir helpers this module prefers, monkeypatch finds no attribute to
+    # pin, and the policy reads the runner's real cgroup -- which in a
+    # memory-limited container turns a test about the start method into a test
+    # of the clamp. The tests that are about these readers install their own
+    # unsloth_zoo.hf_xet_tuning in sys.modules, so they are unaffected.
     try:
-        from pathlib import Path
         from unsloth_zoo import hf_xet_tuning
-        monkeypatch.setattr(
-            hf_xet_tuning, "CGROUP_ROOT", Path("/nonexistent-cgroup-root-for-tests")
-        )
     except Exception:
-        pass
+        hf_xet_tuning = None
+    if hf_xet_tuning is not None:
+        for name, neutral in (
+            ("CGROUP_ROOT", Path("/nonexistent-cgroup-root-for-tests")),
+            ("_cgroup_v2_dirs", lambda: []),
+            ("_cgroup_v1_dirs", lambda controller: []),
+            ("cgroup_memory_limit", lambda: None),
+            ("cgroup_cpu_limit", lambda: None),
+        ):
+            monkeypatch.setattr(hf_xet_tuning, name, neutral, raising = False)
     return module
 
 
