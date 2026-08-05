@@ -1987,13 +1987,16 @@ def _model_config_inspection_target(
 ) -> str:
     if not prefer_local_cache or is_local_path(model_name):
         return model_name
-    from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
+    from hub.utils.hf_cache_state import (
+        latest_snapshot_from_cache_path,
+        with_load_subdirs,
+    )
 
     snapshot = latest_snapshot_from_cache_path(
         local_path,
         "model",
         canonical_model_repo_id(model_name),
-        ("config.json", "adapter_config.json"),
+        with_load_subdirs(model_name, ("config.json", "adapter_config.json")),
     )
     if snapshot is None:
         raise HTTPException(
@@ -2177,7 +2180,11 @@ async def scan_model_remote_code(
         exact_snapshot_repo_id = model_name
         if isinstance(model_snapshot_repo_id, str):
             snapshot_repo_id = model_snapshot_repo_id.strip()
-            if snapshot_repo_id and not _is_valid_repo_id(snapshot_repo_id):
+            # Namespace-less Hub ids such as "gpt2" are valid and the picker offers
+            # them, so use the shared validator rather than the owner/repo-only regex.
+            from hub.utils.paths import is_valid_repo_id as _shared_is_valid_repo_id
+
+            if snapshot_repo_id and not _shared_is_valid_repo_id(snapshot_repo_id):
                 raise HTTPException(
                     status_code = 400,
                     detail = "Invalid model snapshot repository ID.",
@@ -2725,8 +2732,7 @@ async def delete_finetuned_model(
                 raise HTTPException(
                     status_code = 409,
                     detail = (
-                        "Cannot delete trained models while diffusion (Images) training is "
-                        "running"
+                        "Cannot delete trained models while diffusion (Images) training is running"
                     ),
                 )
         except HTTPException:
