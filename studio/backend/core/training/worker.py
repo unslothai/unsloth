@@ -135,6 +135,17 @@ def _is_model_cache_artifact_error(error: BaseException | None) -> bool:
         "can't load feature extractor for",
         "stat: path should be string, bytes, os.pathlike or integer, not nonetype",
         "expected str, bytes or os.pathlike object, not nonetype",
+        # SentencePiece/BPE families resolve a missing vocab path to None and then
+        # dereference it, so the failure arrives as a bare AttributeError carrying no
+        # cache-specific text. Without these, 26 tokenizer families (XLMRoberta, MBart,
+        # NLLB, Bloom, GPTNeoX, Cohere, Marian, PreTrainedTokenizerFast, ...) get zero
+        # Hub retry and a pinned tokenizer-less snapshot is terminal. Scoped to the
+        # model-cache retry path, which is only reached for a pinned local snapshot and
+        # never under offline/require_exact, so a false positive costs one Hub attempt.
+        "'nonetype' object has no attribute 'endswith'",
+        "'nonetype' object has no attribute 'readlines'",
+        "argument should be a str or an os.pathlike object",
+        "can't find a vocabulary file at path 'none'",
     )
     seen: set[int] = set()
     current = error

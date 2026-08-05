@@ -59,7 +59,14 @@ except ImportError:
 # Auth
 from auth.authentication import authenticated_via_api_key, get_current_subject
 
-from utils.utils import canonical_model_repo_id, hf_env_offline, log_and_http_error
+from utils.utils import (
+    canonical_model_repo_id,
+    hf_dns_dead,
+    hf_env_offline,
+    hf_reachability_memo,
+    hf_unreachable,
+    log_and_http_error,
+)
 
 from models import (
     TrainingStartRequest,
@@ -104,6 +111,21 @@ class TrainingResetRequest(PydanticBaseModel):
 
 router = APIRouter()
 logger = get_logger(__name__)
+
+def _hub_unreachable() -> bool:
+    """Bounded, memoised Hub reachability check.
+
+    hf_env_offline() only reads env vars, so a link that is merely dead burns the full
+    5s + 10s metadata budget per leg -- once per resolved address, so 30s at best and
+    minutes on a multi-homed resolver -- before the cached fallbacks are consulted. The
+    training worker subprocess already guards itself this way (core/training/worker.py);
+    the route that spawns it did not. Fails open, so an online start is unchanged.
+    """
+    memo = hf_reachability_memo()
+    if memo is not None:
+        return memo
+    return hf_dns_dead() or hf_unreachable()
+
 
 _LOCAL_MODEL_PROBE_LIMIT = 2000
 _REMOTE_MODEL_METADATA_TIMEOUT_SECONDS = 5.0
@@ -450,7 +472,7 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
         if cached_path is not None and pins_cache:
             return
 
-    if hf_env_offline():
+    if hf_env_offline() or _hub_unreachable():
         if request.dataset_streaming:
             raise _hf_preflight_error(
                 409,
@@ -642,6 +664,18 @@ def _reject_untrainable_model_request(
     metadata_error: Optional[HTTPException] = None
     if path is None:
         try:
+            # Raised inside the try on purpose: the except HTTPException handler below
+            # still runs _resolve_model_snapshot, so a cached snapshot pins exactly as
+            # before, just without first burning the whole remote metadata budget.
+            if _hub_unreachable():
+                raise _hf_preflight_error(
+                    503,
+                    "hf_model_metadata_unavailable",
+                    (
+                        "Hugging Face model metadata is temporarily unavailable. "
+                        "Retry before starting training."
+                    ),
+                )
             remote_format = _remote_untrainable_model_format(
                 request.model_name,
                 request.hf_token or None,
