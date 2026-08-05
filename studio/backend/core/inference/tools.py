@@ -1667,9 +1667,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     start_scan.update(
         i
         for i in range(len(tokens))
-        if i == 0
-        or tokens[i - 1] in _SHELL_SEPARATORS
-        or tokens[i - 1] in _SHELL_KEYWORDS_AS_SEP
+        if i == 0 or tokens[i - 1] in _SHELL_SEPARATORS or tokens[i - 1] in _SHELL_KEYWORDS_AS_SEP
     )
     for i in sorted(start_scan):
         if os.path.basename(tokens[i]).lower() not in ("start", "start.exe"):
