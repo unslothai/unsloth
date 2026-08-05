@@ -488,7 +488,6 @@ def free_stt_model_for_training(reason: str) -> List[str]:
     # holds VRAM exactly like the other two and has to be freed as well.
     try:
         from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
-
         mtmd = get_mtmd_stt_sidecar()
         if mtmd.is_loading() and mtmd.cancel_pending_load():
             logger.info("Cancelling mtmd STT model load for training (%s)", reason)

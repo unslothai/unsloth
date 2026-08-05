@@ -546,7 +546,6 @@ def _block_mtmd_sidecar(stack: ExitStack) -> bool:
     """
     try:
         from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
-
         return stack.enter_context(get_mtmd_stt_sidecar().update_maintenance())
     except Exception as exc:  # noqa: BLE001 - the update proceeds without it
         logger.debug("llama update: mtmd coordination failed", error = str(exc))

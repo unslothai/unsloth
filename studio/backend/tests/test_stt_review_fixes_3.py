@@ -76,7 +76,11 @@ def test_training_preempts_a_startup_unload_cannot_reach(spawned, monkeypatch):
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     started = threading.Event()
 
-    def never_ready(process, port, cancel_event = None):
+    def never_ready(
+        process,
+        port,
+        cancel_event = None,
+    ):
         started.set()
         while not (cancel_event is not None and cancel_event.is_set()):
             time.sleep(0.01)
@@ -158,9 +162,7 @@ def test_the_llama_updater_holds_the_dictation_guard(monkeypatch):
             finally:
                 exited.append(True)
 
-    monkeypatch.setattr(
-        "core.inference.stt_mtmd_sidecar.get_mtmd_stt_sidecar", lambda: _Sidecar()
-    )
+    monkeypatch.setattr("core.inference.stt_mtmd_sidecar.get_mtmd_stt_sidecar", lambda: _Sidecar())
     stack = ExitStack()
     assert llama_cpp_update._block_mtmd_sidecar(stack) is True
     assert entered and not exited, "the guard must be held across the install"
