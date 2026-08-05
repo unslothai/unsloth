@@ -2206,44 +2206,13 @@ def _find_blocked_commands(command: str) -> set[str]:
         # cmd runs the word right after its own /c or /k, which the outer shell
         # sees only as an argument -- `cmd //c start "" powershell` is the very
         # command this walk exists for.
-        previous = tokens[i - 1] if i else ""
-        if (
-            i
-            and i not in command_indexes
-            # The cmd lexer never splits an operator off the word it is glued to,
-            # so `hi&` keeps its `&` and the scan above stays in argument position
-            # for the rest of the line. Read straight off the previous token
-            # instead, which is what that lexer does leave to go on. Kept to that
-            # lexer, and to the operators cmd actually has: the posix one splits
-            # separators into tokens of its own and knows which were quoted, and
-            # second-guessing it there read a printed `';'` or `"then"` as though
-            # a command followed it.
-            and (lexed_posix or not _ends_with_cmd_operator(previous))
-        ):
+        if not _start_is_run(i):
             continue
-        if not lexed_posix and previous.endswith(";"):
-            # cmd has no `;` separator, so the scan above opened a command
-            # position that shell never opens: `echo ; start "" powershell` and
-            # `echo hi; start ""...` both print their whole line there.
-            continue
-        j = i + 1
-        titled = False
-        title_at = -1
-        while j < len(tokens):
-            switch = _win_switch(tokens[j].lower())
-            if _is_start_switch(tokens[j].lower()):
-                # /d C:\dir and friends carry their value in the next token.
-                j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
-            elif not titled and _is_start_title(tokens[j], lexed_posix):
-                # START takes its window title as a QUOTED first argument, so
-                # the program is the token behind it. Only the `""` idiom was
-                # stepped over, which read `start "job" powershell` as a program
-                # named job and left powershell in argument position.
-                titled = True
-                title_at = j
-                j += 1
-            else:
-                break
+        # The same walk the fixpoint above used to publish this launch. Kept in
+        # one place: a second copy is a second thing to keep in step, and the
+        # position it publishes has to be the position screened here.
+        j, title_at = _start_target(i)
+        titled = title_at != -1
         if titled and lexed_posix:
             # Posix proves a title only by its whitespace, and a quoted COMMAND
             # LINE looks the same: `start "ssh a@b"` has no program behind it
