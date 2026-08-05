@@ -823,19 +823,26 @@ def test_a_live_root_hit_still_goes_through_the_hub_so_it_revalidates(monkeypatc
     assert asked == [("Z-Image-Turbo-FP8.pt", str(live))]  # pinned to the root holding the blob
 
 
-def test_a_hit_only_in_the_other_root_is_returned_without_downloading(monkeypatch, tmp_path):
-    # The case the short-circuit exists for: hf_hub_download(cache_dir = live) would not look in
-    # huggingface_hub's import-time root, so it would re-fetch multiple GB of a file already here.
-    default_root = tmp_path / "default-hub"
-    default_root.mkdir()
-    ckpt = default_root / "Z-Image-Turbo-FP8.pt"
-    ckpt.write_bytes(b"weights")
-    source = PrequantSource(
+def _other_root_source():
+    return PrequantSource(
         kind = "repo",
         location = "unsloth/Z-Image-Turbo-FP8",
         filename = "Z-Image-Turbo-FP8.pt",
         fallback_filename = "transformer_fp8.pt",
     )
+
+
+def test_a_hit_only_in_the_other_root_is_revalidated_through_that_root(monkeypatch, tmp_path):
+    # The case this branch exists for: hf_hub_download(cache_dir = live) would not look in
+    # huggingface_hub's import-time root, so it would re-fetch multiple GB of a file already here.
+    # Returning the cached path raw would fix that and pin it: a repo that republishes a corrected
+    # checkpoint under the same filename would never be picked up. So the download is re-run
+    # THROUGH the root that holds the copy, which reuses the blob and costs one HEAD.
+    default_root = tmp_path / "default-hub"
+    default_root.mkdir()
+    ckpt = default_root / "Z-Image-Turbo-FP8.pt"
+    ckpt.write_bytes(b"weights")
+    source = _other_root_source()
 
     def _cache(
         repo_id,
@@ -847,13 +854,77 @@ def test_a_hit_only_in_the_other_root_is_returned_without_downloading(monkeypatc
         return str(path) if cache_dir is None and path.is_file() else None
 
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
-    monkeypatch.setattr(
-        "huggingface_hub.hf_hub_download",
-        lambda *a, **k: pytest.fail("a copy already on disk must not be downloaded again"),
-    )
+    asked: list = []
+
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
+        asked.append((filename, cache_dir))
+        return str(ckpt)  # unchanged upstream: the same blob, revalidated
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
 
     assert pq.prequant_checkpoint_cached(source, cache_dir = "/models/live") is True
     assert pq._resolve_checkpoint_path(source, None, "/models/live") == str(ckpt)
+    # cache_dir None, never the live root: the live root is empty, so pinning it there would be
+    # the multi-GB re-fetch the caller declined on.
+    assert asked == [("Z-Image-Turbo-FP8.pt", None)]
+
+
+def test_a_republished_checkpoint_in_the_other_root_is_picked_up(monkeypatch, tmp_path):
+    # Revalidation earns its HEAD here: the repo replaced the file under the same name, so the
+    # cached pointer is stale and the loader must follow the new snapshot instead.
+    default_root = tmp_path / "default-hub"
+    default_root.mkdir()
+    stale = default_root / "Z-Image-Turbo-FP8.pt"
+    stale.write_bytes(b"old weights")
+    fresh = default_root / "snapshots-new" / "Z-Image-Turbo-FP8.pt"
+    fresh.parent.mkdir()
+    fresh.write_bytes(b"corrected weights")
+
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: (
+            str(stale) if cache_dir is None and filename == "Z-Image-Turbo-FP8.pt" else None
+        ),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download", lambda **kwargs: str(fresh)
+    )
+
+    assert pq._resolve_checkpoint_path(_other_root_source(), None, "/models/live") == str(fresh)
+
+
+def test_other_root_revalidation_never_breaks_a_load_that_works(monkeypatch, tmp_path):
+    # Offline hf_hub_download already swallows the failed HEAD and returns the cached pointer, but
+    # anything else it raises (a hub layout change, a read-only root) must fall back to the copy we
+    # already located rather than turning a working load into a dropped prequant.
+    default_root = tmp_path / "default-hub"
+    default_root.mkdir()
+    ckpt = default_root / "Z-Image-Turbo-FP8.pt"
+    ckpt.write_bytes(b"weights")
+
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: (
+            str(default_root / filename)
+            if cache_dir is None and (default_root / filename).is_file()
+            else None
+        ),
+    )
+    asked: list = []
+
+    def _download(**kwargs):
+        asked.append(kwargs["cache_dir"])
+        raise RuntimeError("hub is unhappy")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    assert pq._resolve_checkpoint_path(_other_root_source(), None, "/models/live") == str(ckpt)
+    assert asked == [None]  # it was tried, through the root holding the copy, and forgiven
 
 
 def test_an_uncached_checkpoint_downloads_into_the_live_root(monkeypatch):
@@ -968,8 +1039,10 @@ def test_the_legacy_name_is_still_used_once_the_canonical_one_is_absent(monkeypa
 
 def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkeypatch, tmp_path):
     """Once the primary is absent remotely the legacy name IS the artifact, so it needs the same
-    other-root reuse the primary got: hf_hub_download(cache_dir = live) cannot see a copy sitting
-    in huggingface_hub's import-time root and would re-fetch multiple GB of it."""
+    other-root treatment the primary got: hf_hub_download(cache_dir = live) cannot see a copy
+    sitting in huggingface_hub's import-time root and would re-fetch multiple GB of it, while
+    returning that copy raw would pin it past a republish. Revalidate through the root holding
+    it instead."""
     from huggingface_hub.errors import EntryNotFoundError
 
     default_root = tmp_path / "default-hub"
@@ -1001,15 +1074,17 @@ def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkey
         token = None,
         cache_dir = None,
     ):
-        asked.append(filename)
+        asked.append((filename, cache_dir))
         if filename == "Z-Image-Turbo-FP8.pt":
             raise EntryNotFoundError("404")
-        pytest.fail("the legacy copy already on disk must not be downloaded again")
+        return str(legacy)  # unchanged upstream: the same blob, revalidated
 
     monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
 
     assert pq._resolve_checkpoint_path(source, None, "/models/live") == str(legacy)
-    assert asked == ["Z-Image-Turbo-FP8.pt"]  # the primary was tried; the legacy was reused
+    # The primary was tried in the live root and 404'd; the legacy was revalidated through the
+    # root that actually holds it, never re-fetched into the live one.
+    assert asked == [("Z-Image-Turbo-FP8.pt", "/models/live"), ("transformer_fp8.pt", None)]
 
 
 def test_load_config_reads_the_same_cache_root_as_the_checkpoint(monkeypatch, tmp_path):

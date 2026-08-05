@@ -363,16 +363,27 @@ def _resolve_checkpoint_path(
             class EntryNotFoundError(Exception):  # type: ignore[no-redef]
                 pass
 
-        # Short-circuit ONLY a hit hf_hub_download would never find. Passing cache_dir means it
-        # already reuses that root's blob and revalidates against the Hub, so returning early on a
-        # hit THERE would pin a stale checkpoint when the repo republishes under the same name.
-        # A copy under the OTHER root is different: hf_hub_download will not look there and would
-        # re-fetch multiple GB, which is the download the caller declined on. PRIMARY only, so the
-        # fallback is still reached solely through EntryNotFoundError below.
+        # Only the OTHER root needs special handling: hf_hub_download called with cache_dir would
+        # not look there and would re-fetch multiple GB, which is the download the caller declined
+        # on. So re-run it THROUGH that root (cache_dir = None) instead of returning the raw path:
+        # an unchanged repo reuses the existing blob and costs one HEAD, while a repo that
+        # republished the checkpoint under the same filename is picked up rather than pinned stale
+        # forever. Offline still resolves, because hf_hub_download keeps the failed HEAD and
+        # returns the cached pointer; any other failure falls back to the path we already found,
+        # so this can never break a load that works today. PRIMARY only, so the fallback is still
+        # reached solely through EntryNotFoundError below.
         if cache_dir is not None and _cached_in_root(source, cache_dir) is None:
             elsewhere = _cached_in_root(source, None)
             if elsewhere is not None:
-                return elsewhere
+                try:
+                    return hf_hub_download(
+                        repo_id = source.location,
+                        filename = source.filename,
+                        token = hf_token,
+                        cache_dir = None,
+                    )
+                except Exception:  # noqa: BLE001 — revalidation is a bonus, never a new failure
+                    return elsewhere
         try:
             return hf_hub_download(
                 repo_id = source.location,
@@ -384,15 +395,25 @@ def _resolve_checkpoint_path(
             if not source.fallback_filename or source.fallback_filename == source.filename:
                 raise
             # The primary is genuinely absent, so the legacy name is now the artifact to load and
-            # it gets the same other-root treatment: without this a legacy copy sitting in the
-            # import-time root is re-fetched, multiple GB, purely because cache_dir points elsewhere.
+            # it gets the same other-root treatment: revalidate through the root that holds the
+            # copy, so a legacy checkpoint sitting in the import-time root is neither re-fetched
+            # (multiple GB, purely because cache_dir points elsewhere) nor pinned stale past a
+            # republish, and the cached path is still returned if that call fails at all.
             if (
                 cache_dir is not None
                 and _cached_in_root(source, cache_dir, source.fallback_filename) is None
             ):
                 elsewhere = _cached_in_root(source, None, source.fallback_filename)
                 if elsewhere is not None:
-                    return elsewhere
+                    try:
+                        return hf_hub_download(
+                            repo_id = source.location,
+                            filename = source.fallback_filename,
+                            token = hf_token,
+                            cache_dir = None,
+                        )
+                    except Exception:  # noqa: BLE001 — never a new failure
+                        return elsewhere
             return hf_hub_download(
                 repo_id = source.location,
                 filename = source.fallback_filename,

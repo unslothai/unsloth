@@ -475,3 +475,191 @@ def test_the_gguf_is_resolved_against_the_live_cache_root(monkeypatch, tmp_path)
     )
     assert b._resolve_gguf_path("unsloth/Z-Image-Turbo-GGUF", "z.gguf", None) == str(other)
     assert calls == []  # not one byte re-downloaded
+
+
+def test_a_private_but_already_downloaded_base_is_not_refused(monkeypatch):
+    """huggingface_hub folds 401 into RepositoryNotFoundError: hf_raise_for_status says "401 is
+    misleading as it is returned for: private and gated repos if user is not authenticated,
+    missing repos => for now, we process them as RepoNotFound anyway" (utils/_http.py). So a
+    PRIVATE companion base that is already on disk arrives here indistinguishable from a deleted
+    one, and refusing it blocks a load that works today: hf_hub_download serves the cached pointer
+    once the token is cleared or expires, exactly as it does for a gated base."""
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    private = "unsloth/private-base"
+    for status in (401, 403):
+        probed = _stub_hub(
+            monkeypatch,
+            model_info_error = _hub_http_error(
+                RepositoryNotFoundError, f"{status} Client Error.", status
+            ),
+        )
+        monkeypatch.setattr(
+            "huggingface_hub.try_to_load_from_cache",
+            lambda repo_id, filename, cache_dir = None, **k: "/cache/model_index.json",
+        )
+        _assert_base_repo_accessible(private, "expired-token")
+        assert probed == []  # served from disk, so not one byte probe was made
+
+
+def test_a_deleted_or_renamed_base_still_raises_even_when_cached(monkeypatch):
+    """The other side of the split. A 404 is not an access verdict a stale copy can excuse: the
+    repo is gone, the size estimate swallows the 404 into a zero-byte plan, and the pick would
+    download nothing and fail later with no explanation."""
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    _stub_hub(
+        monkeypatch,
+        model_info_error = _hub_http_error(RepositoryNotFoundError, "404 Client Error.", 404),
+    )
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: "/cache/model_index.json",
+    )
+    with pytest.raises(ValueError) as excinfo:
+        _assert_base_repo_accessible("unsloth/renamed-away", None)
+    assert "unsloth/renamed-away" in str(excinfo.value)
+
+
+def test_a_repo_not_found_with_no_response_still_raises(monkeypatch):
+    """Older / newer hub versions may not attach a response, so the status is unreadable. Neither
+    401 nor 404 can be proven, so the cache escape is not granted: fail safe, as before."""
+    from huggingface_hub.errors import RepositoryNotFoundError
+
+    _stub_hub(monkeypatch, model_info_error = RepositoryNotFoundError("no response attached"))
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: "/cache/model_index.json",
+    )
+    with pytest.raises(ValueError):
+        _assert_base_repo_accessible("unsloth/mystery", None)
+
+
+def _native_backend_ready(monkeypatch):
+    """An SdCppDiffusionBackend whose binary resolution and asset fetch are stubbed out, so
+    ``_run_load`` reaches (or fails to reach) the preflight without touching a real engine."""
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+
+    b = SdCppDiffusionBackend(engine = None)
+    monkeypatch.setattr(
+        SdCppDiffusionBackend,
+        "_resolve_backend",
+        lambda self: ("oneshot", None, types.SimpleNamespace(version = lambda: "master")),
+    )
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_set_expected_bytes", lambda self, assets, token: None
+    )
+    fetched: list = []
+
+    def _fetch(self, assets, token, cancel_event = None):
+        fetched.append(assets)
+        raise AssertionError("the gated companion must be caught before any byte is fetched")
+
+    monkeypatch.setattr(SdCppDiffusionBackend, "_fetch_assets", _fetch)
+    return b, fetched
+
+
+def test_the_native_load_preflights_its_companion_repos_too(monkeypatch):
+    """The plan alone is not enough. images-page.tsx wraps getDiffusionDownloadPlan in a
+    try/catch ("No plan (older backend, metadata hiccup): fall back to the load's own download")
+    and then calls /images/load regardless, so the 400 the plan raises is swallowed and the load
+    would run with no preflight at all -- the user gets the bare Hub token error this exists to
+    replace. The diffusers backend runs the same check in both places; the native one must too."""
+    from core.inference.diffusion_families import detect_family_for_pick
+    from core.inference.sd_cpp_backend import _SdLoading
+
+    gated = "black-forest-labs/FLUX.1-schnell"
+    b, fetched = _native_backend_ready(monkeypatch)
+    b._loading = _SdLoading(repo_id = "unsloth/FLUX.1-dev-GGUF", base_repo = "")
+
+    class _Api:
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
+            return _FakeInfo("auto" if repo_id == gated else False)
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr(
+        "huggingface_hub.get_hf_file_metadata",
+        lambda url, token = None, **k: (_ for _ in ()).throw(_gated_error()),
+    )
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+
+    fam = detect_family_for_pick("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", None)
+    b._run_load(
+        repo_id = "unsloth/FLUX.1-dev-GGUF",
+        gguf_filename = "flux1-dev-Q4_K_M.gguf",
+        base = "",
+        fam = fam,
+        hf_token = "no-access",
+        _load_token = b._load_token,
+    )
+
+    assert fetched == []  # refused before the multi-GB pull, not 15 GiB into it
+    detail = b._loading.error or ""
+    assert gated in detail and "licence" in detail.lower()
+
+
+def test_the_native_load_probes_the_asset_it_stages_and_honours_the_cache(monkeypatch):
+    """Same two properties the plan half has, so the load half cannot drift from it: the probe is
+    the file THIS pick stages (a VAE-only repo has no pipeline manifest), and a companion already
+    on disk is never refused."""
+    from core.inference.diffusion_families import detect_family_for_pick
+    from core.inference.sd_cpp_backend import _SdLoading
+
+    gated = "black-forest-labs/FLUX.1-schnell"
+    b, fetched = _native_backend_ready(monkeypatch)
+    b._loading = _SdLoading(repo_id = "unsloth/FLUX.1-dev-GGUF", base_repo = "")
+
+    class _Api:
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
+            return _FakeInfo("auto" if repo_id == gated else False)
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    probed: list = []
+
+    def _metadata(
+        url,
+        token = None,
+        **k,
+    ):
+        probed.append(url)
+        raise _gated_error()
+
+    monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", _metadata)
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+
+    fam = detect_family_for_pick("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", None)
+    kwargs = dict(
+        repo_id = "unsloth/FLUX.1-dev-GGUF",
+        gguf_filename = "flux1-dev-Q4_K_M.gguf",
+        base = "",
+        fam = fam,
+        hf_token = "no-access",
+        _load_token = b._load_token,
+    )
+    b._run_load(**kwargs)
+    # The VAE file the load actually opens, not model_index.json, which that repo would not serve.
+    assert probed == [f"https://huggingface.co/{gated}/resolve/main/ae.safetensors"]
+    assert fetched == []
+
+    # That same VAE already on disk clears the preflight and the load proceeds to the fetch.
+    probed.clear()
+    b._loading = _SdLoading(repo_id = "unsloth/FLUX.1-dev-GGUF", base_repo = "")
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: (
+            "/cache/ae.safetensors" if filename == "ae.safetensors" else None
+        ),
+    )
+    b._run_load(**kwargs)
+    assert probed == []
+    assert len(fetched) == 1  # got past the preflight, exactly as before this check existed

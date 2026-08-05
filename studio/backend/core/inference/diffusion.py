@@ -529,9 +529,17 @@ def _assert_base_repo_accessible(
         if _already_downloaded():
             return
         raise ValueError(_repo_access_message(repo, gated = True)) from None
-    except RepositoryNotFoundError:
-        # The size estimate swallows this and plans zero bytes, so without a raise the pick
-        # downloads nothing and fails later with no explanation. Never excused by the cache.
+    except RepositoryNotFoundError as exc:
+        # 401 and 404 both arrive here: hf_raise_for_status folds "private and gated repos if user
+        # is not authenticated" in with a missing repo, because "401 is misleading" (_http.py), so
+        # the status has to be re-read to tell them apart. A 401/403 is an ACCESS verdict and earns
+        # the same cache escape as the other access branches -- a private companion already on disk
+        # still loads once the token is cleared or expires, since hf_hub_download serves it from
+        # the cache. A genuine 404 is never excused: a renamed or removed repo cannot be
+        # un-renamed by a stale copy on disk, and the size estimate swallows that 404 into a
+        # zero-byte plan. An error carrying no response reads as neither, so it raises: fail safe.
+        if _is_auth_error(exc) and _already_downloaded():
+            return
         raise ValueError(_repo_access_message(repo, gated = False)) from None
     except HfHubHTTPError as exc:
         if not _is_auth_error(exc):
