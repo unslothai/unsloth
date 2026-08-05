@@ -964,3 +964,40 @@ def test_the_legacy_name_is_still_used_once_the_canonical_one_is_absent(monkeypa
 
     assert _resolve_checkpoint_path(source, None) == str(tmp_path / "transformer_fp8.pt")
     assert asked == ["Z-Image-Turbo-FP8.pt", "transformer_fp8.pt"]  # primary first, then legacy
+
+
+def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkeypatch, tmp_path):
+    """Once the primary is absent remotely the legacy name IS the artifact, so it needs the same
+    other-root reuse the primary got: hf_hub_download(cache_dir = live) cannot see a copy sitting
+    in huggingface_hub's import-time root and would re-fetch multiple GB of it."""
+    from huggingface_hub.errors import EntryNotFoundError
+
+    default_root = tmp_path / "default-hub"
+    default_root.mkdir()
+    legacy = default_root / "transformer_fp8.pt"
+    legacy.write_bytes(b"weights")
+    source = PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
+    )
+
+    def _cache(repo_id, filename, cache_dir = None):
+        # Only the import-time default holds the legacy file; the live root holds nothing.
+        path = default_root / filename
+        return str(path) if cache_dir is None and path.is_file() else None
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
+    asked: list = []
+
+    def _download(repo_id, filename, token = None, cache_dir = None):
+        asked.append(filename)
+        if filename == "Z-Image-Turbo-FP8.pt":
+            raise EntryNotFoundError("404")
+        pytest.fail("the legacy copy already on disk must not be downloaded again")
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    assert pq._resolve_checkpoint_path(source, None, "/models/live") == str(legacy)
+    assert asked == ["Z-Image-Turbo-FP8.pt"]  # the primary was tried; the legacy was reused

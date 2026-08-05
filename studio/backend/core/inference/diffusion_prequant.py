@@ -182,11 +182,15 @@ def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> O
     return None
 
 
-def _cached_in_root(source: Any, root: Optional[str]) -> Optional[str]:
-    """The primary checkpoint's path inside ONE cache root, or None. Never raises."""
+def _cached_in_root(
+    source: Any, root: Optional[str], name: Optional[str] = None
+) -> Optional[str]:
+    """One checkpoint name's path inside ONE cache root, or None. Defaults to the primary name;
+    the resolver passes ``fallback_filename`` explicitly once the primary turns out to be absent
+    remotely. Never raises."""
     if source is None or getattr(source, "kind", None) != "repo":
         return None
-    name = getattr(source, "filename", None)
+    name = name or getattr(source, "filename", None)
     if not name:
         return None
     try:
@@ -371,6 +375,15 @@ def _resolve_checkpoint_path(
         except EntryNotFoundError:
             if not source.fallback_filename or source.fallback_filename == source.filename:
                 raise
+            # The primary is genuinely absent, so the legacy name is now the artifact to load and
+            # it gets the same other-root treatment: without this a legacy copy sitting in the
+            # import-time root is re-fetched, multiple GB, purely because cache_dir points elsewhere.
+            if cache_dir is not None and _cached_in_root(
+                source, cache_dir, source.fallback_filename
+            ) is None:
+                elsewhere = _cached_in_root(source, None, source.fallback_filename)
+                if elsewhere is not None:
+                    return elsewhere
             return hf_hub_download(
                 repo_id = source.location,
                 filename = source.fallback_filename,
