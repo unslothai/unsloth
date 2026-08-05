@@ -140,6 +140,7 @@ def _build_trainer(
     user_float32 = None,
     has_mixed_precision = True,
     mark_forced_float32 = True,
+    forced_float32 = None,
 ):
     """Run rl.py's __init__ block for one trainer against the shared env."""
     args = _Args(fp16 = fp16, bf16 = bf16, has_mixed_precision = has_mixed_precision)
@@ -151,8 +152,11 @@ def _build_trainer(
     )
     env.setdefault("UNSLOTH_FORCE_FLOAT32", "0")
     if mark_forced_float32:
-        # What from_pretrained stamps on the model it just loaded.
-        model._unsloth_forced_float32 = env["UNSLOTH_FORCE_FLOAT32"] == "1"
+        # What from_pretrained stamps on the model it just loaded. `forced_float32`
+        # sets it apart from the env, which is what an earlier load leaves behind.
+        model._unsloth_forced_float32 = (
+            (env["UNSLOTH_FORCE_FLOAT32"] == "1") if forced_float32 is None else forced_float32
+        )
     env.setdefault("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
     env.setdefault("UNSLOTH_MIXED_PRECISION", "float32")
 
@@ -326,6 +330,45 @@ def test_a_forced_float32_load_cannot_force_an_unforced_trainer():
     env["UNSLOTH_FORCE_FLOAT32"] = "1"
 
     assert _generate(trainer, env, has_bf16 = False) == (False, None)
+
+
+@pytest.mark.parametrize(
+    "model_dtype, bf16_supported, precision, autocast",
+    [
+        (torch.bfloat16, True, "bf16", (True, torch.bfloat16)),
+        (torch.float16, False, "fp16", (True, torch.float16)),
+    ],
+)
+def test_a_forced_load_earlier_in_the_process_cannot_force_this_trainer(
+    model_dtype, bf16_supported, precision, autocast
+):
+    """The trainer's __init__ has to read the stamp too, not only generation.
+
+    The legacy FastLanguageModel path never writes UNSLOTH_FORCE_FLOAT32, so a
+    Gemma3 or gpt-oss loaded before it leaves '1' behind for a model that is not
+    forced. Reading the env there drops the trainer to no mixed precision at all,
+    and generation, which now reads the stamp, no longer puts the float16 back.
+    A float16 model then trains with neither autocast nor a GradScaler.
+    """
+    env = {"UNSLOTH_FORCE_FLOAT32": "1"}
+    trainer = _build_trainer(env, model_dtype, bf16_supported = bf16_supported, forced_float32 = False)
+    assert env["ACCELERATE_MIXED_PRECISION"] == precision
+    assert _generate(trainer, env, has_bf16 = bf16_supported) == autocast
+
+
+def test_an_unstamped_model_still_takes_the_environment_answer_in_init():
+    """The fallback, for a model loaded before the stamp existed."""
+    env = {"UNSLOTH_FORCE_FLOAT32": "1"}
+    trainer = _build_trainer(env, torch.float32, bf16_supported = False, mark_forced_float32 = False)
+    assert env["ACCELERATE_MIXED_PRECISION"] == "no"
+    assert _generate(trainer, env, has_bf16 = False) == (True, torch.float16)
+
+
+def test_the_trainer_init_prefers_the_stamp_over_the_shared_flag():
+    """One fallback read in the __init__ block, as in the generation helper."""
+    assert "_unsloth_forced_float32" in MP_SRC
+    reads = re.findall(r"environ\.get\(\s*['\"]UNSLOTH_FORCE_FLOAT32", MP_SRC)
+    assert len(reads) == 1, reads
 
 
 def _own_returns(node):
