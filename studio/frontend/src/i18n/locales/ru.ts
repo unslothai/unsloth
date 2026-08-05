@@ -43,11 +43,11 @@ export const ru = {
     error: "Ошибка",
     export: "Экспорт",
     help: "Справка",
-    loading: "Загрузка...",
-    new: "Создать",
+    loading: "Загрузка…",
+    new: "Новое",
     rename: "Переименовать",
     save: "Сохранить",
-    saving: "Сохранение...",
+    saving: "Сохранение…",
     search: "Поиск",
     shutdown: "Выключить",
   },
@@ -75,7 +75,7 @@ export const ru = {
     navigation: {
       newChat: "Новый чат",
       returnToChat: "Вернуться к чату",
-      returnToChats: "Вернуться к {count} чатам",
+      returnToChats: "Вернуться к чатам ({count})",
       chatGenerating: "Генерация",
       compare: "Сравнить",
       search: "Поиск",
@@ -90,7 +90,7 @@ export const ru = {
       api: "API",
       lightMode: "Светлая тема",
       darkMode: "Тёмная тема",
-      guidedTour: "Обзорный тур",
+      guidedTour: "Обзор интерфейса",
       help: "Справка",
       logOut: "Выйти",
       shutdown: "Выключить",
@@ -184,13 +184,14 @@ export const ru = {
         sttDownload: "Скачать",
         sttDownloading: "Скачивание… {progress}%",
         sttCancelDownload: "Отмена",
-        sttCancellingDownload: "Отмена…",
+        sttCancellingDownload: "Отмена скачивания…",
         sttDownloadComplete: "Модель распознавания речи скачана",
         sttDownloadFailed: "Не удалось скачать модель распознавания речи",
         sttLoad: "Загрузить",
         sttUnload: "Выгрузить",
         sttUnloading: "Выгрузка…",
         microphoneLabel: "Микрофон",
+        microphoneFallbackName: "Микрофон {index}",
         microphoneDescription: "Используется для диктовки",
         microphoneFallbackHint:
           "Используется для диктовки. Если речевой движок браузера не может работать с этим устройством, будет использовано системное устройство по умолчанию",
@@ -201,7 +202,7 @@ export const ru = {
           "Доступ к микрофону заблокирован. Разрешите доступ к микрофону для этой страницы Unsloth и повторите попытку.",
         micAccessUnsupported:
           "Доступ к микрофону не поддерживается в этом браузере или контексте.",
-        systemDefault: "Системное устройство по умолчанию",
+        systemDefault: "По умолчанию в системе",
         savedMicDisconnected: "Сохранённый микрофон (не подключён)",
         languageLabel: "Язык диктовки",
         languageDescription: "Язык для распознавания",
@@ -211,10 +212,14 @@ export const ru = {
         sectionTitle: "Словарь диктовки",
         sectionDescription:
           "Задайте, как диктовка записывает определённые слова и выражения",
-        manageLabel: "Пользовательские написания",
+        manageLabel: "Особые варианты написания",
         manage: "Управление",
         backToVoice: "Назад к настройкам голоса",
         addEntry: "Добавить запись",
+        newEntryAria: "Новая словарная запись",
+        entryPlaceholder: "Анна Иванова",
+        entryAria: "Словарная запись {index}",
+        removeEntryAria: "Удалить словарную запись {index}",
       },
       recents: {
         sectionTitle: "История диктовок",
@@ -276,8 +281,9 @@ export const ru = {
         volumeLabel: "Громкость",
         previewLabel: "Прослушать голос",
         previewDescription: "Воспроизвести короткий пример",
+        previewFailed: "Не удалось воспроизвести пример синтеза речи",
         previewAction: "Прослушать",
-        stopAction: "Стоп",
+        stopAction: "Остановить",
         ttsLabel: "Синтез речи",
         notSupported: "Не поддерживается в этом браузере",
       },
@@ -291,6 +297,8 @@ export const ru = {
         "Используется для загрузки закрытых моделей и публикации артефактов.",
       hideToken: "Скрыть токен",
       showToken: "Показать токен",
+      clearToken: "Очистить",
+      checkingToken: "Проверка токена...",
       tokenValidated: "Токен проверен",
       password: "Пароль",
       passwordDescription: "Изменить пароль для этого аккаунта Unsloth.",
@@ -322,7 +330,7 @@ export const ru = {
         sectionTitle: "Вспомогательная LLM",
         preloadOnStartup: "Предзагружать вспомогательную LLM при запуске",
         preloadOnStartupDescription:
-          "Загружать вспомогательную модель AI Assist в фоне при запуске. По умолчанию выключено; AI Assist всё равно может загрузить её по запросу.",
+          "Скачивать вспомогательную модель AI Assist в фоновом режиме при запуске. По умолчанию выключено; AI Assist всё равно может скачать её по запросу.",
         disabledByEnv:
           "Отключено переменной UNSLOTH_HELPER_MODEL_DISABLE в окружении бэкенда.",
         loadError: "Не удалось загрузить настройки вспомогательной LLM.",
@@ -332,14 +340,13 @@ export const ru = {
         sectionTitle: "Автопереключение модели (OpenAI API)",
         enable: "Переключать модель по запросу",
         enableDescription:
-          "Когда OpenAI-совместимый запрос указывает другую загруженную GGUF, загружать её перед обслуживанием. По умолчанию выключено; неизвестные имена продолжают обслуживать загруженную модель.",
+          "Загружать скачанную модель GGUF, указанную в запросе к API, перед обработкой запроса. По умолчанию выключено.",
         idleUnload: "Автовыгрузка при простое",
         idleUnloadDescription:
-          "Выгружать модель после указанного числа секунд простоя, чтобы освободить VRAM; следующий запрос загрузит её снова. 0 оставляет модель загруженной. Минимум 60 секунд.",
-        idleNeedsEnable:
-          "Включите «Переключать модель по запросу», чтобы выгруженная модель загружалась при следующем использовании.",
-        idleActiveViaEnv:
-          "Автовыгрузка при простое активна через переменную окружения UNSLOTH_MODEL_IDLE_TTL.",
+          "Освобождать VRAM после указанного числа секунд простоя. 0 оставляет модель загруженной; минимальное значение: 60.",
+        idleSecondsAriaLabel: "Число секунд до автовыгрузки при простое",
+        idleNeedsEnable: "Сначала включите «Переключать модель по запросу».",
+        idleActiveViaEnv: "Активно через UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Не удалось загрузить настройки автопереключения модели.",
         saveError: "Не удалось сохранить настройки автопереключения модели.",
         idleError: "Введите 0, чтобы модель оставалась загруженной, или не менее 60 секунд.",
@@ -354,7 +361,7 @@ export const ru = {
         sectionTitle: "Публикация предпросмотра",
         enableLabel: "Публичные ссылки предпросмотра",
         enableDescription:
-          "Позволяет любому по подписанной ссылке общаться с готовой моделью без входа в систему. Отключите, чтобы закрыть публичный предпросмотр; общие ссылки перестанут работать.",
+          "Позволяет любому по подписанной ссылке общаться с готовой моделью без входа в систему. Отключите, чтобы закрыть публичный предпросмотр; опубликованные ссылки перестанут работать.",
         loadError: "Не удалось загрузить настройки публикации предпросмотра.",
         saveError: "Не удалось сохранить настройки публикации предпросмотра.",
         revokeLabel: "Отозвать все ссылки предпросмотра",
@@ -397,7 +404,7 @@ export const ru = {
         saveError: "Не удалось сохранить модель эмбеддингов.",
         saved: "Модель эмбеддингов сохранена.",
         saveAnyway: "Всё равно сохранить",
-        resetAction: "Сбросить к умолчанию",
+        resetAction: "Восстановить значение по умолчанию",
       },
       storage: {
         sectionTitle: "Хранилище",
@@ -506,9 +513,9 @@ export const ru = {
         trainingRuns: "Запуски",
         trainingCompleted: "Завершено",
         trainingSteps: "Шаги",
-        trainingTokens: "Обучено токенов",
+        trainingTokens: "Обработано токенов",
         trainingTime: "Время обучения",
-        bestLoss: "Лучший loss",
+        bestLoss: "Минимальная функция потерь",
         runSteps: "{steps}",
         runLoss: "loss {loss}",
       },
@@ -529,7 +536,7 @@ export const ru = {
         description: "Цвета, используемые в Unsloth в светлой и тёмной теме.",
         standard: "Стандартная",
         classic: "Классическая",
-        minimal: "Минимальная",
+        minimal: "Минималистичная",
       },
       custom: {
         reset: "Сбросить",
@@ -639,6 +646,13 @@ export const ru = {
       disableOverlay: "Отключить оверлей",
       liveMonitor: {
         title: "Монитор в реальном времени",
+        apiTitle: "Монитор API",
+        summary: "Активные запросы, ошибки и использование токенов",
+        status: "активных: {active} · недавних: {recent} · {model}",
+        noModelLoaded: "модель не загружена",
+        autoOpen: "Автоматически показывать плавающий монитор",
+        autoOpenDescription:
+          "Открывает небольшую панель при появлении трафика API.",
         cpu: "CPU",
         ram: "RAM",
         disk: "Диск",
@@ -650,7 +664,10 @@ export const ru = {
       },
       gpu: {
         title: "Устройства GPU",
-        noGpu: "Видимый GPU не обнаружен. Выше показаны ресурсы CPU.",
+        ggufInference: "Инференс GGUF",
+        unavailable: "недоступно",
+        noGpu:
+          "Доступные GPU не обнаружены. Выше показаны ресурсы только для CPU.",
         unknownDevice: "Неизвестный GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -666,7 +683,8 @@ export const ru = {
         modelsFolder: "Папка моделей",
         modelsFolderKeywords:
           "модели папка каталог путь расположение загрузки кэш хранилище диск перенести изменить models folder path hugging face",
-        modelsFolderDescription: "Где хранятся загруженные модели.",
+        modelsFolderDescription:
+          "Здесь хранятся скачанные модели. Измените папку, чтобы хранить модели не на системном диске.",
         openAction: "Открыть",
         copyAction: "Копировать путь",
         copied: "Путь скопирован",
@@ -707,12 +725,12 @@ export const ru = {
       commandBuilder: "Конструктор команды",
       agent: "Кодинг-агент",
       model: "Модель",
-      searchModels: "Поиск моделей GGUF...",
+      searchModels: "Поиск моделей GGUF…",
       noModels: "Подходящих моделей GGUF нет.",
       showingModels:
         "Показано {shown} из {total} совпадений. Продолжайте вводить, чтобы сузить список.",
       quantization: "Квантизация",
-      loadingQuantizations: "Загрузка квантизаций...",
+      loadingQuantizations: "Загрузка квантизаций…",
       noQuantizations: "Без отдельной квантизации",
       recommended: "Рекомендуется",
       downloaded: "Скачано",
@@ -740,7 +758,8 @@ export const ru = {
         title: "Собрать команду",
         description:
           "Запустите агента на модели, уже загруженной в Studio. Сначала загрузите модель, затем замените claude на любого поддерживаемого агента из списка ниже.",
-        noneDetected: "В вашем PATH не найдено поддерживаемых CLI агентов.",
+        noneDetected:
+          "В PATH не найдено ни одного поддерживаемого агента с интерфейсом командной строки.",
         installed: "Установлен",
       },
       supportedAgents: {
@@ -782,7 +801,7 @@ export const ru = {
       remote: {
         title: "Подключение к удалённому Studio",
         description:
-          "Направьте unsloth start на Studio, работающий в другом месте, задав перед запуском следующие переменные (или передайте --api-key напрямую):",
+          "Чтобы подключить unsloth start к удалённому экземпляру Studio, задайте перед запуском следующие переменные (или передайте --api-key напрямую):",
       },
       passthrough: {
         title: "Передача аргументов агенту",
@@ -797,10 +816,32 @@ export const ru = {
     },
     chat: {
       title: "Чат",
-      description: "Управление историей чатов, хранящейся на этом устройстве.",
-      modelDisclaimer: "Показывать оговорку о модели",
+      description: "Настройка поведения чата на этом устройстве.",
+      modelSelection: {
+        title: "Настройки выбора модели",
+        expandQuantizations: "Раскрывать квантизации",
+        expandQuantizationsDescription:
+          "Включено: квантизации моделей GGUF из раздела «На устройстве» отображаются сразу. Выключено: нажмите модель, чтобы просмотреть её квантизации.",
+        showAllQuantizations: "Показывать все квантизации",
+        showAllQuantizationsDescription:
+          "Включено: показываются все квантизации из раздела «На устройстве», в том числе не скачанные. Выключено: показываются только скачанные квантизации.",
+      },
+      menu: {
+        title: "Меню чата",
+        description:
+          "Закрепляйте пункты в боковом меню «+» чата. Остальные будут доступны в разделе «Ещё».",
+        chatWithFiles: "Чат с файлами (RAG)",
+        mcp: "MCP",
+        savedPrompts: "Сохранённые промпты",
+        compareChat: "Сравнить чаты",
+        exportChat: "Экспортировать чат",
+      },
+      showResponseModel: "Показывать модель в ответах",
+      showResponseModelDescription:
+        "Показывать метаданные модели в ответах ассистента.",
+      modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
-        'Показывать «LLM могут ошибаться» под полем ввода.',
+        "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Сворачивать блоки HTML",
@@ -814,7 +855,7 @@ export const ru = {
       exportHistory: "Экспортировать историю чатов",
       exportHistoryDescription: "Скачать все чаты и сообщения в формате JSON.",
       exportAction: "Экспорт",
-      exportingAction: "Экспорт...",
+      exportingAction: "Экспорт…",
       exportConversations: "Экспортировать «Недавние» и проекты",
       exportConversationsDescription:
         "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Raw JSONL, CSV или ShareGPT JSONL, объединённо или по чатам.",
@@ -825,7 +866,7 @@ export const ru = {
       exportPerChatSuffix: "(по чатам)",
       importChats: "Импортировать чаты",
       importChatsDescription:
-        "Импортировать экспорт JSONL, NDJSON или CSV в «Недавние».",
+        "Импортировать файл экспорта в формате JSONL, NDJSON или CSV в раздел «Недавние».",
       importChatsAction: "Импорт",
       importNoConversations: "В файле не найдено диалогов.",
       importedOneChat: "Импортирован 1 диалог в «Недавние».",
@@ -843,12 +884,12 @@ export const ru = {
         "Безвозвратно удалить все чаты на этом устройстве: {count}.",
       clearChatsAction: "Очистить чаты",
       clearOneChatTitle: "Очистить 1 чат?",
-      clearChatsTitle: "Очистить {count} чатов?",
+      clearChatsTitle: "Очистить чаты ({count})?",
       clearChatsConfirmDescription:
         "Безвозвратно удаляет все чаты на этом устройстве. Это действие нельзя отменить.",
-      clearingAction: "Очистка...",
+      clearingAction: "Очистка…",
       clearOneChatAction: "Очистить 1 чат",
-      clearChatCountAction: "Очистить {count} чатов",
+      clearChatCountAction: "Очистить чаты ({count})",
       clearedAllChats: "Все чаты очищены",
       clearedOneChat: "Очищен 1 чат",
       clearedChatCount: "Очищено чатов: {count}",
@@ -868,14 +909,16 @@ export const ru = {
     },
     data: {
       title: "Данные",
+      backToData: "Вернуться к данным",
+      exportFailed: "Не удалось экспортировать чаты",
       description:
         "Управление историей чатов и загруженными файлами, которые хранятся на этом устройстве.",
       archivedChats: "Архивные чаты",
       archivedChatsDescription:
         "Просматривайте чаты, отправленные в архив, и управляйте ими.",
-      manageAction: "Управление",
+      manageAction: "Управлять",
       exportArchivedChats: "Экспорт",
-      exportingArchivedChats: "Экспорт...",
+      exportingArchivedChats: "Экспорт…",
       exportedOneArchivedChat: "Экспортирован 1 архивный чат",
       exportedArchivedChatCount: "Экспортировано архивных чатов: {count}",
       noArchivedChatsToExport: "Нет архивных чатов для экспорта.",
@@ -885,7 +928,7 @@ export const ru = {
         "Переносит в архив все чаты из «Недавних» и проектов.",
       noChatsToArchive: "Нет чатов для архивации.",
       archiveAllAction: "Архивировать все",
-      archivingAction: "Архивация...",
+      archivingAction: "Архивация…",
       archiveAllChatsTitle: "Архивировать все чаты?",
       archiveAllChatsConfirmDescription:
         "Переносит в архив все чаты на этом устройстве. Архивные чаты остаются доступными, их можно вернуть из архива в любой момент.",
@@ -905,11 +948,11 @@ export const ru = {
         "Создайте из своих чатов датасет JSONL для дообучения. Загрузите его в «Обучение», доработайте в «Рецептах» или экспортируйте.",
       fineTuneExportAction: "Экспорт в JSONL",
       fineTuneRunAction: "Запустить",
-      fineTuneExportingAction: "Экспорт...",
+      fineTuneExportingAction: "Экспорт…",
       fineTuneOpenRecipesAction: "Открыть в «Рецептах»",
-      fineTuneOpeningRecipesAction: "Открытие...",
+      fineTuneOpeningRecipesAction: "Открытие…",
       fineTuneTrainAction: "Загрузить во вкладку «Обучение»",
-      fineTuneTrainingAction: "Загрузка...",
+      fineTuneTrainingAction: "Загрузка…",
       fineTuneExportFailed: "Не удалось экспортировать обучающие данные",
       fineTuneRecipeFailed: "Не удалось открыть чаты в «Рецептах»",
       fineTuneTrainFailed:
@@ -949,7 +992,7 @@ export const ru = {
       osWindows: "Windows",
       secureHttps: "Защищённый HTTPS",
       secureHttpsHint:
-        "Порт 0.0.0.0 по-прежнему доступен глобально. Для полной безопасности запустите Unsloth с флагом --secure, чтобы открыть только эту HTTPS-ссылку.",
+        "Порт, привязанный к адресу 0.0.0.0, по-прежнему доступен из сети. Для полной безопасности запустите Unsloth с флагом --secure, чтобы оставить доступ только по этой HTTPS-ссылке.",
       copyTunnelUrl: "Копировать URL туннеля",
       copySnippet: "Копировать фрагмент",
       copy: "Копировать",
@@ -957,22 +1000,17 @@ export const ru = {
       setupDocs: "Документация по настройке:",
       codingAgents: "Кодинг-агенты",
       codingAgentsHint:
-        "Запустите кодинг-агента к этому серверу. Он использует загруженную модель; локальный сервер выпускает ключ API автоматически, удалённый включает его в команду.",
+        "Запустите кодинг-агента, подключив его к этому серверу. Он будет использовать загруженную модель; локальный сервер автоматически создаст ключ API, а удалённый добавит его в команду.",
       codingAgentsSwap: "Замените claude на codex, openclaw, opencode или hermes.",
       codingAgentDetected: "Установлен на этой машине",
       codingAgentsDetectedHint: "Обнаружены на этой машине: {agents}.",
       relativeNever: "никогда",
       relativeJustNow: "только что",
-      relativeHoursAgo: "{count} ч назад",
-      relativeDaysAgo: "{count} дн назад",
-      relativeMonthsAgo: "{count} мес назад",
-      relativeYearsAgo: "{count} г назад",
       expired: "истёк",
       today: "сегодня",
-      inDays: "через {count} дн",
       created: "Создан {value}",
-      used: "Использован {value}",
-      expires: "Истекает {value}",
+      used: "Использование: {value}",
+      expires: "Срок действия: {value}",
       actionsFor: "Действия для {name}",
       copyPrefix: "Копировать префикс",
       revokeToken: "Отозвать токен",
@@ -986,29 +1024,34 @@ export const ru = {
     },
     about: {
       title: "О программе",
-      description: "Документация, заметки о выпусках, отзывы и данные сборки.",
+      description:
+        "Документация, заметки о выпусках, обратная связь и сведения о сборке.",
       studioVersion: "Версия Unsloth",
       packageVersion: "Версия пакета",
+      desktopAppVersion: "Версия настольного приложения",
+      desktopAppVersionUnavailable: "Недоступно",
       llamaCppVersion: "Версия llama.cpp",
       hardware: "Оборудование",
       gpu: "GPU",
       cuda: "CUDA",
       rocm: "ROCm",
+      xpu: "XPU",
       updates: "Обновление",
       help: "Справка",
       documentation: "Документация",
       releaseNotes: "Заметки о выпуске",
       whatsNew: "Что нового",
-      feedback: "Отзывы",
+      feedback: "Обратная связь",
       reportIssue: "Сообщить о проблеме",
       license: {
         sectionTitle: "Лицензия",
         studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
-        studioDescription: "Открытый исходный код под GNU AGPL v3.0.",
+        studioDescription:
+          "Исходный код открыт и распространяется по лицензии GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
         libraryLicense: "Apache-2.0",
-        libraryDescription: "Лицензировано под Apache 2.0.",
+        libraryDescription: "Распространяется по лицензии Apache 2.0.",
       },
       dangerZone: "Опасная зона",
       shutDownStudio: "Выключить Unsloth",
@@ -1020,7 +1063,7 @@ export const ru = {
         commandText: "Текст «{label}»",
         copied: "Скопировано",
         copyCommand: "Копировать команду",
-        commandCopied: "«{label}» скопировано",
+        commandCopied: "Скопировано: {label}",
         copyNamedCommand: "Копировать «{label}»",
         checkingInstall: "Проверка способа установки Unsloth...",
         installIntro: "Чтобы установить или обновить Unsloth:",
@@ -1028,7 +1071,7 @@ export const ru = {
         installCommandUnix: "Команда установки для macOS/Linux",
         installCommandWindows: "Команда установки для Windows",
         localInstallDetected:
-          "Обнаружена локальная установка. Обновляйте из исходного checkout, чтобы не заменить его версией с PyPI.",
+          "Обнаружена установка из локальной рабочей копии. Обновляйте Unsloth из исходной рабочей копии, чтобы не заменить эту установку пакетом из PyPI.",
         pullThenUpdate:
           "Загрузите последние изменения, затем запустите локальный установщик:",
         gitPullCommand: "Команда git pull",
@@ -1036,14 +1079,40 @@ export const ru = {
         sourceInstallDetected:
           "Обнаружена установка из исходников или VCS-пакета. Переустановите из исходного локального пути или Git URL.",
         repoCheckoutFallback:
-          "Если у вас всё ещё есть checkout репозитория, запустите локальный установщик из него:",
+          "Если рабочая копия репозитория сохранилась, запустите из неё локальный установщик:",
         restartAfterUpdate: "После обновления перезапустите Unsloth.",
         desktopManaged:
-          "Настольное приложение поддерживает встроенный бэкенд в актуальном состоянии и уведомит о новой версии.",
+          "Настольное приложение автоматически проверяет наличие новых версий. Здесь также можно в любое время проверить наличие обновлений или установить их.",
+        desktopReady: "Обновления настольного приложения",
+        desktopReadyDescription:
+          "Проверьте, доступна ли более новая версия настольного приложения.",
+        desktopChecking: "Проверка обновлений",
+        desktopCheckingDescription: "Обычно это занимает несколько секунд.",
+        desktopAvailable:
+          "Доступна версия {version} настольного приложения",
+        desktopAvailableDescription:
+          "Установите обновление сейчас. После установки настольное приложение перезапустится.",
+        desktopExternalServer:
+          "Выполните `unsloth studio update` в терминале, из которого был запущен сервер.",
+        desktopManualInstall:
+          "Откройте страницу выпуска, чтобы установить последнюю версию пакета для Linux.",
+        desktopCheckFailed: "Не удалось проверить наличие обновлений",
+        desktopCheckFailedDescription:
+          "Проверьте подключение к сети и повторите попытку.",
+        desktopCurrent:
+          "Установлена последняя версия настольного приложения",
+        desktopCurrentDescription:
+          "Unsloth продолжит автоматически проверять наличие обновлений.",
+        checkForUpdates: "Проверить наличие обновлений",
+        checkAgain: "Проверить снова",
+        retryCheck: "Повторить попытку",
+        checking: "Проверка…",
+        updateNow: "Обновить сейчас",
+        openReleasePage: "Открыть страницу выпуска",
         unknownInstall:
           "Не удалось определить способ установки Unsloth. Для установки через установщик или PyPI используйте команды выше.",
         localCheckout:
-          "Для установок из локального checkout запустите локальный установщик из него:",
+          "Для установки из локальной рабочей копии запустите установщик из этой копии:",
         docs: "Документация по установке:",
         docsInstall: "Установка",
         docsUpdating: "Обновление",
@@ -1610,7 +1679,8 @@ export const ru = {
       continueAction: "Продолжить обучение",
       cancelAction: "Отменить обучение",
       stopTitle: "Остановить обучение",
-      stopDescription: "Выберите, как остановить текущий запуск обучения.",
+      stopDescription:
+        "Выберите, как остановить текущий запуск обучения. «Остановить и сохранить» создаст чекпоинт, с которого позже можно продолжить обучение; после выбора «Остановить» продолжить обучение будет нельзя.",
       stopAction: "Остановить",
       stopping: "Остановка...",
       stopAndSave: "Остановить и сохранить",
@@ -1658,11 +1728,8 @@ export const ru = {
       deleteRun: "Удалить запуск",
       loss: "Loss",
       steps: "Шаги",
-      lossTrendSparkline: "Спарклайн тренда loss",
+      lossTrendSparkline: "Мини-график динамики функции потерь",
       relativeJustNow: "только что",
-      relativeMinutesAgo: "{count} мин назад",
-      relativeHoursAgo: "{count} ч назад",
-      relativeDaysAgo: "{count} дн назад",
       status: {
         completed: "Завершено",
         stopped: "Остановлено",

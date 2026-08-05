@@ -354,9 +354,9 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   // overflow-y stays `auto` on BOTH panes: toggling to `hidden` clamps the
   // inactive pane's scrollTop to 0 and corrupts the mirror; visibility +
   // pointer-events-none hides it while preserving native scroll state.
-  // Non-split reserves an equal `both-edges` gutter so the centered 1100px
-  // column stays symmetric and aligned with the top bar; split mode pins a
-  // narrow master left, so it reserves only the right (divider) gutter.
+  // Non-split reserves an equal `both-edges` gutter so the centered
+  // --hub-measure column stays symmetric and aligned with the top bar; split
+  // mode pins a narrow master left, so it reserves only the right gutter.
   const scrollPaneClassName =
     "absolute inset-0 min-h-0 overflow-x-hidden overflow-y-auto pb-6 pt-0 [overflow-anchor:none] [scrollbar-width:thin] " +
     (discoverView === "split"
@@ -366,11 +366,11 @@ export const ModelsCatalog = memo(function ModelsCatalog({
   // tightens the right padding so compact rows run wider toward the divider.
   const splitView = discoverView === "split";
   const discoverColumnClassName = splitView
-    ? "mx-auto w-full max-w-[1100px] pl-5 pr-2 sm:pl-8"
-    : "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
+    ? "mx-auto w-full max-w-[var(--hub-measure)] pl-5 pr-2 sm:pl-8"
+    : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8";
   const downloadedColumnClassName = splitView
-    ? "mx-auto w-full max-w-[1100px] pl-5 pr-2 sm:pl-8"
-    : "mx-auto w-full max-w-[1100px] px-5 sm:px-8";
+    ? "mx-auto w-full max-w-[var(--hub-measure)] pl-5 pr-2 sm:pl-8"
+    : "mx-auto w-full max-w-[var(--hub-measure)] px-5 sm:px-8";
   const discoverActive = tab === "discover";
   const downloadedActive = tab === "downloaded";
   const discoverInactiveHeight = Math.max(

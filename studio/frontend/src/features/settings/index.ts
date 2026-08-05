@@ -31,6 +31,7 @@ export {
   DEFAULT_CUSTOMIZATION,
   applyCustomizationToDocument,
   isDefaultCustomization,
+  migrateShippedSidebarNavDefault,
   prefersReducedMotion,
   sanitizeCustomization,
   useAppearanceCustomStore,
@@ -39,6 +40,8 @@ export type {
   AppearanceCustomization,
   CustomModeColors,
   ReduceMotionSetting,
+  SidebarNavItemId,
+  SidebarNavItemPref,
 } from "./stores/appearance-custom-store";
 export { useMonitorOverlayStore } from "./stores/monitor-overlay-store";
 export type {

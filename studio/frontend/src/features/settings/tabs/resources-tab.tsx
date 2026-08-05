@@ -448,14 +448,16 @@ export function ResourcesTab() {
       <SettingsSection title={t("settings.resources.gpu.title")}>
         {separateInferenceGpu && (
           <div className="flex items-center justify-between gap-4 border-b border-border/60 py-3 text-sm">
-            <span className="text-muted-foreground">GGUF inference</span>
+            <span className="text-muted-foreground">
+              {t("settings.resources.gpu.ggufInference")}
+            </span>
             <span className="text-right font-mono text-xs uppercase text-foreground">
               {separateInferenceGpu.backend ?? "GPU"}
               {separateInferenceGpu.available
                 ? inferenceVramTotal
                   ? ` · ${formatGiB(inferenceVramTotal)}`
                   : ""
-                : " · unavailable"}
+                : ` · ${t("settings.resources.gpu.unavailable")}`}
             </span>
           </div>
         )}

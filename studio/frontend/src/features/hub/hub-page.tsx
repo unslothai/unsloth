@@ -1925,20 +1925,21 @@ export function ModelsPage() {
       <div
         className={cn(
           "relative flex min-h-0 min-w-0 flex-1 basis-0",
-          // Split mode shares the top bar's centered 1100px measure so the
+          // Split mode shares the top bar's centered --hub-measure column so the
           // master list lines up with the heading instead of hugging the edge.
           splitMode
-            ? "flex-col lg:mx-auto lg:w-full lg:max-w-[1100px] lg:flex-row"
+            ? "flex-col lg:mx-auto lg:w-full lg:max-w-[var(--hub-measure)] lg:flex-row"
             : "flex-col",
         )}
       >
         <div
           className={cn(
             "flex min-h-0 flex-col",
-            // Split mode keeps the catalog as a fixed-width master pane on large
-            // screens; otherwise it fills the area and the detail view overlays it.
+            // Split mode keeps the catalog as a master pane that grows with the
+            // container off a 460px floor; otherwise it fills the area and the
+            // detail view overlays it.
             splitMode
-              ? "flex-1 lg:w-[460px] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
+              ? "flex-1 lg:w-[clamp(460px,32%,620px)] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
               : "flex-1",
             // A full-bleed opaque overlay, so the catalog leaves the tab order; without
             // this, tabbing out of the form walks into the rows behind it.

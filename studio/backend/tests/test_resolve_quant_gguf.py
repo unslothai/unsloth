@@ -68,6 +68,7 @@ def test_skips_mtp_drafter_for_main_weights(tmp_path):
 
 
 def test_skips_dspark_drafter_for_main_weights(tmp_path):
+    # Same contract for a DSpark drafter, whose filename carries a Q8_0 token.
     root = tmp_path / "repo"
     main = _write(root / "model-Q8_0.gguf", 100)
     _write(root / "dspark" / "dspark-model-Q8_0.gguf", 50)

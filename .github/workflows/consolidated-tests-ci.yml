@@ -342,6 +342,16 @@ jobs:
         run: |
           python -m pytest -v --tb=short tests/test_callback_signature_drift.py
 
+      - name: python floor compatibility (HARD GATE)
+        # pyproject declares requires-python >=3.9 but every job here pins 3.12,
+        # so nothing ran the floor: registry.py grew a dataclass field annotated
+        # `list[QuantType] | dict[...]`, which evaluates at class creation and is
+        # a TypeError below 3.10. Static AST check, no torch and no network. It
+        # reads the floor from pyproject, so raising requires-python relaxes it
+        # rather than making it lie.
+        run: |
+          python -m pytest -v --tb=short tests/test_python39_compatibility.py
+
       - name: generation correctness guards (HARD GATE)
         # Deterministic CPU guards, each validated to fail on its pre-fix code:
         # leftpad = batched left-padded generation (#1066/#3699, fixed by

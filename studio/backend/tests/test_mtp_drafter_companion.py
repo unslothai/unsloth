@@ -72,10 +72,12 @@ DRAFTER_CASES = [
     ("dflash/dflash-model-Q8_0.gguf", True),
     ("dflash-model.gguf", True),
     ("dflash-Qwen3.6-27B-BF16.gguf", True),
-    # DFlash is also a family name, so a directory alone is not a drafter marker.
+    # ...but dflash is a family name, so the DIRECTORY is not a drafter marker:
+    # no published repo uses a dflash/ companion folder, while users do name a
+    # local folder after the family they downloaded.
     ("dflash/Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", False),
     ("foo/dflash/bar.gguf", False),
-    # Real filenames where dflash/dspark is the family name remain selectable.
+    # Real Hub filenames where dflash/dspark is the family name: each IS the model.
     ("Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf", False),
     ("qwen36-35b-a3b-dflash-Q8_0.gguf", False),
     ("laguna-xs21-dflash-q4.gguf", False),
@@ -919,7 +921,13 @@ DEEPSEEK_SIBLINGS = [
 def test_dspark_drafters_are_not_quants_and_are_not_auto_fetched():
     plans = build_gguf_variant_plans(DEEPSEEK_SIBLINGS)
 
+    # The drafters carry BF16/Q8_0 tokens; neither may become a quant. They were
+    # also the two smallest entries, so the fit heuristic used to promote them in
+    # a repo whose real quants are 87 GB+.
     assert set(plans) == {"ud-q4_k_xl", "ud-iq1_s"}
+
+    # DSpark is opt-in and ~11 GB per file, so unlike the root mtp-*.gguf it must
+    # not be folded into every plan.
     for plan in plans.values():
         assert not any(name.startswith("dspark/") for name in plan.target_filenames)
         assert plan.companion_hashes == frozenset()
@@ -930,26 +938,31 @@ def test_dspark_drafters_are_not_quants_and_are_not_auto_fetched():
 
 
 def test_a_root_dflash_drafter_is_not_a_quant():
+    """ggml-org/Qwen3.6-27B-GGUF ships a 3 GB dflash- drafter beside the real
+    54 GB BF16; merging them hands llama.cpp the drafter as the model."""
     plans = build_gguf_variant_plans(
         [
             _sib("Qwen3.6-27B-BF16.gguf", 54_000, "bf16"),
             _sib("dflash-Qwen3.6-27B-BF16.gguf", 3_000, "dflash"),
         ]
     )
-
     assert set(plans) == {"bf16"}
     assert plans["bf16"].main_filenames == frozenset({"Qwen3.6-27B-BF16.gguf"})
     assert plans["bf16"].main_size_bytes == 54_000
 
 
 def test_gemma_mtp_is_still_auto_downloaded():
+    """Filtering only removes drafters from the quant list; the root mtp-*.gguf
+    is still fetched with every variant so MTP speculative decoding works."""
     plans = build_gguf_variant_plans(GEMMA_SIBLINGS)
-
     for plan in plans.values():
         assert "mtp-gemma-4-12b-it.gguf" in plan.target_filenames
 
 
 def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, monkeypatch):
+    """_cached_repo_mtp_drafter uses the predicate inversely, to pick a drafter to
+    launch with --spec-type draft-mtp. DSpark needs draft-dspark plus --fit off,
+    so broadening that predicate must not widen what is launched."""
     import core.inference.llama_cpp as llama_cpp_module
 
     def _snapshot(files):
@@ -978,8 +991,11 @@ def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, m
     assert found is not None and found.endswith("mtp-model.gguf")
 
 
+# ── Deletion: only auto-fetched companions are reclaimed ─────────────
+
+
 def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
-    """Create an HF cache snapshot whose files are symlinks to blobs."""
+    """An HF cache repo: snapshot symlinks pointing at blobs."""
     repo_dir = tmp_path / f"models--{repo_id.replace('/', '--')}"
     snap = repo_dir / "snapshots" / "rev1"
     blobs = repo_dir / "blobs"
@@ -1009,6 +1025,9 @@ def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
 
 
 def test_deleting_a_variant_keeps_an_opt_in_dspark_drafter(tmp_path):
+    """DSpark is in no variant plan, so Studio never downloaded it with the quant
+    and must not reclaim it: that would destroy an ~11 GB file the user fetched
+    deliberately."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
 
     repo, snap = _cache_repo(
@@ -1025,6 +1044,7 @@ def test_deleting_a_variant_keeps_an_opt_in_dspark_drafter(tmp_path):
 
 
 def test_deleting_the_last_variant_still_reclaims_mtp_and_mmproj(tmp_path):
+    """Positive control: those ARE fetched with every variant, so they still go."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
 
     repo, snap = _cache_repo(

@@ -1716,10 +1716,17 @@ def renderable_tool_catalog_for_targets(
     Chained rather than intersected by name, so the surviving descriptions carry every
     candidate's sweep too. Sanitizing an already-sanitized catalog is stable, since a
     broken marker no longer matches, so a clean catalog stays byte-identical."""
+    live = [target for target in targets if target is not None]
+    if not live:
+        # Nothing to profile: the default orchestrator's parent-side mirror carries
+        # capability flags, never the tokenizer or processor (orchestrator.py:1278-1292).
+        # Skipping the targets returned the caller's list unsanitized while the worker
+        # sanitized during the render, so a tool dropped from the prompt stayed authorized
+        # for healing. One None target profiles as unprofilable and takes the curated
+        # sweep, the safe direction (#7066).
+        return renderable_tool_catalog(tools, None, model_info, cache, active_model_name, template)
     catalog = tools
-    for target in targets:
-        if target is None:
-            continue
+    for target in live:
         catalog = renderable_tool_catalog(
             catalog, target, model_info, cache, active_model_name, template
         )

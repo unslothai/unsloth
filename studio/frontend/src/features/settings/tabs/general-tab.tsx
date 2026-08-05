@@ -57,6 +57,10 @@ import {
   updateUploadLimitSettings,
 } from "../api/upload-limit";
 import { ChangePasswordDialog } from "../components/change-password-dialog";
+import {
+  DesktopUpdateControl,
+  DesktopUpdateNote,
+} from "../components/desktop-update-control";
 import { EmbeddingModelCombobox } from "../components/embedding-model-combobox";
 import { LanguageSelect } from "../components/language-select";
 import { SettingsRow } from "../components/settings-row";
@@ -468,7 +472,16 @@ export function GeneralTab() {
         </p>
       </header>
 
-      <StudioVersionSection />
+      {/* Desktop-only, and self-gating: outside the desktop app both render
+          nothing and the section keeps just the version rows. */}
+      <StudioVersionSection>
+        {isTauri ? (
+          <div data-settings-label={t("settings.about.updates")}>
+            <DesktopUpdateControl />
+            <DesktopUpdateNote />
+          </div>
+        ) : null}
+      </StudioVersionSection>
 
       <SettingsSection title={t("settings.general.account")}>
         <SettingsRow
@@ -529,11 +542,13 @@ export function GeneralTab() {
                 disabled={!draftToken && !hfToken}
                 onClick={clearHfToken}
               >
-                Clear
+                {t("settings.general.clearToken")}
               </Button>
             </div>
             {tokenValidation.isChecking ? (
-              <p className="text-xs text-muted-foreground">Checking token…</p>
+              <p className="text-xs text-muted-foreground">
+                {t("settings.general.checkingToken")}
+              </p>
             ) : tokenValidation.error ? (
               <p className="max-w-[330px] text-right text-xs text-destructive">
                 {tokenValidation.error}
@@ -710,7 +725,7 @@ export function GeneralTab() {
                   max={uploadLimit?.maxAllowedUploadSizeMb ?? 8192}
                   step={1}
                   value={draftUploadLimit}
-                  aria-label="Training dataset upload cap in MB"
+                  aria-label={t("settings.general.uploads.maxUploadSize")}
                   onChange={(event) => setDraftUploadLimit(event.target.value)}
                   className="h-8 w-24"
                 />

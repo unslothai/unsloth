@@ -9,8 +9,9 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { type TranslationKey, useT } from "@/i18n";
-import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/api-base";
 import { MicIcon } from "@/lib/mic-icon";
+import { cn } from "@/lib/utils";
 import {
   BotIcon,
   Cancel01Icon,
@@ -36,8 +37,8 @@ import {
   useState,
 } from "react";
 import {
-  SETTINGS_SEARCH_INDEX,
   SETTINGS_SEARCH_KEYWORDS,
+  createSettingsSearchIndex,
 } from "./settings-search";
 import {
   type SettingsTab,
@@ -117,6 +118,8 @@ const TABS: TabDef[] = [
   },
   { id: "about", labelKey: "settings.tabs.about", icon: HelpCircleIcon },
 ];
+
+const SETTINGS_SEARCH_INDEX = createSettingsSearchIndex(isTauri);
 
 function renderTab(tab: SettingsTab) {
   switch (tab) {

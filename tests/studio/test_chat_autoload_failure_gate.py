@@ -65,6 +65,24 @@ export function setScenario(scenario: Scenario) {
 
 const GPU_LAYERS_AUTO = -1;
 
+// The sliced region now includes the queue-specific empty-model resolver and
+// visible-state snapshot helpers, so their imported contracts must exist even
+// though these scenarios call autoLoadSmallestModel directly.
+async function getInferenceStatus() {
+  return { active_model: null };
+}
+function isExternalModelId(value: unknown) {
+  return typeof value === "string" && value.startsWith("external::");
+}
+function resolveInferenceCheckpointId(status: any) {
+  return status.active_model
+    ? (status.model_identifier ?? status.active_model)
+    : null;
+}
+function snapshotQueuedChatRunSettings(state: any) {
+  return { ...state, params: { ...state.params } };
+}
+
 function makeStore(): any {
   const state: any = {
     hfToken: null,

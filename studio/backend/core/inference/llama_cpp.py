@@ -1585,6 +1585,64 @@ def gguf_load_in_flight(hf_repo: Optional[str]):
                 _LOADS_IN_FLIGHT[key] = remaining
 
 
+# Chat loads in flight, repo-agnostic (local paths and safetensors included). The repo-keyed counter above answers the download manager; this one answers the GPU arbiter, which must know before llama-server spawns.
+_CHAT_LOADS_IN_FLIGHT = 0
+
+
+@contextlib.contextmanager
+def chat_load_in_flight():
+    """Track a chat load from before its download until the load call returns."""
+    global _CHAT_LOADS_IN_FLIGHT
+    with _LOADS_IN_FLIGHT_LOCK:
+        _CHAT_LOADS_IN_FLIGHT += 1
+    try:
+        yield
+    finally:
+        with _LOADS_IN_FLIGHT_LOCK:
+            _CHAT_LOADS_IN_FLIGHT = max(0, _CHAT_LOADS_IN_FLIGHT - 1)
+
+
+def chat_load_active() -> bool:
+    """Whether a chat load is in flight, spawned or not.
+
+    ``is_active`` only covers a live llama-server process, which an HF load does not have
+    until its GGUF finished downloading -- minutes during which the arbiter's evictor would
+    find nothing to cancel and grant the GPU to a second workload.
+    """
+    with _LOADS_IN_FLIGHT_LOCK:
+        return _CHAT_LOADS_IN_FLIGHT > 0
+
+
+def zero_vram_chat_load(
+    gpu_memory_mode: str,
+    gpu_layers: int,
+    extra_args: Optional[list] = None,
+    needs_mmproj: bool = False,
+    speculative_type: Optional[str] = None,
+) -> bool:
+    """Whether a GGUF load will hold no VRAM at all, decided from the request.
+
+    A deliberate manual zero-offload load runs on the CPU and is launched with the GPUs hidden
+    from the child (see ``_cpu_only_zero_offload``), so it neither needs the GPU arbiter nor
+    should evict an image/video pipeline for it. This mirrors that launch-time mask so both
+    agree: an mmproj, a GPU drafter, a device pin or a surviving tensor mode all keep the GPUs
+    visible, and the mask is skipped on Vulkan. ``--mmproj`` and ``--model-draft`` are added by
+    the backend rather than being present in ``extra_args``, so their intent is passed in.
+    """
+    if gpu_memory_mode != "manual" or gpu_layers != 0:
+        return False
+    # Any speculative mode may launch a GPU drafter and only the request's own knobs are known here, so treat every selection as GPU-bearing except
+    # "off". Canonicalize first: the UI sends the literal "off", which a bare truthiness test read as "speculation requested".
+    spec_mode = _canonicalize_spec_mode(speculative_type)
+    if needs_mmproj or spec_mode not in (None, "off"):
+        return False
+    if LlamaCppBackend._is_vulkan_backend():
+        return False
+    return not LlamaCppBackend._zero_offload_keeps_gpu_visible(
+        [str(arg) for arg in (extra_args or [])], os.environ
+    )
+
+
 def hf_gguf_load_in_flight(hf_repo: str) -> bool:
     """Return whether a GGUF load is active for hf_repo."""
     key = (hf_repo or "").strip().lower()
@@ -3455,6 +3513,22 @@ class LlamaCppBackend:
     def gpu_layers(self) -> int:
         """Requested --gpu-layers for manual mode (-1 when not manual)."""
         return self._gpu_layers
+
+    @property
+    def holds_no_vram(self) -> bool:
+        """Whether the resident server is a confirmed zero-VRAM launch.
+
+        True only for a deliberate manual zero-offload load whose launched argv carried no GPU
+        companion, pin or tensor mode, so the child was started with the GPUs hidden. The GPU
+        arbiter uses this to leave an image/video pipeline alone when re-asserting ownership for
+        such a model. ``_gpu_offload_active`` is None when no GPU was detected at all (nothing to
+        arbitrate) and True when something still reached the GPU, so both keep the normal path.
+        """
+        return (
+            self._gpu_memory_mode == "manual"
+            and self._gpu_layers == 0
+            and self._gpu_offload_active is False
+        )
 
     @property
     def diffusion_requested_ngl(self) -> Optional[int]:
@@ -7345,12 +7419,132 @@ class LlamaCppBackend:
         )
     )
 
+    # Distro package names for the shared libraries the Linux prebuilt links,
+    # so the loader failure below can say what to install.
+    _SHARED_LIB_PACKAGES = {
+        "libgomp.so.1": " (Debian/Ubuntu: libgomp1, Fedora/RHEL: libgomp)",
+    }
+
+    # Shared objects Unsloth ships itself, next to llama-server in build/bin
+    # (see runtime_payload_health_groups in install_llama_prebuilt.py, and
+    # _llama_server_env_for_binary which puts that dir on LD_LIBRARY_PATH). No
+    # distro packages these, so a loader failure naming one means the managed
+    # runtime is incomplete or mismatched, not that something must be installed.
+    _BUNDLED_LIB_PREFIXES = ("libllama", "libggml", "libmtmd")
+
+    @staticmethod
+    def _is_bundled_llama_library(lib: str) -> bool:
+        # The loader prints a bare soname when the file is absent but a full
+        # path when it found and rejected it, so compare on the basename.
+        return os.path.basename((lib or "").strip()).startswith(
+            LlamaCppBackend._BUNDLED_LIB_PREFIXES
+        )
+
+    @staticmethod
+    def _is_unsloth_managed_binary(binary: Optional[str]) -> bool:
+        """Would `unsloth studio update` actually replace ``binary``?
+
+        A pinned LLAMA_SERVER_PATH, or a llama-server found on PATH, is
+        explicitly unmanaged (update_flow.managed_install_root returns None),
+        so telling the user to update Unsloth's runtime cannot repair it.
+        Unknown binary (callers that pass nothing) keeps the managed default.
+        """
+        if not binary:
+            return True
+        try:
+            from utils.llama_cpp_update import _llama_install_root
+            return _llama_install_root(binary) is not None
+        except Exception:
+            return True
+
+    @staticmethod
+    def _is_library_path(lib: str) -> bool:
+        # glibc's own discriminator is `strchr (name, '/') == NULL`
+        # (elf/dl-load.c): a slash anywhere means the name is a pathname and no
+        # search happens, so a relative DT_NEEDED is as exact as an absolute
+        # one. os.sep would be platform-bound and this string comes from
+        # whatever host ran llama-server, so match both separators.
+        lib = (lib or "").strip()
+        return "/" in lib or "\\" in lib
+
+    @staticmethod
+    def _missing_library_message(lib: str, binary: Optional[str] = None) -> str:
+        """The loader could not FIND ``lib`` ("cannot open shared object file")."""
+        if LlamaCppBackend._is_bundled_llama_library(lib):
+            if LlamaCppBackend._is_unsloth_managed_binary(binary):
+                return (
+                    f"llama-server could not start: {lib} is part of Unsloth's own "
+                    "llama.cpp runtime and is missing from the install. Run "
+                    "`unsloth studio update` to reinstall it, then load the model "
+                    "again."
+                )
+            return (
+                f"llama-server could not start: {lib} is part of the llama.cpp "
+                "runtime that the llama-server binary in use was built with. That "
+                "binary is a custom install Unsloth does not manage, so reinstall "
+                "or rebuild that llama.cpp, then load the model again."
+            )
+        # A bare soname means the loader searched the standard directories,
+        # which is what a package populates. Any name carrying a separator is a
+        # pathname the loader opened directly (e.g. a vendor .so under /opt), so
+        # one exact file is absent and no package will put it there.
+        if LlamaCppBackend._is_library_path(lib):
+            _remedy = (
+                "run `unsloth studio update`"
+                if LlamaCppBackend._is_unsloth_managed_binary(binary)
+                else "reinstall or rebuild that custom llama.cpp"
+            )
+            return (
+                f"llama-server could not start: {lib} is missing from that exact "
+                f"location. Restore it, or {_remedy}, then load the model again."
+            )
+        return (
+            f"llama-server could not start: the system library "
+            f"{lib or 'it needs'} is missing. Install it with your package "
+            f"manager{LlamaCppBackend._SHARED_LIB_PACKAGES.get(lib, '')}, "
+            "then load the model again."
+        )
+
+    @staticmethod
+    def _unloadable_library_message(
+        lib: str,
+        reason: str,
+        binary: Optional[str] = None,
+    ) -> str:
+        """The loader FOUND ``lib`` and refused it: the same "error while
+        loading shared libraries" line also carries "file too short", "invalid
+        ELF header", "wrong ELF class", "cannot open shared object file:
+        Permission denied", ... Installing a package is the wrong advice there
+        -- the file is already present."""
+        detail = f" ({reason})" if reason else ""
+        if LlamaCppBackend._is_bundled_llama_library(lib):
+            if LlamaCppBackend._is_unsloth_managed_binary(binary):
+                return (
+                    f"llama-server could not start: {lib}, part of Unsloth's own "
+                    f"llama.cpp runtime, could not be loaded{detail}. The install "
+                    "is incomplete or mismatched. Run `unsloth studio update` to "
+                    "reinstall it, then load the model again."
+                )
+            return (
+                f"llama-server could not start: {lib}, part of the llama.cpp "
+                "runtime that the llama-server binary in use was built with, "
+                f"could not be loaded{detail}. That binary is a custom install "
+                "Unsloth does not manage, so reinstall or rebuild that "
+                "llama.cpp, then load the model again."
+            )
+        return (
+            f"llama-server could not start: the library {lib or 'it needs'} "
+            f"could not be loaded{detail}. Reinstall or update whatever "
+            "provides it, then load the model again."
+        )
+
     @staticmethod
     def _classify_llama_start_failure(
         output: str,
         gguf_path: Optional[str],
         model_identifier: Optional[str],
         returncode: Optional[int] = None,
+        binary: Optional[str] = None,
     ) -> str:
         """Explain *why* llama-server failed to start, from its output.
 
@@ -7361,6 +7555,51 @@ class LlamaCppBackend:
         never the problem (#5842). Pick the most specific message we can.
         """
         lowered = (output or "").lower()
+
+        # The dynamic loader kills llama-server before main(), so nothing below
+        # matches and the fallback blames the file or memory instead. The Linux
+        # prebuilt links libgomp.so.1, which a stock container does not ship.
+        # glibc prints "<prog>: error while loading shared libraries: <object>:
+        # <diagnostic>[: <strerror>]" (elf/dl-catch.c fatal_error). <object> is
+        # echoed verbatim, so an absolute dependency under a directory with
+        # spaces keeps them ("/opt/My Runtime/libfoo.so: file too short"):
+        # split on the ": " that introduces the diagnostic, not on whitespace.
+        missing_lib = re.search(
+            r"error while loading shared libraries:[ \t]*([^\r\n]+?)"
+            r"(?::[ \t]+([^\r\n]*))?[ \t]*\r?$",
+            output or "",
+            re.MULTILINE,
+        )
+        if missing_lib:
+            _lib = missing_lib.group(1).strip()
+            _reason = (missing_lib.group(2) or "").strip()
+            # glibc omits the object name entirely on its own allocation
+            # failures ("...shared libraries: cannot create search path array"),
+            # so the first word is prose, not a library. Report it unnamed.
+            if not (
+                "/" in _lib or "\\" in _lib or any(_e in _lib for _e in (".so", ".dylib", ".dll"))
+            ):
+                return LlamaCppBackend._unloadable_library_message(
+                    "", f"{_lib} {_reason}".strip(), binary
+                )
+            # Only "cannot open shared object file" means absent; the same line
+            # reports corrupt/incompatible libraries too, which are present.
+            # glibc appends strerror(errno) to that diagnostic, and only ENOENT
+            # ("No such file or directory") means the file is not there: EACCES
+            # ("Permission denied", seen with an absolute DT_NEEDED path, an
+            # unreadable parent directory, SELinux mislabels or container
+            # sandboxing) means it exists and cannot be opened, where installing
+            # a package is the wrong advice. A truncated tail keeps the
+            # missing-library reading.
+            _reason_l = _reason.lower()
+            _errno_text = ""
+            if "cannot open shared object file:" in _reason_l:
+                _errno_text = _reason_l.split("cannot open shared object file:", 1)[1].strip()
+            if not _reason_l or (
+                "cannot open" in _reason_l and (not _errno_text or "no such file" in _errno_text)
+            ):
+                return LlamaCppBackend._missing_library_message(_lib, binary)
+            return LlamaCppBackend._unloadable_library_message(_lib, _reason, binary)
 
         # Tensor parallelism (--split-mode tensor) is arch-gated in llama.cpp;
         # unsupported architectures abort the load with this marker. Point the
@@ -7421,6 +7660,27 @@ class LlamaCppBackend:
                     "different model, or use this model directly through "
                     "Ollama instead."
                 )
+
+        # 127 without any loader line above is not specific to a library: it is
+        # also what a shell wrapper entrypoint reports when its exec target is
+        # gone (_llama_lib_dir supports those, as does a custom
+        # LLAMA_SERVER_PATH), and what a "symbol lookup error" from a mismatched
+        # runtime exits with. Name both causes instead of blaming a distro
+        # package -- but still keep it off the GGUF and off memory.
+        if returncode == 127:
+            # Same provenance split as the library branches: the updater cannot
+            # touch a pinned binary, so do not send its owner there.
+            _remedy = (
+                "run `unsloth studio update` to reinstall the llama.cpp runtime"
+                if LlamaCppBackend._is_unsloth_managed_binary(binary)
+                else "reinstall or rebuild that custom llama.cpp"
+            )
+            return (
+                "llama-server exited immediately (status 127): either the "
+                "llama-server executable could not be found or run, or one of "
+                f"the shared libraries it needs could not be loaded. Check the "
+                f"llama-server log, and {_remedy}."
+            )
 
         # SIGKILL with no diagnostic output is the OOM killer (e.g. a model too
         # large for the WSL VM's RAM cap); name it actionably.
@@ -10757,6 +11017,7 @@ class LlamaCppBackend:
                                 gguf_path,
                                 self._model_identifier,
                                 _retry_rc,
+                                binary,
                             )
                             raise RuntimeError(
                                 self._mmproj_retry_failure_message(
@@ -10771,6 +11032,7 @@ class LlamaCppBackend:
                                 gguf_path,
                                 self._model_identifier,
                                 _crash_rc,
+                                binary,
                             )
                         )
 

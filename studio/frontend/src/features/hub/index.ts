@@ -119,4 +119,4 @@ export { DotTag } from "./catalog/dot-tag";
 export { TransportConflictDialog } from "./catalog/transport-conflict-dialog";
 export { TrainIcon } from "./components/train-icon";
 export { isHiddenModelId } from "./lib/hidden-models";
-export { classifyUnslothSupport } from "./lib/unsloth-support";
+export { classifyUnslothSupport, studioPageForTask } from "./lib/unsloth-support";

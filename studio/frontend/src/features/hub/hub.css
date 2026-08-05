@@ -48,6 +48,20 @@
 }
 
 @layer base {
+  /* Shared measure for every centered Hub column (top bar, catalog, detail,
+     settings). Container-relative, so the column tracks the width actually
+     available instead of pinning to 1100px and leaving wide empty gutters.
+     The floor keeps the old measure on ~1280px laptops, the cap stops rows
+     stretching on ultrawides, and `max-width` never forces overflow, so the
+     floor stays safe on narrow viewports. */
+  .hub-page {
+    --hub-measure: clamp(1100px, 94%, 1760px);
+    /* Split mode's detail pane: tighter, the master list takes the left. */
+    --hub-measure-compact: clamp(860px, 94%, 1180px);
+    /* Model card readme. Fills the column, capped so prose stays readable. */
+    --hub-readme-measure: 1400px;
+  }
+
   /* Filled-control surface — Hub search, Hub filter triggers, picker
 	   search bars. Borderless soft fill matching the .hub-tab-toggle pills:
 	     - Resting: 5% bg, no border

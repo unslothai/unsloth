@@ -30,7 +30,14 @@ import {
   shouldShowTrainingArtifactsDeleted,
   useTrainingActions,
 } from "@/features/training";
-import { translate, type TranslationKey, useT } from "@/i18n";
+import {
+  type Locale,
+  type TranslationKey,
+  formatRelativeTime,
+  translate,
+  useLocale,
+  useT,
+} from "@/i18n";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
@@ -200,15 +207,19 @@ function Sparkline({
   );
 }
 
-function formatRelativeTime(isoDate: string, t: StudioT): string {
+function formatRunRelativeTime(
+  isoDate: string,
+  t: StudioT,
+  locale: Locale,
+): string {
   const diff = Date.now() - new Date(isoDate).getTime();
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return t("studio.history.relativeJustNow");
-  if (mins < 60) return t("studio.history.relativeMinutesAgo", { count: mins });
+  if (mins < 60) return formatRelativeTime(locale, -mins, "minute");
   const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return t("studio.history.relativeHoursAgo", { count: hrs });
+  if (hrs < 24) return formatRelativeTime(locale, -hrs, "hour");
   const days = Math.floor(hrs / 24);
-  return t("studio.history.relativeDaysAgo", { count: days });
+  return formatRelativeTime(locale, -days, "day");
 }
 
 function hasTextSelectionWithin(element: HTMLElement): boolean {
@@ -231,6 +242,7 @@ export function HistoryCardGrid({
   onResumeStarted,
 }: HistoryCardGridProps): ReactElement {
   const t = useT();
+  const locale = useLocale();
   const [runs, setRuns] = useState<TrainingRunSummary[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -515,7 +527,7 @@ export function HistoryCardGrid({
                     </span>
                   )}
                   <span className="text-ui-10 text-muted-foreground">
-                    {formatRelativeTime(run.started_at, t)}
+                    {formatRunRelativeTime(run.started_at, t, locale)}
                   </span>
                 </span>
                 <span className="block min-w-0 cursor-text">

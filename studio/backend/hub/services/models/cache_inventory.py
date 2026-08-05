@@ -400,6 +400,21 @@ def _is_hidden_infra_repo(*values: str | None) -> bool:
     return is_hidden_model(*values)
 
 
+def _cached_row_task(repo_info, *, gguf: bool) -> Optional[str]:
+    """Pipeline task for a cached row, from the same classifiers the models API uses.
+
+    The Images/Video pickers filter On Device rows on this and the chat picker routes a diffusion
+    pick by it, so a row that arrives without one is dropped from those lists entirely. Imported
+    lazily (routes.models imports this package) and best-effort: an unreadable repo just has no
+    task, exactly as before.
+    """
+    try:
+        from routes.models import _cached_repo_task, _repo_gguf_task
+        return _repo_gguf_task(repo_info) if gguf else _cached_repo_task(repo_info)
+    except Exception:  # noqa: BLE001 -- a classification failure never hides a row
+        return None
+
+
 def _scan_cached_gguf() -> list[dict]:
     """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread."""
     cache_scans = all_hf_cache_scans()
@@ -448,6 +463,7 @@ def _scan_cached_gguf() -> list[dict]:
                     "repo_id": repo_id,
                     "size_bytes": max(total_size, variant_state_size),
                     "cache_path": str(repo_info.repo_path),
+                    "task": _cached_row_task(repo_info, gguf = True),
                     "partial": partial,
                     # A marker-only sibling moves neither size nor mtime.
                     "has_variant_state": has_variant_state,
@@ -629,6 +645,13 @@ def _repo_non_gguf_model_payload(repo_info) -> _CachedNonGgufPayload:
         if snapshot is not None:
             for config_name, key in (
                 ("config.json", "has_config"),
+                # A diffusers pipeline's root manifest, which plays exactly the role config.json
+                # plays for transformers: from_pretrained reads it at the snapshot root to learn
+                # the component layout. Without it here no pure pipeline snapshot could classify
+                # (real repos ship model_index.json and per-component configs, never a root
+                # config.json), payload_snapshots came back empty, and every cached diffusion base
+                # pipeline was force-flagged partial and dropped from the On Device lists.
+                ("model_index.json", "has_config"),
                 ("adapter_config.json", "has_adapter_config"),
             ):
                 try:
@@ -830,20 +853,28 @@ def _scan_cached_models() -> list[dict]:
                     skipped_stt += 1
                     continue
                 # Scoped to the row's snapshot, so an incomplete newer revision cannot flip can_chat.
-                snapshot_partial = hf_cache_scan.is_snapshot_partial(
+                download_partial = hf_cache_scan.is_snapshot_partial(
                     "model",
                     repo_id,
                     repo_path,
                     snapshot_dir = load_snapshot,
                 )
+                # A companion-only prefetch (pipeline manifest + VAE / text-encoder but no transformer shards, left by a GGUF load) passes
+                # the download check yet cannot from_pretrained, so mark it partial and the pickers stop advertising it as on-device.
+                # Scoped to the row's own snapshot, like the download check above it: the repo-wide twin picks the newest revision for
+                # itself, so a newer companion-only snapshot beside the complete one refs/main resolves to marked this row partial.
+                companion_only = hf_cache_scan.snapshot_pipeline_missing_denoiser(load_snapshot)
+                snapshot_partial = download_partial or companion_only
                 # Flags are OR-ed over revisions, so no payload snapshot means no directory
                 # serves the row and it would reach for the Hub.
                 if not payload.payload_snapshots:
                     snapshot_partial = True
+                row_task = _cached_row_task(repo_info, gguf = False)
                 row = {
                     "repo_id": repo_id,
                     "size_bytes": payload.size_bytes,
                     "cache_path": str(repo_info.repo_path),
+                    "task": row_task,
                     "partial": snapshot_partial,
                     "partial_transport": (
                         hf_cache_scan.partial_transport_for(
@@ -851,8 +882,16 @@ def _scan_cached_models() -> list[dict]:
                             repo_id,
                             repo_cache_dir = repo_path,
                         )
-                        if snapshot_partial
+                        # Only a genuine download partial has a transport; a companion-only snapshot arrived intact and has no Resume story.
+                        if download_partial
                         else None
+                    ),
+                    # Diffusion repos with no pipeline index load only via from_single_file, so the task pickers must not offer them as
+                    # pipeline loads. Without this the picker's single_file gate sees undefined on every hub-sourced row. Read from the
+                    # row's snapshot: the manifest a sibling revision carries is not the one this row's load_id opens.
+                    "single_file": bool(
+                        row_task is not None
+                        and not hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
                     ),
                     **local_metadata,
                 }
