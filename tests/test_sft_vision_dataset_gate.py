@@ -1,20 +1,19 @@
 """Tests _backport_vision_dataset_gate in rl.py against REAL TRL sources.
 
 TRL 0.22.x decides "skip dataset preparation" and "use the vision collator"
-from `_is_vlm` (the model) alone. Fine-tuning a VLM on a text-only dataset
-then reaches the trainer with a raw `text` column and no tokenized columns,
-and transformers strips every column:
+from `_is_vlm` (the model) alone, so a VLM fine-tuned on a text-only dataset
+reaches the trainer with a raw `text` column and no tokenized ones, and
+transformers strips every column:
 
     ValueError: No columns in the dataset match the model's forward method
     signature ... The following columns have been ignored: [text]
 
 Magistral_(24B)-Reasoning-Conversational hits this; it pins trl==0.22.2.
-TRL 0.24.0+ keys the same decisions off `_is_vision_dataset`, which this
-back-ports.
+TRL 0.24.0+ keys the same decisions off `_is_vision_dataset`, back-ported here.
 
-The patch is textual, so the tests run it over the actual sft_trainer.py of
-whichever TRL is installed, plus a checked-in 0.22.2 excerpt, and require the
-result to still parse. No GPU, no network.
+The patch is textual, so the tests run it over the installed TRL's
+sft_trainer.py plus a checked-in 0.22.2 excerpt and require the result to
+still parse. No GPU, no network.
 """
 
 import ast
@@ -103,9 +102,8 @@ def test_unrecognised_source_is_returned_unchanged():
 
 def _installed_trl_sft_source():
     try:
-        # find_spec imports the parents, so a missing trl raises here rather
-        # than returning None, and the marker would fail collection instead of
-        # skipping in an environment without the optional dependencies.
+        # find_spec imports the parents, so a missing trl raises rather than
+        # returning None, and the marker would fail collection instead of skip.
         spec = importlib.util.find_spec("trl.trainer.sft_trainer")
     except (ImportError, ValueError):
         return None

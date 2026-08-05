@@ -752,24 +752,19 @@ def _wrap_grpo_hidden_states_fallback(trainer_cls):
 def _backport_vision_dataset_gate(RLTrainer_source):
     """Make TRL 0.22.x decide by DATASET, not by model, for SFT vision paths.
 
-    On TRL 0.22.x a VLM skips dataset preparation and picks the vision
-    collator based on `_is_vlm` alone. Fine-tuning a VLM on a text-only
-    dataset therefore reaches the trainer with a raw `text` column, no
-    tokenized columns exist, and transformers strips everything:
+    TRL 0.22.x skips dataset preparation and picks the vision collator from
+    `_is_vlm` alone, so a VLM fine-tuned on a text-only dataset arrives with a
+    raw `text` column and no tokenized ones, and transformers strips them all:
 
         ValueError: No columns in the dataset match the model's forward
         method signature ... The following columns have been ignored: [text]
 
-    Magistral_(24B)-Reasoning-Conversational fails exactly this way; it pins
-    trl==0.22.2 and trains a VLM on a plain `text` dataset. Merging the
-    signature columns (done above) is not enough, because with preparation
-    skipped none of those tokenized columns are ever produced.
+    Magistral_(24B)-Reasoning-Conversational fails this way (it pins
+    trl==0.22.2). Merging the signature columns above is not enough, since
+    with preparation skipped the tokenized columns never exist.
 
-    TRL 0.24.0+ fixed this by keying the decisions off `_is_vision_dataset`,
-    so back-port precisely that. No-op when TRL already defines the flag, so
-    newer versions keep their own logic.
-
-    Returns the source, patched or unchanged."""
+    Back-ports TRL 0.24.0's `_is_vision_dataset` keying. No-op once TRL
+    defines the flag itself. Returns the source, patched or unchanged."""
     if 'self._is_vision_dataset = "image" in dataset_sample' in RLTrainer_source:
         return RLTrainer_source
     anchor = "        dataset_sample = next(iter(train_dataset))\n"
@@ -792,9 +787,8 @@ def _backport_vision_dataset_gate(RLTrainer_source):
         "elif data_collator is None and self._is_vlm:",
         "elif data_collator is None and self._is_vlm and self._is_vision_dataset:",
     )
-    # And actually tokenize the dataset. Skipping preparation is an image-cost
-    # optimisation; with no images there is nothing to save and everything to
-    # lose.
+    # And actually tokenize the dataset: skipping preparation only saves
+    # image-processing cost, of which a text-only dataset has none.
     RLTrainer_source = RLTrainer_source.replace(
         'args.dataset_kwargs.get("skip_prepare_dataset", False) or self._is_vlm',
         'args.dataset_kwargs.get("skip_prepare_dataset", False)'
@@ -1839,11 +1833,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         if _vlm_check_original in RLTrainer_source:
             RLTrainer_source = RLTrainer_source.replace(_vlm_check_original, _vlm_check_patched)
 
-        # Fix TRL 0.22.x: VLM models with text-only datasets. It checks _is_vlm
-        # (model type), not _is_vision_dataset (added in 0.24.0+); with
-        # _is_vlm=True the vision-only signature columns don't overlap tokenized
-        # text columns. Fix: merge both column sets into the VLM branch. Extra
-        # columns are ignored by _remove_unused_columns (raises only on zero match).
+        # Fix TRL 0.22.x VLMs on text-only datasets: it keys off _is_vlm, not
+        # _is_vision_dataset (0.24.0+), so the vision-only signature columns
+        # never overlap the tokenized text ones. Merge both sets into the VLM
+        # branch; _remove_unused_columns ignores extras and raises only on zero.
         _sig_vlm_old = 'self._signature_columns = ["messages", "prompt", "completion", "images"]'
         _sig_vlm_new = (
             'self._signature_columns = ["messages", "prompt", "completion", "images",'
