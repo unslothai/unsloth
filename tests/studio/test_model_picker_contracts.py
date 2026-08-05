@@ -2155,7 +2155,7 @@ def test_a_local_quant_folder_resolves_its_variants_by_path():
     assert "repoId: modelId, hfToken, preferLocalCache: true, localPath: localGgufPath," in card
     # The backend scans a path in the repo_id position before the validation that would 400.
     variants = _read_backend("hub/services/models/gguf_variants.py")
-    scan = variants.split("if is_local_path(repo_id):", 1)
+    scan = variants.split("if is_local_path(repo_id) or probe.exists():", 1)
     assert len(scan) == 2, "the local-path branch this leans on"
     assert "_is_valid_repo_id(repo_id)" in scan[1], "the branch has to come first"
 
