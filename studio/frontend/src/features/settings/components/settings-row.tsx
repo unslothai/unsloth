@@ -26,7 +26,11 @@ export function SettingsRow({
     <div
       data-settings-label={label}
       className={cn(
-        "flex justify-between gap-6 py-3",
+        // The controls are fixed-width and shrink-0, so an unwrapped row starves
+        // the label to one word per line once the content column gets narrow.
+        // justify-end keeps the control right on its own line; an auto margin
+        // would instead defeat items-stretch for the flex-col callers.
+        "flex flex-wrap justify-end gap-x-6 gap-y-2 py-3",
         alignTop ? "items-start" : "items-center",
         destructive && "border-t border-border/60 mt-2 pt-4",
         className,
@@ -34,7 +38,9 @@ export function SettingsRow({
     >
       <div
         className={cn(
-          "flex min-w-0 gap-2.5",
+          // 11rem is the widest floor that leaves every row's geometry
+          // unchanged at the widths that already fit.
+          "flex min-w-[11rem] flex-1 basis-0 gap-2.5",
           alignTop ? "items-start" : "items-center",
         )}
       >
@@ -55,7 +61,7 @@ export function SettingsRow({
       {children ? (
         <div
           className={cn(
-            "flex shrink-0",
+            "flex max-w-full shrink-0",
             // Drop the control past the label row so it lines up with the first
             // description line instead of the label.
             alignTop ? "items-start pt-[21px]" : "items-center",

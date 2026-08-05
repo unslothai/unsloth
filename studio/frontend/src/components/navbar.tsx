@@ -3,14 +3,17 @@
 
 import {
   DesktopTitlebarNavigation,
+  shouldUseCustomWindowTitlebar,
   shouldUseNativeMacWindowTitlebar,
 } from "@/components/tauri/window-titlebar";
 import { SidebarTrigger, useSidebar } from "@/components/ui/sidebar";
+import { cn } from "@/lib/utils";
 import { useState } from "react";
 
 export function Navbar() {
   const { isMobile, pinned, togglePinned } = useSidebar();
   const [usesNativeMacTitlebar] = useState(shouldUseNativeMacWindowTitlebar);
+  const [usesCustomTitlebar] = useState(shouldUseCustomWindowTitlebar);
 
   if (!isMobile) {
     return (
@@ -35,9 +38,25 @@ export function Navbar() {
       </>
     );
   }
+  // Windows text scaling shrinks the CSS viewport, so a desktop window can land
+  // here; sit inside the custom titlebar band instead of buried under its z-[70].
   return (
-    <header className="absolute top-0 inset-x-0 z-[45] h-[48px] pointer-events-none">
-      <div className="flex h-full items-start pt-[11px] pl-2">
+    <header
+      className={cn(
+        "absolute top-0 inset-x-0 pointer-events-none",
+        usesCustomTitlebar
+          ? "z-[80] h-[var(--studio-custom-titlebar-height,34px)]"
+          : "z-[45] h-[48px]",
+      )}
+    >
+      <div
+        className={cn(
+          "flex h-full",
+          usesCustomTitlebar
+            ? "items-center pl-3"
+            : "items-start pt-[11px] pl-2",
+        )}
+      >
         <SidebarTrigger className="pointer-events-auto !size-[34px]" />
       </div>
     </header>

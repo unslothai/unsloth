@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { useIsMobile } from "@/hooks/use-mobile";
 import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
@@ -109,10 +110,17 @@ export function DesktopTitlebarNavigation({
   expanded,
   onToggleSidebar,
   className,
+  showSidebarToggle = true,
 }: {
   expanded: boolean;
   onToggleSidebar: () => void;
   className?: string;
+  /**
+   * Off in the mobile layout, where the sidebar is a sheet keyed off
+   * `openMobile` and pinning does nothing. Navbar's SidebarTrigger takes the
+   * slot, which an inert spacer holds open so back/forward stay put.
+   */
+  showSidebarToggle?: boolean;
 }): ReactElement {
   const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
@@ -129,24 +137,28 @@ export function DesktopTitlebarNavigation({
       role="toolbar"
       aria-label="Sidebar and page navigation"
     >
-      <button
-        type="button"
-        title={expanded ? "Collapse sidebar" : "Expand sidebar"}
-        aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
-        onMouseDown={stopTitlebarDrag}
-        onDoubleClick={stopTitlebarDrag}
-        onClick={(event) => {
-          event.stopPropagation();
-          onToggleSidebar();
-        }}
-        className={buttonClass}
-      >
-        <HugeiconsIcon
-          icon={LayoutAlignLeftIcon}
-          strokeWidth={1.75}
-          className="size-icon"
-        />
-      </button>
+      {showSidebarToggle ? (
+        <button
+          type="button"
+          title={expanded ? "Collapse sidebar" : "Expand sidebar"}
+          aria-label={expanded ? "Collapse sidebar" : "Expand sidebar"}
+          onMouseDown={stopTitlebarDrag}
+          onDoubleClick={stopTitlebarDrag}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleSidebar();
+          }}
+          className={buttonClass}
+        >
+          <HugeiconsIcon
+            icon={LayoutAlignLeftIcon}
+            strokeWidth={1.75}
+            className="size-icon"
+          />
+        </button>
+      ) : (
+        <div aria-hidden="true" className="size-[33px] shrink-0" />
+      )}
       <button
         type="button"
         title="Go back"
@@ -195,6 +207,8 @@ export function WindowTitlebar({
   const [enabled] = useState(shouldUseCustomWindowTitlebar);
   const [maximized, setMaximized] = useState(false);
   const { pinned, togglePinned } = useSidebarPin();
+  // Outside SidebarProvider, so read the same media query the provider does.
+  const isMobile = useIsMobile();
 
   const maximizeRefreshSequence = useRef(0);
   const maximizeRefreshTimer = useRef<number | null>(null);
@@ -381,6 +395,7 @@ export function WindowTitlebar({
             <DesktopTitlebarNavigation
               expanded={pinned}
               onToggleSidebar={togglePinned}
+              showSidebarToggle={!isMobile}
             />
           </div>
         )}
