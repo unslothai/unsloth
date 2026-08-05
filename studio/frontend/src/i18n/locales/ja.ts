@@ -1475,6 +1475,7 @@ export const ja = {
         loadingDataset: "データセットを読み込み中",
         configuring: "構成中",
         training: "トレーニング中",
+        finalizing: "モデルを保存中",
         completed: "完了",
         error: "エラー",
         stopped: "停止",

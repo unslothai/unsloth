@@ -272,6 +272,19 @@ def test_notes_say_where_commands_run(monkeypatch):
     assert "opens a window on the user's desktop" in tools._build_terminal_shell_note()
 
 
+@pytest.fixture
+def _windows_blocklist(monkeypatch):
+    # _BLOCKED_COMMANDS resolves the Windows names at import, so patching
+    # sys.platform is too late; fake the resolved set instead. Kept alongside
+    # windows_terminal, which also fixes which lexer runs; main's tests below
+    # take this one.
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+
+
 @pytest.fixture(params = ["git-bash", "cmd-fallback"])
 def windows_terminal(request, monkeypatch):
     """A Windows host, in both shell configurations _get_shell_cmd produces.
@@ -949,3 +962,20 @@ def test_a_quoted_command_line_after_start_is_not_a_document(windows_terminal):
     # is a command line and must still be lexed.
     assert "rm" in tools._find_blocked_commands('start "" "rm -rf x"')
     assert "rm" in tools._find_blocked_commands('start "" "rm -rf x.txt"')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd //c start "" bash -c "bash /c/x.sh"',
+        "cmd //c start wt",
+        "cmd //c dir",
+        "start notepad",
+    ],
+)
+def test_detached_windows_stay_launchable(command, _windows_blocklist):
+    # `start` is the only route to a window on the user's desktop, which the
+    # terminal description promises, so screening must not blanket-block cmd.
+    # The blocklist is faked here too, or the Linux runner asserts this against
+    # a set with no powershell in it and cannot see a blanket block at all.
+    assert not tools._find_blocked_commands(command)
