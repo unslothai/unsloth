@@ -538,8 +538,8 @@ export function GeneralTab() {
           </div>
         </SettingsRow>
         {/* The desktop app authenticates via desktop auto-auth with a generated
-            secret, so there is no user-entered password to change here (and
-            changing it would clear the desktop secret). Web only. */}
+            secret, so this password only governs remote browsers and is managed
+            in Remote access instead. Web only. */}
         {isTauri ? null : (
           <SettingsRow
             label={t("settings.general.password")}

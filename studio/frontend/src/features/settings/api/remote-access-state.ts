@@ -21,6 +21,7 @@ export type RemoteAccessStatus = {
   canStart: boolean;
   canStop: boolean;
   blockReason: string | null;
+  passwordPending: boolean;
   streamingSupported: boolean;
 };
 
@@ -42,6 +43,8 @@ export type ApiRemoteAccessStatus = {
   // biome-ignore lint/style/useNamingConvention: API schema
   block_reason?: string | null;
   // biome-ignore lint/style/useNamingConvention: API schema
+  password_pending?: boolean;
+  // biome-ignore lint/style/useNamingConvention: API schema
   streaming_supported: boolean;
 };
 
@@ -59,6 +62,7 @@ export function normalizeRemoteAccessStatus(
     canStart: status.can_start,
     canStop: status.can_stop,
     blockReason: status.block_reason ?? null,
+    passwordPending: status.password_pending === true,
     streamingSupported: status.streaming_supported,
   };
 }
@@ -98,12 +102,17 @@ export function remoteAccessStopDisconnectsOrigin(
   );
 }
 
-export function remoteAccessBlockMessage(reason: string | null): string | null {
+export function remoteAccessBlockMessage(
+  reason: string | null,
+  isDesktop: boolean,
+): string | null {
   switch (reason) {
     case "server_starting":
       return "Unsloth is still starting.";
     case "admin_password_change_required":
-      return "Change the administrator password before exposing this server. In the desktop app, run unsloth studio reset-password.";
+      return isDesktop
+        ? "Set a remote password before exposing this server."
+        : "Change the administrator password before exposing this server. In the desktop app, run unsloth studio reset-password.";
     case "explicitly_disabled":
       return "This launch used --no-cloudflare. Restart without it to enable remote access.";
     case "launch_managed":

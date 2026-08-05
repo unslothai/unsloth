@@ -73,11 +73,17 @@ def test_enabled_intent_blocks_only_selected_launch_path(
     )
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
 
-    status = remote_access.remote_access_status(
-        _state(intent = "enabled", launch_managed = launch_managed)
-    )
+    state = _state(intent = "enabled", launch_managed = launch_managed)
+    status = remote_access.remote_access_status(state)
     assert status["block_reason"] == expected_block
     assert status["can_start"] is can_start
+    assert status["password_pending"] is False
+
+    # A pending password is reported on its own, even where another block hides it.
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: False)
+    pending = remote_access.remote_access_status(state)
+    assert pending["password_pending"] is True
+    assert pending["block_reason"] == (expected_block or "admin_password_change_required")
 
 
 def test_failed_stop_remains_retryable(monkeypatch):

@@ -262,6 +262,13 @@ export const en = {
         title: "Change password",
         description:
           "Enter your current password and choose a new one (at least {minLength} characters).",
+        setTrigger: "Set remote password",
+        setTitle: "Set remote password",
+        setDescription:
+          "Choose the password remote browsers sign in with as unsloth (at least {minLength} characters). The Unsloth Desktop App keeps signing in automatically.",
+        setSubmit: "Set password",
+        setting: "Setting...",
+        setDone: "Password set.",
         currentPassword: "Current password",
         newPassword: "New password",
         confirmPassword: "Confirm new password",

@@ -943,6 +943,7 @@ class RemoteAccessResponse(BaseModel):
     can_start: bool
     can_stop: bool
     block_reason: Optional[str] = None
+    password_pending: bool = False
     streaming_supported: bool = True
 
 

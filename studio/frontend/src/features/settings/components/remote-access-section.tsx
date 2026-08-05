@@ -17,12 +17,14 @@ import {
   remoteAccessPollDelay,
   remoteAccessStopDisconnectsOrigin,
 } from "@/features/settings/api/remote-access-state";
+import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
 import { Copy01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ChangePasswordDialog } from "./change-password-dialog";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
@@ -107,6 +109,28 @@ function CopyRemoteUrlButton({ url }: { url: string }) {
   );
 }
 
+// Desktop signs in with a local secret, so the account password exists only for
+// remote browsers and is managed here rather than in the General tab.
+function RemotePasswordRow({
+  status,
+  onDone,
+}: {
+  status: RemoteAccessStatus | null;
+  onDone: () => void;
+}) {
+  if (!(isTauri && status)) {
+    return null;
+  }
+  return (
+    <SettingsRow
+      label="Remote password"
+      description="Remote browsers sign in as unsloth. The Unsloth Desktop App keeps signing in automatically."
+    >
+      <ChangePasswordDialog initial={status.passwordPending} onDone={onDone} />
+    </SettingsRow>
+  );
+}
+
 export function RemoteAccessSection() {
   const [status, setStatus] = useState<RemoteAccessStatus | null>(null);
   const [busy, setBusy] = useState<RemoteAccessOperation | null>(null);
@@ -119,6 +143,13 @@ export function RemoteAccessSection() {
   const applyStatus = useCallback((next: RemoteAccessStatus) => {
     setStatus(next);
     usePlatformStore.setState({ cloudflareUrl: next.url });
+  }, []);
+
+  // A password change rotates credentials outside this section's requests;
+  // discard any in-flight poll and re-read so the block resolves at once.
+  const refreshStatus = useCallback(() => {
+    mutationEpoch.current += 1;
+    setPollRevision((revision) => revision + 1);
   }, []);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: pollRevision intentionally restarts polling after a mutation
@@ -208,7 +239,8 @@ export function RemoteAccessSection() {
     perform("auto", () => updateRemoteAccessAutoStart(enabled));
 
   const statusDescription =
-    remoteAccessBlockMessage(status?.blockReason ?? null) ?? status?.error;
+    remoteAccessBlockMessage(status?.blockReason ?? null, isTauri) ??
+    status?.error;
   const stopAction =
     status?.canStop === true ||
     status?.state === "starting" ||
@@ -245,6 +277,8 @@ export function RemoteAccessSection() {
           {actionLabel}
         </Button>
       </SettingsRow>
+
+      <RemotePasswordRow status={status} onDone={refreshStatus} />
 
       {status?.url ? (
         <SettingsRow

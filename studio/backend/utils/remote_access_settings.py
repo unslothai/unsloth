@@ -187,6 +187,9 @@ def remote_access_status(app_state) -> dict:
     owner = status["managed_by"]
     state = status["state"]
     stop_pending = bool(status.get("stop_pending"))
+    # Reported on its own too: a higher-precedence block hides the reason, but
+    # the desktop still offers setting the password that is pending.
+    password_pending = not _admin_password_ready()
     block_reason = None
     if not ready:
         block_reason = "server_starting"
@@ -196,7 +199,7 @@ def remote_access_status(app_state) -> dict:
         block_reason = "explicitly_disabled"
     elif launch_managed:
         block_reason = "launch_managed"
-    elif not _admin_password_ready():
+    elif password_pending:
         block_reason = "admin_password_change_required"
     elif owner in {"launch", "colab"}:
         block_reason = f"{owner}_managed"
@@ -224,6 +227,7 @@ def remote_access_status(app_state) -> dict:
         "can_start": can_start,
         "can_stop": can_stop,
         "block_reason": block_reason,
+        "password_pending": password_pending,
         "streaming_supported": True,
     }
 
