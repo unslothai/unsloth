@@ -69,7 +69,7 @@ def test_versioned_release_hides_updater_signature_assets():
 
 
 def test_publishing_draft_advances_updater_without_rebuilding():
-    workflow = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding="utf-8"))
+    workflow = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding = "utf-8"))
     assert workflow.get("on", workflow.get(True)) == {"release": {"types": ["published"]}}
     assert workflow["permissions"] == {"contents": "read"}
 
