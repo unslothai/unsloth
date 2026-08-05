@@ -234,7 +234,12 @@ class _RedirectingClient:
     async def __aexit__(self, *exc_info):
         return False
 
-    def stream(self, method, url, headers = None):
+    def stream(
+        self,
+        method,
+        url,
+        headers = None,
+    ):
         _RedirectingClient.seen.append(url)
         outcome = _RedirectingClient.hops.pop(0)
         if isinstance(outcome, str):

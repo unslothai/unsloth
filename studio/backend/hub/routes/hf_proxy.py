@@ -104,9 +104,7 @@ async def proxy_hugging_face_get(
             for _hop in range(MAX_PROXY_REDIRECTS + 1):
                 # stream so the size cap aborts an oversized body (e.g. a resolve/
                 # weights url on an allowed host) instead of buffering it in full.
-                async with client.stream(
-                    "GET", target, headers = request_headers
-                ) as upstream:
+                async with client.stream("GET", target, headers = request_headers) as upstream:
                     if upstream.status_code in (301, 302, 303, 307, 308):
                         location = upstream.headers.get("location")
                         if not location:
@@ -129,9 +127,7 @@ async def proxy_hugging_face_get(
                     response_headers = forwarded_response_headers(upstream.headers)
                     break
             else:
-                raise HTTPException(
-                    status_code = 502, detail = "Too many upstream redirects"
-                )
+                raise HTTPException(status_code = 502, detail = "Too many upstream redirects")
     except httpx.TimeoutException:
         raise HTTPException(status_code = 504, detail = "Hugging Face request timed out")
     except httpx.HTTPError:
