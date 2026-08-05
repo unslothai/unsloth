@@ -11,8 +11,8 @@ import { authFetch } from "./features/auth";
 import { setHubProxyAuthFetch } from "./features/hub";
 import { initializeLocale } from "./i18n";
 
-// Route hub-proxy fallback requests through the session-aware fetch so an
-// expired access token is refresh-retried instead of failing the proxy call.
+// Session-aware fetch for hub-proxy fallbacks, so an expired access token is
+// refresh-retried instead of failing the proxy call.
 setHubProxyAuthFetch(authFetch);
 
 const globalCrypto = globalThis.crypto as Crypto | undefined;

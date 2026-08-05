@@ -72,8 +72,6 @@ def test_forwarded_response_headers_keeps_only_client_facing_headers():
         "content-type": "application/json",
         "link": '<https://huggingface.co/api/models?cursor=abc>; rel="next"',
         "etag": '"deadbeef"',
-        # Stamped on every response this route produces so the frontend can
-        # tell a proxied hub reply from an older backend's catch-all 404.
         hf_proxy.PROXY_MARKER_HEADER: "1",
     }
 
@@ -98,7 +96,7 @@ class _FakeUpstream:
         self.headers = headers
 
     async def aiter_bytes(self):
-        # two chunks so the size cap is exercised mid-stream, not only at the end
+        # Two chunks, so the size cap is exercised mid-stream.
         half = max(1, len(self._content) // 2)
         for start in range(0, len(self._content), half):
             yield self._content[start : start + half]
@@ -215,10 +213,8 @@ def test_proxy_maps_connection_failure_to_502(monkeypatch):
     assert exc_info.value.status_code == 502
 
 
-# ---------------------------------------------------------------------------
-# Redirects are followed manually so the host allowlist applies to every hop.
-# follow_redirects=True would only ever have validated the caller's own URL.
-# ---------------------------------------------------------------------------
+# Redirects are followed manually so the allowlist applies to every hop;
+# follow_redirects=True would validate only the caller's own URL.
 class _RedirectingClient:
     """Real redirect semantics against a scripted set of hops."""
 
@@ -330,9 +326,7 @@ def test_redirect_loop_is_bounded(monkeypatch):
     assert "redirect" in exc_info.value.detail.lower()
 
 
-# ---------------------------------------------------------------------------
 # Malformed authorities must produce a client error, not an unhandled 500.
-# ---------------------------------------------------------------------------
 @pytest.mark.parametrize(
     "url",
     [

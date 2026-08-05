@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { fetchWithTimeout } from "@/features/hub/lib/network";
 
 // Browser-side hub traffic, so it needs the same timeout and hf-proxy fallback
-// as the rest. This hook gates the training subset/split dropdowns.
+// as the rest.
 const SPLITS_TIMEOUT_MS = 15_000;
 
 // ---------------------------------------------------------------------------

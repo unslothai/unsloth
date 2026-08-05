@@ -207,16 +207,15 @@ async function runFetchWithTimeout(
 
 // Browser-level privacy tooling (DNS filtering, TLS-inspecting firewalls,
 // tracker blockers) can block direct fetches to huggingface.co while the
-// backend still has connectivity. When a direct hub fetch fails, retry it
-// through the backend's read-only /api/hub/hf-proxy passthrough before
-// declaring the hub offline.
+// backend still has connectivity, so a failed direct hub fetch is retried
+// through the backend passthrough before the hub is declared offline.
 const HF_PROXY_PATH = "/api/hub/hf-proxy";
 const PROXYABLE_ORIGINS: ReadonlySet<string> = new Set([
   HUGGING_FACE_ORIGIN,
   "https://datasets-server.huggingface.co",
 ]);
-// After a successful fallback, go proxy-first for a while so every listing
-// page doesn't pay for a doomed direct attempt plus its timeout.
+// After a successful fallback, go proxy-first for a while so every listing page
+// does not pay for a doomed direct attempt plus its timeout.
 const PROXY_PREFER_TTL_MS = 10 * 60_000;
 
 // Per origin: a datasets-server failure says nothing about huggingface.co.
@@ -235,10 +234,9 @@ type ProxyAuthFetch = (
   init?: RequestInit,
 ) => Promise<Response>;
 
-// The session-aware fetch (authFetch) lives in the auth feature, whose module
-// graph this network-layer leaf must not import. The app entry registers it at
-// startup so proxied requests get 401-refresh-retry handling; unregistered
-// (tests, early calls) the fallback sends the stored session token directly.
+// authFetch lives in the auth feature, whose module graph this network leaf
+// must not import, so the app entry registers it at startup for 401-refresh
+// retries. Unregistered (tests, early calls) we send the stored token directly.
 let proxyAuthFetch: ProxyAuthFetch | null = null;
 
 export function setHubProxyAuthFetch(fetchImpl: ProxyAuthFetch | null): void {
@@ -246,11 +244,10 @@ export function setHubProxyAuthFetch(fetchImpl: ProxyAuthFetch | null): void {
 }
 
 /**
- * Did this carry a hub reply? Only the marker can say. Status cannot: the hub
- * itself answers 404 for a missing repo, 401/403 for a gated one and 5xx during
- * an outage, and all of those must reach the caller. Everything the route did
- * not produce is unmarked, including its own 502/504 when the hub is
- * unreachable and an older backend's catch-all 404.
+ * Only the marker says a hub reply came through; status cannot, since the hub
+ * itself answers 404 (missing repo), 401/403 (gated) and 5xx (outage) and all
+ * of those must reach the caller. Unmarked covers the route's own 502/504 and
+ * an older backend's catch-all 404.
  */
 function isUsableProxyResponse(response: Response): boolean {
   return response.headers.get(HUB_PROXY_MARKER_HEADER) !== null;
@@ -268,9 +265,9 @@ function isProxyableRequest(
 }
 
 /**
- * Re-issue a Hugging Face request through the backend passthrough. The HF
- * bearer token (if any) moves to the internal token header; Authorization is
- * replaced with the studio session token the backend routes require.
+ * Re-issue a Hugging Face request through the backend passthrough. Any HF
+ * bearer token moves to the internal token header, since Authorization must
+ * carry the studio session token the backend routes require.
  */
 function fetchViaBackendProxy(
   input: Parameters<typeof fetch>[0],
@@ -322,7 +319,7 @@ export async function fetchWithTimeout(
     isProxyableRequest(input, init);
 
   // One proxy attempt per call, whichever branch spends it; otherwise a
-  // proxy-first call can run proxy -> direct -> proxy and burn 3x the timeout.
+  // proxy-first call runs proxy -> direct -> proxy and burns 3x the timeout.
   let proxyAttempted = false;
 
   if (canProxy && prefersProxy(origin)) {
@@ -333,14 +330,13 @@ export async function fetchWithTimeout(
         markRemoteNetworkOnline(origin);
         return response;
       }
-      // unreachable hub, or no hf-proxy route here; retry direct below.
+      // Unreachable hub, or no hf-proxy route here; retry direct below.
       preferProxyUntilByOrigin.delete(origin);
     } catch (error) {
       if (init.signal?.aborted) {
         throw error;
       }
-      // proxy stopped working; retry direct below and re-arm only on a
-      // successful future fallback.
+      // Proxy stopped working; retry direct and re-arm only on a later success.
       preferProxyUntilByOrigin.delete(origin);
     }
   }
@@ -361,14 +357,13 @@ export async function fetchWithTimeout(
           markRemoteNetworkOnline(origin);
           return response;
         }
-        // fallback unavailable or hub unreachable: report the direct failure.
+        // Fallback unavailable or hub unreachable: report the direct failure.
       } catch (proxyError) {
-        // A caller abort must surface as an abort and must not mark the hub
-        // offline; same guard as the proxy-first branch.
+        // A caller abort must surface as an abort, not as the hub going offline.
         if (init.signal?.aborted) {
           throw proxyError;
         }
-        // both paths failed; report the direct failure below.
+        // Both paths failed; report the direct failure below.
       }
     }
     if (timedOut) {

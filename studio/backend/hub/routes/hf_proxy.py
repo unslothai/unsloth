@@ -24,12 +24,11 @@ from hub.dependencies import get_hf_token
 
 router = APIRouter()
 
-# read-only discovery hosts; anything else is refused so this endpoint cannot
-# be used as an open proxy.
+# Read-only discovery hosts; anything else is refused so this cannot be used as
+# an open proxy.
 ALLOWED_PROXY_HOSTS = frozenset({"huggingface.co", "datasets-server.huggingface.co"})
 
-# response headers the browser client consumes. link carries the pagination
-# cursor for the @huggingface/hub listing iterators.
+# link carries the pagination cursor for the @huggingface/hub listing iterators.
 FORWARDED_RESPONSE_HEADERS = ("content-type", "link", "etag")
 
 # Stamped on every response this route produces, so the frontend can tell a hub
@@ -39,12 +38,11 @@ PROXY_MARKER_HEADER = "X-Unsloth-HF-Proxy"
 
 PROXY_TIMEOUT_SECONDS = 30.0
 
-# Redirects are followed by hand so every hop is re-validated; discovery
-# endpoints do not redirect in normal operation.
+# Redirects are followed by hand so every hop is re-validated.
 MAX_PROXY_REDIRECTS = 5
 
-# listing pages are ~100 kib and raw readmes a few mib; anything larger is not
-# a discovery payload and gets refused instead of buffered.
+# Listing pages are ~100 kib and raw readmes a few mib; anything larger is not a
+# discovery payload, so refuse it instead of buffering it.
 MAX_PROXY_RESPONSE_BYTES = 20 * 1024 * 1024
 
 
@@ -93,17 +91,17 @@ async def proxy_hugging_face_get(
     if hf_token:
         request_headers["Authorization"] = f"Bearer {hf_token}"
     try:
-        # follow_redirects stays off: it would only ever validate the caller's
-        # own URL, so a 30x off an allowed host could reach loopback or the
-        # link-local metadata endpoint and return that body. Follow by hand and
-        # re-validate each hop, as core/inference/tools.py does.
+        # follow_redirects stays off: it would validate only the caller's own
+        # URL, so a 30x off an allowed host could reach loopback or the
+        # link-local metadata endpoint. Follow by hand and re-validate each hop,
+        # as core/inference/tools.py does.
         async with httpx.AsyncClient(
             follow_redirects = False,
             timeout = PROXY_TIMEOUT_SECONDS,
         ) as client:
             for _hop in range(MAX_PROXY_REDIRECTS + 1):
-                # stream so the size cap aborts an oversized body (e.g. a resolve/
-                # weights url on an allowed host) instead of buffering it in full.
+                # Stream so the size cap can abort an oversized body (e.g. a
+                # weights URL on an allowed host) instead of buffering it.
                 async with client.stream("GET", target, headers = request_headers) as upstream:
                     if upstream.status_code in (301, 302, 303, 307, 308):
                         location = upstream.headers.get("location")

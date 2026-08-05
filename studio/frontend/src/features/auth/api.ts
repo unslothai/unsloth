@@ -207,9 +207,8 @@ export async function authFetch(
     return response;
   }
   // A 401 stamped by the hf-proxy route is Hugging Face's own (private or
-  // missing repo, which the hub answers 401 for), not a dead Studio session.
-  // Refreshing on it would rotate the session token per lookup, and a failed
-  // refresh would sign the user out because a model was private.
+  // missing repo), not a dead Studio session. Refreshing on it would rotate the
+  // session token per lookup and sign the user out if the refresh failed.
   if (response.headers.get(HUB_PROXY_MARKER_HEADER) !== null) return response;
   if (response.status !== 401) return response;
 

@@ -28,8 +28,8 @@ async function fetchPreviews(repo: string): Promise<string[]> {
   if (cached) return cached;
   const p = (async () => {
     try {
-      // Same wrapper as the rest of the hub traffic: adds a timeout and the
-      // hf-proxy fallback for browsers that cannot reach datasets-server.
+      // Adds a timeout plus the hf-proxy fallback for browsers that cannot
+      // reach datasets-server directly.
       const res = await fetchWithTimeout(
         `https://datasets-server.huggingface.co/first-rows?dataset=${encodeURIComponent(
           repo,

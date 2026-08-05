@@ -6,8 +6,8 @@
 export const HUB_HF_TOKEN_HEADER = "X-Unsloth-HF-Token";
 
 // Set by the hf-proxy route on responses it produced, so a hub status passed
-// through it is not confused with one from the Studio API itself. Lives in this
-// leaf module because both the hub and auth features read it.
+// through it is not confused with one from the Studio API itself. Lives here
+// because both the hub and auth features read it.
 export const HUB_PROXY_MARKER_HEADER = "X-Unsloth-HF-Proxy";
 
 export function hubTokenHeader(

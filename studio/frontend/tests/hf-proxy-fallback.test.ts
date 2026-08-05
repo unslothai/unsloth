@@ -1,11 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Hub discovery fetches huggingface.co straight from the browser, so privacy
-// tooling that filters browser traffic made the UI report "You're offline"
-// while the backend still had connectivity. fetchWithTimeout now retries a
-// failed direct HF fetch through the backend's /api/hub/hf-proxy passthrough
-// and only marks the hub offline when both paths fail.
+// Privacy tooling that filters browser traffic made the UI report "You're
+// offline" while the backend still had connectivity. fetchWithTimeout now
+// retries a failed direct HF fetch through /api/hub/hf-proxy and marks the hub
+// offline only when both paths fail.
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -37,9 +36,8 @@ const PROXY_PREFIX = "/api/hub/hf-proxy?url=";
 
 type FetchCall = { url: string; init: RequestInit | undefined };
 
-// The backend stamps every response the hf-proxy route produces, so the stub
-// has to as well; a proxy reply without it means "this backend has no such
-// route", which is a different case entirely (mode "missing-route").
+// The backend stamps every hf-proxy response, so the stub must too: a proxy
+// reply without the marker means "no such route here" (mode "missing-route").
 const PROXY_MARKER_HEADER = "X-Unsloth-HF-Proxy";
 const proxiedResponse = (body: string, status: number) =>
   new Response(body, { status, headers: { [PROXY_MARKER_HEADER]: "1" } });
@@ -66,15 +64,15 @@ function installFetchStub(behavior: {
       });
     }
     if (mode === "gateway") {
-      // The route could not reach the hub at all, so it raises its own
-      // HTTPException and the marker is never stamped.
+      // The route could not reach the hub, so it raises its own error and the
+      // marker is never stamped.
       return Promise.resolve(
         new Response('{"detail":"bad gateway"}', { status: 502 }),
       );
     }
     if (mode === "missing-route") {
-      // An older Studio backend: the SPA catch-all answers unknown /api paths,
-      // so there is no marker header on the 404.
+      // Older Studio backend: the SPA catch-all answers unknown /api paths, so
+      // its 404 carries no marker header.
       return Promise.resolve(
         new Response('{"detail":"API endpoint not found"}', { status: 404 }),
       );
@@ -204,11 +202,9 @@ test("a caller abort is surfaced, not retried through the proxy", async () => {
 
 test("an older backend without the route is not mistaken for a hub reply", async () => {
   reset();
-  // A Studio backend that predates /api/hub/hf-proxy answers the SPA
-  // catch-all's 404. Treating that as a Hugging Face response would hand
-  // {"detail":"API endpoint not found"} to @huggingface/hub as a model
-  // listing, report the hub as online, and pin every later request to the
-  // missing route for ten minutes.
+  // Treating the SPA catch-all 404 as a hub response would hand
+  // {"detail":"API endpoint not found"} to @huggingface/hub as a model listing,
+  // report the hub online, and pin later requests to the missing route.
   const calls = installFetchStub({ direct: "network-error", proxy: "missing-route" });
 
   await assert.rejects(() => fetchWithTimeout(HF_URL, {}, 50), TypeError);
@@ -222,9 +218,8 @@ test("an older backend without the route is not mistaken for a hub reply", async
 
 test("a genuine hub 404 still reaches the caller", async () => {
   reset();
-  // The mirror image: the proxy DID answer, and Hugging Face said 404 for a
-  // missing repo. That has to pass through untouched, which is why the marker
-  // header exists instead of a status allowlist.
+  // Mirror image: the proxy answered and the hub said 404 for a missing repo,
+  // which must pass through untouched. Hence the marker, not a status allowlist.
   globalThis.fetch = ((input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.startsWith(PROXY_PREFIX)) {
@@ -246,9 +241,8 @@ test("a genuine hub 404 still reaches the caller", async () => {
 
 test("a hub outage relayed by the proxy reaches the caller", async () => {
   reset();
-  // Same shape as the 404 above, for a status the route also uses for its own
-  // errors: a marked 502 came from Hugging Face, so it is a real answer and
-  // must not be mistaken for the fallback being unavailable.
+  // 502 is also a status the route uses for its own errors, so a marked 502 is
+  // a real hub answer and must not read as the fallback being unavailable.
   globalThis.fetch = ((input: string | URL | Request) => {
     const url = typeof input === "string" ? input : input.toString();
     if (url.startsWith(PROXY_PREFIX)) {
@@ -296,8 +290,8 @@ test("one call never spends more than a single proxy attempt", async () => {
   installFetchStub({ direct: "network-error", proxy: "ok" });
   await fetchWithTimeout(HF_URL, {}, 50);
 
-  // ...then make everything hang. Without a cap this runs proxy, direct,
-  // proxy and burns three times the caller's timeout budget.
+  // ...then make everything hang. Uncapped this runs proxy, direct, proxy and
+  // burns 3x the caller's timeout budget.
   const legs: string[] = [];
   globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -335,10 +329,9 @@ test("the proxy preference is per origin", async () => {
 
 test("a hub 401 passed through the proxy is not treated as a dead session", async () => {
   reset();
-  // huggingface.co answers 401 (not 404) for a private or missing repo, and the
-  // route forwards that verbatim. Routed through authFetch it used to look like
-  // a Studio session failure, which refreshes the session token per lookup and
-  // signs the user out when the refresh fails.
+  // huggingface.co answers 401 for a private or missing repo and the route
+  // forwards it verbatim. Through authFetch that used to look like a dead
+  // Studio session: token rotated per lookup, sign-out if the refresh failed.
   let sessionHandled = false;
   setHubProxyAuthFetch(async (input, init) => {
     const response = await fetch(input as string, init);

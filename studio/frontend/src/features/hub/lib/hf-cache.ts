@@ -7,10 +7,9 @@ import { LruMap } from "./lru-map";
 import { fetchWithTimeout } from "./network";
 import { fingerprintToken } from "./token-fingerprint";
 
-// Every modelInfo call funnels through here, so this is where the wrapped
-// fetch belongs. Without it @huggingface/hub uses the global fetch and skips
-// both the timeout and the hf-proxy fallback. Callers passing their own
-// `fetch` (the search hooks, which thread an AbortSignal) still win.
+// Without this @huggingface/hub uses the global fetch and skips both the
+// timeout and the hf-proxy fallback. Callers passing their own `fetch` (the
+// search hooks, which thread an AbortSignal) still win.
 const MODEL_INFO_TIMEOUT_MS = 15_000;
 
 const hubFetch: typeof fetch = (input, init) =>
