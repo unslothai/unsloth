@@ -1177,17 +1177,15 @@ def _skip_start_switches(tokens: "list[str]", index: int) -> int:
     """The first index at or after ``index`` that is not one of `start`'s switches."""
     while index < len(tokens):
         switch = _win_switch(tokens[index].lower())
-        if not switch.startswith("/"):
+        if not _START_SWITCH_RE.fullmatch(switch):
             break
         # /d C:\dir and friends carry their value in the next token.
         index += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
     return index
 
 
-def _quoted_token_indexes(
-    command: str, tokens: "list[str]", lexed_posix: bool
-) -> "frozenset[int]":
-    """Indexes of ``tokens`` that were written with quotes around them.
+def _start_title_indexes(tokens: "list[str]", lexed_posix: bool) -> "frozenset[int]":
+    """Indexes of ``tokens`` that cmd reads as a quoted `start` window title.
 
     cmd reads `start`'s first argument as a window title only when it is quoted,
     which is what separates `start "" prog` and `start "t" prog` -- a title with
@@ -1197,31 +1195,55 @@ def _quoted_token_indexes(
     the start of the token, so `start notepad rm.txt` reported `rm` even though
     the same word in the same place on a full line does not match.
 
-    The non-POSIX lexer keeps the quotes, so the tokens answer for themselves.
-    The POSIX one strips them, so the text is lexed a second time without
-    stripping and the two are lined up one-to-one, reporting nothing when they
-    do not align -- the same technique as _quoted_separator_indexes. That second
-    lex has to be built like the first one: ``shlex.split`` passes no
-    punctuation_chars and clears the comment character, so `;`, `&&`, `|`, `(`
-    and `#` glued onto their neighbours, the two never lined up, and every
-    command holding a separator lost its title detection -- which is worse than
-    not having it, since the title was then screened in the program's place.
+    The question is which tokens still carry quotes by the time cmd parses the
+    line, not which ones the user wrote quotes around, and the two answers are
+    different under Git Bash. Bash strips the quotes and re-quotes an argument
+    only when it has to, so what reaches cmd quoted is exactly the empty and the
+    whitespace-carrying arguments. `start "powershell" -c ls` arrives as
+    `start powershell -c ls`, where powershell is the program and not a title:
+    reading the user's quotes there skipped the block entirely.
+
+    Without Git Bash nothing rewrites the line, the non-POSIX lexer keeps the
+    quotes, and the token answers for itself. Microsoft spells the title
+    `"<Title>"`, so only a double quote counts -- cmd has no single-quote
+    syntax, and `start 'title' rm.txt` launches a program literally named
+    'title', which is how a benign rm.txt came to be blocked as a command.
     """
     if not lexed_posix:
         return frozenset(
-            index for index, token in enumerate(tokens) if token.startswith(('"', "'"))
+            index for index, token in enumerate(tokens) if token.startswith('"')
         )
+    return frozenset(
+        index
+        for index, token in enumerate(tokens)
+        if not token or any(char.isspace() for char in token)
+    )
+
+
+def _source_quoted_indexes(command: str, tokens: "list[str]") -> "frozenset[int] | None":
+    """Indexes of ``tokens`` the user wrote double quotes around, or None when
+    that cannot be told.
+
+    Only the POSIX lexer needs asking, since it is the one that strips them. The
+    text is lexed a second time without stripping and the two are lined up
+    one-to-one -- the same technique as _quoted_separator_indexes -- so the
+    second lex has to be built like the first: ``shlex.split`` passes no
+    punctuation_chars and clears the comment character, which glues `;`, `&&`,
+    `|`, `(` and `#` onto their neighbours and desyncs the two.
+
+    A POSIX-only escape still desyncs them, hence None rather than an empty set:
+    the caller reads "cannot tell" as "screen both candidates", where an empty
+    set would have read as "nothing was quoted" and skipped a screen.
+    """
     try:
         lexer = shlex.shlex(command, posix = False, punctuation_chars = ";&|()`")
         lexer.whitespace_split = True
         raw = list(lexer)
     except ValueError:
-        return frozenset()
+        return None
     if len(raw) != len(tokens):
-        return frozenset()
-    return frozenset(
-        index for index, token in enumerate(raw) if token.startswith(('"', "'"))
-    )
+        return None
+    return frozenset(index for index, token in enumerate(raw) if token.startswith('"'))
 
 
 def _xargs_replacement(tokens: "list[str]", start: int, end: int) -> str:
@@ -1400,6 +1422,11 @@ def _win_switch(token: str) -> str:
 # `start` launches its argument as a program, so that argument is a command
 # position. These switches precede it; the value-taking ones eat a token.
 _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
+# Every `start` switch is one word (/b, /min, /node). Anything holding a further
+# separator is a path, not a switch: Git Bash hands native programs their
+# arguments in MSYS form, so `start "" /c/Windows/System32/powershell.exe` is the
+# launched program, and skipping it as a switch walked straight past the block.
+_START_SWITCH_RE = re.compile(r"/[a-z][a-z0-9]*", re.IGNORECASE)
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -1708,30 +1735,49 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
     # sees only as an argument, so screen what start actually launches.
-    quoted_tokens: "frozenset[int] | None" = None
+    title_tokens: "frozenset[int] | None" = None
+    source_quoted: "frozenset[int] | None" = None
+    source_quoted_built = False
     for i, token in enumerate(tokens):
         if os.path.basename(token).lower() not in ("start", "start.exe"):
             continue
         # Built at most once per call, and only when a start is actually here:
-        # it lexes the whole line, so doing it per start token made the scan
-        # quadratic (800 tokens took 1.1s against main's 34ms).
-        if quoted_tokens is None:
-            quoted_tokens = _quoted_token_indexes(command, tokens, lexed_posix)
+        # the second of them lexes the whole line, so doing it per start token
+        # made the scan quadratic (800 tokens took 1.1s against main's 34ms).
+        if title_tokens is None:
+            title_tokens = _start_title_indexes(tokens, lexed_posix)
         j = _skip_start_switches(tokens, i + 1)
+        if j >= len(tokens):
+            continue
         # `start "title" prog` is the documented form: cmd reads a quoted first
         # argument as the window title, but only when something follows it, so
-        # the program is the token behind it. Matching `== ""` instead saw
-        # neither `start "" prog` on a Windows host without Git Bash -- where the
-        # non-POSIX lexer keeps the quotes and the token arrives as a literal
-        # `""` -- nor any non-empty title on either lexer, and left the program
-        # in both unscreened. A title is data, so it is not screened itself.
-        if j + 1 < len(tokens) and j in quoted_tokens:
-            # Microsoft documents the switches AFTER the title, so skip them on
-            # both sides of it: `start "" /min powershell` left the program at
-            # j + 2 and screened the switch instead.
-            j = _skip_start_switches(tokens, j + 1)
-        if j < len(tokens):
-            blocked |= _find_blocked_commands(tokens[j])
+        # the program is the token behind it. A title is data, so it is not
+        # screened itself. Microsoft documents the switches AFTER the title too,
+        # so they are skipped on both sides of it: `start "" /min powershell`
+        # left the program at j + 2 and screened the switch instead.
+        if j + 1 < len(tokens) and j in title_tokens:
+            k = _skip_start_switches(tokens, j + 1)
+            if k < len(tokens):
+                blocked |= _find_blocked_commands(tokens[k])
+            continue
+        # Whether a quoted word without spaces reaches cmd as a title depends on
+        # how Git Bash rebuilds the line, and the two readings each hide a
+        # different program: if it re-quotes, `start "t" powershell` launches
+        # powershell; if it does not, cmd is handed `start powershell -c ls` and
+        # powershell is the program that `start "powershell" -c ls` launches.
+        # Rather than pick one, screen both positions for this one shape. It is
+        # narrow enough not to bring back the over-block a blind two-token scan
+        # caused, since an unquoted `start notepad rm.txt` is not in it.
+        blocked |= _find_blocked_commands(tokens[j])
+        if j + 1 >= len(tokens) or not lexed_posix:
+            continue
+        if not source_quoted_built:
+            source_quoted = _source_quoted_indexes(command, tokens)
+            source_quoted_built = True
+        if source_quoted is None or j in source_quoted:
+            k = _skip_start_switches(tokens, j + 1)
+            if k < len(tokens):
+                blocked |= _find_blocked_commands(tokens[k])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

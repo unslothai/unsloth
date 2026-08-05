@@ -327,7 +327,11 @@ def test_start_screens_the_program_behind_a_window_title(monkeypatch, bash, comm
         "start notepad rm.txt",
         "start excel curl.csv",
         'start "" notepad rm.txt',
-        'start "rm.txt" notepad',
+        # A title cmd still sees quoted on either lexer. main screens this one
+        # as a program and reports `rm`; the unspaced `"rm.txt"` spelling stays
+        # blocked under Git Bash exactly as on main, because bash drops the
+        # quotes and cmd is handed a program named rm.txt.
+        'start "rm x.txt" notepad',
     ],
 )
 def test_start_arguments_are_not_screened_as_commands(monkeypatch, bash, command):
@@ -367,9 +371,10 @@ def test_detached_windows_stay_launchable(monkeypatch, bash, command):
 @pytest.mark.parametrize(
     "command",
     [
-        # A separator before the start is the whole point: the second lex has to
-        # be built like the first, or the two stop lining up and the title is
-        # screened in the program's place.
+        # A separator before the start is the whole point: inferring the title
+        # from a second lex of the whole line meant a `;` or a `#` glued onto
+        # its neighbour stopped the two lining up, and the title was screened
+        # in the program's place.
         'cd /c/proj; cmd //c start "" pwsh -Command ls',
         'echo done; cmd //c start "" powershell -Command ls',
         'cmd //c start "" pwsh -Command ls; echo ok',
@@ -386,6 +391,51 @@ def test_start_screening_survives_separators_and_switch_order(monkeypatch, bash,
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
     assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Bash strips the user's quotes and re-quotes an argument only when it
+        # has to, so cmd is handed `start powershell -c ls`: powershell is the
+        # program, not a title. Reading the source quotes skipped it entirely.
+        'cmd //c start "powershell" -c ls',
+        "cmd //c start 'pwsh' -c ls",
+        # A POSIX-only escape anywhere earlier in the line used to desync the
+        # second lex the title came from, which then reported nothing and left
+        # the program behind the title unscreened.
+        r'echo a\ b; cmd //c start "" powershell -c ls',
+        r'echo a\ b\ c && cmd //c start "" pwsh -Command ls',
+        # Git Bash hands native programs their arguments in MSYS form, and every
+        # real start switch is one word, so a slash-rooted program is not one.
+        'cmd //c start "" /c/Windows/System32/powershell.exe -c ls',
+        "cmd //c start /c/Windows/System32/powershell.exe -c ls",
+    ],
+)
+def test_start_screening_reads_what_cmd_receives_not_the_source_quotes(monkeypatch, command):
+    # These all run through Git Bash, the shell that rewrites the line between
+    # the user and cmd. Screening the tokens the user typed rather than the ones
+    # cmd parses left the blocked program launchable in each.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "start 'title' rm.txt",
+        "start 'notes' curl.csv",
+    ],
+)
+def test_cmd_has_no_single_quote_syntax(monkeypatch, command):
+    # Without Git Bash nothing rewrites the line and cmd documents the title as
+    # "<Title>", so 'title' is a program literally named that and rm.txt is its
+    # argument. Counting a single quote as a title moved the scan onto the
+    # argument and hard-blocked a benign file for holding `rm`.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert not tools._find_blocked_commands(command)
 
 
 @pytest.mark.parametrize("command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"])
