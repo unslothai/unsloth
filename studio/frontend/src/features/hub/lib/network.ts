@@ -246,17 +246,13 @@ export function setHubProxyAuthFetch(fetchImpl: ProxyAuthFetch | null): void {
 }
 
 /**
- * Did this carry a real Hugging Face reply? False when the passthrough could
- * not reach the hub (502/504), or when the response never reached the route at
- * all (older backend's catch-all 404, auth 401/403).
- *
- * Status alone cannot decide it: the hub itself returns 404 for a missing repo
- * and 401/403 for a gated one, and those must pass through. Hence the marker.
+ * Did this carry a hub reply? Only the marker can say. Status cannot: the hub
+ * itself answers 404 for a missing repo, 401/403 for a gated one and 5xx during
+ * an outage, and all of those must reach the caller. Everything the route did
+ * not produce is unmarked, including its own 502/504 when the hub is
+ * unreachable and an older backend's catch-all 404.
  */
 function isUsableProxyResponse(response: Response): boolean {
-  if (response.status === 502 || response.status === 504) {
-    return false;
-  }
   return response.headers.get(HUB_PROXY_MARKER_HEADER) !== null;
 }
 

@@ -66,8 +66,10 @@ function installFetchStub(behavior: {
       });
     }
     if (mode === "gateway") {
+      // The route could not reach the hub at all, so it raises its own
+      // HTTPException and the marker is never stamped.
       return Promise.resolve(
-        proxiedResponse('{"detail":"bad gateway"}', 502),
+        new Response('{"detail":"bad gateway"}', { status: 502 }),
       );
     }
     if (mode === "missing-route") {
@@ -239,6 +241,25 @@ test("a genuine hub 404 still reaches the caller", async () => {
   const response = await fetchWithTimeout(HF_URL, {}, 50);
   assert.equal(response.status, 404);
   assert.deepEqual(await response.json(), { error: "Repo not found" });
+  assert.equal(isHuggingFaceOffline(), false);
+});
+
+test("a hub outage relayed by the proxy reaches the caller", async () => {
+  reset();
+  // Same shape as the 404 above, for a status the route also uses for its own
+  // errors: a marked 502 came from Hugging Face, so it is a real answer and
+  // must not be mistaken for the fallback being unavailable.
+  globalThis.fetch = ((input: string | URL | Request) => {
+    const url = typeof input === "string" ? input : input.toString();
+    if (url.startsWith(PROXY_PREFIX)) {
+      return Promise.resolve(proxiedResponse("upstream is down", 502));
+    }
+    return Promise.reject(new TypeError("Failed to fetch"));
+  }) as typeof fetch;
+
+  const response = await fetchWithTimeout(HF_URL, {}, 50);
+  assert.equal(response.status, 502);
+  assert.equal(await response.text(), "upstream is down");
   assert.equal(isHuggingFaceOffline(), false);
 });
 
