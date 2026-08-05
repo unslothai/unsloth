@@ -2355,7 +2355,15 @@ def _direct_gguf_for_variant(
     # what listings advertise and clients echo; accept it like the hub download
     # path does through its filename match.
     stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
-    if not _variant_matches(variant, quant, fallback_variant, stripped):
+    # The listing (and its default_variant) can name this same file by another
+    # of its own quant tokens -- the hub extractor prefers the K-quant in
+    # F16-checkpoint-Q4_K_M -- and there is only this one file to name, so any
+    # whole token of its basename resolves it.
+    stem_tokens = [
+        f"{m.group(1) or ''}{m.group(2)}"
+        for m in _GGUF_KNOWN_QUANT_RE.finditer(fallback_variant.rsplit("/", 1)[-1])
+    ]
+    if not _variant_matches(variant, quant, fallback_variant, stripped, *stem_tokens):
         return None
     return detect_gguf_model(str(f), model_root)
 
@@ -2394,13 +2402,14 @@ def _find_local_gguf_by_variant(
         fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
         # Listings advertise the hub-style bpw-stripped spelling; accept it
         # here like the direct-file resolver does. The hub extractor can also
-        # prefer a different token of the same name (F16-checkpoint-Q4_K_M
-        # advertises Q4_K_M), so any whole quant token of the name labels the
-        # same file and resolves it.
+        # prefer a different token of the same BASENAME (F16-checkpoint-Q4_K_M
+        # advertises Q4_K_M), so those tokens label the same file. A parent
+        # directory's quant is not one of them: Q8_0/model-Q4_K_M.gguf is the
+        # Q4_K_M file, and matching it for Q8_0 would load the wrong weights.
         stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
+        basename_stem = fallback_variant.rsplit("/", 1)[-1]
         stem_tokens = [
-            f"{m.group(1) or ''}{m.group(2)}"
-            for m in _GGUF_KNOWN_QUANT_RE.finditer(fallback_variant)
+            f"{m.group(1) or ''}{m.group(2)}" for m in _GGUF_KNOWN_QUANT_RE.finditer(basename_stem)
         ]
         if not _variant_matches(
             variant, quant, fallback_variant, stripped, *stem_tokens

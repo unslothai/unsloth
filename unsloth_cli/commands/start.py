@@ -2088,7 +2088,13 @@ def _attach_gguf_check_for_codex(
             # so the looser filename-token tier is for hub answers alone. The
             # server says which one answered (resolved_locally); path syntax
             # and bare names cover servers that predate the field.
-            local_answer = bool(info.get("resolved_locally"))
+            # One predicate for both judgements: the server says so, else the
+            # shapes a server that predates the field resolves locally anyway.
+            local_answer = (
+                bool(info.get("resolved_locally"))
+                or _is_model_path(candidate)
+                or "/" not in candidate
+            )
             # A local answer of nothing but torn rows has no resumable side:
             # llama-server would be handed the incomplete split only after the
             # teardown, so the load it proves is one that cannot serve.
@@ -2099,11 +2105,7 @@ def _attach_gguf_check_for_codex(
                     f"{candidate} has only incomplete GGUF weights on the server; "
                     "finish or re-copy the download before pointing Codex at it."
                 )
-            if variant and not _answer_offers_variant(
-                variants,
-                variant,
-                strict = local_answer or _is_model_path(candidate) or "/" not in candidate,
-            ):
+            if variant and not _answer_offers_variant(variants, variant, strict = local_answer):
                 _fail_codex_variant_missing(candidate, variant, variants)
             return
         if isinstance(variants, list):

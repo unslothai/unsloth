@@ -188,6 +188,36 @@ def test_variantless_pick_prefers_a_complete_candidate(in_tmp_cwd):
     assert detect_gguf_model(os.fspath(in_tmp_cwd)).endswith("model-Q8_0.gguf")
 
 
+def test_parent_quant_does_not_resolve_a_different_basename_quant(in_tmp_cwd):
+    # Q8_0/model-Q4_K_M.gguf IS the Q4_K_M file; matching it for Q8_0 would
+    # serve the wrong weights under the requested name.
+    from utils.models.model_config import ModelConfig, _find_local_gguf_by_variant
+
+    marked = in_tmp_cwd / "m"
+    (marked / "Q8_0").mkdir(parents = True)
+    (marked / "config.json").write_text("{}")
+    (marked / "Q8_0" / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
+
+    assert _find_local_gguf_by_variant(os.fspath(marked), "Q8_0") is None
+    assert ModelConfig.from_identifier(os.fspath(marked), gguf_variant = "Q8_0").is_gguf is False
+    # The file's own label still resolves it.
+    assert _find_local_gguf_by_variant(os.fspath(marked), "Q4_K_M") is not None
+
+
+def test_direct_file_default_variant_resolves(in_tmp_cwd):
+    # Clients can load the advertised default directly, so the label the
+    # listing recommends has to resolve for the same loose file.
+    from utils.models.model_config import ModelConfig
+
+    gguf = in_tmp_cwd / "F16-checkpoint-Q4_K_M.gguf"
+    gguf.write_bytes(b"GGUF")
+
+    response = _variants(os.fspath(gguf))
+    config = ModelConfig.from_identifier(os.fspath(gguf), gguf_variant = response.default_variant)
+    assert config is not None and config.is_gguf
+    assert config.gguf_file == os.fspath(gguf)
+
+
 def test_dir_resolver_accepts_the_advertised_hub_style_label(in_tmp_cwd):
     # The listing labels F16-checkpoint-Q4_K_M.gguf as Q4_K_M; echoing that
     # label back must resolve the same file.

@@ -6615,6 +6615,11 @@ def test_codex_attach_check_fails_all_partial_local_answers(monkeypatch, capsys)
     assert "incomplete GGUF weights" in capsys.readouterr().err
     _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M", "partial": True}]})
     start._attach_gguf_check_for_codex(BASE, "sk-test", "unsloth/Qwen3-0.6B-GGUF")
+    # A server predating resolved_locally still resolves explicit path syntax
+    # locally, so the same guard applies to its answer.
+    _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M", "partial": True}]})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "./m")
 
 
 def test_codex_attach_check_local_answers_take_exact_labels_only(monkeypatch):
