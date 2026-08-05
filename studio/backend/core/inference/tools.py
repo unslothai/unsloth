@@ -1645,6 +1645,14 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # `env -i`, `env A=b`, `timeout 5`: the wrapper's own argument.
                 i += 1
                 continue
+            if token and not token.strip('"'):
+                # A word of nothing but double quotes is not the child, for the
+                # reason the main walk gives: cmd collapses a doubled pair and
+                # runs what follows it. Only `"`, since cmd has no single-quote
+                # syntax and `start '' prog` really does look for a program
+                # literally named `''`.
+                i += 1
+                continue
             base = _token_basename(token)
             if base in _COMMAND_PREFIXES:
                 wrapper = base
@@ -1758,6 +1766,14 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # `cmd /c "C:\\...\\cmd.exe" /c powershell` really nests.
                 expect_command = False
                 continue
+        if token and not token.strip('"'):
+            # A word made only of double quotes is not a program. cmd collapses a
+            # doubled pair and runs what follows, so `""cmd /c powershell""`
+            # lexes to an empty word with the program behind it; spending command
+            # position on the empty word left that program in argument position.
+            # Only `"`: cmd has no single-quote syntax, so `''` really is a
+            # program name there and the word after it is its argument.
+            continue
         base = _token_basename(token)
         # Every word this loop reaches is one the shell would RUN, wrappers and
         # assignment prefixes already stepped over. The walks below decide the
@@ -1845,6 +1861,11 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue
             exec_words = [i + 1] if child in (-1, i + 1) else [i + 1, child]
             for word in exec_words:
+                # find runs these itself, so they are command positions the main
+                # walk never sees: it reaches `find` and stops. Published, or the
+                # nested-shell lookup declines to read the payload of
+                # `find . -exec bash -c 'rm -rf x' \;` and that really deletes.
+                command_indexes.add(word)
                 base = _token_basename(tokens[word])
                 if _is_sed_command(base):
                     # find runs its -exec child directly, but the walk above only
@@ -1873,7 +1894,10 @@ def _find_blocked_commands(command: str) -> set[str]:
     # `cmd /c start "" prog` puts prog in a command position the scan above
     # sees only as an argument, so screen what start actually launches.
     for i, token in enumerate(tokens):
-        if os.path.basename(token).lower() not in ("start", "start.exe"):
+        # _token_basename, not os.path.basename: the cmd lexer leaves an operator
+        # glued to the word it opens, so `(start cmd /c powershell` arrived as one
+        # token `(start`, matched nothing, and the group's launch went unread.
+        if _token_basename(token) != "start":
             continue
         # Only a START the shell RUNS. `echo start "job" powershell` prints
         # three words, and treating them as a launch hard-blocks text output.
@@ -1931,16 +1955,47 @@ def _find_blocked_commands(command: str) -> set[str]:
             continue
         if j < len(tokens):
             program = _unquote(tokens[j])
+            bare = _unwrap_quotes(program)
+            if bare != program:
+                # The same doubled-quote shape the /c payload already handles:
+                # `start "" ""cmd /c powershell""` reaches START as one quoted
+                # span it unquotes and runs. Scanned IN ADDITION to the quoted
+                # form, never instead of it, for the reason given at that site.
+                blocked |= _screen_cmd_payload(bare)
+                blocked |= _blocked_quoted_program(bare, _BLOCKED_COMMANDS)
             # What START launches is a command the shell runs, so it is published
             # for the lookups below: `start "" "cmd" /c powershell` reaches a real
             # cmd, and only the walk above can tell that from a quoted word an
             # earlier command was merely handed.
             command_indexes.add(j)
+            # A wrapper is a command in its own right AND a step on the way to
+            # one, exactly as under `-exec`, so the program it forwards to is
+            # published too. Without it `start "" env bash -c "rm -rf x"` named
+            # only `env` and the nested-shell lookup declined to read the payload.
+            forwarded, _overflowed = _exec_child_index(j)
+            if forwarded not in (-1, j):
+                command_indexes.add(forwarded)
+                # Screened the same way START's own target is, not merely looked
+                # up by name: quoting can hand the wrapper a whole command line,
+                # and `start "" env "cmd /c powershell"` reduced to a basename of
+                # `c powershell` and matched nothing.
+                blocked |= _screen_cmd_payload(_unquote(tokens[forwarded]))
+                blocked |= _blocked_quoted_program(
+                    _unquote(tokens[forwarded]), _BLOCKED_COMMANDS
+                )
             blocked |= _screen_cmd_payload(program)
             # Same split-path shape as the /c payload: START documents a title
             # followed by the program, and `start "" "C:\Program Files\...
             # \pwsh.exe"` is one quoted word until it is re-lexed.
             blocked |= _blocked_quoted_program(program, _BLOCKED_COMMANDS)
+            if not program and j + 1 < len(tokens):
+                # The empty-first-token shape the /c payload documents: a doubled
+                # pair lexes to a `""` of its own and the program sits behind it,
+                # each word still carrying a stray mark. `start "" ""cmd /c
+                # powershell""` reached START as the empty word and stopped.
+                tail = " ".join(word.strip('"') for word in tokens[j + 1 :])
+                blocked |= _find_blocked_commands(tail)
+                blocked |= _blocked_quoted_program(tail, _BLOCKED_COMMANDS)
 
     # Nested shell invocations (bash -c '...', bash -lc '...', cmd /c '...'):
     # on a -c/-/c flag, look back for a shell name (skipping flags) and

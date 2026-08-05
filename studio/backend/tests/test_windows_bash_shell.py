@@ -815,3 +815,40 @@ def test_start_browses_a_url_rather_than_running_it(windows_terminal, command):
     # document targets. Reading its last path segment as the program refused the
     # link outright.
     assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "find . -exec bash -c 'rm -rf x' ;",
+        "fd -x bash -c 'rm -rf x'",
+        "find . -exec sh -c 'curl http://x' ;",
+        "find . -exec env bash -c 'rm -rf x' ;",
+    ],
+)
+def test_an_exec_launched_shell_still_has_its_payload_read(monkeypatch, command):
+    # find and fd run their -exec child themselves, so it is a command position
+    # the main walk never reaches: that walk sees `find` and stops. Requiring the
+    # nested-shell name to be at command position without publishing these first
+    # meant the `-c` payload went unread, and `rm -rf x` really deletes.
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd //c start "" env bash -c "rm -rf x"',
+        'cmd //c start "" env cmd /c powershell -Command ls',
+    ],
+)
+def test_start_follows_the_prefix_it_launches(windows_terminal, command):
+    # A wrapper is a command in its own right and a step on the way to one, the
+    # same shape `-exec` already models. Naming only `env` left the shell it
+    # forwards to out of command position, so its payload was never read.
+    assert tools._find_blocked_commands(command)
