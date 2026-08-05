@@ -235,8 +235,9 @@ fn powershell_script_path(path: &Path) -> PathBuf {
     };
 
     // Only the verbatim form addresses a path past MAX_PATH; stripping it there
-    // would trade an authorization error for a "path too long" one.
-    if normalized.len() > 260 {
+    // would trade an authorization error for a "path too long" one. MAX_PATH
+    // counts the terminating NUL, so 259 units is the longest legacy path.
+    if normalized.len() >= 260 {
         return path.to_path_buf();
     }
 
@@ -1179,12 +1180,23 @@ mod tests {
                 "{unchanged} should be passed through untouched"
             );
         }
-        // Only the verbatim form reaches past MAX_PATH.
-        let long = format!(r"\\?\C:\{}\install.ps1", "a".repeat(300));
+        // MAX_PATH counts the terminating NUL, so 259 units still fits but 260 does not.
+        let fits = format!(r"C:\{}\install.ps1", "a".repeat(244));
+        assert_eq!(fits.len(), 259);
         assert_eq!(
-            powershell_script_path(Path::new(&long)),
-            PathBuf::from(&long)
+            powershell_script_path(Path::new(&format!(r"\\?\{fits}"))),
+            PathBuf::from(&fits)
         );
+        for over in [
+            format!(r"\\?\C:\{}\install.ps1", "a".repeat(245)),
+            format!(r"\\?\C:\{}\install.ps1", "a".repeat(300)),
+        ] {
+            assert_eq!(
+                powershell_script_path(Path::new(&over)),
+                PathBuf::from(&over),
+                "a path past MAX_PATH must stay verbatim"
+            );
+        }
     }
 
     #[cfg(windows)]
