@@ -1681,18 +1681,37 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
     return [n for n in ggufs if not _is_auxiliary_gguf(n)]
 
 
+# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS: dspark and dflash
+# are the same DeepSeek V4 Flash drafter (its folder and its architecture), and
+# dflash/ as a directory is a family name a user picks for real weights, so only
+# mtp/ and dspark/ count as a publisher's companion folder.
+_DRAFTER_KINDS = ("mtp", "dspark", "dflash")
+_DRAFTER_DIR_KINDS = ("mtp", "dspark")
+
+
 def _is_auxiliary_gguf(filename: str) -> bool:
-    # Vision projectors, MTP drafters and big-endian builds are not loadable
-    # weights; mirrors the server's detect_gguf_model_remote filtering. Only
-    # the root-level trailing -be form is filtered: the server's fuller
-    # big-endian check needs quant context the CLI does not mirror, and an
-    # over-broad copy here would reject repos the server can load.
-    p = filename.lower()
-    name = p.rsplit("/", 1)[-1]
-    if "mmproj" in p or name.startswith("mtp-") or "/mtp/" in f"/{p}":
+    # Vision projectors, separate-file drafters and big-endian builds are not
+    # loadable weights; mirrors the server's detect_gguf_model_remote filtering
+    # (hub.utils.gguf.is_mtp_drafter_path). Drafters match on the basename
+    # prefix, or on an exact parent directory for the companion-only kinds,
+    # never as a substring: the kind names double as family names, so
+    # Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf IS the model. Only the root-level
+    # trailing -be form is filtered: the server's fuller big-endian check needs
+    # quant context the CLI does not mirror, and an over-broad copy here would
+    # reject repos the server can load.
+    p = filename.lower().replace("\\", "/")
+    parts = [segment for segment in p.split("/") if segment]
+    if not parts:
+        return False
+    name, parents = parts[-1], parts[:-1]
+    if "mmproj" in p:
+        return True
+    if any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS):
+        return True
+    if any(kind in parents for kind in _DRAFTER_DIR_KINDS):
         return True
     stem = name.rsplit(".", 1)[0]
-    return "/" not in p and stem.endswith(("-be", "_be"))
+    return not parents and stem.endswith(("-be", "_be"))
 
 
 def _fail_codex_needs_gguf(model_id: str) -> NoReturn:
@@ -1758,8 +1777,12 @@ def _attach_gguf_check_for_codex(base: str, key: str, model: Optional[str]) -> N
         return
     # Mirror the load path's shorthand precedence: the raw name first (it may
     # be a directory relative to the server's cwd), then the unsloth/<name>
-    # canonical form the load would fall back to. Reject only when the final
-    # interpretation gets a live empty answer.
+    # canonical form the load falls back to only when the raw name resolves to
+    # nothing. A live answer is the server's own resolution of that exact id, so
+    # it settles the question: the canonical form must not vouch for a raw name
+    # the server already answered, or a load that lands on a non-GGUF directory
+    # in the server's cwd passes the gate and evicts the resident model. Only an
+    # error (an older server, an unreachable hub) falls through to the next form.
     candidates = [repo]
     if "/" not in repo and not _is_model_path(repo):
         candidates.append(f"unsloth/{repo}")
@@ -1773,7 +1796,7 @@ def _attach_gguf_check_for_codex(base: str, key: str, model: Optional[str]) -> N
         variants = info.get("variants") if isinstance(info, dict) else None
         if isinstance(variants, list) and variants:
             return
-        if candidate == candidates[-1] and isinstance(variants, list):
+        if isinstance(variants, list):
             # Older servers classify marker-less relative paths as hub ids; a
             # local hit for the raw name means it may be a server-side model
             # the server would resolve from its own cwd, so defer.

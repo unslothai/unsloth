@@ -37,6 +37,10 @@ def test_direct_gguf_file_is_a_loadable_variant(in_tmp_cwd):
     response = _variants(os.fspath(gguf))
     assert [v.filename for v in response.variants] == ["foo-Q4_K_M.gguf"]
     assert response.variants[0].quant == "Q4_K_M"
+    # The file is the model: the shard scan cannot walk it, so its empty answer
+    # must not mark the only row partial (the picker disables partial local rows).
+    assert response.variants[0].downloaded is True
+    assert response.variants[0].partial is False
 
 
 def test_markerless_relative_gguf_file_resolves_locally(in_tmp_cwd):
@@ -63,3 +67,5 @@ def test_direct_gguf_file_in_marked_dir_still_lists_siblings(in_tmp_cwd):
     response = _variants(os.fspath(in_tmp_cwd / "model-Q4_K_M.gguf"))
     assert sorted(v.quant for v in response.variants) == ["Q4_K_M", "Q8_0"]
     assert response.has_vision is True
+    # A marked parent is still scanned for completeness, so whole quants stay ready.
+    assert all(v.downloaded for v in response.variants)

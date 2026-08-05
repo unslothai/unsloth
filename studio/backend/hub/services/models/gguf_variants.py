@@ -718,6 +718,8 @@ async def get_gguf_variants_answer(
             local_target = None
         if local_target is not None:
             variants, has_vision = list_local_gguf_variants(repo_id)
+            # The load id is this path, so a quant offered here has to resolve here.
+            complete = _complete_quants_under(repo_id)
             if not variants and local_target.is_file() and local_target.suffix.lower() == ".gguf":
                 # A .gguf file whose parent carries no config/adapter/export
                 # marker is skipped by the directory scan but still loads via
@@ -734,9 +736,13 @@ async def get_gguf_variants_answer(
                         size_bytes = size,
                     )
                 ]
+                # The shard scan resolves a file to its marked parent, so an
+                # unmarked one leaves it walking a file: it answers "no complete
+                # quant" and the row this file IS would read as not downloaded.
+                # Nothing to judge here, so report it as the load sees it.
+                complete = None
             answered_from[0] = repo_id
-            # The load id is this path, so a quant offered here has to resolve here.
-            return _local_response(repo_id, variants, has_vision, _complete_quants_under(repo_id))
+            return _local_response(repo_id, variants, has_vision, complete)
 
         # Reject invalid remote repo_ids up front (like download/delete) so a
         # malformed id returns 400 instead of a 500 from the HF client.

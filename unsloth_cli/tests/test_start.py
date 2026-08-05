@@ -6141,6 +6141,33 @@ def test_hub_gguf_files_ignores_auxiliary_ggufs(monkeypatch):
     assert start._hub_gguf_files("owner/mmproj-pack") == []
 
 
+def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
+    # Mirrors hub.utils.gguf.is_mtp_drafter_path: DSpark/DFlash drafters are
+    # companions, matched by basename prefix (all three kinds) or by an exact
+    # parent dir (mtp/ and dspark/ only, since dflash/ is a real family name).
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
+    payload = {
+        "siblings": [
+            {"rfilename": "DSpark-drafter-Q2K-Q8.gguf"},
+            {"rfilename": "dflash-drafter-Q8_0.gguf"},
+            {"rfilename": "dspark/DeepSeek-V4-Flash-Q8_0.gguf"},
+            # Family names, not companions: these ARE the model.
+            {"rfilename": "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf"},
+            {"rfilename": "DFlash/Qwen3.6-27B-DFlash-Q4_K_M.gguf"},
+        ]
+    }
+    monkeypatch.setattr(
+        start.urllib.request,
+        "urlopen",
+        lambda request, timeout: io.BytesIO(json.dumps(payload).encode()),
+    )
+    assert start._hub_gguf_files("owner/dspark-pack") == [
+        "Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf",
+        "DFlash/Qwen3.6-27B-DFlash-Q4_K_M.gguf",
+    ]
+
+
 def test_hub_gguf_files_filters_root_big_endian_only(monkeypatch):
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
@@ -6369,6 +6396,34 @@ def test_codex_attach_check_trusts_raw_server_dir_answer(monkeypatch):
     monkeypatch.setattr(start, "_http_json", http_json)
     start._attach_gguf_check_for_codex(BASE, "sk-test", "local-gguf-dir")
     assert len(urls) == 1
+
+
+def test_codex_attach_check_rejects_live_empty_raw_shorthand(monkeypatch, tmp_path, capsys):
+    # A live empty answer for the raw name is the server resolving it against
+    # its own cwd, which is exactly what the load does; unsloth/<name> is only
+    # reached when the raw name resolves to nothing, so it must not vouch here.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
+    urls = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        urls.append(url)
+        if "unsloth" in url:
+            return {"variants": [{"quant": "Q4_K_M"}]}
+        return {"variants": []}
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "Qwen3-0.6B-GGUF")
+    assert len(urls) == 1
+    assert "Qwen3-0.6B-GGUF" in capsys.readouterr().err
 
 
 def test_codex_attach_check_defers_shorthand_when_canonical_probe_errors(monkeypatch):
