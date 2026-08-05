@@ -637,3 +637,60 @@ def test_blank_and_leading_lines_still_open_a_command(windows_terminal, command)
     # The recovery counts marks rather than measuring gaps, so a run of newlines,
     # a leading one and a CRLF pair all open exactly one command between them.
     assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd //c env start "" powershell -Command ls',
+        'cmd //c FOO=1 start "" powershell -Command ls',
+        'echo hi\ntime start "" powershell -Command ls',
+        'echo hi\nFOO=1 start "" powershell -Command ls',
+    ],
+)
+def test_a_prefix_may_stand_between_a_boundary_and_start(windows_terminal, command):
+    # A newline and cmd's own /c each open a command position, and a wrapper or
+    # assignment prefix may sit in it before START does. Blessing only the first
+    # word after the boundary left every one of these launches unscreened, so
+    # both feed the same prefix walk an ordinary command position uses.
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'echo "cmd" /c powershell',
+        "echo C:\\Windows\\System32\\cmd.exe /c powershell",
+        'echo /c start "" powershell',
+        'echo /k start "" powershell',
+    ],
+)
+def test_a_shell_named_in_passing_opens_no_payload(windows_terminal, command):
+    # Only a cmd the shell RUNS hands anything to a /c. Recovering the name by
+    # unquoting and normalising any previous word, and taking any /c-shaped token
+    # as a handoff, turned printing these lines into a hard block.
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "echo ';' start \"\" powershell",
+        'echo "then" start "" powershell',
+        "echo '|' start \"\" powershell",
+    ],
+)
+def test_a_quoted_separator_before_start_is_still_data(windows_terminal, command):
+    # The posix lexer splits real separators into tokens of their own and records
+    # which of them the quoting only made look that way. Reading the previous
+    # token instead second-guessed it, and a printed `';'` or `"then"` read as
+    # though a command followed it.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_a_quoted_cmd_payload_is_not_a_program_name(windows_terminal):
+    # Marking what /c hands over as a command position also offered the whole
+    # quoted line to the blocklist as one word, and os.path.basename read its
+    # last path segment: listing a directory came back as the rm builtin.
+    assert not tools._find_blocked_commands('cmd /c "ls /usr/bin/rm"')
+    assert not tools._find_blocked_commands('cmd /c "dir C:\\tmp"')
