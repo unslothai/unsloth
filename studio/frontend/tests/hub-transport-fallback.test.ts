@@ -667,8 +667,11 @@ test("a mirror-only failure is still recorded, with no saved direct failure", as
 
   await transport(HF_URL, {});
   const failure = getLastHubFailure(HF_ORIGIN);
-  assert.equal(failure?.kind, "http");
-  assert.equal(failure?.status, 502);
+  // 502 is the backend's own collapse of "could not reach the Hub", not a status
+  // the Hub sent, so it is reported as a reachability failure and the number is
+  // withheld rather than titled "Hugging Face returned 502".
+  assert.equal(failure?.kind, "network-opaque");
+  assert.equal(failure?.status, undefined);
   assert.equal(
     failure?.origin,
     null,
@@ -716,6 +719,89 @@ test("a stamped 404 is a real Hub answer and is reported", async () => {
   });
 
   await transport(HF_URL, {});
-  assert.equal(getLastHubFailure(HF_ORIGIN)?.kind, "network-opaque");
+  // The server got an answer, so it reports the answer rather than the browser's
+  // own failure to ask.
+  const failure = getLastHubFailure(HF_ORIGIN);
+  assert.equal(failure?.kind, "http");
+  assert.equal(failure?.status, 404);
+  markRemoteNetworkOnline();
+});
+
+test("a served model-info fallback marks the proxy as serving", async () => {
+  markRemoteNetworkOnline();
+  const transport = createHubTransport("models", {
+    direct: failWith("csp-blocked"),
+    backend: async () => new Response("{}", { status: 200 }),
+  });
+
+  await transport(MODEL_INFO_URL, {});
+  assert.equal(
+    isHubProxyServing(),
+    true,
+    "the flag is what stops README and avatar clients hitting the blocked origin",
+  );
+  assert.equal(isHuggingFaceOffline(), true);
+  markRemoteNetworkOnline();
+});
+
+test("a missing repo does not retire a proxy the listing is using", async () => {
+  markRemoteNetworkOnline();
+  const backend = captureBackend();
+  const listing = createHubTransport("models", {
+    direct: failWith("network-opaque"),
+    backend: backend.backend,
+  });
+  await listing(HF_URL, {});
+  assert.equal(isHubProxyServing(), true);
+
+  // 404 here means the repo is gone, not that the proxy is.
+  const info = createHubTransport("models", {
+    direct: failWith("network-opaque"),
+    backend: async () => new Response("{}", { status: 404 }),
+  });
+  await info(MODEL_INFO_URL, {});
+  assert.equal(isHubProxyServing(), true, "the listing path owns demotion");
+  markRemoteNetworkOnline();
+});
+
+test("the backend's own remap is not attributed to Hugging Face", async () => {
+  markRemoteNetworkOnline();
+  // 424 is what the proxy returns for an upstream 401/403, because a real 401
+  // would take authFetch's session-expiry path and log the user out.
+  const transport = createHubTransport("models", {
+    direct: failWith("network-opaque"),
+    backend: async () =>
+      new Response("{}", { status: 424, headers: { "X-Unsloth-HF-Proxy": "1" } }),
+  });
+
+  await transport(HF_URL, {});
+  const failure = getLastHubFailure(HF_ORIGIN);
+  assert.match(failure?.message ?? "", /rejected the access token/);
+  assert.equal(
+    failure?.status,
+    undefined,
+    "424 is ours, so the panel must not title it as the Hub's answer",
+  );
+  markRemoteNetworkOnline();
+});
+
+test("a status the Hub answered directly with reaches the panel", async () => {
+  markRemoteNetworkOnline();
+  // The SDK raises this as an ApiError and fetchWithTimeout clears the origin on
+  // any resolved response, so without an explicit record the http panel is dead
+  // code on the direct path.
+  const transport = createHubTransport("models", {
+    direct: async () => new Response("rate limited", { status: 429 }),
+    backend: async () => {
+      throw new Error("a real status must not trigger the fallback");
+    },
+  });
+
+  const res = await transport(HF_URL, {});
+  assert.equal(res.status, 429);
+  const failure = getLastHubFailure(HF_ORIGIN);
+  assert.equal(failure?.kind, "http");
+  assert.equal(failure?.status, 429);
+  assert.equal(getHubPhase(HF_ORIGIN), "unavailable");
   markRemoteNetworkOnline();
 });

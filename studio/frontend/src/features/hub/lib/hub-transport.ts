@@ -96,15 +96,48 @@ function failureOrigin(failure: HubFailure, raw: string): string {
  * "Hugging Face" rather than naming the operator's internal mirror.
  */
 function proxyOnlyFailure(status?: number): HubFailure {
+  // 424 and 502 are the backend's own remaps (an upstream 401 would log the user
+  // out through authFetch, and 5xx is collapsed), so the code is ours, not the
+  // Hub's. Report what it means instead of attributing the number to the Hub.
+  if (status === 424) {
+    return {
+      kind: "http",
+      message: "Hugging Face rejected the access token.",
+      origin: null,
+      retryable: false,
+    };
+  }
+  if (status === undefined || status === 502) {
+    return {
+      kind: "network-opaque",
+      message: "The server could not reach Hugging Face.",
+      origin: null,
+      retryable: true,
+    };
+  }
   return {
-    kind: status === undefined ? "network-opaque" : "http",
+    kind: "http",
     message:
-      status === undefined
-        ? "The server could not reach Hugging Face."
-        : `The server could not reach Hugging Face (${status}).`,
+      status === 429
+        ? "Hugging Face is rate limiting this deployment. Try again shortly."
+        : `Hugging Face returned ${status} to the server.`,
     origin: null,
     status,
     retryable: true,
+  };
+}
+
+/** A status the Hub itself answered this browser with, so it is the diagnosis. */
+function directHttpFailure(status: number): HubFailure {
+  return {
+    kind: "http",
+    message:
+      status === 429
+        ? "Hugging Face is rate limiting this browser. Try again shortly."
+        : `Hugging Face returned ${status}.`,
+    origin: DEFAULT_HUB_ENDPOINT,
+    status,
+    retryable: status !== 401 && status !== 403,
   };
 }
 
@@ -283,12 +316,36 @@ export function createHubTransport(
         return response;
       }
       // authFetch resolves on a non-2xx, so without this the cause is dropped
-      // and the panel falls back to its generic wording.
-      const failure = directFailure ?? proxyOnlyFailure(response.status);
+      // and the panel falls back to its generic wording. An upstream status the
+      // server actually got (424, 429, 4xx) outranks the saved direct failure:
+      // it names something the browser could not see. A 502 is not a diagnosis,
+      // only "the server could not reach it either", so there the direct cause
+      // stays as the more specific of the two.
+      const answered = proxyOnlyFailure(response.status);
+      const failure =
+        answered.kind === "network-opaque" && directFailure
+          ? directFailure
+          : answered;
       const origin = directFailure
         ? failureOrigin(directFailure, raw)
         : DEFAULT_HUB_ENDPOINT;
       markRemoteNetworkOffline(origin, undefined, failure, "discovery");
+    }
+    return response;
+  };
+
+  // Promote only: a repo that simply does not exist answers 404, and demoting on
+  // that would send the README and avatar clients back at an origin the listing
+  // has already proved unreachable. The listing path owns demotion.
+  const viaInfoBackend = async (
+    info: { repo: string; revision: string },
+    raw: string,
+    init: Parameters<typeof fetch>[1],
+  ): Promise<Response> => {
+    const req = toInfoRequest(info, raw, resource, init);
+    const response = await backend(req.url, req.init);
+    if (response.ok) {
+      setHubProxyServing(true);
     }
     return response;
   };
@@ -305,8 +362,7 @@ export function createHubTransport(
     if (!isListingUrl(raw, resource)) {
       const info = infoTargetOf(raw, resource);
       if (info && ((useProxy && !proxyUnavailable) || proxyFirst())) {
-        const req = toInfoRequest(info, raw, resource, init);
-        return backend(req.url, req.init);
+        return viaInfoBackend(info, raw, init);
       }
       if (!info) {
         // Not a route the backend can serve, so direct is the only option.
@@ -327,8 +383,7 @@ export function createHubTransport(
           throw error;
         }
         useProxy = true;
-        const req = toInfoRequest(info, raw, resource, init);
-        return backend(req.url, req.init);
+        return viaInfoBackend(info, raw, init);
       }
     }
 
@@ -344,6 +399,18 @@ export function createHubTransport(
       // The browser fetched the listing itself, so the backend is not serving
       // the feed; a stale flag would force "available" and hide the next failure.
       setHubProxyServing(false);
+      if (!response.ok) {
+        // The SDK turns this into an ApiError, and fetchWithTimeout has already
+        // cleared the origin on the resolved response, so nothing else records
+        // it and the status never reaches the panel. Not a fallback trigger:
+        // the request did reach the Hub.
+        markRemoteNetworkOffline(
+          hubUrlOf(raw)?.origin ?? DEFAULT_HUB_ENDPOINT,
+          undefined,
+          directHttpFailure(response.status),
+          "discovery",
+        );
+      }
       return response;
     } catch (error) {
       if (
