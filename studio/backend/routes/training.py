@@ -1123,10 +1123,21 @@ async def start_training(
                 resume_output_dir,
             )
             if not resume_run or not await asyncio.to_thread(can_resume_run, resume_run):
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state.",
-                )
+                detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state."
+                if resume_run:
+                    # The provenance gate refuses runs whose checkpoint is entirely
+                    # intact, so reporting the checkpoint blames the wrong thing. It
+                    # already knows why; say that instead when it is the actual cause.
+                    from core.training.provenance import (
+                        resource_provenance_resume_blocker,
+                    )
+                    blocker = await asyncio.to_thread(
+                        resource_provenance_resume_blocker,
+                        training_run_config(resume_run),
+                    )
+                    if blocker:
+                        detail = blocker
+                raise HTTPException(status_code = 400, detail = detail)
             resume_checkpoint = await asyncio.to_thread(
                 get_resume_checkpoint_path,
                 resume_output_dir,

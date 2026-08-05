@@ -866,12 +866,27 @@ def exact_resume_resource_requirements(config: dict[str, Any]) -> tuple[bool, bo
 
 
 def resource_provenance_allows_resume(config: dict[str, Any]) -> bool:
+    return resource_provenance_resume_blocker(config) is None
+
+
+def resource_provenance_resume_blocker(config: dict[str, Any]) -> Optional[str]:
+    """Why this provenance refuses a resume, or None when it allows one.
+
+    ``exact_resume_resource_requirements`` already raises with a precise, user-facing
+    explanation ("the exact model snapshot for this run is no longer available", and so
+    on). Discarding it left the start route reporting a generic checkpoint complaint for
+    a run whose checkpoint is perfectly intact, which points at the wrong thing entirely.
+    """
     marker = config.get(RESOURCE_PROVENANCE_KEY)
     if marker is None:
-        return True
+        return None
     try:
         exact_resume_resource_requirements(config)
-    except ExactResumeResourcesUnavailable:
-        return False
+    except ExactResumeResourcesUnavailable as exc:
+        return str(exc) or "The resources this run was trained from are no longer available."
     status = marker.get("status")
-    return status in {"pending", "incomplete", "complete"}
+    if status in {"pending", "incomplete", "complete"}:
+        return None
+    return (
+        f"This run's recorded resource provenance is not in a resumable state (status: {status!r})."
+    )
