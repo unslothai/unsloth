@@ -284,10 +284,17 @@ def test_notes_say_where_commands_run(monkeypatch):
         r'cmd //c start /d C:/tmp "" powershell -Command ls',
     ],
 )
-def test_cmd_shellout_is_screened_through_mangled_switches(command):
+def test_cmd_shellout_is_screened_through_mangled_switches(monkeypatch, command):
     # Git Bash turns a lone /c into a path, so a model writes //c. That spelling
     # skipped the nested scan, making `cmd //c powershell` reachable where
     # `cmd /c powershell` was blocked, and `start` launches its argument too.
+    # _BLOCKED_COMMANDS resolves the Windows names at import, so patching
+    # sys.platform is too late; fake the resolved set instead.
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
     assert tools._find_blocked_commands(command)
 
 

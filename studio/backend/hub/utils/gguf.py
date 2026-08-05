@@ -342,14 +342,13 @@ def list_empty_gguf_variant_dirs(repo_id: str, root: Optional[Path] = None) -> s
     return {label for key, label in empty.items() if key not in nonempty}
 
 
-def list_gguf_variants_from_hf_cache(
+def select_gguf_cache_snapshot(
     repo_id: str, root: Optional[Path] = None
-) -> Optional[tuple[list[GgufVariantInfo], bool, set]]:
-    """``(variants, has_vision, complete)`` for the snapshot a load would read.
+) -> Optional[tuple[list[GgufVariantInfo], bool, set, Path]]:
+    """``list_gguf_variants_from_hf_cache`` plus the snapshot it answered from.
 
-    Everything in that snapshot is listed, so a torn download stays visible to resume or delete;
-    *complete* is the subset whose shards are all present, so the caller marks the rest partial
-    rather than ready, as the snapshot-path form of this call does.
+    A repo dir holds every revision, so a caller that then reads metadata from wherever this
+    listing came from needs the snapshot, not the dir: the dir includes revisions it skipped.
     """
     # Local import: inventory_scan imports this module.
     from hub.utils.inventory_scan import complete_snapshot_variants
@@ -360,17 +359,30 @@ def list_gguf_variants_from_hf_cache(
         else iter_hf_cache_snapshots(repo_id)
     )
     # Pick the snapshot the inventory row does: newest holding a whole quant, else first non-empty.
-    fallback: Optional[tuple[list[GgufVariantInfo], bool, set]] = None
+    fallback: Optional[tuple[list[GgufVariantInfo], bool, set, Path]] = None
     for snapshot in snapshots:
         variants, has_vision = list_local_gguf_variants(str(snapshot))
         complete = complete_snapshot_variants(str(snapshot)) if variants else set()
         if variants:
             # Selection only: an unlabelled quant cannot be judged, so it counts as usable.
             if any(not v.quant or v.quant in complete for v in variants):
-                return variants, has_vision, complete
+                return variants, has_vision, complete, snapshot
         if fallback is None and (variants or has_vision):
-            fallback = (variants, has_vision, complete)
+            fallback = (variants, has_vision, complete, snapshot)
     return fallback
+
+
+def list_gguf_variants_from_hf_cache(
+    repo_id: str, root: Optional[Path] = None
+) -> Optional[tuple[list[GgufVariantInfo], bool, set]]:
+    """``(variants, has_vision, complete)`` for the snapshot a load would read.
+
+    Everything in that snapshot is listed, so a torn download stays visible to resume or delete;
+    *complete* is the subset whose shards are all present, so the caller marks the rest partial
+    rather than ready, as the snapshot-path form of this call does.
+    """
+    selected = select_gguf_cache_snapshot(repo_id, root = root)
+    return selected[:3] if selected is not None else None
 
 
 def list_partial_gguf_variants_from_state(
