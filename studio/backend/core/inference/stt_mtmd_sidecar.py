@@ -188,7 +188,6 @@ def _cached_file(model_id: str, filename: str) -> Optional[str]:
     from huggingface_hub import hf_hub_download
 
     from core.inference.stt_sidecar import _active_hf_hub_cache
-
     try:
         return hf_hub_download(
             repo_id = MTMD_STT_MODELS[model_id].repo,

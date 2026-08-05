@@ -336,7 +336,11 @@ def test_unload_stops_a_startup_instead_of_letting_it_publish(spawned, monkeypat
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
     started = threading.Event()
 
-    def never_ready(process, port, cancel_event = None):
+    def never_ready(
+        process,
+        port,
+        cancel_event = None,
+    ):
         started.set()
         while not (cancel_event is not None and cancel_event.is_set()):
             time.sleep(0.01)
