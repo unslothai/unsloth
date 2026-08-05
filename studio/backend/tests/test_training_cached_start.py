@@ -814,11 +814,48 @@ def test_unadvertised_cache_pin_reaches_worker(monkeypatch, tmp_path, offline):
     assert (
         worker._cache_artifact_fallback_allowed(
             config,
-            OSError("incomplete cache"),
+            ValueError("Either model_file or model_proto must be specified."),
             "model",
         )
         is False
     )
+
+
+def test_selected_cached_model_tokenizer_failure_allows_hub_fallback(tmp_path):
+    from core.training import worker
+    from core.training.training import _apply_cache_pins
+
+    route = _load_route_module("training_route_selected_cache_tokenizer_fallback")
+    snapshot = tmp_path / "models--unsloth--test" / "snapshots" / "rev"
+    snapshot.mkdir(parents = True)
+    (snapshot / "config.json").write_text("{}")
+    (snapshot / "model.safetensors").write_bytes(b"x")
+
+    preflight = route._reject_untrainable_model_request(
+        _request(model_known_cached = True, model_format = "safetensors")
+    )
+
+    assert preflight.cached_model_pin is None
+    config = {
+        "model_name": preflight.model_name,
+        "model_known_cached": True,
+        "model_local_path": preflight.model_local_path,
+    }
+    _apply_cache_pins(config)
+
+    assert config["model_snapshot_path"] == str(snapshot.resolve())
+    assert config["actual_model_repo_id"] == "unsloth/test"
+    assert config.get("require_validated_model_snapshot", False) is False
+    error = ValueError("Either model_file or model_proto must be specified.")
+    assert worker._cache_artifact_fallback_allowed(config, error, "model") is True
+
+    with patch(
+        "utils.transformers_version.get_transformers_activation_tier",
+        return_value = "default",
+    ):
+        assert worker._drop_model_pin_for_fallback(config, None) == "unsloth/test"
+    assert config["model_snapshot_path"] is None
+    assert config["actual_model_repo_id"] is None
 
 
 def test_untrainable_gate_rejects_remote_adapter():

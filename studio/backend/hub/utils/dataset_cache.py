@@ -382,6 +382,7 @@ def is_cache_artifact_error(error: BaseException | None) -> bool:
                 "cached path",
                 "cached snapshot",
                 "does not appear to have a file named",
+                "either model_file or model_proto must be specified",
                 "failed finding central directory",
                 "invalid header length",
                 "invalid load key",

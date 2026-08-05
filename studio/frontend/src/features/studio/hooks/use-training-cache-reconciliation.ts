@@ -186,8 +186,6 @@ export function useTrainingCacheReconciliation(): void {
     modelLocalPath,
     datasetSource,
     dataset,
-    datasetKnownCached,
-    datasetLocalPath,
   } = useTrainingConfigStore(
     useShallow((s) => ({
       selectedModel: s.selectedModel,
@@ -195,8 +193,6 @@ export function useTrainingCacheReconciliation(): void {
       modelLocalPath: s.modelLocalPath,
       datasetSource: s.datasetSource,
       dataset: s.dataset,
-      datasetKnownCached: s.datasetKnownCached,
-      datasetLocalPath: s.datasetLocalPath,
     })),
   );
 
@@ -204,11 +200,18 @@ export function useTrainingCacheReconciliation(): void {
     if (datasetSource !== "huggingface" || !dataset) {
       return;
     }
+    const current = useTrainingConfigStore.getState();
+    if (
+      current.datasetSource !== "huggingface" ||
+      current.dataset !== dataset
+    ) {
+      return;
+    }
     let cancelled = false;
     const expectedDataset = dataset;
-    const expectedLocalPath = datasetLocalPath;
-    const wasKnownCached = datasetKnownCached;
-    fetchInventorySource("cachedDatasets", { inventoryVersion, hfToken })
+    const expectedLocalPath = current.datasetLocalPath;
+    const wasKnownCached = current.datasetKnownCached;
+    fetchInventorySource("cachedDatasets", { inventoryVersion })
       .then((rows) => {
         if (cancelled) {
           return;
@@ -224,14 +227,7 @@ export function useTrainingCacheReconciliation(): void {
     return () => {
       cancelled = true;
     };
-  }, [
-    inventoryVersion,
-    hfToken,
-    datasetSource,
-    dataset,
-    datasetKnownCached,
-    datasetLocalPath,
-  ]);
+  }, [inventoryVersion, datasetSource, dataset]);
 
   useEffect(() => {
     if (

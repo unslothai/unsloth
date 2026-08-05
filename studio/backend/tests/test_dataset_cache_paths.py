@@ -1065,6 +1065,7 @@ def test_processed_cache_rejects_lookalike_outside_known_root(monkeypatch, tmp_p
         PermissionError("unreadable"),
         RuntimeError("safetensor header is corrupt"),
         OSError("Can't load tokenizer for '/cache/snapshot'"),
+        ValueError("Either model_file or model_proto must be specified."),
         OSError(errno.EIO, "I/O error"),
         ConnectionError("Offline mode is enabled"),
     ],
