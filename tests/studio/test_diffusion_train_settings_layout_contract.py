@@ -41,7 +41,4 @@ def test_settings_columns_key_off_the_pane_width_not_the_viewport():
 def test_field_label_ellipses_instead_of_cutting_mid_glyph():
     # Label's own display is flex and text-overflow does nothing on a flex
     # container, so truncate only ellipses when paired with block.
-    assert (
-        '<Label className="block min-w-0 truncate text-xs">{children}</Label>'
-        in _source()
-    )
+    assert '<Label className="block min-w-0 truncate text-xs">{children}</Label>' in _source()
