@@ -291,13 +291,15 @@ def test_admission_is_released_after_the_upstream_stream_is_closed(func_name):
     # close cannot drop the lease entirely
     releasing = set()
     for node in ast.walk(tree):
-        if isinstance(node, ast.Try) and _first_index(
-            node.finalbody, ("_release_admission",)
-        ) is not None:
+        if (
+            isinstance(node, ast.Try)
+            and _first_index(node.finalbody, ("_release_admission",)) is not None
+        ):
             releasing.update(id(stmt) for stmt in node.body)
 
     teardowns = [
-        node for node in ast.walk(tree)
+        node
+        for node in ast.walk(tree)
         if isinstance(node, ast.Expr) and _called_name(node) in _TEARDOWN_CALLS
     ]
     assert teardowns, f"{func_name}: found no teardown await to check"
