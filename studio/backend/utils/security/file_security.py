@@ -264,7 +264,7 @@ def security_load_subdirs(model_name: str, hf_token: Optional[str] = None) -> tu
     return ()
 
 
-def _load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
+def load_scan_target(model_name: str, load_subdirs: tuple) -> tuple:
     """Map a load alias to the ``(repo_id, load_subdirs)`` the load actually fetches. The
     Spark-TTS / BiCodec alias ``<parent>/LLM`` is downloaded by the trainer as
     ``unsloth/<parent>`` and loaded from ``LLM/``, so scan that repo with ``LLM`` as a
@@ -586,7 +586,7 @@ def evaluate_file_security(
     """
     # Scan the repo the load actually fetches, not the literal alias (which 404s and
     # fails open): the Spark-TTS "<parent>/LLM" alias is really unsloth/<parent> from LLM/.
-    model_name, load_subdirs = _load_scan_target(model_name, tuple(load_subdirs))
+    model_name, load_subdirs = load_scan_target(model_name, tuple(load_subdirs))
 
     # Local paths have no Hub scan, EXCEPT an HF-cache snapshot whose canonical path
     # encodes a repo id + commit: scan that exact commit so an inactive-cache load can't

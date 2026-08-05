@@ -194,6 +194,52 @@ def test_hf_dataset_preflight_accepts_usable_selected_cache(tmp_path):
         route._preflight_hf_dataset_request(request)
 
 
+def test_hf_dataset_preflight_verifies_an_unpinned_repo_with_a_stray_cache(tmp_path):
+    # Without a cache pin the start still downloads, so an unrelated cached copy of the
+    # repo must not buy the request a pass on Hub verification.
+    route = _load_route_module("training_route_unpinned_dataset_verifies")
+    calls: list[str] = []
+
+    class FakeApi:
+        def __init__(self, token = None):
+            pass
+
+        def dataset_info(self, repo_id, *, timeout):
+            calls.append(repo_id)
+            return object()
+
+    with (
+        patch(
+            "hub.utils.dataset_cache.training_dataset_cache_pin",
+            return_value = (tmp_path / "snapshot", "revision"),
+        ),
+        patch.object(route, "hf_env_offline", return_value = False),
+        patch.dict(sys.modules, _fake_hf_modules(FakeApi)),
+    ):
+        route._preflight_hf_dataset_request(_request())
+
+    assert calls == ["org/dataset"]
+
+
+def test_hf_dataset_preflight_accepts_an_unpinned_cached_repo_offline(tmp_path):
+    # Offline there is no Hub to verify against, so a cached copy still starts.
+    route = _load_route_module("training_route_unpinned_dataset_offline")
+
+    class UnexpectedApi:
+        def __init__(self, *args, **kwargs):
+            raise AssertionError("unexpected Hub call")
+
+    with (
+        patch(
+            "hub.utils.dataset_cache.training_dataset_cache_pin",
+            return_value = (tmp_path / "snapshot", "revision"),
+        ),
+        patch.object(route, "hf_env_offline", return_value = True),
+        patch.dict(sys.modules, _fake_hf_modules(UnexpectedApi)),
+    ):
+        route._preflight_hf_dataset_request(_request())
+
+
 def test_streaming_dataset_preflight_bypasses_generic_cache():
     route = _load_route_module("training_route_streaming_dataset_preflight")
     request = _request(dataset_streaming = True, max_steps = 10)
@@ -967,6 +1013,23 @@ def test_remote_format_probe_preserves_root_level_repo_id():
         token = "hf-token",
         timeout = route._REMOTE_MODEL_METADATA_TIMEOUT_SECONDS,
     )
+
+
+def test_remote_format_probe_resolves_the_bicodec_alias():
+    # "Spark-TTS-0.5B/LLM" is a registry alias, not a repo. Probing it literally 404s and
+    # rejects a supported model, so preflight has to probe what the trainer downloads.
+    route = _load_route_module("training_route_remote_bicodec_alias")
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "LLM/config.json"),
+            SimpleNamespace(rfilename = "LLM/model.safetensors"),
+        ]
+    )
+
+    with _patch_model_info(return_value = info) as model_info:
+        assert route._remote_untrainable_model_format("Spark-TTS-0.5B/LLM", None) is None
+
+    assert model_info.call_args_list[0].args[0] == "unsloth/Spark-TTS-0.5B"
 
 
 def test_remote_format_probe_retries_transient_failure():
@@ -1834,12 +1897,14 @@ def test_resolve_model_snapshot_keeps_selected_cache_path_strict(monkeypatch):
         lambda *_args: iter([fallback_path]),
     )
 
+    # Each path is probed once per metadata set (weights first, then bare metadata),
+    # so assert which paths were consulted rather than how many probes ran.
     assert _resolve_model_snapshot("unsloth/test", selected_path) is None
-    assert resolved_paths == [selected_path]
+    assert set(resolved_paths) == {selected_path}
 
     resolved_paths.clear()
     assert _resolve_model_snapshot("unsloth/test", None) == fallback_snapshot
-    assert resolved_paths == [str(fallback_path)]
+    assert set(resolved_paths) == {str(fallback_path)}
 
 
 @pytest.mark.parametrize(

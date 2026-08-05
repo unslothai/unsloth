@@ -316,8 +316,12 @@ def _has_adapter_metadata(path: Path) -> bool:
 def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -> Optional[str]:
     from huggingface_hub import model_info as hf_model_info
     from hub.utils.hf_errors import hf_error_status
+    from utils.security import load_scan_target
 
-    repo_id = canonical_model_repo_id(model_name)
+    # Registry aliases such as "Spark-TTS-0.5B/LLM" are not repos; probe the repo the
+    # trainer really downloads, and treat its load subdir as the weight root. Registry
+    # lookup only, so preflight gains no extra Hub round trip.
+    repo_id, load_subdirs = load_scan_target(canonical_model_repo_id(model_name), ())
     timeouts = (
         _REMOTE_MODEL_METADATA_TIMEOUT_SECONDS,
         _REMOTE_MODEL_METADATA_RETRY_TIMEOUT_SECONDS,
@@ -388,6 +392,7 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
                 ),
             ) from error
 
+    load_roots = ("", *(f"{subdir.strip('/')}/" for subdir in load_subdirs if subdir))
     root_files: set[str] = set()
     has_gguf = False
     for sibling in getattr(info, "siblings", None) or ():
@@ -397,8 +402,9 @@ def _remote_untrainable_model_format(model_name: str, hf_token: Optional[str]) -
         normalized = name.replace("\\", "/")
         if normalized.casefold().endswith(".gguf"):
             has_gguf = True
-        if "/" not in normalized:
-            root_files.add(normalized)
+        for root in load_roots:
+            if normalized.startswith(root) and "/" not in normalized[len(root):]:
+                root_files.add(normalized[len(root):])
     if "adapter_config.json" in root_files:
         return "adapter"
     has_trainable_weights = any(name in root_files for name, _ in _MODEL_WEIGHT_CANDIDATES)
@@ -426,13 +432,21 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
             ),
         ) from error
 
+    cached_path = None
     if not request.dataset_streaming:
         from hub.utils.dataset_cache import training_dataset_cache_pin
         cached_path, _ = training_dataset_cache_pin(
             dataset_id,
             request.dataset_snapshot_path or request.dataset_local_path,
         )
-        if cached_path is not None:
+        # Only a start that actually pins the cache may skip Hub verification. An
+        # unpinned start still downloads, so a bad repo has to fail here, not mid-run.
+        pins_cache = bool(
+            request.dataset_known_cached
+            or request.dataset_local_path
+            or request.dataset_snapshot_path
+        )
+        if cached_path is not None and pins_cache:
             return
 
     if hf_env_offline():
@@ -445,6 +459,8 @@ def _preflight_hf_dataset_request(request: TrainingStartRequest) -> None:
                     "reached while offline. Disable streaming to use a cached dataset."
                 ),
             )
+        if cached_path is not None:
+            return
         raise _hf_preflight_error(
             409,
             "hf_dataset_not_cached_offline",

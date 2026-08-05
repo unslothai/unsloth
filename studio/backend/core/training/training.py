@@ -302,6 +302,17 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 _MODEL_SNAPSHOT_METADATA = ("config.json", "adapter_config.json")
+# refs/main can point at a revision that only ever fetched metadata, so prefer a
+# snapshot that actually carries weights before falling back to a metadata match.
+_MODEL_SNAPSHOT_WEIGHTS = (
+    "model.safetensors",
+    "model.safetensors.index.json",
+    "pytorch_model.bin",
+    "pytorch_model.bin.index.json",
+    "consolidated.safetensors",
+    "adapter_model.safetensors",
+    "adapter_model.bin",
+)
 
 
 def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optional[str]:
@@ -311,19 +322,23 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
     )
 
     repo_id = canonical_model_repo_id(model_name)
+    metadata_sets = (_MODEL_SNAPSHOT_WEIGHTS, _MODEL_SNAPSHOT_METADATA)
     if local_path:
-        return latest_snapshot_from_cache_path(
-            local_path, "model", repo_id, _MODEL_SNAPSHOT_METADATA
-        )
-    for repo_dir in iter_repo_cache_dirs("model", repo_id):
-        snapshot = latest_snapshot_from_cache_path(
-            str(repo_dir),
-            "model",
-            repo_id,
-            _MODEL_SNAPSHOT_METADATA,
-        )
-        if snapshot:
-            return snapshot
+        for metadata in metadata_sets:
+            snapshot = latest_snapshot_from_cache_path(local_path, "model", repo_id, metadata)
+            if snapshot:
+                return snapshot
+        return None
+    for metadata in metadata_sets:
+        for repo_dir in iter_repo_cache_dirs("model", repo_id):
+            snapshot = latest_snapshot_from_cache_path(
+                str(repo_dir),
+                "model",
+                repo_id,
+                metadata,
+            )
+            if snapshot:
+                return snapshot
     return None
 
 

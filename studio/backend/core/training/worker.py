@@ -2348,10 +2348,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         revision_error = _mlx_revision_fallback_error(config)
         if revision_error is not None:
             raise revision_error from error
-        security_error = _model_load_security_error(config, model_load_name, hf_token)
-        if security_error:
-            _send("error", **security_error)
-            return
         _send(
             "status",
             status_message = (
@@ -2359,6 +2355,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
             ),
         )
         model_load_name = _drop_model_pin_for_fallback(config, hf_token)
+        # Scan the Hub target we fall back to, not the cached pin already scanned above.
+        security_error = _model_load_security_error(config, model_load_name, hf_token)
+        if security_error:
+            _send("error", **security_error)
+            return
         model_local_only = False
         model_revision = config.get("model_revision")
         model, tokenizer = FastMLXModel.from_pretrained(
@@ -3781,15 +3782,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 raise fallback_error from error
             if not _cache_artifact_fallback_allowed(config, error, "model"):
                 raise
-            security_error = _model_load_security_error(config, model_load_name, hf_token)
-            if security_error:
-                event_queue.put({"type": "error", **security_error, "ts": time.time()})
-                return
             _send_status(
                 event_queue,
                 f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
             )
             model_load_name = _drop_model_pin_for_fallback(config, hf_token)
+            # Scan the Hub target we fall back to, not the cached pin already scanned above.
+            security_error = _model_load_security_error(config, model_load_name, hf_token)
+            if security_error:
+                event_queue.put({"type": "error", **security_error, "ts": time.time()})
+                return
             model_local_only = False
             model_revision = config.get("model_revision")
             _pre_detect_training_model(
@@ -3906,15 +3908,16 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
                 and fallback_error is None
                 and _cache_artifact_fallback_allowed(config, trainer.model_load_error, "model")
             ):
-                security_error = _model_load_security_error(config, model_load_name, hf_token)
-                if security_error:
-                    event_queue.put({"type": "error", **security_error, "ts": time.time()})
-                    return
                 _send_status(
                     event_queue,
                     f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
                 )
                 model_load_name = _drop_model_pin_for_fallback(config, hf_token)
+                # Scan the Hub target we fall back to, not the cached pin already scanned above.
+                security_error = _model_load_security_error(config, model_load_name, hf_token)
+                if security_error:
+                    event_queue.put({"type": "error", **security_error, "ts": time.time()})
+                    return
                 model_local_only = False
                 model_revision = config.get("model_revision")
                 trainer.model = None
@@ -4510,15 +4513,16 @@ def _run_embedding_training(event_queue: Any, stop_queue: Any, config: dict) -> 
                 raise fallback_error from error
             if not _cache_artifact_fallback_allowed(config, error, "model"):
                 raise
-            security_error = _model_load_security_error(config, model_load_name, hf_token)
-            if security_error:
-                event_queue.put({"type": "error", **security_error, "ts": time.time()})
-                return
             _send_status(
                 event_queue,
                 f"Cached files for {model_name} are incomplete; retrying from Hugging Face...",
             )
             model_load_name = _drop_model_pin_for_fallback(config, hf_token)
+            # Scan the Hub target we fall back to, not the cached pin already scanned above.
+            security_error = _model_load_security_error(config, model_load_name, hf_token)
+            if security_error:
+                event_queue.put({"type": "error", **security_error, "ts": time.time()})
+                return
             model_local_only = False
             model_revision = config.get("model_revision")
             model = FastSentenceTransformer.from_pretrained(

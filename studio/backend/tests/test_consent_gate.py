@@ -493,6 +493,31 @@ class TestWorkersWireTheGate:
             src = (_BACKEND / rel).read_text(encoding = "utf-8")
             assert "get_base_model_from_lora_identifier" in src, rel
 
+    def test_cache_fallback_gates_the_hub_target(self):
+        # Dropping the cache pin swaps in the Hub repo, so the scan has to run on the
+        # new target. Scanning before the swap only re-scans the snapshot already gated.
+        src = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
+        drops = [
+            index
+            for index in range(len(src))
+            if src.startswith("model_load_name = _drop_model_pin_for_fallback(", index)
+        ]
+        assert len(drops) == 4, "expected one fallback per training path"
+        for index in drops:
+            tail = src[index:]
+            gate = tail.index("_model_load_security_error(")
+            reload = min(
+                tail.index(call)
+                for call in (
+                    "FastMLXModel.from_pretrained(",
+                    "FastSentenceTransformer.from_pretrained(",
+                    "_pre_detect_training_model(",
+                    "_reload_dataset_with_remote_model_tokenizer(",
+                )
+                if call in tail
+            )
+            assert gate < reload, "the fallback target must be scanned before it is loaded"
+
     def test_embedding_training_path_gates_before_load(self):
         # The embedding pipeline must run the malware + consent gates before loading, like the other paths.
         src = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
