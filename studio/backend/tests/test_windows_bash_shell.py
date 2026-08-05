@@ -1249,7 +1249,7 @@ def test_call_forwards_to_a_command(windows_terminal, command):
 
 @pytest.mark.parametrize(
     "command",
-    ['call build.bat', "call node app.js", "call :build", 'echo call start "" powershell'],
+    ["call build.bat", "call node app.js", "call :build", 'echo call start "" powershell'],
 )
 def test_call_does_not_invent_a_command(windows_terminal, command):
     assert not tools._find_blocked_commands(command)
