@@ -566,10 +566,12 @@ pub async fn start_managed_repair(
             // the app exits underneath it.
             if msg == update::UPDATE_STOPPED {
                 info!("Managed repair update stopped; skipping installer fallback");
+                // Only a user stop reaches this branch, and the support report prints
+                // final_status verbatim. Matches record_pending_elevation_canceled.
                 diagnostics::finish_repair_group(
                     &diagnostics_state,
                     &repair_group_id,
-                    "failed",
+                    "canceled",
                     Some(msg.clone()),
                 );
                 return Err(msg);
