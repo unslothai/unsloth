@@ -776,6 +776,86 @@ def test_preview_snapshot_returns_immutable_revision_with_cache_pin(monkeypatch,
     assert revision == "commit-preview"
 
 
+def test_training_cache_pin_prefers_processed_cache_without_explicit_path(
+    monkeypatch,
+    tmp_path,
+):
+    repo_id = "Org/Data"
+    repo_root, snapshot = _dataset_repo(tmp_path, repo_id, "commit-preview")
+    (snapshot / "README.md").write_text("metadata only", encoding = "utf-8")
+    processed_root = tmp_path / "processed"
+    processed = processed_root / "Org___Data"
+    output = processed / "default" / "0.0.0" / "build-hash"
+    output.mkdir(parents = True)
+    (output / "dataset_info.json").write_text("{}", encoding = "utf-8")
+    (output / "data-train.arrow").write_bytes(b"\xff\xff\xff\xff")
+    monkeypatch.setenv("HF_DATASETS_CACHE", str(processed_root))
+    monkeypatch.setattr(
+        dataset_cache,
+        "hf_datasets_cache_roots",
+        lambda: [processed_root.resolve()],
+    )
+    _patch_cache_dirs(monkeypatch, repo_id, [repo_root])
+
+    pin, revision = dataset_cache.training_dataset_cache_pin(repo_id)
+    explicit_pin, explicit_revision = dataset_cache.training_dataset_cache_pin(
+        repo_id,
+        str(repo_root),
+    )
+
+    assert pin == processed.resolve()
+    assert revision is None
+    assert explicit_pin == snapshot.resolve()
+    assert explicit_revision == "commit-preview"
+
+
+def test_training_cache_pin_ignores_empty_processed_cache(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    repo_root, snapshot = _dataset_repo(tmp_path, repo_id, "commit-preview")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    processed_root = tmp_path / "processed"
+    processed = processed_root / "Org___Data"
+    output = processed / "default" / "0.0.0" / "build-hash"
+    output.mkdir(parents = True)
+    (output / "dataset_info.json").write_text("{}", encoding = "utf-8")
+    (output / "data-train.arrow").write_bytes(b"")
+    monkeypatch.setenv("HF_DATASETS_CACHE", str(processed_root))
+    monkeypatch.setattr(
+        dataset_cache,
+        "hf_datasets_cache_roots",
+        lambda: [processed_root.resolve()],
+    )
+    _patch_cache_dirs(monkeypatch, repo_id, [repo_root])
+
+    pin, revision = dataset_cache.training_dataset_cache_pin(repo_id)
+
+    assert pin == snapshot.resolve()
+    assert revision == "commit-preview"
+
+
+def test_training_cache_pin_ignores_incomplete_processed_cache(monkeypatch, tmp_path):
+    repo_id = "Org/Data"
+    repo_root, snapshot = _dataset_repo(tmp_path, repo_id, "commit-preview")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    processed_root = tmp_path / "processed"
+    processed = processed_root / "Org___Data"
+    output = processed / "default" / "0.0.0" / "build-hash.incomplete"
+    output.mkdir(parents = True)
+    (output / "dataset_info.json").write_text("{}", encoding = "utf-8")
+    (output / "data-train.arrow").write_bytes(b"\xff\xff\xff\xff")
+    monkeypatch.setattr(
+        dataset_cache,
+        "hf_datasets_cache_roots",
+        lambda: [processed_root.resolve()],
+    )
+    _patch_cache_dirs(monkeypatch, repo_id, [repo_root])
+
+    pin, revision = dataset_cache.training_dataset_cache_pin(repo_id)
+
+    assert pin == snapshot.resolve()
+    assert revision == "commit-preview"
+
+
 def test_app_processed_cache_is_deterministic_and_discoverable(monkeypatch, tmp_path):
     repo_id = "Org/Data"
     _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
@@ -1038,7 +1118,10 @@ def test_processed_cache_is_discovered_without_selected_path(monkeypatch, tmp_pa
     repo_id = "Org/Data"
     processed_root = tmp_path / "processed"
     processed = processed_root / "Org___Data"
-    processed.mkdir(parents = True)
+    output = processed / "default" / "0.0.0" / "build-hash"
+    output.mkdir(parents = True)
+    (output / "dataset_info.json").write_text("{}", encoding = "utf-8")
+    (output / "data-train.arrow").write_bytes(b"\xff\xff\xff\xff")
     monkeypatch.setenv("HF_DATASETS_CACHE", str(processed_root))
 
     assert dataset_cache.latest_cached_dataset_path(repo_id) == processed.resolve()

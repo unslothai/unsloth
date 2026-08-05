@@ -100,6 +100,13 @@ export function useHfTokenValidation(token: string): HfTokenValidationState {
     );
   }, [debouncedToken, shouldValidate]);
 
+  if (normalizedToken && !normalizedToken.startsWith("hf_")) {
+    return {
+      isValid: false,
+      error: "Token must start with hf_.",
+      isChecking: false,
+    };
+  }
   if (!COMPLETE_HF_TOKEN.test(normalizedToken)) return INITIAL;
   if (completed.token !== normalizedToken) {
     return { isValid: null, error: null, isChecking: true };

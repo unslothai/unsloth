@@ -16,6 +16,9 @@ const {
   createDatasetCacheUsabilityIdentity,
   datasetCacheUsabilityIdentitiesEqual,
 } = await import("../src/features/training/lib/dataset-cache-rejection.ts");
+const { buildCachedInventoryRow } = await import(
+  "../src/features/hub/inventory/view-models.ts"
+);
 
 const RECONCILIATION_PATH = fileURLToPath(
   new URL(
@@ -49,6 +52,13 @@ const PREVIEW_DIALOG_PATH = fileURLToPath(
   ),
 );
 
+const DATASET_SELECTOR_PATH = fileURLToPath(
+  new URL(
+    "../src/features/dataset-picker/components/dataset-selector.tsx",
+    import.meta.url,
+  ),
+);
+
 function parseSource(path: string): ts.SourceFile {
   return ts.createSourceFile(
     path,
@@ -60,6 +70,32 @@ function parseSource(path: string): ts.SourceFile {
 }
 
 const reconciliationSource = parseSource(RECONCILIATION_PATH);
+
+test("processed dataset load paths stay separate from management paths", () => {
+  const row = buildCachedInventoryRow(
+    {
+      repo_id: "Org/Data",
+      size_bytes: 256,
+      cache_path: "/cache/datasets--Org--Data",
+      load_cache_path: "/processed/Org___Data",
+    },
+    "unknown",
+  );
+
+  assert.equal(row.cachePath, "/cache/datasets--Org--Data");
+  assert.equal(row.loadCachePath, "/processed/Org___Data");
+
+  const selector = readFileSync(DATASET_SELECTOR_PATH, "utf8");
+  const reconciliation = readFileSync(RECONCILIATION_PATH, "utf8");
+  assert.match(
+    selector,
+    /localPath: cached\?\.loadCachePath \?\? cached\?\.cachePath \?\? null/,
+  );
+  assert.match(
+    reconciliation,
+    /return reference\.load_cache_path \?\? reference\.cache_path/,
+  );
+});
 
 function findCall(
   root: ts.Node,

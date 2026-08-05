@@ -50,6 +50,8 @@ def test_validation_result_must_belong_to_the_current_normalized_token():
 
     assert "const normalizedToken = token.trim()" in source
     assert "useDebouncedValue(normalizedToken, 500)" in source
+    assert 'normalizedToken && !normalizedToken.startsWith("hf_")' in source
+    assert 'error: "Token must start with hf_."' in source
     assert "if (!COMPLETE_HF_TOKEN.test(normalizedToken)) return INITIAL" in source
     assert "if (completed.token !== normalizedToken)" in source
     assert "if (completed.token !== debouncedToken)" not in source
@@ -63,12 +65,14 @@ def test_saved_token_is_not_reported_as_connected():
     assert 't("picker.hfToken.savedAriaLabel")' in indicator
     assert 't("picker.hfToken.savedHint")' in indicator
     assert 't("picker.hfToken.saved")' in indicator
+    assert "hfApiToken(hfToken) !== undefined" in indicator
     assert 'savedAriaLabel: "Hugging Face token saved"' in en_locale
     assert 'savedHint: "Token saved. Access is checked when you use it."' in en_locale
     assert 'saved: "Saved"' in en_locale
     assert "Allows access to private and gated repos" not in indicator
     assert 't("studio.preview.saved")' in preview
     assert 't("studio.preview.connected")' not in preview
+    assert "hfApiToken(hfToken) !== undefined" in preview
 
 
 def test_model_defaults_error_warns_without_blocking_readiness_and_offers_retry():

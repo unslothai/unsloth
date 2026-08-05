@@ -95,6 +95,7 @@ class CachedDatasetItem(BaseModel):
     repo_id: str
     size_bytes: int = 0
     cache_path: Optional[str] = None
+    load_cache_path: Optional[str] = None
     processed_cache: bool = False
     partial: bool = False
     partial_transport: Optional[str] = None

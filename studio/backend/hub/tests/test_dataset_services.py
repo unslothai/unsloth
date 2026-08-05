@@ -84,6 +84,8 @@ def test_dataset_cache_scan_merges_raw_and_processed_rows(monkeypatch):
     assert len(rows) == 1
     assert rows[0]["repo_id"] == "Org/Data"
     assert rows[0]["size_bytes"] == 250
+    assert rows[0]["cache_path"] == "/cache/datasets--Org--Data"
+    assert rows[0]["load_cache_path"] == "/processed/org___data"
     assert rows[0]["partial"] is False
 
 

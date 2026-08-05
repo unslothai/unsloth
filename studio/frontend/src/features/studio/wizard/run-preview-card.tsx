@@ -6,7 +6,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { ownerOf, useHfTokenStore } from "@/features/hub";
+import { hfApiToken, ownerOf, useHfTokenStore } from "@/features/hub";
 import {
   TRAINING_METHOD_META,
   isLocalTrainingModelSelection,
@@ -335,7 +335,7 @@ export function RunPreviewCard({
 
   const gpu = useGpuInfo();
   const hfToken = useHfTokenStore((s) => s.token);
-  const hasToken = !!hfToken && hfToken.trim().length > 0;
+  const hasToken = hfApiToken(hfToken) !== undefined;
   const { isReady, hasModel, hasDataset } = useTrainingReadiness();
   const resourceNotices = useTrainingResourceNotices();
   const nonDefaultAdvancedSettings = useTrainingConfigStore((state) =>

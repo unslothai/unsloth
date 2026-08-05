@@ -142,7 +142,7 @@ export function DatasetSelector() {
       const canonicalId = cached?.repoId ?? validation.id;
       selectHfDataset(canonicalId, {
         knownCached: cached !== undefined,
-        localPath: cached?.cachePath ?? null,
+        localPath: cached?.loadCachePath ?? cached?.cachePath ?? null,
       });
       return true;
     },
@@ -158,7 +158,7 @@ export function DatasetSelector() {
         title: d.repoId,
         detail: t("studio.datasetPicker.hfCacheLabel"),
         repoId: d.repoId,
-        cachePath: d.cachePath ?? null,
+        cachePath: d.loadCachePath ?? d.cachePath ?? null,
       }));
     const localItems: DatasetDeviceItem[] = localRows
       .filter((d) => !d.partial)

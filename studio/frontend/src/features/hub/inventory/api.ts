@@ -114,6 +114,7 @@ export interface CachedDatasetRepo {
   repo_id: string;
   size_bytes: number;
   cache_path?: string;
+  load_cache_path?: string;
   partial?: boolean;
   partial_transport?: string | null;
 }

@@ -117,10 +117,11 @@ export function mirrorHfTokenInto<T extends { hfToken: string }>(store: {
   });
 }
 
-// HF's JS client throws on a non-empty token that isn't `hf_...` instead of
-// browsing anonymously, so treat anything malformed as no token.
+// HF's JS client throws on a non-empty token without the `hf_` prefix instead
+// of browsing anonymously. Action-time validation handles legacy `hf_` shapes.
 export function hfApiToken(
   token: string | undefined | null,
 ): string | undefined {
-  return token?.startsWith("hf_") ? token : undefined;
+  const normalized = token ? normalizeHfToken(token) : "";
+  return normalized.startsWith("hf_") ? normalized : undefined;
 }

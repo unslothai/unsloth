@@ -168,13 +168,50 @@ def processed_dataset_cache_path(local_path: Optional[str], repo_id: str) -> Opt
         return None
 
 
+def processed_dataset_cache_has_artifacts(path: Path) -> bool:
+    if not path.is_dir() or path.is_symlink():
+        return False
+
+    for directory, dirnames, filenames in os.walk(path, followlinks = False):
+        base = Path(directory)
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if not name.endswith(".incomplete") and not (base / name).is_symlink()
+        ]
+        if "dataset_info.json" not in filenames:
+            continue
+        info_path = base / "dataset_info.json"
+        try:
+            if info_path.is_symlink() or not info_path.is_file():
+                continue
+            with info_path.open("r", encoding = "utf-8") as stream:
+                if not isinstance(json.load(stream), dict):
+                    continue
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        for filename in filenames:
+            entry = base / filename
+            if entry.suffix.lower() != ".arrow":
+                continue
+            try:
+                if entry.is_symlink() or not entry.is_file():
+                    continue
+                with entry.open("rb") as stream:
+                    if stream.read(1):
+                        return True
+            except OSError:
+                continue
+    return False
+
+
 def latest_processed_dataset_cache_path(repo_id: str) -> Optional[Path]:
     if not repo_id:
         return None
     expected = repo_id.replace("/", "___")
     for root in hf_datasets_cache_roots():
         direct = processed_dataset_cache_path(str(root / expected), repo_id)
-        if direct is not None:
+        if direct is not None and processed_dataset_cache_has_artifacts(direct):
             return direct
         try:
             matches = [entry for entry in root.iterdir() if entry.name.lower() == expected.lower()]
@@ -183,7 +220,7 @@ def latest_processed_dataset_cache_path(repo_id: str) -> Optional[Path]:
         if len(matches) != 1:
             continue
         matched = processed_dataset_cache_path(str(matches[0]), repo_id)
-        if matched is not None:
+        if matched is not None and processed_dataset_cache_has_artifacts(matched):
             return matched
     return None
 
@@ -311,9 +348,7 @@ def training_dataset_cache_pin(
     if local_path:
         selected = dataset_cache_path_from_cache_path(local_path, repo_id)
     else:
-        selected = latest_cached_dataset_snapshot(repo_id)
-        if selected is None:
-            selected = latest_processed_dataset_cache_path(repo_id)
+        selected = latest_cached_dataset_path(repo_id)
     if selected is None:
         return None, None
     processed = processed_dataset_cache_path(str(selected), repo_id)

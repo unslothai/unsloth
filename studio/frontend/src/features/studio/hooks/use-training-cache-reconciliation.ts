@@ -42,6 +42,12 @@ function findDatasetReference(
   return rows.find((row) => !row.partial && row.repo_id.toLowerCase() === key);
 }
 
+function datasetReferenceLoadPath(
+  reference: CachedDatasetRepo,
+): string | undefined {
+  return reference.load_cache_path ?? reference.cache_path;
+}
+
 function datasetReferenceUsabilityIdentity(
   reference: CachedDatasetRepo,
   dataset: string,
@@ -49,7 +55,7 @@ function datasetReferenceUsabilityIdentity(
 ): DatasetCacheUsabilityIdentity {
   return createDatasetCacheUsabilityIdentity({
     dataset,
-    cachePath: reference.cache_path,
+    cachePath: datasetReferenceLoadPath(reference),
     subset: expected.subset,
     split: expected.split,
     streaming: expected.streaming,
@@ -60,7 +66,7 @@ function datasetReferenceInventoryIdentity(
   reference: CachedDatasetRepo,
 ): DatasetCacheInventoryIdentity {
   return {
-    cachePath: reference.cache_path,
+    cachePath: datasetReferenceLoadPath(reference),
     sizeBytes: reference.size_bytes,
     partial: reference.partial,
     partialTransport: reference.partial_transport,
@@ -168,7 +174,7 @@ function reconcileDatasetReference(
   if (wasKnownCached) {
     if (
       cachedInventoryPathMatchesSelection(
-        reference.cache_path,
+        datasetReferenceLoadPath(reference),
         expectedIdentity.cachePath,
       )
     ) {
@@ -192,7 +198,7 @@ function reconcileDatasetReference(
     }
     current.setSelectedDatasetCacheReference(
       expectedDataset,
-      reference.cache_path ?? null,
+      datasetReferenceLoadPath(reference) ?? null,
     );
     return;
   }
@@ -207,7 +213,7 @@ function reconcileDatasetReference(
   }
   current.setSelectedDatasetCacheReference(
     expectedDataset,
-    reference.cache_path ?? null,
+    datasetReferenceLoadPath(reference) ?? null,
   );
 }
 

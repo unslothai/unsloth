@@ -17,7 +17,10 @@ from hub.services import resolve_destructive_repo_ids
 from hub.services.datasets import downloads
 from hub.utils import download_manifest
 from hub.utils import inventory_scan as hf_cache_scan
-from hub.utils.dataset_cache import hf_datasets_cache_roots
+from hub.utils.dataset_cache import (
+    hf_datasets_cache_roots,
+    processed_dataset_cache_has_artifacts,
+)
 from hub.utils.dataset_processed_cache import (
     app_processed_dataset_cache_from_path,
     delete_app_processed_dataset_caches,
@@ -195,20 +198,6 @@ def _processed_dataset_cache_size(path: Path) -> int:
     return total
 
 
-def _looks_like_processed_dataset_cache(path: Path) -> bool:
-    try:
-        for entry in path.rglob("*"):
-            if not entry.is_file():
-                continue
-            if entry.name in {"dataset_info.json", "state.json"}:
-                return True
-            if entry.suffix == ".arrow":
-                return True
-    except OSError:
-        return False
-    return False
-
-
 def _scan_processed_dataset_caches() -> list[dict]:
     """`load_dataset()` stores processed Arrow caches separately from the Hub snapshot cache, so they're usable on-device but invisible to `scan_cache_dir()`."""
     seen_lower: dict[str, dict] = {}
@@ -221,7 +210,7 @@ def _scan_processed_dataset_caches() -> list[dict]:
             repo_id = _repo_id_from_datasets_cache_dir(entry.name)
             if repo_id is None:
                 continue
-            if not _looks_like_processed_dataset_cache(entry):
+            if not processed_dataset_cache_has_artifacts(entry):
                 continue
             size_bytes = _processed_dataset_cache_size(entry)
             if size_bytes <= 0:
@@ -337,10 +326,11 @@ def _scan_hf_dataset_caches() -> list[dict]:
             seen_lower[key] = row
         else:
             existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
-            # Keep the processed-cache marker when a repo is both snapshot and
-            # processed Arrow cache; merging by size alone dropped it.
+            # Preserve the raw path for scoped deletion and expose the processed
+            # Arrow path separately for loading.
             if row.get("processed_cache"):
                 existing["processed_cache"] = True
+                existing["load_cache_path"] = row.get("cache_path")
     for row in _scan_app_processed_dataset_caches():
         key = row["repo_id"].lower()
         existing = seen_lower.get(key)

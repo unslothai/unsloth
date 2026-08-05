@@ -11,7 +11,7 @@ import { useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import { AiSecurity03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useHfTokenStore } from "../stores/hf-token-store";
+import { hfApiToken, useHfTokenStore } from "../stores/hf-token-store";
 
 interface HfTokenIndicatorProps {
   /** true: status chip (Train wizard); false: icon-only pill (Hub header). */
@@ -33,7 +33,7 @@ export function HfTokenIndicator({
 }: HfTokenIndicatorProps) {
   const t = useT();
   const hfToken = useHfTokenStore((s) => s.token);
-  const hasToken = Boolean(hfToken.trim());
+  const hasToken = hfApiToken(hfToken) !== undefined;
 
   const ariaLabel = hasToken
     ? t("picker.hfToken.savedAriaLabel")
