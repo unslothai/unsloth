@@ -74,6 +74,13 @@ test("publicModelId mirrors what /status reports for a path-loaded model", () =>
     "unsloth/Qwen3-8B-GGUF",
   );
   assert.equal(publicModelId("C:\\models\\Foo-Q4_K_M.gguf"), "Foo-Q4_K_M");
+  // The selector's label for an unlisted model leans on the Windows cache path.
+  assert.equal(
+    publicModelId(
+      "C:\\Users\\u\\.cache\\huggingface\\hub\\models--unsloth--gemma-4-12B-it-qat-GGUF\\snapshots\\7102bdea",
+    ),
+    "unsloth/gemma-4-12B-it-qat-GGUF",
+  );
   assert.equal(publicModelId("~/models/Foo.gguf"), "Foo");
   assert.equal(publicModelId("/srv/models/repo/"), "repo");
   // A repo id and an already-clean name come back untouched.
