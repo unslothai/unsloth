@@ -1053,6 +1053,23 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
     )
 
 
+def _ends_with_cmd_operator(token: str) -> bool:
+    """Whether ``token`` ends in an operator that starts a new command IN CMD.
+
+    cmd's control operators are `&`, `&&`, `||`, `|` and parentheses; `;` is a
+    plain argument separator there, not a `;` as bash means it, so
+    `cmd /c echo hi; start "" prog` prints the lot. A caret escapes the operator
+    that follows it and hands it over as text, so `echo hi ^& start "" prog`
+    prints too, and neither may be read as a launch.
+    """
+    if not token or token[-1] not in "&|()":
+        return False
+    # Count the carets IMMEDIATELY before the operator: an odd run escapes it,
+    # an even one is escaped carets followed by a live operator.
+    carets = len(token[:-1]) - len(token[:-1].rstrip("^"))
+    return carets % 2 == 0
+
+
 def _newline_command_indexes(text: str, tokens: "list[str]", mode: str) -> "frozenset[int]":
     """Indexes of ``tokens`` that open a new physical line the shell will run.
 
@@ -1419,6 +1436,9 @@ _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 
 # What a word has to end in before a path is read as naming a program.
 _WINDOWS_EXE_SUFFIXES = frozenset({".exe", ".com", ".bat", ".cmd"})
+# `start "" https://example.com/powershell` hands the URL to the default browser.
+# Its last path segment is not a program, and reading it as one refused the link.
+_URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 # A drive letter, a separator, or a %VAR% cmd expands before reading the path:
 # how a payload that OPENS with a program path is told from one whose command
 # word was lexed normally.
@@ -1870,21 +1890,15 @@ def _find_blocked_commands(command: str) -> set[str]:
         if (
             i
             and i not in command_indexes
-            # The cmd lexer never splits a separator off the word it is glued to,
-            # so `x;` keeps its `;` and the scan above stays in argument position
+            # The cmd lexer never splits an operator off the word it is glued to,
+            # so `hi&` keeps its `&` and the scan above stays in argument position
             # for the rest of the line. Read straight off the previous token
             # instead, which is what that lexer does leave to go on. Kept to that
-            # lexer: the posix one splits separators into tokens of their own and
-            # knows which were quoted, and second-guessing it there read a
-            # printed `';'` or `"then"` as though a command followed it.
-            and (
-                lexed_posix
-                or not (
-                    _looks_like_separator(previous)
-                    or previous.endswith((";", "&", "|", "(", "`"))
-                    or previous in _SHELL_KEYWORDS_AS_SEP
-                )
-            )
+            # lexer, and to the operators cmd actually has: the posix one splits
+            # separators into tokens of its own and knows which were quoted, and
+            # second-guessing it there read a printed `';'` or `"then"` as though
+            # a command followed it.
+            and (lexed_posix or not _ends_with_cmd_operator(previous))
         ):
             continue
         j = i + 1
@@ -1910,6 +1924,11 @@ def _find_blocked_commands(command: str) -> set[str]:
             # LINE looks the same: `start "ssh a@b"` has no program behind it
             # because that was the program. Screened as well as skipped.
             blocked |= _screen_cmd_payload(_unquote(tokens[title_at]))
+        if j < len(tokens) and _URL_SCHEME_RE.match(_unquote(tokens[j])):
+            # A URL is opened in the default browser, exactly like the document
+            # targets above: `start "" https://example.com/powershell` browses,
+            # it does not run the last path segment.
+            continue
         if j < len(tokens):
             program = _unquote(tokens[j])
             # What START launches is a command the shell runs, so it is published

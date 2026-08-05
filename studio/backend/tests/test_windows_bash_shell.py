@@ -597,7 +597,6 @@ def test_a_quoted_command_line_is_not_only_a_title(monkeypatch):
         'env start "" powershell -Command ls',
         'nohup start "" powershell -Command ls',
         'echo x | xargs start "" powershell -Command ls',
-        'if x; then start "" rm -rf x',
     ],
 )
 def test_a_launched_start_is_read_wherever_the_shell_runs_it(windows_terminal, command):
@@ -727,3 +726,92 @@ def test_bash_eats_an_unquoted_backslash_path(monkeypatch):
     assert "powershell" not in tools._find_blocked_commands(
         'C:\\Windows\\System32\\cmd.exe /c start "" powershell'
     )
+
+
+def test_a_bash_keyword_boundary_belongs_to_bash(monkeypatch):
+    # `;` and `then` are bash syntax. Under Git Bash they open a command and the
+    # START behind them launches; cmd has neither, so the same line only prints.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert "rm" in tools._find_blocked_commands('if x; then start "" rm -rf x')
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert not tools._find_blocked_commands('cmd /c echo hi; start "" powershell')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c echo hi; start "" powershell',
+        'cmd /c echo hi ^& start "" powershell',
+        'cmd /c echo hi ^^^& start "" powershell',
+    ],
+)
+def test_cmd_operators_decide_a_cmd_boundary(monkeypatch, command):
+    # cmd's control operators are &, &&, ||, | and parentheses. A `;` is a plain
+    # argument separator there, and a caret hands the operator after it over as
+    # text, so each of these prints its whole line and launches nothing.
+    # Asked of the cmd lexer alone: bash has neither rule, and the same lines
+    # really do run START there, which the next test pins.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c echo hi; start "" powershell',
+        'cmd /c echo hi ^& start "" powershell',
+    ],
+)
+def test_bash_has_neither_rule(monkeypatch, command):
+    # Under bash a `;` separates and a `^` is an ordinary character, so the `&`
+    # behind it is still an operator and START really launches. The caret rule
+    # must not leak across to the lexer it does not belong to.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert tools._find_blocked_commands(command)
+
+
+def test_a_live_cmd_operator_still_opens_a_command(monkeypatch):
+    # The other side of it: a bare `&`, and an escaped caret followed by a live
+    # `&`, both really do start a second command.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert tools._find_blocked_commands('cmd /c echo hi& start "" powershell')
+    assert tools._find_blocked_commands('cmd /c echo hi ^^& start "" powershell')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c start "" https://example.com/powershell',
+        'cmd /c start "title" "https://example.com/powershell"',
+        'cmd /c start "" http://x/rm',
+    ],
+)
+def test_start_browses_a_url_rather_than_running_it(windows_terminal, command):
+    # START hands a URL to the default browser, the same association route as the
+    # document targets. Reading its last path segment as the program refused the
+    # link outright.
+    assert not tools._find_blocked_commands(command)
