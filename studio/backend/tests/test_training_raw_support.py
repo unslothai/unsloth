@@ -163,7 +163,10 @@ class TestTrainingRawSupport(unittest.TestCase):
     def test_mlx_max_grad_norm_defaults_to_the_cuda_threshold(self):
         # Unset must reach the trainer as the CUDA text path's 1.0, the mode
         # that also makes MLX report the gradient norm the chart plots.
+        from pydantic import ValidationError
+
         from core.training.worker import _resolve_mlx_max_grad_norm
+        from models.training import TrainingStartRequest
 
         self.assertEqual(_resolve_mlx_max_grad_norm(None), 1.0)
         self.assertEqual(_resolve_mlx_max_grad_norm(0), 0.0)
@@ -172,18 +175,23 @@ class TestTrainingRawSupport(unittest.TestCase):
             _resolve_mlx_max_grad_norm(-1)
         with self.assertRaises(ValueError):
             _resolve_mlx_max_grad_norm("nope")
+        # inf clears a >= 0 check but never binds, so it would train unclipped.
+        with self.assertRaises(ValueError):
+            _resolve_mlx_max_grad_norm(float("inf"))
 
-        # An unset request must stay unset all the way to the resolver: a
-        # schema default of 0.0 would turn global-norm clipping off first.
-        from models.training import TrainingStartRequest
-
-        self.assertIsNone(
-            TrainingStartRequest(
+        def request(**overrides):
+            return TrainingStartRequest(
                 model_name = "unsloth/test",
                 training_type = "LoRA/QLoRA",
                 format_type = "auto",
-            ).max_grad_norm
-        )
+                **overrides,
+            )
+
+        with self.assertRaises(ValidationError):
+            request(max_grad_norm = float("inf"))
+        # An unset request must stay unset all the way to the resolver: a
+        # schema default of 0.0 would turn global-norm clipping off first.
+        self.assertIsNone(request().max_grad_norm)
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
         self.assertIn(
             'max_grad_norm = _resolve_mlx_max_grad_norm(config.get("max_grad_norm"))',

@@ -414,9 +414,14 @@ class TrainingStartRequest(BaseModel):
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
     weight_decay: float = Field(0.001, description = "Weight decay")
+    # Finite as well as non-negative: JSON accepts 1e309 (and FastAPI's parser
+    # the Infinity literal), which floats to inf and satisfies a ge-only
+    # constraint. An inf threshold never binds, so the run trains unclipped
+    # while the config reports clipping.
     max_grad_norm: Optional[float] = Field(
         None,
         ge = 0,
+        allow_inf_nan = False,
         description = (
             "Global gradient norm clipping threshold. Unset lets the training "
             "backend apply its default; 0 turns global-norm clipping off, "

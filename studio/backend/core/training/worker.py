@@ -1528,9 +1528,11 @@ def _resolve_mlx_max_grad_norm(value):
         raise ValueError(
             f"Unsloth MLX: max_grad_norm={value!r} must be a non-negative float or None."
         )
-    if value < 0:
+    # inf satisfies a >= 0 check but never binds, so the run would train
+    # unclipped while reporting a threshold.
+    if value < 0 or not math.isfinite(value):
         raise ValueError(
-            f"Unsloth MLX: max_grad_norm={value} must be >= 0 "
+            f"Unsloth MLX: max_grad_norm={value} must be a finite value >= 0 "
             "(use 0 to disable global norm clipping)."
         )
     return value
