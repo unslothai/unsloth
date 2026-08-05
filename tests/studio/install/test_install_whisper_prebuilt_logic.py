@@ -828,6 +828,25 @@ def test_llama_runtime_pairs_falls_back_to_mix_suffix(installed, required, pairs
     assert M.llama_runtime_pairs(installed, required) is pairs
 
 
+@pytest.fixture(autouse = True)
+def _offline_published_tree_lookup(monkeypatch):
+    """Keep llama_runtime_pairs offline and its per-tag cache test-local.
+
+    A missing tree sends published_llama_ggml_tree to the llama release, so
+    without this the pairing assertions below would depend on live release
+    assets. The cache is module level and outlives monkeypatch, so clear it
+    too. Tests wanting the lookup stub _download_host_json themselves, which
+    wins because this fixture is applied first."""
+    M._PUBLISHED_GGML_TREE_CACHE.clear()
+
+    def unreachable(url):
+        raise OSError(f"offline test tried to fetch {url}")
+
+    monkeypatch.setattr(M, "_download_host_json", unreachable)
+    yield
+    M._PUBLISHED_GGML_TREE_CACHE.clear()
+
+
 # Real releases: same -mix-2c8b9c1 suffix, but genuinely different ggml trees.
 SUFFIX_SHARED_A = "b10173-mix-2c8b9c1"
 SUFFIX_SHARED_B = "b10181-mix-2c8b9c1"
@@ -842,8 +861,8 @@ TREE_B = "e96ffb0e063f66952b0c54796a74755b6041c867"
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, TREE_B, False),
         # Different suffixes, same ggml: ABI-identical.
         ("b10241-mix-89aa77b", "b10225-mix-345e1e3", TREE_A, TREE_A, True),
-        # A missing tree either side falls back to the suffix, so installs
-        # predating ggml_tree are not stranded.
+        # A missing tree falls back to the suffix only when the release does
+        # not publish one either; the lookup is stubbed offline above.
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, None, TREE_B, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, TREE_A, None, True),
         (SUFFIX_SHARED_A, SUFFIX_SHARED_B, "", "", True),
@@ -863,6 +882,74 @@ def test_llama_runtime_pairs_prefers_ggml_tree(
         )
         is pairs
     )
+
+
+def test_llama_runtime_pairs_reads_the_published_tree_when_the_marker_has_none(monkeypatch):
+    # The case the fallback got wrong: one -mix- suffix, two ggml trees. An
+    # install predating ggml_tree has no local tree, so both come from the
+    # releases.
+    trees = {SUFFIX_SHARED_A: TREE_A, SUFFIX_SHARED_B: TREE_B}
+    fetched = []
+
+    def fake(url):
+        fetched.append(url)
+        return {"ggml_tree": trees[next(t for t in trees if t in url)]}
+
+    monkeypatch.setattr(M, "_download_host_json", fake)
+    assert M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B) is False
+    assert len(fetched) == 2
+
+
+def test_published_ggml_tree_is_fetched_once_per_tag(monkeypatch):
+    calls = []
+
+    def fake(url):
+        calls.append(url)
+        return {"ggml_tree": TREE_A}
+
+    monkeypatch.setattr(M, "_download_host_json", fake)
+    assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) == TREE_A
+    assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) == TREE_A
+    assert calls == [
+        f"https://github.com/unslothai/llama.cpp/releases/download/"
+        f"{SUFFIX_SHARED_A}/llama-prebuilt-manifest.json"
+    ]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [{}, {"ggml_tree": ""}, {"ggml_tree": None}, {"ggml_tree": ["x"]}, ["not", "a", "dict"]],
+)
+def test_published_ggml_tree_ignores_a_manifest_without_a_usable_tree(monkeypatch, payload):
+    monkeypatch.setattr(M, "_download_host_json", lambda url: payload)
+    assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) is None
+
+
+def test_published_ggml_tree_survives_an_unreachable_release(monkeypatch):
+    # Fail closed to the old comparison rather than stranding a valid install.
+    def boom(url):
+        raise OSError("network down")
+
+    monkeypatch.setattr(M, "_download_host_json", boom)
+    assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) is None
+    assert M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B) is True
+
+
+def test_published_tree_is_not_consulted_when_both_trees_are_known(monkeypatch):
+    def boom(url):
+        raise AssertionError(f"should not fetch {url}")
+
+    monkeypatch.setattr(M, "_download_host_json", boom)
+    assert (
+        M.llama_runtime_pairs(
+            SUFFIX_SHARED_A,
+            SUFFIX_SHARED_B,
+            installed_ggml_tree = TREE_A,
+            required_ggml_tree = TREE_B,
+        )
+        is False
+    )
+    assert M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_A) is True
 
 
 def test_installed_llama_ggml_tree_reads_marker(tmp_path):
