@@ -36,6 +36,10 @@ export interface ManagedDownload {
    * stopping it still leaves a restart-only partial. Set only in that case,
    * and it, not `transport`, decides the stop control. */
   cancelTransport?: ResolvedTransport;
+  // Driven by another subsystem (see external-jobs.ts), not the poll loop. Such
+  // a job is never persisted, probed against the hub API, or published as a
+  // chat-inventory hint when it completes.
+  external?: boolean;
 }
 
 export interface DownloadRequest {

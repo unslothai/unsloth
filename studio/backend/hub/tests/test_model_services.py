@@ -949,20 +949,41 @@ def test_cached_models_scan_hides_non_gguf_embedder(monkeypatch, tmp_path):
     assert [row["repo_id"] for row in result["cached"]] == ["Org/Chat"]
 
 
+_SNAPSHOT_SHA = "a" * 40
+
+
 def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: str):
     """One cached diffusion repo through _scan_cached_models, with the download-partial signal
-    forced off so only the pipeline-shape checks can flag the row."""
+    forced off so only the pipeline-shape checks can flag the row.
+
+    The snapshot is materialised on disk, not just described: the pipeline-shape checks read the
+    directory the row resolves to, so a revision without a real ``snapshot_path`` would report no
+    manifest and no denoiser for every repo alike and the assertions below would all pass on
+    nothing.
+    """
     repo_path = tmp_path / f"hub/models--{repo_id.replace('/', '--')}"
-    repo_path.mkdir(parents = True)
-    monkeypatch.setattr(
-        cache_inventory,
-        "all_hf_cache_scans",
-        lambda: [SimpleNamespace(repos = [_repo(repo_id, files, repo_path)])],
+    snapshot = repo_path / "snapshots" / _SNAPSHOT_SHA
+    snapshot.mkdir(parents = True)
+    for f in files:
+        target = snapshot / f.file_name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(b"\0" * min(int(f.size_on_disk), 4096))
+    refs = repo_path / "refs"
+    refs.mkdir(parents = True, exist_ok = True)
+    (refs / "main").write_text(_SNAPSHOT_SHA)
+    revision = SimpleNamespace(files = files, snapshot_path = snapshot, commit_hash = _SNAPSHOT_SHA)
+    repo = SimpleNamespace(
+        repo_id = repo_id, repo_type = "model", repo_path = repo_path, revisions = [revision]
     )
+    monkeypatch.setattr(
+        cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
+    )
+    # The real signature takes snapshot_dir; a double that omits it raises TypeError, which the
+    # per-repo except swallows into an empty row list and every assertion below stops running.
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
-        lambda _kind, _repo_id, _path: False,
+        lambda *_args, **_kwargs: False,
     )
     monkeypatch.setattr(cache_inventory, "_cached_row_task", lambda _repo, gguf: task)
     rows = cache_inventory._scan_cached_models()

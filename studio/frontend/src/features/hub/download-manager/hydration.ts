@@ -65,6 +65,7 @@ function removeLocalActivePeers(
   const activeJobKey = jobKeyOf(kind, repoId, variant);
   const snapshotJobKey = jobKeyOf(kind, repoId, null);
   for (const job of Object.values(getState().jobs)) {
+    if (job.external) continue;
     if (!ACTIVE_STATES.has(job.state)) continue;
     if (repoKeyOf(job.kind, job.repoId) !== activeRepoKey) continue;
     if (variant !== null && kind === DOWNLOAD_KIND.MODEL) {
@@ -274,6 +275,8 @@ export function hydrateDownloadManager(): void {
   void hydrateBackendActiveDownloads();
   const jobs = Object.values(getState().jobs);
   for (const job of jobs) {
+    // External jobs are live in memory and have no hub job to probe.
+    if (job.external) continue;
     if (!ACTIVE_STATES.has(job.state)) {
       removeJob(job.key);
       continue;
