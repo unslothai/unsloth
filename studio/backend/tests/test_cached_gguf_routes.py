@@ -3820,7 +3820,9 @@ def test_another_caches_quant_is_offered_as_a_download_not_as_downloaded(monkeyp
     _pin_caches(monkeypatch, pinned_root, [pinned_root, other_root])
     _unreachable_hub(monkeypatch)
     monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
-    monkeypatch.setattr(models_route, "_read_native_context_length", lambda model, *, is_local: None)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
 
     response = asyncio.run(
         models_route.get_gguf_variants(
