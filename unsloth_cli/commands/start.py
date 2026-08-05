@@ -1770,7 +1770,55 @@ def _direct_gguf_variant_labels(path: str) -> tuple:
     labels = [stem]
     if match is not None:
         labels.append(f"{match.group(1) or ''}{match.group(2)}{match.group(3) or ''}")
+    else:
+        # The extractor's own fallback: the last hyphen-separated segment.
+        labels.append(stem.split("-")[-1])
     return tuple(labels)
+
+
+# Mirrors gguf_variants._DIRECT_SPLIT_RE; change in lockstep.
+_DIRECT_SPLIT_FILE_RE = re.compile(
+    r"^(?P<stem>.+)-(?P<index>\d{3,})-of-(?P<total>\d{3,})$", re.IGNORECASE
+)
+
+
+def _direct_gguf_file_is_ready(path: str) -> bool:
+    """Whether a CLI-visible direct .gguf file can actually serve a load.
+
+    Mirrors the backend's direct-file completeness rules: a zero-byte file is
+    an interrupted copy, and a split needs every declared sibling index beside
+    it as a readable non-empty file. Anything unknowable reports ready, so a
+    path this process cannot judge never blocks the load.
+    """
+    try:
+        p = Path(os.path.expanduser(path))
+        if not p.is_file():
+            return True
+        if p.stat().st_size == 0:
+            return False
+        match = _DIRECT_SPLIT_FILE_RE.match(p.name.rsplit(".", 1)[0])
+        if match is None:
+            return True
+        total = int(match.group("total"))
+        if not 1 < total <= 1000:
+            return True
+        sibling = re.compile(
+            re.escape(match.group("stem"))
+            + r"-(\d{"
+            + str(len(match.group("index")))
+            + r"})-of-"
+            + re.escape(match.group("total"))
+            + r"\.gguf$",
+            re.IGNORECASE,
+        )
+        found = {
+            int(m.group(1))
+            for q in p.parent.iterdir()
+            if (m := sibling.match(q.name)) and q.is_file() and q.stat().st_size > 0
+        }
+        return found >= set(range(1, total + 1))
+    except OSError:
+        return True
 
 
 def _answer_offers_variant(variants: list, variant: str) -> bool:
@@ -1888,6 +1936,15 @@ def _attach_gguf_check_for_codex(
         # loopback attach this gate protects is exactly when it does.
         if _direct_gguf_is_companion(repo):
             _fail_codex_needs_gguf(repo)
+        # On a loopback attach this process sees the server's filesystem, so an
+        # incomplete file is failed here: the server classifies the extension
+        # as a GGUF load and llama-server only finds the missing bytes or
+        # shards after the resident model is torn down.
+        if is_loopback_url(base) and not _direct_gguf_file_is_ready(repo):
+            _fail(
+                f"{repo} is incomplete (zero bytes or a split missing shards); "
+                "re-download or re-copy it before pointing Codex at it."
+            )
         # The file names the one quant it is. A contradictory explicit variant
         # makes _find_local_gguf_by_variant resolve nothing server-side, and
         # the load then evicts on the transformers path before failing. Accept

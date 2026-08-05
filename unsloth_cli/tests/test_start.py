@@ -6440,6 +6440,33 @@ def test_codex_attach_check_refuses_contradictory_direct_variant(monkeypatch, ca
     with pytest.raises(typer.Exit):
         start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q8_0/foo-Q4_K_M.gguf", "Q8_0")
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q8_0/foo-Q4_K_M.gguf", "Q4_K_M")
+    # A quant-less basename answers the extractor's last-segment fallback.
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-bar.gguf", "bar")
+
+
+def test_codex_attach_check_rejects_incomplete_direct_files(tmp_path, monkeypatch, capsys):
+    # On a loopback attach the CLI sees the server's filesystem, and llama only
+    # finds missing bytes or shards after the resident model is torn down.
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: pytest.fail("a direct .gguf file needs no variants probe"),
+    )
+    empty = tmp_path / "zero-Q4_K_M.gguf"
+    empty.write_bytes(b"")
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(empty))
+    assert "incomplete" in capsys.readouterr().err
+
+    shard = tmp_path / "m-Q4_K_M-00001-of-00002.gguf"
+    shard.write_bytes(b"GGUF")
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(shard))
+
+    # The complete set beside it passes, and a CLI-invisible path stays open.
+    (tmp_path / "m-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(shard))
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/nonexistent/other-Q4_K_M.gguf")
 
 
 @pytest.mark.parametrize(
