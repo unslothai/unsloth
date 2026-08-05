@@ -13,6 +13,39 @@ from pathlib import Path
 from typing import NoReturn, Optional, Sequence, Tuple
 
 
+def _normalize_standard_streams():
+    """Point missing std streams at the null device.
+
+    Python documents sys.stdout/stderr/stdin as None for a process with no valid
+    std handles, typically a Windows GUI/pythonw or detached launch. Every
+    .write() / .isatty() / .readline() on them then raises AttributeError and the
+    server dies before it can report why. A null-device stream answers all of
+    those like a real one (encoding, buffer, fileno, isatty, reconfigure), so
+    nothing downstream needs its own None check.
+
+    MUST run before the `from loggers import ...` below: structlog binds
+    `from sys import stdout` at ITS import time and PrintLogger does
+    `self._file = file or stdout`, so a None stdout is captured permanently and
+    the first log call in run_server() dies. Normalizing inside run_server() is
+    too late to undo that capture.
+    """
+    for name, mode in (("stdin", "r"), ("stdout", "w"), ("stderr", "w")):
+        if getattr(sys, name, None) is not None:
+            continue
+        try:
+            stream = open(os.devnull, mode, encoding = "utf-8", errors = "replace")
+        except Exception:
+            # Normalizing must never itself be what kills startup.
+            continue
+        setattr(sys, name, stream)
+        # sys.__stdout__ & co are None too; third-party code falls back to them.
+        if getattr(sys, f"__{name}__", None) is None:
+            setattr(sys, f"__{name}__", stream)
+
+
+_normalize_standard_streams()
+
+
 def _fix_torch_cuda_ld_path():
     """Prepend torch's bundled CUDA libs to LD_LIBRARY_PATH.
 
@@ -1454,10 +1487,9 @@ def _setup_server_disk_logging():
     _harden_console_close(sys.stdout)
     _harden_console_close(sys.stderr)
 
-    # A hidden Windows subprocess (CREATE_NO_WINDOW, e.g. `unsloth studio`
-    # launched from the installer or a launcher) has no console, so the
-    # interpreter leaves sys.stdout / sys.stderr as None. Wrap the file log
-    # alone in that case -- the tee's write() no-ops on a None stream.
+    # _normalize_standard_streams() has already replaced any missing console with
+    # a null-device stream, so these are never None. The tee's own None guards are
+    # defence-in-depth for a direct _TeeStream(None, ...) construction.
     sys.stdout = _TeeStream(sys.stdout, log_fh)
     sys.stderr = _TeeStream(sys.stderr, log_fh)
 
