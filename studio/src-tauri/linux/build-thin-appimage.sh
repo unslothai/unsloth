@@ -88,7 +88,7 @@ set -eu
 
 appdir=${APPDIR:-$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)}
 export PATH="$appdir/usr/bin${PATH:+:$PATH}"
-export XDG_DATA_DIRS="$appdir/usr/share${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+export XDG_DATA_DIRS="$appdir/usr/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 
 binary="$appdir/usr/bin/unsloth-studio"
 missing=$(

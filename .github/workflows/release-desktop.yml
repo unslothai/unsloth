@@ -44,6 +44,7 @@ env:
 
     > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
     > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
+    > Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`
     > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
 
 concurrency:

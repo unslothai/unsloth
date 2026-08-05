@@ -1,5 +1,6 @@
 """Contracts for the host-integrated Linux AppImage release path."""
 
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -102,7 +103,7 @@ def test_thin_appimage_rejects_a_bundled_host_library(tmp_path):
     assert "libglib-2.0.so.0" in result.stderr
 
 
-def test_thin_appimage_resolves_a_relative_output_before_verification(tmp_path):
+def _build_fake_appimage(tmp_path):
     package_root = tmp_path / "package"
     control_dir = package_root / "DEBIAN"
     binary_dir = package_root / "usr" / "bin"
@@ -115,7 +116,7 @@ def test_thin_appimage_resolves_a_relative_output_before_verification(tmp_path):
         "Package: unsloth-test\nVersion: 1.0\nArchitecture: amd64\nDescription: test\n",
         encoding = "utf-8",
     )
-    shutil.copy2("/bin/true", binary_dir / "unsloth-studio")
+    shutil.copy2("/bin/sh", binary_dir / "unsloth-studio")
     (desktop_dir / "Unsloth.desktop").write_text("[Desktop Entry]\n", encoding = "utf-8")
     (icon_dir / "unsloth-studio.png").write_bytes(b"test")
 
@@ -134,7 +135,9 @@ set -euo pipefail
 while [[ $# -gt 2 ]]; do shift; done
 app_dir="$1"
 output_path="$2"
-printf '#!/usr/bin/env bash\nset -euo pipefail\ncp -a %q squashfs-root\n' "$app_dir" > "$output_path"
+captured_app_dir="${output_path}.AppDir"
+cp -a "$app_dir" "$captured_app_dir"
+printf '#!/usr/bin/env bash\nset -euo pipefail\ncp -a %q squashfs-root\n' "$captured_app_dir" > "$output_path"
 chmod +x "$output_path"
 """,
         encoding = "utf-8",
@@ -153,15 +156,48 @@ chmod +x "$output_path"
     )
 
     output_path = tmp_path / relative_output
+    return output_path, Path(f"{output_path}.AppDir"), result
+
+
+def test_thin_appimage_resolves_a_relative_output_before_verification(tmp_path):
+    output_path, _, result = _build_fake_appimage(tmp_path)
+
     assert output_path.is_file()
     assert f"Built thin AppImage: {output_path}" in result.stdout
 
 
-def test_release_notes_keep_experimental_appimage_guidance_concise():
+def test_thin_appimage_preserves_host_xdg_data_dirs(tmp_path):
+    _, app_dir, _ = _build_fake_appimage(tmp_path)
+    apprun = app_dir / "AppRun"
+    command = [apprun, "-c", 'printf %s "$XDG_DATA_DIRS"']
+
+    default_env = os.environ.copy()
+    default_env.pop("XDG_DATA_DIRS", None)
+    default_result = subprocess.run(
+        command,
+        env = default_env,
+        check = True,
+        capture_output = True,
+        text = True,
+    )
+    assert default_result.stdout == f"{app_dir}/usr/share:/usr/local/share:/usr/share"
+
+    custom_env = {**default_env, "XDG_DATA_DIRS": "/opt/share:/srv/share"}
+    custom_result = subprocess.run(
+        command,
+        env = custom_env,
+        check = True,
+        capture_output = True,
+        text = True,
+    )
+    assert custom_result.stdout == f"{app_dir}/usr/share:/opt/share:/srv/share"
+
+
+def test_release_notes_keep_existing_appimage_guidance():
     notes = _workflow()["env"]["DESKTOP_RELEASE_NOTES"]
     assert "`.AppImage` is experimental." in notes
     assert "libwebkit2gtk" not in notes
-    assert "libfuse" not in notes
+    assert "Linux AppImage on Ubuntu 24.04+ may require: `sudo apt install libfuse2t64`" in notes
     assert "--appimage-extract-and-run" not in notes
 
 
