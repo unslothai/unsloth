@@ -1303,6 +1303,8 @@ class _TeeStream:
             self._log_fh.write(data)
         except Exception:
             pass
+        if self._stream is None:
+            return len(data)
         return self._stream.write(data)
 
     def flush(self):
@@ -1310,6 +1312,8 @@ class _TeeStream:
             self._log_fh.flush()
         except Exception:
             pass
+        if self._stream is None:
+            return
         try:
             self._stream.flush()
         except Exception:
@@ -1325,12 +1329,16 @@ class _TeeStream:
             self._log_fh.flush()
         except Exception:
             pass
+        if self._stream is None:
+            return
         try:
             self._stream.close()
         except Exception:
             pass
 
     def __getattr__(self, name):
+        if self._stream is None:
+            raise AttributeError(name)
         return getattr(self._stream, name)
 
 
@@ -1374,6 +1382,8 @@ def _harden_console_close(stream):
     before and any other error still propagates, so nothing changes off Colab. A
     stream whose ``close`` cannot be reassigned keeps its original close().
     """
+    if stream is None:
+        return
     try:
         _orig_close = stream.close
     except Exception:
@@ -1444,6 +1454,10 @@ def _setup_server_disk_logging():
     _harden_console_close(sys.stdout)
     _harden_console_close(sys.stderr)
 
+    # A hidden Windows subprocess (CREATE_NO_WINDOW, e.g. `unsloth studio`
+    # launched from the installer or a launcher) has no console, so the
+    # interpreter leaves sys.stdout / sys.stderr as None. Wrap the file log
+    # alone in that case -- the tee's write() no-ops on a None stream.
     sys.stdout = _TeeStream(sys.stdout, log_fh)
     sys.stderr = _TeeStream(sys.stderr, log_fh)
 
