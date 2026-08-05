@@ -513,9 +513,8 @@ class SdCppDiffusionBackend:
 
             assets = self._asset_specs(repo_id, gguf_filename, fam)
             # Same preflight the plan runs: catch a gated companion here, not 15 GiB into the
-            # prefetch. The plan is not enough on its own -- the images page wraps the plan call in
-            # a try/catch and falls back to calling this load directly, so a load reached that way
-            # would otherwise skip the check entirely and fail on the bare Hub token error.
+            # prefetch. The plan alone is not enough -- the images page falls back to calling this
+            # load directly when the plan call fails, skipping the check entirely.
             self._preflight_companion_repos(self._assets_by_repo(assets), repo_id, hf_token)
             self._set_expected_bytes(assets, hf_token)
             paths = self._fetch_assets(assets, hf_token, cancel_event = cancel_event)
@@ -687,9 +686,8 @@ class SdCppDiffusionBackend:
 
     @staticmethod
     def _assets_by_repo(specs: list[tuple[str, str, str]]) -> dict[str, list[str]]:
-        """repo -> the files this pick needs from it, first-seen order (transformer first).
-
-        Grouped so a family whose VAE and text encoder share a repo yields one entry."""
+        """repo -> the files this pick needs from it, first-seen order (transformer first), so a
+        family whose VAE and text encoder share a repo yields one entry."""
         by_repo: dict[str, list[str]] = {}
         for repo, filename, kind in specs:
             # A local GGUF directory is already on disk; nothing to stage or preflight for it.
@@ -713,15 +711,13 @@ class SdCppDiffusionBackend:
         The native asset list carries its own companion repos (flux.1's VAE is the gated
         black-forest-labs/FLUX.1-schnell), and neither ``_plan_file_sizes`` nor the size probe
         surfaces the 401: the entry is planned at 0 bytes and the fetch dies on the bare Hub token
-        error this preflight exists to replace.
-
-        Run from BOTH the plan and ``_run_load``, exactly as the diffusers backend does, because
-        the UI falls back to calling /images/load directly whenever the plan call fails -- so a
-        400 raised only at plan time is swallowed and the user sees the old error anyway."""
+        error this preflight exists to replace. Run from BOTH the plan and ``_run_load``, as the
+        diffusers backend does, because the UI falls back to /images/load when the plan call
+        fails, so a 400 raised only at plan time is swallowed."""
         from core.inference.diffusion import _assert_base_repo_accessible
         for repo, names in by_repo.items():
-            # Companions only, mirroring the diffusers plan, which preflights the resolved base and
-            # not the pick: the picker only lists repos it could already read.
+            # Companions only, mirroring the diffusers plan: the picker only lists repos it could
+            # already read.
             if repo != repo_id and names:
                 # Probe an asset THIS pick stages: a repo read only for its VAE has no pipeline
                 # manifest, so the default name would neither verify access nor see the cache.
@@ -809,7 +805,7 @@ class SdCppDiffusionBackend:
                 # An asset cached only under huggingface_hub's import-time root resolves through
                 # that root, matching the preflight, which clears a base found under EITHER root.
                 # Pinned to the live one, a cache-folder change re-downloads every moved asset and
-                # turns an already-downloaded gated/private base into the bare Hub token error.
+                # turns an already-downloaded gated base into the bare Hub token error.
                 path = hf_hub_download_with_xet_fallback(
                     repo, fn, hf_token, cancel_event = cancel, reuse_other_cache_root = True
                 )

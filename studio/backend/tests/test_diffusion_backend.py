@@ -3348,9 +3348,8 @@ def _stub_hosted_prequant(monkeypatch, *, cached: bool):
 def _spy_dense_quant(monkeypatch):
     """Record every dense/prequant fast-path build and keep it from running.
 
-    Keyed by backend INSTANCE: the patch is class-level, and an earlier test's begin_load leaves a
-    daemon thread that can still be loading while this one runs, so a bare count is not this
-    test's. Read it through ``_dense_calls``."""
+    Keyed by backend INSTANCE: the patch is class-level and an earlier test's begin_load can leave
+    a daemon thread still loading, so a bare count is not this test's. Read via ``_dense_calls``."""
     calls: list = []
 
     def _record(self, *a, **k):
@@ -3401,9 +3400,8 @@ def test_auto_quant_takes_a_hosted_prequant_that_is_already_cached(
 
 @pytest.mark.parametrize("loras", [[("adapter", 0.0)], [("a", 0.0), ("b", 0.0)]])
 def test_all_zero_weight_loras_do_not_look_like_a_bake(loras, fake_runtime, tmp_path, monkeypatch):
-    # LoraSpec and every sibling check read weight 0 as disabled, so plain truthiness on the list
-    # would call this a bake, skip the decline and fetch the dense companion for a request that
-    # applies no adapter at all.
+    # Weight 0 is disabled everywhere else, so plain truthiness on the list would call this a bake,
+    # skip the decline and fetch the dense companion for a request that applies no adapter.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
     backend = DiffusionBackend()
@@ -3418,9 +3416,8 @@ def test_all_zero_weight_loras_do_not_look_like_a_bake(loras, fake_runtime, tmp_
 
 
 def test_a_weighted_lora_is_still_treated_as_a_bake(fake_runtime, tmp_path, monkeypatch):
-    # The other direction, so the zero-weight fix does not turn every bake into a GGUF load: a
-    # real adapter must still take the dense route, which this runtime cannot complete and so
-    # reports rather than silently dropping the adapter.
+    # The other direction, so the zero-weight fix does not turn every bake into a GGUF load: a real
+    # adapter still takes the dense route, which this runtime reports rather than silently drops.
     _stub_hosted_prequant(monkeypatch, cached = False)
     _spy_dense_quant(monkeypatch)
     backend = DiffusionBackend()
@@ -3457,7 +3454,7 @@ def test_an_explicit_quant_request_still_downloads_the_hosted_prequant(
 
 
 def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp_path, monkeypatch):
-    # A LoRA bake needs the DENSE transformer (adapters attach before quantize_) and the GGUF fallback cannot carry the adapters, so it must not be declined here.
+    # A LoRA bake needs the DENSE transformer and the GGUF fallback cannot carry the adapters.
     _stub_hosted_prequant(monkeypatch, cached = False)
     calls = _spy_dense_quant(monkeypatch)
     backend = DiffusionBackend()
@@ -3482,9 +3479,9 @@ def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp
 def test_the_dense_builder_skips_the_prequant_only_for_a_real_bake(
     lora_specs, consults_prequant, fake_runtime, monkeypatch
 ):
-    # The decline let the auto path continue, but the raw list was handed on and this builder's own
-    # gate read it as truthy, skipping the cached prequant and building the dense transformer for
-    # adapters that apply nothing. The rule has to hold here too, not just at the decline.
+    # The decline let the auto path continue, but this builder's own gate read the raw list as
+    # truthy and built the dense transformer for adapters that apply nothing. The rule holds here
+    # too, not just at the decline.
     import contextlib
 
     from core.inference import diffusion as dmod
@@ -3518,9 +3515,9 @@ def test_the_dense_builder_skips_the_prequant_only_for_a_real_bake(
 
 
 def test_the_plan_does_not_force_a_dense_bake_for_disabled_adapters(fake_runtime, monkeypatch):
-    # The gate above stopped calling it a bake, but the candidate sizing right below still passed
-    # force_dense on the raw list, so the plan sized a dense LoRA bake and staged the base repo
-    # transformer/ shards while the load ran the cached prequant. Both must read the same rule.
+    # The gate above stopped calling it a bake, but the candidate sizing below still passed
+    # force_dense on the raw list, staging base transformer/ shards while the load ran the cached
+    # prequant. Both must read the same rule.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -3542,9 +3539,9 @@ def test_the_plan_does_not_force_a_dense_bake_for_disabled_adapters(fake_runtime
 
 
 def test_the_plan_reads_pydantic_lora_specs_as_the_load_reads_tuples(fake_runtime, monkeypatch):
-    # /images/load converts to (id, weight) tuples but /images/download-plan passes the LoraSpec
-    # models through, and unpacking a pydantic model yields its (field, value) pairs, so a plain
-    # (_lid, w) unpack binds w to ("weight", 0.0) and reads a disabled adapter as an active bake.
+    # /images/load sends (id, weight) tuples but /images/download-plan passes LoraSpec models, and
+    # unpacking a pydantic model yields (field, value) pairs, so a plain (_lid, w) unpack binds w
+    # to ("weight", 0.0) and reads a disabled adapter as an active bake.
     from core.inference import diffusion as dmod
     from models.inference import LoraSpec
 
@@ -3571,10 +3568,9 @@ def test_the_plan_reads_pydantic_lora_specs_as_the_load_reads_tuples(fake_runtim
 
 
 def test_the_plan_reads_zero_weight_loras_exactly_as_the_load_does(fake_runtime, monkeypatch):
-    # The plan and the load must agree on what a bake is. Gating the prefetch on the raw list while
-    # load_pipeline gates on active weights stages the base transformer/ shards for a load that
-    # will run the GGUF. The return value alone does not show it, so this asserts the decline
-    # happened on the cache verdict, BEFORE any candidate sizing, exactly as with no loras at all.
+    # The plan and the load must agree on what a bake is: gating the prefetch on the raw list
+    # stages base transformer/ shards for a load that will run the GGUF. The return value alone
+    # does not show it, so this asserts the decline happened on the cache verdict, BEFORE sizing.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()

@@ -567,16 +567,15 @@ def hf_hub_download_with_xet_fallback(
     """Single-file download via the shared fallback with Unsloth's marker-aware HTTP-retry prep.
     ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path).
 
-    ``reuse_other_cache_root`` (opt-in) lets a file that is cached ONLY under huggingface_hub's
-    import-time root resolve through that root instead of being re-fetched into the live one.
-    Studio's cache folder is a setting, so after it changes every companion asset already on disk
-    is invisible to a call pinned to the new root: multiple GB re-download, and for a gated or
-    private base with no valid token the pull 401s outright even though the bytes are right
-    there -- while the preflight, which looks in BOTH roots, already cleared the load. Reached
-    THROUGH the other root rather than by returning the raw path, so the ref still resolves and a
-    republished file is picked up; the blob is reused, so nothing is re-fetched when it has not
-    changed, and offline/401 hf_hub_download keeps the failed HEAD and serves the cached pointer.
-    Off for ``force_download``, whose whole point is to re-fetch."""
+    ``reuse_other_cache_root`` (opt-in) lets a file cached ONLY under huggingface_hub's import-time
+    root resolve through that root instead of being re-fetched into the live one. Studio's cache
+    folder is a setting, so after it changes every asset already on disk is invisible to a call
+    pinned to the new root: multiple GB re-download, and for a gated base with no valid token the
+    pull 401s even though the bytes are right there, on a load the preflight (which looks in BOTH
+    roots) already cleared. Reached THROUGH the other root rather than by returning the raw path,
+    so the ref still resolves and a republished file is picked up; the blob is reused, and
+    offline/401 hf_hub_download keeps the failed HEAD and serves the cached pointer. Off for
+    ``force_download``, whose whole point is to re-fetch."""
     if cache_dir is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         cache_dir = str(get_hf_cache_paths().hub_cache)

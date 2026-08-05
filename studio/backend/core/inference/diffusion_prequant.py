@@ -166,15 +166,13 @@ def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> O
     """The path of a hosted (``kind == "repo"``) checkpoint ALREADY in the local Hub cache.
 
     A pure lookup (a refs read plus a stat, no network), so memory planning can ask on every pick.
-    Only the PRIMARY ``filename`` counts. ``fallback_filename`` names the legacy artifact for repos
-    that never published the canonical one, so a cached legacy copy must not short-circuit the
-    primary: that would pin a stale ``transformer_<scheme>.pt`` forever even after the repo starts
-    shipping the real name. Whether the primary exists remotely cannot be known without a network
-    call, so a fallback-only cache reads as "this would have to download" and the GGUF simply runs.
+    Only the PRIMARY ``filename`` counts: a cached ``fallback_filename`` (the legacy artifact) must
+    not short-circuit it, or a stale name stays pinned forever once the repo ships the real one.
+    The primary's remote existence cannot be known without a network call, so a fallback-only cache
+    reads as "this would have to download" and the GGUF simply runs.
 
     Both cache roots are searched: Studio pins the LIVE cache setting while an unpinned
-    ``hf_hub_download`` falls back to huggingface_hub's import-time constant, so the file can sit
-    under either. Never raises: an answer it cannot give is None."""
+    ``hf_hub_download`` falls back to huggingface_hub's import-time constant. Never raises."""
     for root in (cache_dir, None) if cache_dir else (None,):
         hit = _cached_in_root(source, root)
         if hit is not None:
@@ -187,9 +185,8 @@ def _cached_in_root(
     root: Optional[str],
     name: Optional[str] = None,
 ) -> Optional[str]:
-    """One checkpoint name's path inside ONE cache root, or None. Defaults to the primary name;
-    the resolver passes ``fallback_filename`` explicitly once the primary turns out to be absent
-    remotely. Never raises."""
+    """One checkpoint name's path inside ONE cache root, or None. Defaults to the primary name; the
+    resolver passes ``fallback_filename`` once the primary turns out to be absent. Never raises."""
     if source is None or getattr(source, "kind", None) != "repo":
         return None
     name = name or getattr(source, "filename", None)
@@ -264,8 +261,8 @@ def load_prequantized_transformer(
     """Load the pre-quantized transformer described by ``source`` onto ``device``.
 
     ``cache_dir`` is the live Hub cache root, as every other loader call pins it: unset, a fetch
-    lands under huggingface_hub's import-time constant, which a mid-session cache change misses, so
-    the checkpoint downloads again into a root Studio is no longer reading.
+    lands under huggingface_hub's import-time constant, so a mid-session cache change re-downloads
+    the checkpoint into a root Studio is no longer reading.
 
     Returns the placed transformer, or None on any problem (missing / mismatched /
     unreadable checkpoint, or unsupported meta-init) so the caller falls back to
@@ -300,12 +297,10 @@ def load_prequantized_transformer(
         state_dict = ckpt["state_dict"]
         _pin_kernel_preference(state_dict, logger)
 
-        # Same root as the checkpoint above: load_config forwards cache_dir to hf_hub_download, so
-        # unpinned it reads through huggingface_hub's import-time constant. After a mid-session
-        # cache change that root may be gone or read-only, and the raise is swallowed below into a
-        # None return -- silently dropping a prequant whose checkpoint is cached and already
-        # loaded. "Same root" means the one that actually supplied the checkpoint, which is the
-        # import-time one whenever the resolver answered from there.
+        # The root that actually supplied the checkpoint above, which is the import-time one
+        # whenever the resolver answered from there. After a mid-session cache change the pinned
+        # root may be gone or read-only, and load_config's raise is swallowed below into a None
+        # return -- silently dropping a prequant whose checkpoint is cached and already loaded.
         config = _load_transformer_config(transformer_cls, base, hf_token, cache_dir, path)
         from accelerate import init_empty_weights
 
@@ -344,12 +339,10 @@ def load_prequantized_transformer(
 def _entry_not_found_errors() -> tuple:
     """``(EntryNotFoundError, LocalEntryNotFoundError)`` for both huggingface_hub majors.
 
-    On 0.x ``EntryNotFoundError`` is an ``HfHubHTTPError``; on 1.x it is a plain ``Exception``
-    split into ``RemoteEntryNotFoundError`` (the Hub answered 404 for this filename) and
-    ``LocalEntryNotFoundError`` (this cache root has no copy and the network could not be
-    reached). On BOTH, local subclasses the base, so the local class has to be caught first
-    wherever the two mean different things. Private markers on an unexpected layout: nothing
-    raises them, so the caller simply keeps today's behaviour."""
+    On 1.x the base splits into a remote 404 and ``LocalEntryNotFoundError`` (no copy in this root
+    and no network). On BOTH majors local subclasses the base, so it must be caught first wherever
+    the two mean different things. Private markers on an unexpected layout: nothing raises them, so
+    the caller keeps today's behaviour."""
     try:
         from huggingface_hub.errors import EntryNotFoundError
     except Exception:  # noqa: BLE001 — older/newer hub layouts
@@ -377,19 +370,17 @@ def _download_checkpoint_name(
 ) -> str:
     """Download ONE checkpoint filename, reusing a copy that sits under the other cache root.
 
-    Only the OTHER root needs special handling: hf_hub_download called with cache_dir would not
-    look there and would re-fetch multiple GB, which is the download the caller declined on. So
-    re-run it THROUGH that root (cache_dir = None) instead of returning the raw path: an unchanged
-    repo reuses the existing blob and costs one HEAD, while a repo that republished the checkpoint
-    under the same filename is picked up rather than pinned stale forever. Offline still resolves,
-    because hf_hub_download keeps the failed HEAD and returns the cached pointer.
+    Only the OTHER root needs handling: pinned to ``cache_dir``, hf_hub_download would not look
+    there and would re-fetch multiple GB, the download the caller declined on. So re-run it THROUGH
+    that root instead of returning the raw path: an unchanged repo reuses the blob for one HEAD,
+    a republished checkpoint is picked up rather than pinned stale, and offline still resolves off
+    the cached pointer.
 
     ``propagate_missing`` says another filename is still to be tried, so a remote 404 for THIS one
-    must reach the caller's fallback branch. Swallowing it (as a blanket ``except Exception``
-    does) returns the stale other-root copy of a canonical name the repo no longer publishes, and
-    the fallback name that IS valid is never reached. A local cache miss is not that verdict, and
-    with no name left to try neither is a 404: both keep the copy already found, so revalidation
-    stays a bonus and never a new failure."""
+    must reach the caller's fallback branch; swallowing it would return the stale other-root copy
+    of a name the repo no longer publishes and never reach the fallback that IS valid. A local
+    cache miss is not that verdict, and with no name left to try neither is a 404: both keep the
+    copy already found, so revalidation stays a bonus and never a new failure."""
     from huggingface_hub import hf_hub_download
 
     EntryNotFoundError, LocalEntryNotFoundError = _entry_not_found_errors()
@@ -448,8 +439,8 @@ def _resolve_checkpoint_path(
         except EntryNotFoundError:
             if not has_fallback:
                 raise
-            # The primary is genuinely absent, so the legacy name is now the artifact to load and
-            # it gets the same other-root treatment, with nothing left to fall back to.
+            # The primary is genuinely absent, so the legacy name gets the same other-root
+            # treatment, with nothing left to fall back to.
             return _download_checkpoint_name(
                 source,
                 source.fallback_filename,
@@ -466,16 +457,15 @@ def _config_cache_roots(checkpoint_path: str, cache_dir: Optional[str]) -> tuple
     ``_resolve_checkpoint_path`` may answer from huggingface_hub's import-time root even when
     Studio pins its live one, so pinning the config to the live root alone misses in exactly the
     cache-moved/offline case the checkpoint lookup just accepted -- and load_config's raise is
-    swallowed into a None return, silently dropping a prequant whose checkpoint is already cached.
-    The other root is still tried second, so nothing that resolves today stops resolving."""
+    swallowed into a None return. The other root is still tried second, so nothing that resolves
+    today stops resolving."""
     if cache_dir is None:
         return (None,)
     import os
 
     try:
-        # normcase before comparing: Windows paths are case-insensitive and accept either
-        # separator, so a plain startswith says "not under the live root" on nothing more than
-        # C:\Users vs c:\users and silently reverses the order below. It is identity on POSIX.
+        # normcase before comparing: on Windows a plain startswith says "not under the live root"
+        # on nothing more than C:\Users vs c:\users and silently reverses the order below.
         root = os.path.normcase(os.path.realpath(cache_dir))
         real = os.path.normcase(os.path.realpath(checkpoint_path))
         under_live = real == root or real.startswith(root + os.sep)

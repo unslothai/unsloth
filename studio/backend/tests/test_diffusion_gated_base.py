@@ -3,10 +3,10 @@
 
 """Hermetic tests for the gated companion-base preflight.
 
-Hugging Face gates the BYTE endpoint only, so ``model_info`` answers anonymously for FLUX / Krea /
-Ideogram and the download plan is built from a full file list before anything 401s. Stubbing
-``HfApi`` / ``get_hf_file_metadata`` pins both halves: the plan fails up front naming the repo and
-its licence page, and every non-access failure falls through so an offline host can still load.
+Hugging Face gates the BYTE endpoint only, so ``model_info`` answers anonymously and the download
+plan is built from a full file list before anything 401s. Stubbing ``HfApi`` /
+``get_hf_file_metadata`` pins both halves: the plan fails up front naming the repo and its licence
+page, and every non-access failure falls through so an offline host can still load.
 """
 
 from __future__ import annotations
@@ -132,7 +132,8 @@ def test_a_network_error_fails_open(monkeypatch):
 
 
 def test_unreadable_metadata_is_named_too(monkeypatch):
-    # A private / renamed / deleted base 401s on model_info, which the size estimate swallows: the plan would stage zero bytes and the load fail with no explanation.
+    # A private / renamed / deleted base 401s on model_info, which the size estimate swallows into
+    # a zero-byte plan, so the load fails with no explanation.
     from huggingface_hub.errors import RepositoryNotFoundError
 
     _stub_hub(
@@ -154,10 +155,9 @@ def test_unreadable_metadata_is_named_too(monkeypatch):
 
 
 def test_an_already_downloaded_base_is_never_refused(monkeypatch, tmp_path):
-    """A base whose bytes are on disk loads today with no token at all: hf_hub_download catches the
-    gated 401 HEAD and returns the cached pointer. Probing live access there can only refuse a load
-    that already works -- a token cleared from Studio settings, an expired one, or a fresh profile
-    over an existing cache. The never-downloaded pick this preflight exists for still probes."""
+    """A base whose bytes are on disk loads today with no token: hf_hub_download catches the gated
+    401 HEAD and returns the cached pointer. Probing live access there could only refuse a load
+    that already works. The never-downloaded pick this preflight exists for still probes."""
     root = tmp_path / "hub"
     folder = root / f"models--{GATED_REPO.replace('/', '--')}"
     commit = "c" * 40
@@ -208,11 +208,9 @@ def test_local_and_non_repo_bases_are_skipped(monkeypatch, tmp_path):
 
 
 def test_a_base_whose_home_cannot_be_resolved_fails_open(monkeypatch):
-    # '~someoneelse/models' and a plain '~/models' under a service account with no home both
-    # carry exactly one slash, so they reach the local-path probe instead of short-circuiting,
-    # and pathlib answers an unresolvable home with RuntimeError -- which is NOT an OSError.
-    # This function documents "fails open on any non-access error", so it must fall through to
-    # the Hub probe rather than escaping as a 500 on a load that has not started.
+    # '~other/models' and '~/models' under an account with no home both carry exactly one slash,
+    # so they reach the local-path probe, where pathlib raises RuntimeError -- NOT an OSError.
+    # This probe fails open, so that must fall through rather than 500 a load that has not started.
     probed = _stub_hub(monkeypatch, info = _FakeInfo(False))
 
     class _NoHomePath:
@@ -230,9 +228,8 @@ def test_a_base_whose_home_cannot_be_resolved_fails_open(monkeypatch):
 
 
 def test_an_unknown_user_home_base_fails_open_for_real(monkeypatch):
-    # The same failure without stubbing pathlib at all: no such user, so expanduser() raises.
-    # POSIX only -- Windows expanduser() has no user database and silently rewrites '~ghost'
-    # against USERPROFILE's parent, so it never reaches the RuntimeError branch there.
+    # The same failure unstubbed: no such user, so expanduser() raises. POSIX only -- Windows
+    # rewrites '~ghost' against USERPROFILE's parent and never reaches the RuntimeError branch.
     if os.name == "nt":
         pytest.skip("POSIX-only: Windows expanduser() never fails for an unknown user")
     _stub_hub(monkeypatch, info = _FakeInfo(False))
@@ -295,9 +292,8 @@ def test_run_load_stamps_the_gated_error_on_the_load(monkeypatch):
 def _hub_http_error(cls, message, status):
     """Build an HfHubHTTPError subclass portably.
 
-    huggingface_hub 1.x made ``response`` a REQUIRED keyword-only argument, so a message-only
-    construction raises TypeError there, and CI resolves 1.x (transformers pins
-    huggingface-hub>=1.5 over studio.txt's 0.36.2). Passing it works on both."""
+    huggingface_hub 1.x made ``response`` a REQUIRED keyword-only argument, and CI resolves 1.x
+    (transformers pins huggingface-hub>=1.5 over studio.txt's 0.36.2). Passing it works on both."""
     import requests
 
     response = requests.Response()
@@ -341,9 +337,8 @@ def test_a_server_error_still_fails_open(status, monkeypatch):
 
 @pytest.mark.parametrize("token", ["", "   ", None])
 def test_a_blank_token_is_not_sent_as_a_credential(token, monkeypatch):
-    """build_hf_headers sends any str verbatim, so "" becomes a literal "Bearer " that the Hub
-    answers 401 invalid-credentials. Left unnormalized, the 401 handling would turn an open base
-    into a hard access error, which is the opposite of what this preflight is for."""
+    """build_hf_headers sends any str verbatim, so "" becomes a literal "Bearer " the Hub answers
+    401 to. Left unnormalized, the 401 handling would turn an open base into a hard access error."""
     seen: list = []
 
     class _Api:
@@ -365,8 +360,8 @@ def test_a_blank_token_is_not_sent_as_a_credential(token, monkeypatch):
 def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
     """A GPU-less host routes /images/download-plan to the sd.cpp planner, whose asset list carries
     its own companion repos: flux.1's VAE is the gated black-forest-labs/FLUX.1-schnell. The size
-    probe swallows the 401, so without the preflight that entry plans at 0 bytes and the manager's
-    fetch dies on the bare token error this preflight exists to replace."""
+    probe swallows the 401, so without the preflight that entry plans at 0 bytes and the fetch dies
+    on the bare token error."""
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
     gated = "black-forest-labs/FLUX.1-schnell"
@@ -413,9 +408,8 @@ def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
 
 
 def test_the_native_plan_probes_the_asset_it_stages(monkeypatch):
-    """flux.1's native VAE repo is read for ae.safetensors only. Probing the pipeline manifest
-    there would neither verify access to that file nor see it in the cache, so a host that already
-    downloaded the VAE would be refused a load that works today."""
+    """flux.1's native VAE repo is read for ae.safetensors only, so probing the pipeline manifest
+    there would neither verify access to that file nor see it in the cache."""
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
     gated = "black-forest-labs/FLUX.1-schnell"
@@ -472,9 +466,9 @@ def test_the_native_plan_probes_the_asset_it_stages(monkeypatch):
 
 
 def test_the_gguf_is_resolved_against_the_live_cache_root(monkeypatch, tmp_path):
-    """The prefetch stages the GGUF under the LIVE root (hf_hub_download_with_xet_fallback
-    defaults to it), so an unpinned resolve reads huggingface_hub's import-time constant and,
-    after a mid-session cache change, pulls the whole multi-GB file again inside the load lock."""
+    """The prefetch stages the GGUF under the LIVE root, so an unpinned resolve reads
+    huggingface_hub's import-time constant and, after a mid-session cache change, pulls the whole
+    multi-GB file again inside the load lock."""
     live = tmp_path / "live"
     calls: list = []
 
@@ -499,8 +493,7 @@ def test_the_gguf_is_resolved_against_the_live_cache_root(monkeypatch, tmp_path)
     assert calls == [str(live)]
 
     # A copy under the OTHER root is reached THROUGH that root, not returned raw: the blob is
-    # reused so nothing is re-fetched, but the ref still resolves, so a republished GGUF under the
-    # same filename is picked up instead of pinned forever.
+    # reused, but the ref still resolves, so a republished GGUF is picked up instead of pinned.
     other = tmp_path / "other" / "z.gguf"
     other.parent.mkdir(parents = True)
     other.write_bytes(b"gguf")
@@ -522,12 +515,10 @@ def test_the_gguf_is_resolved_against_the_live_cache_root(monkeypatch, tmp_path)
 
 
 def test_a_private_but_already_downloaded_base_is_not_refused(monkeypatch):
-    """huggingface_hub folds 401 into RepositoryNotFoundError: hf_raise_for_status says "401 is
-    misleading as it is returned for: private and gated repos if user is not authenticated,
-    missing repos => for now, we process them as RepoNotFound anyway" (utils/_http.py). So a
-    PRIVATE companion base that is already on disk arrives here indistinguishable from a deleted
-    one, and refusing it blocks a load that works today: hf_hub_download serves the cached pointer
-    once the token is cleared or expires, exactly as it does for a gated base."""
+    """huggingface_hub folds 401 into RepositoryNotFoundError ("401 is misleading", utils/_http.py),
+    so a PRIVATE companion base already on disk arrives indistinguishable from a deleted one.
+    Refusing it would block a load that works today: hf_hub_download serves the cached pointer once
+    the token is cleared or expires, exactly as it does for a gated base."""
     from huggingface_hub.errors import RepositoryNotFoundError
 
     private = "unsloth/private-base"
@@ -547,9 +538,8 @@ def test_a_private_but_already_downloaded_base_is_not_refused(monkeypatch):
 
 
 def test_a_deleted_or_renamed_base_still_raises_even_when_cached(monkeypatch):
-    """The other side of the split. A 404 is not an access verdict a stale copy can excuse: the
-    repo is gone, the size estimate swallows the 404 into a zero-byte plan, and the pick would
-    download nothing and fail later with no explanation."""
+    """The other side of the split: a 404 is not an access verdict a stale copy can excuse. The
+    repo is gone, and the size estimate swallows the 404 into a zero-byte plan."""
     from huggingface_hub.errors import RepositoryNotFoundError
 
     _stub_hub(
@@ -566,8 +556,8 @@ def test_a_deleted_or_renamed_base_still_raises_even_when_cached(monkeypatch):
 
 
 def test_a_repo_not_found_with_no_response_still_raises(monkeypatch):
-    """Older / newer hub versions may not attach a response, so the status is unreadable. Neither
-    401 nor 404 can be proven, so the cache escape is not granted: fail safe, as before."""
+    """A hub version that attaches no response leaves the status unreadable: neither 401 nor 404
+    can be proven, so the cache escape is not granted. Fail safe."""
     from huggingface_hub.errors import RepositoryNotFoundError
 
     _stub_hub(monkeypatch, model_info_error = RepositoryNotFoundError("no response attached"))
@@ -609,11 +599,9 @@ def _native_backend_ready(monkeypatch):
 
 
 def test_the_native_load_preflights_its_companion_repos_too(monkeypatch):
-    """The plan alone is not enough. images-page.tsx wraps getDiffusionDownloadPlan in a
-    try/catch ("No plan (older backend, metadata hiccup): fall back to the load's own download")
-    and then calls /images/load regardless, so the 400 the plan raises is swallowed and the load
-    would run with no preflight at all -- the user gets the bare Hub token error this exists to
-    replace. The diffusers backend runs the same check in both places; the native one must too."""
+    """The plan alone is not enough: images-page.tsx wraps getDiffusionDownloadPlan in a try/catch
+    and calls /images/load regardless, so the plan's 400 is swallowed and the load would run with
+    no preflight. The diffusers backend checks in both places; the native one must too."""
     from core.inference.diffusion_families import detect_family_for_pick
     from core.inference.sd_cpp_backend import _SdLoading
 
@@ -653,9 +641,8 @@ def test_the_native_load_preflights_its_companion_repos_too(monkeypatch):
 
 
 def test_the_native_load_probes_the_asset_it_stages_and_honours_the_cache(monkeypatch):
-    """Same two properties the plan half has, so the load half cannot drift from it: the probe is
-    the file THIS pick stages (a VAE-only repo has no pipeline manifest), and a companion already
-    on disk is never refused."""
+    """Same two properties as the plan half, so the load half cannot drift: the probe is the file
+    THIS pick stages (a VAE-only repo has no manifest), and a cached companion is never refused."""
     from core.inference.diffusion_families import detect_family_for_pick
     from core.inference.sd_cpp_backend import _SdLoading
 
@@ -722,8 +709,7 @@ def _stub_shared_download(
     """Record the cache root each companion download resolves against.
 
     ``cached_elsewhere`` names the files that exist ONLY under huggingface_hub's import-time root
-    (Studio's cache folder was changed mid-session), so the live root is a miss for them.
-    """
+    (Studio's cache folder was changed mid-session), so the live root is a miss for them."""
     import utils.hf_xet_fallback as X
 
     seen: list = []
@@ -751,10 +737,9 @@ def _stub_shared_download(
 
 def test_the_prefetch_reuses_a_base_asset_cached_under_the_other_root(monkeypatch, tmp_path):
     """The preflight clears a base found under EITHER cache root, but the companion downloads are
-    pinned to the live one, so after a cache-folder change the load re-fetches every already-cached
-    asset -- and with no valid token for a gated or private base it 401s outright, which is the
-    bare Hub token error the preflight exists to replace. The download has to resolve through the
-    root that actually holds the file, exactly as the GGUF and pre-quant resolvers do."""
+    pinned to the live one, so after a cache-folder change the load re-fetches every cached asset
+    and, with no valid token for a gated base, 401s outright. The download has to resolve through
+    the root that actually holds the file, as the GGUF and pre-quant resolvers do."""
     seen = _stub_shared_download(monkeypatch, tmp_path, cached_elsewhere = {"ae.safetensors"})
     DiffusionBackend()._prefetch_files(
         "unsloth/FLUX.1-dev-GGUF",
@@ -773,11 +758,10 @@ def test_the_prefetch_reuses_a_base_asset_cached_under_the_other_root(monkeypatc
 
 def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypatch, tmp_path):
     """The prefetch reuse above only covers a base the size estimate could list, and the estimate
-    is built from the very ``model_info`` call whose 401 earned the cache escape: a private base, or
-    a stale token on any base, leaves ``base_files`` empty, so nothing is staged and the escape has
-    nothing to hand ``from_pretrained``, which is pinned to the live root and re-raises the bare Hub
-    auth error over a base that is completely on disk. The preflight carries the snapshot it
-    accepted so the load reads it straight off disk instead."""
+    comes from the very ``model_info`` call whose 401 earned the cache escape: a private base, or a
+    stale token on any base, leaves ``base_files`` empty, so nothing is staged and
+    ``from_pretrained``, pinned to the live root, re-raises the bare Hub auth error over a base
+    completely on disk. The preflight carries the snapshot it accepted so the load reads it."""
     from huggingface_hub.errors import RepositoryNotFoundError
 
     private = "unsloth/private-base"
@@ -839,9 +823,9 @@ def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypat
 
 
 def test_a_base_excused_by_the_live_root_carries_no_snapshot(monkeypatch, tmp_path):
-    """The other side: a copy under the root the loader already reads needs no escort. Returning one
-    would pin ``from_pretrained`` to a local dir it never asked for, so a partially cached base
-    could no longer finish its own download."""
+    """The other side: a copy under the root the loader already reads needs no escort. Returning
+    one would pin ``from_pretrained`` to a local dir, so a partially cached base could no longer
+    finish its own download."""
     from huggingface_hub.errors import RepositoryNotFoundError
 
     private = "unsloth/private-base"

@@ -431,8 +431,8 @@ def _assert_local_base_is_pipeline(base_repo: str) -> None:
 
 
 def _repo_access_message(repo: str, *, gated: bool) -> str:
-    """The repo id AND its licence page. The worker's own 401/403 names neither, and the base is
-    resolved from a card tag, so the user never even saw which repo it is."""
+    """The repo id AND its licence page: the worker's 401/403 names neither, and the base comes
+    from a card tag, so the user never saw which repo it is."""
     url = f"https://huggingface.co/{repo}"
     if gated:
         return (
@@ -454,39 +454,30 @@ def _assert_base_repo_accessible(
 ) -> Optional[str]:
     """Fail up front, with the licence URL, when a companion base cannot be read.
 
-    The Hub gates the BYTE endpoint only, so ``model_info`` answers anonymously for gated FLUX /
-    Krea / Ideogram repos and a plan built from it dies mid-download with a bare token error.
-    Probes a file the load fetches anyway, and only when ``gated`` is set ("auto"/"manual", a
-    truthy STRING, never True), so an open repo costs one metadata call. Fails open on any
-    non-access error: offline/transient must not block a load.
+    The Hub gates the BYTE endpoint only, so ``model_info`` answers anonymously for gated repos and
+    a plan built from it dies mid-download on a bare token error. Probes ``probe_file`` (a file the
+    load fetches anyway) and only when ``gated`` is set, so an open repo costs one metadata call;
+    the native plan passes its own asset name, since a repo it reads only for a VAE has no manifest
+    cached. Fails open on any non-access error: offline/transient must not block a load.
 
-    ``probe_file`` is that file: the pipeline manifest for a diffusers base, but the native plan
-    passes its own asset name, since a repo it reads only for a VAE has no manifest cached and
-    would be refused for a load that works today.
-
-    Returns the base's local snapshot dir when an ACCESS verdict was excused by a copy that lives
-    only under huggingface_hub's import-time cache root, so the caller can load the base straight
-    off disk; None otherwise. The metadata failure that earns that escape also empties the size
-    estimate, so the prefetch stages nothing to reuse, and ``from_pretrained`` is pinned to
-    ``hub_cache_dir()`` and cannot see the other root -- it would re-raise the bare Hub auth error
-    the escape exists to avoid."""
+    Returns the base's snapshot dir when an ACCESS verdict was excused by a copy that lives only
+    under huggingface_hub's import-time cache root, so the caller can load off disk; None
+    otherwise. That escape is needed because ``from_pretrained`` is pinned to ``hub_cache_dir()``
+    and cannot see the other root, and the metadata failure that earned it also empties the size
+    estimate, so the prefetch stages nothing to reuse."""
     repo = (base_repo or "").strip()
     # Only a remote 'org/name' can be gated; a local base is already on disk.
     if not repo or repo.count("/") != 1:
         return None
-    # Blank to None, as load_pipeline does later. build_hf_headers sends any str verbatim, so ""
-    # becomes a literal "Bearer " that answers 401 invalid-credentials, and the 401 handling below
-    # would turn an open base into a hard access error. None means "use the cached login".
+    # Blank to None, as load_pipeline does: build_hf_headers sends "" verbatim as a literal
+    # "Bearer " that 401s, which the handling below would read as an open base being unreadable.
     hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
     try:
         if Path(repo).expanduser().exists():
             return None
-    # OSError: invalid path characters -> a remote id, not a local path.
-    # RuntimeError: pathlib raises it, NOT an OSError, when expanduser() cannot resolve the home
-    # directory -- '~someoneelse/models' on any OS, and plain '~/models' under a Windows service
-    # account with no USERPROFILE or a daemon with no HOME. Exactly one forward slash, so both
-    # reach here rather than short-circuiting above, and an escape turns this fail-open probe into
-    # a 500 on a load that has not even started.
+    # OSError: invalid path characters -> a remote id. RuntimeError: pathlib, not OSError, when
+    # expanduser() cannot resolve the home dir ('~other/models', or '~/models' with no HOME). Both
+    # have exactly one slash so they reach here, and an escape would 500 this fail-open probe.
     except (OSError, RuntimeError, ValueError):
         pass
     try:
@@ -499,28 +490,23 @@ def _assert_base_repo_accessible(
     except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
         return None
 
-    # Set when only huggingface_hub's import-time root holds the copy that excuses the verdict; the
-    # snapshot dir is handed back so the caller can load the base from disk instead of through the
-    # live root, which is where a from_pretrained pinned to hub_cache_dir() would look and miss.
+    # Set when only huggingface_hub's import-time root holds the excusing copy, so the caller can
+    # load off disk: a from_pretrained pinned to hub_cache_dir() looks in the live root and misses.
     other_root_snapshot: Optional[str] = None
 
-    # A base already on disk needs no Hub access, so refusing one can only block a load that works
-    # today: hf_hub_download catches the gated/401 HEAD and returns the cached pointer ("let's
-    # switch to 'local_files_only=True' to check if the files are already cached",
-    # file_download._get_metadata_or_catch_error), which is how a downloaded gated base still loads
-    # once the token is cleared or expires. It excuses an ACCESS verdict only, never a 404: a
-    # renamed or removed repo cannot be un-renamed by a stale copy on disk, and the size estimate
-    # swallows that 404 into a zero-byte plan.
+    # A base already on disk needs no Hub access, so refusing one would block a load that works
+    # today: hf_hub_download catches the gated/401 HEAD and serves the cached pointer
+    # (file_download._get_metadata_or_catch_error), which is how a downloaded gated base still
+    # loads once the token is cleared or expires. Excuses an ACCESS verdict only, never a 404: a
+    # renamed or removed repo cannot be un-renamed by a stale copy, and the size estimate swallows
+    # that 404 into a zero-byte plan.
     def _already_downloaded() -> bool:
-        """True when ``probe_file`` is on disk under either root. Both roots, as the pre-quant
-        lookup does: the prefetch downloads under huggingface_hub's import-time constant while
-        Studio pins its live setting. Never raises.
+        """True when ``probe_file`` is on disk under EITHER root (Studio pins its live setting, the
+        prefetch downloads under huggingface_hub's import-time constant). Never raises.
 
-        Exact for the native plan, which probes an asset it stages, and a proxy for the diffusers
-        plan, which probes the manifest: a base whose manifest is cached but whose shards are not
-        now passes the preflight and dies mid-download on the bare token error. That is the
-        pre-preflight behaviour, so the excuse costs a better message in a partial-download case
-        and never blocks a load -- the opposite trade of refusing every cached base outright."""
+        Exact for the native plan, which probes an asset it stages; a proxy for the diffusers plan,
+        which probes the manifest, so a manifest-cached base with missing shards passes and dies
+        mid-download on the bare token error -- the pre-preflight behaviour, never a blocked load."""
         nonlocal other_root_snapshot
         try:
             from huggingface_hub import try_to_load_from_cache
@@ -528,9 +514,9 @@ def _assert_base_repo_accessible(
                 # Only a str is a cached path; a miss is None and an absent file is a sentinel.
                 hit = try_to_load_from_cache(repo, probe_file, cache_dir = root)
                 if isinstance(hit, str):
-                    # The live root is tried first, so landing here on None means only the
-                    # import-time one has it. One level up is the snapshot dir -- true only for a
-                    # top-level probe, so a subfolder name yields nothing rather than a wrong root.
+                    # The live root is tried first, so root None here means only the import-time
+                    # one has it. Its parent is the snapshot dir only for a top-level probe, so a
+                    # subfolder name yields nothing rather than a wrong root.
                     if root is None and "/" not in probe_file:
                         other_root_snapshot = str(Path(hit).parent)
                     return True
@@ -541,10 +527,10 @@ def _assert_base_repo_accessible(
     def _is_auth_error(exc: Any) -> bool:
         """A 401/403 that hf_raise_for_status did not classify.
 
-        An expired or malformed token answers 401 "Invalid credentials in Authorization header",
-        which _http.py excludes from its RepoNotFound branch by name, and a token without the right
-        permission answers a bare 403. Both arrive as plain HfHubHTTPError, so catching only the
-        classified errors fails open on exactly the case this probe exists to catch."""
+        An expired token 401s "Invalid credentials in Authorization header", which _http.py
+        excludes from its RepoNotFound branch by name, and a token missing a permission 403s. Both
+        arrive as plain HfHubHTTPError, so catching only the classified errors fails open on
+        exactly the case this probe exists to catch."""
         status = getattr(getattr(exc, "response", None), "status_code", None)
         return status in (401, 403)
 
@@ -555,14 +541,11 @@ def _assert_base_repo_accessible(
             return other_root_snapshot
         raise ValueError(_repo_access_message(repo, gated = True)) from None
     except RepositoryNotFoundError as exc:
-        # 401 and 404 both arrive here: hf_raise_for_status folds "private and gated repos if user
-        # is not authenticated" in with a missing repo, because "401 is misleading" (_http.py), so
-        # the status has to be re-read to tell them apart. A 401/403 is an ACCESS verdict and earns
-        # the same cache escape as the other access branches -- a private companion already on disk
-        # still loads once the token is cleared or expires, since hf_hub_download serves it from
-        # the cache. A genuine 404 is never excused: a renamed or removed repo cannot be
-        # un-renamed by a stale copy on disk, and the size estimate swallows that 404 into a
-        # zero-byte plan. An error carrying no response reads as neither, so it raises: fail safe.
+        # 401 and 404 both land here: hf_raise_for_status folds unauthenticated private/gated in
+        # with a missing repo, because "401 is misleading" (_http.py), so the status is re-read to
+        # tell them apart. A 401/403 is an ACCESS verdict and earns the same cache escape as the
+        # other access branches; a genuine 404 never does, and an error carrying no response reads
+        # as neither, so it raises: fail safe.
         if _is_auth_error(exc) and _already_downloaded():
             return other_root_snapshot
         raise ValueError(_repo_access_message(repo, gated = False)) from None
@@ -580,8 +563,7 @@ def _assert_base_repo_accessible(
         return None
     try:
         # A metadata HEAD, never hf_hub_download: a cached manifest makes the download return the
-        # cached pointer (the 401 HEAD is kept as head_call_error), so a stale token would pass the
-        # probe and 401 again mid-prefetch. The HEAD hits the same /resolve/ URL the shards do.
+        # cached pointer, so a stale token would pass the probe and 401 again mid-prefetch.
         get_hf_file_metadata(hf_hub_url(repo, probe_file), token = hf_token)
     except GatedRepoError:
         raise ValueError(_repo_access_message(repo, gated = True)) from None
@@ -735,11 +717,10 @@ _NO_WEIGHT = object()
 def _has_active_lora(loras: Any) -> bool:
     """True when any adapter would actually be baked, for either shape the callers pass.
 
-    Weight 0 means disabled everywhere else in this file, but the two entry points disagree on
-    shape: /images/load hands over ``(id, weight)`` tuples while /images/download-plan passes the
-    ``LoraSpec`` models through untouched. Unpacking a pydantic model yields its ``(field, value)``
-    pairs, so ``(_lid, w)`` would bind ``w`` to ``("weight", 0.0)`` and read a disabled adapter as
-    active. Reading the attribute first and only then falling back to unpacking covers both."""
+    Weight 0 means disabled, but /images/load passes ``(id, weight)`` tuples while
+    /images/download-plan passes ``LoraSpec`` models. Unpacking a pydantic model yields its
+    ``(field, value)`` pairs, so ``(_lid, w)`` would bind ``w`` to ``("weight", 0.0)`` and read a
+    disabled adapter as active; reading the attribute first covers both."""
     for entry in loras or ():
         weight = getattr(entry, "weight", _NO_WEIGHT)
         if weight is _NO_WEIGHT:
@@ -766,10 +747,10 @@ def _uncached_prequant_repo(
     """The hosted pre-quant repo an AUTO-derived quant would have to DOWNLOAD for this pick, or
     None when it costs no extra bytes (no hosted source, a local override, or already cached).
 
-    Otherwise an auto pick of ``unsloth/Z-Image-GGUF`` fetches the GGUF and then a second 6.29 GB
-    denoiser it uses instead, which is not what "auto" may spend on the user's behalf. Shared by
-    ``load_pipeline`` and ``_dense_quant_prefetch_needed`` so the load and the download plan
-    decline together. Cheap (a refs read + stat) and never raises."""
+    Otherwise an auto GGUF pick fetches the GGUF and then a second multi-GB denoiser it uses
+    instead, which is not what "auto" may spend on the user's behalf. Shared by ``load_pipeline``
+    and ``_dense_quant_prefetch_needed`` so the load and the download plan decline together. Cheap
+    (a refs read + stat) and never raises."""
     try:
         scheme = select_transformer_quant_scheme(
             target, requested, family = getattr(fam, "name", None)
@@ -850,20 +831,16 @@ class DiffusionBackend:
             return str(resolve_local_gguf_child(local_root, gguf_filename))
         from huggingface_hub import hf_hub_download, try_to_load_from_cache
 
-        # Pin the LIVE root, as the prefetch does (hf_hub_download_with_xet_fallback defaults to
-        # it). Unpinned, this resolves against huggingface_hub's import-time constant, so a
-        # mid-session cache change misses the GGUF the prefetch just staged and pulls the whole
-        # multi-GB file again -- inside the load lock, after eviction, where unload cannot preempt
-        # it and progress already reported 100%.
+        # Pin the LIVE root, as the prefetch does. Unpinned, a mid-session cache change misses the
+        # GGUF the prefetch just staged and re-pulls the whole multi-GB file inside the load lock,
+        # after eviction, where unload cannot preempt it and progress already reported 100%.
         cache_dir = hub_cache_dir()
         if not isinstance(try_to_load_from_cache(repo_id, gguf_filename, cache_dir = cache_dir), str):
-            # Same other-root reuse as the pre-quant checkpoint: a copy under the import-time root
-            # is one hf_hub_download will not look for, and re-fetching it is the download this
-            # pins the root to avoid. Reached THROUGH that root rather than returned raw, so the
-            # ref is still resolved and a republished GGUF under the same name is picked up; the
-            # blob is reused, so nothing is re-fetched when it has not changed, and offline the
-            # HEAD failure is swallowed and the cached pointer comes back anyway. Any other
-            # failure falls back to the path already found, so this cannot break a working load.
+            # Same other-root reuse as the pre-quant checkpoint: re-fetching a copy that root
+            # already holds is the download this pins the root to avoid. Reached THROUGH that root
+            # rather than returned raw, so the ref still resolves and a republished GGUF is picked
+            # up; the blob is reused, and offline the cached pointer comes back anyway. Any failure
+            # falls back to the path already found, so this cannot break a working load.
             elsewhere = try_to_load_from_cache(repo_id, gguf_filename, cache_dir = None)
             if isinstance(elsewhere, str) and Path(elsewhere).is_file():
                 try:
@@ -909,8 +886,8 @@ class DiffusionBackend:
             # plan must not stage the base transformer/ shards either.
             if (
                 auto
-                # Active weights, as load_pipeline reads them: an all-zero list is not a bake, and
-                # disagreeing here stages the base transformer/ shards for a load that runs the GGUF.
+                # Active weights only: an all-zero list is not a bake, and disagreeing here stages
+                # base transformer/ shards for a load that runs the GGUF.
                 and not _has_active_lora(kwargs.get("loras"))
                 and _uncached_prequant_repo(
                     fam,
@@ -929,8 +906,8 @@ class DiffusionBackend:
                 requested = mode,
                 base_repo = kwargs.get("base_repo"),
                 prequant_path = kwargs.get("transformer_prequant_path"),
-                # Same rule as the decline above it: an all-zero list bakes nothing, so sizing
-                # it as a dense bake stages transformer/ shards the load will not read.
+                # Same rule as the decline above: an all-zero list bakes nothing, so sizing it
+                # dense stages transformer/ shards the load will not read.
                 force_dense = _has_active_lora(kwargs.get("loras")),
                 logger = None,
             )
@@ -978,11 +955,10 @@ class DiffusionBackend:
 
         # Callers without a per-load event (tests, direct use) fall back to the current one.
         cancel = cancel_event if cancel_event is not None else self._cancel_event
-        # A file cached only under huggingface_hub's import-time root resolves through that root
-        # instead of being pulled again into the live one. The preflight clears a base found under
-        # EITHER root, so without this a cache-folder change turns an already-downloaded gated or
-        # private base into the bare Hub token error mid-prefetch (and every other moved asset
-        # into a needless multi-GB re-download) on a load the preflight just accepted.
+        # A file cached only under huggingface_hub's import-time root resolves through that root.
+        # The preflight clears a base found under EITHER root, so without this a cache-folder
+        # change turns an already-downloaded gated base into a mid-prefetch Hub token error (and
+        # every other moved asset into a needless re-download) on a load the preflight accepted.
         # GGUF transformer (hub repos only; a local path is already on disk).
         if gguf_filename and not Path(repo_id).expanduser().exists():
             hf_hub_download_with_xet_fallback(
@@ -1204,8 +1180,8 @@ class DiffusionBackend:
                     kwargs["repo_id"], kwargs.get("base_repo"), fam, kwargs.get("hf_token")
                 )
             # Same preflight the plan runs: catch a gated base here, not 15 GiB into the prefetch.
-            # It hands back a snapshot dir when it excused the base off a copy only huggingface_hub's
-            # import-time root holds, which the pinned from_pretrained below could not reach.
+            # Returns a snapshot dir when it excused the base off a copy only the import-time root
+            # holds, which the pinned from_pretrained below could not reach.
             base_snapshot = _assert_base_repo_accessible(base, kwargs.get("hf_token"))
             kwargs["base_repo"] = base
             # The pre-cast encoder replaces these weights, so skip their dense shards. Same resolver as the injection.
@@ -1234,10 +1210,10 @@ class DiffusionBackend:
                     self._loading.base_repo = base
                     self._loading.expected_bytes = expected
             # Download outside the lock so unload/an eviction can preempt the pull.
-            # The carried snapshot is the fallback, never the override: it only ever fires when the
-            # estimate came back empty, since the base metadata that fills it is the same call whose
-            # failure earned the escape. Without it the load ends on the bare Hub auth error even
-            # though every byte is already on disk.
+            # The carried snapshot is the fallback, never the override: it only fires when the
+            # estimate came back empty, since the base metadata that fills it is the same call
+            # whose failure earned the escape. Without it the load ends on the bare Hub auth error
+            # with every byte already on disk.
             kwargs["_base_local_dir"] = (
                 self._prefetch_files(
                     kwargs["repo_id"],
@@ -1470,8 +1446,7 @@ class DiffusionBackend:
             hf_token,
             kind = kind,
             single_file_is_pipeline = bool(fam and fam.single_file_is_pipeline),
-            # With the RESOLVED base, as the load passes it: a variant base picks its own pre-quant
-            # repo, so the caller's raw one would answer a different question than the loader.
+            # The RESOLVED base, as the load passes it: a variant base picks its own pre-quant repo.
             include_transformer = kind == "gguf"
             and self._dense_quant_prefetch_needed(fam, {**load_kwargs, "base_repo": base}),
             sizes_out = sizes,
@@ -1757,13 +1732,11 @@ class DiffusionBackend:
                 # the fallback would pull them HERE, inside the load lock, after eviction, where unload cannot preempt it and
                 # progress already reported 100%.
                 dense_fallback_allowed = bool(_transformer_prefetched)
-                # The user picked a GGUF and left the scheme to us, so the hosted pre-quant is free
-                # only while already cached: fetching it means a SECOND multi-GB denoiser and the
-                # GGUF never runs. An explicit fp8/int8 request, a LoRA bake (dense by construction)
-                # and every non-GGUF kind keep today's behaviour, where the prequant IS the point.
-                # An all-zero-weight list is not a bake: LoraSpec and every sibling check read
-                # weight 0 as disabled, so plain truthiness here would skip the decline and fetch
-                # the dense companion for a request that applies no adapter at all.
+                # A GGUF pick with the scheme left to us: the hosted pre-quant is free only while
+                # already cached, since fetching it means a SECOND multi-GB denoiser and the GGUF
+                # never runs. An explicit scheme, a LoRA bake and every non-GGUF kind keep today's
+                # behaviour, where the prequant IS the point. An all-zero-weight list is not a
+                # bake, so plain truthiness would fetch the dense companion for no adapter at all.
                 baking_loras = _has_active_lora(loras)
                 if kind == "gguf" and transformer_quant_auto and not baking_loras:
                     uncached_prequant = _uncached_prequant_repo(
@@ -2405,7 +2378,7 @@ class DiffusionBackend:
             raise RuntimeError("transformer quant unsupported for this device/scheme")
         if fam is not None and not _has_active_lora(lora_specs):
             # A LoRA bake needs the DENSE transformer (adapters attach before quantize_), so skip
-            # prequant. Active weights only: an all-zero list bakes nothing, so it must not cost the
+            # prequant. Active weights only: an all-zero list bakes nothing and must not cost the
             # caller the dense build the decline above already declined to pay for.
             source = resolve_prequant_source(
                 fam, scheme, path_override = prequant_path, base_repo = base
@@ -2424,7 +2397,7 @@ class DiffusionBackend:
                     # Only enforced when the caller forces fp8 fast-accum; a checkpoint that baked the other choice falls to the dense path.
                     fast_accum = fast_accum,
                     # The root _uncached_prequant_repo cleared this load against, so its hit is
-                    # reused instead of re-downloaded under the import-time constant.
+                    # reused rather than re-downloaded under the import-time constant.
                     cache_dir = hub_cache_dir(),
                     logger = logger,
                 )
