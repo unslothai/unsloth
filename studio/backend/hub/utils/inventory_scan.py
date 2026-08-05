@@ -1513,15 +1513,22 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
     """The denoiser subdirs this pipeline's own ``model_index.json`` declares, or None.
 
     The names come from the manifest rather than the fixed ``_DENOISER_DIRS`` pair because
-    multi-DiT pipelines carry more than one (Ideogram 4 adds ``unconditional_transformer/``, the
-    dual-expert video pipelines add ``transformer_2/``) and would otherwise be judged complete on
-    whichever the loop reached first. None means the manifest could not be trusted to enumerate
-    them, and the caller keeps the older fixed-pair rule.
+    multi-DiT pipelines carry more than one (Ideogram 4 pairs ``transformer/`` with
+    ``unconditional_transformer/``, Wan 2.2's A14B experts pair it with ``transformer_2/``) and
+    would otherwise be judged complete on whichever the loop reached first.
+
+    None means the manifest could not be READ, and the caller keeps the older fixed-pair rule. An
+    EMPTY tuple is the different answer that it read fine and names no denoiser under either
+    spelling -- Stable Cascade and Wuerstchen call theirs ``decoder``/``prior``, Kandinsky and
+    Shap-E ``prior`` -- so there is nothing here this check can prove absent and the caller must
+    not fall back to hunting for directories that layout never had.
     """
     try:
         with (snapshot / "model_index.json").open("r", encoding = "utf-8") as fh:
             manifest = json.load(fh)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
+        # RecursionError: json.load on deeply nested input, and neither a ValueError nor an
+        # OSError, so it would escape the caller's fail-open guard.
         return None
     if not isinstance(manifest, dict):
         return None
@@ -1536,7 +1543,7 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
         if isinstance(value, (list, tuple)) and not any(v for v in value):
             continue
         found.append(key)
-    return tuple(found) or None
+    return tuple(found)
 
 
 def _component_weights_complete(component: Path) -> bool:
@@ -1548,17 +1555,24 @@ def _component_weights_complete(component: Path) -> bool:
 
     Each index is judged on its OWN shard set, not on the union, because one satisfied index is all
     the loader needs. A repo publishing both formats lands its safetensors shards plus BOTH
-    indexes: the download plan drops a ``.bin`` whose directory also has a picked ``.safetensors``,
-    and that filter matches on the ``.bin`` suffix, so the orphan ``.bin.index.json`` survives
+    indexes: diffusers' ``_get_ignore_patterns`` drops ``*.bin`` once the safetensors set is
+    compatible, and that glob does not match ``...bin.index.json``, so the orphan index survives
     while the shards it names never arrive. Unioning would charge those absent shards to a complete
-    safetensors set. Unfetched ``fp16`` and other variants behave the same way.
+    safetensors set. Unfetched variants behave the same way, hence the ``.index.`` match rather
+    than an ``.index.json`` suffix: diffusers' ``_add_variant`` inserts the variant before the last
+    extension, so a bf16 index is ``diffusion_pytorch_model.safetensors.index.bf16.json``.
     """
+    # glob() swallows the OSError an unreadable directory raises, which would read as "no weights"
+    # instead of reaching the caller's fail-open guard. iterdir() raises it.
+    next(component.iterdir(), None)
     claimed: set[str] = set()
-    for index in component.glob("*.index.json"):
+    for index in component.glob("*.json"):
+        if ".index." not in index.name:
+            continue
         try:
             with index.open("r", encoding = "utf-8") as fh:
                 weight_map = json.load(fh).get("weight_map")
-        except (OSError, ValueError, AttributeError):
+        except (OSError, ValueError, AttributeError, RecursionError):
             # An unreadable index cannot prove incompleteness.
             continue
         if not isinstance(weight_map, dict):
@@ -1605,11 +1619,14 @@ def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
         root = Path(snapshot)
         declared = _manifest_denoiser_components(root)
         if declared is not None:
+            # all(()) is True: a manifest that declares no denoiser under either spelling has none
+            # this check can prove absent, so it reads complete rather than being hunted for a
+            # transformer/ or unet/ its pipeline class never had.
             return not all(
                 (root / name).is_dir() and _component_weights_complete(root / name)
                 for name in declared
             )
-        # No trustworthy manifest: either fixed name will do, since a UNet pipeline has no
+        # Unreadable manifest: either fixed name will do, since a UNet pipeline has no
         # transformer/ and a DiT one has no unet/.
         return not any(
             (root / name).is_dir() and _component_weights_complete(root / name)

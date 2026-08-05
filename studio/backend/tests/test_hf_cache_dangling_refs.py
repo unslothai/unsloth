@@ -3177,17 +3177,30 @@ _FLUX_INDEX = {
     "vae": ["diffusers", "AutoencoderKL"],
     "safety_checker": [None, None],
 }
+# Both trimmed from the real manifests: CalamitousFelicitousness/Ideogram-4-bf16-Diffusers and
+# Wan-AI/Wan2.2-T2V-A14B-Diffusers, each of which ships two fully sharded denoiser directories.
 _IDEOGRAM_INDEX = {
     "_class_name": "Ideogram4Pipeline",
     "transformer": ["diffusers", "Ideogram4Transformer2DModel"],
     "unconditional_transformer": ["diffusers", "Ideogram4Transformer2DModel"],
-    "vae": ["diffusers", "AutoencoderKL"],
+    "vae": ["diffusers", "AutoencoderKLFlux2"],
 }
 _WAN_INDEX = {
     "_class_name": "WanPipeline",
     "transformer": ["diffusers", "WanTransformer3DModel"],
     "transformer_2": ["diffusers", "WanTransformer3DModel"],
     "vae": ["diffusers", "AutoencoderKLWan"],
+}
+# Wan-AI/Wan2.2-TI2V-5B-Diffusers: the single-expert sibling declares the second slot and fills it
+# with [null, null], and ships no transformer_2/ at all.
+_WAN_SINGLE_EXPERT_INDEX = dict(_WAN_INDEX, transformer_2 = [None, None])
+# stabilityai/stable-cascade calls its denoiser "decoder"; Wuerstchen, Kandinsky and Shap-E use
+# "decoder"/"prior". No key here matches either fixed name.
+_CASCADE_INDEX = {
+    "_class_name": "StableCascadeDecoderPipeline",
+    "decoder": ["diffusers", "StableCascadeUNet"],
+    "text_encoder": ["transformers", "CLIPTextModelWithProjection"],
+    "vqgan": ["wuerstchen", "PaellaVQModel"],
 }
 
 
@@ -3264,17 +3277,77 @@ def test_neither_format_being_whole_is_still_torn(tmp_path):
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
 
 
-@pytest.mark.parametrize("orphan", ["bin", "fp16.safetensors"])
-def test_an_orphan_variant_index_does_not_veto_the_default_weight(orphan, tmp_path):
+# diffusers' _add_variant inserts the variant before the LAST extension, so a bf16 shard index is
+# named "...safetensors.index.bf16.json" (genmo/mochi-1-preview ships exactly that beside the
+# default one), not "...bf16.safetensors.index.json".
+_VARIANT_INDEX_NAME = "diffusion_pytorch_model.safetensors.index.bf16.json"
+
+
+@pytest.mark.parametrize(
+    "orphan_index, orphan_suffix",
+    [
+        ("diffusion_pytorch_model.bin.index.json", ".bin"),
+        (_VARIANT_INDEX_NAME, ".bf16.safetensors"),
+    ],
+)
+def test_an_orphan_variant_index_does_not_veto_the_default_weight(
+    orphan_index, orphan_suffix, tmp_path
+):
     """An orphan variant index must not hide the unsharded default weight beside it."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
         {
             "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
-            f"transformer/diffusion_pytorch_model.{orphan}.index.json": _dual_format_shard_index(
-                f".{orphan}"
-            ),
+            f"transformer/{orphan_index}": _dual_format_shard_index(orphan_suffix),
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_half_landed_variant_shard_set_is_torn_like_the_default_one(tmp_path):
+    """The variant index is the only index here, and it is short a shard, so the component is
+    torn. Matching on ``.index.`` rather than on an ``.index.json`` suffix is what sees it."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            f"transformer/{_VARIANT_INDEX_NAME}": _dual_format_shard_index(".bf16.safetensors"),
+            "transformer/diffusion_pytorch_model-00001-of-00002.bf16.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (
+        snapshot / "transformer" / "diffusion_pytorch_model-00002-of-00002.bf16.safetensors"
+    ).write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_pipeline_declaring_no_denoiser_key_is_not_hunted_for_one(tmp_path):
+    """Stable Cascade names its denoiser ``decoder``, so neither fixed name is in the manifest.
+    A readable manifest that declares no transformer/unet has nothing this check can prove
+    absent, and the fully downloaded pipeline must not be hidden as partial."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _CASCADE_INDEX,
+        {
+            "decoder/diffusion_pytorch_model.safetensors": b"\0" * 256,
+            "vqgan/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_declared_but_null_second_expert_is_not_a_missing_denoiser(tmp_path):
+    """Wan 2.2's 5B sibling declares ``transformer_2`` as [null, null] and ships no such
+    directory. That is the manifest saying the slot is deliberately empty, not a torn download."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _WAN_SINGLE_EXPERT_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
+            "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
         },
     )
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
@@ -3325,6 +3398,23 @@ def test_a_multi_denoiser_pipeline_needs_every_denoiser_it_declares(manifest, se
 
     (snapshot / second).mkdir()
     (snapshot / second / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+@pytest.mark.parametrize(
+    "target", ["model_index.json", "transformer/diffusion_pytorch_model.safetensors.index.json"]
+)
+def test_json_too_deep_to_parse_reports_not_missing_rather_than_raising(target, tmp_path):
+    """json.load raises RecursionError, which is neither a ValueError nor an OSError, so an
+    unguarded parse would escape past the caller and drop the row from the scan entirely."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
+            target: b"[" * 20000 + b"]" * 20000,
+        },
+    )
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
 
 
