@@ -83,6 +83,11 @@ export const ptBR = {
       projects: "Projetos",
       train: "Treinar",
       recipes: "Receitas",
+      images: "Imagens",
+      video: "Vídeo",
+      more: "Mais",
+      customizeSidebar: "Personalizar barra lateral",
+      newBadge: "Novo",
       export: "Exportar",
       recents: "Recentes",
       noChatsYet: "Nenhum chat ainda",
@@ -182,10 +187,20 @@ export const ptBR = {
         sttNotDownloaded: "Não baixado",
         sttDownloadStatusFailed: "Não foi possível verificar o status do download",
         sttDownload: "Baixar",
+        sttDownloadConfirmTitle: "Baixar {model}?",
+        sttDownloadConfirmBody:
+          "O ditado local funciona totalmente offline, mas antes precisa do modelo de fala {model}. Cerca de {size}, baixado uma única vez para o cache do Hugging Face.",
+        sttDownloadConfirmBodyUnsized:
+          "O ditado local funciona totalmente offline, mas antes precisa do modelo de fala {model}. Ele é baixado uma única vez para o cache do Hugging Face.",
+        sttOpenVoiceSettings: "Abrir as configurações de Voz",
+        sttDownloadStarted: "Baixando {model}",
         sttDownloading: "Baixando… {progress}%",
         sttCancelDownload: "Cancelar",
         sttCancellingDownload: "Cancelando…",
+        sttCancelDownloadFailed: "Não foi possível cancelar o download",
         sttDownloadComplete: "Modelo de reconhecimento de fala baixado",
+        sttModelReady: "O modelo {model} está pronto para o ditado",
+        sttRecommended: "Recomendado",
         sttDownloadFailed:
           "Não foi possível baixar o modelo de reconhecimento de fala",
         sttLoad: "Carregar",
@@ -632,6 +647,14 @@ export const ptBR = {
         compactSidebarDescription:
           "Mantém a barra lateral expandida em vez de recolhê-la em ícones.",
       },
+      sidebarNav: {
+        title: "Navegação da barra lateral",
+        description:
+          "Fixe e reordene as abas da barra lateral. As abas não fixadas ficam no menu Mais; se só houver uma aba não fixada, ela é ocultada em vez de virar um menu de um item só. Novo chat permanece fixo.",
+        dragToReorder: "Arraste para reordenar",
+        pinToSidebar: "Fixar {name} na barra lateral",
+        moreHolds: "Mais ({count})",
+      },
       sidebarMenu: {
         title: "Menu da barra lateral",
         description:
@@ -821,10 +844,10 @@ export const ptBR = {
         title: "Configurações de seleção de modelo",
         expandQuantizations: "Expandir quantizações",
         expandQuantizationsDescription:
-          "Ativado: os modelos GGUF no dispositivo exibem imediatamente suas quantizações. Desativado: clique em um modelo para ver suas quantizações.",
+          "Ativado: os modelos GGUF em “On Device” exibem imediatamente suas quantizações. Desativado: clique em um modelo para ver suas quantizações.",
         showAllQuantizations: "Mostrar todas as quantizações",
         showAllQuantizationsDescription:
-          "Ativado: lista todas as quantizações no dispositivo, inclusive as que não foram baixadas. Desativado: mostra apenas as quantizações baixadas.",
+          "Ativado: lista todas as quantizações em “On Device”, inclusive as que não foram baixadas. Desativado: mostra apenas as quantizações baixadas.",
       },
       menu: {
         title: "Menu do chat",
@@ -1673,7 +1696,7 @@ export const ptBR = {
       cancelAction: "Cancelar Treinamento",
       stopTitle: "Interromper Treinamento",
       stopDescription:
-        "Escolha como interromper a execução de treino atual. Interromper e Salvar cria um checkpoint que poderá ser retomado mais tarde; Interromper não permite retomar o treino.",
+        "Escolha como interromper a execução de treino atual. Interromper e Salvar cria um checkpoint que poderá ser retomado mais tarde; se interromper sem salvar, não será possível retomar o treino.",
       stopAction: "Interromper",
       stopping: "Interrompendo...",
       stopAndSave: "Interromper e Salvar",

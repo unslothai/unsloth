@@ -83,6 +83,11 @@ export const es = {
       projects: "Proyectos",
       train: "Entrenar",
       recipes: "Recetas",
+      images: "Imágenes",
+      video: "Vídeo",
+      more: "Más",
+      customizeSidebar: "Personalizar la barra lateral",
+      newBadge: "Nuevo",
       export: "Exportar",
       recents: "Recientes",
       noChatsYet: "Aún no hay chats",
@@ -184,10 +189,20 @@ export const es = {
         sttDownloadStatusFailed:
           "No se pudo comprobar el estado de la descarga",
         sttDownload: "Descargar",
+        sttDownloadConfirmTitle: "¿Descargar {model}?",
+        sttDownloadConfirmBody:
+          "El dictado local funciona totalmente sin conexión, pero antes necesita el modelo de reconocimiento de voz {model}. Ocupa unos {size} y se descarga una sola vez en tu caché de Hugging Face.",
+        sttDownloadConfirmBodyUnsized:
+          "El dictado local funciona totalmente sin conexión, pero antes necesita el modelo de reconocimiento de voz {model}. Se descarga una sola vez en tu caché de Hugging Face.",
+        sttOpenVoiceSettings: "Abrir la configuración de Voz",
+        sttDownloadStarted: "Descargando {model}",
         sttDownloading: "Descargando… {progress}%",
         sttCancelDownload: "Cancelar",
         sttCancellingDownload: "Cancelando…",
+        sttCancelDownloadFailed: "No se pudo cancelar la descarga",
         sttDownloadComplete: "Modelo de reconocimiento de voz descargado",
+        sttModelReady: "{model} está listo para el dictado",
+        sttRecommended: "Recomendado",
         sttDownloadFailed:
           "No se pudo descargar el modelo de reconocimiento de voz",
         sttLoad: "Cargar",
@@ -644,6 +659,14 @@ export const es = {
         compactSidebarDescription:
           "Mantén la barra lateral expandida en lugar de contraerla a iconos.",
       },
+      sidebarNav: {
+        title: "Navegación de la barra lateral",
+        description:
+          "Fija y reordena las pestañas de la barra lateral. Las pestañas sin fijar se agrupan en el menú «Más»; si solo queda una pestaña sin fijar, se oculta en lugar de crear un menú de un único elemento. «Nuevo chat» queda fijo.",
+        dragToReorder: "Arrastra para reordenar",
+        pinToSidebar: "Fijar {name} en la barra lateral",
+        moreHolds: "Más ({count})",
+      },
       sidebarMenu: {
         title: "Menú de la barra lateral",
         description:
@@ -835,10 +858,10 @@ export const es = {
         title: "Configuración de selección del modelo",
         expandQuantizations: "Expandir las cuantizaciones",
         expandQuantizationsDescription:
-          "Activado: los modelos GGUF de este dispositivo muestran sus cuantizaciones de inmediato. Desactivado: haz clic en un modelo para ver sus cuantizaciones.",
+          "Activado: los modelos GGUF de «On Device» muestran sus cuantizaciones de inmediato. Desactivado: haz clic en un modelo para ver sus cuantizaciones.",
         showAllQuantizations: "Mostrar todas las cuantizaciones",
         showAllQuantizationsDescription:
-          "Activado: muestra todas las cuantizaciones de este dispositivo, incluidas las que no están descargadas. Desactivado: muestra solo las cuantizaciones descargadas.",
+          "Activado: muestra todas las cuantizaciones de «On Device», incluidas las que no están descargadas. Desactivado: muestra solo las cuantizaciones descargadas.",
       },
       menu: {
         title: "Menú del chat",

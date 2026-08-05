@@ -827,10 +827,10 @@ export const en = {
         title: "Select model settings",
         expandQuantizations: "Expand quantizations",
         expandQuantizationsDescription:
-          "On: On Device GGUF models show their quantizations right away. Off: click a model to view its quantizations.",
+          "On: GGUF models in “On Device” show their quantizations right away. Off: click a model to view its quantizations.",
         showAllQuantizations: "Show all quantizations",
         showAllQuantizationsDescription:
-          "On: list every On Device quantization, including not downloaded. Off: show only downloaded quantizations.",
+          "On: list every quantization in “On Device”, including not downloaded. Off: show only downloaded quantizations.",
       },
       menu: {
         title: "Chat menu",
@@ -1660,7 +1660,7 @@ export const en = {
       cancelAction: "Cancel Training",
       stopTitle: "Stop Training",
       stopDescription:
-        "Choose how you want to stop the current training run. Stop and Save writes a checkpoint you can resume from later; Stop cannot be resumed.",
+        "Choose how you want to stop the current training run. Stop and Save writes a checkpoint you can resume from later; stopping without saving cannot be resumed.",
       stopAction: "Stop",
       stopping: "Stopping...",
       stopAndSave: "Stop and Save",

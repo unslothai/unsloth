@@ -6,7 +6,10 @@
 // - All non-English keys must exist in en (no extras).
 // - Placeholder set must match per leaf between en and the overlay.
 //
-// Run: npm run i18n:check
+// --strict also fails on missing keys, naming them. See studio-frontend-ci.yml
+// for why CI needs that on top of the runtime fallback.
+//
+// Run: npm run i18n:check   (or: npx tsx src/i18n/check-parity.ts [--strict])
 
 import { ar } from "./locales/ar.ts";
 import { de } from "./locales/de.ts";
@@ -125,7 +128,9 @@ function requiresOverlay(key: string): boolean {
   return requiredOverlayPrefixes.some((prefix) => key.startsWith(prefix));
 }
 
+const strict = process.argv.includes("--strict");
 let anyError = false;
+let anyMissing = false;
 
 for (const [locale, overlay] of Object.entries(overlays)) {
   const errors: string[] = [];
@@ -140,6 +145,13 @@ for (const [locale, overlay] of Object.entries(overlays)) {
 
   console.log(`\n=== ${locale} ===`);
   console.log(`Missing keys (will fall back to en): ${missing.length}`);
+  if (missing.length > 0) {
+    anyMissing = true;
+    // Name them either way: the count alone does not say what to translate.
+    for (const k of missing) {
+      console.log(`  - ${k}`);
+    }
+  }
   if (errors.length > 0) {
     anyError = true;
     console.error(`Errors (${errors.length}):`);
@@ -152,6 +164,13 @@ for (const [locale, overlay] of Object.entries(overlays)) {
 }
 
 if (anyError) {
+  process.exit(1);
+}
+if (strict && anyMissing) {
+  console.error(
+    "\nMissing keys above. Add them to every overlay, or run without --strict " +
+      "to accept the English fallback.",
+  );
   process.exit(1);
 }
 console.log("\nAll locale overlays pass parity.");
