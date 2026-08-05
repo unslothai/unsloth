@@ -3198,6 +3198,37 @@ def patch_gradient_accumulation_fix(Trainer):
         exec(function, globals())
         Trainer.training_step = _unsloth_training_step
 
+    # Settle any deferred compile-mode switch at the start of every step.
+    #
+    # When torch.compile runs out of recompile cache, unsloth_zoo keeps the
+    # call compiled and marks the patched function for a switch to eager
+    # instead of switching mid-call. It has to: non-reentrant activation
+    # checkpointing packs the forward and recomputes it during the backward,
+    # and a region packed compiled but recomputed eagerly aborts the backward
+    # with "Something went unexpectedly wrong in activation checkpoint".
+    # Here, between steps, nothing is half-packed, so the switch is free.
+    if not getattr(Trainer, "_unsloth_settles_eager_fallbacks", False):
+        try:
+            from unsloth_zoo.temporary_patches.utils import (
+                apply_pending_eager_fallbacks as _apply_pending_eager_fallbacks,
+            )
+        except Exception:
+            # Older unsloth_zoo without the deferred switch. Nothing to settle.
+            _apply_pending_eager_fallbacks = None
+        if _apply_pending_eager_fallbacks is not None:
+            _training_step_before_settle = Trainer.training_step
+
+            @functools.wraps(_training_step_before_settle)
+            def _unsloth_training_step_settling_fallbacks(self, *args, **kwargs):
+                try:
+                    _apply_pending_eager_fallbacks()
+                except Exception:
+                    pass
+                return _training_step_before_settle(self, *args, **kwargs)
+
+            Trainer.training_step = _unsloth_training_step_settling_fallbacks
+            Trainer._unsloth_settles_eager_fallbacks = True
+
     # Wrap Trainer.__init__: (1) pre-init, shadow accepts_loss_kwargs on whatever
     # model was passed in (covers PEFT wrapping done after FastModel.from_pretrained);
     # (2) post-init, clamp accelerator GA to 1 for the transformers 5.0-5.5
