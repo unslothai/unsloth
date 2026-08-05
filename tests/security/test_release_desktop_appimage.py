@@ -71,6 +71,12 @@ def test_thin_appimage_never_injects_a_partial_desktop_runtime():
         "libnghttp2.so",
     ):
         assert library in script
+    assert (
+        "sudo apt install libayatana-appindicator3-1 libwebkit2gtk-4.1-0 libgtk-3-0"
+        in script
+    )
+    assert "zenity --error" in script
+    assert "xmessage -center" in script
 
 
 def test_thin_appimage_rejects_a_bundled_host_library(tmp_path):
@@ -98,11 +104,12 @@ def test_thin_appimage_rejects_a_bundled_host_library(tmp_path):
     assert "libglib-2.0.so.0" in result.stderr
 
 
-def test_release_notes_state_the_thin_appimage_host_requirements():
+def test_release_notes_keep_experimental_appimage_guidance_concise():
     notes = _workflow()["env"]["DESKTOP_RELEASE_NOTES"]
-    assert "Linux Mint 21+" in notes
-    assert "libwebkit2gtk-4.1-0" in notes
-    assert "--appimage-extract-and-run" in notes
+    assert "`.AppImage` is experimental." in notes
+    assert "libwebkit2gtk" not in notes
+    assert "libfuse" not in notes
+    assert "--appimage-extract-and-run" not in notes
 
 
 def test_thin_appimage_preserves_user_runtime_environment_for_child_processes():

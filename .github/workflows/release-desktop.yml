@@ -40,12 +40,10 @@ env:
 
     **macOS**: Download the Apple Silicon `.dmg`.
     **Windows**: Download the `-setup.exe` installer.
-    **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental and supports Ubuntu 22.04+, Linux Mint 21+, and Debian 12+.
+    **Linux**: Download `.deb` for Ubuntu/Debian. `.AppImage` is experimental.
 
     > Linux in-app updates are AppImage-oriented. Package installs should update by downloading a new package.
-    > Linux AppImage uses host GTK/WebKit libraries. On Ubuntu or Linux Mint, install them with: `sudo apt install libayatana-appindicator3-1 libwebkit2gtk-4.1-0 libgtk-3-0`
     > Linux AppImage can show a blank window on some Tauri/WebKitGTK + Wayland/Mesa stacks; use `.deb` when available.
-    > If FUSE is unavailable, launch the AppImage with `--appimage-extract-and-run`.
     > First-run system dependency elevation is supported on Ubuntu/Debian. Other Linux distributions should install system packages manually.
 
 concurrency:
