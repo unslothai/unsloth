@@ -607,6 +607,11 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
     return found >= set(range(1, total + 1))
 
 
+# The cache scan's split grammar (hub.utils.inventory_scan._GGUF_SPLIT_RE),
+# looser than the load path's five digits; kept here to tell the two apart.
+_CACHE_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
+
+
 def _complete_quants_under(snapshot: str):
     """Quants whose shards are all present under *snapshot*, or None if unknown.
 
@@ -614,9 +619,28 @@ def _complete_quants_under(snapshot: str):
     working folder unusable.
     """
     try:
-        return hf_cache_scan.complete_snapshot_variants(snapshot)
+        complete = hf_cache_scan.complete_snapshot_variants(snapshot)
     except Exception:
         return None
+    if complete is None:
+        return None
+    # The scan reads the cache's looser -\d{3,}- split grammar, so a name the
+    # LOAD treats as an ordinary file (llama.cpp splits are five digits) can be
+    # judged a torn set with no siblings. Those quants are ready as they are.
+    try:
+        for file in _iter_gguf_paths(Path(snapshot)):
+            name = Path(file).name
+            stem = name.rsplit(".", 1)[0]
+            if _DIRECT_SPLIT_RE.match(stem) is not None:
+                continue
+            if _CACHE_SPLIT_RE.search(name) is None:
+                continue
+            quant = extract_quant_label(name)
+            if quant:
+                complete = set(complete) | {quant}
+    except Exception:
+        return complete
+    return complete
 
 
 # One scan per identical request in flight. Aborting the HTTP request cannot stop the scan

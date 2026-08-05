@@ -1935,7 +1935,13 @@ def _answer_offers_variant(
             # the listing's own default can name the file by the other of its
             # two labels (F16-checkpoint-Q4_K_M advertises Q4_K_M).
             if any(
-                wanted == f"{m.group(1) or ''}{m.group(2)}".lower()
+                wanted
+                in (
+                    f"{m.group(1) or ''}{m.group(2)}".lower(),
+                    # The loader's own label keeps the bpw modifier the hub
+                    # extractor drops, so both spellings name this file.
+                    f"{m.group(1) or ''}{m.group(2)}{m.group(3) or ''}".lower(),
+                )
                 for m in _QUANT_LABEL_RE.finditer(stem.rsplit("/", 1)[-1])
             ):
                 return True
@@ -2111,10 +2117,18 @@ def _attach_gguf_check_for_codex(
             # and bare names cover servers that predate the field.
             # One predicate for both judgements: the server says so, else the
             # shapes a server that predates the field resolves locally anyway.
-            local_answer = (
-                bool(info.get("resolved_locally"))
-                or _is_model_path(candidate)
-                or "/" not in candidate
+            # The hub-id shape owner/name.gguf is a repo, not a path, the same
+            # exemption the direct-file branch makes; _is_model_path sees only
+            # the suffix, and a remote answer judged local would be held to
+            # rules (top-level rows, exact labels) the remote load does not use.
+            hub_shaped = (
+                candidate.count("/") == 1
+                and not candidate.startswith(("/", ".", "~"))
+                and ":" not in candidate
+                and "\\" not in candidate
+            )
+            local_answer = bool(info.get("resolved_locally")) or (
+                not hub_shaped and (_is_model_path(candidate) or "/" not in candidate)
             )
             # A local answer of nothing but torn rows has no resumable side:
             # llama-server would be handed the incomplete split only after the

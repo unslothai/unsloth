@@ -6608,6 +6608,34 @@ def test_codex_attach_check_defers_companion_paths_with_a_variant(monkeypatch, c
     assert "Codex needs a GGUF model" in capsys.readouterr().err
 
 
+def test_codex_attach_check_treats_gguf_suffixed_hub_ids_as_remote(monkeypatch):
+    # owner/name.gguf is a repo, not a path: the remote load scans siblings
+    # recursively and matches loosely, so local-only rules must not apply.
+    _fake_variants(
+        monkeypatch,
+        {"variants": [{"quant": "Q4_K_M", "filename": "BF16/model-Q4_K_M.gguf"}]},
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "owner/model.gguf")
+    _fake_variants(
+        monkeypatch,
+        {"variants": [{"quant": "UD-Q4_K_XL", "filename": "m-UD-Q4_K_XL.gguf"}]},
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "owner/model.gguf", "Q4_K_XL")
+
+
+def test_codex_attach_check_accepts_bpw_qualified_local_requests(monkeypatch):
+    # The listing advertises the stripped label while the local loader accepts
+    # the full bpw spelling; both name the same file, so both must pass.
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [{"quant": "IQ4_XS", "filename": "model-IQ4_XS-3.53bpw.gguf"}],
+            "resolved_locally": True,
+        },
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "IQ4_XS-3.53bpw")
+
+
 def test_codex_attach_check_strict_accepts_basename_quant_tokens(monkeypatch):
     # The loose-file resolver takes any whole quant token of the basename, so
     # the listing's own default (the other label of the same file) must pass.

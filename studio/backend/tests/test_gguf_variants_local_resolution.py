@@ -306,6 +306,27 @@ def test_torn_direct_split_is_not_offered_as_downloaded(in_tmp_cwd):
     assert whole.downloaded is True and whole.partial is False
 
 
+def test_short_shard_like_name_in_a_directory_reads_ready(in_tmp_cwd):
+    # The cache scan's looser split grammar would call this a torn set, but the
+    # load treats a -001-of-002 name as an ordinary file and opens it.
+    from utils.models.model_config import detect_gguf_model
+
+    (in_tmp_cwd / "config.json").write_text("{}")
+    (in_tmp_cwd / "model-Q4_K_M-001-of-002.gguf").write_bytes(b"GGUF")
+
+    assert detect_gguf_model(os.fspath(in_tmp_cwd)) is not None
+    row = _variants(os.fspath(in_tmp_cwd)).variants[0]
+    assert row.downloaded is True and row.partial is False
+
+    # A real five-digit split missing a shard is still partial.
+    torn = in_tmp_cwd / "torn"
+    torn.mkdir()
+    (torn / "config.json").write_text("{}")
+    (torn / "m-Q8_0-00001-of-00002.gguf").write_bytes(b"GGUF")
+    torn_row = _variants(os.fspath(torn)).variants[0]
+    assert torn_row.downloaded is False and torn_row.partial is True
+
+
 def test_symlinked_split_follows_its_target_set(in_tmp_cwd):
     # The load resolves a symlinked shard to its target's colocated set, so a
     # link beside no siblings is still ready when the target set is whole.
