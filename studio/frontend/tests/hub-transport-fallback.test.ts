@@ -677,3 +677,45 @@ test("a mirror-only failure is still recorded, with no saved direct failure", as
   assert.equal(getHubPhase(HF_ORIGIN), "unavailable", "a mirror needs a backoff too");
   markRemoteNetworkOnline();
 });
+
+test("an older backend's SPA 404 is not reported as a Hub failure", async () => {
+  markRemoteNetworkOnline();
+  let backendCalls = 0;
+  const transport = createHubTransport("models", {
+    direct: failWith("network-opaque"),
+    // No marker header: this is the SPA catch-all, not the proxy route.
+    backend: async () => {
+      backendCalls += 1;
+      return new Response("<!doctype html>", { status: 404 });
+    },
+  });
+
+  const res = await transport(HF_URL, {});
+  assert.equal(res.status, 404);
+  assert.equal(
+    getLastHubFailure(HF_ORIGIN),
+    null,
+    "a backend without the route is a deployment fact, not a Hub outage",
+  );
+
+  // And the fallback is not offered again on this transport.
+  await assert.rejects(transport(HF_URL, {}));
+  assert.equal(backendCalls, 1, "no point re-asking a backend that has no route");
+  markRemoteNetworkOnline();
+});
+
+test("a stamped 404 is a real Hub answer and is reported", async () => {
+  markRemoteNetworkOnline();
+  const transport = createHubTransport("models", {
+    direct: failWith("network-opaque"),
+    backend: async () =>
+      new Response("{}", {
+        status: 404,
+        headers: { "X-Unsloth-HF-Proxy": "1" },
+      }),
+  });
+
+  await transport(HF_URL, {});
+  assert.equal(getLastHubFailure(HF_ORIGIN)?.kind, "network-opaque");
+  markRemoteNetworkOnline();
+});

@@ -9,7 +9,10 @@ import {
   markRemoteNetworkOffline,
   setHubProxyServing,
 } from "./network";
-import { HUB_HF_TOKEN_HEADER } from "./hub-token-header";
+import {
+  HUB_HF_TOKEN_HEADER,
+  HUB_PROXY_MARKER_HEADER,
+} from "./hub-token-header";
 
 export type HubResource = "models" | "datasets";
 
@@ -229,6 +232,8 @@ export function createHubTransport(
   const backend = deps.backend ?? defaultBackend;
   const proxyFirst = deps.proxyFirst ?? defaultProxyFirst;
   let useProxy = false;
+  // Set when the backend turns out to predate the proxy routes.
+  let proxyUnavailable = false;
   // Held for the transport's proxy lifetime: later pages have no failure of
   // their own, and the direct one was deliberately never recorded.
   let savedDirectFailure: HubFailure | undefined;
@@ -265,6 +270,18 @@ export function createHubTransport(
     // suppresses the direct clients (see isHuggingFaceOffline).
     setHubProxyServing(response.ok);
     if (!response.ok) {
+      if (
+        response.status === 404 &&
+        response.headers.get(HUB_PROXY_MARKER_HEADER) === null
+      ) {
+        // The SPA catch-all answered: this backend has no proxy route. That is
+        // a deployment fact, not a Hub outage, so stop offering the fallback
+        // for this transport rather than blaming Hugging Face for it.
+        proxyUnavailable = true;
+        useProxy = false;
+        setHubProxyServing(false);
+        return response;
+      }
       // authFetch resolves on a non-2xx, so without this the cause is dropped
       // and the panel falls back to its generic wording.
       const failure = directFailure ?? proxyOnlyFailure(response.status);
@@ -287,7 +304,7 @@ export function createHubTransport(
 
     if (!isListingUrl(raw, resource)) {
       const info = infoTargetOf(raw, resource);
-      if (info && (useProxy || proxyFirst())) {
+      if (info && ((useProxy && !proxyUnavailable) || proxyFirst())) {
         const req = toInfoRequest(info, raw, resource, init);
         return backend(req.url, req.init);
       }
@@ -302,7 +319,11 @@ export function createHubTransport(
         // a working feed with no metadata on any deep link, pinned publisher or
         // priority card, because these transports never run a listing and so
         // never pick up the affinity that would have routed them.
-        if (!isHubFetchError(error) || !FALLBACK_KINDS.has(error.failure.kind)) {
+        if (
+          proxyUnavailable ||
+          !isHubFetchError(error) ||
+          !FALLBACK_KINDS.has(error.failure.kind)
+        ) {
           throw error;
         }
         useProxy = true;
@@ -311,7 +332,10 @@ export function createHubTransport(
       }
     }
 
-    if (useProxy || proxyFirst()) {
+    // proxyFirst is not gated on proxyUnavailable: on a mirror the direct route
+    // would put a private repo id and token on the public Hub, so a backend
+    // without the route means the feed is unavailable, not that we go direct.
+    if ((useProxy && !proxyUnavailable) || proxyFirst()) {
       return viaBackend(raw, init, savedDirectFailure);
     }
 
@@ -322,7 +346,11 @@ export function createHubTransport(
       setHubProxyServing(false);
       return response;
     } catch (error) {
-      if (!isHubFetchError(error) || !FALLBACK_KINDS.has(error.failure.kind)) {
+      if (
+        proxyUnavailable ||
+        !isHubFetchError(error) ||
+        !FALLBACK_KINDS.has(error.failure.kind)
+      ) {
         throw error;
       }
       // Aborts and HTTP statuses are excluded above: the browser genuinely

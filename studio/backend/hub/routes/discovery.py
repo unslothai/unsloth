@@ -26,7 +26,11 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from auth.authentication import get_current_subject
-from hub.dependencies import HUB_HF_TOKEN_HEADER, get_hf_token
+from hub.dependencies import (
+    HUB_HF_TOKEN_HEADER,
+    HUB_PROXY_MARKER_HEADER,
+    get_hf_token,
+)
 from hub.utils.download_registry import scrub_secrets
 from hub.utils.hf_errors import hf_error_status
 from hub.utils.paths import is_valid_repo_id
@@ -305,6 +309,8 @@ _HOST_IN_MESSAGE_RE = re.compile(r"host\s*=\s*'[^']*'", re.IGNORECASE)
 _PRIVATE_HEADERS = {
     "Cache-Control": "no-store",
     "Vary": "Authorization, " + HUB_HF_TOKEN_HEADER,
+    # Absent on the SPA catch-all, so its 404 is distinguishable from ours.
+    HUB_PROXY_MARKER_HEADER: "1",
 }
 
 
