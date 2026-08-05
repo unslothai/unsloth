@@ -26,6 +26,7 @@ import torch
 import inspect
 import linecache
 from collections import defaultdict
+from contextlib import nullcontext
 from unsloth_zoo.rl_replacements import (
     RL_REPLACEMENTS,
     left_pack_padding,
@@ -886,24 +887,59 @@ RL_FUNCTIONS["sft_trainer"].append(sft_trainer_push_to_hub_token)
 
 
 # Autocast precision for GRPO
+def _unsloth_grpo_autocast(self):
+    """Decide the GRPO autocast once and latch it on the trainer.
+
+    ACCELERATE_MIXED_PRECISION is process wide, so a trainer built after this
+    one but before it runs would rewrite it and hand this trainer the other
+    trainer's precision. args belongs to this trainer alone, so ask it first.
+    """
+    if not hasattr(self, "_autocast_enabled"):
+        args = getattr(self, "args", None)
+        precision = getattr(args, "mixed_precision", None)
+        use_bf16 = getattr(args, "bf16", None)
+        use_fp16 = getattr(args, "fp16", None)
+        if not isinstance(precision, str):
+            # transformers < 5 has no args.mixed_precision, but rl.py sets the
+            # fp16 / bf16 flags on this same args for every branch it takes.
+            if isinstance(use_bf16, bool) and isinstance(use_fp16, bool):
+                precision = "bf16" if use_bf16 else ("fp16" if use_fp16 else "no")
+            else:
+                precision = os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16")
+        self._autocast_dtype = torch.float16 if precision == "fp16" else torch.bfloat16
+        # "no" is a real value: full finetuning and an explicit float32 load
+        # both set it, and reading it as bfloat16 raises on a T4 or V100.
+        self._autocast_enabled = precision != "no"
+        self._autocast_force_float32 = False
+        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+            # Gemma3 / gpt-oss set "no" as well, but still want float16 autocast.
+            self._autocast_dtype = torch.float16
+            self._autocast_enabled = True
+            self._autocast_force_float32 = True
+
+    return self._autocast_enabled, self._autocast_dtype
+
+
+def _unsloth_grpo_autocast_kwargs(self, device_type = "cuda"):
+    """torch.amp.autocast keyword arguments for GRPO generation."""
+    enabled, dtype = _unsloth_grpo_autocast(self)
+    if not getattr(self, "_autocast_force_float32", False):
+        # Already inside an autocast, so do not name a dtype of our own.
+        if torch.is_autocast_enabled(device_type):
+            dtype = nullcontext()
+    return {"enabled": enabled, "dtype": dtype}
+
+
 def grpo_trainer__prepare_inputs(function_name, function):
     if function_name != "_prepare_inputs":
         return function
 
-    # Add mixed precision training
+    # Add mixed precision training. The decision is latched on the trainer, so a
+    # second trainer's __init__ cannot change this trainer's autocast mid run.
     function = function.replace(
         "with torch.inference_mode():",
         "with torch.inference_mode(), "
-        "torch.amp.autocast(device_type = 'cuda', "
-        # 'no' is a real value, set by full finetuning and by an explicit float32
-        # load. Falling through to bfloat16 raises on the T4/V100 those land on.
-        # UNSLOTH_FORCE_FLOAT32 also sets 'no' but still wants fp16 autocast here,
-        # which is what the dtype expression below already does for it.
-        "enabled = (os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') != 'no' "
-        "or os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '1'), "
-        "dtype = ((torch.float16 if os.environ.get('ACCELERATE_MIXED_PRECISION', 'fp16') == 'fp16' else torch.bfloat16) "
-        "if not torch.is_autocast_enabled('cuda') else nullcontext())"
-        "if os.environ.get('UNSLOTH_FORCE_FLOAT32', '0') == '0' else torch.float16):",
+        "torch.amp.autocast(device_type = 'cuda', **_unsloth_grpo_autocast_kwargs(self)):",
     )
     function = function.replace(
         "self.accelerator.unwrap_model(self.model)",
@@ -1373,18 +1409,7 @@ def grpo_trainer__get_per_token_logps(function_name, function):
         if True:  # os.environ.get('UNSLOTH_USE_NEW_MODEL', '0') == '0':
             return None  # Unsloth efficient GRPO
         # Otherwise, calculate normally:
-        if not hasattr(self, "_autocast_dtype"):
-            self._autocast_dtype = (
-                torch.float16
-                if os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") == "fp16"
-                else torch.bfloat16
-            )
-            # "no" is a real value: full finetuning and an explicit float32 load
-            # both set it, and reading it as bfloat16 raises on a T4 or V100.
-            self._autocast_enabled = os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") != "no"
-            if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-                self._autocast_dtype = torch.float16
-                self._autocast_enabled = True
+        _unsloth_grpo_autocast(self)
 
         os.environ["UNSLOTH_RETURN_HIDDEN_STATES"] = "1"
         with torch.amp.autocast(
@@ -1447,20 +1472,7 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
         if compute_efficient:
             return None, None
         else:
-            if not hasattr(self, "_autocast_dtype"):
-                self._autocast_dtype = (
-                    torch.float16
-                    if os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") == "fp16"
-                    else torch.bfloat16
-                )
-                # "no" is a real value: full finetuning and an explicit float32
-                # load both set it, and bfloat16 raises on a T4 or V100.
-                self._autocast_enabled = (
-                    os.environ.get("ACCELERATE_MIXED_PRECISION", "fp16") != "no"
-                )
-                if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
-                    self._autocast_dtype = torch.float16
-                    self._autocast_enabled = True
+            _unsloth_grpo_autocast(self)
 
             compute_aux_loss = kwargs.get("compute_aux_loss", None)
 
@@ -2289,6 +2301,8 @@ grpo_compute_loss_slow = RL_REPLACEMENTS["grpo_compute_loss_slow"]
 UnslothEfficientGRPO = RL_REPLACEMENTS["UnslothEfficientGRPO"]
 grpo_accumulated_loss = RL_REPLACEMENTS["grpo_accumulated_loss"]
 grpo_update_SamplingParams = RL_REPLACEMENTS["grpo_update_SamplingParams"]
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast))
+RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_grpo_autocast_kwargs))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_model_config))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_final_logit_softcapping))
 RL_PRE_ITEMS["grpo_trainer"].append(inspect.getsource(_unsloth_get_mm_token_id))

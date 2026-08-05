@@ -99,6 +99,36 @@ def _prepare_inputs_snippet() -> str:
     return ast.literal_eval("(" + SRC[start : end + 1] + ")")
 
 
+def _autocast_helper_source() -> str:
+    """Module level helpers the header calls, mirrored into the generated
+    trainer through RL_PRE_ITEMS."""
+    parts = [
+        ast.get_source_segment(SRC, node)
+        for node in ast.parse(SRC).body
+        if isinstance(node, ast.FunctionDef) and node.name.startswith("_unsloth_grpo_autocast")
+    ]
+    assert parts, "expected the shared autocast helper"
+    return "\n\n".join(parts)
+
+
+def _namespace(env):
+    """What the generated trainer module offers the header. `self` carries no
+    args here, which is the fallback path; a trainer with args is covered in
+    test_grpo_autocast_per_trainer.py."""
+    from contextlib import nullcontext
+
+    namespace = {
+        "torch": torch,
+        "os": type(sys)("os"),
+        "nullcontext": nullcontext,
+        "self": type("Trainer", (), {})(),
+        "seen": [],
+    }
+    namespace["os"].environ = env
+    exec(_autocast_helper_source(), namespace)
+    return namespace
+
+
 def test_the_injected_snippet_is_valid_python():
     ast.parse(_prepare_inputs_snippet() + "\n    pass\n")
 
@@ -118,19 +148,11 @@ def test_the_injected_snippet_is_valid_python():
 def test_the_injected_snippet_only_autocasts_when_asked(precision, has_bf16, expect_enabled):
     """Run the real header and check both that it survives and that it did not
     quietly stop autocasting for everyone else."""
-    from contextlib import nullcontext
-
     env = {"UNSLOTH_FORCE_FLOAT32": "0"}
     if precision is not None:
         env["ACCELERATE_MIXED_PRECISION"] = precision
 
-    namespace = {
-        "torch": torch,
-        "os": type(sys)("os"),
-        "nullcontext": nullcontext,
-        "seen": [],
-    }
-    namespace["os"].environ = env
+    namespace = _namespace(env)
     with _pretend_cuda(has_bf16 = has_bf16):
         exec(
             _prepare_inputs_snippet() + "\n    seen.append(torch.is_autocast_enabled('cuda'))\n",
@@ -153,7 +175,8 @@ def test_every_autocast_call_passes_enabled():
 
 
 def test_the_flag_is_recorded_beside_the_dtype():
-    """Both `_autocast_dtype` initialisers must record the flag beside it.
+    """Every `_autocast_dtype` assignment must record the flag beside it. Both
+    live in the one helper now, the default and the forced float32 override.
 
     Paired by position rather than by counting a literal spelling: the repo's
     ruff hook is free to collapse either assignment onto one line, and a test
@@ -163,7 +186,7 @@ def test_the_flag_is_recorded_beside_the_dtype():
     lines = SRC.splitlines()
     dtype_at = [i for i, l in enumerate(lines) if "self._autocast_dtype = " in l]
     flag_at = [i for i, l in enumerate(lines) if "self._autocast_enabled = " in l]
-    assert len(dtype_at) == 4, dtype_at
+    assert len(dtype_at) == 2, dtype_at
     for i in dtype_at:
         assert any(0 < j - i <= 8 for j in flag_at), (i, lines[i].strip())
 
@@ -186,22 +209,15 @@ def test_force_float32_still_autocasts_in_float16():
 
 
 def test_forced_float32_still_autocasts_in_the_injected_header():
-    """UNSLOTH_FORCE_FLOAT32 sets 'no' as well, but wants fp16 autocast: the
-    dtype expression already forces float16 for it and the two other consumers
-    set _autocast_enabled True. Reading 'no' alone here would have left
-    Gemma3 and gpt-oss generation in full float32."""
-    from contextlib import nullcontext
-
-    namespace = {
-        "torch": torch,
-        "os": type(sys)("os"),
-        "nullcontext": nullcontext,
-        "seen": [],
-    }
-    namespace["os"].environ = {
-        "ACCELERATE_MIXED_PRECISION": "no",
-        "UNSLOTH_FORCE_FLOAT32": "1",
-    }
+    """UNSLOTH_FORCE_FLOAT32 sets 'no' as well, but wants fp16 autocast, so the
+    shared helper overrides both the dtype and the flag for it. Reading 'no'
+    alone here would have left Gemma3 and gpt-oss generation in full float32."""
+    namespace = _namespace(
+        {
+            "ACCELERATE_MIXED_PRECISION": "no",
+            "UNSLOTH_FORCE_FLOAT32": "1",
+        }
+    )
     with _pretend_cuda(has_bf16 = False):
         exec(
             _prepare_inputs_snippet()
