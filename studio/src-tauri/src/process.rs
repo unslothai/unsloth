@@ -572,7 +572,20 @@ pub fn start_backend(
 
     let args = backend_args(port);
     let start_line = format!("Starting backend: {:?} {}", bin, args.join(" "));
-    let pending_owner = crate::desktop_backend_owner::new_pending_owner();
+    let pending_owner = match crate::desktop_backend_owner::new_pending_owner() {
+        Ok(pending_owner) => pending_owner,
+        Err(error) => {
+            let msg = format!("Failed to claim ownership of the backend: {}", error);
+            diagnostics::record_backend_start_failure(
+                diagnostics_state,
+                Some(port),
+                None,
+                "claim_backend_ownership",
+                &msg,
+            );
+            return Err(msg);
+        }
+    };
     let mut cmd = Command::new(&bin);
     cmd.args(&args)
         .stdout(Stdio::piped())
@@ -585,20 +598,7 @@ pub fn start_backend(
         );
     }
 
-    if let Some(owner) = pending_owner.as_ref() {
-        cmd.env(
-            crate::desktop_backend_owner::OWNER_TOKEN_ENV,
-            owner.token.as_str(),
-        );
-        cmd.env(
-            crate::desktop_backend_owner::OWNER_KIND_ENV,
-            crate::desktop_backend_owner::OWNER_KIND_TAURI,
-        );
-        cmd.env(
-            crate::desktop_backend_owner::OWNER_PID_ENV,
-            std::process::id().to_string(),
-        );
-    }
+    crate::desktop_backend_owner::apply_owner_env(&mut cmd, &pending_owner);
 
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
     // scrub so the spawned Python backend can't diverge. UNSLOTH_LLAMA_CPP_PATH
@@ -671,13 +671,40 @@ pub fn start_backend(
         let backend_pid = child.id();
         let stdout = child.stdout().take();
         let stderr = child.stderr().take();
-        let owner = pending_owner.clone().and_then(|pending| {
-            crate::desktop_backend_owner::activate_owner(pending, port, generation, backend_pid)
-        });
+        let owner = match crate::desktop_backend_owner::activate_owner(
+            pending_owner,
+            port,
+            generation,
+            backend_pid,
+        ) {
+            Ok(owner) => owner,
+            Err(error) => {
+                // No handle owns this live child yet, so stop it before returning.
+                // The backend mutex stays held until cleanup finishes.
+                if let Err(stop_error) = stop_spawned_backend(child, None, None, backend_pid) {
+                    warn!(
+                        "Could not stop the unclaimed backend (pid {}): {}",
+                        backend_pid, stop_error
+                    );
+                }
+                let msg = format!(
+                    "Failed to claim ownership of the backend, so it was stopped: {}",
+                    error
+                );
+                diagnostics::record_backend_start_failure(
+                    diagnostics_state,
+                    Some(port),
+                    Some(generation),
+                    "activate_backend_ownership",
+                    &msg,
+                );
+                return Err(msg);
+            }
+        };
 
         proc.owned = Some(OwnedBackendHandle::spawned(
             child,
-            owner,
+            Some(owner),
             backend_pid,
             generation,
         ));

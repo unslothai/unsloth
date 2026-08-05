@@ -540,6 +540,10 @@ fn main() {
             has_saved_window_state,
         ])
         .setup(|app| {
+            // Recover legacy desktop installs before the first preflight.
+            if let Err(error) = desktop_backend_owner::ensure_installed_studio_root_id() {
+                warn!("Desktop backend ownership id unavailable: {error}");
+            }
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;

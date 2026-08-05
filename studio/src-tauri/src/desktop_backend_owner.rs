@@ -21,6 +21,8 @@ pub(crate) const OWNER_KIND_TAURI: &str = "tauri";
 
 const METADATA_SCHEMA_VERSION: u8 = 1;
 const STUDIO_INSTALL_ID_HEX_LEN: usize = 64;
+const STUDIO_INSTALL_ID_BYTES: usize = STUDIO_INSTALL_ID_HEX_LEN / 2;
+const STUDIO_INSTALL_ID_LOCK_FILE: &str = ".studio_install_id.lock";
 const OWNER_TOKEN_BYTES: usize = 32;
 const DESKTOP_PORT_START: u16 = 8888;
 const DESKTOP_PORT_END: u16 = 8908;
@@ -186,6 +188,192 @@ pub(crate) fn read_expected_studio_root_id() -> Option<String> {
     parse_studio_root_id(&raw)
 }
 
+/// Returns the managed Studio root ID, creating it when absent.
+/// Desktop installs skip the installer step that normally creates it.
+pub(crate) fn ensure_managed_studio_root_id() -> Result<String, String> {
+    #[cfg(test)]
+    if let Ok(guard) = TEST_EXPECTED_STUDIO_ROOT_ID.lock() {
+        if let Some(value) = guard.clone() {
+            return Ok(value);
+        }
+    }
+
+    let path = managed_studio_root_id_path(&home_dir_or_error()?);
+    ensure_studio_root_id_at(&path, true)?.ok_or_else(|| {
+        format!(
+            "could not create the desktop ownership id at {}",
+            path.display()
+        )
+    })
+}
+
+/// Repairs a missing ID only when a managed install already exists.
+pub(crate) fn ensure_installed_studio_root_id() -> Result<Option<String>, String> {
+    let path = managed_studio_root_id_path(&home_dir_or_error()?);
+    ensure_studio_root_id_at(&path, crate::process::find_unsloth_binary().is_some())
+}
+
+fn home_dir_or_error() -> Result<PathBuf, String> {
+    dirs::home_dir().ok_or_else(|| "could not resolve the home directory".to_string())
+}
+
+fn ensure_studio_root_id_at(
+    path: &Path,
+    create_when_missing: bool,
+) -> Result<Option<String>, String> {
+    ensure_studio_root_id_at_with_blank_observer(path, create_when_missing, || {})
+}
+
+fn ensure_studio_root_id_at_with_blank_observer(
+    path: &Path,
+    create_when_missing: bool,
+    after_blank_observed: impl FnOnce(),
+) -> Result<Option<String>, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("desktop ownership id path {} has no parent", path.display()))?;
+
+    // Do not create the share directory before Studio is installed.
+    if !create_when_missing && !path.exists() {
+        return Ok(None);
+    }
+
+    std::fs::create_dir_all(parent)
+        .map_err(|error| format!("could not create {}: {}", parent.display(), error))?;
+    set_private_dir_permissions(parent);
+    let _lock = lock_studio_root_id(parent)?;
+
+    if let Some(existing) = read_studio_root_id_file(path)? {
+        return Ok(Some(existing));
+    }
+    if !create_when_missing {
+        return Ok(None);
+    }
+    // Remove interrupted blank writes under the install lock.
+    if matches!(std::fs::read_to_string(path), Ok(raw) if is_blank_studio_root_id(&raw)) {
+        after_blank_observed();
+        match std::fs::remove_file(path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "could not replace the blank desktop ownership id at {}: {}",
+                    path.display(),
+                    error
+                ))
+            }
+        }
+    }
+    if let Some(created) = create_studio_root_id_file(path)? {
+        return Ok(Some(created));
+    }
+    // Adopt the ID created by a concurrent caller.
+    match read_studio_root_id_file(path)? {
+        Some(winner) => Ok(Some(winner)),
+        None => Err(format!(
+            "could not create the desktop ownership id at {}; delete that file and reopen Unsloth",
+            path.display()
+        )),
+    }
+}
+
+fn lock_studio_root_id(parent: &Path) -> Result<std::fs::File, String> {
+    let lock_path = parent.join(STUDIO_INSTALL_ID_LOCK_FILE);
+    let mut options = std::fs::OpenOptions::new();
+    options.create(true).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&lock_path)
+        .map_err(|error| format!("could not open {}: {}", lock_path.display(), error))?;
+    file.lock()
+        .map_err(|error| format!("could not lock {}: {}", lock_path.display(), error))?;
+    set_private_file_permissions(&lock_path);
+    Ok(file)
+}
+
+// Match installer behavior: blank IDs are interrupted writes.
+fn is_blank_studio_root_id(raw: &str) -> bool {
+    raw.trim().is_empty()
+}
+
+fn read_studio_root_id_file(path: &Path) -> Result<Option<String>, String> {
+    let raw = match std::fs::read_to_string(path) {
+        Ok(raw) => raw,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(format!(
+                "could not read the desktop ownership id at {}: {}",
+                path.display(),
+                error
+            ))
+        }
+    };
+    if is_blank_studio_root_id(&raw) {
+        return Ok(None);
+    }
+    // Never rewrite malformed IDs because a running backend may still report
+    // the previous value.
+    parse_studio_root_id(&raw).map(Some).ok_or_else(|| {
+        format!(
+            "the desktop ownership id at {} is not 64 lowercase hex characters; delete that file and reopen Unsloth",
+            path.display()
+        )
+    })
+}
+
+/// Returns the created id, or `None` when another process won the race.
+fn create_studio_root_id_file(path: &Path) -> Result<Option<String>, String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("desktop ownership id path {} has no parent", path.display()))?;
+    let id = hex_bytes(&rand::random::<[u8; STUDIO_INSTALL_ID_BYTES]>());
+    // Unique temp names isolate concurrent publishers.
+    let tmp = parent.join(format!(".studio_install_id.{}.tmp", &id[..16]));
+    let claimed = claim_private_file(&tmp, path, id.as_bytes());
+    let _ = std::fs::remove_file(&tmp);
+    claimed.map(|claimed| claimed.then_some(id))
+}
+
+/// Atomically publishes a flushed temp file without replacing an existing ID.
+fn claim_private_file(tmp: &Path, path: &Path, body: &[u8]) -> Result<bool, String> {
+    claim_private_file_with_link(tmp, path, body, |prepared, destination| {
+        std::fs::hard_link(prepared, destination)
+    })
+}
+
+fn claim_private_file_with_link(
+    tmp: &Path,
+    path: &Path,
+    body: &[u8],
+    hard_link: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> Result<bool, String> {
+    let _ = std::fs::remove_file(tmp);
+    write_private_file(tmp, body)?;
+    match hard_link(tmp, path) {
+        Ok(()) => {
+            set_private_file_permissions(path);
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
+        // The install lock makes rename a safe no-clobber fallback.
+        Err(_) => publish_private_file_by_rename(tmp, path),
+    }
+}
+
+fn publish_private_file_by_rename(tmp: &Path, path: &Path) -> Result<bool, String> {
+    if path.exists() {
+        return Ok(false);
+    }
+    std::fs::rename(tmp, path)
+        .map_err(|error| format!("could not publish {}: {}", path.display(), error))?;
+    set_private_file_permissions(path);
+    Ok(true)
+}
+
 fn metadata_path() -> Option<PathBuf> {
     dirs::home_dir().map(|home| metadata_path_for_home(&home))
 }
@@ -215,11 +403,18 @@ fn hex_bytes(bytes: &[u8]) -> String {
     out
 }
 
-pub(crate) fn new_pending_owner() -> Option<PendingBackendOwner> {
-    Some(PendingBackendOwner {
+pub(crate) fn new_pending_owner() -> Result<PendingBackendOwner, String> {
+    Ok(PendingBackendOwner {
         token: random_owner_token(),
-        studio_root_id: read_expected_studio_root_id()?,
+        studio_root_id: ensure_managed_studio_root_id()?,
     })
+}
+
+/// Applies the identity required for ownership and parent-watchdog tracking.
+pub(crate) fn apply_owner_env(cmd: &mut std::process::Command, pending: &PendingBackendOwner) {
+    cmd.env(OWNER_TOKEN_ENV, pending.token.as_str());
+    cmd.env(OWNER_KIND_ENV, OWNER_KIND_TAURI);
+    cmd.env(OWNER_PID_ENV, std::process::id().to_string());
 }
 
 pub(crate) fn activate_owner(
@@ -227,8 +422,8 @@ pub(crate) fn activate_owner(
     requested_port: u16,
     generation: u64,
     backend_pid: u32,
-) -> Option<BackendOwnerState> {
-    let path = metadata_path()?;
+) -> Result<BackendOwnerState, String> {
+    let path = metadata_path().ok_or_else(|| "could not resolve the home directory".to_string())?;
     let now = now_ms();
     let metadata = DesktopBackendMetadata {
         schema_version: METADATA_SCHEMA_VERSION,
@@ -245,11 +440,14 @@ pub(crate) fn activate_owner(
         updated_at_ms: now,
     };
     let state = BackendOwnerState { path, metadata };
-    if let Err(error) = state.write() {
-        warn!("Desktop backend owner metadata unavailable: {}", error);
-        return None;
-    }
-    Some(state)
+    state.write().map_err(|error| {
+        format!(
+            "could not write the desktop backend ownership metadata at {}: {}",
+            state.path.display(),
+            error
+        )
+    })?;
+    Ok(state)
 }
 
 #[allow(dead_code)]
@@ -1307,6 +1505,245 @@ mod tests {
         ));
         assert!(path.exists());
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    fn temp_root_id_path(test_name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "unsloth-root-id-{test_name}-{}-{}-{}",
+            std::process::id(),
+            now_ms(),
+            hex_bytes(&rand::random::<[u8; 4]>())
+        ));
+        dir.join("share").join("studio_install_id")
+    }
+
+    #[test]
+    fn missing_studio_root_id_is_created_once_and_then_preserved() {
+        let path = temp_root_id_path("create");
+
+        let created = ensure_studio_root_id_at(&path, true).unwrap().unwrap();
+        assert!(is_valid_studio_root_id(&created));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), created);
+
+        // A second call must return the same id, not mint a new one.
+        assert_eq!(
+            ensure_studio_root_id_at(&path, true).unwrap(),
+            Some(created.clone())
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), created);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn created_studio_root_id_is_private_to_the_user() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let path = temp_root_id_path("permissions");
+        ensure_studio_root_id_at(&path, true).unwrap().unwrap();
+
+        let file_mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(file_mode & 0o777, 0o600);
+        let dir_mode = std::fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(dir_mode & 0o777, 0o700);
+        // The temp file used to publish the id must not be left behind.
+        let leftovers: Vec<_> = std::fs::read_dir(path.parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|name| name != "studio_install_id" && name != STUDIO_INSTALL_ID_LOCK_FILE)
+            .collect();
+        assert!(leftovers.is_empty(), "unexpected leftovers: {leftovers:?}");
+
+        let lock_mode = std::fs::metadata(path.parent().unwrap().join(STUDIO_INSTALL_ID_LOCK_FILE))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(lock_mode & 0o777, 0o600);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn malformed_studio_root_id_is_an_error_not_a_silent_rewrite() {
+        let path = temp_root_id_path("malformed");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "not-a-root-id").unwrap();
+
+        let error = ensure_studio_root_id_at(&path, true).unwrap_err();
+        assert!(error.contains(&path.display().to_string()), "{error}");
+        // A backend may still be reporting the id this file used to hold.
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "not-a-root-id");
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn blank_studio_root_id_is_replaced_like_a_missing_one() {
+        // Blank IDs are interrupted writes and must not block later starts.
+        for blank in ["", "\n"] {
+            let path = temp_root_id_path("blank");
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(&path, blank).unwrap();
+
+            let created = ensure_studio_root_id_at(&path, true).unwrap().unwrap();
+            assert!(is_valid_studio_root_id(&created));
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), created);
+
+            let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn stale_blank_observer_cannot_delete_a_competing_callers_id() {
+        let path = temp_root_id_path("stale-blank-observer");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "").unwrap();
+
+        let (blank_seen_tx, blank_seen_rx) = std::sync::mpsc::channel();
+        let (resume_tx, resume_rx) = std::sync::mpsc::channel();
+        let first_path = path.clone();
+        let first = std::thread::spawn(move || {
+            ensure_studio_root_id_at_with_blank_observer(&first_path, true, || {
+                blank_seen_tx.send(()).unwrap();
+                resume_rx.recv().unwrap();
+            })
+            .unwrap()
+            .unwrap()
+        });
+        blank_seen_rx.recv().unwrap();
+
+        // The second caller must wait until blank-file recovery completes.
+        let contender = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(path.parent().unwrap().join(STUDIO_INSTALL_ID_LOCK_FILE))
+            .unwrap();
+        let lock_error = contender.try_lock().unwrap_err();
+        assert!(matches!(lock_error, std::fs::TryLockError::WouldBlock));
+
+        let (second_tx, second_rx) = std::sync::mpsc::channel();
+        let second_path = path.clone();
+        let second = std::thread::spawn(move || {
+            second_tx
+                .send(ensure_studio_root_id_at(&second_path, true))
+                .unwrap();
+        });
+
+        resume_tx.send(()).unwrap();
+        let first_id = first.join().unwrap();
+        let second_id = second_rx.recv().unwrap().unwrap().unwrap();
+        second.join().unwrap();
+        let persisted = std::fs::read_to_string(&path).unwrap();
+
+        assert_eq!(first_id, persisted);
+        assert_eq!(second_id, persisted);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn studio_root_id_is_not_created_without_a_managed_install() {
+        let path = temp_root_id_path("not-installed");
+
+        assert_eq!(ensure_studio_root_id_at(&path, false).unwrap(), None);
+        assert!(!path.parent().unwrap().exists());
+    }
+
+    #[test]
+    fn concurrent_creators_converge_on_one_studio_root_id() {
+        let path = temp_root_id_path("concurrent");
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+
+        let handles: Vec<_> = (0..8)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = std::sync::Arc::clone(&barrier);
+                std::thread::spawn(move || {
+                    barrier.wait();
+                    ensure_studio_root_id_at(&path, true).unwrap().unwrap()
+                })
+            })
+            .collect();
+        let ids: Vec<String> = handles
+            .into_iter()
+            .map(|handle| handle.join().unwrap())
+            .collect();
+
+        let persisted = std::fs::read_to_string(&path).unwrap();
+        assert!(is_valid_studio_root_id(&persisted));
+        for id in &ids {
+            assert_eq!(id, &persisted);
+        }
+        let entries = std::fs::read_dir(path.parent().unwrap()).unwrap().count();
+        assert_eq!(entries, 2);
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn no_hard_link_fallback_publishes_only_a_complete_destination() {
+        let path = temp_root_id_path("rename-fallback");
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let tmp = path.parent().unwrap().join("fallback.tmp");
+        let body = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+        let claimed = claim_private_file_with_link(&tmp, &path, body, |prepared, destination| {
+            assert_eq!(std::fs::read(prepared).unwrap(), body);
+            assert!(!destination.exists());
+            Err(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "hard links disabled for test",
+            ))
+        })
+        .unwrap();
+
+        assert!(claimed);
+        assert_eq!(std::fs::read(&path).unwrap(), body);
+        assert!(!tmp.exists());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+
+        let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    #[test]
+    fn spawned_backends_always_receive_the_owner_environment() {
+        let pending = PendingBackendOwner {
+            token: TOKEN.to_string(),
+            studio_root_id: ROOT_ID.to_string(),
+        };
+        let mut cmd = std::process::Command::new("unsloth");
+        apply_owner_env(&mut cmd, &pending);
+
+        let env: std::collections::HashMap<String, String> = cmd
+            .get_envs()
+            .filter_map(|(key, value)| {
+                Some((
+                    key.to_string_lossy().into_owned(),
+                    value?.to_string_lossy().into_owned(),
+                ))
+            })
+            .collect();
+
+        assert_eq!(env.get(OWNER_TOKEN_ENV).map(String::as_str), Some(TOKEN));
+        assert_eq!(
+            env.get(OWNER_KIND_ENV).map(String::as_str),
+            Some(OWNER_KIND_TAURI)
+        );
+        // The backend arms its parent watchdog only when it knows the owner pid.
+        assert_eq!(
+            env.get(OWNER_PID_ENV).map(String::as_str),
+            Some(std::process::id().to_string().as_str())
+        );
     }
 
     #[test]

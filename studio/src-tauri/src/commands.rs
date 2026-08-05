@@ -23,16 +23,21 @@ fn should_emit_repair_failed(msg: &str) -> bool {
 }
 
 fn external_conflict_message(conflict: &crate::preflight::ExternalBackendConflict) -> String {
-    if conflict.reason == "desktop_owned_backend_active" {
-        return format!(
+    match conflict.reason.as_str() {
+        "desktop_owned_backend_active" => format!(
             "A desktop-owned Unsloth server for this install is already running on port {}. Quit the other desktop app instance, then try again.",
             conflict.port
-        );
+        ),
+        // Do not describe a backend from an unknown install as terminal-started.
+        "ambiguous_root_external_backend_active" => format!(
+            "An Unsloth server is already running on port {}, and this app cannot confirm which install it belongs to. Stop that server, then try again.",
+            conflict.port
+        ),
+        _ => format!(
+            "An Unsloth server for this install is already running from a terminal on port {}. Stop that server, or run `unsloth studio update` from that terminal before using desktop repair/update.",
+            conflict.port
+        ),
     }
-    format!(
-        "An Unsloth server for this install is already running from a terminal on port {}. Stop that server, or run `unsloth studio update` from that terminal before using desktop repair/update.",
-        conflict.port
-    )
 }
 
 fn owned_backend_port(state: &tauri::State<'_, BackendState>) -> Result<Option<u16>, String> {
@@ -768,6 +773,28 @@ mod tests {
 
         assert!(err.contains(&format!("port {external_port}")));
         assert!(err.contains("Stop that server"));
+    }
+
+    #[test]
+    fn conflict_message_only_blames_a_terminal_for_a_same_install_backend() {
+        let message = |reason: &str| {
+            super::external_conflict_message(&crate::preflight::ExternalBackendConflict {
+                port: 8890,
+                reason: reason.to_string(),
+            })
+        };
+
+        assert!(message("same_root_external_backend_active").contains("from a terminal"));
+
+        for reason in [
+            "desktop_owned_backend_active",
+            "ambiguous_root_external_backend_active",
+        ] {
+            let message = message(reason);
+            assert!(!message.contains("from a terminal"), "{message}");
+            assert!(!message.contains("unsloth studio update"), "{message}");
+            assert!(message.contains("port 8890"), "{message}");
+        }
     }
 
     #[test]
