@@ -568,11 +568,9 @@ with sync_playwright() as p:
                 page.get_by_label("Dictation engine").click()
                 page.get_by_role("option", name = "Local transcription").click()
                 page.get_by_label("Speech recognition model").click()
-                # Matched on the literal "Search model" until #7835 reworded it to "Search any
-                # model on HF"; get_by_placeholder is substring, not fuzzy, so the locator stopped
-                # resolving and this step failed on every run. A pattern spans both wordings, and
-                # scoping it to the popover that holds the results list keeps it off the other
-                # "Search models" boxes the pattern would otherwise match page-wide.
+                # #7835 reworded this placeholder to "Search any model on HF", and
+                # get_by_placeholder is substring, so the old literal stopped resolving. Scoped to
+                # the results popover: page-wide the pattern also hits the other search boxes.
                 page.locator('[data-testid="stt-model-results"]').locator(
                     "xpath=.."
                 ).get_by_placeholder(re.compile(r"search\b.*\bmodel", re.I)).fill("whisper")
