@@ -1637,7 +1637,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
     _SHELLS_WIN = {"cmd", "cmd.exe"}
     for i, token in enumerate(tokens):
-        tok_lower = token.lower()
+        tok_lower = _cmd_unquote(token).lower()
         # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)
         is_unix_c = tok_lower == "-c" or (
             tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
@@ -1650,16 +1650,19 @@ def _find_blocked_commands(command: str) -> set[str]:
         # Look back past flags for the shell binary. Windows flags and absolute
         # paths both start with /, so only skip short /X flags (not /bin/bash).
         for j in range(i - 1, -1, -1):
-            prev = tokens[j]
+            prev = _cmd_unquote(tokens[j])
             if prev.startswith("-"):
                 continue  # skip Unix flags like --login, -l
             if is_win_c and prev.startswith("/") and len(prev) <= 3:
                 continue  # skip Windows flags like /s, /q (not /bin/bash)
             prev_base = os.path.basename(prev).lower()
+            # The payload is unquoted for the same reason: under the cmd lexer
+            # `cmd /c "rm -rf x"` arrives as one quoted token, and re-lexing it
+            # with the quotes still attached finds no command at all.
             if is_unix_c and prev_base in _SHELLS:
-                blocked |= _find_blocked_commands(tokens[i + 1])
+                blocked |= _find_blocked_commands(_cmd_unquote(tokens[i + 1]))
             elif is_win_c and prev_base in _SHELLS_WIN:
-                blocked |= _find_blocked_commands(tokens[i + 1])
+                blocked |= _find_blocked_commands(_cmd_unquote(tokens[i + 1]))
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
@@ -1674,11 +1677,24 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
             # /d C:\dir and friends carry their value in the next token.
             j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
-        # `start ""` is the idiom for "no title"; anything else is the program.
-        if j < len(tokens) and _cmd_unquote(tokens[j]) == "":
-            j += 1
-        if j < len(tokens):
-            blocked |= _find_blocked_commands(_cmd_unquote(tokens[j]))
+        if j >= len(tokens):
+            continue
+        # `start ["title"] prog`: cmd reads the first argument as a window title
+        # ONLY when it is quoted, so an unquoted token here is the program
+        # itself and the one after it is just an argument. Both `start ""` and
+        # `start "MyWindow"` hide the program one token further on, and only the
+        # empty spelling was screened before. The cmd lexer keeps the quotes on
+        # the token; the posix lexer has already dropped them, so the raw text
+        # is consulted there. Guessing instead (screening both positions
+        # unconditionally) blocks `start explorer .` on the `.` source builtin.
+        head = tokens[j]
+        if not lexed_posix:
+            titled = head.startswith('"')
+        else:
+            titled = head == "" or '"%s"' % head in command or "'%s'" % head in command
+        blocked |= _find_blocked_commands(_cmd_unquote(head))
+        if titled and j + 1 < len(tokens):
+            blocked |= _find_blocked_commands(_cmd_unquote(tokens[j + 1]))
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

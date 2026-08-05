@@ -346,6 +346,54 @@ def test_detached_windows_stay_launchable(monkeypatch, command, bash):
     assert not tools._find_blocked_commands(command)
 
 
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A window title is the other spelling that puts the program one token
+        # further on, and only the empty one used to be screened.
+        'cmd //c start "MyWindow" powershell -Command ls',
+        'cmd //c start /b "Build" pwsh -Command ls',
+        # The cmd lexer keeps quote marks, so a quoted shell name or payload
+        # never matched the nested-shell scan.
+        '"cmd" /c powershell -Command ls',
+        'cmd /c "powershell -Command ls"',
+        'cmd /c "rm -rf x"',
+        '"bash" -c "rm -rf x"',
+    ],
+)
+def test_quoted_shellouts_are_screened(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # An UNQUOTED first argument is the program, not a title, so the token
+        # after it is an argument. Screening it anyway blocks `.` (the POSIX
+        # source builtin) on a plain "open this folder".
+        "cmd //c start explorer .",
+        "cmd //c start code .",
+        r"cmd //c start explorer C:\Users\me\project",
+        'cmd //c start "" wt -d .',
+        "cmd //c start https://example.com",
+        'cmd //c start /min "" myapp.exe --flag',
+    ],
+)
+def test_start_arguments_are_not_read_as_commands(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+def test_posix_start_scan_is_unaffected():
+    # The start scan runs on every platform, so an over-block there would land
+    # on Linux and macOS, where none of this applies.
+    assert not tools._find_blocked_commands("start code .")
+    assert not tools._find_blocked_commands("start explorer .")
+
+
 def _fake_git_for_windows(monkeypatch, tmp_path):
     """A trusted Git for Windows layout under a faked Program Files root."""
     program_files = tmp_path / "Program Files"
