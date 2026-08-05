@@ -371,6 +371,9 @@ jobs:
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
       DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
+      # Compiled in by preflight/version.rs. Without it the app only knows the
+      # floor, so a shared venv left by the CLI installer is never upgraded again.
+      UNSLOTH_DESKTOP_BACKEND_VERSION: ${{ needs.prepare-version.outputs.pypi_version }}
 
     steps:
       # harden-runner in audit mode: surfaces every egress destination in
