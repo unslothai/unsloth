@@ -352,6 +352,10 @@ async def download_model_response(
         "state": state,
         "accepted": True,
         "generation": generation,
+        # The transport that was actually resolved: an explicit "xet" is
+        # downgraded to HTTP where hf_xet is unavailable, and a client that
+        # assumed its request stood would offer the wrong stop control.
+        "transport": transport,
     }
 
 

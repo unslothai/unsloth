@@ -78,8 +78,9 @@ class DownloadStartResponse(BaseModel):
     state: str
     accepted: bool
     generation: int
-    # Set only when this start adopted a job another client had already begun:
-    # the transport that job is really on, which need not be the one requested.
+    # The transport the job is really on: the one the backend resolved for a
+    # fresh start, or the running job's own when this start adopted one.
+    # Either can differ from what the client asked for.
     transport: Optional[str] = None
 
 
@@ -192,7 +193,7 @@ class DatasetDownloadStartResponse(BaseModel):
     state: str
     accepted: bool
     generation: int
-    # Set only when this start adopted an already-running job (see above).
+    # The transport the job is really on (see above).
     transport: Optional[str] = None
 
 

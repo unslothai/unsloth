@@ -7,8 +7,8 @@ import { bumpInventoryVersion } from "../stores/inventory-events";
 import { toast } from "@/lib/toast";
 import { appendSample, computeTransferStats } from "@/lib/transfer-stats";
 import {
+  getActiveDatasetDownloads,
   getActiveModelDownloads,
-  getDatasetDownloadStatus,
   type ActiveModelDownload,
   type DownloadJobState,
 } from "./api";
@@ -39,6 +39,7 @@ import {
   type ResolvedTransport,
   type TransportMode,
   isResolvedTransport,
+  probeDescribesCurrentRun,
   transportAfterStart,
 } from "./constants";
 import {
@@ -905,9 +906,17 @@ export function adoptJob(
 ): void {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
   if (runtimeRegistry.runtimes.get(key)?.pollingStarted) {
-    // Persistence hydration and the backend-active probe run concurrently. A
+    // Persistence hydration and the backend-active probe run concurrently, so a
     // late backend response must still replace a missing or stale stored value.
-    if (transport) patchJob(key, { transport });
+    // Only for the run it described, though: a cancel and restart in between
+    // makes this a different job, possibly on the other transport.
+    const known = getState().jobs[key]?.serverGeneration;
+    if (transport && probeDescribesCurrentRun(known, generation)) {
+      patchJob(key, {
+        transport,
+        ...(Number.isSafeInteger(known) ? {} : { serverGeneration: generation }),
+      });
+    }
     return;
   }
   void startJob(req, {
@@ -961,13 +970,19 @@ export async function probeAndAdopt(
       return;
     }
 
-    const status = await getDatasetDownloadStatus(repoId, signal);
+    // The active-downloads list, not download-status: only the list reports the
+    // transport, without which an adopted HTTP dataset shows Cancel for a
+    // transfer that would have resumed.
+    const datasets = await getActiveDatasetDownloads(signal, repoId);
     if (signal.aborted) return;
-    if (status.state === "running" || status.state === "cancelling") {
+    for (const active of datasets) {
+      if (active.repo_id !== repoId) continue;
+      if (active.state !== "running" && active.state !== "cancelling") continue;
       adoptJob(
         { kind, repoId, variant: null, expectedBytes: 0 },
-        status.generation,
-        status.state,
+        active.generation,
+        active.state,
+        isResolvedTransport(active.transport) ? active.transport : undefined,
       );
     }
   } catch (error) {

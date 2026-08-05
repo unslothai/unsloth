@@ -4,7 +4,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { transportAfterStart } from "../src/features/hub/download-manager/constants.ts";
+import {
+  probeDescribesCurrentRun,
+  transportAfterStart,
+} from "../src/features/hub/download-manager/constants.ts";
 
 test("a start of its own keeps the transport it resolved", () => {
   assert.equal(transportAfterStart("http", null), "http");
@@ -22,4 +25,25 @@ test("an unresolved or unknown report is ignored, not trusted", () => {
   assert.equal(transportAfterStart("http", "auto"), "http");
   assert.equal(transportAfterStart("xet", "ftp"), "xet");
   assert.equal(transportAfterStart("xet", 3), "xet");
+});
+
+test("a probe for the run a job is on may patch it", () => {
+  assert.equal(probeDescribesCurrentRun(7, 7), true);
+});
+
+test("a probe from before a cancel and restart may not", () => {
+  // The old response would otherwise hand the restarted job the old
+  // transport, and the fresh start's own reply cannot repair it.
+  assert.equal(probeDescribesCurrentRun(8, 7), false);
+});
+
+test("a job with no generation yet takes what the probe reports", () => {
+  assert.equal(probeDescribesCurrentRun(undefined, 7), true);
+  assert.equal(probeDescribesCurrentRun(null, 0), true);
+});
+
+test("a probe with no generation proves nothing", () => {
+  assert.equal(probeDescribesCurrentRun(undefined, undefined), false);
+  assert.equal(probeDescribesCurrentRun(7, undefined), false);
+  assert.equal(probeDescribesCurrentRun(7, 7.5), false);
 });

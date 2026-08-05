@@ -313,8 +313,12 @@ async function getActiveModelDownloadsForKey(
 
 export async function getActiveDatasetDownloads(
   signal?: AbortSignal,
+  repoId?: string,
 ): Promise<ActiveDatasetDownload[]> {
-  const response = await authFetch("/api/hub/datasets/active-downloads", {
+  // No repo id lists every active dataset download, which is what hydration
+  // wants; one narrows it, which is what a single repo view wants.
+  const params = repoId ? `?${new URLSearchParams({ repo_id: repoId })}` : "";
+  const response = await authFetch(`/api/hub/datasets/active-downloads${params}`, {
     signal,
   });
   const data = await parseJsonOrThrow<{

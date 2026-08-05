@@ -223,6 +223,9 @@ async def download_dataset_response(
         "state": state,
         "accepted": True,
         "generation": generation,
+        # See models: the resolved transport, which a downgrade can make
+        # different from the one requested.
+        "transport": transport,
     }
 
 

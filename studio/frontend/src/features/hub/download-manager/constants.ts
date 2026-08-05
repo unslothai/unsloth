@@ -43,6 +43,21 @@ export function transportAfterStart(
   return isResolvedTransport(reported) ? reported : requested;
 }
 
+/** Whether a probe response describes the run a job is currently on.
+ *
+ * A cancel and restart between the request and its reply makes the answer
+ * about a different job, possibly on the other transport. A job with no
+ * generation recorded yet has nothing better to go on, so any generation the
+ * probe reports is taken (along with the generation itself). */
+export function probeDescribesCurrentRun(
+  known: unknown,
+  reported: unknown,
+): boolean {
+  return Number.isSafeInteger(known)
+    ? reported === known
+    : Number.isSafeInteger(reported);
+}
+
 export function isResolvedTransport(
   value: unknown,
 ): value is ResolvedTransport {
