@@ -54,15 +54,12 @@ def hf_datasets_cache_roots() -> list[Path]:
         seen.add(resolved)
         roots.append(resolved)
 
+    # Keep this stdlib-only. Training validates cached datasets before activating a
+    # Transformers sidecar, and importing datasets here would cache the base
+    # huggingface_hub module before the sidecar can provide its matching version.
     env_cache = os.environ.get("HF_DATASETS_CACHE")
     if env_cache:
         add(Path(env_cache))
-
-    try:
-        from datasets import config as datasets_config
-        add(Path(datasets_config.HF_DATASETS_CACHE))
-    except Exception:
-        pass
 
     hf_home = os.environ.get("HF_HOME")
     if hf_home:
