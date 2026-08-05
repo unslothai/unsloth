@@ -575,9 +575,7 @@ with sync_playwright() as p:
                 # "Search models" boxes the pattern would otherwise match page-wide.
                 page.locator('[data-testid="stt-model-results"]').locator(
                     "xpath=.."
-                ).get_by_placeholder(re.compile(r"search\b.*\bmodel", re.I)).fill(
-                    "whisper"
-                )
+                ).get_by_placeholder(re.compile(r"search\b.*\bmodel", re.I)).fill("whisper")
                 results = page.get_by_test_id("stt-model-results")
                 page.wait_for_function(
                     """() => {
