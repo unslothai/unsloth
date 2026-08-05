@@ -1349,6 +1349,8 @@ def _cmd_unquote(token: str) -> str:
 # `start` launches its argument as a program, so that argument is a command
 # position. These switches precede it; the value-taking ones eat a token.
 _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
+# cmd keywords whose command word does not follow immediately, or at all.
+_CMD_CONTROL_FLOW = frozenset({"if", "else", "do", "for"})
 
 # Tells one quoted executable path apart from an argument list mentioning one.
 _EXECUTABLE_PATH_RE = re.compile(r"\.(?:exe|com|bat|cmd)(?=\s|$)", re.IGNORECASE)
@@ -1652,6 +1654,39 @@ def _find_blocked_commands(command: str) -> set[str]:
         )
         blocked.update(re.findall(pattern, lowered))
 
+    def _cmd_payload_commands(start: int) -> "list[int]":
+        """Command positions inside a `cmd /c` payload.
+
+        cmd runs control flow of its own, so the program is not always the first
+        word: `if exist FILE start "" prog` puts it behind a condition that bash
+        grammar reads as plain arguments. But the words after a command really
+        are its arguments, so marking the whole payload made
+        `cmd /c echo start "title" prog` read the echoed text as a launcher.
+        """
+        indexes: "list[int]" = []
+        k, expect = start, True
+        while k < len(tokens):
+            token = tokens[k]
+            if token in _SHELL_SEPARATORS:
+                k, expect = k + 1, True
+                continue
+            if not expect:
+                k += 1
+                continue
+            indexes.append(k)
+            if _token_basename(_cmd_unquote(token)) not in _CMD_CONTROL_FLOW:
+                k, expect = k + 1, False
+                continue
+            # `if [/i] [not] exist FILE prog`, and the else/do/for forms whose
+            # command is simply the next word.
+            k += 1
+            while k < len(tokens) and _cmd_unquote(tokens[k]).lower() in ("/i", "not"):
+                k += 1
+            if k < len(tokens):
+                condition = _cmd_unquote(tokens[k]).lower()
+                k += 2 if condition in ("exist", "defined", "errorlevel") else 1
+        return indexes
+
     def _runnable_index(idx: int) -> bool:
         """True where the shell would execute the word at ``idx``: command
         position, inside a `cmd /c` payload (cmd runs control flow of its own),
@@ -1696,14 +1731,8 @@ def _find_blocked_commands(command: str) -> set[str]:
             if is_unix_c and prev_runs and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(_cmd_unquote(tokens[i + 1]))
             elif is_win_c and prev_runs and prev_base in _SHELLS_WIN:
-                # Tell the start scan below where cmd hands control over. The
-                # WHOLE payload counts: cmd runs control flow of its own, so
-                # `cmd /c if exist C:\Windows start "" powershell` hides start
-                # behind an `if` that bash grammar reads as plain arguments.
-                for payload_index in range(i + 1, len(tokens)):
-                    if tokens[payload_index] in _SHELL_SEPARATORS:
-                        break
-                    win_c_payloads.add(payload_index)
+                # Tell the start scan below where cmd hands control over.
+                win_c_payloads.update(_cmd_payload_commands(i + 1))
                 blocked |= _scan_cmd_payload(_cmd_unquote(tokens[i + 1]))
             break  # stop at first non-flag token
 

@@ -698,3 +698,35 @@ def test_a_shell_the_shell_runs_still_screens_its_payload(monkeypatch, command, 
     # The guard above must not cost the nested-shell scan its real cases.
     _fake_windows_screening(monkeypatch, bash = bash)
     assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Inside a cmd payload the words after a command are its arguments, so
+        # an echoed or searched-for `start "title" ...` launches nothing.
+        'cmd /c echo start "title" powershell',
+        'cmd //c echo start "title" powershell',
+        'cmd /c findstr start "title" powershell',
+    ],
+)
+def test_a_start_echoed_inside_a_cmd_payload_launches_nothing(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        r'cmd /c if exist C:\Windows start "" powershell -Command ls',
+        r'cmd /c if not exist C:\nope start "" powershell -Command ls',
+        'cmd /c if defined FOO start "" pwsh -Command ls',
+        'cmd /c dir & start "" powershell -Command ls',
+    ],
+)
+def test_a_start_cmd_really_runs_is_still_screened(monkeypatch, command, bash):
+    # The guard above must not cost the cmd control-flow cases their coverage.
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
