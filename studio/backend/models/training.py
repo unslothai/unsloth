@@ -414,10 +414,16 @@ class TrainingStartRequest(BaseModel):
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
     weight_decay: float = Field(0.001, description = "Weight decay")
-    max_grad_norm: float = Field(
-        0.0,
+    max_grad_norm: Optional[float] = Field(
+        None,
         ge = 0,
-        description = "Global gradient norm clipping threshold. Set 0 to disable.",
+        description = (
+            "Global gradient norm clipping threshold. Unset lets the training "
+            "backend apply its default; 0 turns global-norm clipping off, "
+            "which on MLX leaves per-parameter clipping in force unless "
+            "max_grad_leaf_norm is also 0. Honored on MLX; the CUDA path "
+            "trains with its own fixed thresholds."
+        ),
     )
     max_grad_value: Optional[float] = Field(
         None,

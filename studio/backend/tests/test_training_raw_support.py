@@ -160,6 +160,80 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertNotIn("model_random_state", config)
         self.assertNotIn("lora_random_state", config)
 
+    def test_mlx_max_grad_norm_defaults_to_the_cuda_threshold(self):
+        # Unset must reach the trainer as the CUDA text path's 1.0, the mode
+        # that also makes MLX report the gradient norm the chart plots.
+        from core.training.worker import _resolve_mlx_max_grad_norm
+
+        self.assertEqual(_resolve_mlx_max_grad_norm(None), 1.0)
+        self.assertEqual(_resolve_mlx_max_grad_norm(0), 0.0)
+        self.assertEqual(_resolve_mlx_max_grad_norm(0.3), 0.3)
+        with self.assertRaises(ValueError):
+            _resolve_mlx_max_grad_norm(-1)
+        with self.assertRaises(ValueError):
+            _resolve_mlx_max_grad_norm("nope")
+
+        # An unset request must stay unset all the way to the resolver: a
+        # schema default of 0.0 would turn global-norm clipping off first.
+        from models.training import TrainingStartRequest
+
+        self.assertIsNone(
+            TrainingStartRequest(
+                model_name = "unsloth/test",
+                training_type = "LoRA/QLoRA",
+                format_type = "auto",
+            ).max_grad_norm
+        )
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+        self.assertIn(
+            'max_grad_norm = _resolve_mlx_max_grad_norm(config.get("max_grad_norm"))',
+            source,
+        )
+
+    def test_start_training_leaves_unset_max_grad_norm_for_worker_default(self):
+        # A None here is what lets the worker apply the CUDA-matching default;
+        # a coerced 0.0 would silently drop every UI run back off global-norm
+        # clipping, which is what emptied the gradient-norm chart.
+        backend = TrainingBackend()
+
+        class DummyProcess:
+            pid = 4321
+
+            def start(self):
+                return None
+
+        class DummyThread:
+            def start(self):
+                return None
+
+        dummy_queue = object()
+
+        with (
+            patch(
+                "core.training.training.prepare_gpu_selection",
+                return_value = ([0], {"selection_mode": "auto"}),
+            ),
+            patch(
+                "core.training.training._CTX.Queue",
+                side_effect = [dummy_queue, dummy_queue],
+            ),
+            patch(
+                "core.training.training._CTX.Process", return_value = DummyProcess()
+            ) as mock_process,
+            patch(
+                "core.training.training.threading.Thread",
+                return_value = DummyThread(),
+            ),
+        ):
+            backend.start_training(
+                job_id = "test-grad-clip-default",
+                model_name = "unsloth/test",
+                training_type = "LoRA/QLoRA",
+            )
+
+        config = mock_process.call_args.kwargs["kwargs"]["config"]
+        self.assertIsNone(config["max_grad_norm"])
+
     def test_route_forwards_all_grad_clipping_fields(self):
         # The HTTP route builds the config dict by hand; a schema field that
         # is not forwarded here is silently dropped for REST callers.
@@ -211,12 +285,13 @@ class TestTrainingRawSupport(unittest.TestCase):
         )
 
     def test_training_backend_normalizes_explicit_none_seed_and_dtypes(self):
-        # Raw / backend callers can pass `random_seed=None`,
-        # `cast_norm_output_to_input_dtype=None`, and MLX clip knobs
-        # as None (or omit them) and must NOT leak the
-        # `None` past `TrainingBackend.start_training`. Otherwise
+        # Raw / backend callers can pass `random_seed=None` and
+        # `cast_norm_output_to_input_dtype=None` (or omit them), and those must
+        # NOT leak the `None` past `TrainingBackend.start_training`. Otherwise
         # transformers.set_seed(None) raises, PEFT init becomes
-        # nondeterministic, and the MLX norm-output cast silently flips.
+        # nondeterministic, and the MLX norm-output cast silently flips. The
+        # MLX clip knobs are the exception: None survives, so each one's owner
+        # (the MLX trainer, or the worker for max_grad_norm) picks the default.
         from core.training.training import (
             _coerce_seed,
             _coerce_optional_bool,

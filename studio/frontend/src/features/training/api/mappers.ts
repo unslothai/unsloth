@@ -113,7 +113,9 @@ export function buildTrainingStartPayload(
     save_steps: config.saveSteps,
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
-    max_grad_norm: 0.0,
+    // max_grad_norm is deliberately omitted: sending 0 turns global-norm
+    // clipping off, which silences the MLX gradient-norm chart. Leaving it
+    // unset lets the backend apply its default.
     max_grad_value: null,
     random_seed: config.randomSeed,
     packing: isEmbedding ? false : config.packing,

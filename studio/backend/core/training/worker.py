@@ -1510,6 +1510,32 @@ def _resolve_mlx_output_dir(config, model_name):
     return str(resolve_output_dir(output_dir))
 
 
+def _resolve_mlx_max_grad_norm(value):
+    """Global-norm clip threshold for MLX runs; None selects the default.
+
+    1.0 is what the CUDA text path trains with (TRL's SFTConfig default) and
+    what the public MLX API applies when no clipping knob is given, so an
+    unset value lands on the same threshold everywhere. CUDA's vision branch
+    uses 0.3, which is not mirrored here. Explicit 0 turns global-norm
+    clipping off, which leaves MLX's per-parameter clipping in force unless
+    max_grad_leaf_norm is also set to 0.
+    """
+    if value is None:
+        return 1.0
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Unsloth MLX: max_grad_norm={value!r} must be a non-negative float or None."
+        )
+    if value < 0:
+        raise ValueError(
+            f"Unsloth MLX: max_grad_norm={value} must be >= 0 "
+            "(use 0 to disable global norm clipping)."
+        )
+    return value
+
+
 def _run_mlx_training(event_queue, stop_queue, config):
     """Self-contained MLX training path for Apple Silicon.
 
@@ -1960,9 +1986,10 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         eval_steps_val = int(eval_steps_val)
 
-    # Per-element clipping only; trainer owns the None default. Re-validate
-    # for direct worker callers (training.py normalizes the main path).
-    max_grad_norm = 0.0
+    # Re-validate for direct worker callers (training.py normalizes the main
+    # path). Clipping globally also yields the pre-clip norm the gradient-norm
+    # chart plots, at the same cost the opt-in report_grad_norm would pay.
+    max_grad_norm = _resolve_mlx_max_grad_norm(config.get("max_grad_norm"))
     max_grad_value = config.get("max_grad_value")
     if max_grad_value is not None:
         max_grad_value = float(max_grad_value)
