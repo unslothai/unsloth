@@ -1218,6 +1218,41 @@ def _start_title_indexes(tokens: "list[str]", lexed_posix: bool) -> "frozenset[i
     )
 
 
+def _strip_cmd_quotes(token: str) -> str:
+    """``token`` without the quotes cmd strips before it resolves a program.
+
+    Only the non-POSIX lexer leaves them on, and the recursive scan re-lexes
+    what it is handed, so `start "" "powershell.exe" -c ls` recursed into a
+    program spelled `"powershell.exe"`, which matches no blocked name. Quoting
+    the path is the ordinary way to write one holding a space, so the hard block
+    was a quote away on any host without Git Bash.
+    """
+    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
+        return token[1:-1]
+    return token
+
+
+def _blocked_start_program(token: str) -> "set[str]":
+    """The blocked names the program `start` launches resolves to.
+
+    A start target is one program, not a shell line, so it is matched by name
+    rather than rescanned as command text. Rescanning read a Windows path as a
+    command position, where the blocklist's own `.` matches the dot in any file
+    that has one, and `start "" "C:/Users/me/report.txt"` came back refused.
+
+    Backslashes separate here whatever the host is: this only ever reads a
+    Windows program, and posixpath leaves `C:\\Windows\\System32\\powershell.exe`
+    whole, so the name never matched on the Linux CI that runs these tests.
+    """
+    base = os.path.basename(_strip_cmd_quotes(token).replace("\\", "/")).lower()
+    stem, ext = os.path.splitext(base)
+    if ext in {".exe", ".com", ".bat", ".cmd"}:
+        base = stem
+    if base in _blocked_commands():
+        return {base}
+    return _blocked_matching_glob(base)
+
+
 def _source_quoted_indexes(command: str, tokens: "list[str]") -> "frozenset[int] | None":
     """Indexes of ``tokens`` the user wrote double quotes around, or None when
     that cannot be told.
@@ -1538,6 +1573,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     skip_operand = False  # consume a wrapper/conditional operand, not the command
     sed_indexes: "list[int]" = []  # command-position sed words, for the `e` scan below
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
+    start_indexes: "set[int]" = set()  # command-position start words, for the scan below
     xargs_index = -1  # an xargs awaiting the command it wraps
     for token_index, token in enumerate(tokens):
         if skip_operand:
@@ -1603,6 +1639,8 @@ def _find_blocked_commands(command: str) -> set[str]:
             sed_indexes.append(token_index)
             if xargs_index >= 0:
                 sed_xargs[token_index] = xargs_index
+        if base == "start":
+            start_indexes.add(token_index)
         if base in _blocked_commands():
             blocked.add(base)
         else:
@@ -1724,11 +1762,19 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue  # skip Unix flags like --login, -l
             if is_win_c and prev.startswith("/") and len(prev) <= 3:
                 continue  # skip Windows flags like /s, /q (not /bin/bash)
-            prev_base = os.path.basename(prev).lower()
+            # _token_basename, not os.path.basename: the cmd lexer keeps a glued
+            # opener, so `(cmd //c ...)` left prev as `(cmd` and matched no shell.
+            prev_base = _token_basename(prev)
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             elif is_win_c and prev_base in _SHELLS_WIN:
                 blocked |= _find_blocked_commands(tokens[i + 1])
+                # The nested command line starts here, so a start word in this
+                # position is a launch even though the outer scan reads it as an
+                # argument of cmd. Recursing alone does not reach it: only the
+                # one token is passed on, and `start` by itself blocks nothing.
+                if _token_basename(tokens[i + 1]) == "start":
+                    start_indexes.add(i + 1)
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
@@ -1736,9 +1782,10 @@ def _find_blocked_commands(command: str) -> set[str]:
     title_tokens: "frozenset[int] | None" = None
     source_quoted: "frozenset[int] | None" = None
     source_quoted_built = False
-    for i, token in enumerate(tokens):
-        if os.path.basename(token).lower() not in ("start", "start.exe"):
-            continue
+    # Only a start that is really a launch. `echo start "my title" powershell`
+    # prints text, and reading every token named start walked the title branch
+    # into a hard block for it.
+    for i in sorted(start_indexes):
         # Built at most once per call, and only when a start is actually here:
         # the second of them lexes the whole line, so doing it per start token
         # made the scan quadratic (800 tokens took 1.1s against main's 34ms).
@@ -1756,7 +1803,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         if j + 1 < len(tokens) and j in title_tokens:
             k = _skip_start_switches(tokens, j + 1)
             if k < len(tokens):
-                blocked |= _find_blocked_commands(tokens[k])
+                blocked |= _blocked_start_program(tokens[k])
             continue
         # Whether a quoted word without spaces reaches cmd as a title depends on
         # how Git Bash rebuilds the line, and the two readings each hide a
@@ -1766,16 +1813,25 @@ def _find_blocked_commands(command: str) -> set[str]:
         # Rather than pick one, screen both positions for this one shape. It is
         # narrow enough not to bring back the over-block a blind two-token scan
         # caused, since an unquoted `start notepad rm.txt` is not in it.
-        blocked |= _find_blocked_commands(tokens[j])
+        blocked |= _blocked_start_program(tokens[j])
         if j + 1 >= len(tokens) or not lexed_posix:
             continue
         if not source_quoted_built:
             source_quoted = _source_quoted_indexes(command, tokens)
             source_quoted_built = True
-        if source_quoted is None or j in source_quoted:
+        # A desync answers "cannot tell", and screening everything then brought
+        # the unquoted-argument over-block back for any line holding a POSIX-only
+        # escape: `echo a\ b; start notepad rm.txt` reported rm again. Looking
+        # for the quoted spelling in the text keeps the fallback local, so a
+        # word the user never quoted stays out of the second screen.
+        if source_quoted is None:
+            plausible_title = f'"{tokens[j]}"' in command
+        else:
+            plausible_title = j in source_quoted
+        if plausible_title:
             k = _skip_start_switches(tokens, j + 1)
             if k < len(tokens):
-                blocked |= _find_blocked_commands(tokens[k])
+                blocked |= _blocked_start_program(tokens[k])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

@@ -438,6 +438,67 @@ def test_cmd_has_no_single_quote_syntax(monkeypatch, command):
     assert not tools._find_blocked_commands(command)
 
 
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A start that is not a launch. Reading every token named start walked
+        # an ordinary argument into the title branch and refused a benign echo.
+        'echo start "my title" powershell',
+        "echo to start pwsh run this",
+        'printf "%s" start powershell',
+    ],
+)
+def test_start_is_only_screened_in_command_position(monkeypatch, bash, command):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # cmd strips the quotes before it resolves the program, but the non-POSIX
+        # lexer keeps them, so the scan looked for a program spelled with them
+        # and the hard block was one quote away. Quoting is the ordinary way to
+        # write a path holding a space.
+        ('cmd /c start "" "powershell.exe" -c ls', True),
+        (r'cmd /c start "" "C:\Windows\System32\powershell.exe"', True),
+        # ...and the target is a program, not a command line. Rescanning it as
+        # one read the path as a command position, where the blocklist's own `.`
+        # matches the dot in any file that has one.
+        (r'cmd /c start "" "C:\Users\me\report.txt"', False),
+        (r'cmd /c start "" "C:\Program Files\app\notepad.exe"', False),
+    ],
+)
+def test_start_target_is_matched_as_a_program_path(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # A POSIX-only escape desyncs the quote check, which then answers
+        # "cannot tell". Screening both candidates on that answer brought the
+        # unquoted-argument over-block back for any line holding one.
+        (r"echo a\ b; start notepad rm.txt", False),
+        (r"echo a\ b; start excel curl.csv", False),
+        # The argument is a file that happens to be named like a blocked
+        # command, so it is the one shape a name match alone still refuses.
+        (r"echo a\ b; start notepad rm", False),
+        (r"echo a\ b; start notepad curl", False),
+        # The hedge itself still has to survive the desync.
+        (r'echo a\ b; cmd //c start "t" powershell -c ls', True),
+    ],
+)
+def test_desync_does_not_screen_unquoted_start_arguments(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
 @pytest.mark.parametrize(
     "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
 )
