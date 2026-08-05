@@ -192,7 +192,11 @@ def test_bind_falls_back_outside_a_multiprocessing_worker(monkeypatch):
 
 
 class _FakeParent:
-    def __init__(self, pid, alive = True):
+    def __init__(
+        self,
+        pid,
+        alive = True,
+    ):
         self.pid = pid
         self._alive = alive
 
