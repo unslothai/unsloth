@@ -570,7 +570,7 @@ mod tests {
     #[test]
     fn a_venv_behind_the_desktop_backend_version_is_stale() {
         // The CLI installer shares this venv, so its package version is the only
-        // thing that pulls an old-but-launchable install forward through repair.
+        // thing that pulls an old-but-launchable install forward via repair.
         let mut capability = healthy_capability();
         capability.version = Some("2026.5.2".to_string());
         assert_eq!(

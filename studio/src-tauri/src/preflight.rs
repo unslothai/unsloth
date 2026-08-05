@@ -466,8 +466,8 @@ mod tests {
 
     #[test]
     fn managed_venv_behind_the_shipped_backend_is_outdated() {
-        // Above the floor but below what this build shipped with: the exact case
-        // the standalone installer leaves behind in the shared venv.
+        // Above the floor but below what this build shipped: the exact case the
+        // standalone installer leaves behind in the shared venv.
         assert_eq!(
             backend_version_outdated_reason(Some("2026.8.4"), "2026.8.5").as_deref(),
             Some("desktop_backend_version_outdated")
@@ -490,8 +490,8 @@ mod tests {
                 Some(reason)
             );
         }
-        // Unstamped builds fall back to the floor, so dev and CI keep today's
-        // behaviour and the managed gate reduces to the shared one.
+        // Unstamped builds fall back to the floor, so the managed gate reduces
+        // to the shared one for dev and CI.
         assert_eq!(expected_backend_version(), MIN_DESKTOP_BACKEND_VERSION);
         assert_eq!(
             managed_backend_version_stale_reason(Some(MIN_DESKTOP_BACKEND_VERSION)),
