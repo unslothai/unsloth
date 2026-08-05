@@ -1,0 +1,193 @@
+name: Publish Desktop Updater
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-desktop-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  publish-updater:
+    name: Advance desktop updater channel
+    if: startsWith(github.event.release.tag_name, 'desktop-v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.event.release.tag_name }}
+
+    steps:
+      - name: Harden runner (audit)
+        uses: step-security/harden-runner@a5ad31d6a139d249332a2605b85202e8c0b78450  # v2.19.1
+        with:
+          egress-policy: audit
+
+      - name: Download updater metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/desktop-updater" "$RUNNER_TEMP/desktop-current"
+          gh release download "$RELEASE_TAG" --pattern latest.json --dir "$RUNNER_TEMP/desktop-updater"
+          test -s "$RUNNER_TEMP/desktop-updater/latest.json"
+          gh release download desktop-latest --pattern latest.json --dir "$RUNNER_TEMP/desktop-current" 2>/dev/null || true
+
+      - name: Remove standalone signature assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          signature_assets="$(
+            gh release view "$RELEASE_TAG" --json assets \
+              --jq '.assets[].name | select(endswith(".sig"))'
+          )"
+          while IFS= read -r asset_name; do
+            [[ -z "$asset_name" ]] || gh release delete-asset "$RELEASE_TAG" "$asset_name" --yes
+          done <<< "$signature_assets"
+
+      - name: Validate updater metadata
+        run: |
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import re
+          import sys
+
+          def parse(value: str):
+              value = value.removeprefix('v')
+              match = re.fullmatch(
+                  r'(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
+                  r'(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?'
+                  r'(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?',
+                  value,
+              )
+              if not match:
+                  sys.exit(f'Invalid desktop updater version: {value}')
+              major, minor, patch, prerelease = match.groups()
+              return (int(major), int(minor), int(patch), prerelease)
+
+          def compare_identifier(left: str, right: str) -> int:
+              if left.isdigit() and right.isdigit():
+                  return (int(left) > int(right)) - (int(left) < int(right))
+              if left.isdigit():
+                  return -1
+              if right.isdigit():
+                  return 1
+              left_tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', left)
+              right_tail = re.fullmatch(r'([A-Za-z-]+)(\d+)', right)
+              if left_tail and right_tail and left_tail.group(1).lower() == right_tail.group(1).lower():
+                  return (int(left_tail.group(2)) > int(right_tail.group(2))) - (
+                      int(left_tail.group(2)) < int(right_tail.group(2))
+                  )
+              return (left > right) - (left < right)
+
+          def compare(left: str, right: str) -> int:
+              left_major, left_minor, left_patch, left_pre = parse(left)
+              right_major, right_minor, right_patch, right_pre = parse(right)
+              left_core = (left_major, left_minor, left_patch)
+              right_core = (right_major, right_minor, right_patch)
+              if left_core != right_core:
+                  return (left_core > right_core) - (left_core < right_core)
+              if left_pre == right_pre:
+                  return 0
+              if left_pre is None:
+                  return 1
+              if right_pre is None:
+                  return -1
+              left_parts = left_pre.split('.')
+              right_parts = right_pre.split('.')
+              for left_part, right_part in zip(left_parts, right_parts):
+                  order = compare_identifier(left_part, right_part)
+                  if order:
+                      return order
+              return (len(left_parts) > len(right_parts)) - (len(left_parts) < len(right_parts))
+
+          release_tag = os.environ['RELEASE_TAG']
+          tag_match = re.fullmatch(r'desktop-v(.+)', release_tag)
+          if not tag_match:
+              sys.exit(f'Not a desktop version release: {release_tag}')
+
+          latest_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-updater', 'latest.json')
+          data = json.loads(latest_path.read_text())
+          if not isinstance(data, dict):
+              sys.exit('latest.json must be a JSON object')
+          version = data.get('version')
+          if not isinstance(version, str) or version.removeprefix('v') != tag_match.group(1):
+              sys.exit(f'latest.json version {version!r} does not match {release_tag}')
+          parse(version)
+
+          platforms = data.get('platforms')
+          if not isinstance(platforms, dict) or not platforms:
+              sys.exit('latest.json missing platforms')
+          required = {'darwin-aarch64': False, 'linux-x86_64': False, 'windows-x86_64': False}
+          expected_prefix = f'https://github.com/{os.environ["GITHUB_REPOSITORY"]}/releases/download/{release_tag}/'
+          for platform, entry in platforms.items():
+              if not isinstance(entry, dict):
+                  sys.exit(f'Platform {platform} must be an object')
+              url = entry.get('url')
+              signature = entry.get('signature')
+              if not isinstance(url, str) or not url.startswith(expected_prefix):
+                  sys.exit(f'Platform {platform} URL must point at {release_tag}: {url}')
+              if not isinstance(signature, str) or not signature.strip():
+                  sys.exit(f'Platform {platform} missing signature')
+              for family in required:
+                  if platform == family or platform.startswith(family + '-'):
+                      required[family] = True
+          missing = [family for family, found in required.items() if not found]
+          if missing:
+              sys.exit('latest.json missing required platform families: ' + ', '.join(missing))
+
+          current_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-current', 'latest.json')
+          if current_path.is_file():
+              current = json.loads(current_path.read_text()).get('version')
+              if not isinstance(current, str):
+                  sys.exit('desktop-latest latest.json has missing version')
+              if compare(version, current) < 0:
+                  sys.exit(f'Refusing to move desktop-latest from {current} to older version {version}.')
+          PY
+
+      - name: Ensure updater channel release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          channel_json="$RUNNER_TEMP/desktop-latest-release.json"
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$channel_json" 2>/dev/null; then
+            gh release create desktop-latest \
+              --title "Unsloth Desktop updater channel" \
+              --notes "Machine-managed desktop updater channel; latest.json follows published desktop releases." \
+              --prerelease \
+              --latest=false \
+              --target "$GITHUB_SHA"
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$channel_json"
+          fi
+
+          python3 <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          channel = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-latest-release.json').read_text())
+          if channel.get('draft'):
+              sys.exit('desktop-latest release is draft')
+          if channel.get('immutable'):
+              sys.exit('desktop-latest release is immutable')
+          if not channel.get('prerelease'):
+              sys.exit('desktop-latest release must be a prerelease')
+          PY
+
+      - name: Publish updater channel metadata
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh release upload desktop-latest "$RUNNER_TEMP/desktop-updater/latest.json" --clobber
+          test "$(gh release view desktop-latest --json assets --jq '[.assets[] | select(.name == "latest.json")] | length')" = 1

@@ -7,6 +7,7 @@ import yaml
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 WORKFLOW = REPO_ROOT / ".github" / "workflows" / "release-desktop.yml"
+UPDATER_WORKFLOW = REPO_ROOT / ".github" / "workflows" / "publish-desktop-updater.yml"
 
 
 def _workflow():
@@ -56,3 +57,26 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     )
     assert "gh release view" in release_step["run"]
     assert "--json tagName,isDraft,isPrerelease" in release_step["run"]
+
+
+def test_versioned_release_hides_updater_signature_assets():
+    steps = _workflow()["jobs"]["publish-release"]["steps"]
+    publish = next(step for step in steps if step.get("name") == "Publish versioned release assets")
+
+    assert '[[ "$asset" == *.sig ]] || release_assets+=("$asset")' in publish["run"]
+    assert "gh release delete-asset" in publish["run"]
+    assert '"${release_assets[@]}"' in publish["run"]
+
+
+def test_publishing_draft_advances_updater_without_rebuilding():
+    workflow = yaml.safe_load(UPDATER_WORKFLOW.read_text(encoding="utf-8"))
+    assert workflow.get("on", workflow.get(True)) == {"release": {"types": ["published"]}}
+    assert workflow["permissions"] == {"contents": "read"}
+
+    job = workflow["jobs"]["publish-updater"]
+    assert "build" not in workflow["jobs"]
+    assert job["permissions"] == {"contents": "write"}
+    assert "startsWith(github.event.release.tag_name, 'desktop-v')" in job["if"]
+    assert not any("actions/checkout" in step.get("uses", "") for step in job["steps"])
+    assert any("desktop-latest" in step.get("run", "") for step in job["steps"])
+    assert any("gh release delete-asset" in step.get("run", "") for step in job["steps"])
