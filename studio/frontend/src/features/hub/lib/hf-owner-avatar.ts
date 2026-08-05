@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { fetchWithTimeout } from "@/features/hub/lib/network";
 import { hubProxyFirst } from "@/features/hub/lib/hub-endpoint";
-import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
+import { useDirectHubOnline } from "@/features/hub/hooks/use-online-status";
 
 type AvatarCacheEntry =
   | { kind: "url"; url: string; expiresAt: number }
@@ -162,7 +162,7 @@ export function useHfOwnerAvatar(
   enabled = true,
 ): string | null {
   const key = owner?.trim() ?? "";
-  const online = useOnlineStatus();
+  const online = useDirectHubOnline();
   const [state, setState] = useState<{ key: string; url: string | null }>(() => {
     return { key, url: readCachedUrl(key) };
   });

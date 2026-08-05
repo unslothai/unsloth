@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
+import { useDirectHubOnline } from "@/features/hub/hooks/use-online-status";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { useEffect, useState } from "react";
 import {
@@ -13,7 +13,7 @@ export function useDatasetSize(
   repoId: string | null | undefined,
   options: { enabled?: boolean; token?: string | null } = {},
 ): DatasetSizeInfo | null {
-  const online = useOnlineStatus();
+  const online = useDirectHubOnline();
   const enabled = options.enabled ?? true;
   const token = options.token || undefined;
   const repoKey = repoId ?? "";

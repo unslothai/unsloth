@@ -2,7 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Spinner } from "@/components/ui/spinner";
-import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
+import { useDirectHubOnline } from "@/features/hub/hooks/use-online-status";
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { isDirectHubOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
@@ -387,7 +387,7 @@ export function ModelReadme({
   subject?: ReadmeSubject;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
-  const online = useOnlineStatus();
+  const online = useDirectHubOnline();
   const tokenFingerprint = useMemo(() => fingerprintToken(hfToken), [hfToken]);
   // This cache holds the in-flight promise, so without the route a direct
   // attempt still running when the browser turns out to be blocked is handed

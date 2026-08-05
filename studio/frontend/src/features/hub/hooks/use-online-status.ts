@@ -5,6 +5,7 @@ import {
   getBrowserOfflineRetryDelayMs,
   getHubPhase,
   getLastHubFailure,
+  isDirectHubOffline,
   isHubProxyServing,
   type HubFailure,
   type HubPhase,
@@ -58,6 +59,24 @@ export function useOnlineStatus(): boolean {
   return useSyncExternalStore(
     subscribeOnlineStatus,
     getOnlineSnapshot,
+    getServerOnlineSnapshot,
+  );
+}
+
+function getDirectOnlineSnapshot(): boolean {
+  return !isDirectHubOffline();
+}
+
+/**
+ * For components that fetch repo assets from the Hub themselves: cards, owner
+ * avatars, dataset sizes. A blocked catalog listing must not stop them, since a
+ * block can be per-path, and their own failures are what suppress them, which
+ * is also what lets their own success bring them back.
+ */
+export function useDirectHubOnline(): boolean {
+  return useSyncExternalStore(
+    subscribeOnlineStatus,
+    getDirectOnlineSnapshot,
     getServerOnlineSnapshot,
   );
 }
