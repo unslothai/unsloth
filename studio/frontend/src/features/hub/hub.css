@@ -1219,24 +1219,6 @@
     justify-content: center;
   }
 
-  .hub-cta-indicator-spinner,
-  .hub-cta-indicator-cancel {
-    transition: opacity 150ms;
-  }
-
-  .hub-cta-indicator-cancel {
-    position: absolute;
-    opacity: 0;
-  }
-
-  .hub-action-btn:hover .hub-cta-indicator-spinner {
-    opacity: 0;
-  }
-
-  .hub-action-btn:hover .hub-cta-indicator-cancel {
-    opacity: 1;
-  }
-
   /* Hover-revealed inline action overlay (used for the row-end trash on
 	   downloaded models and datasets in the inspector). Wrapper 28×28 with a
 	   16px glyph — same icon size as `.hub-action-btn` so the destructive

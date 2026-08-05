@@ -805,7 +805,7 @@ export const it = {
     chat: {
       title: "Chat",
       description:
-        "Gestisci la cronologia delle chat memorizzata su questo dispositivo.",
+        "Personalizza il comportamento della chat su questo dispositivo.",
       modelSelection: {
         title: "Impostazioni di selezione del modello",
         expandQuantizations: "Espandi le quantizzazioni",
@@ -987,7 +987,7 @@ export const it = {
       osWindows: "Windows",
       secureHttps: "HTTPS sicuro",
       secureHttpsHint:
-        "La porta su 0.0.0.0 resta raggiungibile da tutta la rete. Per la massima sicurezza avvia Unsloth con --secure, così viene esposto solo questo link HTTPS.",
+        "La porta su 0.0.0.0 resta raggiungibile da ovunque. Per la massima sicurezza avvia Unsloth con --secure, così viene esposto solo questo link HTTPS.",
       copyTunnelUrl: "Copia l'URL del tunnel",
       copySnippet: "Copia lo snippet",
       copy: "Copia",
@@ -1076,7 +1076,7 @@ export const it = {
           "Se hai ancora il checkout del repository, esegui l'installer locale da lì:",
         restartAfterUpdate: "Riavvia Unsloth dopo l'aggiornamento.",
         desktopManaged:
-          "L'app desktop mantiene aggiornato il backend integrato e avvisa quando è disponibile una nuova versione.",
+          "L'app desktop verifica automaticamente la presenza di nuove versioni. Puoi anche controllare o aggiornare qui in qualsiasi momento.",
         desktopReady: "Aggiornamenti dell'app desktop",
         desktopReadyDescription:
           "Verifica se è disponibile una versione più recente dell'app desktop.",

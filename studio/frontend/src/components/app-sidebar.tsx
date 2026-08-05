@@ -1716,7 +1716,7 @@ export function AppSidebar() {
         className={cn(
           "relative",
           usesDesktopTitlebar
-            ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+6px)]"
+            ? "shrink-0 p-0 pt-[calc(var(--studio-desktop-titlebar-height,34px)+17px)]"
             : "pl-3 pr-3 pt-[14px] pb-[8px] group-data-[collapsible=icon]:px-0",
         )}
       >
@@ -1850,11 +1850,12 @@ export function AppSidebar() {
         )}
       </SidebarHeader>
 
-      {/* Uniform pl-1.5 pr-1.75 keeps every hover pill the same width, inset from the edge. */}
+      {/* Paired padding shifts Tauri's primary pills left without changing width. */}
       <SidebarGroup
         className={cn(
-          "group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 shrink-0 transition-[padding]",
-          usesDesktopTitlebar ? "pt-3" : "pt-[9px]",
+          "group-data-[collapsible=icon]:px-0 shrink-0 transition-[padding]",
+          usesDesktopTitlebar ? "pl-[5px] pr-2" : "pl-1.5 pr-1.75",
+          usesDesktopTitlebar ? "pt-[11px]" : "pt-[9px]",
           // Scrolled: New Chat is pinned, give a little gap below it.
           scrolled ? "pb-[5px]" : "pb-px",
         )}
@@ -1875,12 +1876,11 @@ export function AppSidebar() {
               }
               // Off-route this row is the only sign chats are still running.
               spinner={anyChatRunning && !isChatRoute}
-              active={
-                isChatRoute &&
-                !search.thread &&
-                !search.compare &&
-                !search.project
-              }
+              // An action, not a destination, so it never marks itself active:
+              // the active pill is the hover pill, and on a blank new chat it
+              // left the row looking permanently hovered. Search below is the
+              // same kind of row and has always passed false.
+              active={false}
               onClick={() => {
                 if (showReturnToChat) {
                   // Prefer the running thread so we return to the live generation,
@@ -1942,7 +1942,13 @@ export function AppSidebar() {
           scrolled && "is-scrolled",
         )}
       >
-        <SidebarGroup data-tour="navbar" className="group-data-[collapsible=icon]:px-0 pl-1.5 pr-1.75 py-0 shrink-0">
+        <SidebarGroup
+          data-tour="navbar"
+          className={cn(
+            "group-data-[collapsible=icon]:px-0 py-0 shrink-0",
+            usesDesktopTitlebar ? "pl-[5px] pr-2" : "pl-1.5 pr-1.75",
+          )}
+        >
 
           <SidebarGroupContent>
             <SidebarMenu>
@@ -2067,8 +2073,10 @@ export function AppSidebar() {
                         );
                       })}
                       {/* Way out of the flyout: jump straight to the control that
-                          decides what lives here vs. on the sidebar itself. */}
-                      <DropdownMenuSeparator className="mx-1! my-1.5! h-0! border-t border-border/70 bg-transparent! dark:border-white/15" />
+                          decides what lives here vs. on the sidebar itself.
+                          my-1 matches the menu's own p-1, so the gap either side
+                          of the rule equals the one under the last row. */}
+                      <DropdownMenuSeparator className="mx-1! my-1! h-0! border-t border-border/70 bg-transparent! dark:border-white/15" />
                       <DropdownMenuItem
                         onSelect={() =>
                           useSettingsDialogStore
@@ -2245,14 +2253,27 @@ export function AppSidebar() {
         {!isStudioRoute && !showTrainingRecents && (
           <Collapsible open={chatOpen} onOpenChange={setChatOpen} asChild>
             <SidebarGroup className="group-data-[collapsible=icon]:hidden px-0 py-0">
-              <SidebarGroupLabel className={cn("sidebar-sticky-label sidebar-sticky-label-following", scrolled && "is-scrolled")} asChild>
+              <SidebarGroupLabel
+                className={cn(
+                  "sidebar-sticky-label sidebar-sticky-label-following",
+                  scrolled && "is-scrolled",
+                  usesDesktopTitlebar && "translate-x-[2px]",
+                )}
+                asChild
+              >
                 <CollapsibleTrigger className="cursor-pointer flex w-full items-center gap-1 group/sb-collap">
                   {t("shell.navigation.recents")}
                   <ChevronDown className="size-3.5 opacity-0 transition-[transform,opacity] duration-200 group-hover/sb-collap:opacity-100 group-focus-visible/sb-collap:opacity-100 data-[state=open]:rotate-0 [[data-state=closed]_&]:rotate-[-90deg] [[data-state=closed]_&]:opacity-100" />
                 </CollapsibleTrigger>
               </SidebarGroupLabel>
               <CollapsibleContent>
-                <SidebarGroupContent className="pl-1.5 pr-1.75">
+                <SidebarGroupContent
+                  className={
+                    usesDesktopTitlebar
+                      ? "pl-2 pr-[5px]"
+                      : "pl-1.5 pr-1.75"
+                  }
+                >
                   <SidebarMenu>
                     {recentChatItems.map((item) =>
                       renderChatSidebarItem(item, "recent"),
@@ -2378,7 +2399,7 @@ export function AppSidebar() {
 
       <SidebarFooter
         className={cn(
-          "relative pb-3 group-data-[collapsible=icon]:px-0",
+          "relative pb-[11px] group-data-[collapsible=icon]:px-0",
           // Tighter top with the update card so the fade hugs it; fuller top
           // for the profile on its own.
           showUpdateCard ? "pt-1.5" : "pt-2.5",
@@ -2390,10 +2411,13 @@ export function AppSidebar() {
         <div
           aria-hidden="true"
           className={cn(
-            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
-            // Shorter fade when the update card sits above the profile so the
-            // list reads closer to it.
-            showUpdateCard ? "h-3" : "h-10",
+            // The scroll area hard-clips at the fade's bottom edge, so a plain
+            // ramp is still part-transparent there and slices the last row
+            // mid-glyph. from-[16px] holds it opaque across the clip.
+            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[16px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
+            // Shorter fade with the update card so the list reads closer to
+            // it, but still tall enough to clear a row.
+            showUpdateCard ? "h-9" : "h-14",
             canScrollDown ? "opacity-100" : "opacity-0",
           )}
         />
