@@ -714,7 +714,11 @@ def test_the_native_load_probes_the_asset_it_stages_and_honours_the_cache(monkey
     assert len(fetched) == 1  # got past the preflight, exactly as before this check existed
 
 
-def _stub_shared_download(monkeypatch, tmp_path, cached_elsewhere = ()):
+def _stub_shared_download(
+    monkeypatch,
+    tmp_path,
+    cached_elsewhere = (),
+):
     """Record the cache root each companion download resolves against.
 
     ``cached_elsewhere`` names the files that exist ONLY under huggingface_hub's import-time root

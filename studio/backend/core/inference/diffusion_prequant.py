@@ -434,7 +434,9 @@ def _resolve_checkpoint_path(
         return expanded if os.path.isfile(expanded) else None
     if source.kind == "repo":
         EntryNotFoundError, _ = _entry_not_found_errors()
-        has_fallback = bool(source.fallback_filename) and source.fallback_filename != source.filename
+        has_fallback = (
+            bool(source.fallback_filename) and source.fallback_filename != source.filename
+        )
         try:
             return _download_checkpoint_name(
                 source,
