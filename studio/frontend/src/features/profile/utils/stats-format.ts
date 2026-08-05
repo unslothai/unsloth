@@ -9,42 +9,59 @@
 
 import type { Locale } from "@/i18n";
 
-const TRAILING_ZERO_DECIMAL = /\.0$/;
+const COMPACT_FORMATTERS = new Map<string, Intl.NumberFormat>();
+const FULL_FORMATTERS = new Map<Locale, Intl.NumberFormat>();
 
-/** Compact form used on every stat tile: 12.3K, 4.5M, 19.8B. */
-export function formatCompactNumber(value: number): string {
-  if (!Number.isFinite(value)) return "0";
-  const abs = Math.abs(value);
-  if (abs < 1000) return String(Math.round(value));
-
-  const units: Array<{ limit: number; suffix: string }> = [
-    { limit: 1e12, suffix: "T" },
-    { limit: 1e9, suffix: "B" },
-    { limit: 1e6, suffix: "M" },
-    { limit: 1e3, suffix: "K" },
-  ];
-  for (const [index, { limit, suffix }] of units.entries()) {
-    if (abs < limit) continue;
-    const scaled = value / limit;
-    // One decimal below 100 keeps "1.9B" readable; above it the decimal is noise.
-    const rounded =
-      Math.abs(scaled) >= 100 ? Math.round(scaled) : Number(scaled.toFixed(1));
-    // Rounding can push a value over the next boundary, and "1000K" is not
-    // compact. Step up a unit rather than print four digits.
-    const next = units[index - 1];
-    if (next && Math.abs(rounded) >= 1000) {
-      return `${(value / next.limit).toFixed(1).replace(TRAILING_ZERO_DECIMAL, "")}${next.suffix}`;
-    }
-    const text =
-      Math.abs(scaled) >= 100 ? rounded.toString() : scaled.toFixed(1);
-    return `${text.replace(TRAILING_ZERO_DECIMAL, "")}${suffix}`;
+function compactFormatter(
+  locale: Locale,
+  maximumFractionDigits: 0 | 1,
+): Intl.NumberFormat {
+  const key = `${locale}:${maximumFractionDigits}`;
+  const cached = COMPACT_FORMATTERS.get(key);
+  if (cached) {
+    return cached;
   }
-  return String(Math.round(value));
+  const formatter = new Intl.NumberFormat(locale, {
+    notation: "compact",
+    maximumFractionDigits,
+  });
+  COMPACT_FORMATTERS.set(key, formatter);
+  return formatter;
 }
 
-export function formatFullNumber(value: number): string {
+/** Magnitude of the compact form, so "past 100 of a unit" is asked of Intl
+ * rather than derived from a hardcoded 1e3/1e6/1e9 ladder that only matches
+ * locales grouping in thousands. ja and zh group in 万, hi in लाख. */
+function compactInteger(locale: Locale, value: number): number {
+  for (const part of compactFormatter(locale, 1).formatToParts(value)) {
+    if (part.type === "integer") {
+      return Math.abs(Number(part.value));
+    }
+  }
+  return 0;
+}
+
+/**
+ * Compact form used on every stat tile: 12.3K, 4.5M, 19.8B in English, and
+ * each locale's own units elsewhere (1.2万 in ja, 1,9 Mrd. in de, 1.2 लाख in
+ * hi). One decimal below 100 of a unit keeps "1.9B" readable; above it the
+ * decimal is noise, and asking for zero digits also avoids "1000K", which is
+ * not compact.
+ */
+export function formatCompactNumber(value: number, locale: Locale): string {
   if (!Number.isFinite(value)) return "0";
-  return Math.round(value).toLocaleString();
+  return compactInteger(locale, value) < 100
+    ? compactFormatter(locale, 1).format(value)
+    : compactFormatter(locale, 0).format(value);
+}
+
+/** The exact count behind a tile, grouped the way the chosen locale groups. */
+export function formatFullNumber(value: number, locale: Locale): string {
+  if (!Number.isFinite(value)) return "0";
+  const cached = FULL_FORMATTERS.get(locale);
+  const formatter = cached ?? new Intl.NumberFormat(locale);
+  if (!cached) FULL_FORMATTERS.set(locale, formatter);
+  return formatter.format(Math.round(value));
 }
 
 const DAY_FORMATTERS = new Map<Locale, Intl.NumberFormat>();

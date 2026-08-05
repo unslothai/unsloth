@@ -8,6 +8,7 @@ import {
   formatCompactNumber,
   formatDayCount,
   formatDuration,
+  formatFullNumber,
   formatMilliseconds,
   formatProfileCount,
   heatLevel,
@@ -17,26 +18,52 @@ import {
 } from "../src/features/profile/utils/stats-format.ts";
 
 test("compact numbers match the tile format", () => {
-  assert.equal(formatCompactNumber(0), "0");
-  assert.equal(formatCompactNumber(999), "999");
-  assert.equal(formatCompactNumber(1000), "1K");
-  assert.equal(formatCompactNumber(12_340), "12.3K");
-  assert.equal(formatCompactNumber(1_900_000_000), "1.9B");
-  assert.equal(formatCompactNumber(19_800_000_000), "19.8B");
+  assert.equal(formatCompactNumber(0, "en"), "0");
+  assert.equal(formatCompactNumber(999, "en"), "999");
+  assert.equal(formatCompactNumber(1000, "en"), "1K");
+  assert.equal(formatCompactNumber(12_340, "en"), "12.3K");
+  assert.equal(formatCompactNumber(1_900_000_000, "en"), "1.9B");
+  assert.equal(formatCompactNumber(19_800_000_000, "en"), "19.8B");
   // Past 100 of a unit the decimal is noise.
-  assert.equal(formatCompactNumber(123_400), "123K");
-  assert.equal(formatCompactNumber(Number.NaN), "0");
+  assert.equal(formatCompactNumber(123_400, "en"), "123K");
+  assert.equal(formatCompactNumber(Number.NaN, "en"), "0");
 });
 
 test("rounding up a unit steps to the next suffix", () => {
   // Rounding 999.5K to "1000K" is four digits, which is not compact.
-  assert.equal(formatCompactNumber(999_999), "1M");
-  assert.equal(formatCompactNumber(999_500), "1M");
-  assert.equal(formatCompactNumber(999_999_999), "1B");
-  assert.equal(formatCompactNumber(999_999_999_999), "1T");
-  assert.equal(formatCompactNumber(-999_999), "-1M");
+  assert.equal(formatCompactNumber(999_999, "en"), "1M");
+  assert.equal(formatCompactNumber(999_500, "en"), "1M");
+  assert.equal(formatCompactNumber(999_999_999, "en"), "1B");
+  assert.equal(formatCompactNumber(999_999_999_999, "en"), "1T");
+  assert.equal(formatCompactNumber(-999_999, "en"), "-1M");
   // Just below the rounding boundary the unit is unchanged.
-  assert.equal(formatCompactNumber(999_499), "999K");
+  assert.equal(formatCompactNumber(999_499, "en"), "999K");
+});
+
+test("compact numbers use each locale's own magnitude units", () => {
+  // K/M/B is an English convention. ja and ko group in 万/억, zh in 万/亿,
+  // and hi in लाख, so a hardcoded ladder is wrong in half the locales.
+  assert.equal(formatCompactNumber(12_340, "ja"), "1.2万");
+  assert.equal(formatCompactNumber(1_900_000_000, "ja"), "19億");
+  assert.equal(formatCompactNumber(12_340, "zh-CN"), "1.2万");
+  assert.equal(formatCompactNumber(1_900_000_000, "zh-CN"), "19亿");
+  // U+00A0, not a plain space: CLDR keeps the unit from wrapping away from
+  // its number, so an assertion with a normal space silently fails.
+  assert.equal(formatCompactNumber(1_900_000, "hi"), "19\u00a0लाख");
+  // Decimal separator and unit word follow the locale too.
+  assert.equal(formatCompactNumber(1_900_000, "de"), "1,9\u00a0Mio.");
+  assert.equal(formatCompactNumber(1_900_000, "ru"), "1,9\u00a0млн");
+  // German CLDR has no short form below a million, so thousands stay written
+  // out. That is the locale's rule, not a fallback.
+  assert.equal(formatCompactNumber(12_340, "de"), "12.340");
+});
+
+test("full numbers group the way the chosen locale groups", () => {
+  assert.equal(formatFullNumber(1_234_567, "en"), "1,234,567");
+  assert.equal(formatFullNumber(1_234_567, "de"), "1.234.567");
+  // Indian grouping is 2-2-3, not 3-3-3.
+  assert.equal(formatFullNumber(1_234_567, "hi"), "12,34,567");
+  assert.equal(formatFullNumber(Number.NaN, "en"), "0");
 });
 
 test("durations read the way the header does", () => {
