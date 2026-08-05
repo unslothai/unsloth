@@ -207,6 +207,30 @@ def test_prefer_ungated_mirror_declines(monkeypatch):
     assert prefer_ungated_mirror(gated) == gated
 
 
+def test_a_local_base_directory_is_never_mirrored(monkeypatch, tmp_path):
+    """A path that exists on disk is not a Hub id, so it must survive the swap untouched.
+
+    A user can clone a base into a directory whose RELATIVE path is the vendor id. The loaders
+    resolve such a base locally (``Path(base).exists()``), but several of them take that branch
+    after the mirror swap, so rewriting it would send the load to the Hub and ignore the on-disk
+    files.
+    """
+    gated = "black-forest-labs/FLUX.1-dev"
+    _no_cache(monkeypatch)
+    # The table still knows this id: only the local path stops the swap.
+    assert mirror_repo(gated) == "unsloth/FLUX.1-dev"
+    assert prefer_ungated_mirror(gated) == "unsloth/FLUX.1-dev"
+
+    local = tmp_path / gated
+    (local / "vae").mkdir(parents = True)
+    (local / "model_index.json").write_text("{}")
+    monkeypatch.chdir(tmp_path)
+    assert prefer_ungated_mirror(gated) == gated
+    assert prefer_ungated_mirror(gated, files = ["model_index.json"]) == gated
+    # An absolute local path never matched the table, and still does not.
+    assert prefer_ungated_mirror(str(local)) == str(local)
+
+
 def test_mirrored_base_still_trips_the_flux2_shape_guard():
     """The regression the two-helper split exists for.
 

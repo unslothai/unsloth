@@ -553,6 +553,20 @@ def _upstream_is_cached(repo_id: str, files: Optional[Sequence[str]] = None) -> 
         return False
 
 
+def _is_local_path(base: str) -> bool:
+    """Whether ``base`` names something that exists on disk, i.e. a local dir, not a Hub id.
+
+    A user can clone a base into a directory whose relative path IS the vendor id
+    (``black-forest-labs/FLUX.1-dev``), and the loaders deliberately treat such a base as local
+    via ``Path(...).exists()``. An id with invalid path characters makes ``exists()`` raise
+    OSError, which just means "not a local path".
+    """
+    try:
+        return Path(base or "").expanduser().exists()
+    except OSError:
+        return False
+
+
 def prefer_ungated_mirror(
     base: str,
     hf_token: Optional[str] = None,
@@ -568,10 +582,10 @@ def prefer_ungated_mirror(
     records. The one place the swapped id is visible is the download manager row, which names the
     repo it is actually pulling -- staging the gated id there is the 401 this exists to remove.
 
-    Declines back to today's behaviour when ``UNSLOTH_DIFFUSION_NO_MIRROR`` is set, or when the
-    upstream already satisfies the load from cache and switching would re-pull tens of GiB for no
-    gain. ``files`` sharpens that second test to the exact repo-relative names the caller is about
-    to fetch; without it any cached weight file counts.
+    Declines back to today's behaviour when ``UNSLOTH_DIFFUSION_NO_MIRROR`` is set, when ``base``
+    is an existing local path, or when the upstream already satisfies the load from cache and
+    switching would re-pull tens of GiB for no gain. ``files`` sharpens that last test to the exact
+    repo-relative names the caller is about to fetch; without it any cached weight file counts.
 
     PURE: table lookup, env read, local stat, no network. This runs inside pipeline assembly, so an
     earlier ``model_info`` probe of the mirror put a Hub round trip on the load path and made the
@@ -581,6 +595,11 @@ def prefer_ungated_mirror(
     del hf_token  # noqa: F841 -- signature stability only
     mirror = mirror_repo(base)
     if not mirror or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+        return base
+    # A local path is never a Hub id: rewriting one sends loads that the rest of the loaders
+    # resolve on disk (``Path(base).exists()``) to the Hub for files already downloaded, and some
+    # of those sites take the local branch AFTER this swap, so the on-disk copy is skipped.
+    if _is_local_path(base):
         return base
     return base if _upstream_is_cached(base, files) else mirror
 
