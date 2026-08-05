@@ -524,9 +524,7 @@ def _upstream_is_cached(repo_id: str) -> bool:
     """
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
-        blobs = (
-            Path(active_hf_hub_cache()) / f"models--{repo_id.replace('/', '--')}" / "blobs"
-        )
+        blobs = Path(active_hf_hub_cache()) / f"models--{repo_id.replace('/', '--')}" / "blobs"
         return blobs.is_dir() and any(blobs.iterdir())
     except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
         return False

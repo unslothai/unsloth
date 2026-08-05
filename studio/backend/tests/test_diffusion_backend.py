@@ -219,9 +219,13 @@ def test_mirrored_base_still_trips_the_flux2_shape_guard():
         class _Reader:
             def __init__(self, _path):
                 self.tensors = [
-                    type("T", (), {"name": "double_stream_modulation_img.lin.weight",
-                                   "shape": (inner_dim,)})()
+                    type(
+                        "T",
+                        (),
+                        {"name": "double_stream_modulation_img.lin.weight", "shape": (inner_dim,)},
+                    )()
                 ]
+
         return _Reader
 
     import gguf
@@ -2007,8 +2011,11 @@ def test_prefetch_pulls_companions_from_the_ungated_mirror(monkeypatch, tmp_path
         "core.inference.diffusion_families._upstream_is_cached", lambda repo_id: True
     )
     backend._prefetch_files(
-        "unsloth/FLUX.1-dev-GGUF", None, "black-forest-labs/FLUX.1-dev",
-        ["vae/diffusion_pytorch_model.safetensors"], None,
+        "unsloth/FLUX.1-dev-GGUF",
+        None,
+        "black-forest-labs/FLUX.1-dev",
+        ["vae/diffusion_pytorch_model.safetensors"],
+        None,
     )
     assert ("black-forest-labs/FLUX.1-dev", "vae/diffusion_pytorch_model.safetensors") in calls
 
