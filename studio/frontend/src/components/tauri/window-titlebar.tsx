@@ -115,11 +115,7 @@ export function DesktopTitlebarNavigation({
   expanded: boolean;
   onToggleSidebar: () => void;
   className?: string;
-  /**
-   * Off in the mobile layout, where the sidebar is a sheet keyed off
-   * `openMobile` and pinning does nothing. Navbar's SidebarTrigger takes the
-   * slot, which an inert spacer holds open so back/forward stay put.
-   */
+  /** Off in mobile, where Navbar's SidebarTrigger owns the slot; a spacer holds it open. */
   showSidebarToggle?: boolean;
 }): ReactElement {
   const stopTitlebarDrag = (event: MouseEvent<HTMLButtonElement>) => {

@@ -38,8 +38,8 @@ export function Navbar() {
       </>
     );
   }
-  // Windows text scaling shrinks the CSS viewport, so a desktop window can land
-  // here; sit inside the custom titlebar band instead of buried under its z-[70].
+  // Desktop windows can land here under Windows text scaling, so sit inside the
+  // custom titlebar band instead of under its z-[70].
   return (
     <header
       className={cn(
