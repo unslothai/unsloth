@@ -1655,6 +1655,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             prefix_pending = False
             prefix_command = ""
             win_shell_pending = False
+            payload_pending = False
             xargs_index = -1
         if skip_operand:
             # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand
@@ -1695,6 +1696,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             prefix_pending = False
             prefix_command = ""
             win_shell_pending = False
+            payload_pending = False
             xargs_index = -1
             continue
         if token.startswith("-"):
@@ -1762,7 +1764,11 @@ def _find_blocked_commands(command: str) -> set[str]:
         prefix_command = ""
         # Only a cmd the shell RUNS opens a payload behind /c, so this is set
         # here and nowhere else, and any separator or newline clears it again.
-        win_shell_pending = base in ("cmd", "cmd.exe")
+        # Normalised like the nested-shell lookup: a shell can be spelled as a
+        # full path, and os.path.basename leaves a backslash path whole off
+        # Windows, so `C:\Windows\System32\cmd.exe /c start "" powershell`
+        # matched no shell and its START was left in argument position.
+        win_shell_pending = _token_basename(_unquote(token).replace("\\", "/")) == "cmd"
         xargs_index = -1
 
     # `alias zap='rm -rf'` stores a command bash runs when the alias is invoked,

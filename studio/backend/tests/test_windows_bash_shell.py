@@ -694,3 +694,36 @@ def test_a_quoted_cmd_payload_is_not_a_program_name(windows_terminal):
     # last path segment: listing a directory came back as the rm builtin.
     assert not tools._find_blocked_commands('cmd /c "ls /usr/bin/rm"')
     assert not tools._find_blocked_commands('cmd /c "dir C:\\tmp"')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        '"C:\\Windows\\System32\\cmd.exe" /c start "" powershell -Command ls',
+        "C:/Windows/System32/cmd.exe /c start \"\" powershell -Command ls",
+        '"C:\\Windows\\System32\\cmd.exe" /c env start "" powershell -Command ls',
+    ],
+)
+def test_a_full_path_cmd_still_opens_its_payload(windows_terminal, command):
+    # A shell can be spelled as a full path, and os.path.basename leaves a
+    # backslash path whole off Windows, so the /c opened no command position and
+    # the START behind it stayed in argument position. Normalised the way the
+    # nested-shell lookup already normalises the same spelling.
+    assert tools._find_blocked_commands(command)
+
+
+def test_bash_eats_an_unquoted_backslash_path(monkeypatch):
+    # Unquoted, those backslashes are bash escapes and the program name arrives
+    # as C:WindowsSystem32cmd.exe, which launches nothing. Checked against bash
+    # rather than assumed. Quoting is what carries the path through, and that
+    # spelling is covered above.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert "powershell" not in tools._find_blocked_commands(
+        "C:\\Windows\\System32\\cmd.exe /c start \"\" powershell"
+    )
