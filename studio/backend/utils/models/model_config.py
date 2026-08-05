@@ -2342,7 +2342,11 @@ def _direct_gguf_for_variant(
     context = f"{f.parent.name}/{f.name}"
     quant = _extract_quant_label(context)
     fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", f.name.rsplit(".", 1)[0])
-    if not _variant_matches(variant, quant, fallback_variant):
+    # The hub-side extractor drops the -bpw modifier, so that shorter label is
+    # what listings advertise and clients echo; accept it like the hub download
+    # path does through its filename match.
+    stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
+    if not _variant_matches(variant, quant, fallback_variant, stripped):
         return None
     return detect_gguf_model(str(f), model_root)
 
