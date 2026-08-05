@@ -852,3 +852,22 @@ def test_start_follows_the_prefix_it_launches(windows_terminal, command):
     # same shape `-exec` already models. Naming only `env` left the shell it
     # forwards to out of command position, so its payload was never read.
     assert tools._find_blocked_commands(command)
+
+
+def test_an_empty_pair_is_read_by_where_it_sits(monkeypatch):
+    # `""cmd` closes a zero-length span glued to the program, and the shell drops
+    # the marks before anything sees argv, so cmd really runs. `"" rm` is a
+    # different line: a genuine empty argument, and the wrapper in front of it
+    # tries to run nothing at all. Only the whitespace between them tells the two
+    # apart, so the raw text decides rather than the token alone.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert "powershell" in tools._find_blocked_commands('""cmd /c powershell""')
+    assert "powershell" in tools._find_blocked_commands('cmd //c start "" ""cmd /c powershell""')
+    assert not tools._find_blocked_commands('xargs "" rm')
+    assert not tools._find_blocked_commands('find . -exec "" rm ;')

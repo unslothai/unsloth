@@ -1609,6 +1609,22 @@ def _find_blocked_commands(command: str) -> set[str]:
             base = stem
         return base
 
+    def _glued_empty_quotes(index: int) -> bool:
+        """Whether ``tokens[index]`` is an empty quoted pair the shell would have
+        collapsed INTO the word after it.
+
+        `""cmd /c prog` reaches the program as `cmd`, because the marks close a
+        zero-length span glued to it and the shell drops them before anything
+        sees argv; the cmd lexer keeps them and hands back a word of its own.
+        `"" rm` is a different line: a genuine empty argument, and the wrapper in
+        front of it really does try to run nothing. The two are told apart by the
+        whitespace between them, which only the raw text still has.
+        """
+        token = tokens[index]
+        if not token or token.strip('"'):
+            return False
+        return index + 1 < len(tokens) and token + tokens[index + 1] in command
+
     def _exec_child_index(start: int) -> "tuple[int, bool]":
         """The command a `find -exec` actually runs, as ``(index, overflowed)``;
         the index is -1 when the action holds no command word at all.
@@ -1645,12 +1661,9 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # `env -i`, `env A=b`, `timeout 5`: the wrapper's own argument.
                 i += 1
                 continue
-            if token and not token.strip('"'):
-                # A word of nothing but double quotes is not the child, for the
-                # reason the main walk gives: cmd collapses a doubled pair and
-                # runs what follows it. Only `"`, since cmd has no single-quote
-                # syntax and `start '' prog` really does look for a program
-                # literally named `''`.
+            if _glued_empty_quotes(i):
+                # Not the child: the shell collapsed this pair into the word
+                # behind it, for the reason _glued_empty_quotes gives.
                 i += 1
                 continue
             base = _token_basename(token)
@@ -1766,13 +1779,10 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # `cmd /c "C:\\...\\cmd.exe" /c powershell` really nests.
                 expect_command = False
                 continue
-        if token and not token.strip('"'):
-            # A word made only of double quotes is not a program. cmd collapses a
-            # doubled pair and runs what follows, so `""cmd /c powershell""`
-            # lexes to an empty word with the program behind it; spending command
-            # position on the empty word left that program in argument position.
-            # Only `"`: cmd has no single-quote syntax, so `''` really is a
-            # program name there and the word after it is its argument.
+        if _glued_empty_quotes(token_index):
+            # Not a program: the shell collapsed this pair into the word behind
+            # it, so `""cmd /c powershell""` runs cmd. Spending command position
+            # on the empty word left that program in argument position.
             continue
         base = _token_basename(token)
         # Every word this loop reaches is one the shell would RUN, wrappers and
