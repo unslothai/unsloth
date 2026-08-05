@@ -125,12 +125,12 @@ def test_the_dictation_step_binds_to_no_translated_copy_at_all():
     assert offenders == [], offenders
 
 
-MULTI_LINE_SAMPLE = '''page.get_by_role(
+MULTI_LINE_SAMPLE = """page.get_by_role(
     "button",
     name = re.compile(r"^Voice$"),
 ).first.click()
 page.get_by_test_id("stt-model-search").fill("whisper")
-'''
+"""
 
 
 def test_the_guard_catches_a_multi_line_copy_locator():
