@@ -14,6 +14,7 @@ import contextlib
 import sys
 import threading
 import types
+from pathlib import Path
 
 import pytest
 
@@ -3448,7 +3449,9 @@ def test_prefetch_returns_snapshot_dir_for_manifest(monkeypatch):
     root = backend._prefetch_files(
         "base/repo", None, "base/repo", ["model_index.json", "vae/x.safetensors"], None
     )
-    assert root == "/cache/snap"
+    # str(Path(...).parent), so the separator is the platform's: '/cache/snap' on POSIX and
+    # '\cache\snap' on Windows. Comparing against the literal passed everywhere but Windows.
+    assert root == str(Path("/cache/snap"))
     assert (
         backend._prefetch_files("base/repo", None, "base/repo", ["vae/x.safetensors"], None) is None
     )
