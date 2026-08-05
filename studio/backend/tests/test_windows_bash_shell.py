@@ -1401,3 +1401,37 @@ def test_the_newline_marker_is_not_attacker_controlled(windows_terminal):
     # line: a boundary an author could delete by typing it.
     assert "powershell" in tools._find_blocked_commands('echo \x01\nstart "" powershell')
     assert "powershell" in tools._find_blocked_commands('echo \x01\x02\x03\nstart "" powershell')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\tools\\rm scripts\\x"',
+        'cmd /c "C:\\tools\\pwsh scripts\\job.ps1"',
+        # START is not in this list on purpose. `cmd /c` runs a COMMAND LINE, so
+        # its prefixes are candidate programs; START takes a single target, which
+        # is why its arguments go outside the quotes, so a fully quoted target
+        # naming no executable reads as one file. With a suffix present there is
+        # no ambiguity and `start "" "C:\tools\pwsh.exe scripts\job.ps1"` is
+        # screened, which the test above pins.
+    ],
+)
+def test_the_shortest_prefix_is_screened_when_nothing_ends_the_path(windows_terminal, command):
+    # No executable suffix anywhere says where this path ENDS, and CreateProcess
+    # tries the shortest prefix first, so `C:\tools\rm scripts\x` runs rm on a
+    # file rather than naming one long path. Joining it all read the argument as
+    # the program and let the blocked one in front of it through.
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\powershell scripts\\notepad.exe -x"',
+        'cmd /c "C:\\tools\\notepad rm"',
+    ],
+)
+def test_a_directory_named_like_a_command_is_not_the_program(windows_terminal, command):
+    # The other side: when the path DOES end in an executable, that is what runs,
+    # so the folder it sits in is not screened as the program.
+    assert not tools._find_blocked_commands(command)

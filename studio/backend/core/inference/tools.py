@@ -1679,10 +1679,19 @@ def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "s
     # %VAR% is expanded before the path is read, so the separator is normalised
     # rather than assumed.
     stem, ext = os.path.splitext(os.path.basename(program[-1].replace("\\", "/")))
-    if ext and ext.lower() not in _WINDOWS_EXE_SUFFIXES:
-        return set()
-    base = stem.lower()
-    return {base} if base in blocked_names else set()
+    candidates: "list[str]" = []
+    if not ext or ext.lower() in _WINDOWS_EXE_SUFFIXES:
+        candidates.append(stem.lower())
+    if not ext or ext.lower() not in _WINDOWS_EXE_SUFFIXES:
+        # Nothing along the path says where it ENDS, so the shortest prefix is a
+        # candidate too: CreateProcess tries those first, and `C:\tools\rm
+        # scripts\x` runs rm on a file rather than naming one long path. Only
+        # when the last component is suffixless, so a spaced directory ending in
+        # a real executable, `C:\powershell scripts\notepad.exe`, still reports
+        # the notepad it launches rather than the folder it sits in.
+        first = os.path.basename(program[0].replace("\\", "/"))
+        candidates.append(os.path.splitext(first)[0].lower())
+    return {base for base in candidates if base in blocked_names}
 
 
 def _is_start_title(token: str, lexed_posix: bool) -> bool:
