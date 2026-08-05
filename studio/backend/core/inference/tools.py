@@ -372,6 +372,7 @@ _SEPARATOR_CHARS = frozenset("".join(_SHELL_SEPARATORS))
 # non-whitespace, non-quote, non-punctuation_chars character serves, so the
 # masked text splits into the same words and the token lists line up.
 _QUOTED_SEPARATOR_MARK = "\x00"
+_NEWLINE_COMMAND_MARK = "\x01"
 # The characters bash expands a word against the filesystem for, and the
 # placeholder standing in for a QUOTED one during the same second lex.
 _GLOB_CHARS = frozenset("*?[")
@@ -1052,6 +1053,58 @@ def _quoted_separator_indexes(text: str, tokens: "list[str]", punctuation: str) 
     )
 
 
+def _newline_command_indexes(text: str, tokens: "list[str]", mode: str) -> "frozenset[int]":
+    """Indexes of ``tokens`` that open a new physical line the shell will run.
+
+    A newline ends a command as surely as `;` does, but shlex counts it as
+    whitespace and hands back nothing to show for it, so the first word of the
+    next line reads as one more argument of the command before it. The main scan
+    does not need this -- its regex pass already anchors on a bare newline -- but
+    a walk that has to decide command position from the token list alone does.
+
+    Found by marking every newline the quoting did NOT make literal and lexing a
+    second time. Only whitespace becomes a token, so the two lexes differ by the
+    marks alone; the recovered count is checked against the original and anything
+    unexpected reports nothing.
+    """
+    if "\n" not in text or _NEWLINE_COMMAND_MARK in text:
+        return frozenset()
+    states = _shell_quote_states(text)
+    marked = "".join(
+        f" {_NEWLINE_COMMAND_MARK} " if char == "\n" and not states[index] else char
+        for index, char in enumerate(text)
+    )
+    if _NEWLINE_COMMAND_MARK not in marked:
+        return frozenset()  # every newline was quoted, so none of them separates
+    try:
+        if mode == "posix":
+            lexer = shlex.shlex(marked, posix = True, punctuation_chars = ";&|()`")
+            lexer.whitespace_split = True
+            relexed = list(lexer)
+        elif mode == "cmd":
+            relexed = shlex.split(marked, posix = False)
+        else:
+            # The caller's own unbalanced-quote fallback. Mirrored rather than
+            # re-derived: guessing the lexer here lined the marks up against a
+            # different token list and reported nothing for the whole line.
+            relexed = marked.split()
+    except ValueError:
+        return frozenset()
+    starts: "set[int]" = set()
+    index, opening = 0, False
+    for token in relexed:
+        if token == _NEWLINE_COMMAND_MARK:
+            opening = True
+            continue
+        if opening:
+            starts.add(index)
+            opening = False
+        index += 1
+    if index != len(tokens):
+        return frozenset()  # the two lexes disagree; report nothing rather than guess
+    return frozenset(starts)
+
+
 def _masked_tokens(
     text: str, tokens: "list[str]", punctuation: str, chars: "frozenset[str]", mark: str
 ) -> "list[str] | None":
@@ -1467,6 +1520,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     # command after a control-flow keyword stayed unread and
     # `if true; then rm -rf x; fi` came back with nothing blocked.
     lexed_posix = _shell_is_posix()
+    lex_mode = "posix" if lexed_posix else "cmd"
     try:
         if not lexed_posix:
             tokens = shlex.split(command, posix = False)
@@ -1477,6 +1531,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     except ValueError:
         tokens = command.split()
         lexed_posix = False
+        lex_mode = "split"
 
     # Which separator tokens the shell only produced because the quoting was
     # stripped. The non-posix (cmd) lexer KEEPS the quote marks, so a quoted
@@ -1514,6 +1569,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     quoted_redirects = (
         _quoted_redirection_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
     )
+    # Both lexers count a newline as plain whitespace, so neither leaves a token
+    # behind to look back at; recovered with the lexer that produced `tokens`.
+    newline_starts = _newline_command_indexes(command, tokens, lex_mode)
     exec_flag_indexes, invocation_stops, redirect_indexes = _exec_scan_layout(
         tokens, quoted_separators, quoted_redirects
     )
@@ -1576,6 +1634,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         return -1, steps >= _MAX_EXEC_PREFIX_SCAN and i < len(tokens)
 
     expect_command = True  # start of string is a command position
+    command_indexes: "set[int]" = set()  # words the shell runs, for the START walk
     prefix_pending = False  # last cmd-position token was a wrapper (env/time/xargs/...)
     prefix_command = ""  # which wrapper that was, for its own value-taking options
     skip_operand = False  # consume a wrapper/conditional operand, not the command
@@ -1642,6 +1701,10 @@ def _find_blocked_commands(command: str) -> set[str]:
         if prefix_pending and token.lstrip("-").isdigit():
             continue
         base = _token_basename(token)
+        # Every word this loop reaches is one the shell would RUN, wrappers and
+        # assignment prefixes already stepped over. The START walk below decides
+        # the same question and cannot redo it from the token list alone.
+        command_indexes.add(token_index)
         if _is_sed_command(base):
             sed_indexes.append(token_index)
             if xargs_index >= 0:
@@ -1805,18 +1868,28 @@ def _find_blocked_commands(command: str) -> set[str]:
             continue
         # Only a START the shell RUNS. `echo start "job" powershell` prints
         # three words, and treating them as a launch hard-blocks text output.
-        # Command position cannot be taken from the main scan here: the outer
-        # shell runs only token 0 of `cmd //c start "" powershell`, which is the
-        # very command this exists for. So: first word, after a separator, or
-        # handed to cmd by its own /c or /k.
+        # The main scan above already decided which words are run, wrappers and
+        # assignment prefixes and all, so that verdict is reused rather than
+        # re-derived: reading the previous token instead missed `time start ...`,
+        # `FOO=1 start ...` and `xargs start ...`, each of which really launches.
+        # It knows nothing of two cases, so both are added. A newline separates
+        # commands but lexes as whitespace, leaving no token to look back at; and
+        # cmd runs the word right after its own /c or /k, which the outer shell
+        # sees only as an argument -- `cmd //c start "" powershell` is the very
+        # command this walk exists for.
         previous = tokens[i - 1] if i else ""
-        if i and not (
-            # `echo hi; start x` keeps the `;` glued on under the cmd lexer,
-            # which never splits it off, so test the tail as well as the token.
-            _looks_like_separator(previous)
-            or previous.endswith((";", "&", "|", "(", "`"))
-            or previous in _SHELL_KEYWORDS_AS_SEP
-            or _win_switch(previous.lower()) in ("/c", "/k")
+        if (
+            i
+            and i not in command_indexes
+            and i not in newline_starts
+            and _win_switch(previous.lower()) not in ("/c", "/k")
+            # The cmd lexer never splits a separator off the word it is glued to,
+            # so `x;` keeps its `;` and the scan above stays in argument position
+            # for the rest of the line. Read straight off the previous token
+            # instead, which is what that lexer does leave to go on.
+            and not _looks_like_separator(previous)
+            and not previous.endswith((";", "&", "|", "(", "`"))
+            and previous not in _SHELL_KEYWORDS_AS_SEP
         ):
             continue
         j = i + 1

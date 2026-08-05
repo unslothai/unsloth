@@ -585,3 +585,32 @@ def test_a_quoted_command_line_is_not_only_a_title(monkeypatch):
     )
     assert "ssh" in tools._find_blocked_commands('cmd //c start "ssh a@b"')
     assert "rm" in tools._find_blocked_commands("cmd //c start 'sudo rm -rf /'")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'ls\nstart "" powershell -Command ls',
+        'echo hi\nstart "" ssh a@b',
+        "FOO=1 start \"\" powershell -Command ls",
+        'time start "" powershell -Command ls',
+        'env start "" powershell -Command ls',
+        'nohup start "" powershell -Command ls',
+        'echo x | xargs start "" powershell -Command ls',
+        'if x; then start "" rm -rf x',
+    ],
+)
+def test_a_launched_start_is_read_wherever_the_shell_runs_it(windows_terminal, command):
+    # Command position is what the main scan already decides, wrappers and
+    # assignment prefixes and all, so the walk reuses that verdict. Reading only
+    # the token before START instead missed every one of these, each of which
+    # really launches. A newline separates commands but lexes as whitespace,
+    # leaving no token to look back at, so it is recovered from the raw text.
+    assert tools._find_blocked_commands(command)
+
+
+def test_a_newline_inside_quotes_does_not_start_a_command(windows_terminal):
+    # Only a newline the quoting left bare ends a command. One inside a quoted
+    # word is data the command receives, and treating it as a separator would
+    # read printed text as a launch.
+    assert not tools._find_blocked_commands('echo "hi\nstart \'\' powershell"')
