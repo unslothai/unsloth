@@ -180,6 +180,10 @@ _COMMAND_PREFIXES = frozenset(
         "doas",
         "su",
         "xargs",
+        # cmd's own prefix: CALL re-parses the rest of the line and runs it, so
+        # its target is a command position exactly as a wrapper's child is.
+        # https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/call
+        "call",
     }
 )
 # Wrapper options whose VALUE is a separate token (env -u NAME, nice -n 5).

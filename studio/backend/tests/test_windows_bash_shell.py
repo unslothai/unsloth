@@ -1228,3 +1228,28 @@ def test_a_padded_wrapper_chain_behind_start_fails_closed(windows_terminal):
 
 def test_a_wrapper_chain_within_the_budget_still_names_the_child(windows_terminal):
     assert "rm" in tools._find_blocked_commands('start "" env env rm -rf x')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd //c call start "" powershell -Command ls',
+        'call start "" powershell',
+        "cmd /c call powershell",
+        "call cmd /c powershell",
+        "call rm -rf x",
+    ],
+)
+def test_call_forwards_to_a_command(windows_terminal, command):
+    # CALL re-parses the rest of the line and runs it, so its target is a
+    # command position exactly as a wrapper's child is. The main walk recorded
+    # only `call`, so the gate refused the START behind it.
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['call build.bat', "call node app.js", "call :build", 'echo call start "" powershell'],
+)
+def test_call_does_not_invent_a_command(windows_terminal, command):
+    assert not tools._find_blocked_commands(command)
