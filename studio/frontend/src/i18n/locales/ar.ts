@@ -1534,6 +1534,7 @@ export const ar = {
         loadingDataset: "جارٍ تحميل مجموعة البيانات",
         configuring: "جارٍ الإعداد",
         training: "قيد التدريب",
+        finalizing: "جارٍ حفظ النموذج",
         completed: "مكتمل",
         error: "خطأ",
         stopped: "متوقف",

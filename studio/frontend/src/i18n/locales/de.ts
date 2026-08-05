@@ -1592,6 +1592,7 @@ export const de = {
         loadingDataset: "Datensatz wird geladen",
         configuring: "Wird konfiguriert",
         training: "Training",
+        finalizing: "Modell wird gespeichert",
         completed: "Abgeschlossen",
         error: "Fehler",
         stopped: "Gestoppt",
