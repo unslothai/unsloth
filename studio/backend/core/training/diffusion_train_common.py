@@ -25,12 +25,22 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from core._torchao_stub import (
+    install_torchao_windows_rocm_stub,
+    install_xformers_windows_rocm_stub,
+)
 from core.inference.diffusion_families import (
     detect_family,
     detect_family_for_pick,
     supported_family_names,
     trainable_family_names,
 )
+
+# The trainers run in a spawned child that imports diffusers itself, so the
+# inference-side install does not carry over. Both trainers import this module
+# before that happens.
+install_xformers_windows_rocm_stub()
+install_torchao_windows_rocm_stub()
 
 # Default LoRA target modules: the attention projections common to the SDXL U-Net and the DiTs (the diffusers/kohya convention). A family may override this.
 DEFAULT_LORA_TARGETS: tuple[str, ...] = ("to_k", "to_q", "to_v", "to_out.0")

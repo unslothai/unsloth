@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Shared torchao Windows-ROCm import stub.
+"""Shared Windows-ROCm import stubs.
 
 torchao (pulled in by transformers.quantizers) imports distributed_c10d.py
 unconditionally, which crashes on Windows ROCm because the RCCL backend
@@ -9,6 +9,9 @@ unconditionally, which crashes on Windows ROCm because the RCCL backend
 import chain; _StubSubpackageFinder handles any depth of torchao.xxx.yyy.
 Worker subprocesses call install_torchao_windows_rocm_stub() before importing
 transformers / unsloth_zoo.
+
+xformers reaches the same absent backend and takes diffusers down with it, so
+the diffusion paths install both stubs before importing diffusers.
 """
 
 from __future__ import annotations
@@ -100,29 +103,38 @@ class _StubSubpackageFinder(importlib.abc.MetaPathFinder):
         )
 
 
+def _is_windows_rocm() -> bool:
+    """True on a Windows host whose active torch is a ROCm build."""
+    # Gate on the active torch runtime, not env-var presence -- HIP_PATH/ROCM_PATH
+    # persist after reverting to a CUDA wheel. Some ROCm wheels lack
+    # torch.version.hip but still encode "rocm" in __version__, so accept either.
+    if sys.platform != "win32":
+        return False
+    try:
+        import torch as _torch_probe
+        return bool(
+            getattr(getattr(_torch_probe, "version", None), "hip", None)
+            or "rocm" in getattr(_torch_probe, "__version__", "").lower()
+        )
+    except Exception:
+        return False
+
+
+def _ensure_finder() -> None:
+    """Register the subpackage finder once, however many stubs are installed."""
+    if not any(isinstance(f, _StubSubpackageFinder) for f in sys.meta_path):
+        sys.meta_path.append(_StubSubpackageFinder())
+
+
 def install_torchao_windows_rocm_stub() -> None:
     """Pre-stub torchao on Windows ROCm so transformers/peft imports don't crash.
 
     No-op elsewhere (incl. Windows CUDA, where torchao is real). Must run before
     importing transformers / unsloth_zoo. Safe to call once per worker.
     """
-    # Gate on the active torch runtime, not env-var presence -- HIP_PATH/ROCM_PATH
-    # persist after reverting to a CUDA wheel. Some ROCm wheels lack
-    # torch.version.hip but still encode "rocm" in __version__, so accept either.
-    _is_win32_rocm = False
-    if sys.platform == "win32":
-        try:
-            import torch as _torch_probe
-            _is_win32_rocm = bool(
-                getattr(getattr(_torch_probe, "version", None), "hip", None)
-                or "rocm" in getattr(_torch_probe, "__version__", "").lower()
-            )
-            del _torch_probe
-        except Exception:
-            pass
-    if _is_win32_rocm:
+    if _is_windows_rocm():
         # Register the finder only on Windows ROCm.
-        sys.meta_path.append(_StubSubpackageFinder())
+        _ensure_finder()
         # Seed torchao top-level + key submodules; the finder handles the rest.
         for _tao_name in (
             "torchao",
@@ -133,3 +145,19 @@ def install_torchao_windows_rocm_stub() -> None:
         ):
             if _tao_name not in sys.modules:
                 sys.modules[_tao_name] = _make_mod_stub(_tao_name)
+
+
+def install_xformers_windows_rocm_stub() -> None:
+    """Pre-stub xformers on Windows ROCm so diffusers can import at all.
+
+    The Windows xformers pin is CUDA-only. Against a ROCm torch, which ships no
+    distributed backend, ``import xformers.ops`` dies reaching
+    torch.distributed internals, and diffusers imports xformers on sight, so
+    every diffusers model import goes down with it. No-op elsewhere. Must run
+    before importing diffusers.
+    """
+    if _is_windows_rocm():
+        _ensure_finder()
+        for _xf_name in ("xformers", "xformers.ops"):
+            if _xf_name not in sys.modules:
+                sys.modules[_xf_name] = _make_mod_stub(_xf_name)
