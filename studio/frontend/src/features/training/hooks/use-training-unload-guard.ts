@@ -7,7 +7,8 @@ import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 
 let currentHandler: ((e: BeforeUnloadEvent) => void) | null = null;
 
-// Desktop quit never fires beforeunload; Rust asks from the tray instead.
+// Desktop quit never fires beforeunload; Rust asks instead, from the tray and
+// (outside macOS) from the window close button.
 function publishTrainingActive(active: boolean): void {
   if (!isTauri) return;
   void import("@tauri-apps/api/core")

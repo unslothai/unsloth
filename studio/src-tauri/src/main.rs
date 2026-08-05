@@ -25,14 +25,16 @@ use simplelog::{
     CombinedLogger, Config, LevelFilter, SharedLogger, TermLogger, TerminalMode, WriteLogger,
 };
 use std::fs;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Once;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
-/// Serializes the exit paths that must reap the backend: the tray "Quit" item,
-/// the Unix termination signal listener, and `RunEvent::Exit`. Exactly one path
+/// Serializes the exit paths that must reap the backend: `request_quit` (the tray
+/// "Quit" item and, outside macOS, the window close button), the Unix termination
+/// signal listener, and `RunEvent::Exit`. Exactly one path
 /// runs cleanup; the others block until it is done, so the process never exits
 /// out from under a cleanup that is still killing the backend tree.
 static TERMINATION_CLEANUP: Once = Once::new();
@@ -285,24 +287,56 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
+/// One quit confirmation at a time. The dialogs are shown asynchronously and are
+/// not parented to the window, so the window stays clickable while one is up;
+/// without this, every further press of a close button that now means "quit"
+/// would stack another dialog on another thread.
+static QUIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
+
+/// Clears the flag on cancel and on panic alike, so a quit that unwinds cannot
+/// leave the close button inert for the rest of the session.
+struct QuitGuard;
+
+impl Drop for QuitGuard {
+    fn drop(&mut self) {
+        QUIT_IN_PROGRESS.store(false, Ordering::SeqCst);
+    }
+}
+
+fn begin_quit() -> Option<QuitGuard> {
+    (!QUIT_IN_PROGRESS.swap(true, Ordering::SeqCst)).then_some(QuitGuard)
+}
+
 /// Confirm, reap the backend, then exit. Always off the caller's thread: the
 /// confirmations block, and neither a tray callback nor the window event loop
 /// may. Exiting before the tree is reaped would orphan the backend.
 fn request_quit(app: &tauri::AppHandle) {
+    let Some(guard) = begin_quit() else {
+        info!("Quit already awaiting confirmation, ignoring the repeat request");
+        return;
+    };
     let app = app.clone();
-    std::thread::spawn(move || {
-        if !confirm_quit_during_install(&app) {
-            return;
-        }
-        if !confirm_quit_during_update(&app) {
-            return;
-        }
-        if !confirm_quit_during_training(&app) {
-            return;
-        }
-        cleanup_child_processes(&app);
-        app.exit(0);
-    });
+    // The guard moves into the closure, so a failed spawn drops it and the next
+    // request retries rather than finding the quit path permanently closed.
+    let spawned = std::thread::Builder::new()
+        .name("request-quit".to_string())
+        .spawn(move || {
+            let _guard = guard;
+            if !confirm_quit_during_install(&app) {
+                return;
+            }
+            if !confirm_quit_during_update(&app) {
+                return;
+            }
+            if !confirm_quit_during_training(&app) {
+                return;
+            }
+            cleanup_child_processes(&app);
+            app.exit(0);
+        });
+    if let Err(error) = spawned {
+        warn!("Could not spawn the quit thread: {error}");
+    }
 }
 
 fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
@@ -437,8 +471,9 @@ fn main() {
                     .note_dropped_paths(paths);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Never close directly: both paths below need the window alive,
-                // one to reopen from the tray, the other to parent a dialog.
+                // Never close directly. This is the only window, so closing it would
+                // drive the app to exit before the backend has been reaped; macOS
+                // additionally needs it alive to reopen from the tray or the Dock.
                 api.prevent_close();
                 if cfg!(target_os = "macos") {
                     // Closing a window leaves the app in the Dock; Reopen restores it.
@@ -468,4 +503,39 @@ fn main() {
             }
             _ => {}
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // One test rather than three: `QUIT_IN_PROGRESS` is process-global and cargo
+    // runs tests on parallel threads.
+    #[test]
+    fn quit_guard_admits_one_quit_and_always_re_arms() {
+        assert!(!QUIT_IN_PROGRESS.load(Ordering::SeqCst));
+
+        {
+            let _first = begin_quit().expect("the first quit must be admitted");
+            assert!(
+                begin_quit().is_none(),
+                "a repeat close must not stack a second confirmation"
+            );
+        }
+
+        // Cancelling drops the guard, which re-arms the close button.
+        {
+            let _second = begin_quit().expect("cancelling must re-arm the close button");
+        }
+
+        let unwound = std::panic::catch_unwind(|| {
+            let _guard = begin_quit().expect("admitted");
+            panic!("quit thread unwound");
+        });
+        assert!(unwound.is_err());
+        assert!(
+            begin_quit().is_some(),
+            "a panicking quit must release the guard"
+        );
+    }
 }
