@@ -6,11 +6,8 @@
 // - All non-English keys must exist in en (no extras).
 // - Placeholder set must match per leaf between en and the overlay.
 //
-// --strict additionally fails on missing keys and names them. The runtime
-// fallback still covers a gap, but it renders English inside a translated UI,
-// and without a gate that silently accumulates: the overlays were repaired to
-// full parity twice in three days and had drifted to 18 missing keys each
-// within a day of the second pass.
+// --strict also fails on missing keys, naming them. See studio-frontend-ci.yml
+// for why CI needs that on top of the runtime fallback.
 //
 // Run: npx tsx src/i18n/check-parity.ts [--strict]
 

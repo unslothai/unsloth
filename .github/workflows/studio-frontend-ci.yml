@@ -130,10 +130,9 @@ jobs:
             --enumerate-dead
           python3 tests/studio/test_frontend_dep_removal.py
 
-      # A key added to en.ts and nowhere else falls back to English at
-      # runtime, so nothing breaks and nothing complains -- which is how the
-      # overlays drifted 22 keys behind, got repaired, then drifted 18 behind
-      # again inside a day. Strict mode names the missing keys and fails here.
+      # A key added only to en.ts falls back to English at runtime, so nothing
+      # breaks and nothing complains -- which is how the overlays drifted 22
+      # keys behind, were repaired, then drifted 18 behind inside a day.
       - name: Locale parity
         run: npm run i18n:check:strict
 
