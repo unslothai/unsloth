@@ -311,6 +311,48 @@ def test_a_model_without_the_stamp_keeps_the_old_environment_answer():
     assert _generate(trainer, env, has_bf16 = False) == (True, torch.float16)
 
 
+def test_a_forced_float32_load_cannot_force_an_unforced_trainer():
+    """The mirror of the test above, for a model that was stamped.
+
+    A float32 Llama on a T4 is not a forced family, and its loader never writes
+    UNSLOTH_FORCE_FLOAT32, so loading Gemma3 or gpt-oss next sets '1' behind its
+    back. Without the stamp on that model the first generation would read the
+    other model's answer and turn float16 autocast back on.
+    """
+    env = {"UNSLOTH_FORCE_FLOAT32": "0"}
+    trainer = _build_trainer(env, torch.float32, bf16_supported = False)
+    assert trainer.model._unsloth_forced_float32 is False
+    assert env["ACCELERATE_MIXED_PRECISION"] == "no"
+
+    # A forced float32 family loaded before the first generation batch.
+    env["UNSLOTH_FORCE_FLOAT32"] = "1"
+
+    assert _generate(trainer, env, has_bf16 = False) == (False, None)
+
+
+def test_every_loader_return_path_stamps_the_forced_float32_answer():
+    """Not just the paths that can answer True: a path that returns a model of
+    its own has to say so either way, or the trainer falls back to the env."""
+    for rel in ("unsloth/models/loader.py", "unsloth/models/vision.py"):
+        tree = ast.parse((REPO_ROOT / rel).read_text(encoding = "utf-8"))
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.FunctionDef) and node.name == "from_pretrained"):
+                continue
+            calls = [
+                (c.func.id, c.args[0].id)
+                for c in ast.walk(node)
+                if isinstance(c, ast.Call)
+                and isinstance(c.func, ast.Name)
+                and c.func.id in ("_mark_requested_float32", "_mark_forced_float32")
+                and c.args
+                and isinstance(c.args[0], ast.Name)
+            ]
+            requested = {arg for name, arg in calls if name == "_mark_requested_float32"}
+            forced = {arg for name, arg in calls if name == "_mark_forced_float32"}
+            # `delegated` came from another from_pretrained, already stamped there.
+            assert (requested - forced) <= {"delegated"}, (rel, requested, forced)
+
+
 # ---- everything that must NOT change -------------------------------------
 
 

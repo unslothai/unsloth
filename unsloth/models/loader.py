@@ -1111,6 +1111,10 @@ class FastLanguageModel(FastLlamaModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
+        # This path only dispatches archs outside FORCE_FLOAT32 and never sets
+        # UNSLOTH_FORCE_FLOAT32, so answer False rather than leaving the trainer
+        # to read whatever a later load writes into the environment.
+        model = _mark_forced_float32(model, False)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 
