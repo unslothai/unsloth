@@ -144,6 +144,24 @@ def _should_skip_auto_packing_error(exc: Exception) -> bool:
     return any(msg in message for msg in _AUTO_PACK_SKIP_MESSAGES)
 
 
+def _should_skip_auto_padding_free_error(exc: Exception) -> bool:
+    """TRL >= 1.0.0 rejects padding-free without packing while `max_length` is set.
+
+    rl.py already clears `max_length` for those versions, so this is only the net
+    for a TRL that words the same guard differently. Both terms must appear, so an
+    unrelated ValueError still propagates.
+    """
+    message = str(exc).lower()
+    return "padding_free" in message and "max_length" in message
+
+
+def _disable_padding_free(config):
+    if config is None:
+        return
+    if hasattr(config, "padding_free"):
+        setattr(config, "padding_free", False)
+
+
 _VISION_DATASET_KEYS = frozenset(
     {
         "image",
@@ -848,6 +866,14 @@ def _patch_sft_trainer_auto_packing(trl_module):
                 )
                 _disable_sample_packing(config_arg)
                 packing_active = False
+                original_init(self, *args, **kwargs)
+            elif auto_padding_free_active and _should_skip_auto_padding_free_error(exc):
+                logger.info(
+                    "Unsloth: Auto padding-free disabled because the trainer rejected it (%s).",
+                    exc,
+                )
+                _disable_padding_free(config_arg)
+                auto_padding_free_active = False
                 original_init(self, *args, **kwargs)
             else:
                 raise

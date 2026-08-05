@@ -1201,6 +1201,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         # At this point max_seq_length might be set, but trl is moving to max_length
         if trainer_file == "sft_trainer":
             max_length_check = (
+                # Remember what the user actually asked for before we overwrite it
+                # below: anything equal to the dataclass default did not come from them.
+                "_unsloth_requested_max_length = getattr(args, 'max_length', None)\n"
+                "try:\n"
+                "    if _unsloth_requested_max_length == type(args).__dataclass_fields__['max_length'].default:\n"
+                "        _unsloth_requested_max_length = None\n"
+                "except Exception:\n"
+                "    _unsloth_requested_max_length = None\n"
                 "if 'max_length' not in locals() and not hasattr(args, 'max_length'):\n"
                 "    pass\n"
                 "else:\n"
@@ -1222,6 +1230,33 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "            print('Unsloth: We did not find `max_seq_length` or `max_length` in the model or args. We will set it to 1024.')\n"
                 "            args.max_length = 1024\n"
             )
+            # TRL >= 1.0.0 refuses to build an SFTTrainer when padding-free is on,
+            # packing is off and `max_length` is set, because TRL cannot enforce
+            # truncation on a flattened batch (it already passes max_length=None to
+            # its own collator in that case). Unsloth auto-enables padding-free
+            # whenever the user leaves `padding_free` at its None default, and the
+            # block above always writes `args.max_length`, so the pair tripped that
+            # guard for essentially every SFT user. Hand TRL the None it asks for and
+            # keep truncating in Unsloth's own dataset prep, which uses
+            # `max_seq_length`. Only emitted for a TRL that carries the guard, so
+            # older versions receive exactly what they did before.
+            if "`max_length` is not enforced" in old_RLTrainer_source:
+                max_length_check += (
+                    "if getattr(args, 'padding_free', False) is True and not getattr(args, 'packing', False) "
+                    "and getattr(args, 'max_length', None) is not None:\n"
+                    "    _unsloth_truncate_to = args.max_length\n"
+                    "    if _unsloth_requested_max_length is not None:\n"
+                    "        _unsloth_truncate_to = _unsloth_requested_max_length\n"
+                    "        _unsloth_model_max_length = getattr(model, 'max_seq_length', None)\n"
+                    "        if _unsloth_model_max_length is not None and _unsloth_truncate_to > _unsloth_model_max_length:\n"
+                    "            _unsloth_truncate_to = _unsloth_model_max_length\n"
+                    "        if _unsloth_truncate_to != args.max_length:\n"
+                    "            print('Unsloth: Truncating to your `max_length` of ' + str(_unsloth_truncate_to) + ' during dataset preparation, since padding-free batching cannot truncate later.')\n"
+                    "    if hasattr(args, 'max_seq_length'):\n"
+                    "        args.max_seq_length = _unsloth_truncate_to\n"
+                    "    args.max_length = None\n"
+                    "    max_length = None\n"
+                )
             extra_args += max_length_check
 
     # Enable for training and move padding side of tokenizer to right

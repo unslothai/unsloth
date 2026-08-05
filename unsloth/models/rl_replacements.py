@@ -503,6 +503,16 @@ _ZOO_MAP_NUM_PROC_ASSIGNMENT = re.compile(
     flags = re.MULTILINE,
 )
 
+# The Zoo seeds its truncation length from args.max_length and only falls through
+# to args.max_seq_length when that is 0. Unsloth now hands TRL >= 1.0.0 a
+# max_length of None under padding-free (see rl.py), which is neither 0 nor an
+# int, so normalise it here or the fall-through is skipped and the length ends up
+# None (no truncation, then a None > 0 comparison).
+_ZOO_MAX_LENGTH_SEED = re.compile(
+    r"^(?P<indent>[ \t]*)max_seq_length[ \t]*=[ \t]*getattr\(args,[ \t]*[\"']max_length[\"'],[ \t]*0\)[ \t]*$",
+    flags = re.MULTILINE,
+)
+
 
 def _replace_or_fallback(
     function,
@@ -583,6 +593,14 @@ def sft_trainer_prepare_dataset(function_name, function):
                     "Unsloth: failed to install wrapped-packing support into "
                     "sft_prepare_dataset (signature not found); please file a bug report."
                 )
+            function = _replace_or_fallback(
+                function,
+                '    max_seq_length = getattr(args, "max_length", 0)',
+                '    max_seq_length = getattr(args, "max_length", 0) or 0',
+                fallback_pattern = _ZOO_MAX_LENGTH_SEED,
+                fallback_new = r'\g<indent>max_seq_length = getattr(args, "max_length", 0) or 0',
+                where = "sft_prepare_dataset max_length seed",
+            )
             # why: route each edit through _require_replace so a drifted anchor fails
             # loudly instead of leaving a dangling reference to the setup variables.
             function = _require_replace(
