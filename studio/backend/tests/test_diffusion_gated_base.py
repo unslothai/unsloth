@@ -86,7 +86,6 @@ def _stub_hub(
 
 def _gated_error():
     from huggingface_hub.errors import GatedRepoError
-
     return _hub_http_error(
         GatedRepoError, "401 Client Error. Cannot access gated repo for url ...", 401
     )
@@ -175,7 +174,9 @@ def test_an_already_downloaded_base_is_never_refused(monkeypatch, tmp_path):
         monkeypatch.setattr(
             "huggingface_hub.try_to_load_from_cache",
             lambda repo_id, filename, cache_dir = None, **k: (
-                str(root / f"models--{repo_id.replace('/', '--')}" / "snapshots" / commit / filename)
+                str(
+                    root / f"models--{repo_id.replace('/', '--')}" / "snapshots" / commit / filename
+                )
                 if cache_dir in (str(root), None) and str(root) in (live, str(imported))
                 else None
             ),
@@ -276,7 +277,6 @@ def _auth_error(status):
     Its RepoNotFound branch excludes 401 "Invalid credentials in Authorization header" by name, and
     a permission-scoped 403 has no branch at all, so neither becomes GatedRepoError."""
     from huggingface_hub.errors import HfHubHTTPError
-
     return _hub_http_error(HfHubHTTPError, f"{status} Client Error.", status)
 
 
@@ -343,7 +343,12 @@ def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
 
     # Only the VAE repo is gated, as on the Hub: the pick and the encoder repo answer normally.
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             return _FakeInfo("auto" if repo_id == gated else False)
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
@@ -386,13 +391,22 @@ def test_the_native_plan_probes_the_asset_it_stages(monkeypatch):
     )
 
     class _Api:
-        def model_info(self, repo_id, files_metadata = False, token = None):
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
             return _FakeInfo("auto" if repo_id == gated else False)
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
     probed: list = []
 
-    def _metadata(url, token = None, **k):
+    def _metadata(
+        url,
+        token = None,
+        **k,
+    ):
         probed.append(url)
         raise _gated_error()
 
@@ -430,7 +444,13 @@ def test_the_gguf_is_resolved_against_the_live_cache_root(monkeypatch, tmp_path)
     live = tmp_path / "live"
     calls: list = []
 
-    def _download(repo_id, filename, token = None, cache_dir = None, **k):
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+        **k,
+    ):
         calls.append(cache_dir)
         return str(live / filename)
 

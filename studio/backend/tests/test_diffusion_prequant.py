@@ -1033,7 +1033,12 @@ def test_load_config_reads_the_same_cache_root_as_the_checkpoint(monkeypatch, tm
 
     class _Cls:
         @staticmethod
-        def load_config(base, subfolder = None, token = None, cache_dir = None):
+        def load_config(
+            base,
+            subfolder = None,
+            token = None,
+            cache_dir = None,
+        ):
             seen["cache_dir"] = cache_dir
             raise RuntimeError("stop right after the config fetch")
 

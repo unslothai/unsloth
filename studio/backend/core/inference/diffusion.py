@@ -505,7 +505,6 @@ def _assert_base_repo_accessible(
         and never blocks a load -- the opposite trade of refusing every cached base outright."""
         try:
             from huggingface_hub import try_to_load_from_cache
-
             for root in (hub_cache_dir(), None):
                 # Only a str is a cached path; a miss is None and an absent file is a sentinel.
                 if isinstance(try_to_load_from_cache(repo, probe_file, cache_dir = root), str):
@@ -828,9 +827,7 @@ class DiffusionBackend:
             elsewhere = try_to_load_from_cache(repo_id, gguf_filename, cache_dir = None)
             if isinstance(elsewhere, str) and Path(elsewhere).is_file():
                 return elsewhere
-        return hf_hub_download(
-            repo_id, gguf_filename, token = hf_token, cache_dir = cache_dir
-        )
+        return hf_hub_download(repo_id, gguf_filename, token = hf_token, cache_dir = cache_dir)
 
     def _dense_quant_prefetch_needed(self, fam: DiffusionFamily, kwargs: dict) -> bool:
         """True when ``load_pipeline`` may take the dense transformer-quant path, so
