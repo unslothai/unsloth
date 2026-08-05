@@ -111,8 +111,8 @@ def test_compose_preexec_passthrough_off_linux(monkeypatch):
 
 
 def test_child_popen_kwargs_binds_the_spawning_pid(monkeypatch):
-    # The preexec must compare against the pid of the process that forked it, so
-    # a healthy child of a pid-1 parent is not mistaken for an orphan (#7886).
+    # Compare against the forking pid, so a healthy child of a pid-1 parent is
+    # not mistaken for an orphan (#7886).
     seen = []
     monkeypatch.setattr(pl, "_is_linux", lambda: True)
     monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda owner: seen.append(owner))
@@ -129,7 +129,7 @@ class _ExitCalled(BaseException):
 
 
 def _run_preexec(monkeypatch, *, owner_pid, getppid):
-    # prctl is stubbed so the decision is exercised on any platform.
+    # prctl is stubbed so the decision runs on any platform.
     import ctypes
 
     class _Libc:
@@ -146,9 +146,8 @@ def _run_preexec(monkeypatch, *, owner_pid, getppid):
 
 
 def test_pdeathsig_keeps_child_whose_parent_is_pid_1(monkeypatch):
-    # Unsloth Studio launched as a container entrypoint runs as pid 1, so a
-    # healthy child sees getppid() == 1. Killing it there took down every
-    # llama-server spawn before exec (#7886).
+    # Studio as a container entrypoint runs as pid 1, so a healthy child sees
+    # getppid() == 1; killing it took down every llama-server spawn (#7886).
     _run_preexec(monkeypatch, owner_pid = 1, getppid = 1)
 
 
@@ -170,9 +169,9 @@ def _bind_with_parent(monkeypatch, parent):
 
 
 def test_bind_keeps_a_worker_whose_creator_is_alive(monkeypatch):
-    # The orphan decision comes from the creator's sentinel, not a pid compare:
-    # under forkserver the kernel parent is the fork server, so comparing pids
-    # would read every healthy worker as orphaned and kill it before its target.
+    # The decision comes from the creator's sentinel, not a pid compare: under
+    # forkserver the kernel parent is the fork server, so pids would read every
+    # healthy worker as orphaned.
     seen, exited = _bind_with_parent(monkeypatch, _FakeParent(4242, alive = True))
     assert seen == [os.getppid()]  # PDEATHSIG still bound to the kernel parent
     assert exited == []
@@ -192,8 +191,8 @@ def test_bind_only_arms_pdeathsig_outside_a_multiprocessing_worker(monkeypatch):
 
 
 def test_bind_keeps_a_non_worker_whose_parent_is_pid_1(monkeypatch):
-    # Runs the REAL hook, not a stub: a non-worker under a container init sees
-    # getppid() == 1, and the bare fallback killed it outright with no output.
+    # Runs the REAL hook: a non-worker under a container init sees getppid() == 1,
+    # which the bare fallback killed outright.
     import ctypes
     import multiprocessing
 
