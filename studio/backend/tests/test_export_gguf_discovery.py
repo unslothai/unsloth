@@ -31,7 +31,12 @@ from test_export_absolute_paths import (  # noqa: E402
 )
 
 
-def _backend(monkeypatch, tmp_path, model, checkpoint = None):
+def _backend(
+    monkeypatch,
+    tmp_path,
+    model,
+    checkpoint = None,
+):
     """An ExportBackend wired to `model`, exporting into tmp_path/'export'."""
     _install_export_backend_stubs(monkeypatch)
     export_mod = _load_module("test_core_export_backend", "core/export/export.py", monkeypatch)
@@ -63,18 +68,24 @@ def _gguf(path: Path, payload: bytes = b"GGUF") -> Path:
 @pytest.mark.parametrize(
     "result",
     [
-        None,                                   # pre-2025.10 unsloth / non-main process
-        "some/path",                            # save_method="lora" returns a str
-        ("path", True, False),                  # hypothetical legacy tuple
-        {},                                     # dict without the key
+        None,  # pre-2025.10 unsloth / non-main process
+        "some/path",  # save_method="lora" returns a str
+        ("path", True, False),  # hypothetical legacy tuple
+        {},  # dict without the key
         {"gguf_files": None},
         {"gguf_files": "not-a-list"},
-        {"gguf_files": []},                     # empty == "nothing to say"
-        {"gguf_files": [123]},                  # malformed entry -> distrust all
+        {"gguf_files": []},  # empty == "nothing to say"
+        {"gguf_files": [123]},  # malformed entry -> distrust all
     ],
     ids = [
-        "none", "str", "tuple", "empty_dict", "null_files",
-        "str_files", "empty_list", "bad_entry",
+        "none",
+        "str",
+        "tuple",
+        "empty_dict",
+        "null_files",
+        "str_files",
+        "empty_list",
+        "bad_entry",
     ],
 )
 def test_reported_files_absent_shapes_fall_back(monkeypatch, tmp_path, result):
@@ -89,9 +100,9 @@ def test_reported_files_filters_missing_and_non_gguf(monkeypatch, tmp_path):
         {
             "gguf_files": [
                 str(real),
-                str(tmp_path / "a" / "deleted.gguf"),      # unlinked by cleanup
-                str(tmp_path / "a" / "notes.txt"),          # not a gguf
-                str(tmp_path / "a"),                        # a directory
+                str(tmp_path / "a" / "deleted.gguf"),  # unlinked by cleanup
+                str(tmp_path / "a" / "notes.txt"),  # not a gguf
+                str(tmp_path / "a"),  # a directory
             ]
         }
     )
@@ -138,7 +149,7 @@ def test_zero_files_is_a_failure_not_a_silent_success(monkeypatch, tmp_path):
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             Path(model_save_path).mkdir(parents = True)
             _gguf(tmp_path / "elsewhere" / "MyModel.Q5_K_M.gguf")
-            return None                                   # legacy build
+            return None  # legacy build
 
     _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _Model())
     success, message, output_path = backend.export_gguf(str(save_dir), "q5_k_m")
@@ -160,7 +171,7 @@ def test_nested_gguf_is_rescued_before_rmtree(monkeypatch, tmp_path):
             gguf_dir = Path(str(tmp) + "_gguf") / "shards"
             for i in (1, 2, 3):
                 _gguf(gguf_dir / f"MyModel-{i:05d}-of-00003.gguf")
-            return None                                   # exercise the fallback path
+            return None  # exercise the fallback path
 
     _m, backend, save_dir, _cwd = _backend(monkeypatch, tmp_path, _Model())
     success, message, _p = backend.export_gguf(str(save_dir), "q5_k_m")
@@ -221,8 +232,7 @@ def test_multi_quant_relocates_every_output(monkeypatch, tmp_path):
         def save_pretrained_gguf(self, model_save_path, tokenizer, quantization_method):
             Path(model_save_path).mkdir(parents = True)
             files = [
-                str(_gguf(sibling / f"MyModel.{q}.gguf"))
-                for q in ("Q4_K_M", "Q5_K_M", "Q8_0")
+                str(_gguf(sibling / f"MyModel.{q}.gguf")) for q in ("Q4_K_M", "Q5_K_M", "Q8_0")
             ]
             return {"gguf_files": files}
 

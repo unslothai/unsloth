@@ -20,9 +20,7 @@ from pathlib import Path
 
 import pytest
 
-pytestmark = pytest.mark.skipif(
-    sys.platform != "win32", reason = "native Windows path semantics"
-)
+pytestmark = pytest.mark.skipif(sys.platform != "win32", reason = "native Windows path semantics")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _SAVE_PY = _REPO_ROOT / "unsloth" / "save.py"
@@ -56,16 +54,15 @@ def test_glob_really_hides_dot_leading_gguf():
     with tempfile.TemporaryDirectory() as d:
         Path(d, ".BF16.gguf").write_bytes(b"GGUF")
         Path(d, "ok.gguf").write_bytes(b"GGUF")
-        assert [os.path.basename(p) for p in glob.glob(os.path.join(d, "*.gguf"))] == [
-            "ok.gguf"
-        ]
+        assert [os.path.basename(p) for p in glob.glob(os.path.join(d, "*.gguf"))] == ["ok.gguf"]
         assert sorted(p.name for p in Path(d).glob("*.gguf")) == [".BF16.gguf", "ok.gguf"]
 
 
 def test_posix_basename_would_not_have_fixed_it():
     """os.path.basename is correct here but wrong on the Linux CI that tests it."""
     import posixpath
-    assert os.path.basename(r"D:\M\MyModel") == "MyModel"          # ntpath: fine
+
+    assert os.path.basename(r"D:\M\MyModel") == "MyModel"  # ntpath: fine
     assert posixpath.basename(r"D:\M\MyModel") == r"D:\M\MyModel"  # posix: broken
 
 

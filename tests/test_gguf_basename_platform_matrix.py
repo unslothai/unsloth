@@ -31,6 +31,7 @@ _GPU_CELL = os.environ.get("UNSLOTH_SIM_GPU", "cpu").lower()
 
 # -- GPU cell: applied before anything torch-touching -------------------------
 
+
 def _apply_gpu_cell(cell: str) -> dict:
     """Returns a description of what the process now claims to be."""
     if cell == "cpu":
@@ -42,12 +43,14 @@ def _apply_gpu_cell(cell: str) -> dict:
         spoof.apply()
     elif cell == "rocm":
         import _zoo_rocm_spoof as spoof
+
         # gfx1100 == RX 7900 XTX, the card in issue #7897.
         spoof.apply("gfx1100")
     else:
         raise AssertionError(f"unknown UNSLOTH_SIM_GPU={cell!r}")
 
     import torch
+
     return {
         "cell": cell,
         "cuda": torch.cuda.is_available(),
@@ -63,6 +66,7 @@ except Exception as exc:  # noqa: BLE001 -- torch absent is a legitimate cell
 
 # -- The helper under test, lifted without importing unsloth ------------------
 
+
 def _load_helper():
     src = _SAVE_PY.read_text(encoding = "utf-8")
     for node in ast.parse(src).body:
@@ -76,10 +80,10 @@ def _load_helper():
 # OS flavour -> (path module, a base-model path that OS actually produces)
 _OS_CELLS = {
     "windows": (ntpath, r"D:\Models\Merged Models\MyModel"),
-    "linux":   (posixpath, "/home/u/models/MyModel"),
+    "linux": (posixpath, "/home/u/models/MyModel"),
     # WSL reaches a Windows drive through drvfs; it is an ordinary POSIX path.
-    "wsl":     (posixpath, "/mnt/d/Models/MyModel"),
-    "macos":   (posixpath, "/Users/u/models/MyModel"),
+    "wsl": (posixpath, "/mnt/d/Models/MyModel"),
+    "macos": (posixpath, "/Users/u/models/MyModel"),
 }
 
 # Cells that are not real products. Kept as invariance checks only -- passing
@@ -91,9 +95,7 @@ _UNREAL_CELLS = {("macos", "nvidia"), ("macos", "rocm")}
 def test_stem_is_identical_in_every_cell(os_name):
     flavour, base = _OS_CELLS[os_name]
     stem = _load_helper()(base)
-    assert stem == "MyModel", (
-        f"cell {os_name}/{_GPU_CELL}: {base!r} -> {stem!r}"
-    )
+    assert stem == "MyModel", f"cell {os_name}/{_GPU_CELL}: {base!r} -> {stem!r}"
 
 
 @pytest.mark.parametrize("os_name", sorted(_OS_CELLS))
@@ -129,7 +131,8 @@ def test_the_fix_imports_no_gpu_library():
     """_model_basename must stay pure: no torch, no accelerator probing."""
     src = _SAVE_PY.read_text(encoding = "utf-8")
     fn = next(
-        n for n in ast.parse(src).body
+        n
+        for n in ast.parse(src).body
         if isinstance(n, ast.FunctionDef) and n.name == "_model_basename"
     )
     body = ast.get_source_segment(src, fn)

@@ -2872,18 +2872,21 @@ def _model_basename(name_or_path, default = "model") -> str:
     GGUF lands next to the base model (#7897); an empty stem gives a hidden
     `.Q4_K_M.gguf` that `glob.glob` cannot see.
     """
-    if name_or_path is None: return default
+    if name_or_path is None:
+        return default
     try:
         text = os.fspath(name_or_path)
     except TypeError:
         text = str(name_or_path)
-    if not isinstance(text, str) or not text.strip(): return default
+    if not isinstance(text, str) or not text.strip():
+        return default
 
     # A real directory wins: a POSIX directory name may legally contain a backslash.
     try:
         if os.path.isdir(text):
             base = os.path.basename(os.path.normpath(text))
-            if base and base not in (".", ".."): return base
+            if base and base not in (".", ".."):
+                return base
     except (OSError, ValueError):
         pass
 

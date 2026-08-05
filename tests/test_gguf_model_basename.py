@@ -61,40 +61,45 @@ def _load_helper():
 # Rows marked REGRESSION must be byte-identical to the old .split("/")[-1].
 _TABLE_A = [
     # -- REGRESSION rows: behaviour must not change -------------------------
-    ("hf_id",                 "unsloth/Qwen3-8B",                       "Qwen3-8B"),
-    ("hf_id_nested",          "meta-llama/Llama-2-7b-hf",               "Llama-2-7b-hf"),
-    ("bare_name",             "Qwen3-8B",                               "Qwen3-8B"),
-    ("posix_abs",             "/home/u/models/MyModel",                 "MyModel"),
-    ("posix_rel",             "./models/MyModel",                       "MyModel"),
-    ("wsl_mount",             "/mnt/d/Models/MyModel",                  "MyModel"),
-    ("win_forward_slashes",   "D:/Models/MyModel",                      "MyModel"),
+    ("hf_id", "unsloth/Qwen3-8B", "Qwen3-8B"),
+    ("hf_id_nested", "meta-llama/Llama-2-7b-hf", "Llama-2-7b-hf"),
+    ("bare_name", "Qwen3-8B", "Qwen3-8B"),
+    ("posix_abs", "/home/u/models/MyModel", "MyModel"),
+    ("posix_rel", "./models/MyModel", "MyModel"),
+    ("wsl_mount", "/mnt/d/Models/MyModel", "MyModel"),
+    ("win_forward_slashes", "D:/Models/MyModel", "MyModel"),
     # -- BUG rows: broken today ---------------------------------------------
-    ("posix_trailing_sep",    "/home/u/models/MyModel/",                "MyModel"),
-    ("win_drive_abs",         r"D:\Models\Merged Models\MyModel",       "MyModel"),
-    ("win_drive_trailing",    "D:\\Models\\MyModel\\",                  "MyModel"),
-    ("win_mixed_seps",        "D:\\Models/Merged Models\\MyModel",      "MyModel"),
-    ("unc_share",             r"\\server\share\Models\MyModel",         "MyModel"),
-    ("unc_extended",          r"\\?\UNC\server\share\MyModel",          "MyModel"),
-    ("win_extended",          r"\\?\D:\Models\MyModel",                 "MyModel"),
-    ("win_dot_rel",           r".\models\MyModel",                      "MyModel"),
-    ("win_spaces",            r"C:\Users\Ada\OneDrive - X\Llama 3.1 8B", "Llama 3.1 8B"),
-    ("win_unicode",           "D:\\Модели\\Модель",                     "Модель"),
-    ("win_short_name",        r"C:\Models\MYMODE~1",                    "MYMODE~1"),
-    ("win_double_dot_name",   r"C:\Models\MyModel..v2",                 "MyModel..v2"),
-    ("repeated_seps",         "D:\\Models\\\\MyModel",                  "MyModel"),
+    ("posix_trailing_sep", "/home/u/models/MyModel/", "MyModel"),
+    ("win_drive_abs", r"D:\Models\Merged Models\MyModel", "MyModel"),
+    ("win_drive_trailing", "D:\\Models\\MyModel\\", "MyModel"),
+    ("win_mixed_seps", "D:\\Models/Merged Models\\MyModel", "MyModel"),
+    ("unc_share", r"\\server\share\Models\MyModel", "MyModel"),
+    ("unc_extended", r"\\?\UNC\server\share\MyModel", "MyModel"),
+    ("win_extended", r"\\?\D:\Models\MyModel", "MyModel"),
+    ("win_dot_rel", r".\models\MyModel", "MyModel"),
+    ("win_spaces", r"C:\Users\Ada\OneDrive - X\Llama 3.1 8B", "Llama 3.1 8B"),
+    ("win_unicode", "D:\\Модели\\Модель", "Модель"),
+    ("win_short_name", r"C:\Models\MYMODE~1", "MYMODE~1"),
+    ("win_double_dot_name", r"C:\Models\MyModel..v2", "MyModel..v2"),
+    ("repeated_seps", "D:\\Models\\\\MyModel", "MyModel"),
     # -- degenerate rows: must never yield "" (a hidden .Q4_K_M.gguf) --------
-    ("drive_root",            "D:\\",                                   "model"),
-    ("bare_drive",            "D:",                                     "model"),
-    ("empty",                 "",                                       "model"),
-    ("none",                  None,                                     "model"),
-    ("dot",                   ".",                                      "model"),
-    ("dotdot",                "..",                                     "model"),
-    ("posix_root",            "/",                                      "model"),
+    ("drive_root", "D:\\", "model"),
+    ("bare_drive", "D:", "model"),
+    ("empty", "", "model"),
+    ("none", None, "model"),
+    ("dot", ".", "model"),
+    ("dotdot", "..", "model"),
+    ("posix_root", "/", "model"),
 ]
 
 _REGRESSION_LABELS = {
-    "hf_id", "hf_id_nested", "bare_name", "posix_abs",
-    "posix_rel", "wsl_mount", "win_forward_slashes",
+    "hf_id",
+    "hf_id_nested",
+    "bare_name",
+    "posix_abs",
+    "posix_rel",
+    "wsl_mount",
+    "win_forward_slashes",
 }
 
 
@@ -164,9 +169,9 @@ def test_quantize_output_stays_inside_gguf_directory(label, name_or_path, _expec
     """
     stem = _load_helper()(name_or_path)
     out = ntpath.join(_GGUF_DIR, f"{stem}.Q5_K_M.gguf")
-    assert ntpath.dirname(out) == _GGUF_DIR, (
-        f"{name_or_path!r} -> stem {stem!r} -> output escaped to {out!r}"
-    )
+    assert (
+        ntpath.dirname(out) == _GGUF_DIR
+    ), f"{name_or_path!r} -> stem {stem!r} -> output escaped to {out!r}"
     assert ntpath.basename(out) != ".Q5_K_M.gguf"
 
 

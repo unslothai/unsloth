@@ -28,8 +28,18 @@ save_mod = pytest.importorskip("unsloth.save", reason = "needs torch + unsloth_z
 # ---------------------------------------------------------------------------
 
 _PURE = {
-    "join", "basename", "dirname", "split", "splitdrive", "splitext",
-    "normpath", "normcase", "isabs", "commonpath", "sep", "altsep",
+    "join",
+    "basename",
+    "dirname",
+    "split",
+    "splitdrive",
+    "splitext",
+    "normpath",
+    "normcase",
+    "isabs",
+    "commonpath",
+    "sep",
+    "altsep",
 }
 
 
@@ -89,11 +99,7 @@ class _Harness:
         if qtype == "None":
             qtype = kwargs.get("model_dtype", "bf16")
         # unsloth_zoo/llama_cpp.py:2465 -- the name zoo would build.
-        final = (
-            model_name
-            if model_name.endswith(".gguf")
-            else f"{model_name}.{qtype.upper()}.gguf"
-        )
+        final = model_name if model_name.endswith(".gguf") else f"{model_name}.{qtype.upper()}.gguf"
         self.initial_names.append(final)
         # save.py:2037 requires the returned paths to exist, so hand back a real
         # file. The escape under test happens at the *quantize* join, which is
@@ -112,8 +118,14 @@ _WINDOWS_BASE = r"D:\Models\Merged Models\MyModel"
 _EXPORT_DIR = r"C:\Users\u\.unsloth\studio\exports\MyModel\_tmp_model_ab12"
 
 
-def _run(monkeypatch, tmp_path, model_name, model_directory, flavour = ntpath,
-         methods = None):
+def _run(
+    monkeypatch,
+    tmp_path,
+    model_name,
+    model_directory,
+    flavour = ntpath,
+    methods = None,
+):
     harness = _Harness(monkeypatch, tmp_path, flavour)
     monkeypatch.setattr(save_mod, "shutil", _NoMove(), raising = False)
     # gguf_directory is a Windows-style string here; os.makedirs is the *real* one,
@@ -164,7 +176,7 @@ def test_derived_stem_keeps_quantized_gguf_inside_gguf_directory(monkeypatch, tm
 
 def test_legacy_stem_escaped_to_the_base_model_drive(monkeypatch, tmp_path):
     """Pin the #7897 failure mode: the pre-fix stem relocated the output to D:."""
-    legacy_stem = _WINDOWS_BASE.split("/")[-1]          # the old derivation
+    legacy_stem = _WINDOWS_BASE.split("/")[-1]  # the old derivation
     harness = _run(monkeypatch, tmp_path, legacy_stem, _EXPORT_DIR)
 
     assert harness.quantize_calls
@@ -177,7 +189,7 @@ def test_trailing_separator_no_longer_yields_a_hidden_gguf(monkeypatch, tmp_path
     """OS-agnostic half of the bug: a trailing sep gave an empty stem."""
     assert "".join(_WINDOWS_BASE.rsplit("\\", 1)[1:]) == "MyModel"
     legacy_stem = "/home/u/models/MyModel/".split("/")[-1]
-    assert legacy_stem == ""                                  # the old behaviour
+    assert legacy_stem == ""  # the old behaviour
 
     stem = save_mod._model_basename("/home/u/models/MyModel/")
     export_dir = str(tmp_path / "exports" / "run")

@@ -57,16 +57,16 @@ def _progress(step = 0, total_steps = 0):
 @pytest.mark.parametrize(
     "step, total, msg, expected",
     [
-        (126, 126, "training in progress...", True),    # the reported symptom
-        (127, 126, "training in progress...", True),    # defensive overshoot
-        (125, 126, "training in progress...", False),   # steps remain
-        (0,   126, "training in progress...", False),
-        (0,   0,   "training in progress...", False),   # total unknown -> inert
-        (5,   0,   "training in progress...", False),
-        (0,   0,   "saving model...",         True),    # MLX/embedding say so
-        (10,  126, "saving stopped model...", True),
-        (10,  126, "merging weights into 16bit", True),
-        (10,  126, "ready to train",           False),
+        (126, 126, "training in progress...", True),  # the reported symptom
+        (127, 126, "training in progress...", True),  # defensive overshoot
+        (125, 126, "training in progress...", False),  # steps remain
+        (0, 126, "training in progress...", False),
+        (0, 0, "training in progress...", False),  # total unknown -> inert
+        (5, 0, "training in progress...", False),
+        (0, 0, "saving model...", True),  # MLX/embedding say so
+        (10, 126, "saving stopped model...", True),
+        (10, 126, "merging weights into 16bit", True),
+        (10, 126, "ready to train", False),
     ],
 )
 def test_is_finalizing(step, total, msg, expected):
@@ -115,7 +115,8 @@ def test_every_emitted_phase_is_in_the_response_literal():
     src = _ROUTES_TRAINING.read_text(encoding = "utf-8")
     tree = ast.parse(src)
     fn = next(
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
         and n.name == "get_training_status"
     )
@@ -123,9 +124,7 @@ def test_every_emitted_phase_is_in_the_response_literal():
         node.value.value
         for node in ast.walk(fn)
         if isinstance(node, ast.Assign)
-        and any(
-            isinstance(t, ast.Name) and t.id == "phase" for t in node.targets
-        )
+        and any(isinstance(t, ast.Name) and t.id == "phase" for t in node.targets)
         and isinstance(node.value, ast.Constant)
         and isinstance(node.value.value, str)
     }
@@ -144,18 +143,19 @@ def test_completion_still_comes_only_from_is_completed():
     fn_src = ast.get_source_segment(
         src,
         next(
-            n for n in ast.walk(ast.parse(src))
+            n
+            for n in ast.walk(ast.parse(src))
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and n.name == "get_training_status"
+            and n.name == "get_training_status"
         ),
     )
     completed_branch = re.search(r'phase\s*=\s*"completed"', fn_src)
     assert completed_branch, "no completed branch found"
     preceding = fn_src[: completed_branch.start()]
     # The guard immediately governing `completed` must still be is_completed.
-    assert "is_completed" in preceding.rsplit("elif", 1)[-1], (
-        "the `completed` phase is no longer gated on progress.is_completed"
-    )
+    assert (
+        "is_completed" in preceding.rsplit("elif", 1)[-1]
+    ), "the `completed` phase is no longer gated on progress.is_completed"
     # And `finalizing` must sit inside the is_active branch, never after it.
     assert fn_src.index('phase = "finalizing"') < completed_branch.start()
 
@@ -164,8 +164,7 @@ def test_frontend_phase_union_covers_the_backend_literal():
     """phaseColors/phaseLabelKeys are Record<TrainingPhase, ...>, so a backend
     phase missing from the union is a compile error the frontend never sees."""
     runtime_ts = (
-        _BACKEND_DIR.parent / "frontend" / "src" / "features" / "training"
-        / "types" / "runtime.ts"
+        _BACKEND_DIR.parent / "frontend" / "src" / "features" / "training" / "types" / "runtime.ts"
     )
     if not runtime_ts.is_file():
         pytest.skip("frontend sources not present")
