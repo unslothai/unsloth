@@ -3224,7 +3224,6 @@ async def get_kv_cache_estimate(
                     _auto_mode_drops_mtp,
                     _extract_model_size_b,
                 )
-
                 drafter_path, drafter_bytes = _resolve_mtp_drafter(path)
                 # Auto declines MTP on a sub-3B embedded head, where the
                 # per-token cost regresses; a separate drafter is exempt. Pricing
