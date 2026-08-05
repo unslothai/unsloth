@@ -1874,12 +1874,11 @@ export function AppSidebar() {
               }
               // Off-route this row is the only sign chats are still running.
               spinner={anyChatRunning && !isChatRoute}
-              active={
-                isChatRoute &&
-                !search.thread &&
-                !search.compare &&
-                !search.project
-              }
+              // An action, not a destination, so it never marks itself active:
+              // the active pill is the hover pill, and on a blank new chat it
+              // left the row looking permanently hovered. Search below is the
+              // same kind of row and has always passed false.
+              active={false}
               onClick={() => {
                 if (showReturnToChat) {
                   // Prefer the running thread so we return to the live generation,
