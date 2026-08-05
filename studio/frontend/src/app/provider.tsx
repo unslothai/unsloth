@@ -321,6 +321,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     isExternalServer,
     currentStepIndex,
     progressDetail,
+    startupMessage,
     elevationPackages,
     startInstall,
     retry,
@@ -464,6 +465,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       error={error}
       currentStepIndex={currentStepIndex}
       progressDetail={startupProgressDetail}
+      startupMessage={startupMessage}
       elevationPackages={elevationPackages}
       onInstall={startInstall}
       onRetry={retry}
