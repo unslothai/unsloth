@@ -2,23 +2,39 @@
 node_modules/
 studio/frontend/node_modules/
 
-# Build outputs
+# Production build
 dist/
 build/
 studio/frontend/dist/
 studio/frontend/build/
 
-# Environment files
+# Vite cache
+.vite/
+studio/frontend/.vite/
+
+# Test coverage
+coverage/
+studio/frontend/coverage/
+
+# Environment variables
 .env
 .env.local
 .env.development.local
 .env.test.local
 .env.production.local
+
 studio/frontend/.env
 studio/frontend/.env.local
-studio/frontend/.env.*.local
+studio/frontend/.env.development.local
+studio/frontend/.env.test.local
+studio/frontend/.env.production.local
+
+# Allow environment templates
+!.env.example
+!studio/frontend/.env.example
 
 # Logs
+logs/
 *.log
 npm-debug.log*
 yarn-debug.log*
@@ -26,24 +42,69 @@ yarn-error.log*
 pnpm-debug.log*
 bun-debug.log*
 
-# Test coverage
-coverage/
-studio/frontend/coverage/
-
-# Editors
-.idea/
-.vscode/
-*.swp
-*.swo
-
-# Operating systems
-.DS_Store
-Thumbs.db
-
 # TypeScript
 *.tsbuildinfo
+
+# ESLint and tooling caches
+.eslintcache
+.cache/
+.parcel-cache/
+.turbo/
+
+# Editors and IDEs
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
 
 # Temporary files
 tmp/
 temp/
-.cache/
+*.tmp
+*.temp
+
+
+# Local application data
+data/
+uploads/
+storage/
+
+# Playwright
+playwright-report/
+test-results/
+blob-report/
+studio/frontend/playwright-report/
+studio/frontend/test-results/
+
+# Cypress
+cypress/videos/
+cypress/screenshots/
+
+# Storybook
+storybook-static/
+
+# Generated archives
+*.zip
+*.tar
+*.tar.gz
+
+# Do not ignore lockfiles
+!studio/frontend/package-lock.json
+!studio/frontend/bun.lock
+!studio/frontend/bun.lockb
