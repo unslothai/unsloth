@@ -41,9 +41,8 @@ _ACCESS_LOG_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_DEDUP_MS", 300)
 # Liveness/UI polls whose line means only "still polling"; collapse to a longer
 # heartbeat. First hit and errors still log. 0 = off.
 _QUIET_POLL_DEDUP_MS = _env_int("UNSLOTH_STUDIO_ACCESS_LOG_POLL_DEDUP_MS", 10000)
-# Both windows off is exactly what `unsloth studio --verbose` sets, and that flag
-# promises to log every request. The drop-the-2xx suppressor below has no window of
-# its own, so it has to read the same signal or --verbose cannot reach those paths.
+# Both windows off is what --verbose sets; the drop-the-2xx suppressor below has no
+# window of its own, so it must read the same signal to honour --verbose.
 _VERBOSE_ACCESS_LOG = _ACCESS_LOG_DEDUP_MS <= 0 and _QUIET_POLL_DEDUP_MS <= 0
 _QUIET_POLL_PATHS = {
     "/api/health",
@@ -59,16 +58,14 @@ _QUIET_POLL_PATHS = {
     "/api/models/download-progress",
     "/api/models/gguf-download-progress",
     "/api/datasets/download-progress",
-    # Generation is fire-and-forget: the outcome only reaches the UI through these 300ms
-    # polls, so keep a "still generating" pulse instead of dropping them.
+    # Generation is fire-and-forget: its outcome only reaches the UI via these polls.
     "/api/inference/images/generate-progress",
     "/api/inference/video/generate-progress",
-    # Diffusion training status, polled every 1.5s while the train UI is open.
+    # Polled every 1.5s while the train UI is open.
     "/api/train/diffusion/status",
-    # Unlike /api/inference/load-progress, whose handler emits inference_load_progress
-    # every 10%, these two only read state, and diffusion.loaded / video.loaded fire
-    # once the load is already done. A diffusion load runs minutes (download, quant,
-    # compile), so a pulse is the only sign it is still moving.
+    # Unlike /api/inference/load-progress, these handlers log nothing and
+    # diffusion.loaded / video.loaded are terminal, so a minutes-long load would
+    # otherwise emit nothing at all.
     "/api/inference/images/load-progress",
     "/api/inference/video/load-progress",
 }

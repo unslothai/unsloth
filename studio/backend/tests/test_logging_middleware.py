@@ -376,7 +376,7 @@ def test_generation_progress_polls_heartbeat(logs, monkeypatch):
 
 
 def test_generation_progress_errors_still_log(logs, monkeypatch):
-    # A failing poll must stay visible: heartbeat dedup is GET/2xx only.
+    # Heartbeat dedup is GET/2xx only, so a failing poll stays visible.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 1000)
     mw = LoggingMiddleware(_status_app(500))
@@ -402,7 +402,7 @@ def test_image_video_load_progress_heartbeats(logs, monkeypatch):
 
 
 def test_unrelated_image_routes_still_log(logs, monkeypatch):
-    # Only the timer-polled paths are quieted; the tabs' event-driven reads are untouched.
+    # Only the timer-polled paths are quieted, not the event-driven reads.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     for path in (
         "/api/inference/images/status",
@@ -418,8 +418,7 @@ def test_unrelated_image_routes_still_log(logs, monkeypatch):
 
 
 def test_verbose_restores_the_dropped_success_polls(logs, monkeypatch):
-    # `unsloth studio --verbose` zeroes both windows and promises every request is
-    # logged, so the drop-the-2xx suppressor has to stand down too.
+    # --verbose zeroes both windows, so the 2xx suppressor must stand down too.
     monkeypatch.setattr(hmod, "_ACCESS_LOG_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_QUIET_POLL_DEDUP_MS", 0)
     monkeypatch.setattr(hmod, "_VERBOSE_ACCESS_LOG", True)
@@ -437,7 +436,7 @@ def test_verbose_restores_the_dropped_success_polls(logs, monkeypatch):
 
 
 def test_verbose_off_by_default_keeps_the_polls_quiet(logs):
-    # The default env leaves both windows set, so nothing changes for a normal launch.
+    # Default env leaves both windows set, so a normal launch is unchanged.
     assert hmod._VERBOSE_ACCESS_LOG is False
     for path in ("/api/inference/load-progress", "/api/hub/download-progress"):
         _run(LoggingMiddleware(_status_app(200))(_http_scope(path), _noop_receive, _drop))
