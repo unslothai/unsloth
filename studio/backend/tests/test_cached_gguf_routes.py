@@ -105,33 +105,10 @@ def test_legacy_hf_scan_uses_snapshot_path_for_inactive_cache(tmp_path):
 def test_collect_local_models_scans_previous_cache(monkeypatch, tmp_path):
     active = tmp_path / "active"
     previous = tmp_path / "previous"
-    active_partial = active / "models--Org--Model" / "blobs" / "abc.incomplete"
-    active_partial.parent.mkdir(parents = True)
-    active_partial.write_bytes(b"partial")
-    snapshot = previous / "models--Org--Model" / "snapshots" / "revision"
+    active.mkdir()
+    snapshot = previous / "models--Org--Previous" / "snapshots" / "revision"
     snapshot.mkdir(parents = True)
-    (snapshot / "model.safetensors").write_bytes(b"complete")
-    registered = tmp_path / "registered"
-    (registered / "models--Org--Registered").mkdir(parents = True)
-    state = SimpleNamespace(for_repo = lambda *_a, **_k: state, iter_manifests = lambda: ())
-    build_calls = []
 
-    def record_build(repositories, **kwargs):
-        assert kwargs["active_hub_cache"] == active
-        build_calls.append(set(repositories))
-        return state
-
-    def indexed_partial(
-        *args,
-        variant_state = None,
-        **_kwargs,
-    ):
-        assert variant_state is state
-        return any((args[2] / "blobs").glob("*.incomplete"))
-
-    monkeypatch.setattr("hub.utils.download_manifest.build_variant_state_index", record_build)
-    monkeypatch.setattr("hub.utils.inventory_scan.is_snapshot_partial", indexed_partial)
-    monkeypatch.setattr("hub.utils.inventory_scan.is_gguf_repo_partial", lambda *_a, **_k: False)
     monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
     monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
     monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
@@ -139,22 +116,54 @@ def test_collect_local_models_scans_previous_cache(monkeypatch, tmp_path):
     monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, previous])
     monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
 
-    rows = models_route.collect_local_models(
-        tmp_path / "models", custom_folders = [{"path": str(registered)}]
-    )
+    rows = models_route.collect_local_models(tmp_path / "models")
+
+    previous_row = next(row for row in rows if row.model_id == "Org/Previous")
+    assert previous_row.id == str(snapshot.resolve())
+
+
+def test_collect_local_models_prefers_complete_previous_copy(monkeypatch, tmp_path):
+    from hub.utils import download_manifest
+
+    active = tmp_path / "active"
+    previous = tmp_path / "previous"
+    active_partial = active / "models--Org--Model" / "blobs" / "abc.incomplete"
+    active_partial.parent.mkdir(parents = True)
+    active_partial.write_bytes(b"partial")
+    snapshot = previous / "models--Org--Model" / "snapshots" / "revision"
+    snapshot.mkdir(parents = True)
+    (snapshot / "model.safetensors").write_bytes(b"complete")
+    build_calls = []
+    real_build = download_manifest.build_variant_state_index
+
+    def record_build(repositories, **kwargs):
+        repositories = tuple(repositories)
+        build_calls.append(repositories)
+        return real_build(repositories, **kwargs)
+
+    monkeypatch.setattr("hub.utils.download_manifest.build_variant_state_index", record_build)
+    monkeypatch.setattr(models_route, "_resolve_hf_cache_dir", lambda: active)
+    monkeypatch.setattr("utils.paths.legacy_hf_cache_dir", lambda: tmp_path / "legacy")
+    monkeypatch.setattr("utils.paths.hf_default_cache_dir", lambda: tmp_path / "default")
+    monkeypatch.setattr("utils.paths.lmstudio_model_dirs", lambda: [])
+    monkeypatch.setattr("utils.hf_cache_settings.known_hf_hub_caches", lambda: [active, previous])
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: [])
+
+    rows = models_route.collect_local_models(tmp_path / "models")
     [row] = [row for row in rows if row.model_id == "Org/Model"]
     assert row.id == str(snapshot.resolve())
     assert row.partial is False
     assert row.active_cache is False
     assert len(build_calls) == 1
-    assert build_calls[0] == {
+    assert set(build_calls[0]) == {
         ("model", "Org/Model", active),
         ("model", "Org/Model", previous),
-        ("model", "Org/Registered", registered),
     }
 
 
-def test_compat_local_inventory_route_shares_scan_snapshot(monkeypatch, tmp_path):
+def test_compat_local_inventory_requests_share_scan(monkeypatch, tmp_path):
+    assert models_route._compat_inventory_path_identity("\0") == "\0"
+    assert models_route._compat_inventory_path_identity("\ud800") == "\ud800"
     sources = models_route._CompatLocalInventorySources(
         tmp_path / "active",
         tmp_path / "legacy",
@@ -162,36 +171,14 @@ def test_compat_local_inventory_route_shares_scan_snapshot(monkeypatch, tmp_path
         (tmp_path / "lm",),
         (tmp_path / "known",),
     )
-    source_snapshot = [sources]
-    folders = [{"id": 1, "path": "/custom", "created_at": "now"}]
-    monkeypatch.setattr(models_route, "_compat_local_inventory_sources", lambda: source_snapshot[0])
-    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: folders)
-    monkeypatch.setattr("hub.utils.inventory_scan.hf_cache_scans_epoch", lambda: 7)
-    monkeypatch.setattr(
-        "hub.utils.download_manifest.variant_state_generation", lambda: "generation"
-    )
-    monkeypatch.setattr(
-        "hub.utils.download_manifest.variant_state_mutation_snapshot",
-        lambda: SimpleNamespace(markers = ("marker",), in_progress = False),
-    )
-    started, keyed, changed_keyed = asyncio.Event(), asyncio.Event(), asyncio.Event()
-    release, workers = asyncio.Event(), []
-    real_key, keys = models_route._compat_local_inventory_key, []
-
-    def record_key(*args):
-        keys.append(real_key(*args))
-        if len(keys) == 2:
-            keyed.set()
-        elif len(keys) == 3:
-            changed_keyed.set()
-        return keys[-1]
-
-    monkeypatch.setattr(models_route, "_compat_local_inventory_key", record_key)
+    folders = [[{"id": 1, "path": "/custom", "created_at": "now"}]]
+    monkeypatch.setattr("storage.studio_db.list_scan_folders", lambda: folders[0])
+    started, release, workers = [asyncio.Event(), asyncio.Event()], asyncio.Event(), []
 
     async def fake_to_thread(function, *args, **kwargs):
         if function is models_route.collect_local_models:
-            workers.append((kwargs["sources"], kwargs["custom_folders"]))
-            started.set()
+            workers.append((args, kwargs))
+            started[len(workers) - 1].set()
             await release.wait()
             return []
         return function(*args, **kwargs)
@@ -199,40 +186,33 @@ def test_compat_local_inventory_route_shares_scan_snapshot(monkeypatch, tmp_path
     monkeypatch.setattr(models_route.asyncio, "to_thread", fake_to_thread)
 
     async def run_requests():
-        request = lambda: models_route.list_local_models(str(Path("./models").resolve()), "test")
-        first = asyncio.create_task(request())
-        await asyncio.wait_for(started.wait(), 1)
-        second = asyncio.create_task(request())
-        await asyncio.wait_for(keyed.wait(), 1)
-        await asyncio.sleep(0)
-        assert workers == [(sources, folders)]
-        source_snapshot[0] = sources._replace(legacy_hf = tmp_path / "changed")
-        third = asyncio.create_task(request())
-        await asyncio.wait_for(changed_keyed.wait(), 1)
-        await asyncio.sleep(0)
-        assert workers == [(sources, folders), (source_snapshot[0], folders)]
-        release.set()
-        return await asyncio.gather(first, second, third)
-
-    responses = asyncio.run(run_requests())
-    assert [response.hf_cache_dir for response in responses] == [str(sources.hf_cache_dir)] * 3
-    normalize = models_route.os.path.normcase
-    assert (
-        keys[0]
-        == keys[1]
-        == (
-            normalize(str(Path("./models").resolve())),
-            tuple(
-                tuple(normalize(str(item)) for item in path)
-                if isinstance(path, tuple)
-                else normalize(str(path))
-                for path in sources
-            ),
-            7,
-            "generation",
-            ("marker",),
-            (("1", "/custom", "now"),),
+        request = lambda root = tmp_path: models_route._shared_compat_local_inventory_scan(
+            root, sources
         )
+        first = asyncio.create_task(request(tmp_path))
+        await asyncio.wait_for(started[0].wait(), 1)
+        second = asyncio.create_task(request(tmp_path / "alias" / ".."))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        assert len(workers) == 1
+        assert sources in next(iter(models_route._compat_local_inventory_flights))[1]
+        first.cancel()
+        second.cancel()
+        await asyncio.gather(first, second, return_exceptions = True)
+        second = asyncio.create_task(request())
+        await asyncio.sleep(0)
+        folders[0] = [{"id": 2, "path": "/changed", "created_at": "later"}]
+        changed = asyncio.create_task(request())
+        await asyncio.wait_for(started[1].wait(), 1)
+        assert [worker[1]["custom_folders"] for worker in workers] == [
+            [{"id": 1, "path": "/custom", "created_at": "now"}],
+            folders[0],
+        ]
+        release.set()
+        return await asyncio.gather(second, changed)
+
+    assert (
+        asyncio.run(run_requests()) == [[], []] and not models_route._compat_local_inventory_flights
     )
 
 
@@ -3056,7 +3036,7 @@ def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_p
     monkeypatch.setattr(
         models_route,
         "_cached_repo_task",
-        lambda repo_info: ("text-to-image" if "Qwen-Image" in repo_info.repo_id else None),
+        lambda repo_info: "text-to-image" if "Qwen-Image" in repo_info.repo_id else None,
     )
     monkeypatch.setattr(
         models_route,

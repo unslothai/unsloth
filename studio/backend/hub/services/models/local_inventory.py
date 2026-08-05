@@ -12,7 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
-from typing import List, Optional
+from typing import List, NamedTuple, Optional
 
 from fastapi import HTTPException
 from loggers import get_logger
@@ -42,10 +42,21 @@ logger = get_logger(__name__)
 _MAX_MODELS_PER_CUSTOM_FOLDER = 200
 _MAX_CUSTOM_FOLDER_ENTRIES = 2000
 _MODEL_SIGNAL_PROBE_LIMIT = 200
-_LocalInventoryKey = tuple[
-    str, int, Optional[str], tuple[str, ...], tuple[tuple[str, str, str], ...]
-]
-_local_inventory_flights: dict[_LocalInventoryKey, asyncio.Task[LocalModelListResponse]] = {}
+
+
+class _LocalInventorySources(NamedTuple):
+    hf_cache_dir: Path
+    legacy_hf: Path
+    hf_default: Path
+    lm_dirs: tuple[Path, ...]
+    ollama_dirs: tuple[Path, ...]
+    known_hf_caches: tuple[Path, ...]
+
+
+_LocalInventoryKey = tuple[str, _LocalInventorySources, tuple[str, ...]]
+_local_inventory_flights: dict[
+    tuple[asyncio.AbstractEventLoop, _LocalInventoryKey], asyncio.Task[LocalModelListResponse]
+] = {}
 
 # Local aliases keep the extracted code close to the original implementation.
 _is_model_directory = model_common._is_model_directory
@@ -112,6 +123,18 @@ def _is_model_directory_for_scan(path: Path, *, entry_limit: int | None) -> bool
 def _resolve_hf_cache_dir() -> Path:
     from utils.hf_cache_settings import get_hf_cache_paths
     return get_hf_cache_paths().hub_cache
+
+
+def _local_inventory_sources() -> _LocalInventorySources:
+    from utils.hf_cache_settings import known_hf_hub_caches
+    return _LocalInventorySources(
+        _resolve_hf_cache_dir(),
+        legacy_hf_cache_dir(),
+        hf_default_cache_dir(),
+        tuple(lmstudio_model_dirs()),
+        tuple(ollama_model_dirs()),
+        tuple(known_hf_hub_caches()),
+    )
 
 
 def _scan_models_dir(
@@ -486,6 +509,18 @@ def _resolve_allowed_models_dir(models_dir: str, allowed_roots: list[Path]) -> P
     raise ValueError("Directory not allowed")
 
 
+def _inventory_path_identity(raw_path: str) -> str:
+    """Canonical identity for scan roots used in shared-flight keys."""
+    raw = raw_path.strip()
+    try:
+        normalized = normalize_path(raw)
+        return os.path.normcase(os.path.realpath(os.path.expanduser(normalized)))
+    except (OSError, UnicodeError, ValueError):
+        # Keep malformed sources distinct until the worker's existing request or
+        # per-folder error boundary turns them into a 403/skip.
+        return os.path.normcase(raw)
+
+
 def _coerce_scan_folder_path(raw_path: str) -> str:
     """Normalize a scan registration target; the registry stores directories, so a pasted weight-file path is reduced to its parent folder."""
     if not raw_path or not raw_path.strip():
@@ -548,8 +583,10 @@ async def _collect_models_from_default_sources(
     hf_cache_dir: Path,
     legacy_hf: Path,
     hf_default: Path,
-    lm_dirs: list[Path],
-    ollama_dirs: list[Path],
+    lm_dirs: tuple[Path, ...],
+    ollama_dirs: tuple[Path, ...],
+    known_hf_caches: tuple[Path, ...],
+    custom_folders: list[dict],
 ) -> List[LocalModelInfo]:
     local_models = await _scan_source("models directory", _scan_models_dir, models_root)
     hf_sources = [("HF cache", hf_cache_dir, True)]
@@ -564,13 +601,11 @@ async def _collect_models_from_default_sources(
     ):
         hf_sources.append(("default HF cache", hf_default, False))
 
-    from utils.hf_cache_settings import known_hf_hub_caches
-
     seen_hf = {
         os.path.normcase(str(path.resolve(strict = False)))
         for path in (hf_cache_dir, legacy_hf, hf_default)
     }
-    for previous_cache in known_hf_hub_caches():
+    for previous_cache in known_hf_caches:
         key = os.path.normcase(str(previous_cache.resolve(strict = False)))
         if key in seen_hf:
             continue
@@ -578,12 +613,24 @@ async def _collect_models_from_default_sources(
         hf_sources.append(("previous HF cache", previous_cache, False))
 
     discovered_sources = []
+    custom_sources = []
     state_repositories = []
     for label, cache_dir, active_cache in hf_sources:
         discovered = await _scan_source(label, _discover_hf_cache, cache_dir)
         discovered_sources.append((label, cache_dir, active_cache, discovered))
         state_repositories.extend(
             ("model", model_id, cache_dir) for _repo, model_id, _updated in discovered
+        )
+    for folder in custom_folders:
+        folder_path = Path(normalize_path(folder["path"])).expanduser()
+        discovered = await _scan_source(
+            "custom HF cache",
+            lambda path: _discover_hf_cache(path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES),
+            folder_path,
+        )
+        custom_sources.append((folder_path, discovered))
+        state_repositories.extend(
+            ("model", model_id, folder_path) for _repo, model_id, _updated in discovered
         )
     try:
         variant_states = await asyncio.to_thread(
@@ -613,10 +660,30 @@ async def _collect_models_from_default_sources(
     for ollama_dir in ollama_dirs:
         local_models += await _scan_source("Ollama", scan_ollama_dir, ollama_dir)
 
+    for folder_path, discovered in custom_sources:
+        try:
+            custom_models = await asyncio.to_thread(
+                _scan_custom_folder,
+                folder_path,
+                discovered = discovered,
+                variant_states = variant_states,
+                active_hub_cache = hf_cache_dir,
+            )
+        except Exception as e:
+            logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
+            continue
+        local_models.extend(_promote_to_custom_source(model) for model in custom_models)
+
     return local_models
 
 
-def _scan_custom_folder(folder_path: Path) -> List[LocalModelInfo]:
+def _scan_custom_folder(
+    folder_path: Path,
+    *,
+    discovered: Optional[list[tuple[Path, str, Optional[float]]]] = None,
+    variant_states: Optional[download_manifest.VariantStateIndex] = None,
+    active_hub_cache: Optional[Path] = None,
+) -> List[LocalModelInfo]:
     from utils.models.model_config import detect_gguf_model
 
     supported_formats: set[ModelFormat] = {"gguf", "safetensors", "adapter"}
@@ -632,6 +699,9 @@ def _scan_custom_folder(folder_path: Path) -> List[LocalModelInfo]:
                 folder_path,
                 entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES,
                 active_cache = False,
+                discovered = discovered,
+                variant_states = variant_states,
+                active_hub_cache = active_hub_cache,
             )
             + _scan_lmstudio_dir(folder_path, entry_limit = _MAX_CUSTOM_FOLDER_ENTRIES)
         )
@@ -687,23 +757,6 @@ async def _load_custom_folders() -> list[dict]:
         return []
 
 
-async def _collect_models_from_custom_folders(
-    custom_folders: Optional[list[dict]] = None,
-) -> List[LocalModelInfo]:
-    if custom_folders is None:
-        custom_folders = await _load_custom_folders()
-    local_models: List[LocalModelInfo] = []
-    for folder in custom_folders:
-        folder_path = Path(normalize_path(folder["path"])).expanduser()
-        try:
-            custom_models = await asyncio.to_thread(_scan_custom_folder, folder_path)
-        except Exception as e:
-            logger.warning("Skipping unreadable scan folder %s: %s", folder_path, e)
-            continue
-        local_models.extend(_promote_to_custom_source(m) for m in custom_models)
-    return local_models
-
-
 def _dedupe_local_models(local_models: List[LocalModelInfo]) -> list[LocalModelInfo]:
     deduped: dict[str, LocalModelInfo] = {}
     for model in local_models:
@@ -757,14 +810,10 @@ def _filter_hidden_models(local_models: List[LocalModelInfo]) -> list[LocalModel
 
 
 async def _scan_local_models_response(
-    models_dir: str, custom_folders: list[dict]
+    models_dir: str, custom_folders: list[dict], sources: _LocalInventorySources
 ) -> LocalModelListResponse:
     """List local model candidates from every supported on-device source."""
-    hf_cache_dir = _resolve_hf_cache_dir()
-    legacy_hf = legacy_hf_cache_dir()
-    hf_default = hf_default_cache_dir()
-    lm_dirs = lmstudio_model_dirs()
-    ollama_dirs = ollama_model_dirs()
+    hf_cache_dir, legacy_hf, hf_default, lm_dirs, ollama_dirs, known_hf_caches = sources
 
     allowed_roots: list[Path] = [Path("./models").resolve(), hf_cache_dir]
     if _safe_is_dir(legacy_hf):
@@ -786,8 +835,9 @@ async def _scan_local_models_response(
             hf_default,
             lm_dirs,
             ollama_dirs,
+            known_hf_caches,
+            custom_folders,
         )
-        local_models += await _collect_models_from_custom_folders(custom_folders)
         models = _dedupe_local_models(_filter_hidden_models(local_models))
         return LocalModelListResponse(
             models_dir = str(models_root),
@@ -804,21 +854,13 @@ async def _scan_local_models_response(
         )
 
 
-def _clear_local_inventory_flight(
-    key: _LocalInventoryKey, task: asyncio.Task[LocalModelListResponse]
-) -> None:
-    if _local_inventory_flights.get(key) is task:
-        _local_inventory_flights.pop(key, None)
-    if not task.cancelled():
-        task.exception()
-
-
 async def list_local_models_response(models_dir: str = "./models") -> LocalModelListResponse:
     """Coalesce overlapping local inventory requests for the same models root."""
     custom_folders = await _load_custom_folders()
+    sources = _local_inventory_sources()
 
     async def scan_and_classify() -> LocalModelListResponse:
-        response = await _scan_local_models_response(models_dir, custom_folders)
+        response = await _scan_local_models_response(models_dir, custom_folders, sources)
         # These rows feed the same pickers as /api/models/local. Classify inside the shared
         # worker so retrying waiters do not repeat GGUF metadata reads.
         try:
@@ -832,33 +874,12 @@ async def list_local_models_response(models_dir: str = "./models") -> LocalModel
             logger.warning("Could not classify local model tasks: %s", e)
             return response
 
-    custom_generation = tuple(
-        (
-            str(folder.get("id", "")),
-            str(folder.get("path", "")),
-            str(folder.get("created_at", "")),
-        )
-        for folder in custom_folders
+    key: _LocalInventoryKey = (
+        _inventory_path_identity(models_dir),
+        sources,
+        tuple(_inventory_path_identity(str(folder.get("path", ""))) for folder in custom_folders),
     )
-    mutations = download_manifest.variant_state_mutation_snapshot()
-    while mutations.in_progress:
-        await asyncio.sleep(0.01)
-        mutations = download_manifest.variant_state_mutation_snapshot()
-    key = (
-        os.path.normcase(models_dir),
-        hf_cache_scan.hf_cache_scans_epoch(),
-        download_manifest.variant_state_generation(),
-        mutations.markers,
-        custom_generation,
-    )
-    flight = _local_inventory_flights.get(key)
-    if flight is None or flight.done():
-        flight = asyncio.create_task(scan_and_classify())
-        _local_inventory_flights[key] = flight
-        flight.add_done_callback(
-            lambda task, flight_key = key: _clear_local_inventory_flight(flight_key, task)
-        )
-    return await asyncio.shield(flight)
+    return await hf_cache_scan.shared_scan(_local_inventory_flights, key, scan_and_classify)
 
 
 def get_models_folder_response() -> dict:

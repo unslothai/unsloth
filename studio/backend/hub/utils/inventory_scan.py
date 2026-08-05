@@ -13,6 +13,7 @@ layers built on top of these primitives live in download_registry.py.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import re
@@ -21,7 +22,7 @@ import threading
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Callable, NamedTuple, Optional
+from typing import Awaitable, Callable, Hashable, NamedTuple, Optional, TypeVar
 
 from loggers import get_logger
 
@@ -70,6 +71,28 @@ _hf_cache_scans_cached_at: float = 0.0
 # under; an invalidation mid-scan changes the epoch so the in-flight result is
 # neither cached nor served to callers that arrived after the mutation.
 _hf_cache_scans_epoch: int = 0
+
+_T = TypeVar("_T")
+
+
+async def shared_scan(
+    flights: dict[Hashable, asyncio.Task[_T]], key: Hashable, factory: Callable[[], Awaitable[_T]]
+) -> _T:
+    """Shield same-loop callers behind one task for the same inventory key."""
+    flight_key = (asyncio.get_running_loop(), key)
+    flight = flights.get(flight_key)
+    if flight is None or flight.done():
+        flight = asyncio.create_task(factory())
+        flights[flight_key] = flight
+
+        def clear(task: asyncio.Task[_T]) -> None:
+            if flights.get(flight_key) is task:
+                flights.pop(flight_key, None)
+            if not task.cancelled():
+                task.exception()
+
+        flight.add_done_callback(clear)
+    return await asyncio.shield(flight)
 
 
 def invalidate_hf_cache_scans() -> None:
@@ -648,26 +671,26 @@ def _gguf_variant_manifest_blob_hashes(
 
     hashes: set[str] = set()
     hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
-    manifests = (
-        variant_state.iter_manifests()
-        if variant_state is not None
-        else download_manifest.iter_variant_manifests(
-            "model",
-            repo_id,
-            hub_cache = hub_cache,
-        )
-    )
-    for variant, _path in manifests:
-        manifest = (
-            variant_state.manifest_for(variant)
-            if variant_state is not None
-            else download_manifest.read_manifest(
+    if variant_state is not None:
+        manifests = variant_state.manifests()
+    else:
+        manifests = (
+            (
+                variant,
+                download_manifest.read_manifest(
+                    "model",
+                    repo_id,
+                    variant,
+                    hub_cache = hub_cache,
+                ),
+            )
+            for variant, _path in download_manifest.iter_variant_manifests(
                 "model",
                 repo_id,
-                variant,
                 hub_cache = hub_cache,
             )
         )
+    for _variant, manifest in manifests:
         if manifest is None:
             continue
         for expected in manifest.expected_files:
@@ -1868,45 +1891,43 @@ def is_gguf_repo_partial(
     complete_here = _completed_gguf_variants(snapshot_dir)
     variants: set[str] = set(complete_here)
     hub_cache = _hub_cache_for_repo_dir(repo_cache_dir)
-    manifests = (
-        variant_state.iter_manifests()
-        if variant_state is not None
-        else download_manifest.iter_variant_manifests(
+    if variant_state is not None:
+        manifests = variant_state.manifests()
+    else:
+        manifests = (
+            (
+                variant,
+                download_manifest.read_manifest(
+                    "model",
+                    repo_id,
+                    variant,
+                    hub_cache = hub_cache,
+                ),
+            )
+            for variant, _path in download_manifest.iter_variant_manifests(
+                "model",
+                repo_id,
+                hub_cache = hub_cache,
+            )
+        )
+    for variant, manifest in manifests:
+        if manifest is not None:
+            variants.add(variant)
+    if variant_state is not None:
+        variants.update(variant_state.marker_variants())
+    else:
+        for variant, _path in download_manifest.iter_variant_markers(
             "model",
             repo_id,
             hub_cache = hub_cache,
-        )
-    )
-    for variant, _path in manifests:
-        manifest = (
-            variant_state.manifest_for(variant)
-            if variant_state is not None
-            else download_manifest.read_manifest(
+        ):
+            if download_manifest.has_cancel_marker(
                 "model",
                 repo_id,
                 variant,
                 hub_cache = hub_cache,
-            )
-        )
-        if manifest is not None:
-            variants.add(variant)
-    markers = (
-        variant_state.iter_markers()
-        if variant_state is not None
-        else download_manifest.iter_variant_markers(
-            "model",
-            repo_id,
-            hub_cache = hub_cache,
-        )
-    )
-    for variant, _path in markers:
-        if variant_state is not None or download_manifest.has_cancel_marker(
-            "model",
-            repo_id,
-            variant,
-            hub_cache = hub_cache,
-        ):
-            variants.add(variant)
+            ):
+                variants.add(variant)
     if not variants:
         # Nothing named a quant: an interrupted attempt leaves only torn shards.
         return has_legacy_partial or _recovered_snapshot_cannot_serve(

@@ -59,25 +59,13 @@ _MODEL_METADATA_TIMEOUT_SECONDS = 5.0
 _repo_size_cache_lock = threading.Lock()
 
 
-class _CachedGgufScanFlight(NamedTuple):
-    generation: tuple[int, Optional[str], tuple[str, ...]]
-    task: asyncio.Task[list[dict]]
-
-
-_cached_gguf_scan_flight: Optional[_CachedGgufScanFlight] = None
-_cached_models_scan_flight: Optional[_CachedGgufScanFlight] = None
+_cached_inventory_flights: dict[
+    tuple[asyncio.AbstractEventLoop, tuple[str, int]], asyncio.Task[list[dict]]
+] = {}
 
 # Identity for a cached file with no HF blob (Windows without Developer Mode: hf
 # moves the blob into snapshots/ and leaves blobs/ empty).
 _LOCAL_SIZE_IDENTITY_PREFIX = "size:"
-
-
-def _cached_inventory_flight_generation(mutations) -> tuple[int, Optional[str], tuple[str, ...]]:
-    return (
-        hf_cache_scan.hf_cache_scans_epoch(),
-        download_manifest.variant_state_generation(),
-        mutations.markers,
-    )
 
 
 def get_repo_snapshot_metadata_cached(
@@ -453,24 +441,27 @@ def _cached_row_task(repo_info, *, gguf: bool) -> Optional[str]:
         return None
 
 
-def _scan_cached_gguf() -> list[dict]:
-    """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread."""
-    cache_scans = all_hf_cache_scans()
-    from utils.hf_cache_settings import get_hf_cache_paths
-
-    active_hub_cache = get_hf_cache_paths().hub_cache
-    state_repositories = []
-    for hf_cache in cache_scans:
-        for repo_info in hf_cache.repos:
+def _variant_state_repositories(cache_scans):
+    for cache_scan in cache_scans:
+        for repo in cache_scan.repos:
             try:
-                if str(repo_info.repo_type) == "model":
-                    state_repositories.append(
-                        ("model", repo_info.repo_id, Path(repo_info.repo_path).parent)
-                    )
+                if str(repo.repo_type) == "model":
+                    yield "model", repo.repo_id, Path(repo.repo_path).parent
             except Exception:
                 continue
+
+
+def _scan_cached_gguf(
+    *, cache_scans: Optional[list] = None, active_hub_cache: Optional[Path] = None
+) -> list[dict]:
+    """Synchronous HF-cache disk walk for GGUF repos; runs in a worker thread."""
+    if cache_scans is None:
+        cache_scans = all_hf_cache_scans()
+    if active_hub_cache is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        active_hub_cache = get_hf_cache_paths().hub_cache
     variant_states = download_manifest.build_variant_state_index(
-        state_repositories,
+        _variant_state_repositories(cache_scans),
         active_hub_cache = active_hub_cache,
     )
 
@@ -562,32 +553,37 @@ def _scan_cached_gguf() -> list[dict]:
     return sorted(seen_lower.values(), key = lambda c: c["repo_id"])
 
 
-async def _shared_cached_gguf_scan() -> list[dict]:
-    global _cached_gguf_scan_flight
+class _CacheSourceChanged(RuntimeError):
+    pass
 
-    mutations = download_manifest.variant_state_mutation_snapshot()
-    while mutations.in_progress:
-        await asyncio.sleep(0.01)
-        mutations = download_manifest.variant_state_mutation_snapshot()
-    generation = _cached_inventory_flight_generation(mutations)
-    flight = _cached_gguf_scan_flight
-    if flight is None or flight.task.done() or flight.generation != generation:
-        flight = _CachedGgufScanFlight(
-            generation,
-            asyncio.create_task(asyncio.to_thread(_scan_cached_gguf)),
-        )
-        _cached_gguf_scan_flight = flight
-    try:
-        return await asyncio.shield(flight.task)
-    finally:
-        if flight.task.done() and _cached_gguf_scan_flight is flight:
-            _cached_gguf_scan_flight = None
+
+def _scan_cached_inventory_snapshot(scanner, expected_epoch: int) -> list[dict]:
+    from utils.hf_cache_settings import get_hf_cache_paths
+
+    active_hub_cache = get_hf_cache_paths().hub_cache
+    cache_scans = all_hf_cache_scans()
+    if hf_cache_scan.hf_cache_scans_epoch() != expected_epoch:
+        raise _CacheSourceChanged
+    return scanner(cache_scans = cache_scans, active_hub_cache = active_hub_cache)
+
+
+async def _shared_cached_inventory_scan(name: str, scanner) -> list[dict]:
+    while True:
+        epoch = hf_cache_scan.hf_cache_scans_epoch()
+        try:
+            return await hf_cache_scan.shared_scan(
+                _cached_inventory_flights,
+                (name, epoch),
+                lambda: asyncio.to_thread(_scan_cached_inventory_snapshot, scanner, epoch),
+            )
+        except _CacheSourceChanged:
+            continue
 
 
 async def list_cached_gguf_response(hf_token: Optional[str] = None):
     """List GGUF repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        cached = await _shared_cached_gguf_scan()
+        cached = await _shared_cached_inventory_scan("gguf", _scan_cached_gguf)
         return {"cached": cached}
     except Exception as e:
         logger.error(
@@ -881,20 +877,18 @@ def _cached_model_local_metadata(repo_path: Path, snapshot: Optional[Path] = Non
     return result
 
 
-def _scan_cached_models() -> list[dict]:
+def _scan_cached_models(
+    *, cache_scans: Optional[list] = None, active_hub_cache: Optional[Path] = None
+) -> list[dict]:
     """Synchronous HF-cache disk walk for non-GGUF model repos; runs in a worker thread."""
-    cache_scans = all_hf_cache_scans()
-    from utils.hf_cache_settings import get_hf_cache_paths
-
-    active_hub_cache = get_hf_cache_paths().hub_cache
+    if cache_scans is None:
+        cache_scans = all_hf_cache_scans()
+    if active_hub_cache is None:
+        from utils.hf_cache_settings import get_hf_cache_paths
+        active_hub_cache = get_hf_cache_paths().hub_cache
     try:
         variant_states = download_manifest.build_variant_state_index(
-            [
-                ("model", repo.repo_id, Path(repo.repo_path).parent)
-                for cache_scan in cache_scans
-                for repo in cache_scan.repos
-                if str(repo.repo_type) == "model"
-            ],
+            _variant_state_repositories(cache_scans),
             active_hub_cache = active_hub_cache,
         )
     except Exception as e:
@@ -1037,32 +1031,10 @@ def _scan_cached_models() -> list[dict]:
     return cached
 
 
-async def _shared_cached_models_scan() -> list[dict]:
-    global _cached_models_scan_flight
-
-    mutations = download_manifest.variant_state_mutation_snapshot()
-    while mutations.in_progress:
-        await asyncio.sleep(0.01)
-        mutations = download_manifest.variant_state_mutation_snapshot()
-    generation = _cached_inventory_flight_generation(mutations)
-    flight = _cached_models_scan_flight
-    if flight is None or flight.task.done() or flight.generation != generation:
-        flight = _CachedGgufScanFlight(
-            generation,
-            asyncio.create_task(asyncio.to_thread(_scan_cached_models)),
-        )
-        _cached_models_scan_flight = flight
-    try:
-        return await asyncio.shield(flight.task)
-    finally:
-        if flight.task.done() and _cached_models_scan_flight is flight:
-            _cached_models_scan_flight = None
-
-
 async def list_cached_models_response(hf_token: Optional[str] = None):
     """List non-GGUF model repos downloaded to HF cache, legacy Unsloth cache, and HF default cache."""
     try:
-        cached = await _shared_cached_models_scan()
+        cached = await _shared_cached_inventory_scan("models", _scan_cached_models)
         return {"cached": cached}
     except Exception as e:
         logger.error(

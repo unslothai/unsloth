@@ -10,8 +10,6 @@ cache lifecycle. Two subdirectories:
     <studio cache>/hub-state/
         manifests/cache-<digest>/<key>.json   expected-files manifest
         cancelled/cache-<digest>/<key>.json   cancel marker
-        mutations/<pid>-<uuid>.json           in-flight state publication
-
 The cache digest isolates state for the same repo across selectable Hub caches.
 The ``<key>`` mirrors HF's cache dir naming while the resulting manifest,
 cancel-marker, and atomic-write temp filenames fit common filesystem basename
@@ -50,8 +48,6 @@ _HUB_STATE_DIRNAME = "hub-state"
 _MANIFESTS_SUBDIR = "manifests"
 _CANCELLED_SUBDIR = "cancelled"
 _WORKERS_SUBDIR = "workers"
-_VARIANT_STATE_MUTATIONS_SUBDIR = "mutations"
-_VARIANT_STATE_GENERATION_FILENAME = "variant-state-generation.json"
 _SAFE_VARIANT_FRAGMENT = re.compile(r"^[a-z0-9._-]{1,64}$")
 _MAX_STATE_BASENAME_BYTES = 255
 _STATE_EXTENSION = ".json"
@@ -59,6 +55,8 @@ _STATE_EXTENSION = ".json"
 _ATOMIC_WRITE_TMP_OVERHEAD = len(".") + len(".tmp-") + 8
 _MAX_VARIANT_FRAGMENT_LENGTH = 64
 _CACHE_SCOPE_DIGEST_LENGTH = 32
+_HASH_PREFIXES = ("sha256-", "@sha256-")
+_LEGACY_HASH_FRAGMENT = re.compile(r"sha256-[0-9a-f]{32}")
 
 
 def state_root(*, create: bool = False) -> Optional[Path]:
@@ -74,14 +72,6 @@ def state_root(*, create: bool = False) -> Optional[Path]:
     return root
 
 
-def variant_state_generation_path(*, create: bool = False) -> Optional[Path]:
-    """Return the cross-process inventory-generation file without writing it."""
-    root = state_root(create = create)
-    if root is None:
-        return None
-    return root / _VARIANT_STATE_GENERATION_FILENAME
-
-
 def _subdir(name: str, *, create: bool = False) -> Optional[Path]:
     root = state_root(create = create)
     if root is None:
@@ -95,11 +85,6 @@ def _subdir(name: str, *, create: bool = False) -> Optional[Path]:
         logger.debug("Could not create hub state subdir %s: %s", path, exc)
         return None
     return path
-
-
-def variant_state_mutations_dir(*, create: bool = False) -> Optional[Path]:
-    """Return the per-writer inventory-publication directory."""
-    return _subdir(_VARIANT_STATE_MUTATIONS_SUBDIR, create = create)
 
 
 def repo_cache_basename(repo_type: RepoType, repo_id: str) -> str:
@@ -120,35 +105,103 @@ def _state_filename_fits(entry_key: str) -> bool:
     return _filename_bytes(filename) + _ATOMIC_WRITE_TMP_OVERHEAD <= _MAX_STATE_BASENAME_BYTES
 
 
-def _state_repo_key(repo_type: RepoType, repo_id: str) -> str:
+def state_filename_is_ambiguous(name: str) -> bool:
+    """Whether an unreadable state filename has multiple possible owners."""
+    stem, separator = name.removesuffix(_STATE_EXTENSION).lower(), "--variant--"
+    boundary = stem.find(separator)
+    if boundary >= 0 and stem.find(separator, boundary + 1) >= 0:
+        return True
+    repo_key = stem[:boundary] if boundary >= 0 else stem
+    repo_fragment = repo_key.partition("--")[2]
+    variant_fragment = stem.rsplit(separator, 1)[-1] if boundary >= 0 else ""
+    return bool(
+        _LEGACY_HASH_FRAGMENT.fullmatch(repo_fragment)
+        or _LEGACY_HASH_FRAGMENT.fullmatch(variant_fragment)
+    )
+
+
+def _state_repo_key(
+    repo_type: RepoType,
+    repo_id: str,
+    *,
+    legacy_repo_key: bool = False,
+    legacy_hash_key: bool = False,
+) -> str:
+    """Return an injective write key, or the pre-migration key for reads.
+
+    Repositories ending in ``variant`` otherwise alias a shorter repository's
+    legacy double-hyphen variant. Both collision sides use hashes for new state.
+    """
     base = repo_cache_basename(repo_type, repo_id)
+    repo_fragment = base.partition("--")[2]
     variant_prefix = f"{base}--variant--"
     longest_variant_key = f"{variant_prefix}{'x' * _MAX_VARIANT_FRAGMENT_LENGTH}"
-    if _state_filename_fits(longest_variant_key):
+    if _state_filename_fits(longest_variant_key) and (
+        legacy_repo_key
+        or (not base.endswith("--variant") and not repo_fragment.startswith(_HASH_PREFIXES))
+    ):
         return base
     digest = hashlib.sha256(base.encode("utf-8")).hexdigest()[:32]
-    return f"{repo_type}s--sha256-{digest}"
+    tag = "sha256-" if legacy_hash_key else "@sha256-"
+    return f"{repo_type}s--{tag}{digest}"
 
 
-def variant_filename_prefix(repo_type: RepoType, repo_id: str) -> str:
+def variant_filename_prefix(
+    repo_type: RepoType,
+    repo_id: str,
+    *,
+    legacy_repo_key: bool = False,
+    legacy_hash_key: bool = False,
+) -> str:
     """Lowercased prefix every variant-keyed state file for this repo shares.
 
     The single source the download_manifest enumerators match against, so the
     scheme in :func:`_entry_key` cannot drift from them silently."""
-    return f"{_state_repo_key(repo_type, repo_id)}--variant--"
+    repo_key = _state_repo_key(
+        repo_type,
+        repo_id,
+        legacy_repo_key = legacy_repo_key,
+        legacy_hash_key = legacy_hash_key,
+    )
+    return f"{repo_key}--variant--"
 
 
-def _entry_key(repo_type: RepoType, repo_id: str, variant: Optional[str]) -> str:
-    base = _state_repo_key(repo_type, repo_id)
+def _entry_key(
+    repo_type: RepoType,
+    repo_id: str,
+    variant: Optional[str],
+    *,
+    legacy_variant_key: bool = False,
+    legacy_repo_key: bool = False,
+    legacy_hash_key: bool = False,
+) -> str:
+    base = _state_repo_key(
+        repo_type,
+        repo_id,
+        legacy_repo_key = legacy_repo_key,
+        legacy_hash_key = legacy_hash_key,
+    )
     if not variant:
         return base
     normalized_variant = variant.strip().lower()
-    if _SAFE_VARIANT_FRAGMENT.fullmatch(normalized_variant):
+    # Double-hyphen variants can alias a repository component plus the
+    # ``--variant--`` delimiter, so give them an injective hashed fragment.
+    if _SAFE_VARIANT_FRAGMENT.fullmatch(normalized_variant) and (
+        legacy_variant_key
+        or ("--" not in normalized_variant and not normalized_variant.startswith(_HASH_PREFIXES))
+    ):
         variant_fragment = normalized_variant
     else:
         digest = hashlib.sha256(normalized_variant.encode("utf-8")).hexdigest()[:32]
-        variant_fragment = f"sha256-{digest}"
-    return f"{variant_filename_prefix(repo_type, repo_id)}{variant_fragment}"
+        tag = "sha256-" if legacy_hash_key else "@sha256-"
+        variant_fragment = f"{tag}{digest}"
+    prefix = variant_filename_prefix(
+        repo_type,
+        repo_id,
+        legacy_repo_key = legacy_repo_key,
+        legacy_hash_key = legacy_hash_key,
+    )
+    return f"{prefix}{variant_fragment}"
 
 
 def cache_scope_name(hub_cache: str | Path) -> str:
@@ -183,6 +236,9 @@ def manifest_path(
     *,
     hub_cache: Optional[str | Path] = None,
     create: bool = False,
+    legacy_variant_key: bool = False,
+    legacy_repo_key: bool = False,
+    legacy_hash_key: bool = False,
 ) -> Optional[Path]:
     """Path to the manifest file for this triple. May or may not exist."""
     parent = _subdir(_MANIFESTS_SUBDIR, create = create)
@@ -191,7 +247,15 @@ def manifest_path(
     parent = _cache_scope(parent, hub_cache, create = create)
     if parent is None:
         return None
-    return parent / f"{_entry_key(repo_type, repo_id, variant)}.json"
+    entry_key = _entry_key(
+        repo_type,
+        repo_id,
+        variant,
+        legacy_variant_key = legacy_variant_key,
+        legacy_repo_key = legacy_repo_key,
+        legacy_hash_key = legacy_hash_key,
+    )
+    return parent / f"{entry_key}.json"
 
 
 def marker_path(
@@ -201,6 +265,9 @@ def marker_path(
     *,
     hub_cache: Optional[str | Path] = None,
     create: bool = False,
+    legacy_variant_key: bool = False,
+    legacy_repo_key: bool = False,
+    legacy_hash_key: bool = False,
 ) -> Optional[Path]:
     """Path to the cancel-marker file for this triple. May or may not exist."""
     parent = _subdir(_CANCELLED_SUBDIR, create = create)
@@ -209,7 +276,15 @@ def marker_path(
     parent = _cache_scope(parent, hub_cache, create = create)
     if parent is None:
         return None
-    return parent / f"{_entry_key(repo_type, repo_id, variant)}.json"
+    entry_key = _entry_key(
+        repo_type,
+        repo_id,
+        variant,
+        legacy_variant_key = legacy_variant_key,
+        legacy_repo_key = legacy_repo_key,
+        legacy_hash_key = legacy_hash_key,
+    )
+    return parent / f"{entry_key}.json"
 
 
 def manifests_dir(*, create: bool = False) -> Optional[Path]:

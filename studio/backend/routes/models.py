@@ -1042,58 +1042,26 @@ def collect_local_models(
     return [m for m in models if not _is_hidden_model(m.id, m.model_id, m.path)]
 
 
-_CompatLocalInventoryKey = tuple[
-    str,
-    tuple[str, str, str, tuple[str, ...], tuple[str, ...]],
-    int,
-    Optional[str],
-    tuple[str, ...],
-    tuple[tuple[str, str, str], ...],
-]
+_CompatLocalInventoryKey = tuple[Path, _CompatLocalInventorySources, tuple[str, ...]]
 _compat_local_inventory_flights: dict[
-    _CompatLocalInventoryKey, asyncio.Task[List[LocalModelInfo]]
+    tuple[asyncio.AbstractEventLoop, _CompatLocalInventoryKey], asyncio.Task[List[LocalModelInfo]]
 ] = {}
 
 
-def _compat_local_inventory_key(
-    models_root: Path,
-    sources: _CompatLocalInventorySources,
-    hf_cache_epoch: int,
-    variant_generation: Optional[str],
-    markers: tuple[str, ...],
-    custom_generation: tuple[tuple[str, str, str], ...],
-) -> _CompatLocalInventoryKey:
-    normalize = lambda path: os.path.normcase(str(path))
-    return (
-        normalize(models_root),
-        (
-            normalize(sources.hf_cache_dir),
-            normalize(sources.legacy_hf),
-            normalize(sources.hf_default),
-            tuple(map(normalize, sources.lm_dirs)),
-            tuple(map(normalize, sources.known_hf_caches)),
-        ),
-        hf_cache_epoch,
-        variant_generation,
-        markers,
-        custom_generation,
-    )
-
-
-def _clear_compat_local_inventory_flight(
-    key: _CompatLocalInventoryKey, task: asyncio.Task[List[LocalModelInfo]]
-) -> None:
-    if _compat_local_inventory_flights.get(key) is task:
-        _compat_local_inventory_flights.pop(key, None)
-    if not task.cancelled():
-        task.exception()
+def _compat_inventory_path_identity(path: object) -> str:
+    """Canonical source identity for compatibility inventory flights."""
+    raw = str(path)
+    try:
+        return os.path.normcase(os.path.realpath(os.path.expanduser(raw)))
+    except (OSError, UnicodeError, ValueError):
+        return os.path.normcase(raw)
 
 
 async def _shared_compat_local_inventory_scan(
     models_root: Path, sources: Optional[_CompatLocalInventorySources] = None
 ) -> List[LocalModelInfo]:
-    from hub.utils import download_manifest, inventory_scan as hf_cache_scan
     from storage.studio_db import list_scan_folders
+    from hub.utils import inventory_scan as hf_cache_scan
 
     sources = sources or _compat_local_inventory_sources()
     try:
@@ -1101,41 +1069,21 @@ async def _shared_compat_local_inventory_scan(
     except Exception as e:
         logger.warning("Could not load custom scan folders: %s", e)
         custom_folders = []
-    custom_generation = tuple(
-        (
-            str(folder.get("id", "")),
-            str(folder.get("path", "")),
-            str(folder.get("created_at", "")),
-        )
-        for folder in custom_folders
-    )
-    mutations = download_manifest.variant_state_mutation_snapshot()
-    while mutations.in_progress:
-        await asyncio.sleep(0.01)
-        mutations = download_manifest.variant_state_mutation_snapshot()
-    key = _compat_local_inventory_key(
-        models_root,
+    key: _CompatLocalInventoryKey = (
+        Path(_compat_inventory_path_identity(models_root)),
         sources,
-        hf_cache_scan.hf_cache_scans_epoch(),
-        download_manifest.variant_state_generation(),
-        mutations.markers,
-        custom_generation,
+        tuple(_compat_inventory_path_identity(folder.get("path", "")) for folder in custom_folders),
     )
-    flight = _compat_local_inventory_flights.get(key)
-    if flight is None or flight.done():
-        flight = asyncio.create_task(
-            asyncio.to_thread(
-                collect_local_models,
-                models_root,
-                custom_folders = custom_folders,
-                sources = sources,
-            )
-        )
-        _compat_local_inventory_flights[key] = flight
-        flight.add_done_callback(
-            lambda task, flight_key = key: _clear_compat_local_inventory_flight(flight_key, task)
-        )
-    return await asyncio.shield(flight)
+    return await hf_cache_scan.shared_scan(
+        _compat_local_inventory_flights,
+        key,
+        lambda: asyncio.to_thread(
+            collect_local_models,
+            models_root,
+            custom_folders = custom_folders,
+            sources = sources,
+        ),
+    )
 
 
 @router.get("/local", response_model = LocalModelListResponse)

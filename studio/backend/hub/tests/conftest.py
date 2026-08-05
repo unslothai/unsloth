@@ -112,6 +112,9 @@ import pytest
 @pytest.fixture(autouse = True)
 def _isolate_studio_home(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path_factory.mktemp("studio_home")))
+    for name, module in tuple(sys.modules.items()):
+        if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
+            monkeypatch.setattr(module, "_schema_ready", False)
 
 
 @pytest.fixture(autouse = True)

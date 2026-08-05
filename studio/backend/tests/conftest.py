@@ -33,6 +33,9 @@ os.environ.setdefault("UNSLOTH_IS_PRESENT", "1")
 @pytest.fixture(autouse = True)
 def _isolate_studio_home(tmp_path_factory, monkeypatch):
     monkeypatch.setenv("UNSLOTH_STUDIO_HOME", str(tmp_path_factory.mktemp("studio_home")))
+    for name, module in tuple(sys.modules.items()):
+        if name.startswith(("storage.", "hub.storage.")) and hasattr(module, "_schema_ready"):
+            monkeypatch.setattr(module, "_schema_ready", False)
 
 
 # Pytest CLI options
@@ -279,7 +282,7 @@ def stub_embeddings(monkeypatch):
     monkeypatch.setattr(
         embeddings,
         "token_counter",
-        lambda model_name = None: (lambda t: len(t.split())),
+        lambda model_name = None: lambda t: len(t.split()),
     )
     monkeypatch.setattr(embeddings, "warm", lambda model_name = None: None)
     return dim
