@@ -614,3 +614,26 @@ def test_a_newline_inside_quotes_does_not_start_a_command(windows_terminal):
     # word is data the command receives, and treating it as a separator would
     # read printed text as a launch.
     assert not tools._find_blocked_commands("echo \"hi\nstart '' powershell\"")
+
+
+def test_a_continued_line_is_one_command(windows_terminal):
+    # A backslash before the newline joins the two lines, so what follows is one
+    # more argument rather than a new command. Verified against bash: the second
+    # line is printed, not launched. Only a newline the quoting left bare counts,
+    # and an escaped one is quoted like any other character.
+    assert not tools._find_blocked_commands('echo hi \\\nstart "" powershell')
+    assert not tools._find_blocked_commands('echo one two \\\nthree start "" powershell')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        '\nstart "" powershell -Command ls',
+        'echo hi\n\n\nstart "" powershell -Command ls',
+        'echo hi\r\nstart "" powershell -Command ls',
+    ],
+)
+def test_blank_and_leading_lines_still_open_a_command(windows_terminal, command):
+    # The recovery counts marks rather than measuring gaps, so a run of newlines,
+    # a leading one and a CRLF pair all open exactly one command between them.
+    assert tools._find_blocked_commands(command)
