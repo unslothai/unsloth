@@ -1,13 +1,24 @@
-from unsloth import FastLanguageModel, FastModel
-from transformers import WhisperForConditionalGeneration, WhisperProcessor
-import torch
-
 # ruff: noqa
+import pytest
+
+try:
+    # unsloth first, so it can patch transformers/peft
+    from unsloth import FastLanguageModel, FastModel
+    from transformers import WhisperForConditionalGeneration, WhisperProcessor
+    import torch
+    from peft import PeftModel
+    import requests
+except ImportError as exc:
+    # Imported at collection time, so an absent runtime dep (triton on the
+    # Windows CI runner) is a collection error that reports no results at all.
+    pytest.skip(
+        f"requires the full unsloth runtime: {exc}",
+        allow_module_level = True,
+    )
+
 import sys
 from pathlib import Path
-from peft import PeftModel
 import warnings
-import requests
 
 
 REPO_ROOT = Path(__file__).parents[3]
@@ -145,8 +156,7 @@ except Exception as e:
     # the whole file reports no results. Wikimedia rate-limits and this URL has
     # answered 429 in a batch run; a fixture we could not fetch says nothing
     # about unsloth, so skip rather than fail.
-    import pytest as _pytest
-    _pytest.skip(
+    pytest.skip(
         f"could not download the test audio fixture from {audio_url}: {e}",
         allow_module_level = True,
     )
