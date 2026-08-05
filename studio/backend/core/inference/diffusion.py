@@ -447,14 +447,22 @@ def _repo_access_message(repo: str, *, gated: bool) -> str:
     )
 
 
-def _assert_base_repo_accessible(base_repo: str, hf_token: Optional[str]) -> None:
+def _assert_base_repo_accessible(
+    base_repo: str,
+    hf_token: Optional[str],
+    probe_file: str = "model_index.json",
+) -> None:
     """Fail up front, with the licence URL, when a companion base cannot be read.
 
     The Hub gates the BYTE endpoint only, so ``model_info`` answers anonymously for gated FLUX /
     Krea / Ideogram repos and a plan built from it dies mid-download with a bare token error.
-    Probes the manifest the load fetches anyway, and only when ``gated`` is set ("auto"/"manual",
-    a truthy STRING, never True), so an open repo costs one metadata call. Fails open on any
-    non-access error: offline/transient must not block a load."""
+    Probes a file the load fetches anyway, and only when ``gated`` is set ("auto"/"manual", a
+    truthy STRING, never True), so an open repo costs one metadata call. Fails open on any
+    non-access error: offline/transient must not block a load.
+
+    ``probe_file`` is that file: the pipeline manifest for a diffusers base, but the native plan
+    passes its own asset name, since a repo it reads only for a VAE has no manifest cached and
+    would be refused for a load that works today."""
     repo = (base_repo or "").strip()
     # Only a remote 'org/name' can be gated; a local base is already on disk.
     if not repo or repo.count("/") != 1:
@@ -478,6 +486,28 @@ def _assert_base_repo_accessible(base_repo: str, hf_token: Optional[str]) -> Non
     except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
         return
 
+    # A base already on disk needs no Hub access at all, so asking for one can only refuse a load
+    # that works today: hf_hub_download catches the gated/401 HEAD and returns the cached pointer
+    # ("let's switch to 'local_files_only=True' to check if the files are already cached",
+    # file_download._get_metadata_or_catch_error), which is how a downloaded gated base still loads
+    # once the token is cleared or expires. It excuses an ACCESS verdict only, never a 404: a
+    # renamed or removed repo cannot be un-renamed by a stale copy on disk, and the size estimate
+    # swallows that 404 into a zero-byte plan.
+    def _already_downloaded() -> bool:
+        """True when ``probe_file`` is on disk under either root, so the load needs no Hub access.
+        Both roots, as the pre-quant lookup does: the prefetch downloads under huggingface_hub's
+        import-time constant while Studio pins its live setting. Never raises."""
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            for root in (hub_cache_dir(), None):
+                # Only a str is a cached path; a miss is None and an absent file is a sentinel.
+                if isinstance(try_to_load_from_cache(repo, probe_file, cache_dir = root), str):
+                    return True
+        except Exception:  # noqa: BLE001 — a cache we cannot read is not an access verdict
+            pass
+        return False
+
     def _is_auth_error(exc: Any) -> bool:
         """A 401/403 that hf_raise_for_status did not classify.
 
@@ -491,24 +521,28 @@ def _assert_base_repo_accessible(base_repo: str, hf_token: Optional[str]) -> Non
     try:
         gated = getattr(HfApi().model_info(repo, token = hf_token), "gated", None)
     except GatedRepoError:  # a gated repo can also withhold its metadata
+        if _already_downloaded():
+            return
         raise ValueError(_repo_access_message(repo, gated = True)) from None
     except RepositoryNotFoundError:
         # The size estimate swallows this and plans zero bytes, so without a raise the pick
-        # downloads nothing and fails later with no explanation.
+        # downloads nothing and fails later with no explanation. Never excused by the cache.
         raise ValueError(_repo_access_message(repo, gated = False)) from None
     except HfHubHTTPError as exc:
         if not _is_auth_error(exc):
             return  # a 5xx or rate limit is not an access verdict
+        if _already_downloaded():
+            return
         raise ValueError(_repo_access_message(repo, gated = False)) from None
     except Exception:  # noqa: BLE001 — offline / transient: the download surfaces any real error
         return
-    if not gated:
+    if not gated or _already_downloaded():
         return
     try:
         # A metadata HEAD, never hf_hub_download: a cached manifest makes the download return the
         # cached pointer (the 401 HEAD is kept as head_call_error), so a stale token would pass the
         # probe and 401 again mid-prefetch. The HEAD hits the same /resolve/ URL the shards do.
-        get_hf_file_metadata(hf_hub_url(repo, "model_index.json"), token = hf_token)
+        get_hf_file_metadata(hf_hub_url(repo, probe_file), token = hf_token)
     except GatedRepoError:
         raise ValueError(_repo_access_message(repo, gated = True)) from None
     except HfHubHTTPError as exc:
@@ -773,9 +807,24 @@ class DiffusionBackend:
         local_root = Path(repo_id).expanduser()
         if local_root.exists():
             return str(resolve_local_gguf_child(local_root, gguf_filename))
-        from huggingface_hub import hf_hub_download
+        from huggingface_hub import hf_hub_download, try_to_load_from_cache
 
-        return hf_hub_download(repo_id, gguf_filename, token = hf_token)
+        # Pin the LIVE root, as the prefetch does (hf_hub_download_with_xet_fallback defaults to
+        # it). Unpinned, this resolves against huggingface_hub's import-time constant, so a
+        # mid-session cache change misses the GGUF the prefetch just staged and pulls the whole
+        # multi-GB file again -- inside the load lock, after eviction, where unload cannot preempt
+        # it and progress already reported 100%.
+        cache_dir = hub_cache_dir()
+        if not isinstance(try_to_load_from_cache(repo_id, gguf_filename, cache_dir = cache_dir), str):
+            # Same other-root reuse as the pre-quant checkpoint: a copy under the import-time root
+            # is one hf_hub_download will not look for, and re-fetching it is the download this
+            # pins the root to avoid.
+            elsewhere = try_to_load_from_cache(repo_id, gguf_filename, cache_dir = None)
+            if isinstance(elsewhere, str) and Path(elsewhere).is_file():
+                return elsewhere
+        return hf_hub_download(
+            repo_id, gguf_filename, token = hf_token, cache_dir = cache_dir
+        )
 
     def _dense_quant_prefetch_needed(self, fam: DiffusionFamily, kwargs: dict) -> bool:
         """True when ``load_pipeline`` may take the dense transformer-quant path, so

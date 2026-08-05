@@ -1010,3 +1010,45 @@ def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkey
 
     assert pq._resolve_checkpoint_path(source, None, "/models/live") == str(legacy)
     assert asked == ["Z-Image-Turbo-FP8.pt"]  # the primary was tried; the legacy was reused
+
+
+def test_load_config_reads_the_same_cache_root_as_the_checkpoint(monkeypatch, tmp_path):
+    """load_config forwards cache_dir to hf_hub_download, so unpinned it reads huggingface_hub's
+    import-time constant. After a mid-session cache change that root may be gone or read-only, and
+    the raise is swallowed into a None return: the prequant is silently dropped even though its
+    checkpoint is cached and already loaded."""
+    import torch
+
+    from core.inference import diffusion_prequant as P
+
+    seen: dict = {}
+    live = str(tmp_path / "live")
+    ckpt = tmp_path / "ck.pt"
+    ckpt.write_bytes(b"x")
+
+    monkeypatch.setattr(P, "_resolve_checkpoint_path", lambda s, t, c = None: str(ckpt))
+    monkeypatch.setattr(P, "_validate_checkpoint", lambda *a, **k: True)
+    monkeypatch.setattr(P, "_pin_kernel_preference", lambda *a, **k: 0)
+    monkeypatch.setattr(torch, "load", lambda *a, **k: {"state_dict": {}, "scheme": "int8"})
+
+    class _Cls:
+        @staticmethod
+        def load_config(base, subfolder = None, token = None, cache_dir = None):
+            seen["cache_dir"] = cache_dir
+            raise RuntimeError("stop right after the config fetch")
+
+    src = P.PrequantSource(kind = "repo", location = "unsloth/X-FP8", filename = "X-FP8.pt")
+    assert (
+        P.load_prequantized_transformer(
+            _Cls,
+            "org/base",
+            src,
+            device = "cpu",
+            dtype = torch.bfloat16,
+            scheme = "int8",
+            cache_dir = live,
+        )
+        is None
+    )
+
+    assert seen["cache_dir"] == live

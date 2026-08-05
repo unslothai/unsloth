@@ -74,6 +74,8 @@ def _stub_hub(
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
     monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", _metadata)
+    # No ambient cache: whether THIS box happens to hold the repo must not decide the test.
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
     # The probe must never route through the download API: a cached manifest answers that from disk.
     monkeypatch.setattr(
         "huggingface_hub.hf_hub_download",
@@ -84,7 +86,10 @@ def _stub_hub(
 
 def _gated_error():
     from huggingface_hub.errors import GatedRepoError
-    return GatedRepoError("401 Client Error. Cannot access gated repo for url ...")
+
+    return _hub_http_error(
+        GatedRepoError, "401 Client Error. Cannot access gated repo for url ...", 401
+    )
 
 
 def test_a_gated_base_fails_at_plan_time_naming_the_repo_and_its_licence(monkeypatch):
@@ -130,7 +135,10 @@ def test_unreadable_metadata_is_named_too(monkeypatch):
     # A private / renamed / deleted base 401s on model_info, which the size estimate swallows: the plan would stage zero bytes and the load fail with no explanation.
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    _stub_hub(monkeypatch, model_info_error = RepositoryNotFoundError("401 Client Error."))
+    _stub_hub(
+        monkeypatch,
+        model_info_error = _hub_http_error(RepositoryNotFoundError, "401 Client Error.", 401),
+    )
 
     with pytest.raises(ValueError) as excinfo:
         _assert_base_repo_accessible("unsloth/not-published-yet", None)
@@ -145,10 +153,11 @@ def test_unreadable_metadata_is_named_too(monkeypatch):
     assert "licence" in str(gated.value).lower()
 
 
-def test_a_cached_manifest_cannot_satisfy_the_probe(monkeypatch, tmp_path):
-    # hf_hub_download keeps a 401 HEAD as head_call_error and returns the cached pointer anyway
-    # (file_download._hf_hub_download_to_cache_dir), so a manifest on disk would clear the preflight
-    # for a stale token and 401 again mid-prefetch. Only a bare HEAD verifies current access.
+def test_an_already_downloaded_base_is_never_refused(monkeypatch, tmp_path):
+    """A base whose bytes are on disk loads today with no token at all: hf_hub_download catches the
+    gated 401 HEAD and returns the cached pointer. Probing live access there can only refuse a load
+    that already works -- a token cleared from Studio settings, an expired one, or a fresh profile
+    over an existing cache. The never-downloaded pick this preflight exists for still probes."""
     root = tmp_path / "hub"
     folder = root / f"models--{GATED_REPO.replace('/', '--')}"
     commit = "c" * 40
@@ -156,15 +165,29 @@ def test_a_cached_manifest_cannot_satisfy_the_probe(monkeypatch, tmp_path):
     (folder / "refs" / "main").write_text(commit)
     (folder / "snapshots" / commit).mkdir(parents = True)
     (folder / "snapshots" / commit / "model_index.json").write_text("{}")
-    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(root))
 
-    probed = _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = _gated_error())
+    # Cached under the LIVE root, and separately under huggingface_hub's import-time constant: the
+    # prefetch downloads under the latter, so checking only one root would still refuse the load.
+    for live, imported in ((str(root), tmp_path / "other"), (str(tmp_path / "other"), root)):
+        monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda live = live: live)
+        monkeypatch.setenv("HF_HUB_CACHE", str(imported))
+        probed = _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = _gated_error())
+        monkeypatch.setattr(
+            "huggingface_hub.try_to_load_from_cache",
+            lambda repo_id, filename, cache_dir = None, **k: (
+                str(root / f"models--{repo_id.replace('/', '--')}" / "snapshots" / commit / filename)
+                if cache_dir in (str(root), None) and str(root) in (live, str(imported))
+                else None
+            ),
+        )
+        _assert_base_repo_accessible(GATED_REPO, "stale-token")
+        assert probed == []  # served from disk, so not one Hub call was made
 
-    with pytest.raises(ValueError) as excinfo:
-        _assert_base_repo_accessible(GATED_REPO, None)
-
-    assert GATED_REPO in str(excinfo.value)
-    assert probed == [f"https://huggingface.co/{GATED_REPO}/resolve/main/model_index.json"]
+    # Nothing cached: the reported case still fails up front, naming the repo and its licence.
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path / "empty"))
+    _stub_hub(monkeypatch, info = _FakeInfo("auto"), download_error = _gated_error())
+    with pytest.raises(ValueError, match = "gated"):
+        _assert_base_repo_accessible(GATED_REPO, "stale-token")
 
 
 def test_local_and_non_repo_bases_are_skipped(monkeypatch, tmp_path):
@@ -234,17 +257,27 @@ def test_run_load_stamps_the_gated_error_on_the_load(monkeypatch):
     assert GATED_REPO in (backend.load_progress().get("error") or "")
 
 
+def _hub_http_error(cls, message, status):
+    """Build an HfHubHTTPError subclass portably.
+
+    huggingface_hub 1.x made ``response`` a REQUIRED keyword-only argument, so a message-only
+    construction raises TypeError there, and CI resolves 1.x (transformers pins
+    huggingface-hub>=1.5 over studio.txt's 0.36.2). Passing it works on both."""
+    import requests
+
+    response = requests.Response()
+    response.status_code = status
+    return cls(message, response = response)
+
+
 def _auth_error(status):
     """The bare HfHubHTTPError hf_raise_for_status leaves for an unclassified 401/403.
 
     Its RepoNotFound branch excludes 401 "Invalid credentials in Authorization header" by name, and
     a permission-scoped 403 has no branch at all, so neither becomes GatedRepoError."""
-    import requests
     from huggingface_hub.errors import HfHubHTTPError
 
-    response = requests.Response()
-    response.status_code = status
-    return HfHubHTTPError(f"{status} Client Error.", response = response)
+    return _hub_http_error(HfHubHTTPError, f"{status} Client Error.", status)
 
 
 @pytest.mark.parametrize("status", [401, 403])
@@ -293,3 +326,132 @@ def test_a_blank_token_is_not_sent_as_a_credential(token, monkeypatch):
     _assert_base_repo_accessible("some-org/open-model", token)
 
     assert seen == [None]  # blank normalized away, so the cached login still applies
+
+
+def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
+    """A GPU-less host routes /images/download-plan to the sd.cpp planner, whose asset list carries
+    its own companion repos: flux.1's VAE is the gated black-forest-labs/FLUX.1-schnell. The size
+    probe swallows the 401, so without the preflight that entry plans at 0 bytes and the manager's
+    fetch dies on the bare token error this preflight exists to replace."""
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+
+    gated = "black-forest-labs/FLUX.1-schnell"
+    b = SdCppDiffusionBackend(engine = None)
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
+    )
+
+    # Only the VAE repo is gated, as on the Hub: the pick and the encoder repo answer normally.
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            return _FakeInfo("auto" if repo_id == gated else False)
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr(
+        "huggingface_hub.get_hf_file_metadata",
+        lambda url, token = None, **k: (_ for _ in ()).throw(_gated_error()),
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        b.download_plan(
+            "unsloth/FLUX.1-dev-GGUF",
+            gguf_filename = "flux1-dev-Q4_K_M.gguf",
+            model_kind = "gguf",
+        )
+    detail = str(excinfo.value)
+    assert gated in detail and f"https://huggingface.co/{gated}" in detail
+
+    # An open family is untouched: every companion answers, so the plan is built exactly as before.
+    plan = b.download_plan(
+        "unsloth/Z-Image-Turbo-GGUF",
+        gguf_filename = "z-image-turbo-Q4_K_M.gguf",
+        model_kind = "gguf",
+    )
+    assert {e["repo_id"] for e in plan["entries"]} == {
+        "unsloth/Z-Image-Turbo-GGUF",
+        "Comfy-Org/z_image_turbo",
+    }
+
+
+def test_the_native_plan_probes_the_asset_it_stages(monkeypatch):
+    """flux.1's native VAE repo is read for ae.safetensors only. Probing the pipeline manifest
+    there would neither verify access to that file nor see it in the cache, so a host that already
+    downloaded the VAE would be refused a load that works today."""
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+
+    gated = "black-forest-labs/FLUX.1-schnell"
+    b = SdCppDiffusionBackend(engine = None)
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
+    )
+
+    class _Api:
+        def model_info(self, repo_id, files_metadata = False, token = None):
+            return _FakeInfo("auto" if repo_id == gated else False)
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    probed: list = []
+
+    def _metadata(url, token = None, **k):
+        probed.append(url)
+        raise _gated_error()
+
+    monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", _metadata)
+
+    # Nothing cached: the probe is the VAE file the plan stages, not the manifest.
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    with pytest.raises(ValueError, match = "gated"):
+        b.download_plan(
+            "unsloth/FLUX.1-dev-GGUF",
+            gguf_filename = "flux1-dev-Q4_K_M.gguf",
+            model_kind = "gguf",
+        )
+    assert probed == [f"https://huggingface.co/{gated}/resolve/main/ae.safetensors"]
+
+    # That same VAE already on disk clears the plan without a single Hub call.
+    probed.clear()
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: (
+            "/cache/ae.safetensors" if filename == "ae.safetensors" else None
+        ),
+    )
+    plan = b.download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf", model_kind = "gguf"
+    )
+    assert probed == []
+    assert gated in {e["repo_id"] for e in plan["entries"]}
+
+
+def test_the_gguf_is_resolved_against_the_live_cache_root(monkeypatch, tmp_path):
+    """The prefetch stages the GGUF under the LIVE root (hf_hub_download_with_xet_fallback
+    defaults to it), so an unpinned resolve reads huggingface_hub's import-time constant and,
+    after a mid-session cache change, pulls the whole multi-GB file again inside the load lock."""
+    live = tmp_path / "live"
+    calls: list = []
+
+    def _download(repo_id, filename, token = None, cache_dir = None, **k):
+        calls.append(cache_dir)
+        return str(live / filename)
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: str(live))
+
+    b = DiffusionBackend()
+
+    # Nothing cached anywhere: the download is pinned to the live root, not the import-time one.
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    b._resolve_gguf_path("unsloth/Z-Image-Turbo-GGUF", "z.gguf", None)
+    assert calls == [str(live)]
+
+    # A copy under the OTHER root is reused rather than re-fetched: pinning alone would miss it.
+    other = tmp_path / "other" / "z.gguf"
+    other.parent.mkdir(parents = True)
+    other.write_bytes(b"gguf")
+    calls.clear()
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: None if cache_dir else str(other),
+    )
+    assert b._resolve_gguf_path("unsloth/Z-Image-Turbo-GGUF", "z.gguf", None) == str(other)
+    assert calls == []  # not one byte re-downloaded

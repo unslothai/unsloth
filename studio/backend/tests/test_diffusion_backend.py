@@ -3346,15 +3346,24 @@ def _stub_hosted_prequant(monkeypatch, *, cached: bool):
 
 
 def _spy_dense_quant(monkeypatch):
-    """Record every dense/prequant fast-path build and keep it from running."""
+    """Record every dense/prequant fast-path build and keep it from running.
+
+    Keyed by backend INSTANCE: the patch is class-level, and an earlier test's begin_load leaves a
+    daemon thread that can still be loading while this one runs, so a bare count is not this
+    test's. Read it through ``_dense_calls``."""
     calls: list = []
 
     def _record(self, *a, **k):
-        calls.append(k.get("prequant_path"))
+        calls.append((self, k.get("prequant_path")))
         return None, None
 
     monkeypatch.setattr(DiffusionBackend, "_load_dense_quant_pipeline", _record)
     return calls
+
+
+def _dense_calls(calls, backend):
+    """The recorded fast-path builds belonging to ``backend`` alone."""
+    return [prequant_path for (owner, prequant_path) in calls if owner is backend]
 
 
 def test_auto_quant_declines_an_uncached_hosted_prequant(fake_runtime, tmp_path, monkeypatch):
@@ -3368,7 +3377,8 @@ def test_auto_quant_declines_an_uncached_hosted_prequant(fake_runtime, tmp_path,
 
     status = backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
 
-    assert calls == []  # the fast path never ran, so nothing fetched a second transformer
+    # The fast path never ran, so nothing fetched a second transformer.
+    assert _dense_calls(calls, backend) == []
     assert status["loaded"] is True
     assert status["transformer_quant"] is None
     assert _FakeTransformer.last["path"]  # the GGUF the user picked
@@ -3386,7 +3396,7 @@ def test_auto_quant_takes_a_hosted_prequant_that_is_already_cached(
 
     backend.load_pipeline(str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image")
 
-    assert len(calls) == 1
+    assert len(_dense_calls(calls, backend)) == 1
 
 
 @pytest.mark.parametrize("loras", [[("adapter", 0.0)], [("a", 0.0), ("b", 0.0)]])
@@ -3404,7 +3414,7 @@ def test_all_zero_weight_loras_do_not_look_like_a_bake(loras, fake_runtime, tmp_
         str(tmp_path), gguf_filename = "m.gguf", family_override = "z-image", loras = loras
     )
 
-    assert calls == []
+    assert _dense_calls(calls, backend) == []
 
 
 def test_a_weighted_lora_is_still_treated_as_a_bake(fake_runtime, tmp_path, monkeypatch):
@@ -3443,7 +3453,7 @@ def test_an_explicit_quant_request_still_downloads_the_hosted_prequant(
         transformer_quant = "fp8",
     )
 
-    assert len(calls) == 1
+    assert len(_dense_calls(calls, backend)) == 1
 
 
 def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp_path, monkeypatch):
@@ -3462,7 +3472,7 @@ def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp
             loras = [("adapter", 1.0)],
         )
 
-    assert len(calls) == 1
+    assert len(_dense_calls(calls, backend)) == 1
 
 
 @pytest.mark.parametrize(

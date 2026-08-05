@@ -300,7 +300,13 @@ def load_prequantized_transformer(
         state_dict = ckpt["state_dict"]
         _pin_kernel_preference(state_dict, logger)
 
-        config = transformer_cls.load_config(base, subfolder = "transformer", token = hf_token)
+        # Same root as the checkpoint above: load_config forwards cache_dir to hf_hub_download, so
+        # unpinned it reads through huggingface_hub's import-time constant. After a mid-session
+        # cache change that root may be gone or read-only, and the raise is swallowed below into a
+        # None return -- silently dropping a prequant whose checkpoint is cached and already loaded.
+        config = transformer_cls.load_config(
+            base, subfolder = "transformer", token = hf_token, cache_dir = cache_dir
+        )
         from accelerate import init_empty_weights
 
         with init_empty_weights():

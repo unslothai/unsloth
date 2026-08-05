@@ -670,6 +670,20 @@ class SdCppDiffusionBackend:
             if filename not in names:
                 names.append(filename)
 
+        # Same preflight the diffusers plan runs. The native asset list carries its own companion
+        # repos (flux.1's VAE is the gated black-forest-labs/FLUX.1-schnell), and _plan_file_sizes
+        # swallows the 401, so without this the entry is planned at 0 bytes and the manager's fetch
+        # dies on the bare token error this preflight exists to replace.
+        from core.inference.diffusion import _assert_base_repo_accessible
+
+        for repo in by_repo:
+            # Companions only, mirroring the diffusers plan, which preflights the resolved base and
+            # not the pick: the picker only lists repos it could already read.
+            if repo != repo_id:
+                # Probe an asset THIS plan stages: a repo read only for its VAE has no pipeline
+                # manifest, so the default name would neither verify access nor see the cache.
+                _assert_base_repo_accessible(repo, hf_token, by_repo[repo][0])
+
         sizes = self._plan_file_sizes(by_repo, hf_token)
         entries: list[dict[str, Any]] = []
         total = 0
