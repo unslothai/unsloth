@@ -45,6 +45,18 @@ def _extract(pattern: str) -> str:
     return match.group(0)
 
 
+def _blocks() -> tuple:
+    """The skip list and the screen, straight out of install.ps1.
+
+    Hoisted out of the f-strings below: a backslash inside an f-string expression
+    is a syntax error before 3.12, and this repo is 3.9+ (ruff targets py311).
+    """
+    return (
+        _extract(r'    # Patch releases the stack cannot run.*?\$PythonSkip = @\([^\)]*\)'),
+        _extract(r'    function Remove-SkippedPython \{.*?\n    \}'),
+    )
+
+
 def _fake_python(tmp_path: Path, version: str) -> Path:
     """An executable that reports ``version`` for the resolver's probe."""
     if os.name == "nt":
@@ -63,14 +75,15 @@ def _run(tmp_path: Path, version: str | None) -> str:
         if version is None
         else f'@{{ Version = "3.13"; Path = "{_fake_python(tmp_path, version)}" }}'
     )
+    skip_block, screen_block = _blocks()
     script = f"""
 $ErrorActionPreference = "Stop"
 # Write-Host, like the real substep: Write-Output would put the message on
 # the pipeline, so the function would return @(message, $null) and every
 # `if ($DetectedPython)` downstream would read it as truthy.
 function substep {{ param($m, $c) Write-Host "SUBSTEP: $m" }}
-{_extract(r'    # Patch releases the stack cannot run.*?\$PythonSkip = @\([^\)]*\)')}
-{_extract(r'    function Remove-SkippedPython \{.*?\n    \}')}
+{skip_block}
+{screen_block}
 $result = Remove-SkippedPython ({candidate})
 if ($null -eq $result) {{ Write-Output "RESULT: rejected" }}
 else {{ Write-Output "RESULT: kept" }}
@@ -104,14 +117,15 @@ def test_an_unreadable_interpreter_is_not_treated_as_bad(tmp_path):
     # A probe that cannot run is not evidence of a bad version, and refusing it
     # would send a working machine down the install path for no reason.
     missing = tmp_path / "does-not-exist"
+    skip_block, screen_block = _blocks()
     script = f"""
 $ErrorActionPreference = "Stop"
 # Write-Host, like the real substep: Write-Output would put the message on
 # the pipeline, so the function would return @(message, $null) and every
 # `if ($DetectedPython)` downstream would read it as truthy.
 function substep {{ param($m, $c) Write-Host "SUBSTEP: $m" }}
-{_extract(r'    # Patch releases the stack cannot run.*?\$PythonSkip = @\([^\)]*\)')}
-{_extract(r'    function Remove-SkippedPython \{.*?\n    \}')}
+{skip_block}
+{screen_block}
 $result = Remove-SkippedPython (@{{ Version = "3.13"; Path = "{missing}" }})
 if ($null -eq $result) {{ Write-Output "RESULT: rejected" }}
 else {{ Write-Output "RESULT: kept" }}
@@ -137,3 +151,129 @@ def test_the_resolver_is_screened_at_every_entry_point():
         if "= Find-CompatiblePython" in line and "Remove-SkippedPython" not in line
     ]
     assert not bare, f"unscreened resolver calls in the install flow: {bare}"
+
+
+# ── The screen inside the resolver ──
+# The window above starts at the install step, so it never sees the recovery
+# paths: Install-PythonFromPythonOrg and Install-X64Python both end in a bare
+# `return (Find-CompatiblePython)`. Screening every candidate as it is
+# enumerated is what makes those safe, and is also what lets the resolver carry
+# on to its next minor instead of giving up on the machine.
+
+
+def _every_version_match_screens_the_patch() -> list[str]:
+    body = _extract(r"    function Find-CompatiblePython \{.*?\n    \}")
+    lines = body.splitlines()
+    unscreened = []
+    for i, line in enumerate(lines):
+        if 'match "Python' not in line:
+            continue
+        window = "\n".join(lines[i : i + 9])
+        if "$PythonSkip -contains" not in window:
+            unscreened.append(line.strip())
+    return unscreened
+
+
+def test_every_enumerated_candidate_is_screened():
+    assert (
+        len(
+            [
+                l
+                for l in _extract(
+                    r"    function Find-CompatiblePython \{.*?\n    \}"
+                ).splitlines()
+                if 'match "Python' in l
+            ]
+        )
+        == 3
+    ), "the resolver's enumeration sites moved; re-check the screen"
+    assert not _every_version_match_screens_the_patch(), (
+        "Find-CompatiblePython enumerates a candidate without checking $PythonSkip: "
+        f"{_every_version_match_screens_the_patch()}"
+    )
+
+
+def _fake_launcher(root: Path, versions: dict[str, str]) -> Path:
+    """A `py` launcher over fake interpreters, one per minor in ``versions``."""
+    root.mkdir(parents = True, exist_ok = True)
+    branches = []
+    for minor, full in versions.items():
+        exe = root / f"python{minor.replace('.', '')}"
+        # -S -c "import sys; print(sys.base_prefix)" for the conda screen.
+        exe.write_text('#!/bin/sh\necho "/usr"\n', encoding = "utf-8")
+        exe.chmod(0o755)
+        branches.append(
+            f'  {minor}) ver="{full}"; exe="{exe}" ;;'
+        )
+    launcher = root / "py"
+    launcher.write_text(
+        "#!/bin/sh\n"
+        'case "$1" in\n'
+        + "\n".join(f'  -{b.lstrip()}' for b in branches)
+        + "\n  *) exit 1 ;;\nesac\n"
+        "shift\n"
+        'case "$1" in\n'
+        '  --version) echo "Python $ver" ;;\n'
+        '  -S) echo "$exe" ;;\n'
+        "  *) exit 1 ;;\n"
+        "esac\n",
+        encoding = "utf-8",
+    )
+    launcher.chmod(0o755)
+    return launcher
+
+
+def _resolve(tmp_path: Path, versions: dict[str, str]) -> str:
+    """Run the real Find-CompatiblePython over ``versions`` and report the hit."""
+    root = tmp_path / "bin"
+    _fake_launcher(root, versions)
+    skip_block, screen_block = _blocks()
+    # Hoisted for the same reason as _blocks: a backslash in an f-string
+    # expression does not parse before 3.12.
+    conda_block = _extract(r'    function Test-IsCondaPython \{.*?\n    \}')
+    tag_block = _extract(r'    function Get-PythonPlatformTag \{.*?\n    \}')
+    resolver_block = _extract(r'    function Find-CompatiblePython \{.*?\n    \}')
+    script = f"""
+$ErrorActionPreference = "Stop"
+$env:PATH = "{root}"
+$PythonVersion = "3.13"
+function substep {{ param($m, $c) Write-Host "SUBSTEP: $m" }}
+function Get-HostMachineArch {{ return "x86_64" }}
+{skip_block}
+$script:CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
+{conda_block}
+{tag_block}
+{resolver_block}
+$found = Find-CompatiblePython
+if ($null -eq $found) {{ Write-Output "RESULT: none" }}
+else {{ Write-Output "RESULT: $($found.Version)" }}
+"""
+    completed = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output = True,
+        text = True,
+    )
+    out = completed.stdout + completed.stderr
+    match = re.search(r"RESULT: (\S+)", out)
+    assert match is not None, out
+    return match.group(1)
+
+
+def test_the_resolver_falls_through_to_the_next_minor(tmp_path):
+    # The offline/locked-down case: 3.13.8 and a healthy 3.12 both installed and
+    # nothing installable. Ending the search on the 3.13 would leave the caller
+    # with a Python that cannot import torch; refusing it outright would fail a
+    # machine that has a perfectly good interpreter one entry down the list.
+    assert (
+        _resolve(tmp_path, {"3.13": "3.13.8", "3.12": "3.12.11"}) == "3.12"
+    )
+
+
+def test_a_good_preferred_minor_still_wins(tmp_path):
+    assert (
+        _resolve(tmp_path, {"3.13": "3.13.13", "3.12": "3.12.11"}) == "3.13"
+    )
+
+
+def test_nothing_usable_is_still_nothing(tmp_path):
+    assert _resolve(tmp_path, {"3.13": "3.13.8"}) == "none"

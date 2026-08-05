@@ -27,21 +27,48 @@ assert_eq() {
 
 _HELPERS=$(mktemp)
 {
+    # Quiet stand-ins for the reporting helpers the extracted functions call.
+    printf 'substep() { :; }\nrollback_substep() { :; }\n'
     sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"
     sed -n '/^_python_is_skipped()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_python_request()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_start_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_discard_venv_for_recreate()/,/^}/p' "$INSTALL_SH"
+    sed -n '/^_restore_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
 } > "$_HELPERS"
+for _needed in _python_is_skipped _python_request _start_studio_venv_replacement \
+               _discard_venv_for_recreate _restore_studio_venv_replacement; do
+    grep -q "^$_needed()" "$_HELPERS" || {
+        echo "  FAIL: could not extract $_needed from install.sh"
+        exit 1
+    }
+done
 # shellcheck disable=SC1090
 . "$_HELPERS"
 
 echo "=== the request handed to uv ==="
 
-assert_eq "a bare 3.13 asks for a range that excludes the bad patch" \
-    ">=3.13.9,<3.14" "$(_python_request 3.13)"
-assert_eq "other versions are passed through untouched" \
-    "3.12" "$(_python_request 3.12)"
+assert_eq "a bare 3.13 asks for its own series minus the bad patch" \
+    ">=3.13,<3.14,!=3.13.8" "$(_python_request 3.13)"
+# Not a floor: an offline host, or a uv whose manifest predates 3.13.9, may still
+# have a good cached 3.13.7, and ">=3.13.9" would refuse it and fail the install.
+assert_eq "the request never becomes a floor above the bad patch" \
+    "" "$(_python_request 3.13 | grep -o '>=3\.13\.9' || true)"
+assert_eq "a minor with nothing skipped still gets its own series" \
+    ">=3.12,<3.13" "$(_python_request 3.12)"
 assert_eq "an explicit patch from --python is the user's choice" \
     "3.13.8" "$(_python_request 3.13.8)"
+assert_eq "a --python path is not a version and is passed through" \
+    "/usr/bin/python3.13" "$(_python_request /usr/bin/python3.13)"
+# The exclusions are generated from PYTHON_SKIP, so adding a patch there is the
+# only edit a future bad release needs.
+_saved_skip="$PYTHON_SKIP"
+PYTHON_SKIP="3.13.8 3.13.20 3.12.4"
+assert_eq "every skipped patch in the series is excluded" \
+    ">=3.13,<3.14,!=3.13.8,!=3.13.20" "$(_python_request 3.13)"
+assert_eq "a skipped patch from another series is not" \
+    ">=3.12,<3.13,!=3.12.4" "$(_python_request 3.12)"
+PYTHON_SKIP="$_saved_skip"
 
 echo "=== the skip list ==="
 
@@ -82,7 +109,11 @@ EOF
 
     (
         set -e
+        STUDIO_HOME="$_work"
         VENV_DIR="$_work/venv"
+        _VENV_ROLLBACK_DIR=""
+        _VENV_ROLLBACK_TARGET="$VENV_DIR"
+        _VENV_ROLLBACK_ACTIVE=false
         _USER_PYTHON="$_user_python"
         PYTHON_VERSION="3.13"
         # shellcheck disable=SC1090
@@ -104,8 +135,8 @@ EOF
     rm -rf "$_work"
 }
 
-assert_eq "a venv left on 3.13.8 is recreated on the range" \
-    ">=3.13.9,<3.14" "$(run_guard 3.13.8)"
+assert_eq "a venv left on 3.13.8 is recreated on the screened request" \
+    ">=3.13,<3.14,!=3.13.8" "$(run_guard 3.13.8)"
 assert_eq "a healthy venv is left alone" \
     "" "$(run_guard 3.13.12)"
 assert_eq "an unreadable interpreter is left alone" \
@@ -113,7 +144,69 @@ assert_eq "an unreadable interpreter is left alone" \
 assert_eq "--python is honoured even on a skipped version" \
     "" "$(run_guard 3.13.8 /usr/bin/python3.13)"
 
-rm -f "$_HELPERS" "$_GUARD"
+echo "=== a failed recreate must not cost the user their environment ==="
+
+# The legacy-layout migration moves $STUDIO_HOME/.venv into $VENV_DIR without
+# arming _start_studio_venv_replacement, so the guard runs with no rollback in
+# place. If it removed the venv outright, a `uv venv` that cannot resolve an
+# interpreter (offline, or a uv older than the requested patch) would leave the
+# machine with nothing. $_rollback_active mirrors whether a replacement is
+# already in flight; $_recreate_rc is what the stubbed uv returns.
+# A separate `sh`, not a subshell: `( ... ) || true` puts the subshell in an ||
+# list, which switches set -e off for everything inside it, so the guard would
+# never abort the way it does in the real installer.
+_DRIVER=$(mktemp)
+cat > "$_DRIVER" <<'DRIVER'
+STUDIO_HOME="$1"
+VENV_DIR="$1/venv"
+_VENV_ROLLBACK_DIR=""
+_VENV_ROLLBACK_TARGET="$VENV_DIR"
+_VENV_ROLLBACK_ACTIVE=false
+_USER_PYTHON=""
+PYTHON_VERSION="3.13"
+# shellcheck disable=SC1090
+. "$2"
+if [ "$3" = true ]; then
+    # Stand in for the main path, which moved the user's real venv aside itself
+    # and then created the fresh one the guard is about to replace.
+    mkdir -p "$1/already-preserved"
+    _VENV_ROLLBACK_DIR="$1/already-preserved"
+    _VENV_ROLLBACK_ACTIVE=true
+fi
+_stub_rc="$4"
+run_install_cmd() { return "$_stub_rc"; }
+set -e
+# What _on_install_exit does for a non-zero status.
+trap '[ "$?" -eq 0 ] || _restore_studio_venv_replacement' EXIT
+# shellcheck disable=SC1090
+. "$5"
+DRIVER
+
+run_guard_failure() {
+    _rollback_active="$1"
+    _recreate_rc="$2"
+    _work=$(mktemp -d)
+    mkdir -p "$_work/venv/bin"
+    printf '#!/bin/sh\necho 3.13.8\n' > "$_work/venv/bin/python"
+    chmod +x "$_work/venv/bin/python"
+    # Only present in the environment the user already had.
+    : > "$_work/venv/USER_DATA"
+
+    sh "$_DRIVER" "$_work" "$_HELPERS" "$_rollback_active" "$_recreate_rc" "$_GUARD" \
+        >/dev/null 2>&1 || true
+
+    if [ -f "$_work/venv/USER_DATA" ]; then echo "preserved"; else echo "lost"; fi
+    rm -rf "$_work"
+}
+
+assert_eq "a migrated venv survives a recreate that fails" \
+    "preserved" "$(run_guard_failure false 1)"
+assert_eq "a rollback copy is not clobbered when one is already in flight" \
+    "lost" "$(run_guard_failure true 1)"
+assert_eq "a recreate that works still replaces the environment" \
+    "lost" "$(run_guard_failure false 0)"
+
+rm -f "$_HELPERS" "$_GUARD" "$_DRIVER"
 
 echo
 echo "Results: $PASS passed, $FAIL failed"

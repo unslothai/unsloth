@@ -1293,6 +1293,9 @@ exit 0
     # Returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     # The resolved Path is passed to `uv venv --python` to prevent uv from
     # re-resolving the version string back to a conda interpreter.
+    # Candidates on $PythonSkip are dropped as they are enumerated, so no caller
+    # can be handed an interpreter that cannot import torch and the usual
+    # 3.13 -> 3.12 -> 3.11 fallback still applies when the preferred minor is bad.
     function Find-CompatiblePython {
         # -X64Only: best installed x64 interpreter or $null, never ARM64. Last resort for
         # Install-X64Python, where x64 of a lower-priority minor beats ARM64.
@@ -1315,8 +1318,14 @@ exit 0
             foreach ($minor in $minors) {
                 try {
                     $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
-                    if ($out -match "Python (3\.1[1-3])\.\d+") {
-                        $ver = $Matches[1]
+                    if ($out -match "Python ((3\.1[1-3])\.\d+)") {
+                        # Both captures first: Test-IsCondaPython below runs -match
+                        # and overwrites $Matches. Screening the patch here costs no
+                        # extra subprocess (the text is already in hand) and lets the
+                        # loop carry on to the next launcher and the next minor.
+                        $full = $Matches[1]
+                        $ver = $Matches[2]
+                        if ($PythonSkip -contains $full) { continue }
                         # Resolve the actual executable path and verify it is not conda-based
                         $resolvedExe = (& $pyLauncher.Source "-$minor" -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
                         if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
@@ -1341,8 +1350,10 @@ exit 0
                 if (Test-IsCondaPython $cmd.Source) { continue }
                 try {
                     $out = & $cmd.Source --version 2>&1 | Out-String
-                    if ($out -match "Python (3\.1[1-3])\.\d+") {
-                        $ver = $Matches[1]
+                    if ($out -match "Python ((3\.1[1-3])\.\d+)") {
+                        $full = $Matches[1]
+                        $ver = $Matches[2]
+                        if ($PythonSkip -contains $full) { continue }
                         # PATH entries may be wrappers (e.g. pyenv-win's python.bat).
                         # Resolve the real executable so uv bypasses wrapper re-resolution.
                         $resolvedExe = (& $cmd.Source -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
@@ -1373,8 +1384,11 @@ exit 0
                     if (Test-IsCondaPython $exe) { continue }
                     try {
                         $out = & $exe --version 2>&1 | Out-String
-                        if ($out -match "Python (3\.1[1-3])\.\d+") {
-                            $candidates += @{ Version = $Matches[1]; Path = $exe }
+                        if ($out -match "Python ((3\.1[1-3])\.\d+)") {
+                            $full = $Matches[1]
+                            $ver = $Matches[2]
+                            if ($PythonSkip -contains $full) { continue }
+                            $candidates += @{ Version = $ver; Path = $exe }
                         }
                     } catch {}
                 }
@@ -1474,10 +1488,10 @@ exit 0
         return (Find-CompatiblePython)
     }
 
-    # Find-CompatiblePython matches on the minor version, so a machine whose only
-    # 3.13 is a skipped patch would be "already installed" and the venv would be
-    # built on an interpreter that cannot import torch. Returning $null instead
-    # sends the caller down the install path, which pins $PythonFallbackFullVersion.
+    # Backstop for the screen inside Find-CompatiblePython, for an interpreter that
+    # reports one version to --version and another to sys.version_info (a wrapper or
+    # a shim). Returning $null sends the caller down the install path, which pins
+    # $PythonFallbackFullVersion.
     function Remove-SkippedPython {
         param($Candidate)
         if (-not $Candidate) { return $null }
