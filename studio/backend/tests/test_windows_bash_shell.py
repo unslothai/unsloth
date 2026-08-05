@@ -320,6 +320,9 @@ def windows_terminal(request, monkeypatch):
         # /s strips the outer pair off the whole payload, leaving the lexer an
         # empty first token with the program behind it.
         'cmd /s /c ""powershell" -Command ls"',
+        # A program path holding spaces is ONE quoted word, so re-lexing it
+        # reads `C:\Program` and leaves the executable in argument position.
+        r'cmd /c "C:\Program Files\PowerShell\7\pwsh.exe" -Command ls',
     ],
 )
 def test_cmd_shellout_is_screened_through_mangled_switches(windows_terminal, command):
@@ -383,6 +386,33 @@ def test_cmd_runs_only_double_quotes(monkeypatch):
     assert not tools._find_blocked_commands("cmd /c 'powershell -Command ls'")
     assert not tools._find_blocked_commands("cmd //c start '' powershell -Command ls")
     assert tools._find_blocked_commands('cmd /c "powershell -Command ls"')
+
+
+def test_a_drive_path_after_start_is_the_program_not_a_switch(windows_terminal):
+    # Git Bash hands `/c/Windows/...` to cmd as a C: executable path, but every
+    # documented START option is one word after the slash, so skipping anything
+    # slash-prefixed walked past the program onto its arguments.
+    assert tools._find_blocked_commands(
+        'cmd //c start "" /c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command ls'
+    )
+
+
+def test_the_s_switch_payload_keeps_a_spaced_program_path(monkeypatch):
+    # /s strips the outer pair off the whole payload, so the program path is
+    # split across tokens with a stray mark on each. Pinned to the cmd lexer:
+    # posix shlex reads the backslashes as escapes and mangles the path.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert tools._find_blocked_commands(
+        r'cmd /s /c ""C:\Program Files\PowerShell\7\pwsh.exe" -Command ls"'
+    )
+    # A path named in passing is still an argument, not a program.
+    assert not tools._find_blocked_commands(r'cmd /c "ls /usr/bin/rm"')
 
 
 def test_cmd_reads_a_one_word_start_title(monkeypatch):

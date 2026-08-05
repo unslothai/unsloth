@@ -1364,6 +1364,41 @@ def _unwrap_quotes(token: str) -> str:
 # position. These switches precede it; the value-taking ones eat a token.
 _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 
+# What a word has to end in before a path is read as naming a program.
+_WINDOWS_EXE_SUFFIXES = frozenset({".exe", ".com", ".bat", ".cmd"})
+
+
+def _is_start_switch(token: str) -> bool:
+    """Whether ``token`` is a START option rather than the program it launches.
+
+    Every documented one is a single letter or word after the slash, so an MSYS
+    drive path keeps its own: Git Bash hands `/c/Windows/.../powershell.exe`
+    straight to cmd as a C: executable, and skipping it as an option walks the
+    scan past the program onto its arguments.
+    """
+    switch = _win_switch(token)
+    return switch.startswith("/") and "/" not in switch[1:]
+
+
+def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "set[str]":
+    """Blocked names spelled as an executable PATH inside a cmd payload.
+
+    `cmd /c "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -Command ls` names one
+    program whose path holds spaces, so re-lexing the payload reads
+    `C:\\Program` as the command word and leaves pwsh in argument position.
+    Anchored on the executable suffix so a word that merely mentions a path,
+    `ls /usr/bin/rm`, is still an argument.
+    """
+    found: "set[str]" = set()
+    for word in payload.split():
+        stem, ext = os.path.splitext(word.strip("\"'"))
+        if ext.lower() not in _WINDOWS_EXE_SUFFIXES:
+            continue
+        base = os.path.basename(stem.replace("\\", "/")).lower()
+        if base in blocked_names:
+            found.add(base)
+    return found
+
 
 def _is_start_title(token: str, lexed_posix: bool) -> bool:
     """Whether ``token`` is START's window title rather than the program it runs.
@@ -1690,15 +1725,19 @@ def _find_blocked_commands(command: str) -> set[str]:
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(_unquote(tokens[i + 1]))
             elif is_win_c and prev_base in _SHELLS_WIN:
-                blocked |= _find_blocked_commands(_unquote(tokens[i + 1]))
-                if not _unquote(tokens[i + 1]) and i + 2 < len(tokens):
+                payload = _unquote(tokens[i + 1])
+                blocked |= _find_blocked_commands(payload)
+                # A program path holding spaces survives lexing as one quoted
+                # word, so re-lexing it reads only its first path segment.
+                blocked |= _blocked_quoted_program(payload, _BLOCKED_COMMANDS)
+                if not payload and i + 2 < len(tokens):
                     # `cmd /s /c ""prog" args"`: /s strips the outer pair off the
                     # WHOLE payload, so the lexer hands back that pair as an
                     # empty first token and the program sits behind it, each
                     # word still carrying a stray mark. Documented under cmd /s.
-                    blocked |= _find_blocked_commands(
-                        " ".join(word.strip('"') for word in tokens[i + 2 :])
-                    )
+                    tail = " ".join(word.strip('"') for word in tokens[i + 2 :])
+                    blocked |= _find_blocked_commands(tail)
+                    blocked |= _blocked_quoted_program(tail, _BLOCKED_COMMANDS)
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
@@ -1710,7 +1749,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         titled = False
         while j < len(tokens):
             switch = _win_switch(tokens[j].lower())
-            if switch.startswith("/"):
+            if _is_start_switch(tokens[j].lower()):
                 # /d C:\dir and friends carry their value in the next token.
                 j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
             elif not titled and _is_start_title(tokens[j], lexed_posix):
