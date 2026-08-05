@@ -891,9 +891,7 @@ def test_a_republished_checkpoint_in_the_other_root_is_picked_up(monkeypatch, tm
             str(stale) if cache_dir is None and filename == "Z-Image-Turbo-FP8.pt" else None
         ),
     )
-    monkeypatch.setattr(
-        "huggingface_hub.hf_hub_download", lambda **kwargs: str(fresh)
-    )
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", lambda **kwargs: str(fresh))
 
     assert pq._resolve_checkpoint_path(_other_root_source(), None, "/models/live") == str(fresh)
 

@@ -719,7 +719,6 @@ class SdCppDiffusionBackend:
         the UI falls back to calling /images/load directly whenever the plan call fails -- so a
         400 raised only at plan time is swallowed and the user sees the old error anyway."""
         from core.inference.diffusion import _assert_base_repo_accessible
-
         for repo, names in by_repo.items():
             # Companions only, mirroring the diffusers plan, which preflights the resolved base and
             # not the pick: the picker only lists repos it could already read.

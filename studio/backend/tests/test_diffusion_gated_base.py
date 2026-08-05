@@ -585,7 +585,12 @@ def _native_backend_ready(monkeypatch):
     )
     fetched: list = []
 
-    def _fetch(self, assets, token, cancel_event = None):
+    def _fetch(
+        self,
+        assets,
+        token,
+        cancel_event = None,
+    ):
         fetched.append(assets)
         raise AssertionError("the gated companion must be caught before any byte is fetched")
 
