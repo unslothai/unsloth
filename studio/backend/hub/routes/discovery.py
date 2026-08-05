@@ -461,10 +461,12 @@ async def discovery_readme(
     and only the repo and branch are taken from the caller, both validated.
     """
     if not is_valid_repo_id(repo):
-        return _stamped(HTTPException(
-            status_code = 400,
-            detail = _scrub_detail(f"Invalid repo: {repo!r}", hf_token),
-        ))
+        return _stamped(
+            HTTPException(
+                status_code = 400,
+                detail = _scrub_detail(f"Invalid repo: {repo!r}", hf_token),
+            )
+        )
     if not _README_BRANCH_RE.match(branch):
         return _stamped(HTTPException(status_code = 400, detail = "Invalid branch"))
 
