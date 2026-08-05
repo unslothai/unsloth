@@ -53,6 +53,7 @@ that already matches logs "already matches" and returns 0 without downloading
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -349,27 +350,30 @@ def _llama_ggml_commit(tag: str) -> str | None:
     return tag[end:] if idx >= 0 and end < len(tag) else None
 
 
-_PUBLISHED_GGML_TREE_CACHE: dict[str, str | None] = {}
+_PUBLISHED_GGML_TREE_CACHE: dict[tuple[str, str], str | None] = {}
 
 
-def published_llama_ggml_tree(tag: Any) -> str | None:
+def published_llama_ggml_tree(tag: Any, repo: Any = None) -> str | None:
     """ggml tree id recorded in the published llama release for ``tag``.
 
     An install made before ggml_tree was recorded has no tree locally, and
     nothing can backfill one without reinstalling llama. The release manifest
     carries it, so read that instead of falling back to the "-mix-" suffix,
-    which does not track ggml. Network failures return None: the caller then
-    uses the old fallback rather than refusing an otherwise valid install."""
+    which does not track ggml. Failures return None: the caller then uses the
+    old fallback rather than refusing an otherwise valid install, so this
+    fetches once with no retries -- the retry policy exists for downloads we
+    need, and an unreachable host would otherwise stall every uncached tag."""
     if not isinstance(tag, str) or not tag:
         return None
-    if tag in _PUBLISHED_GGML_TREE_CACHE:
-        return _PUBLISHED_GGML_TREE_CACHE[tag]
+    if not (isinstance(repo, str) and repo):
+        repo = llama.DEFAULT_PUBLISHED_REPO
+    key = (repo, tag)
+    if key in _PUBLISHED_GGML_TREE_CACHE:
+        return _PUBLISHED_GGML_TREE_CACHE[key]
     tree = None
     try:
-        payload = _download_host_json(
-            release_asset_download_url(
-                llama.DEFAULT_PUBLISHED_REPO, tag, llama.DEFAULT_PUBLISHED_MANIFEST_ASSET
-            )
+        payload = _download_host_json_once(
+            release_asset_download_url(repo, tag, llama.DEFAULT_PUBLISHED_MANIFEST_ASSET)
         )
         if isinstance(payload, dict):
             candidate = payload.get("ggml_tree")
@@ -377,8 +381,27 @@ def published_llama_ggml_tree(tag: Any) -> str | None:
                 tree = candidate
     except Exception as exc:
         log(f"slim_selection: could not read ggml_tree for llama {tag}: {exc}")
-    _PUBLISHED_GGML_TREE_CACHE[tag] = tree
+    _PUBLISHED_GGML_TREE_CACHE[key] = tree
     return tree
+
+
+def installed_llama_tree_repo() -> str | None:
+    """Repo whose published ggml tree describes the installed llama binaries.
+
+    None when there is nothing to read, or when the binaries came from a repo
+    other than the one that published the release: recorded_ggml_tree() leaves
+    the marker's tree unset in that case precisely because the fork tree does
+    not describe an upstream-built libggml, so it must not be inferred either."""
+    metadata = llama.load_prebuilt_metadata(llama.default_managed_llama_dir())
+    if metadata is None:
+        return None
+    published = metadata.get("published_repo")
+    if not isinstance(published, str) or not published:
+        return None
+    binary = metadata.get("binary_repo")
+    if isinstance(binary, str) and binary and binary != published:
+        return None
+    return published
 
 
 def llama_runtime_pairs(
@@ -387,12 +410,17 @@ def llama_runtime_pairs(
     *,
     installed_ggml_tree: Any = None,
     required_ggml_tree: Any = None,
+    installed_repo: Any = None,
 ) -> bool:
     """Whether an installed llama tag can back a slim bundle needing required_tag.
     An exact tag always pairs; otherwise the ggml tree ids decide, since they
     change exactly when ggml does. The "-mix-" suffix does not track ggml at all
     (see _llama_ggml_commit) and is only used when either tree is missing.
-    requires_ggml_sonames stays the per-file ABI gate."""
+    requires_ggml_sonames stays the per-file ABI gate.
+
+    installed_repo is the repo that published the installed runtime (from
+    installed_llama_tree_repo()); without it the installed tag's tree is not
+    inferred, since only the caller knows the binaries came from that release."""
     if not isinstance(required_tag, str):
         return False
     if installed_tag == required_tag:
@@ -401,7 +429,8 @@ def llama_runtime_pairs(
     # tag's published release rather than stranding the install on a suffix
     # comparison that ignores ggml.
     if not (isinstance(installed_ggml_tree, str) and installed_ggml_tree):
-        installed_ggml_tree = published_llama_ggml_tree(installed_tag)
+        if isinstance(installed_repo, str) and installed_repo:
+            installed_ggml_tree = published_llama_ggml_tree(installed_tag, installed_repo)
     if not (isinstance(required_ggml_tree, str) and required_ggml_tree):
         required_ggml_tree = published_llama_ggml_tree(required_tag)
     if installed_ggml_tree and required_ggml_tree:
@@ -428,6 +457,7 @@ def slim_pairing_for_artifact(
         requires_tag,
         installed_ggml_tree = installed_llama_ggml_tree(),
         required_ggml_tree = artifact.get("requires_ggml_tree"),
+        installed_repo = installed_llama_tree_repo(),
     ):
         log(
             f"slim_selection: {asset} skipped: installed llama tag {llama_tag!r} "
@@ -542,6 +572,7 @@ def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> s
         return None
     installed_tag = runtime[1]
     installed_tree = installed_llama_ggml_tree()
+    installed_repo = installed_llama_tree_repo()
     # Normalise the tree: llama_runtime_pairs treats a non-string as absent, but
     # an unhashable one (list/dict) would blow up the set first.
     required_pairs = {
@@ -557,7 +588,11 @@ def _slim_release_incompatibility(manifest: dict[str, Any], host: HostInfo) -> s
     required_tags = {tag for tag, _tree in required_pairs}
     if required_tags and not any(
         llama_runtime_pairs(
-            installed_tag, tag, installed_ggml_tree = installed_tree, required_ggml_tree = tree
+            installed_tag,
+            tag,
+            installed_ggml_tree = installed_tree,
+            required_ggml_tree = tree,
+            installed_repo = installed_repo,
         )
         for tag, tree in required_pairs
     ):
@@ -621,6 +656,16 @@ def _download_host_latest_release_tag(repo: str) -> str | None:
 
 def _download_host_json(url: str) -> Any:
     return core.fetch_download_host_json(_OPS, url)
+
+
+def _download_host_json_once(url: str) -> Any:
+    """One attempt, for a probe whose failure path is a cheap fallback.
+
+    A refused or blackholed host is a retryable URLError, so the default policy
+    would spend four attempts with backoff per tag before returning the answer
+    the caller already has a fallback for."""
+    data = download_bytes(url, timeout = 30, attempts = 1, headers = {"User-Agent": USER_AGENT})
+    return json.loads(data.decode("utf-8"))
 
 
 def _resolve_release_via_download_host(
@@ -918,6 +963,7 @@ def selection_from_artifact(
         artifact.get("requires_llama_tag"),
         installed_ggml_tree = installed_llama_ggml_tree(),
         required_ggml_tree = artifact.get("requires_ggml_tree"),
+        installed_repo = installed_llama_tree_repo(),
     ):
         raise PrebuiltFallback(
             "the paired llama.cpp runtime changed underneath the slim whisper selection"
