@@ -795,14 +795,23 @@ def test_a_live_root_hit_still_goes_through_the_hub_so_it_revalidates(monkeypatc
         fallback_filename = "transformer_fp8.pt",
     )
 
-    def _cache(repo_id, filename, cache_dir = None):
+    def _cache(
+        repo_id,
+        filename,
+        cache_dir = None,
+    ):
         path = live / filename
         return str(path) if cache_dir == str(live) and path.is_file() else None
 
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
     asked: list = []
 
-    def _download(repo_id, filename, token = None, cache_dir = None):
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
         asked.append((filename, cache_dir))
         return str(ckpt)  # the same blob, revalidated
 
@@ -828,7 +837,11 @@ def test_a_hit_only_in_the_other_root_is_returned_without_downloading(monkeypatc
         fallback_filename = "transformer_fp8.pt",
     )
 
-    def _cache(repo_id, filename, cache_dir = None):
+    def _cache(
+        repo_id,
+        filename,
+        cache_dir = None,
+    ):
         # Only the import-time default (cache_dir None) holds it; the live root is a miss.
         path = default_root / filename
         return str(path) if cache_dir is None and path.is_file() else None
