@@ -1220,9 +1220,9 @@ def _start_title_indexes(tokens: "list[str]", lexed_posix: bool) -> "frozenset[i
 
 # cmd ends a command word at these whether or not whitespace surrounds them.
 _CMD_OPERATOR_RE = re.compile(r"[&|<>]")
-# cmd commands that take the rest of their segment as text, so a `start` behind
-# one is a word being printed or assigned rather than a program being launched.
-_CMD_TEXT_COMMANDS = frozenset({"echo", "rem", "set", "title", "prompt"})
+# ...but only these begin another command. `>` redirects into a file, so
+# `echo hi>start powershell` writes to one called start and launches nothing.
+_CMD_SEPARATOR_RE = re.compile(r"[&|]")
 
 
 def _strip_cmd_quotes(token: str) -> str:
@@ -1521,21 +1521,30 @@ def _find_blocked_commands(command: str) -> set[str]:
         found at all. cmd reads the operator, so the word after the last one is
         the command.
         """
-        return _token_basename(_CMD_OPERATOR_RE.split(tokens[index])[-1]) == "start"
+        return _token_basename(_CMD_SEPARATOR_RE.split(tokens[index])[-1]) == "start"
 
     def _cmd_command_head(index: int) -> int:
         """The index of the word cmd runs for the segment beginning at ``index``.
 
         `if` carries out the command after its condition, so the leading word is
         not the command: `cmd /c if exist x echo start "t" powershell` runs echo,
-        which only prints. The condition forms all take a fixed number of words
-        (`exist PATH`, `defined VAR`, `errorlevel N`, or one `a==b` comparison),
-        so the command behind them can be reached without parsing further.
+        which only prints. Microsoft documents the condition as
+        `if [/i] [not] (<string1> <compareop> <string2> | exist <path> |
+        defined <var> | errorlevel <n>) <command>`, all of which take a fixed
+        number of words, so the command behind one can be reached without
+        parsing further. Missing the optional /i left the comparison itself
+        looking like the command.
         """
         while index < len(tokens) and _token_basename(tokens[index]) == "if":
             index += 1
-            if index < len(tokens) and _token_basename(tokens[index]) == "not":
-                index += 1
+            for _ in range(2):  # /i and not, in either order
+                if index >= len(tokens):
+                    break
+                # _token_basename would read /i as the path `i`, so the switch is
+                # matched on the raw word, through the Git Bash `//i` spelling.
+                word = tokens[index].lower()
+                if _win_switch(word) == "/i" or _token_basename(word) == "not":
+                    index += 1
             if index >= len(tokens):
                 break
             if _token_basename(tokens[index]) in ("exist", "defined", "errorlevel"):
@@ -1548,47 +1557,43 @@ def _find_blocked_commands(command: str) -> set[str]:
         """Indexes of the `start` words that launch a program in the cmd command
         line beginning at ``begin``.
 
-        cmd keeps parsing past its own conditionals and operators, so promoting
+        cmd keeps parsing past its own conditionals and separators, so promoting
         only the first word missed `cmd //c if exist . start "" powershell`,
         which cmd runs and which the scan had caught before it was gated. Each
-        segment is read down to the word cmd actually runs instead, so a start
-        that is an argument of one taking text stays an argument: `cmd //c echo
-        start "my title" powershell` prints and launches nothing.
+        segment is read down to the word cmd actually runs instead, and only
+        that word counts: anywhere else a start is an operand of the command
+        that is running, whether that prints it (`cmd //c echo start "t" pwsh`)
+        or reads it as a name (`cmd /c dir start "" powershell`).
 
         Under bash the payload ends at the first shell separator, since that
         terminates the cmd invocation rather than starting a new cmd command:
-        with `cmd //c echo ok; printf "%s" start "t" powershell`, cmd is handed
-        only `echo ok` and the start belongs to printf. The cmd lexer has no
-        such boundary, and there `&` does begin a new cmd command.
+        with `cmd //c echo ok; printf "%s" start "" powershell`, cmd is handed
+        only `echo ok` and the start belongs to printf. An escaped one is the
+        opposite: bash passes it through and cmd reads it as its own separator,
+        so it opens a segment rather than ending the scan.
         """
         found: "set[int]" = set()
-        head_base: "str | None" = None  # the word cmd runs for the open segment
-        condition_end = begin
+        head = -1  # index of the word cmd runs for the open segment
         for index in range(begin, len(tokens)):
             token = tokens[index]
-            if _looks_like_separator(token) and index not in quoted_separators:
-                if lexed_posix:
+            if _looks_like_separator(token):
+                if lexed_posix and index not in quoted_separators:
                     break
-                head_base = None
+                head = -1
                 continue
-            # An operator with no space around it stays inside the token under
+            # A separator with no space around it stays inside the token under
             # the cmd lexer, so it both hides a start and opens a segment:
             # `cmd /c echo ok&start "" pwsh` runs echo and then the start.
-            pieces = [token] if lexed_posix else _CMD_OPERATOR_RE.split(token)
+            # Redirections are not separators: `cmd /c echo hi>start powershell`
+            # writes to a file called start and launches nothing.
+            pieces = [token] if lexed_posix else _CMD_SEPARATOR_RE.split(token)
             glued = len(pieces) > 1
-            if head_base is None:
-                condition_end = _cmd_command_head(index)
-                head_base = (
-                    _token_basename(tokens[condition_end]) if condition_end < len(tokens) else ""
-                )
-            if (
-                index >= condition_end
-                and _is_cmd_start_word(index)
-                and (glued or head_base == "start" or head_base not in _CMD_TEXT_COMMANDS)
-            ):
+            if head < 0:
+                head = _cmd_command_head(index)
+            if (glued or index == head) and _is_cmd_start_word(index):
                 found.add(index)
             if glued:
-                head_base = _token_basename(pieces[-1])
+                head = index  # the segment after the last separator begins here
         return found
 
     def _exec_child_index(start: int) -> "tuple[int, bool]":

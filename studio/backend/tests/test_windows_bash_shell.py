@@ -539,10 +539,18 @@ def test_desync_does_not_screen_unquoted_start_arguments(monkeypatch, command, b
         ('cmd //c if exist . start "" powershell -c ls', True),
         ('cmd //c dir & start "" powershell -c ls', True),
         ('cmd //c if not exist x.txt start "" pwsh -c ls', True),
-        # ...but a start that is an argument of a command taking text is not a
-        # launch, which is what gating the scan fixed in the first place.
+        # ...but only the word cmd runs counts. Anywhere else the start is an
+        # operand of the command that is running, whether that prints it or
+        # reads it as a name, and neither launches anything.
         ('cmd //c echo start "my title" powershell', False),
         ('cmd //c set x=start "t" powershell', False),
+        ('cmd /c dir start "" powershell', False),
+        ('cmd /c type start "" pwsh', False),
+        # `>` redirects into a file rather than beginning another command, so
+        # these write output to one called start and launch nothing, including
+        # where the redirection sits on the segment's own command word.
+        ("cmd /c echo hi>start powershell", False),
+        ('cmd /c x>start "" powershell', False),
     ],
 )
 def test_start_is_found_across_a_whole_cmd_command_line(monkeypatch, bash, command, blocked):
@@ -622,9 +630,15 @@ def test_git_bash_does_not_requote_a_bare_word():
         ('cmd /c if exist x echo start "my title" powershell', False),
         ('cmd /c if not defined V echo start "t" powershell', False),
         ('cmd /c if errorlevel 1 echo start "t" powershell', False),
+        # Microsoft documents /i before the comparison. Missing it left `a==a`
+        # looking like the command, which both refused a printed start and hid
+        # a real one behind the same condition.
+        ('cmd /c if /i a==a echo start "" powershell', False),
         # ...but a real launch behind a condition still counts.
         ('cmd /c if exist x start "" powershell -c ls', True),
         ('cmd /c if not exist x start "" pwsh -c ls', True),
+        ('cmd /c if /i a==a start "" powershell', True),
+        ('cmd //c if //i a==a start "" pwsh -c ls', True),
     ],
 )
 def test_cmd_if_advances_to_the_command_it_runs(monkeypatch, bash, command, blocked):
@@ -659,6 +673,11 @@ def test_start_is_found_behind_a_glued_cmd_separator(monkeypatch, command):
         ('cmd //c dir; echo start "my title" pwsh', False),
         # The cmd payload before the separator is still read.
         ('cmd //c start "" powershell -c ls; echo done', True),
+        # An escaped separator is the opposite case: bash passes it through and
+        # cmd reads it as its own, so it opens a segment rather than ending the
+        # scan, and the launch behind it is real.
+        (r'cmd //c echo ok \& start "" powershell -c ls', True),
+        (r'cmd //c dir \& start "" pwsh -c ls', True),
     ],
 )
 def test_the_nested_cmd_scan_stops_at_an_outer_separator(monkeypatch, command, blocked):
