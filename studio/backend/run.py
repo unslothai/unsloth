@@ -35,7 +35,9 @@ def _normalize_standard_streams():
             # Normalizing must never itself be what kills startup.
             continue
         setattr(sys, name, stream)
-        # sys.__stdout__ & co are None too; third-party code falls back to them.
+        # sys.__stdout__ & co are None here too, and readers of those (rich reads
+        # sys.__stdout__.fileno() at import) otherwise fall back to fds 0/1/2,
+        # which this process does not have. Point them at the real null fd.
         if getattr(sys, f"__{name}__", None) is None:
             setattr(sys, f"__{name}__", stream)
 

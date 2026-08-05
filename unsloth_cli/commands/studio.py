@@ -1599,7 +1599,8 @@ def studio_default(
                 # Hand our std handles to the child: without them CREATE_NO_WINDOW
                 # gives the backend its own hidden console and `unsloth studio > log`
                 # captures nothing -- the same trap noted at the setup.ps1 call below.
-                # stdin is deliberately not passed, so the child cannot steal input.
+                # Omitting stdin does not withhold it (subprocess still fills it from
+                # GetStdHandle); that would need stdin = DEVNULL.
                 proc = _sp.Popen(
                     args,
                     stdout = _stream_for_subprocess(sys.stdout),
