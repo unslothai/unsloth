@@ -88,6 +88,7 @@ import {
   MoreVerticalIcon,
   PinIcon,
   PinOffIcon,
+  PencilEdit02Icon,
   Telescope02Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
@@ -186,18 +187,19 @@ import { useExternalProvidersStore } from "./stores/external-providers-store";
 import { syncExternalProvidersFromBackend } from "./sync-external-providers";
 import { buildChatTourSteps } from "./tour";
 import type { ChatView, MessageRecord } from "./types";
+import { clearNewChatDraft } from "./utils/composer-draft";
 import {
   getStoredChatThread,
   isExpectedBackgroundChatStorageError,
   listStoredChatMessages,
   listStoredChatThreads,
 } from "./utils/chat-history-storage";
+import { requestTemporaryPromptQueueStop } from "./utils/prompt-queue-boundary";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
 import {
   consumeProjectSourcesPending,
   hasProjectSourcesPending,
 } from "@/features/rag/components/project-source-dropzone";
-
 
 const ProjectSourcesPanel = lazy(() =>
   import("@/features/rag/components/project-sources-panel").then((module) => ({
@@ -1816,6 +1818,7 @@ export function ChatPage({
     : "Turn on temporary chat";
   const toggleIncognito = useCallback(() => {
     const store = useChatRuntimeStore.getState();
+    const wasIncognito = store.incognito;
     store.setIncognito(!store.incognito);
     // On an empty scratch chat there's nothing to abandon, so flip in
     // place: navigating would remount the thread and bounce the composer
@@ -1827,6 +1830,9 @@ export function ChatPage({
       !search.compare &&
       !search.project &&
       store.activeThreadId == null;
+    if (wasIncognito) {
+      requestTemporaryPromptQueueStop();
+    }
     if (onEmptyScratchChat) return;
     // setActiveThreadId already clears contextUsage.
     store.setActiveThreadId(null);
@@ -1951,6 +1957,20 @@ export function ChatPage({
     },
     [navigate],
   );
+
+  const handleDesktopNewChat = useCallback(() => {
+    clearNewChatDraft();
+    const runtime = useChatRuntimeStore.getState();
+    runtime.setActiveThreadId(null);
+    runtime.setActiveProjectId(currentProjectId);
+    runtime.setIncognito(false);
+    navigate({
+      to: "/chat",
+      search: currentProjectId
+        ? { project: currentProjectId }
+        : { new: crypto.randomUUID() },
+    });
+  }, [currentProjectId, navigate]);
   const openProjectsList = useCallback(() => {
     navigate({ to: "/projects" });
   }, [navigate]);
@@ -3250,12 +3270,31 @@ export function ChatPage({
               ? "pl-12"
               : pinned
                 ? "pl-2"
-                : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
+                : isTauri
+                  ? "pl-[var(--studio-collapsed-chat-controls-inset,0.75rem)]"
+                  : "pl-[calc(0.5rem+max(0px,var(--studio-mac-traffic-light-inset,0px)-var(--sidebar-width-icon,3rem)))]",
             view.mode === "compare" &&
               "right-[10px] left-auto w-auto bg-transparent pl-0 pr-[calc(0.5rem+var(--studio-chat-header-right-inset,var(--studio-window-control-inset,0px)))]",
           )}
         >
           <div className="pointer-events-auto flex items-center gap-1">
+            {isTauri && !isMobile && !pinned && view.mode !== "compare" && (
+              <Button
+                type="button"
+                variant="ghost"
+                size="icon-sm"
+                title="New chat"
+                aria-label="New chat"
+                onClick={handleDesktopNewChat}
+                className="!size-[33px] rounded-[10px] text-muted-foreground"
+              >
+                <HugeiconsIcon
+                  icon={PencilEdit02Icon}
+                  strokeWidth={1.75}
+                  className="size-icon"
+                />
+              </Button>
+            )}
             {view.mode !== "compare" && (
               <ModelSelector
                 models={models}

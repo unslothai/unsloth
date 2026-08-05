@@ -9,6 +9,16 @@ import type {
 import { authFetch } from "@/features/auth";
 import { readFastApiError } from "@/lib/format-fastapi-error";
 
+export class DatasetFormatError extends Error {
+  status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "DatasetFormatError";
+    this.status = status;
+  }
+}
+
 type CheckDatasetFormatArgs = {
   datasetName: string;
   hfToken: string | null;
@@ -37,7 +47,7 @@ export async function checkDatasetFormat({
   });
 
   if (!res.ok) {
-    throw new Error(await readFastApiError(res));
+    throw new DatasetFormatError(await readFastApiError(res), res.status);
   }
 
   return res.json();

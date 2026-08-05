@@ -280,7 +280,10 @@ const WEB_UPDATE_HIDDEN_ROUTES = new Set([
 const MAC_NATIVE_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
   "--studio-mac-titlebar-height": "34px",
+  "--studio-desktop-titlebar-height": "34px",
+  "--studio-titlebar-navigation-offset-y": "2px",
   "--studio-mac-traffic-light-inset": "78px",
+  "--studio-collapsed-chat-controls-inset": "188px",
   "--studio-startup-top-inset": "58px",
   "--studio-content-top-inset": "0px",
   "--studio-non-chat-content-top-inset": "34px",
@@ -294,8 +297,10 @@ const MAC_NATIVE_CHROME_STYLE = {
 const CUSTOM_CHROME_STYLE = {
   "--studio-titlebar-height": "0px",
   "--studio-custom-titlebar-height": "34px",
+  "--studio-desktop-titlebar-height": "34px",
   "--studio-sidebar-expanded-width": "17.5rem",
   "--studio-sidebar-collapsed-width": "3rem",
+  "--studio-collapsed-chat-controls-inset": "12px",
   "--studio-startup-top-inset": "42px",
   "--studio-content-top-inset": "34px",
   "--studio-hidden-route-top-inset": "34px",

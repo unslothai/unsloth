@@ -65,6 +65,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.appearance.custom.codeFontSize.label",
     "settings.appearance.custom.fontSmoothing.label",
     "settings.appearance.layout.compactSidebar",
+    "settings.appearance.sidebarNav.title",
     "settings.appearance.sidebarMenu.title",
     "settings.appearance.sidebarMenu.darkModeToggle",
   ],

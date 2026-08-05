@@ -678,6 +678,10 @@ export function DatasetSection() {
     void navigate({ to: "/data-recipes" });
   }, [navigate]);
 
+  const handleOpenDataRecipes = useCallback(() => {
+    void navigate({ to: "/data-recipes" });
+  }, [navigate]);
+
   return (
     <div data-tour="studio-dataset" className="min-w-0">
       <SectionCard
@@ -967,13 +971,12 @@ export function DatasetSection() {
                                     </p>
                                     {localDatasets.length === 0 ? (
                                       <Button
-                                        asChild={true}
+                                        type="button"
                                         size="sm"
                                         variant="outline"
+                                        onClick={handleOpenDataRecipes}
                                       >
-                                        <a href="/data-recipes">
-                                          {t("studio.dataset.openDataRecipes")}
-                                        </a>
+                                        {t("studio.dataset.openDataRecipes")}
                                       </Button>
                                     ) : null}
                                   </div>
