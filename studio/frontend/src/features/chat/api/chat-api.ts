@@ -11,7 +11,7 @@ import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
-import { formatFastApiDetail } from "@/lib/format-fastapi-error";
+import { formatApiErrorBody } from "@/lib/format-fastapi-error";
 import type {
   MessageRecord,
   ModelType,
@@ -87,14 +87,7 @@ function notifyChatProjectsUpdated(): void {
 }
 
 function parseErrorText(status: number, body: unknown): string {
-  if (body && typeof body === "object") {
-    const detail = (body as { detail?: unknown }).detail;
-    const formatted = formatFastApiDetail(detail);
-    if (formatted) return formatted;
-    const message = (body as { message?: unknown }).message;
-    if (typeof message === "string" && message) return message;
-  }
-  return `Request failed (${status})`;
+  return formatApiErrorBody(body) ?? `Request failed (${status})`;
 }
 
 /**
