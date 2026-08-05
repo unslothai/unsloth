@@ -3179,7 +3179,7 @@ _FLUX_INDEX = {
     "safety_checker": [None, None],
 }
 # Trimmed from the real manifests of CalamitousFelicitousness/Ideogram-4-bf16-Diffusers and
-# Wan-AI/Wan2.2-T2V-A14B-Diffusers, which each ship two sharded denoiser directories.
+# Wan-AI/Wan2.2-T2V-A14B-Diffusers, which each ship two denoiser directories.
 _IDEOGRAM_INDEX = {
     "_class_name": "Ideogram4Pipeline",
     "transformer": ["diffusers", "Ideogram4Transformer2DModel"],
@@ -3192,11 +3192,9 @@ _WAN_INDEX = {
     "transformer_2": ["diffusers", "WanTransformer3DModel"],
     "vae": ["diffusers", "AutoencoderKLWan"],
 }
-# Wan-AI/Wan2.2-TI2V-5B-Diffusers: the single-expert sibling declares transformer_2 as
-# [null, null] and ships no such directory.
+# Wan-AI/Wan2.2-TI2V-5B-Diffusers declares transformer_2 as [null, null] and ships no such dir.
 _WAN_SINGLE_EXPERT_INDEX = dict(_WAN_INDEX, transformer_2 = [None, None])
-# Stable Cascade, Wuerstchen, Kandinsky and Shap-E call theirs "decoder"/"prior", so no key here
-# matches either fixed name.
+# Stable Cascade and friends call theirs "decoder"/"prior", so no key matches either fixed name.
 _CASCADE_INDEX = {
     "_class_name": "StableCascadeDecoderPipeline",
     "decoder": ["diffusers", "StableCascadeUNet"],
@@ -3243,8 +3241,8 @@ def _dual_format_shard_index(fmt: str) -> bytes:
 
 
 def test_an_unused_alternate_format_index_does_not_tear_a_whole_snapshot(tmp_path):
-    """A whole safetensors set stays whole beside the orphan ``.bin.index.json`` a dual-format
-    repo leaves behind, because each index is judged on its own shard set."""
+    """Each index is judged on its own shard set, so a whole safetensors set stays whole beside the
+    orphan ``.bin.index.json`` a dual-format repo leaves behind."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3261,8 +3259,7 @@ def test_an_unused_alternate_format_index_does_not_tear_a_whole_snapshot(tmp_pat
 
 
 def test_neither_format_being_whole_is_still_torn(tmp_path):
-    """The other direction: any-index-SATISFIED, not any-index-present, so both formats half
-    landed is still torn."""
+    """The other direction: any-index-SATISFIED, not any-index-present."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3310,9 +3307,8 @@ def test_a_variant_only_component_is_missing_its_denoiser_whole_or_not(tmp_path)
     component readable -- not half landed, and not even whole.
 
     ``from_pretrained`` without ``variant`` resolves the plain name and has no fallback to the
-    twin: against a directory holding only ``diffusion_pytorch_model.fp16.safetensors`` diffusers
-    raises ``Error no file named diffusion_pytorch_model.safetensors``. The download plan skips
-    those files for that reason, so a cache holding only them cannot serve this row.
+    twin, raising ``Error no file named diffusion_pytorch_model.safetensors``. The download plan
+    skips those files for that reason, so a cache holding only them cannot serve this row.
     """
     snapshot = _pipeline_snapshot(
         tmp_path,
@@ -3334,9 +3330,9 @@ def test_a_variant_only_component_is_missing_its_denoiser_whole_or_not(tmp_path)
 def test_a_corrupt_selected_index_hides_the_whole_weight_beside_it(whole_suffix, tmp_path):
     """An unreadable selected index is the failure, not an absence of evidence.
 
-    ``is_sharded`` is set from that file merely existing, so ``_get_checkpoint_shard_files`` then
-    parses it and raises, and neither the ``except IOError`` branch nor the pickle fallback under
-    it is reachable once sharded. The complete weight sitting beside it is never opened.
+    ``is_sharded`` is set from that file merely existing, so the parse then raises with neither the
+    ``except IOError`` branch nor the pickle fallback reachable. The whole weight beside it is
+    never opened.
     """
     snapshot = _pipeline_snapshot(
         tmp_path,
@@ -3350,12 +3346,9 @@ def test_a_corrupt_selected_index_hides_the_whole_weight_beside_it(whole_suffix,
 
 
 def test_a_sharded_bin_set_is_not_what_a_default_load_resolves(tmp_path):
-    """``.bin`` shards behind their own index answer no default load.
-
-    ``use_safetensors`` unset coerces to True, so ``_fetch_index_file`` builds the safetensors
-    index name and nothing else; with no index found the loader asks for the UNSHARDED
-    ``diffusion_pytorch_model.bin``, which a sharded set does not provide.
-    """
+    """``.bin`` shards behind their own index answer no default load: ``use_safetensors`` unset
+    coerces to True, so only the safetensors index name is built, and with none found the loader
+    asks for the UNSHARDED ``diffusion_pytorch_model.bin``, which a sharded set does not provide."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3370,8 +3363,7 @@ def test_a_sharded_bin_set_is_not_what_a_default_load_resolves(tmp_path):
 
 def test_the_legacy_variant_index_spelling_does_not_vouch_either(tmp_path):
     """``_fetch_index_file_legacy`` spells the variant BEFORE ``.index``, so a deprecated fp16 set
-    is ``diffusion_pytorch_model.safetensors.fp16.index.json`` -- a name ending in ``.index.json``
-    that a load passing no ``variant`` still never resolves."""
+    ends in ``.index.json`` and a load passing no ``variant`` still never resolves it."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3387,10 +3379,9 @@ def test_the_legacy_variant_index_spelling_does_not_vouch_either(tmp_path):
 
 
 def test_shards_whose_index_never_landed_do_not_stand_in_for_the_whole_weight(tmp_path):
-    """A numbered shard is only ever reached THROUGH an index: with ``is_sharded`` false the loader
-    asks for the unsharded name and nothing else. So a complete shard set whose index is missing --
-    or, as here, present in the snapshot only as a blob symlink the cache already collected -- is
-    wreckage, not a loose weight."""
+    """A numbered shard is only ever reached THROUGH an index, so a complete set whose index is
+    missing -- or, as here, a dangling blob symlink the cache already collected -- is wreckage
+    rather than a loose weight."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3407,8 +3398,8 @@ def test_shards_whose_index_never_landed_do_not_stand_in_for_the_whole_weight(tm
 
 
 def test_an_unsharded_dtype_twin_alone_is_not_the_default_weight(tmp_path):
-    """The same rule without an index in sight: the twin a ``variant = "fp16"`` load left in the
-    cache is the only weight here, and the default load this app issues cannot open it."""
+    """The same rule with no index in sight: the twin a ``variant = "fp16"`` load left behind is
+    the only weight here, and the default load this app issues cannot open it."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3422,8 +3413,7 @@ def test_an_unsharded_dtype_twin_alone_is_not_the_default_weight(tmp_path):
 
 def test_a_pipeline_declaring_no_denoiser_key_is_not_hunted_for_one(tmp_path):
     """Stable Cascade names its denoiser ``decoder``, so neither fixed name is in the manifest.
-    A readable manifest that declares no transformer/unet has nothing this check can prove
-    absent, and the fully downloaded pipeline must not be hidden as partial."""
+    Nothing here can be proved absent, and the complete pipeline must not be hidden as partial."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _CASCADE_INDEX,
@@ -3437,9 +3427,8 @@ def test_a_pipeline_declaring_no_denoiser_key_is_not_hunted_for_one(tmp_path):
 
 def test_a_manifest_entry_that_is_not_a_component_pair_is_left_to_the_loader(tmp_path):
     """JaiDalmotra/ACE-STEP-Stereo-Finetuned maps "transformer" to a dict pointing at
-    ace_step_transformer/, and ships no transformer/ at all. A custom manifest that does not
-    follow the [library, class] pair convention does not name a directory, so demanding one would
-    hide the whole repo."""
+    ace_step_transformer/ and ships no transformer/ at all. An entry that is not a
+    [library, class] pair names no directory, so demanding one would hide the whole repo."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         {
@@ -3464,7 +3453,7 @@ def test_a_manifest_entry_that_is_not_a_component_pair_is_left_to_the_loader(tmp
     ],
 )
 def test_the_manifest_keys_generalise_past_the_names_we_knew(denoisers, tmp_path):
-    """Reading the names off the manifest is what keeps this right for layouts no hardcoded list
+    """Reading the names off the manifest keeps this right for layouts no hardcoded list
     anticipated, without another edit here."""
     manifest = {"_class_name": "SomePipeline", "vae": ["diffusers", "AutoencoderKL"]}
     manifest.update({name: ["diffusers", "SomeTransformer2DModel"] for name in denoisers})
@@ -3477,8 +3466,8 @@ def test_the_manifest_keys_generalise_past_the_names_we_knew(denoisers, tmp_path
 
 
 def test_a_declared_but_null_second_expert_is_not_a_missing_denoiser(tmp_path):
-    """Wan 2.2's 5B sibling declares ``transformer_2`` as [null, null] and ships no such
-    directory. That is the manifest saying the slot is deliberately empty, not a torn download."""
+    """Wan 2.2's 5B sibling declares ``transformer_2`` as [null, null] and ships no such directory:
+    the manifest saying the slot is deliberately empty, not a torn download."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _WAN_SINGLE_EXPERT_INDEX,
@@ -3491,8 +3480,7 @@ def test_a_declared_but_null_second_expert_is_not_a_missing_denoiser(tmp_path):
 
 
 def test_a_half_landed_shard_set_is_not_rescued_by_the_loose_scan(tmp_path):
-    """The loose fallback skips claimed names, so shard 1 of 2, itself a weight file, cannot pose
-    as the whole set and undo the check above it."""
+    """The loose fallback skips claimed names, so shard 1 of 2 cannot pose as the whole set."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3508,9 +3496,8 @@ def test_a_half_landed_shard_set_is_not_rescued_by_the_loose_scan(tmp_path):
 
 @pytest.mark.parametrize("escape", ["../vae/diffusion_pytorch_model.safetensors", "/absolute"])
 def test_a_denoiser_index_naming_a_shard_outside_the_component_is_not_a_denoiser(escape, tmp_path):
-    """``component / shard`` follows ``..`` out to a sibling and drops the component entirely for
-    an absolute name, so a corrupt map could be satisfied by the vae next door. Same rule the
-    root-weight scanner applies to its own indexes."""
+    """``component / shard`` follows ``..`` to a sibling and drops the component entirely for an
+    absolute name, so a corrupt map could be satisfied by the vae next door."""
     outside = tmp_path / "outside.safetensors"
     outside.write_bytes(b"\0" * 256)
     shard = str(outside) if escape == "/absolute" else escape
@@ -3532,8 +3519,8 @@ def test_a_drive_qualified_shard_name_is_outside_the_component_everywhere(tmp_pa
     """The escape above, spelled the way a Windows-written index spells it.
 
     ``PurePosixPath`` reads ``C:/pipe/...`` as a subdirectory literally called ``C:``, so without a
-    drive check the name resolves to a real file here while on Windows the same join discards the
-    component and reaches the drive root. The verdict has to be the escape on both.
+    drive check the name resolves to a real file here, while on Windows the same join discards the
+    component and reaches the drive root. It has to read as the escape on both.
     """
     snapshot = _pipeline_snapshot(
         tmp_path,
@@ -3550,7 +3537,7 @@ def test_a_drive_qualified_shard_name_is_outside_the_component_everywhere(tmp_pa
 
 def test_a_denoiser_index_short_of_the_total_its_shard_names_declare_is_torn(tmp_path):
     """An index truncated to shard 1 of 2 satisfies every name it maps, but the loader opens the
-    map and nothing else, so the omitted half is silently dropped."""
+    map and nothing else, so the omitted half is dropped silently."""
     snapshot = _pipeline_snapshot(
         tmp_path,
         _FLUX_INDEX,
@@ -3573,9 +3560,8 @@ def test_a_denoiser_index_short_of_the_total_its_shard_names_declare_is_torn(tmp
 
 
 def test_a_whole_bin_set_does_not_stand_in_for_the_selected_safetensors_index(tmp_path):
-    """diffusers coerces an unset use_safetensors to True, so it resolves only
-    diffusion_pytorch_model.safetensors.index.json here; finding it makes the component sharded,
-    and both the IOError handler and the pickle fallback below it are gated on not is_sharded. The
+    """Only diffusion_pytorch_model.safetensors.index.json is resolved here, and finding it makes
+    the component sharded, gating out the IOError handler and the pickle fallback below it. The
     whole .bin set beside it is never opened, so it cannot vouch for the component."""
     snapshot = _pipeline_snapshot(
         tmp_path,
@@ -3611,8 +3597,8 @@ def test_an_unsharded_denoiser_still_passes_on_presence_alone(tmp_path):
     ],
 )
 def test_a_multi_denoiser_pipeline_needs_every_denoiser_it_declares(manifest, second, tmp_path):
-    """Ideogram 4 and the dual-expert video pipelines declare two denoisers, and the manifest is
-    what says so, so both must be on disk before the snapshot reads as complete."""
+    """Ideogram 4 and the dual-expert video pipelines declare two denoisers, so both must be on
+    disk before the snapshot reads as complete."""
     files = {
         "transformer/diffusion_pytorch_model.safetensors": b"\0" * 256,
         "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
@@ -3636,10 +3622,9 @@ def test_json_too_deep_to_parse_is_contained_rather_than_raising(target, missing
     """json.load raises RecursionError, which is neither a ValueError nor an OSError, so an
     unguarded parse would escape past the caller and drop the row from the scan entirely.
 
-    Contained is not the same as ignored, and which one it is depends on the file. An unreadable
-    MANIFEST proves nothing about the denoiser, so the row stays. An unreadable SELECTED INDEX is
-    the failure itself: diffusers marks the component sharded on that file existing and then
-    parses it with the same json module, so the whole weight lying beside it is never opened.
+    Contained is not ignored, and which one it is depends on the file. An unreadable MANIFEST
+    proves nothing about the denoiser, so the row stays. An unreadable SELECTED INDEX is the
+    failure itself, since the whole weight lying beside it is then never opened.
     """
     snapshot = _pipeline_snapshot(
         tmp_path,
@@ -3654,7 +3639,7 @@ def test_json_too_deep_to_parse_is_contained_rather_than_raising(target, missing
 
 def test_an_unreadable_manifest_keeps_the_fixed_denoiser_pair(tmp_path):
     """A corrupt manifest falls back to the fixed pair, rather than reading as a pipeline that
-    declares no denoiser and is therefore complete."""
+    declares no denoiser and is complete by default."""
     snapshot = tmp_path / "snap"
     snapshot.mkdir()
     (snapshot / "model_index.json").write_bytes(b"{not json")

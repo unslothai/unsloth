@@ -1078,10 +1078,9 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
         with index_path.open(encoding = "utf-8") as handle:
             index = json.load(handle)
     except (OSError, UnicodeDecodeError, ValueError, RecursionError):
-        # RecursionError: deeply nested json, which is neither ValueError nor OSError and would
-        # otherwise escape every caller's fail-open guard. The loader parses the index with the
-        # same json module inside ``_get_checkpoint_shard_files``, so one too deep to parse there
-        # cannot serve its shards here either.
+        # RecursionError (deeply nested json) escapes every caller's fail-open guard. The loader
+        # parses this index with the same json module, so one too deep to parse there cannot serve
+        # its shards here either.
         return True
     weight_map = index.get("weight_map") if isinstance(index, dict) else None
     if not isinstance(weight_map, dict) or not weight_map:
@@ -1100,10 +1099,9 @@ def _index_cannot_serve_its_shards(index_path: Path, family_files: set[str]) -> 
         if not isinstance(shard, str) or not shard:
             return True
         parts = PurePosixPath(shard.replace("\\", "/"))
-        # is_absolute() is per flavour: PurePosixPath reads a drive-qualified name like
-        # "C:/weights/x.safetensors" as a relative subdirectory called "C:", while the join below
-        # is a platform Path -- so on Windows that name replaces the index directory outright and
-        # lands wherever it points. A drive is never part of a shard name relative to its index.
+        # is_absolute() is per flavour: PurePosixPath reads "C:/weights/x.safetensors" as a relative
+        # subdirectory called "C:", but the join below is a platform Path, so on Windows that name
+        # replaces the index directory outright. A drive is never part of a shard name.
         windows = PureWindowsPath(shard)
         if parts.is_absolute() or ".." in parts.parts or windows.is_absolute() or windows.drive:
             return True
@@ -1501,10 +1499,9 @@ def _current_revisions(repo_info):
 # check so the two cannot drift into disagreeing about the same directory.
 _DENOISER_DIRS = ("transformer", "unet")
 _DENOISER_WEIGHT_SUFFIXES = (".safetensors", ".bin")
-# The one sharded index diffusers resolves inside a component under the default kwargs: with
-# use_safetensors unset it coerces to True, and _fetch_index_file then builds only
-# _add_variant(SAFE_WEIGHTS_INDEX_NAME, variant) -- so with variant unset this exact name and no
-# other. Our load path passes neither (core/inference/diffusion.py, core/inference/video.py).
+# The one sharded index a default load resolves: use_safetensors unset coerces to True, and
+# _fetch_index_file then builds only _add_variant(SAFE_WEIGHTS_INDEX_NAME, variant), so with
+# variant unset this exact name. Our load path passes neither (core/inference/{diffusion,video}.py).
 _SELECTED_DENOISER_INDEX = "diffusion_pytorch_model.safetensors.index.json"
 
 
@@ -1526,22 +1523,20 @@ def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
 def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
     """The denoiser subdirs this pipeline's own ``model_index.json`` declares, or None.
 
-    The names come from the manifest rather than the fixed ``_DENOISER_DIRS`` pair because
-    multi-DiT pipelines carry more than one (Ideogram 4 pairs ``transformer/`` with
-    ``unconditional_transformer/``, Wan 2.2's A14B experts pair it with ``transformer_2/``) and
-    would otherwise be judged complete on whichever the loop reached first.
+    Read off the manifest rather than the fixed ``_DENOISER_DIRS`` pair because multi-DiT pipelines
+    carry more than one (Ideogram 4 adds ``unconditional_transformer/``, Wan 2.2's A14B experts
+    ``transformer_2/``) and would otherwise pass on whichever the loop reached first.
 
-    None means the manifest could not be READ, and the caller keeps the older fixed-pair rule. An
-    EMPTY tuple is the different answer that it read fine and names no denoiser under either
-    spelling -- Stable Cascade and Wuerstchen call theirs ``decoder``/``prior``, Kandinsky and
-    Shap-E ``prior`` -- so there is nothing here this check can prove absent and the caller must
-    not fall back to hunting for directories that layout never had.
+    None means the manifest could not be READ and the caller keeps the fixed-pair rule. An EMPTY
+    tuple is the different answer that it read fine and names no denoiser under either spelling
+    (Stable Cascade and Wuerstchen call theirs ``decoder``/``prior``), so there is nothing here to
+    prove absent and the caller must not hunt for directories that layout never had.
     """
     try:
         with (snapshot / "model_index.json").open("r", encoding = "utf-8") as fh:
             manifest = json.load(fh)
     except (OSError, ValueError, RecursionError):
-        # RecursionError: deeply nested json, otherwise escapes the caller's fail-open guard.
+        # RecursionError (deeply nested json) would escape the caller's fail-open guard.
         return None
     if not isinstance(manifest, dict):
         return None
@@ -1552,10 +1547,9 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
         name = key.lower()
         if name != "unet" and "transformer" not in name:
             continue
-        # A component is a [library, class] pair whose directory is the key; [null, null] means
-        # deliberately absent (Wan 2.2's 5B transformer_2). Anything else names no directory this
-        # can infer -- ACE-STEP maps "transformer" to {"config": "ace_step_transformer/config.json"}
-        # -- so leave it to the loader instead of demanding a directory that will not exist.
+        # A component is a [library, class] pair keyed by its directory; [null, null] means
+        # deliberately absent (Wan 2.2's 5B transformer_2). Anything else names no directory to
+        # infer (ACE-STEP maps "transformer" to a config dict), so leave it to the loader.
         if not isinstance(value, (list, tuple)) or not any(v for v in value):
             continue
         found.append(key)
@@ -1565,14 +1559,14 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
 def _denoiser_index_shards(index: Path) -> Optional[set[str]]:
     """The shard names *index* maps, or None when it is absent, unparseable or maps nothing.
 
-    None is "no evidence" rather than "incomplete": an index we cannot read proves neither that the
-    component loads nor that it does not, so the caller keeps looking.
+    None is "no evidence" rather than "incomplete": an index we cannot read proves nothing either
+    way, so the caller keeps looking.
     """
     try:
         with index.open("r", encoding = "utf-8") as fh:
             weight_map = json.load(fh).get("weight_map")
     except (OSError, ValueError, AttributeError, RecursionError):
-        # RecursionError: deeply nested json, otherwise escapes the caller's fail-open guard.
+        # RecursionError (deeply nested json) would escape the caller's fail-open guard.
         return None
     if not isinstance(weight_map, dict):
         return None
@@ -1586,47 +1580,34 @@ def _component_weights_complete(component: Path) -> bool:
     ``*.index.json`` naming every shard, and a fetch that landed shard 1 of 2 alone satisfies a
     first-match test while failing at load.
 
-    ``_SELECTED_DENOISER_INDEX`` decides the whole question on its own whenever it EXISTS.
-    It is the only sharded name diffusers resolves here, its mere presence makes the component
-    sharded, and everything after that is unconditional: ``_get_checkpoint_shard_files`` parses it
-    and opens exactly what it maps, while both the ``except IOError`` branch and the pickle
-    fallback below it are gated on ``not is_sharded``. So a short set fails, and so does an index
-    too corrupt to parse -- the whole weight beside it is never opened either way.
+    ``_SELECTED_DENOISER_INDEX`` settles the question on its own whenever it EXISTS: it is the only
+    sharded name diffusers resolves here, its presence alone makes the component sharded, and what
+    follows is unconditional -- ``_get_checkpoint_shard_files`` opens exactly what it maps, while
+    the ``except IOError`` branch and the pickle fallback under it are both gated on ``not
+    is_sharded``. So a short set fails, and so does an index too corrupt to parse.
 
-    Every OTHER index vouches for nothing, whatever its shard set looks like, because a default
-    load never opens it: ``_fetch_index_file`` builds the safetensors name only, and the
-    non-sharded fallback under it asks for the UNSHARDED ``diffusion_pytorch_model.bin``, never a
-    ``.bin.index.json`` set beside it. Some repos are published with exactly that leftover:
-    ``stablediffusionapi/sdrealdream`` ships ``unet/`` with two safetensors shards, a matching
-    index, and a ``.bin.index.json`` naming two ``.bin`` shards that exist nowhere in the repo.
-    Our own plan manufactures the same shape (``core/inference/diffusion.py`` drops a ``.bin``
-    whose directory also has a picked ``.safetensors``, matching on the ``.bin`` suffix, so
-    ``.bin.index.json`` survives while its shards never arrive). Those indexes are still walked,
-    so they claim their shards and a half-landed set cannot pose as the default weight below.
+    Every OTHER index vouches for nothing, because a default load never opens it:
+    ``_fetch_index_file`` builds the safetensors name only, and the non-sharded fallback under it
+    asks for the UNSHARDED ``diffusion_pytorch_model.bin``, never a ``.bin.index.json`` set beside
+    it. Repos ship exactly that leftover (``stablediffusionapi/sdrealdream``), and our own download
+    plan manufactures it (``core/inference/diffusion.py``).
 
-    A dtype variant never vouches for the component, whole or not. ``_add_variant`` splits on ``.``
-    and inserts the variant before the last part, so a bf16 set is
-    ``diffusion_pytorch_model.safetensors.index.bf16.json`` over
+    Nor does a dtype variant, whole or not. ``_add_variant`` inserts the variant before the last
+    part, so a bf16 set is ``diffusion_pytorch_model.safetensors.index.bf16.json`` over
     ``diffusion_pytorch_model-00001-of-00002.bf16.safetensors`` -- the real names
-    ``genmo/mochi-1-preview`` ships beside its default weights. A load that passes no ``variant``
-    asks for the plain name and nothing else, and diffusers has no fallback the other way: against
-    a directory holding only the twin it raises ``Error no file named
-    diffusion_pytorch_model.safetensors``. The download plan skips those files for the same reason
-    (``_pipeline_file_downloaded``), so a cache holding only them was filled by something else --
-    a ``from_pretrained(..., variant = "fp16")`` elsewhere -- and is not a pipeline this app can
-    run. They are still walked, rather than ignored, so a variant index claims its own shards and
-    a half-landed twin set cannot pose as the default weight in the loose scan below.
+    ``genmo/mochi-1-preview`` ships beside its default weights. A load passing no ``variant`` asks
+    for the plain name and has no fallback the other way, and the download plan skips those files
+    for the same reason, so a cache holding only them was filled by something else.
+
+    Both kinds are still walked, so they claim their shards and a half-landed set cannot pose as
+    the default weight in the loose scan below.
     """
     # iterdir() raises on an unreadable dir, reaching the caller's fail-open guard; glob() would
     # swallow that OSError and read as "no weights".
     next(component.iterdir(), None)
-    # Selected before every other weight here and never fallen back from, so nothing beside it can
-    # vouch for the component once it EXISTS. Existence is the whole gate diffusers applies --
-    # ``is_sharded`` comes from ``index_file.is_file()`` alone -- and everything after it is
-    # unconditional: ``_get_checkpoint_shard_files`` parses the index and raises, while both the
-    # ``except IOError`` branch and the pickle fallback under it are gated on ``not is_sharded``.
-    # So an index we cannot read is not no-evidence here, it IS the failure. ``is_file()`` is the
-    # loader's own test, dangling snapshot symlink included: absent to both, so both fall through.
+    # Existence alone makes the component sharded (``is_sharded`` comes from ``is_file()``), so an
+    # index we cannot read is not no-evidence here, it IS the failure. ``is_file()`` is also the
+    # loader's own test, so a dangling snapshot symlink is absent to both.
     selected = component / _SELECTED_DENOISER_INDEX
     if selected.is_file():
         return not _index_cannot_serve_its_shards(selected, set())
@@ -1638,30 +1619,21 @@ def _component_weights_complete(component: Path) -> bool:
         shards = _denoiser_index_shards(index)
         if shards is None:
             continue
-        # Nothing reaching here vouches for the component. The one sharded name a default load
-        # resolves is ``_SELECTED_DENOISER_INDEX``, and it already answered above if it was there
-        # at all; what is left is the ``.bin`` twin and the variant spellings, none of which
-        # ``_fetch_index_file`` ever builds -- it takes the safetensors name only, and the
-        # non-sharded fallback under it asks for the UNSHARDED ``diffusion_pytorch_model.bin``,
-        # never the sharded set beside it. They still claim their shards, so a half-landed set
-        # cannot pose as the default weight in the loose scan below.
+        # Nothing left here vouches for the component -- the one resolved name answered above --
+        # but it still claims its shards, so a half-landed set cannot pose as a loose weight.
         claimed |= shards
-    # No whole set, so the last thing that could load is a weight NO index claims: an unsharded
-    # default beside an orphan variant index. Skipping claimed names stops a half-landed set from
-    # reading as complete.
+    # The last thing that could load is a weight NO index claims: an unsharded default beside an
+    # orphan variant index.
     for entry in component.rglob("*"):
         if not entry.is_file() or not entry.name.lower().endswith(_DENOISER_WEIGHT_SUFFIXES):
             continue
-        # The default name carries one dot; the variant sits in a second one
-        # (``diffusion_pytorch_model.fp16.safetensors``), and a load without ``variant`` asks for
-        # the plain name, so the twin is no more loadable loose than it was through its index.
+        # The default name carries one dot, the variant a second
+        # (``diffusion_pytorch_model.fp16.safetensors``), and a default load asks for the plain one.
         if entry.name.count(".") > 1:
             continue
-        # A numbered shard is only ever reached THROUGH an index: with ``is_sharded`` false the
-        # loader asks ``_get_model_file`` for the unsharded name and nothing else. So a shard no
-        # index claimed is not a loose weight, it is the wreckage of a set whose index never
-        # landed (or landed as a dangling blob symlink) -- which the claimed-name skip below
-        # cannot catch, precisely because there was no readable index to claim it.
+        # A numbered shard is only ever reached THROUGH an index, so one no index claimed is not a
+        # loose weight but the wreckage of a set whose index never landed (or landed dangling) --
+        # which the claimed-name skip cannot catch, there being no readable index to claim it.
         if _WEIGHT_SHARD_RE.search(entry.name):
             continue
         try:
@@ -1693,8 +1665,8 @@ def snapshot_pipeline_missing_denoiser(snapshot: Optional[Path]) -> bool:
         root = Path(snapshot)
         declared = _manifest_denoiser_components(root)
         if declared is not None:
-            # all(()) is True: a manifest declaring no denoiser has none this check can prove
-            # absent, so it reads complete rather than being hunted for one it never had.
+            # all(()) is True: a manifest declaring no denoiser has none to prove absent, so it
+            # reads complete rather than being hunted for one it never had.
             return not all(
                 (root / name).is_dir() and _component_weights_complete(root / name)
                 for name in declared
@@ -1744,8 +1716,8 @@ def repo_pipeline_missing_denoiser(repo_info) -> bool:
 
     Judged by :func:`snapshot_pipeline_missing_denoiser` on the revision the loader opens, so the
     compatibility ``/api/models/cached-models`` listing and the Hub inventory agree on a row. The
-    fixed-name/first-weight walk below it is only for a scan that records no ``snapshot_path``:
-    without a directory there is no manifest to read and no shard index to check."""
+    walk below it is only for a scan that records no ``snapshot_path``: with no directory there is
+    no manifest to read and no shard index to check."""
     if not repo_has_pipeline_index(repo_info):
         return False
     try:

@@ -2835,7 +2835,7 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
     for d in (old_snap / "transformer", new_snap / "vae"):
         d.mkdir(parents = True)
     # A real manifest, not "{}": the scan reads the denoiser names off it, and one declaring none
-    # has nothing it can prove absent (Stable Cascade calls its denoiser "decoder").
+    # has nothing it can prove absent.
     manifest = json.dumps(
         {
             "_class_name": "FluxPipeline",
@@ -2845,8 +2845,7 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
     )
     (old_snap / "model_index.json").write_text(manifest, encoding = "utf-8")
     (new_snap / "model_index.json").write_text(manifest, encoding = "utf-8")
-    # Real weights, not just the dirs: the scan reads the component off disk, so an empty
-    # transformer/ is a torn denoiser rather than a present one.
+    # Real weights, not just the dirs: an empty transformer/ is a torn denoiser, not a present one.
     (old_snap / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
     (new_snap / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
     # Make "new" unambiguously newer than "old" for the mtime rule both this and the loader use.
@@ -2905,8 +2904,7 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
 )
 def test_both_cached_listings_agree_on_a_torn_pipeline(extra_files, manifest_extra, tmp_path):
     # /api/models/cached-models ORs the repo-wide helper while the hub inventory calls the snapshot
-    # one, so the two have to reach the same verdict on one snapshot or a row the hub hides as
-    # partial is still advertised as runnable by the compatibility listing.
+    # one, so a disagreement leaves a row the hub hides as partial still advertised as runnable.
     import hub.utils.inventory_scan as scan
 
     manifest = {
