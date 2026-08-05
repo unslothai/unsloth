@@ -27,6 +27,8 @@ TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
 TAURI_UPDATE_CONTEXT = FRONTEND / "hooks/tauri-update-context.ts"
 TAURI_UPDATE_HOOK = FRONTEND / "hooks/use-tauri-update.ts"
 UPDATE_INSTRUCTIONS = FRONTEND / "features/settings/components/update-studio-instructions.tsx"
+DESKTOP_UPDATE_CONTROL = FRONTEND / "features/settings/components/desktop-update-control.tsx"
+GENERAL_SETTINGS = FRONTEND / "features/settings/tabs/general-tab.tsx"
 DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 
 
@@ -45,7 +47,7 @@ def test_desktop_update_offer_remains_actionable_from_settings():
     provider = APP_PROVIDER.read_text(encoding = "utf-8")
     context = TAURI_UPDATE_CONTEXT.read_text(encoding = "utf-8")
     hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
-    settings = UPDATE_INSTRUCTIONS.read_text(encoding = "utf-8")
+    settings = DESKTOP_UPDATE_CONTROL.read_text(encoding = "utf-8")
 
     assert "<TauriUpdateContext.Provider value={update}>" in provider
     context_start = provider.index("<TauriUpdateContext.Provider value={update}>")
@@ -64,6 +66,13 @@ def test_desktop_update_offer_remains_actionable_from_settings():
     assert "const available = update.info !== null && !checking;" in settings
     assert "void update.installUpdate();" in settings
     assert "void update.checkForUpdate();" in settings
+
+
+def test_desktop_update_search_has_a_stable_general_tab_destination():
+    general = GENERAL_SETTINGS.read_text(encoding = "utf-8")
+
+    assert 'data-settings-label={t("settings.about.updates")}' in general
+    assert "<DesktopUpdateControl />" in general
 
 
 def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
@@ -94,7 +103,7 @@ def test_desktop_update_keeps_the_in_app_path_on_a_guessed_policy():
 
 
 def test_settings_update_button_is_inert_while_an_install_runs():
-    settings = UPDATE_INSTRUCTIONS.read_text(encoding = "utf-8")
+    settings = DESKTOP_UPDATE_CONTROL.read_text(encoding = "utf-8")
 
     assert 'update.status === "updating-backend"' in settings
     assert 'update.status === "downloading"' in settings
@@ -105,14 +114,16 @@ def test_settings_update_button_is_inert_while_an_install_runs():
 
 def test_desktop_update_check_failures_are_retryable():
     hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
-    settings = UPDATE_INSTRUCTIONS.read_text(encoding = "utf-8")
+    settings = DESKTOP_UPDATE_CONTROL.read_text(encoding = "utf-8")
     policy = DESKTOP_UPDATE_POLICY.read_text(encoding = "utf-8")
 
     assert "setCheckError(String(e));" in hook
     assert "update.checkError !== null" in settings
     assert 't("settings.about.update.retryCheck")' in settings
-    # The reason must reach the user, not just the console.
-    assert "${update.checkError}" in settings
+    # The reason must reach the user without guessing that every failure is
+    # caused by their network connection.
+    assert "description = update.checkError ?? label;" in settings
+    assert 't("settings.about.update.desktopCheckFailedDescription")' not in settings
     assert "server returned HTTP {status}" in policy
     request = policy.split("let response = client", 1)[1].split("let metadata", 1)[0]
     assert ".map_err(" in request
