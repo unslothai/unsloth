@@ -1105,6 +1105,9 @@ def active_download_refs(
                 repo_id = ref_repo_id,
                 variant = variant,
                 transport = metadata.transport if metadata is not None else None,
+                cancel_transport = (
+                    metadata.cancel_marker_transport if metadata is not None else None
+                ),
                 state = ref.state,
                 generation = ref.generation,
                 files = scoped_files or None,

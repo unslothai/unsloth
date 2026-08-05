@@ -2631,15 +2631,9 @@ def run_training_process(*, event_queue: Any, stop_queue: Any, config: dict) -> 
         )
         return
 
-    # ── 1c. Set fork start method so dataset.map() can multiprocess ──
-    # The compiled SFTTrainer disables num_proc if start method isn't "fork".
-    # Linux only and safe here (no CUDA context yet); macOS/Windows excluded.
-    if sys.platform == "linux":
-        import multiprocessing as _mp
-        try:
-            _mp.set_start_method("fork", force = True)
-        except RuntimeError:
-            pass  # Already set
+    # No start-method override: Dataset.map() imports Pool from `multiprocess`,
+    # so forcing stdlib multiprocessing onto "fork" never reached it. Linux forks
+    # by default, and the guard now asks multiprocess directly.
 
     # ── 1c. On Windows, check Triton availability (must be before import torch) ──
     if sys.platform == "win32":

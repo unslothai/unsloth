@@ -2454,9 +2454,11 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
   );
 
   return (
-    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    // The chat-style layout gives this page no outer top inset, so clear the custom
+    // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
+    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the settings column below. Load progress shows in a toast. */}
-      <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-6 pr-2 pt-[11px]">
+      <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         <div className="flex items-center gap-2">
           {pageMode === "train" ? (
             <TrainBaseSelector
@@ -2487,7 +2489,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           )}
         </div>
         {/* Create | Train page-mode switch, centered on the page rather than tied to the selector width. PillTabs is the app segmented control. */}
-        <div className="pointer-events-none absolute inset-x-0 top-[11px] flex justify-center">
+        <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center">
           <PillTabs
             ariaLabel="Page mode"
             value={pageMode}
