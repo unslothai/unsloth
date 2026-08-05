@@ -3154,7 +3154,13 @@ class VideoGenerationDefaults(BaseModel):
     num_frames: int = Field(..., description = "Default frame count")
     fps: int = Field(..., description = "Default playback frame rate")
     frame_step: int = Field(
-        ..., description = "Temporal lattice: valid counts are k * frame_step + 1"
+        ..., description = "Temporal lattice stride"
+    )
+    frame_offset: int = Field(
+        1, description = "Temporal lattice offset: valid counts are k * frame_step + frame_offset"
+    )
+    duration_presets: list[float] = Field(
+        default_factory = list, description = "Clip durations in seconds the UI offers"
     )
     resolution_multiple: int = Field(..., description = "Width/height must be divisible by this")
     resolution_presets: list[list[int]] = Field(
@@ -3174,6 +3180,7 @@ class VideoStatusResponse(BaseModel):
     model_kind: Optional[str] = Field(
         None, description = "Resolved load kind: gguf | single_file | pipeline (gates GGUF-only UI)"
     )
+    engine: Optional[str] = Field(None, description = "Active video engine: diffusers | sd_cpp")
     offload_policy: Optional[str] = Field(
         None, description = "Resolved offload policy: none | group | model | sequential"
     )
@@ -3203,6 +3210,9 @@ class VideoStatusResponse(BaseModel):
     )
     has_audio: bool = Field(
         False, description = "Whether the loaded family produces a synchronized audio track"
+    )
+    supports_cfg: bool = Field(
+        True, description = "Whether guidance and negative prompts apply to this family"
     )
     defaults: Optional[VideoGenerationDefaults] = Field(
         None, description = "Per-family generation defaults + shape constraints; null when unloaded"

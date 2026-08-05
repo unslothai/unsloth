@@ -362,7 +362,7 @@ _probe_tier_cache: dict[str, str] = {}
 TRANSFORMERS_510_VERSION = "5.10.2"
 TRANSFORMERS_550_VERSION = "5.5.0"
 TRANSFORMERS_530_VERSION = "5.3.0"
-TRANSFORMERS_DEFAULT_VERSION = "4.57.6"
+TRANSFORMERS_DEFAULT_VERSION = "5.5.0" if sys.version_info >= (3, 10) else "4.57.6"
 # Backwards-compat alias — points to the highest 5.x tier.
 # Consumers should prefer TRANSFORMERS_510_VERSION / TRANSFORMERS_550_VERSION /
 # TRANSFORMERS_530_VERSION.

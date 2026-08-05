@@ -49,10 +49,12 @@ class SdCppModelFiles:
 
     diffusion_model: str
     vae: Optional[str] = None
+    audio_vae: Optional[str] = None
     clip_l: Optional[str] = None
     clip_g: Optional[str] = None
     t5xxl: Optional[str] = None
     llm: Optional[str] = None
+    llm_vision: Optional[str] = None
     qwen2vl: Optional[str] = None
 
 
@@ -84,6 +86,20 @@ class SdCppGenParams:
     # LoRA
     lora_dir: Optional[str] = None
     lora_apply_mode: Optional[str] = None
+
+
+@dataclass(frozen = True)
+class SdCppVideoGenParams:
+    """Video generation parameters for sd-cli's ``vid_gen`` mode."""
+
+    prompt: str
+    width: int
+    height: int
+    num_frames: int
+    fps: int = 24
+    steps: Optional[int] = None
+    cfg_scale: float = 1.0
+    seed: Optional[int] = None
 
 
 @dataclass(frozen = True)
@@ -284,6 +300,71 @@ def build_sd_cpp_command(
         cmd += ["-v"]
     if extra_args:
         cmd += list(extra_args)
+    return cmd
+
+
+def build_sd_cpp_video_command(
+    binary: str,
+    files: SdCppModelFiles,
+    params: SdCppVideoGenParams,
+    *,
+    output_path: str,
+    offload: Optional[list[str]] = None,
+    verbose: bool = False,
+    extra_args: Optional[list[str]] = None,
+) -> list[str]:
+    """Build one MiniMax-H3 text-to-audio-video ``sd-cli`` command."""
+    if not files.diffusion_model:
+        raise ValueError("diffusion_model path is required")
+    if not files.vae:
+        raise ValueError("MiniMax-H3 video generation requires a video VAE")
+    if not files.llm:
+        raise ValueError("MiniMax-H3 video generation requires its Qwen3-VL text encoder")
+    if not (params.prompt or "").strip():
+        raise ValueError("prompt is required")
+    if params.width <= 0 or params.height <= 0 or params.num_frames <= 0:
+        raise ValueError("width, height, and num_frames must be positive")
+
+    cmd = [
+        binary,
+        "--mode",
+        "vid_gen",
+        "--diffusion-model",
+        files.diffusion_model,
+        "--vae",
+        files.vae,
+    ]
+    if files.audio_vae:
+        cmd += ["--audio-vae", files.audio_vae]
+    cmd += ["--llm", files.llm]
+    if files.llm_vision:
+        cmd += ["--llm_vision", files.llm_vision]
+    cmd += [
+        "--prompt",
+        params.prompt,
+        "--cfg-scale",
+        _fmt_float(params.cfg_scale),
+        "--width",
+        str(int(params.width)),
+        "--height",
+        str(int(params.height)),
+        "--rng",
+        "cpu",
+        "--fps",
+        str(int(params.fps)),
+        "--video-frames",
+        str(int(params.num_frames)),
+    ]
+    if params.steps is not None:
+        cmd += ["--steps", str(int(params.steps))]
+    if params.seed is not None:
+        cmd += ["--seed", str(int(params.seed))]
+    cmd += ["--output", output_path]
+    if verbose:
+        cmd.append("-v")
+    for flag in list(offload or []) + list(extra_args or []):
+        if flag not in cmd:
+            cmd.append(flag)
     return cmd
 
 

@@ -323,6 +323,17 @@ export const IMAGE_CATALOG: CatalogGroup[] = [
 
 export const VIDEO_CATALOG: CatalogGroup[] = [
   {
+    canonicalId: "MiniMaxAI/MiniMax-H3",
+    displayName: "MiniMax H3",
+    description: "Text-to-video with synchronized audio",
+    scope: "video",
+    aliases: ["Comfy-Org/MiniMax-H3"],
+    artifacts: [
+      bf16Pipeline("MiniMaxAI/MiniMax-H3", 145),
+      gguf("leejet/MiniMax-H3-GGUF"),
+    ],
+  },
+  {
     // The distilled 2.3 release: Lightricks' own bf16/fp8 single-file DiT checkpoints (loaded against the already-trusted LTX-2
     // base for the VAE / Gemma3 encoder) plus the GGUF quants. The single-file ones keep the ~50 GB encoder in bf16, so consumer GPUs route to GGUF.
     canonicalId: "unsloth/LTX-2.3",

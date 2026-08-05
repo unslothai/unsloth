@@ -43,7 +43,7 @@ DEFAULT_REPO = "unslothai/stable-diffusion.cpp"
 # Fallback when the mirror cannot serve this host (release missing, or a host we do not build).
 UPSTREAM_FALLBACK_REPO = "leejet/stable-diffusion.cpp"
 # Pinned for reproducibility; UNSLOTH_SD_CPP_TAG overrides (empty tracks latest). A missing tag falls back to latest.
-DEFAULT_TAG = "master-809-eb7f35c"
+DEFAULT_TAG = "master-812-ea7f0c8"
 
 # Back-compat alias (some callers/tests import REPO).
 REPO = DEFAULT_REPO

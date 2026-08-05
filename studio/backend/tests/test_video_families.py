@@ -143,12 +143,27 @@ def test_generation_defaults_distilled_vs_dev():
 
 def test_supported_names():
     assert supported_video_family_names() == (
+        "minimax-h3",
         "ltx-2",
         "wan2.2-ti2v-5b",
         "wan2.2-t2v-a14b",
         "hunyuanvideo-1.5",
         "hunyuanvideo-1.5-720p",
     )
+
+
+def test_minimax_h3_family_and_frame_lattice():
+    fam = detect_video_family("MiniMaxAI/MiniMax-H3")
+    assert fam is not None and fam.name == "minimax-h3"
+    assert fam.modular_workflow == "t2va"
+    assert fam.has_audio is True
+    assert fam.supports_cfg is False
+    assert fam.frame_step == 17
+    assert fam.frame_offset == 5
+    assert snap_num_frames(fam, 124) == 124
+    assert snap_num_frames(fam, 125) == 141
+    assert snap_num_frames(fam, 1) == 124
+    assert snap_num_frames(fam, 999) == 345
 
 
 def test_wan_snap_num_frames_4k_plus_1():

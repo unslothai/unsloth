@@ -22,10 +22,12 @@ from core.inference.sd_cpp_args import (
     SdCppGenParams,
     SdCppModelFiles,
     SdCppUpscaleParams,
+    SdCppVideoGenParams,
     build_img_gen_request,
     build_sd_cpp_command,
     build_sd_cpp_server_command,
     build_sd_cpp_upscale_command,
+    build_sd_cpp_video_command,
     is_ggml_unsupported_op_abort,
     metal_text_encoder_flags,
     native_speed_flags,
@@ -557,3 +559,35 @@ def test_server_command_appends_extra_args_last():
     )
     assert cmd[-2:] == ["--backend", "cpu"]
     assert cmd[0] == "/x/sd-server"
+
+
+def test_minimax_h3_video_command_has_all_joint_av_components():
+    files = SdCppModelFiles(
+        diffusion_model = "/m/minimax_h3_fl2va-Q4_K_M.gguf",
+        vae = "/m/video.safetensors",
+        audio_vae = "/m/audio.safetensors",
+        llm = "/m/qwen.gguf",
+    )
+    cmd = build_sd_cpp_video_command(
+        "/bin/sd-cli",
+        files,
+        SdCppVideoGenParams(
+            prompt = "a fox runs through snow",
+            width = 960,
+            height = 544,
+            num_frames = 124,
+            fps = 24,
+            steps = 30,
+            seed = 42,
+        ),
+        output_path = "/out/result.webm",
+        offload = ["--diffusion-fa", "--offload-to-cpu"],
+    )
+    assert _pair(cmd, "--mode") == "vid_gen"
+    assert _pair(cmd, "--audio-vae") == "/m/audio.safetensors"
+    assert _pair(cmd, "--llm") == "/m/qwen.gguf"
+    assert _pair(cmd, "--video-frames") == "124"
+    assert _pair(cmd, "--fps") == "24"
+    assert _pair(cmd, "--cfg-scale") == "1"
+    assert "--rng" in cmd and _pair(cmd, "--rng") == "cpu"
+    assert cmd[-2:] == ["--diffusion-fa", "--offload-to-cpu"]

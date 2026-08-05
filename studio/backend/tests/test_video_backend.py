@@ -1884,6 +1884,63 @@ def _plan_api(monkeypatch, repos):
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
 
 
+def test_h3_native_download_plan_stages_the_complete_runtime(monkeypatch):
+    _plan_api(
+        monkeypatch,
+        {
+            "leejet/MiniMax-H3-GGUF": [
+                _PlanSibling("minimax_h3_fl2va-Q4_K_M.gguf", 19),
+                _PlanSibling("qwen3vl_32b_minimax_h3-Q4_K_M.gguf", 18),
+            ],
+            "Comfy-Org/MiniMax-H3": [
+                _PlanSibling("vae/minimax_h3_video_vae_fp16.safetensors", 5),
+                _PlanSibling("vae/minimax_h3_audio_vae_fp32.safetensors", 1),
+            ],
+        },
+    )
+
+    plan = VideoBackend().download_plan(
+        "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        model_kind = "gguf",
+    )
+
+    by_repo = {entry["repo_id"]: entry for entry in plan["entries"]}
+    assert by_repo["leejet/MiniMax-H3-GGUF"]["files"] == [
+        "minimax_h3_fl2va-Q4_K_M.gguf",
+        "qwen3vl_32b_minimax_h3-Q4_K_M.gguf",
+    ]
+    assert by_repo["Comfy-Org/MiniMax-H3"]["files"] == [
+        "vae/minimax_h3_video_vae_fp16.safetensors",
+        "vae/minimax_h3_audio_vae_fp32.safetensors",
+    ]
+    assert plan["total_bytes"] == 43
+
+
+def test_direct_h3_native_load_uses_sd_cpp_path(monkeypatch):
+    backend = VideoBackend()
+    calls = []
+    monkeypatch.setattr("core.inference.video._ensure_mp4_encoder_available", lambda: None)
+    monkeypatch.setattr(
+        backend,
+        "_run_load_h3_native",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    result = backend.load_pipeline(
+        "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+        family_override = "minimax-h3",
+        model_kind = "gguf",
+    )
+
+    assert result["loaded"] is False
+    assert len(calls) == 1
+    assert calls[0]["fam"].name == "minimax-h3"
+    assert calls[0]["gguf_filename"] == "minimax_h3_fl2va-Q4_K_M.gguf"
+
+
 def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):
     # A 2.3 checkpoint brings its own VAEs, vocoder and connectors, so staging the 2.0 base copies downloads gigabytes the
     # pipeline never opens -- and the companions it DOES read were missing from the plan, so they were pulled inline.

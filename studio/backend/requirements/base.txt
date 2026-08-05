@@ -1,3 +1,5 @@
 # Core unsloth packages
 unsloth-zoo
 unsloth
+diffusers @ git+https://github.com/huggingface/diffusers.git@f53d552036a0d1bd5570782a39cd40cfabf112bc ; python_version >= "3.10"
+diffusers ; python_version < "3.10"

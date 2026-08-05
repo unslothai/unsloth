@@ -136,6 +136,13 @@ def is_gguf_filename(filename: str) -> bool:
     return filename.lower().endswith(".gguf")
 
 
+def _is_selectable_repo_gguf(repo_id: str, filename: str) -> bool:
+    """Hide auxiliary GGUFs from repos that bundle several model roles."""
+    if repo_id.strip().lower() == "leejet/minimax-h3-gguf":
+        return Path(filename).name.lower() == "minimax_h3_fl2va-q4_k_m.gguf"
+    return True
+
+
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
 
 
@@ -568,6 +575,8 @@ def list_gguf_variants(
         filename = getattr(sibling, "rfilename", None)
         if not isinstance(filename, str) or not is_gguf_filename(filename):
             continue
+        if not _is_selectable_repo_gguf(repo_id, filename):
+            continue
         if is_mtp_drafter_path(filename):
             continue
         if is_mmproj_filename(filename):
@@ -627,8 +636,11 @@ def list_local_gguf_variants(
     quant_totals: dict[str, int] = {}
     quant_first_file: dict[str, str] = {}
     has_vision = False
+    h3_bundle = "models--leejet--minimax-h3-gguf" in root.as_posix().lower()
 
     for file in sorted(iter_gguf_files(root, recursive = True)):
+        if h3_bundle and not _is_selectable_repo_gguf("leejet/MiniMax-H3-GGUF", file.name):
+            continue
         if is_mmproj_filename(file.name):
             # A projector llama.cpp cannot open is not vision support.
             try:
