@@ -504,9 +504,7 @@ def test_complete_dataset_snapshot_rejects_cross_snapshot_symlink(monkeypatch, t
     _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
     _, other_snapshot = _dataset_repo(tmp_path, repo_id, "commit-b")
     (other_snapshot / "train.parquet").write_bytes(b"rows")
-    (snapshot / "train.parquet").symlink_to(
-        os.path.join(os.pardir, "commit-b", "train.parquet")
-    )
+    (snapshot / "train.parquet").symlink_to(os.path.join(os.pardir, "commit-b", "train.parquet"))
     manifest = _metadata_manifest(
         repo_id,
         tmp_path,
