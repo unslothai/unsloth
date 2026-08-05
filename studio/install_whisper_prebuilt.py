@@ -349,6 +349,38 @@ def _llama_ggml_commit(tag: str) -> str | None:
     return tag[end:] if idx >= 0 and end < len(tag) else None
 
 
+_PUBLISHED_GGML_TREE_CACHE: dict[str, str | None] = {}
+
+
+def published_llama_ggml_tree(tag: Any) -> str | None:
+    """ggml tree id recorded in the published llama release for ``tag``.
+
+    An install made before ggml_tree was recorded has no tree locally, and
+    nothing can backfill one without reinstalling llama. The release manifest
+    carries it, so read that instead of falling back to the "-mix-" suffix,
+    which does not track ggml. Network failures return None: the caller then
+    uses the old fallback rather than refusing an otherwise valid install."""
+    if not isinstance(tag, str) or not tag:
+        return None
+    if tag in _PUBLISHED_GGML_TREE_CACHE:
+        return _PUBLISHED_GGML_TREE_CACHE[tag]
+    tree = None
+    try:
+        payload = _download_host_json(
+            release_asset_download_url(
+                llama.DEFAULT_PUBLISHED_REPO, tag, llama.DEFAULT_PUBLISHED_MANIFEST_ASSET
+            )
+        )
+        if isinstance(payload, dict):
+            candidate = payload.get("ggml_tree")
+            if isinstance(candidate, str) and candidate:
+                tree = candidate
+    except Exception as exc:
+        log(f"slim_selection: could not read ggml_tree for llama {tag}: {exc}")
+    _PUBLISHED_GGML_TREE_CACHE[tag] = tree
+    return tree
+
+
 def llama_runtime_pairs(
     installed_tag: str,
     required_tag: Any,
@@ -365,15 +397,14 @@ def llama_runtime_pairs(
         return False
     if installed_tag == required_tag:
         return True
-    # Only decidable with both trees. Refusing when the install predates
-    # ggml_tree would strand it: nothing can backfill a tree-less marker
-    # without a llama release to install.
-    if (
-        isinstance(installed_ggml_tree, str)
-        and installed_ggml_tree
-        and isinstance(required_ggml_tree, str)
-        and required_ggml_tree
-    ):
+    # An install predating ggml_tree has no tree locally, so read it from that
+    # tag's published release rather than stranding the install on a suffix
+    # comparison that ignores ggml.
+    if not (isinstance(installed_ggml_tree, str) and installed_ggml_tree):
+        installed_ggml_tree = published_llama_ggml_tree(installed_tag)
+    if not (isinstance(required_ggml_tree, str) and required_ggml_tree):
+        required_ggml_tree = published_llama_ggml_tree(required_tag)
+    if installed_ggml_tree and required_ggml_tree:
         return installed_ggml_tree == required_ggml_tree
     commit = _llama_ggml_commit(installed_tag)
     return commit is not None and commit == _llama_ggml_commit(required_tag)
