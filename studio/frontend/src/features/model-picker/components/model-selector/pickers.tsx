@@ -120,6 +120,7 @@ import {
   isMobileVariant,
   isRecommendableFormat,
   matchesFormatFilter,
+  orderRecommendedRows,
   paramsFromId,
 } from "./recommended-fit";
 import {
@@ -2378,25 +2379,20 @@ export function HubModelPicker({
   // "recommended" sort also drops models too big for the device. Already-
   // downloaded models stay visible (badged), never hidden.
   const recommendedRows = useMemo(() => {
-    // Never list mobile-targeted builds in the Unsloth section.
-    let rows = recommendedSearch.results
-      .filter((r) => !isHiddenModelId(r.id))
-      .filter((r) => !isMobileVariant(r.id));
-    // Drop models Unsloth can't run for chat (diffusion / image / video / etc.).
-    rows = rows.filter(isChatSupported);
-    // With no explicit format, show the device-recommended formats (GGUF, plus
-    // MLX on Mac). When the user picks a format, honor it instead so Safetensors
-    // is not dropped by the recommendation default.
-    rows =
-      formatFilter === "all"
-        ? rows.filter((r) => isRecommendableFormat(r.id, r.isGguf, isMac))
-        : rows.filter((r) => matchesFormatFilter(r.id, r.isGguf, formatFilter));
-    // Task-scoped pages load single-file GGUF only. As with recommendedIds, a curated artifact is loadable whatever its format, so GGUF-only here hid the catalog's bf16 / bnb-4bit / fp8 models from Hub search.
-    if (task) {
-      rows = rows.filter(
-        (r) => r.isGguf || Boolean(catalog && artifactForRepoId(r.id, catalog)),
-      );
-    }
+    const keep = (r: HfModelResult) =>
+      // Never list mobile-targeted builds in the Unsloth section.
+      !isHiddenModelId(r.id) &&
+      !isMobileVariant(r.id) &&
+      // Drop models Unsloth can't run for chat (diffusion / image / video / etc.).
+      isChatSupported(r) &&
+      // With no explicit format, show the device-recommended formats (GGUF, plus
+      // MLX on Mac). When the user picks a format, honor it instead so Safetensors
+      // is not dropped by the recommendation default.
+      (formatFilter === "all"
+        ? isRecommendableFormat(r.id, r.isGguf, isMac)
+        : matchesFormatFilter(r.id, r.isGguf, formatFilter)) &&
+      // Task-scoped pages load single-file GGUF only. As with recommendedIds, a curated artifact is loadable whatever its format, so GGUF-only here hid the catalog's bf16 / bnb-4bit / fp8 models from Hub search.
+      (!task || r.isGguf || Boolean(catalog && artifactForRepoId(r.id, catalog)));
     // Members would render under their canonical group row, which does not exist yet (see recommendedIds): filtering here removed curated models from Hub
     // search too. The "recommended" sort always applies the device-fit filter; the shared "Fits on device" tick extends it to the other sorts.
     const deviceFiltered = recommendedSort === "recommended" || fitOnDeviceOnly;
@@ -2404,21 +2400,14 @@ export function HubModelPicker({
       // Downloaded models always show, regardless of device fit.
       downloadedSet.has(r.id.toLowerCase()) ||
       hfModelFitsDevice(r, r.isGguf ? inferenceGpu : gpu);
-    if (deviceFiltered) rows = rows.filter(fits);
     // Curated rows lead, in catalog order, so the list does not reshuffle as pages land.
-    const byId = new Map(rows.map((r) => [r.id, r]));
-    const listed = new Set(recommendedSearch.results.map((r) => r.id));
-    const curated: HfModelResult[] = [];
-    for (const seed of catalogSeedRows) {
-      const listedRow = byId.get(seed.id);
-      if (listedRow) {
-        curated.push(listedRow);
-      } else if (!listed.has(seed.id) && (!deviceFiltered || fits(seed))) {
-        curated.push(seed);
-      }
-    }
-    const curatedIds = new Set(curated.map((r) => r.id));
-    return [...curated, ...rows.filter((r) => !curatedIds.has(r.id))];
+    return orderRecommendedRows({
+      seeds: catalogSeedRows,
+      results: recommendedSearch.results,
+      keep,
+      deviceFiltered,
+      fits,
+    });
   }, [
     recommendedSearch.results,
     catalogSeedRows,

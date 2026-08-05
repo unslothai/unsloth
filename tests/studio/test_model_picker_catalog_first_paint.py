@@ -44,13 +44,15 @@ def test_listing_takes_over_each_id_once_it_reports_it():
     rows_end = source.index("const recommendedMeta = useMemo(", rows_start)
     rows = source[rows_start:rows_end]
 
-    assert "const listed = new Set(recommendedSearch.results.map((r) => r.id));" in rows
-    # A listed id renders the listing's row; an unlisted one keeps its seed.
-    assert "if (listedRow) {" in rows
-    assert "} else if (!listed.has(seed.id) && (!deviceFiltered || fits(seed))) {" in rows
-    # Curated first, then whatever else the listing found, each id once.
-    assert "return [...curated, ...rows.filter((r) => !curatedIds.has(r.id))];" in rows
-    assert "catalogSeedRows," in rows
+    # The merge lives in orderRecommendedRows (see recommended-catalog-seeds.test.ts),
+    # which hands a seed over only to a row that survived `keep`. Retiring it on
+    # bare membership of the raw result set dropped a curated row the filters had
+    # rejected, so a row that first-painted from the catalog vanished on response.
+    assert "return orderRecommendedRows({" in rows
+    assert "seeds: catalogSeedRows," in rows
+    assert "results: recommendedSearch.results," in rows
+    assert "keep,\n      deviceFiltered,\n      fits,\n    });" in rows
+    assert "recommendedSearch.results.map((r) => r.id)" not in rows
 
 
 def test_bottom_spinner_shows_only_while_a_page_is_in_flight():

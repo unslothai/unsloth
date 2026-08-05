@@ -162,3 +162,35 @@ export function hfModelFitsDevice(
     requireKnown: true,
   });
 }
+
+/** Order the Recommended list: curated seeds first, in catalog order, then the
+ * rest of the listing in its own order, each id once. `keep` is the listing's
+ * metadata filter chain (task, format, hidden ids).
+ *
+ * A seed hands off only to a row that survived `keep`, so a curated row does not
+ * disappear when the response carries its id with metadata the filters reject
+ * (missing/wrong `pipelineTag`, an unsupported tag). Device fit then applies to
+ * whichever row renders: a listing row that loses that cut takes its seed with
+ * it, since the seed's id-derived size estimate is coarser and would put a model
+ * that does not fit back on screen. */
+export function orderRecommendedRows<T extends { id: string }>(opts: {
+  seeds: readonly T[];
+  results: readonly T[];
+  keep: (row: T) => boolean;
+  deviceFiltered: boolean;
+  fits: (row: T) => boolean;
+}): T[] {
+  const { seeds, results, keep, deviceFiltered, fits } = opts;
+  const rows = results.filter(keep);
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const curated: T[] = [];
+  for (const seed of seeds) {
+    const row = byId.get(seed.id) ?? seed;
+    if (!deviceFiltered || fits(row)) curated.push(row);
+  }
+  const curatedIds = new Set(curated.map((r) => r.id));
+  const rest = (deviceFiltered ? rows.filter(fits) : rows).filter(
+    (r) => !curatedIds.has(r.id),
+  );
+  return [...curated, ...rest];
+}
