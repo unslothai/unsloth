@@ -702,6 +702,98 @@ def test_an_operator_inside_a_quoted_path_is_not_cmd_syntax(monkeypatch, command
 
 
 @pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # Microsoft: "&, | and parentheses are special characters that must be
+        # preceded by the escape character ^ ... when you pass them as
+        # arguments", so an escaped one is text and opens no command.
+        ('cmd /c echo ok^&start "" powershell', False),
+        ('cmd /c echo ok^|start "" pwsh', False),
+        # ...and the caret is dropped, so it hides a name from a plain
+        # comparison the way quoting once did.
+        ('start "" power^shell -c ls', True),
+        ('start "" pw^sh -c ls', True),
+        ('cmd /c start "" po^wers^hell', True),
+    ],
+)
+def test_cmd_carets_escape_and_are_dropped(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # `start <"title"> [switches] [<command>|<program> [<parameter>...]]`:
+        # the program is optional, so a lone quoted operand is only the title
+        # and cmd opens a window with that name rather than running it.
+        'start "powershell"',
+        'cmd /c start "rm"',
+        'start /min "pwsh"',
+    ],
+)
+def test_a_lone_quoted_operand_is_only_a_title(monkeypatch, command):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The start reference: file types with a registered association,
+        # "including URLs, which are automatically detected and opened in the
+        # default browser". Its own example is `start "Bing" "https://..."`.
+        'start "" https://example.com/curl',
+        'start "Bing" "https://curl.com"',
+        'start "" http://rm.example.com/rm',
+        'cmd //c start "" https://example.com/powershell',
+    ],
+)
+def test_a_url_target_goes_to_the_browser_not_a_program(monkeypatch, bash, command):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # cmd reads an escaped `&` as its own separator, so a launch behind one
+        # is real, but `;` is not cmd syntax at all and is only text to it.
+        (r'cmd //c echo ok \& start "" powershell -c ls', True),
+        (r'cmd //c echo ok \; start "" powershell -c ls', False),
+        (r'cmd //c echo ok \| start "" pwsh -c ls', True),
+    ],
+)
+def test_only_cmds_own_separators_open_a_cmd_segment(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # A conditional glued behind a separator still hands its command along.
+        ('cmd /c echo&if exist . start "" powershell -c ls', True),
+        ('cmd /c dir&if /i a==a start "" pwsh', True),
+        ('cmd /c echo&if exist . echo start "" powershell', False),
+        # POSIX wrappers are not cmd's: `time` is a builtin that shows the
+        # clock, so it runs neither start nor what follows it.
+        ('time start "" powershell', False),
+        ('env start "" pwsh', False),
+    ],
+)
+def test_cmd_grammar_is_not_read_with_posix_rules(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
     "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
 )
 def test_windows_only_names_are_not_hard_blocked_off_windows(monkeypatch, command):

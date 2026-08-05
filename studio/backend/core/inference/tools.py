@@ -1219,10 +1219,28 @@ def _start_title_indexes(tokens: "list[str]", lexed_posix: bool) -> "frozenset[i
 
 
 # cmd ends a command word at these whether or not whitespace surrounds them.
-_CMD_OPERATOR_RE = re.compile(r"[&|<>]")
+_CMD_OPERATOR_RE = re.compile(r"(?<!\^)[&|<>]")
 # ...but only these begin another command. `>` redirects into a file, so
 # `echo hi>start powershell` writes to one called start and launches nothing.
-_CMD_SEPARATOR_RE = re.compile(r"[&|]")
+# Microsoft: "The ampersand &, pipe | and parentheses ( ) are special characters
+# that must be preceded by the escape character ^ or quotation marks when you
+# pass them as arguments", so an escaped one is an argument and not a separator.
+_CMD_SEPARATOR_RE = re.compile(r"(?<!\^)[&|]")
+# A URL is opened in the browser rather than run: "any file type that has a
+# registered association, including URLs, which are automatically detected and
+# opened in the default browser" (the start reference), whose own example is
+# `start "Bing" "https://www.bing.com"`.
+_URL_SCHEME_RE = re.compile(r"[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
+
+
+def _strip_cmd_carets(token: str) -> str:
+    """``token`` with cmd's escape character applied, as cmd applies it.
+
+    The caret escapes the character behind it and is dropped, so it hides a
+    name from a plain comparison the way quoting once did: cmd runs
+    `start "" power^shell` as powershell.
+    """
+    return re.sub(r"\^(.)", r"\1", token)
 
 
 def _strip_cmd_quotes(token: str) -> str:
@@ -1261,6 +1279,11 @@ def _blocked_start_program(token: str) -> "set[str]":
     """
     unquoted = _strip_cmd_quotes(token)
     target = unquoted if unquoted is not token else _CMD_OPERATOR_RE.split(token, 1)[0]
+    target = _strip_cmd_carets(target)
+    # A URL goes to the browser, so its host and path are not a program name and
+    # `start "" https://example.com/curl` is not curl.
+    if _URL_SCHEME_RE.match(target):
+        return set()
     base = os.path.basename(target.replace("\\", "/")).lower()
     stem, ext = os.path.splitext(base)
     if ext in {".exe", ".com", ".bat", ".cmd"}:
@@ -1521,9 +1544,13 @@ def _find_blocked_commands(command: str) -> set[str]:
         found at all. cmd reads the operator, so the word after the last one is
         the command.
         """
-        return _token_basename(_CMD_SEPARATOR_RE.split(tokens[index])[-1]) == "start"
+        return _cmd_word_base(_CMD_SEPARATOR_RE.split(tokens[index])[-1]) == "start"
 
-    def _cmd_command_head(index: int) -> int:
+    def _cmd_word_base(word: str) -> str:
+        """``word`` as cmd resolves it: escapes applied, then the plain basename."""
+        return _token_basename(_strip_cmd_carets(word))
+
+    def _cmd_command_head(index: int, after_if: bool = False) -> int:
         """The index of the word cmd runs for the segment beginning at ``index``.
 
         `if` carries out the command after its condition, so the leading word is
@@ -1535,19 +1562,21 @@ def _find_blocked_commands(command: str) -> set[str]:
         parsing further. Missing the optional /i left the comparison itself
         looking like the command.
         """
-        while index < len(tokens) and _token_basename(tokens[index]) == "if":
-            index += 1
+        while after_if or (index < len(tokens) and _cmd_word_base(tokens[index]) == "if"):
+            if not after_if:
+                index += 1
+            after_if = False
             for _ in range(2):  # /i and not, in either order
                 if index >= len(tokens):
                     break
                 # _token_basename would read /i as the path `i`, so the switch is
                 # matched on the raw word, through the Git Bash `//i` spelling.
                 word = tokens[index].lower()
-                if _win_switch(word) == "/i" or _token_basename(word) == "not":
+                if _win_switch(word) == "/i" or _cmd_word_base(word) == "not":
                     index += 1
             if index >= len(tokens):
                 break
-            if _token_basename(tokens[index]) in ("exist", "defined", "errorlevel"):
+            if _cmd_word_base(tokens[index]) in ("exist", "defined", "errorlevel"):
                 index += 2
             else:
                 index += 1  # the `a==b` comparison, which cmd lexes as one word
@@ -1568,9 +1597,9 @@ def _find_blocked_commands(command: str) -> set[str]:
         Under bash the payload ends at the first shell separator, since that
         terminates the cmd invocation rather than starting a new cmd command:
         with `cmd //c echo ok; printf "%s" start "" powershell`, cmd is handed
-        only `echo ok` and the start belongs to printf. An escaped one is the
-        opposite: bash passes it through and cmd reads it as its own separator,
-        so it opens a segment rather than ending the scan.
+        only `echo ok` and the start belongs to printf. An escaped one is passed
+        through instead, and then it depends whose syntax it is: cmd reads `\&`
+        as its own separator and opens a segment, but `\;` is only text to it.
         """
         found: "set[int]" = set()
         head = -1  # index of the word cmd runs for the open segment
@@ -1579,7 +1608,8 @@ def _find_blocked_commands(command: str) -> set[str]:
             if _looks_like_separator(token):
                 if lexed_posix and index not in quoted_separators:
                     break
-                head = -1
+                if _CMD_SEPARATOR_RE.search(token):
+                    head = -1
                 continue
             # A separator with no space around it stays inside the token under
             # the cmd lexer, so it both hides a start and opens a segment:
@@ -1593,7 +1623,15 @@ def _find_blocked_commands(command: str) -> set[str]:
             if (glued or index == head) and _is_cmd_start_word(index):
                 found.add(index)
             if glued:
-                head = index  # the segment after the last separator begins here
+                # The segment after the last separator begins inside this token,
+                # so its head is here -- unless that word is a conditional, whose
+                # command is further along: `cmd /c echo&if exist . start "" pwsh`
+                # left the head pinned to the glued token and missed the launch.
+                head = (
+                    _cmd_command_head(index + 1, after_if = True)
+                    if _cmd_word_base(pieces[-1]) == "if"
+                    else index
+                )
         return found
 
     def _exec_child_index(start: int) -> "tuple[int, bool]":
@@ -1714,7 +1752,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             sed_indexes.append(token_index)
             if xargs_index >= 0:
                 sed_xargs[token_index] = xargs_index
-        if base == "start":
+        if base == "start" and lexed_posix:
             start_indexes.add(token_index)
         if base in _blocked_commands():
             blocked.add(base)
@@ -1854,6 +1892,12 @@ def _find_blocked_commands(command: str) -> set[str]:
     # `cmd /c start "" prog` puts prog in a command position the scan above
     # sees only as an argument, so screen what start actually launches.
     title_tokens: "frozenset[int] | None" = None
+    # When cmd is the shell the whole line is its command line, so it is read
+    # with cmd's grammar rather than the POSIX command positions above, which
+    # hand a wrapper's operand to the next word: `time` is a cmd builtin that
+    # shows the clock, and `time start "" powershell` launches nothing.
+    if not lexed_posix:
+        start_indexes |= _cmd_start_positions(0)
     # `start` launches a program in cmd. On a POSIX host it is whatever the user
     # has by that name, its arguments are arguments, and reading them as cmd
     # syntax refused `start "dry run" rm` on Linux and macOS.
@@ -1875,7 +1919,12 @@ def _find_blocked_commands(command: str) -> set[str]:
         # screened itself. Microsoft documents the switches AFTER the title too,
         # so they are skipped on both sides of it: `start "" /min powershell`
         # left the program at j + 2 and screened the switch instead.
-        if j + 1 < len(tokens) and j in title_tokens:
+        if j in title_tokens:
+            # Microsoft writes the syntax as `start <"title"> [switches]
+            # [<command>|<program> [<parameter>...]]`, so the program is
+            # optional and a lone quoted operand is only the title: `start
+            # "powershell"` opens a window with that name and runs nothing,
+            # where screening it as the program refused the word itself.
             k = _skip_start_switches(tokens, j + 1)
             if k < len(tokens):
                 blocked |= _blocked_start_program(tokens[k])
