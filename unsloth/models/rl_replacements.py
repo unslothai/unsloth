@@ -1484,12 +1484,15 @@ def grpo_trainer__get_per_token_logps_and_entropies(function_name, function):
 
             lm_head = self.model.get_output_embeddings().weight
 
-            # The cached dtype says nothing when autocast is off: the forward
-            # runs in float32 and sizing it as 16-bit halves the estimate.
-            dtype_bytes = 16 if (
-                getattr(self, "_autocast_enabled", True)
-                and self._autocast_dtype in [torch.float16, torch.bfloat16]
-            ) else 32
+            # Size on the dtype the forward actually runs in. With autocast off
+            # that is the model's own dtype, which is float32 for an explicit
+            # float32 load but still bfloat16 for pure bfloat16 full finetuning.
+            forward_dtype = (
+                self._autocast_dtype
+                if getattr(self, "_autocast_enabled", True)
+                else lm_head.dtype
+            )
+            dtype_bytes = 16 if forward_dtype in [torch.float16, torch.bfloat16] else 32
             total_rows = input_ids.shape[0]
             seq_len = input_ids.shape[1]
             hidden_dim = lm_head.shape[1]

@@ -35,6 +35,7 @@ when autocast is on, and turning it off is what 'no' means.
 import ast
 import re
 import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -194,12 +195,34 @@ def test_forced_float32_still_autocasts_in_the_injected_header():
     assert namespace["seen"] == [torch.float16]
 
 
-def test_chunk_sizing_follows_the_flag_not_the_cached_dtype():
-    """The cached dtype stays bfloat16 when autocast is off, so sizing off it
-    alone estimates half the memory the float32 forward actually uses."""
-    line = next(l for l in SRC.splitlines() if "dtype_bytes = 16" in l)
+def test_chunk_sizing_reads_the_model_dtype_when_autocast_is_off():
+    """With autocast off the forward runs in the model's own dtype. That is
+    float32 for an explicit float32 load but bfloat16 for pure bfloat16 full
+    finetuning, so the flag alone would double the estimate for the latter."""
+    line = next(l for l in SRC.splitlines() if "forward_dtype = (" in l)
     block = SRC[SRC.index(line):SRC.index(line) + 400]
     assert "_autocast_enabled" in block, block
+    assert "lm_head.dtype" in block, block
+    assert "dtype_bytes = 16 if forward_dtype in" in block, block
+
+
+def test_chunk_sizing_by_execution():
+    """Both cases, evaluated rather than read: pure bfloat16 full finetuning
+    keeps 16, an explicit float32 load gets 32."""
+    for head_dtype, expected in ((torch.bfloat16, 16), (torch.float32, 32)):
+        scope = {
+            "torch": torch,
+            "self": type("T", (), {
+                "_autocast_dtype": torch.bfloat16, "_autocast_enabled": False,
+            })(),
+            "lm_head": torch.zeros(2, 2, dtype = head_dtype),
+        }
+        line = next(l for l in SRC.splitlines() if "forward_dtype = (" in l)
+        start = SRC.index(line)
+        end = SRC.index("dtype_bytes = 16 if forward_dtype in", start)
+        end = SRC.index("\n", end)
+        exec(textwrap.dedent(SRC[start:end]), scope)
+        assert scope["dtype_bytes"] == expected, (head_dtype, scope["dtype_bytes"])
 
 
 if __name__ == "__main__":
