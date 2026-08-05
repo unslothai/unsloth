@@ -339,6 +339,27 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
     assert "enforceMinimumWindowSize(win, LogicalSize, isCurrent, requestedSize)" in app_layout
 
 
+def test_hidden_desktop_routes_scroll_without_moving_custom_titlebar():
+    source = APP_PROVIDER.read_text(encoding = "utf-8")
+    compact_source = " ".join(source.split())
+    hidden_routes = source.split("const HIDDEN_TITLEBAR_SIDEBAR_ROUTES", 1)[1].split(
+        "]);", 1
+    )[0]
+    overflow_choice = compact_source.split("const contentOverflowClass", 1)[1].split(";", 1)[0]
+    custom_chrome = source.split("const showSidebarSurface", 1)[1].split(
+        "function AppearanceCustomizationEffect", 1
+    )[0]
+    # The shell holds the titlebar, so only the wrapper below it may scroll.
+    outer_shell, content_wrapper = custom_chrome.split("<WindowTitlebar", 1)
+
+    assert '"/onboarding"' in hidden_routes
+    assert "hidesTitlebarSidebar" in overflow_choice
+    assert "overflow-y-auto" in overflow_choice
+    assert "overflow-hidden" in outer_shell
+    assert "contentOverflowClass" not in outer_shell
+    assert "${contentOverflowClass}" in content_wrapper
+
+
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     source = TITLEBAR.read_text(encoding = "utf-8")
 

@@ -439,6 +439,9 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
   const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
   const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
+  const contentOverflowClass = hidesTitlebarSidebar
+    ? "overflow-x-hidden overflow-y-auto"
+    : "overflow-hidden";
 
   const content = showApp ? (
     <TauriUpdateLayer
@@ -479,11 +482,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     if (usesNativeMacTitlebar) {
       return (
         <div
-          className={
-            hidesTitlebarSidebar
-              ? "relative h-dvh min-h-0 overflow-x-hidden overflow-y-auto bg-background"
-              : "relative h-dvh min-h-0 overflow-hidden bg-background"
-          }
+          className={`relative h-dvh min-h-0 bg-background ${contentOverflowClass}`}
           style={MAC_NATIVE_CHROME_STYLE}
         >
           {!showApp || hidesTitlebarSidebar ? (
@@ -509,7 +508,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       style={CUSTOM_CHROME_STYLE}
     >
       <WindowTitlebar showSidebarSurface={showSidebarSurface} />
-      <div className="h-full min-h-0 overflow-hidden">{content}</div>
+      <div className={`h-full min-h-0 ${contentOverflowClass}`}>{content}</div>
     </div>
   );
 }
