@@ -1254,9 +1254,13 @@ def _blocked_start_program(token: str) -> "set[str]":
     A cmd operator glued to the name ends it, since the cmd lexer takes no
     punctuation_chars and leaves `powershell&` whole where cmd reads an operator
     and runs powershell. The recursive scan this replaced stripped those, so
-    matching the raw token dropped a name the older code caught.
+    matching the raw token dropped a name the older code caught. Only an
+    operator OUTSIDE the quotes is syntax though: quoting is what makes a path
+    holding one usable, and splitting inside truncated `"C:/A&B/powershell.exe"`
+    to `C:/A` and let the program behind it through.
     """
-    target = _CMD_OPERATOR_RE.split(_strip_cmd_quotes(token), 1)[0]
+    unquoted = _strip_cmd_quotes(token)
+    target = unquoted if unquoted is not token else _CMD_OPERATOR_RE.split(token, 1)[0]
     base = os.path.basename(target.replace("\\", "/")).lower()
     stem, ext = os.path.splitext(base)
     if ext in {".exe", ".com", ".bat", ".cmd"}:
@@ -1264,32 +1268,6 @@ def _blocked_start_program(token: str) -> "set[str]":
     if base in _blocked_commands():
         return {base}
     return _blocked_matching_glob(base)
-
-
-def _source_quoted_indexes(command: str, tokens: "list[str]") -> "frozenset[int] | None":
-    """Indexes of ``tokens`` the user wrote double quotes around, or None when
-    that cannot be told.
-
-    Only the POSIX lexer needs asking, since it is the one that strips them. The
-    text is lexed a second time without stripping and the two are lined up
-    one-to-one -- the same technique as _quoted_separator_indexes -- so the
-    second lex has to be built like the first: ``shlex.split`` passes no
-    punctuation_chars and clears the comment character, which glues `;`, `&&`,
-    `|`, `(` and `#` onto their neighbours and desyncs the two.
-
-    A POSIX-only escape still desyncs them, hence None rather than an empty set:
-    the caller reads "cannot tell" as "screen both candidates", where an empty
-    set would have read as "nothing was quoted" and skipped a screen.
-    """
-    try:
-        lexer = shlex.shlex(command, posix = False, punctuation_chars = ";&|()`")
-        lexer.whitespace_split = True
-        raw = list(lexer)
-    except ValueError:
-        return None
-    if len(raw) != len(tokens):
-        return None
-    return frozenset(index for index, token in enumerate(raw) if token.startswith('"'))
 
 
 def _xargs_replacement(tokens: "list[str]", start: int, end: int) -> str:
@@ -1534,29 +1512,83 @@ def _find_blocked_commands(command: str) -> set[str]:
             base = stem
         return base
 
+    def _is_cmd_start_word(index: int) -> bool:
+        """Whether ``tokens[index]`` ends in cmd's `start` command word.
+
+        The cmd lexer takes no punctuation_chars, so a separator with no space
+        around it stays glued to the word before it and `cmd /c dir&start ""
+        powershell` arrived as a single `dir&start`, where the start was never
+        found at all. cmd reads the operator, so the word after the last one is
+        the command.
+        """
+        return _token_basename(_CMD_OPERATOR_RE.split(tokens[index])[-1]) == "start"
+
+    def _cmd_command_head(index: int) -> int:
+        """The index of the word cmd runs for the segment beginning at ``index``.
+
+        `if` carries out the command after its condition, so the leading word is
+        not the command: `cmd /c if exist x echo start "t" powershell` runs echo,
+        which only prints. The condition forms all take a fixed number of words
+        (`exist PATH`, `defined VAR`, `errorlevel N`, or one `a==b` comparison),
+        so the command behind them can be reached without parsing further.
+        """
+        while index < len(tokens) and _token_basename(tokens[index]) == "if":
+            index += 1
+            if index < len(tokens) and _token_basename(tokens[index]) == "not":
+                index += 1
+            if index >= len(tokens):
+                break
+            if _token_basename(tokens[index]) in ("exist", "defined", "errorlevel"):
+                index += 2
+            else:
+                index += 1  # the `a==b` comparison, which cmd lexes as one word
+        return index
+
     def _cmd_start_positions(begin: int) -> "set[int]":
         """Indexes of the `start` words that launch a program in the cmd command
-        line running from ``begin`` to the end.
+        line beginning at ``begin``.
 
         cmd keeps parsing past its own conditionals and operators, so promoting
         only the first word missed `cmd //c if exist . start "" powershell`,
         which cmd runs and which the scan had caught before it was gated. Each
-        segment is read down to its leading word instead, so a start that is an
-        argument of one that takes text stays an argument: `cmd //c echo start
-        "my title" powershell` prints and launches nothing.
+        segment is read down to the word cmd actually runs instead, so a start
+        that is an argument of one taking text stays an argument: `cmd //c echo
+        start "my title" powershell` prints and launches nothing.
+
+        Under bash the payload ends at the first shell separator, since that
+        terminates the cmd invocation rather than starting a new cmd command:
+        with `cmd //c echo ok; printf "%s" start "t" powershell`, cmd is handed
+        only `echo ok` and the start belongs to printf. The cmd lexer has no
+        such boundary, and there `&` does begin a new cmd command.
         """
         found: "set[int]" = set()
-        head = -1
+        head_base: "str | None" = None  # the word cmd runs for the open segment
+        condition_end = begin
         for index in range(begin, len(tokens)):
-            if _looks_like_separator(tokens[index]):
-                head = -1
+            token = tokens[index]
+            if _looks_like_separator(token) and index not in quoted_separators:
+                if lexed_posix:
+                    break
+                head_base = None
                 continue
-            if head < 0:
-                head = index
-            if _token_basename(tokens[index]) != "start":
-                continue
-            if head == index or _token_basename(tokens[head]) not in _CMD_TEXT_COMMANDS:
+            # An operator with no space around it stays inside the token under
+            # the cmd lexer, so it both hides a start and opens a segment:
+            # `cmd /c echo ok&start "" pwsh` runs echo and then the start.
+            pieces = [token] if lexed_posix else _CMD_OPERATOR_RE.split(token)
+            glued = len(pieces) > 1
+            if head_base is None:
+                condition_end = _cmd_command_head(index)
+                head_base = (
+                    _token_basename(tokens[condition_end]) if condition_end < len(tokens) else ""
+                )
+            if (
+                index >= condition_end
+                and _is_cmd_start_word(index)
+                and (glued or head_base == "start" or head_base not in _CMD_TEXT_COMMANDS)
+            ):
                 found.add(index)
+            if glued:
+                head_base = _token_basename(pieces[-1])
         return found
 
     def _exec_child_index(start: int) -> "tuple[int, bool]":
@@ -1817,8 +1849,6 @@ def _find_blocked_commands(command: str) -> set[str]:
     # `cmd /c start "" prog` puts prog in a command position the scan above
     # sees only as an argument, so screen what start actually launches.
     title_tokens: "frozenset[int] | None" = None
-    source_quoted: "frozenset[int] | None" = None
-    source_quoted_built = False
     # `start` launches a program in cmd. On a POSIX host it is whatever the user
     # has by that name, its arguments are arguments, and reading them as cmd
     # syntax refused `start "dry run" rm` on Linux and macOS.
@@ -1828,9 +1858,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     # prints text, and reading every token named start walked the title branch
     # into a hard block for it.
     for i in sorted(start_indexes):
-        # Built at most once per call, and only when a start is actually here:
-        # the second of them lexes the whole line, so doing it per start token
-        # made the scan quadratic (800 tokens took 1.1s against main's 34ms).
+        # Built at most once per call, and only when a start is actually here.
         if title_tokens is None:
             title_tokens = _start_title_indexes(tokens, lexed_posix)
         j = _skip_start_switches(tokens, i + 1)
@@ -1847,33 +1875,16 @@ def _find_blocked_commands(command: str) -> set[str]:
             if k < len(tokens):
                 blocked |= _blocked_start_program(tokens[k])
             continue
-        # Whether a quoted word without spaces reaches cmd as a title depends on
-        # how Git Bash rebuilds the line, and the two readings each hide a
-        # different program: if it re-quotes, `start "t" powershell` launches
-        # powershell; if it does not, cmd is handed `start powershell -c ls` and
-        # powershell is the program that `start "powershell" -c ls` launches.
-        # Rather than pick one, screen both positions for this one shape. It is
-        # narrow enough not to bring back the over-block a blind two-token scan
-        # caused, since an unquoted `start notepad rm.txt` is not in it.
+        # Otherwise this token is the program cmd launches. Under Git Bash a
+        # quoted word without spaces is not a title by the time cmd sees it,
+        # because bash removes the quotes and MSYS re-quotes an argument only
+        # when it holds whitespace or is empty -- the same rule as
+        # subprocess.list2cmdline. So `start "powershell" -c ls` arrives as
+        # `start powershell -c ls` and is caught right here, and `start "t"
+        # powershell` arrives as `start t powershell`, which launches t and
+        # passes powershell to it as a parameter rather than running it.
+        # test_git_bash_does_not_requote_a_bare_word checks that on Windows.
         blocked |= _blocked_start_program(tokens[j])
-        if j + 1 >= len(tokens) or not lexed_posix:
-            continue
-        if not source_quoted_built:
-            source_quoted = _source_quoted_indexes(command, tokens)
-            source_quoted_built = True
-        # A desync answers "cannot tell", and screening everything then brought
-        # the unquoted-argument over-block back for any line holding a POSIX-only
-        # escape: `echo a\ b; start notepad rm.txt` reported rm again. Looking
-        # for the quoted spelling in the text keeps the fallback local, so a
-        # word the user never quoted stays out of the second screen.
-        if source_quoted is None:
-            plausible_title = f'"{tokens[j]}"' in command
-        else:
-            plausible_title = j in source_quoted
-        if plausible_title:
-            k = _skip_start_switches(tokens, j + 1)
-            if k < len(tokens):
-                blocked |= _blocked_start_program(tokens[k])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

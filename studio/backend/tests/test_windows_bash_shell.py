@@ -11,6 +11,7 @@ because studio-backend-ci is Linux-only.
 """
 
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -306,9 +307,11 @@ def test_cmd_shellout_is_screened_through_mangled_switches(monkeypatch, bash, co
 @pytest.mark.parametrize(
     "command",
     [
+        # A title cmd reads as one on either lexer: it holds whitespace, so bash
+        # has to re-quote it, and it arrives quoted whoever built the line.
         'start "My Title" powershell -Command ls',
-        'cmd /c start "t" pwsh -c ls',
-        'cmd //c start /min "win" powershell -Command ls',
+        'cmd /c start "a b" pwsh -c ls',
+        'cmd //c start /min "the win" powershell -Command ls',
     ],
 )
 def test_start_screens_the_program_behind_a_window_title(monkeypatch, bash, command):
@@ -318,6 +321,31 @@ def test_start_screens_the_program_behind_a_window_title(monkeypatch, bash, comm
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
     assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c start "t" pwsh -c ls',
+        'cmd //c start /min "win" powershell -Command ls',
+        'start "t" /wait /b pwsh -c ls',
+    ],
+)
+def test_a_bare_quoted_title_is_only_a_title_under_the_cmd_lexer(monkeypatch, command):
+    # Nothing rewrites the line without Git Bash, so cmd is handed the quotes
+    # the user wrote and reads them as the window title.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert tools._find_blocked_commands(command)
+
+    # With Git Bash it is not a title at all: bash removes the quotes and MSYS
+    # re-quotes an argument only when it holds whitespace or is empty, so cmd
+    # gets `start t pwsh -c ls`, which launches t and hands it pwsh as a
+    # parameter. Screening the word behind it instead was a guess at how MSYS
+    # rebuilds the line, and guessing cost two over-blocks before this;
+    # test_git_bash_does_not_requote_a_bare_word checks the rule on Windows.
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert not tools._find_blocked_commands(command)
 
 
 @pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
@@ -379,11 +407,11 @@ def test_detached_windows_stay_launchable(monkeypatch, bash, command):
         'echo done; cmd //c start "" powershell -Command ls',
         'cmd //c start "" pwsh -Command ls; echo ok',
         '(cmd //c start "" pwsh -Command ls)',
-        'ls; cmd //c start "Build" powershell -Command "Remove-Item x"',
-        'start "t" powershell -c ls # note',
+        'ls; cmd //c start "The Build" powershell -Command "Remove-Item x"',
+        'start "" powershell -c ls # note',
         # Microsoft documents the switches after the title, not before it.
         'start "" /min powershell -c ls',
-        'start "t" /wait /b pwsh -c ls',
+        'start "a b" /wait /b pwsh -c ls',
         'cmd /c start "" /min powershell -c ls',
     ],
 )
@@ -489,8 +517,11 @@ def test_start_target_is_matched_as_a_program_path(monkeypatch, command, blocked
         # command, so it is the one shape a name match alone still refuses.
         (r"echo a\ b; start notepad rm", False),
         (r"echo a\ b; start notepad curl", False),
-        # The hedge itself still has to survive the desync.
-        (r'echo a\ b; cmd //c start "t" powershell -c ls', True),
+        # An earlier quoted copy of the word used to be read as evidence that
+        # this one was quoted too, because the search was over the whole line.
+        (r'echo "notepad" a\ b; start notepad rm', False),
+        # The program itself is still screened whatever else is on the line.
+        (r'echo a\ b; cmd //c start "" powershell -c ls', True),
     ],
 )
 def test_desync_does_not_screen_unquoted_start_arguments(monkeypatch, command, blocked):
@@ -552,6 +583,103 @@ def test_start_is_not_read_as_cmd_syntax_off_windows(monkeypatch, platform, comm
     # program refused a benign line that main allows.
     monkeypatch.setattr(sys, "platform", platform)
     assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "Git Bash argument passing")
+def test_git_bash_does_not_requote_a_bare_word():
+    # The screen reads `start "t" prog` as launching t, not prog, because MSYS
+    # re-quotes an argument only when it holds whitespace or is empty. That rule
+    # decides which token cmd runs, so it is checked against the real thing
+    # rather than argued from the docs: ask cmd to echo the line it was handed.
+    bash = tools._windows_bash()
+    if bash is None:
+        pytest.skip("no trusted Git Bash on this host")
+    echoed = subprocess.run(
+        [bash, "-c", 'cmd //c echo start "t" powershell'],
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    ).stdout.strip()
+    assert echoed == "start t powershell", echoed
+    # ...and that it does re-quote once the word holds a space, which is what
+    # makes the whitespace test the right one.
+    echoed = subprocess.run(
+        [bash, "-c", 'cmd //c echo start "a b" powershell'],
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    ).stdout.strip()
+    assert echoed == 'start "a b" powershell', echoed
+
+
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # cmd's `if` carries out the command after its condition, so the leading
+        # word is not the command and the one behind the condition may be a
+        # text command whose arguments are only printed.
+        ('cmd /c if exist x echo start "my title" powershell', False),
+        ('cmd /c if not defined V echo start "t" powershell', False),
+        ('cmd /c if errorlevel 1 echo start "t" powershell', False),
+        # ...but a real launch behind a condition still counts.
+        ('cmd /c if exist x start "" powershell -c ls', True),
+        ('cmd /c if not exist x start "" pwsh -c ls', True),
+    ],
+)
+def test_cmd_if_advances_to_the_command_it_runs(monkeypatch, bash, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The cmd lexer glues a spaceless separator to the word before it, so
+        # the start was not found as a word at all.
+        'cmd /c dir&start "" powershell -c ls',
+        'cmd /c echo ok&start "" pwsh -c ls',
+        'cmd /c dir|start "" powershell -c ls',
+    ],
+)
+def test_start_is_found_behind_a_glued_cmd_separator(monkeypatch, command):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # A bash separator ends the cmd invocation rather than starting another
+        # cmd command, so what follows belongs to bash and not to cmd.
+        ('cmd //c echo ok; printf "%s" start "" powershell', False),
+        ('cmd //c dir; ls start "" pwsh -c ls', False),
+        ('cmd //c dir; echo start "my title" pwsh', False),
+        # The cmd payload before the separator is still read.
+        ('cmd //c start "" powershell -c ls; echo done', True),
+    ],
+)
+def test_the_nested_cmd_scan_stops_at_an_outer_separator(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Quoting is what makes a path holding an operator usable, so an
+        # operator inside the quotes is part of the name, not cmd syntax.
+        r'start "" "C:\A&B\powershell.exe"',
+        r'start "" "C:\Program Files (x86)\A&B\pwsh.exe"',
+    ],
+)
+def test_an_operator_inside_a_quoted_path_is_not_cmd_syntax(monkeypatch, command):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert tools._find_blocked_commands(command)
 
 
 @pytest.mark.parametrize(
