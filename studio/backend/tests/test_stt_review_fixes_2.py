@@ -225,9 +225,27 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
     validated_revision = "a" * 40
     head_revision = "b" * 40
 
-    def fake_snapshot_download(**kwargs):
-        captured.update(kwargs)
-        return "/cached"
+    class _FakeProcess:
+        returncode = 0
+
+        def poll(self):
+            return 0
+
+        def communicate(self):
+            return (None, b"")
+
+    def fake_spawn_download(args, hf_token = None):
+        # The transfer moved to a worker process; pinning is now in its argv.
+        remaining = iter(args)
+        patterns: list[str] = []
+        for flag in remaining:
+            value = next(remaining)
+            if flag == "--revision":
+                captured["revision"] = value
+            elif flag == "--allow-pattern":
+                patterns.append(value)
+        captured["allow_patterns"] = patterns
+        return _FakeProcess()
 
     class _FakeApi:
         def __init__(self, token = None):
@@ -254,7 +272,7 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
     import huggingface_hub
 
     monkeypatch.setattr(huggingface_hub, "HfApi", _FakeApi)
-    monkeypatch.setattr(huggingface_hub, "snapshot_download", fake_snapshot_download)
+    monkeypatch.setattr("core.inference.stt_download_worker.spawn_download", fake_spawn_download)
 
     state = stt_sidecar_module._SnapshotDownloadState()
     # The revision resolved at validation time wins over the current head.

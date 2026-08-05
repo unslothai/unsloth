@@ -674,6 +674,101 @@ def _download_gguf_variant(repo_id: str, variant: str, hf_token: str | None, mod
             )
 
 
+def _download_scoped_snapshot(
+    repo_id: str, scope: str, files: list[str], hf_token: str | None, mode: str
+) -> None:
+    """Fetch exactly ``files`` from ``repo_id``, keyed under ``scope``.
+
+    For consumers that read a deliberate subset of a repo (the diffusion loader skips the
+    packaged root single, transformer/ shards and fp16 twins). Keyed apart from the repo's
+    full snapshot so neither manifest describes the other, and the repo is not later judged
+    partial against expectations it was never meant to meet."""
+    from huggingface_hub import HfApi, snapshot_download
+    from hub.utils.download_registry import prepare_cache_for_transport
+    from hub.utils import download_manifest
+    from hub.utils.download_manifest import ExpectedFile
+
+    wanted = set(files)
+    try:
+        info = _model_info_with_retry(repo_id, hf_token)
+    except Exception as e:
+        print(
+            f"metadata unavailable for scoped download of {repo_id} " f"({type(e).__name__}: {e})",
+            file = sys.stderr,
+        )
+        info = None
+
+    expected_files: list[ExpectedFile] = []
+    blob_hashes: frozenset[str] = frozenset()
+    if info is not None:
+        siblings = [s for s in info.siblings if getattr(s, "rfilename", None) in wanted]
+        # Every requested file must resolve: dropping an unmatched name would shrink the manifest and the completion check to the
+        # survivors, and snapshot_download also succeeds when an allow pattern matches nothing, so the job would report complete.
+        missing = sorted(set(wanted) - {getattr(s, "rfilename", None) for s in siblings})
+        if missing:
+            print(
+                f"Scoped download of {repo_id} cannot resolve "
+                f"{len(missing)} requested file(s): {_format_path_list(missing)}",
+                file = sys.stderr,
+            )
+            sys.exit(1)
+        expected_files = [
+            ExpectedFile(
+                path = s.rfilename,
+                size = int(getattr(s, "size", 0) or 0),
+                sha256 = sibling_sha256(s),
+            )
+            for s in siblings
+        ]
+        from hub.utils.snapshot_filters import blob_hashes_for_siblings
+
+        blob_hashes = blob_hashes_for_siblings(siblings)
+        download_manifest.write_manifest("model", repo_id, scope, expected_files, mode)
+
+    download_manifest.clear_cancel_marker("model", repo_id, scope)
+    purged = prepare_cache_for_transport(
+        "model",
+        repo_id,
+        mode,
+        scope,
+        only_blob_hashes = blob_hashes or None,
+        protected_blob_hashes = _protected_blob_hashes(),
+    )
+    if purged:
+        print(
+            f"Purged {purged} untrusted partial blob(s) for {repo_id} [{scope}] "
+            f"before starting {mode} download.",
+            file = sys.stderr,
+        )
+    _preflight_disk_space("model", repo_id, expected_files)
+    snapshot_path = snapshot_download(
+        repo_id = repo_id,
+        token = _hf_token_arg(hf_token),
+        allow_patterns = files,
+        max_workers = 1,
+    )
+    if info is None:
+        # With no metadata there is no manifest, so _verify_completed_download below is a no-op, and snapshot_download RETURNS AN EXISTING SNAPSHOT
+        # FOLDER, fetching nothing, when its repo_info also fails. A repo already on disk would flip this job to complete with no weights.
+        root = Path(snapshot_path)
+        absent = tuple(f for f in files if not (root / f).exists())
+        if absent:
+            print(
+                f"Could not reach Hugging Face for {repo_id} [{scope}] and the copy on disk "
+                f"is incomplete ({len(absent)} file(s) missing): {_format_path_list(absent)}. "
+                "Reconnect (or set a valid HF token) and resume the download.",
+                file = sys.stderr,
+            )
+            sys.exit(1)
+    _verify_completed_download(
+        "model",
+        repo_id,
+        scope,
+        snapshot_path,
+        metadata_unavailable = info is None,
+    )
+
+
 def _download_dataset(repo_id: str, hf_token: str | None, mode: str) -> None:
     from huggingface_hub import snapshot_download
     from hub.utils.download_registry import prepare_cache_for_transport
@@ -767,7 +862,24 @@ def main() -> None:
     parser.add_argument("--dataset", action = "store_true")
     parser.add_argument("--transport", choices = ("http", "xet"), default = "http")
     parser.add_argument("--parent-pid", type = int, default = None)
+    parser.add_argument(
+        "--files-json",
+        default = None,
+        help = "Temp JSON file holding a scoped job's exact file list (deleted after reading).",
+    )
     args = parser.parse_args()
+
+    scoped_files: list[str] = []
+    if args.files_json:
+        import json
+        try:
+            with open(args.files_json, encoding = "utf-8") as handle:
+                scoped_files = [str(f) for f in json.load(handle)]
+        finally:
+            try:
+                os.unlink(args.files_json)
+            except OSError:
+                pass
 
     _install_signal_handlers()
     _install_parent_death_watchdog(args.parent_pid)
@@ -780,6 +892,10 @@ def main() -> None:
     try:
         if args.dataset:
             _download_dataset(args.repo_id, hf_token, args.transport)
+        elif scoped_files:
+            _download_scoped_snapshot(
+                args.repo_id, args.variant, scoped_files, hf_token, args.transport
+            )
         elif args.variant:
             _download_gguf_variant(args.repo_id, args.variant, hf_token, args.transport)
         else:

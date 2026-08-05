@@ -86,6 +86,74 @@ export const SIDEBAR_MENU_DEFAULT_VISIBLE: Record<SidebarMenuItemId, boolean> =
     connections: false,
   };
 
+/** Sidebar NAVIGATION rows the user can pin and reorder, distinct from the profile-menu entries above. Array order is render order. Unpinned rows go to the "More" flyout, except a lone one, which is hidden. */
+export const SIDEBAR_NAV_ITEM_IDS = [
+  // Model hub leads: picking a model comes before the work that uses one.
+  "hub",
+  "projects",
+  "images",
+  // Video sits directly under Images: the two media tabs read as one pair.
+  "video",
+  "train",
+  "recipes",
+  "export",
+  "api",
+] as const;
+
+export type SidebarNavItemId = (typeof SIDEBAR_NAV_ITEM_IDS)[number];
+
+export type SidebarNavItemPref = {
+  id: SidebarNavItemId;
+  /** true = top-level row; false = under "More". */
+  pinned: boolean;
+};
+
+// Matches the shipped layout, so an untouched install looks unchanged.
+export const SIDEBAR_NAV_DEFAULT_PINNED: Record<SidebarNavItemId, boolean> = {
+  hub: true,
+  projects: true,
+  images: true,
+  // Under "More" until a user pins it.
+  video: false,
+  train: true,
+  recipes: false,
+  export: false,
+  api: false,
+};
+
+/** Every previously shipped layout, so a migration can tell an untouched install from one the
+ *  user arranged themselves. v3 pinned Video under Images; v4 moved Model hub above Projects;
+ *  v5 put Video back under "More". */
+const SHIPPED_SIDEBAR_NAV_DEFAULTS: SidebarNavItemPref[][] = [
+  [
+    { id: "projects", pinned: true },
+    { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "train", pinned: true },
+    { id: "video", pinned: false },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "projects", pinned: true },
+    { id: "hub", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+  [
+    { id: "hub", pinned: true },
+    { id: "projects", pinned: true },
+    { id: "images", pinned: true },
+    { id: "video", pinned: true },
+    { id: "train", pinned: true },
+    { id: "recipes", pinned: false },
+    { id: "export", pinned: false },
+  ],
+];
+
 export const MAX_IMPORTED_FONTS = 3;
 /** Imported-font family name cap; must match the backend name max_length (100). */
 export const MAX_IMPORTED_FONT_NAME_LENGTH = 100;
@@ -117,6 +185,8 @@ export type AppearanceCustomization = {
   fontSmoothing: boolean;
   /** Order and visibility of the optional sidebar profile menu items. */
   sidebarMenu: SidebarMenuItemPref[];
+  /** Order of the sidebar nav rows, and which are pinned vs. under "More". */
+  sidebarNav: SidebarNavItemPref[];
 };
 
 const EMPTY_MODE_COLORS: CustomModeColors = {
@@ -141,6 +211,10 @@ export const DEFAULT_CUSTOMIZATION: AppearanceCustomization = {
   sidebarMenu: SIDEBAR_MENU_ITEM_IDS.map((id) => ({
     id,
     visible: SIDEBAR_MENU_DEFAULT_VISIBLE[id],
+  })),
+  sidebarNav: SIDEBAR_NAV_ITEM_IDS.map((id) => ({
+    id,
+    pinned: SIDEBAR_NAV_DEFAULT_PINNED[id],
   })),
 };
 
@@ -229,6 +303,26 @@ function isSidebarMenuItemId(value: unknown): value is SidebarMenuItemId {
   return SIDEBAR_MENU_ITEM_IDS.includes(value as SidebarMenuItemId);
 }
 
+function isSidebarNavItemId(value: unknown): value is SidebarNavItemId {
+  return SIDEBAR_NAV_ITEM_IDS.includes(value as SidebarNavItemId);
+}
+
+function sanitizeSidebarNav(value: unknown): SidebarNavItemPref[] {
+  const items: SidebarNavItemPref[] = [];
+  const seen = new Set<SidebarNavItemId>();
+  for (const entry of Array.isArray(value) ? value : []) {
+    const source = (entry ?? {}) as Partial<SidebarNavItemPref>;
+    if (!isSidebarNavItemId(source.id) || seen.has(source.id)) continue;
+    seen.add(source.id);
+    items.push({ id: source.id, pinned: source.pinned !== false });
+  }
+  // Ids added after the payload was written land at the end with their default.
+  for (const id of SIDEBAR_NAV_ITEM_IDS) {
+    if (!seen.has(id)) items.push({ id, pinned: SIDEBAR_NAV_DEFAULT_PINNED[id] });
+  }
+  return items;
+}
+
 function sanitizeSidebarMenu(value: unknown): SidebarMenuItemPref[] {
   const items: SidebarMenuItemPref[] = [];
   const seen = new Set<SidebarMenuItemId>();
@@ -280,7 +374,31 @@ export function sanitizeCustomization(value: unknown): AppearanceCustomization {
         : "system",
     fontSmoothing: source.fontSmoothing !== false,
     sidebarMenu: sanitizeSidebarMenu(source.sidebarMenu),
+    sidebarNav: sanitizeSidebarNav(source.sidebarNav),
   };
+}
+
+/** Adopt the latest default only when the sidebar still matches one we shipped. */
+export function migrateShippedSidebarNavDefault(
+  customization: AppearanceCustomization,
+  storedVersion: number,
+  migrationVersion: number,
+): AppearanceCustomization {
+  // Once this migration version has been persisted, the same layout may be a
+  // deliberate user choice and must never be adopted again.
+  if (storedVersion >= migrationVersion) return customization;
+  const stored = JSON.stringify(customization.sidebarNav);
+  // Sanitize each layout too: the stored one has since gained any ids added
+  // after it was written, so a raw compare would never match.
+  const untouched = SHIPPED_SIDEBAR_NAV_DEFAULTS.some(
+    (layout) => JSON.stringify(sanitizeSidebarNav(layout)) === stored,
+  );
+  return untouched
+    ? {
+        ...customization,
+        sidebarNav: [...DEFAULT_CUSTOMIZATION.sidebarNav],
+      }
+    : customization;
 }
 
 export function isDefaultCustomization(c: AppearanceCustomization): boolean {
@@ -357,13 +475,16 @@ export const useAppearanceCustomStore = create<AppearanceCustomState>()(
     }),
     {
       name: "unsloth_appearance_customization",
-      version: 2,
+      version: 5,
       storage: createJSONStorage(() => guardedLocalStorage),
-      migrate: (persisted) => {
+      migrate: (persisted, version) => {
         const state = (persisted ?? {}) as Partial<AppearanceCustomState>;
-        return {
-          customization: sanitizeCustomization(state.customization),
-        } as AppearanceCustomState;
+        const customization = migrateShippedSidebarNavDefault(
+          sanitizeCustomization(state.customization),
+          version,
+          5,
+        );
+        return { customization } as AppearanceCustomState;
       },
       // Sanitize on EVERY rehydrate, not just version bumps: a same-version
       // payload written by an older bundle (e.g. before importedFonts existed)

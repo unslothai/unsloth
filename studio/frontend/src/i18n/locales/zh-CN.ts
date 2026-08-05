@@ -53,6 +53,11 @@ export const zhCN = {
       projects: "项目",
       train: "训练",
       recipes: "配方",
+      images: "图像",
+      video: "视频",
+      more: "更多",
+      customizeSidebar: "自定义侧边栏",
+      newBadge: "新",
       export: "导出",
       recents: "最近",
       noChatsYet: "暂无对话",
@@ -581,10 +586,18 @@ export const zhCN = {
         compactSidebar: "默认固定侧边栏",
         compactSidebarDescription: "保持侧边栏展开，而不是折叠为图标。",
       },
-      sidebarMenu: {
-        title: "侧边栏菜单",
+      sidebarNav: {
+        title: "侧边栏导航",
         description:
-          "显示、隐藏和重新排序侧边栏个人菜单中的项目。设置、帮助、退出登录和关闭服务保持固定。",
+          "固定并重新排序侧边栏标签。取消固定的标签会收进“更多”菜单；若只有一个取消固定，则直接隐藏，而不是为它单独建一个菜单。新聊天保持固定。",
+        dragToReorder: "拖动以重新排序",
+        pinToSidebar: "将{name}固定到侧边栏",
+        moreHolds: "更多（{count}）",
+      },
+      sidebarMenu: {
+        title: "个人菜单",
+        description:
+          "选择点击侧边栏底部你的名字时显示哪些快捷项及其顺序。设置、帮助、退出登录和关闭始终显示。",
         darkModeToggle: "深色模式切换",
         dragToReorder: "拖动以重新排序",
       },

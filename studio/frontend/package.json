@@ -14,6 +14,7 @@
     "test": "node --experimental-strip-types --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false",
     "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
+    "catalog:check": "node --experimental-strip-types --no-warnings src/features/model-picker/components/model-selector/model-catalog.check.ts",
     "biome:check": "biome check",
     "biome:fix": "biome check --write"
   },

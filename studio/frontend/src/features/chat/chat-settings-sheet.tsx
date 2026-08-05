@@ -141,6 +141,7 @@ export function ParamSlider({
   info,
   valueSize,
   disabled,
+  inline,
 }: {
   label: string;
   value: number;
@@ -152,7 +153,43 @@ export function ParamSlider({
   info?: ReactNode;
   valueSize?: number;
   disabled?: boolean;
+  /** Label, track and value on one row, for narrow settings columns. */
+  inline?: boolean;
 }) {
+  if (inline) {
+    return (
+      <div className="flex items-center gap-3">
+        {/* A floor rather than a fixed width, so a longer label is never clipped. */}
+        <div className="flex min-w-[104px] shrink-0 items-center gap-1.5">
+          <span className="text-ui-13 font-medium leading-[1.25] tracking-nav text-nav-fg">
+            {label}
+          </span>
+          {info && <InfoHint>{info}</InfoHint>}
+        </div>
+        <Slider
+          min={min}
+          max={max}
+          step={step}
+          value={[value]}
+          onValueChange={([v]) => onChange(snapToStep(v, step, min, max))}
+          className="panel-slider min-w-0 flex-1"
+          disabled={disabled}
+        />
+        <NumericValueInput
+          value={value}
+          min={min}
+          max={max}
+          step={step}
+          onChange={onChange}
+          displayValue={displayValue}
+          ariaLabel={label}
+          size={valueSize ?? 4}
+          className="panel-number-input"
+          disabled={disabled}
+        />
+      </div>
+    );
+  }
   return (
     <div className="space-y-3.5">
       <div className="flex items-center justify-between gap-3">
