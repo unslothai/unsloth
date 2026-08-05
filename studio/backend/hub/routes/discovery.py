@@ -38,7 +38,11 @@ router = APIRouter()
 # Discovery is interactive: a slow mirror should fail fast enough to fall back.
 _REQUEST_TIMEOUT_SECONDS = 15.0
 # `expand` can make a 500-item listing large, and it is buffered before parsing.
-_MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+# Measured, not guessed: the feed asks for limit=500 with expand=safetensors,
+# tags, library_name, config, createdAt, downloadsAllTime, gguf. That is 7.7 MB
+# unfiltered and 9.9 MB for filter=text-generation, so an 8 MiB cap 502s on an
+# ordinary listing. Still bounded: a page cannot exceed 500 items.
+_MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 _MAX_LIMIT = 500
 _MAX_STRING_LENGTH = 256
 _MAX_REPEATED_VALUES = 24

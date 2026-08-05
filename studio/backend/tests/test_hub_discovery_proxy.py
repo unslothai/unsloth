@@ -513,3 +513,16 @@ class TestErrorDetailScrubbing:
         assert (
             "Max retries exceeded" in cleaned
         ), "stripping the URL must not strip the reason the request failed"
+
+
+class TestResponseSizeCap:
+    def test_the_cap_clears_a_real_listing(self):
+        # Measured against the live Hub with the shape the feed actually sends
+        # (limit=500, the SDK keys plus ALL_FIELDS): 7.7 MB unfiltered and
+        # 9.9 MB for filter=text-generation. The previous 8 MiB cap 502'd the
+        # latter, so this pins the headroom rather than leaving it to taste.
+        measured_worst_case = 9_879_823
+        assert discovery._MAX_RESPONSE_BYTES > measured_worst_case
+
+    def test_the_cap_still_bounds_memory(self):
+        assert discovery._MAX_RESPONSE_BYTES <= 32 * 1024 * 1024
