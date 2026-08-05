@@ -1539,8 +1539,13 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
         name = key.lower()
         if name != "unet" and "transformer" not in name:
             continue
-        # ["diffusers", "FluxTransformer2DModel"]; [null, null] means deliberately absent.
-        if isinstance(value, (list, tuple)) and not any(v for v in value):
+        # A declared component is the ["diffusers", "FluxTransformer2DModel"] pair, and its
+        # directory is the key. A [null, null] pair means deliberately absent (Wan 2.2's 5B
+        # sibling declares transformer_2 that way and ships no such directory). Anything else is a
+        # custom manifest that does not follow the pair convention and whose directory this cannot
+        # infer -- ACE-STEP maps "transformer" to {"config": "ace_step_transformer/config.json"}
+        # -- so it is left to the loader rather than demanded at a directory that will not exist.
+        if not isinstance(value, (list, tuple)) or not any(v for v in value):
             continue
         found.append(key)
     return tuple(found)
@@ -1554,13 +1559,17 @@ def _component_weights_complete(component: Path) -> bool:
     first-match test while failing at load.
 
     Each index is judged on its OWN shard set, not on the union, because one satisfied index is all
-    the loader needs. A repo publishing both formats lands its safetensors shards plus BOTH
-    indexes: diffusers' ``_get_ignore_patterns`` drops ``*.bin`` once the safetensors set is
-    compatible, and that glob does not match ``...bin.index.json``, so the orphan index survives
-    while the shards it names never arrive. Unioning would charge those absent shards to a complete
-    safetensors set. Unfetched variants behave the same way, hence the ``.index.`` match rather
-    than an ``.index.json`` suffix: diffusers' ``_add_variant`` inserts the variant before the last
-    extension, so a bf16 index is ``diffusion_pytorch_model.safetensors.index.bf16.json``.
+    the loader needs. Some repos are simply published that way: ``stablediffusionapi/sdrealdream``
+    ships ``unet/`` with two safetensors shards, a matching index, and a ``.bin.index.json`` naming
+    two ``.bin`` shards that exist nowhere in the repo. Our own plan manufactures the same shape
+    (``core/inference/diffusion.py`` drops a ``.bin`` whose directory also has a picked
+    ``.safetensors``, matching on the ``.bin`` suffix, so ``.bin.index.json`` survives while its
+    shards never arrive). Unioning would charge those absent shards to a complete safetensors set.
+
+    Unfetched variants behave the same way, hence the ``.index.`` match rather than an
+    ``.index.json`` suffix: diffusers' ``_add_variant`` splits on ``.`` and inserts the variant
+    before the last part, so a bf16 index is
+    ``diffusion_pytorch_model.safetensors.index.bf16.json``.
     """
     # glob() swallows the OSError an unreadable directory raises, which would read as "no weights"
     # instead of reaching the caller's fail-open guard. iterdir() raises it.

@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shutil
 import stat
 import tracemalloc
 from pathlib import Path
@@ -3337,6 +3338,47 @@ def test_a_pipeline_declaring_no_denoiser_key_is_not_hunted_for_one(tmp_path):
         },
     )
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_manifest_entry_that_is_not_a_component_pair_is_left_to_the_loader(tmp_path):
+    """JaiDalmotra/ACE-STEP-Stereo-Finetuned maps "transformer" to a dict pointing at
+    ace_step_transformer/, and ships no transformer/ at all. A custom manifest that does not
+    follow the [library, class] pair convention does not name a directory, so demanding one would
+    hide the whole repo."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        {
+            "_class_name": "ACEStepPipeline",
+            "transformer": {
+                "_class_name": "ACEStepTransformer2DModel",
+                "config": "ace_step_transformer/config.json",
+            },
+        },
+        {"ace_step_transformer/diffusion_pytorch_model.safetensors": b"\0" * 256},
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+@pytest.mark.parametrize(
+    "denoisers",
+    [
+        # weizhou03/HunyuanVideo-1.5-Diffusers-1080p-2SR runs three.
+        ("transformer", "transformer_2", "transformer_3"),
+        # BoyuanJiang/FitDiT has no "transformer" key at all.
+        ("transformer_garm", "transformer_vton"),
+    ],
+)
+def test_the_manifest_keys_generalise_past_the_names_we_knew(denoisers, tmp_path):
+    """Reading the names off the manifest is what keeps this right for layouts no hardcoded list
+    anticipated, without another edit here."""
+    manifest = {"_class_name": "SomePipeline", "vae": ["diffusers", "AutoencoderKL"]}
+    manifest.update({name: ["diffusers", "SomeTransformer2DModel"] for name in denoisers})
+    files = {f"{name}/diffusion_pytorch_model.safetensors": b"\0" * 256 for name in denoisers}
+    snapshot = _pipeline_snapshot(tmp_path, manifest, files)
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+    shutil.rmtree(snapshot / denoisers[-1])
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
 
 
 def test_a_declared_but_null_second_expert_is_not_a_missing_denoiser(tmp_path):
