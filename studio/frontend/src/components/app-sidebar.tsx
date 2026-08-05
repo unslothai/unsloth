@@ -992,7 +992,6 @@ export function AppSidebar() {
     video: {
       icon: FlimSlateIcon,
       label: t("shell.navigation.video"),
-      badge: t("shell.navigation.newBadge"),
       active: pathname === "/video" || pathname.startsWith("/video/"),
       disabled: chatOnly,
       tooltip: chatOnly
