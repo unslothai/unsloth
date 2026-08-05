@@ -8,9 +8,11 @@
 #   - Tauri CLI version drift (we pin 2.10.1, matching release-desktop.yml)
 #   - frontend output not picked up by Tauri's distDir
 #
-# Linux-only on a free `ubuntu-latest` runner. Mac and Windows desktop builds
-# stay in release-desktop.yml (manual `workflow_dispatch`) because they need
-# code-signing secrets and ~30 min of runner time each.
+# The build job stays on Linux; signed desktop builds remain in the manual
+# release workflow.
+#
+# A compile-only Windows job covers `#[cfg(windows)]` code. Linux cannot
+# cross-compile it because `ring` requires MSVC `lib.exe`.
 
 name: Unsloth Tauri CI
 
@@ -147,3 +149,37 @@ jobs:
           # frontend dist rather than failing the upload itself.
           if-no-files-found: warn
           retention-days: 1
+
+  windows-check:
+    name: Tauri Windows type check (compile only)
+    runs-on: windows-latest
+    # A cold cache compiles both debug and release dependency trees.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8  # stable @ 2026-03-27
+
+      - uses: swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32  # v2.9.1
+        with:
+          workspaces: studio/src-tauri -> target
+          key: windows-check
+
+      - name: Placeholder frontend dist
+        # `tauri::generate_context!` only needs `frontendDist` to exist. The Linux
+        # job builds and verifies the real frontend output.
+        shell: bash
+        run: |
+          mkdir -p studio/frontend/dist
+          echo '<!doctype html><title>ci</title>' > studio/frontend/dist/index.html
+
+      - name: cargo check (Windows)
+        working-directory: studio/src-tauri
+        # Check all targets and both profiles because Windows paths differ under
+        # `debug_assertions`. Bash ensures either Cargo failure stops the step.
+        shell: bash
+        run: |
+          cargo check --all-targets
+          cargo check --all-targets --release

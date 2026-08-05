@@ -5697,7 +5697,9 @@ dependencies = [
  "tempfile",
  "time",
  "tokio",
+ "webview2-com",
  "windows 0.62.2",
+ "windows-core 0.61.2",
  "windows-sys 0.61.2",
 ]
 

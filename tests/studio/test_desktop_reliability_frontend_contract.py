@@ -313,6 +313,16 @@ def test_mac_dock_reopens_hidden_main_window():
     assert "show_main_window(app)" in reopen_handler
 
 
+def test_windows_browser_guard_runs_only_in_release_builds():
+    # WebView2 is not reachable from Python, so pin the release-only call that
+    # keeps refresh controls available during development.
+    source = TAURI_MAIN.read_text(encoding = "utf-8")
+
+    assert "fn setup_windows_browser_guards" in source
+    before_call = source.split("setup_windows_browser_guards(app)?;", 1)[0]
+    assert before_call.rstrip().endswith("#[cfg(all(windows, not(debug_assertions)))]")
+
+
 def test_desktop_startup_waits_for_auth_without_intermediate_handoff():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
 
