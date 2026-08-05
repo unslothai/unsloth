@@ -98,9 +98,9 @@ def test_child_popen_kwargs_linux_vs_other(monkeypatch):
 def test_compose_preexec_runs_pdeathsig_then_existing(monkeypatch):
     calls = []
     monkeypatch.setattr(pl, "_is_linux", lambda: True)
-    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda: calls.append("death"))
-    pl.compose_preexec(lambda: calls.append("existing"))()
-    assert calls == ["death", "existing"]  # ordering matters for sandbox hooks
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda owner: calls.append(("death", owner)))
+    pl.compose_preexec(lambda: calls.append("existing"), 4242)()
+    assert calls == [("death", 4242), "existing"]  # ordering matters for sandbox hooks
 
 
 def test_compose_preexec_passthrough_off_linux(monkeypatch):
@@ -108,6 +108,74 @@ def test_compose_preexec_passthrough_off_linux(monkeypatch):
     sentinel = lambda: None  # noqa: E731
     assert pl.compose_preexec(sentinel) is sentinel
     assert pl.compose_preexec(None) is None
+
+
+def test_child_popen_kwargs_binds_the_spawning_pid(monkeypatch):
+    # The preexec must compare against the pid of the process that forked it, so
+    # a healthy child of a pid-1 parent is not mistaken for an orphan (#7886).
+    seen = []
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda owner: seen.append(owner))
+    pl.child_popen_kwargs()["preexec_fn"]()
+    assert seen == [os.getpid()]
+
+
+# ── Orphan decision inside the preexec hook ──
+
+
+class _ExitCalled(BaseException):
+    """Stands in for os._exit, which a test cannot survive. A BaseException so
+    the hook's own `except Exception` does not swallow it."""
+
+
+def _run_preexec(monkeypatch, *, owner_pid, getppid):
+    # prctl is stubbed so the decision is exercised on any platform.
+    import ctypes
+
+    class _Libc:
+        def prctl(self, *args):
+            return 0
+
+    def _no_exit(code):
+        raise _ExitCalled(code)
+
+    monkeypatch.setattr(ctypes, "CDLL", lambda *a, **k: _Libc())
+    monkeypatch.setattr(pl.os, "getppid", lambda: getppid)
+    monkeypatch.setattr(pl.os, "_exit", _no_exit)
+    pl._pdeathsig_preexec(owner_pid)
+
+
+def test_pdeathsig_keeps_child_whose_parent_is_pid_1(monkeypatch):
+    # Unsloth Studio launched as a container entrypoint runs as pid 1, so a
+    # healthy child sees getppid() == 1. Killing it there took down every
+    # llama-server spawn before exec (#7886).
+    _run_preexec(monkeypatch, owner_pid = 1, getppid = 1)
+
+
+def test_pdeathsig_exits_when_reparented_away_from_the_owner(monkeypatch):
+    with pytest.raises(_ExitCalled):
+        _run_preexec(monkeypatch, owner_pid = 4242, getppid = 1)
+
+
+def test_bind_passes_the_creating_process_pid(monkeypatch):
+    # multiprocessing workers get no preexec_fn, so they read the creator's pid
+    # from multiprocessing itself; None outside a worker keeps the fallback.
+    import multiprocessing
+
+    seen = []
+    monkeypatch.setattr(pl, "_is_linux", lambda: True)
+    monkeypatch.setattr(pl, "_pdeathsig_preexec", lambda owner: seen.append(owner))
+
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: _FakeParent(4242))
+    pl.bind_current_process_to_parent_lifetime()
+    monkeypatch.setattr(multiprocessing, "parent_process", lambda: None)
+    pl.bind_current_process_to_parent_lifetime()
+    assert seen == [4242, None]
+
+
+class _FakeParent:
+    def __init__(self, pid):
+        self.pid = pid
 
 
 # ── Real Linux PDEATHSIG: child dies when the parent dies abnormally ──

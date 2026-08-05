@@ -152,13 +152,24 @@ def _install_windows_job() -> None:
 # ── Child binding ──
 
 
-def _pdeathsig_preexec() -> None:
+def _pdeathsig_preexec(owner_pid: Optional[int] = None) -> None:
     # Runs in the forked child before exec. prctl is Linux-only; the getppid
-    # check closes the race where the parent died before this ran.
+    # check closes the race where the parent died before this ran, leaving the
+    # child with no death signal (PR_SET_PDEATHSIG does not survive the fork).
+    #
+    # owner_pid is the spawning process's own pid, read before the fork. Compare
+    # against it rather than testing for "reparented to init": a bare
+    # `getppid() == 1` also matches a parent that legitimately IS pid 1, which is
+    # how Unsloth Studio runs as a container entrypoint. There the check fired on
+    # every healthy spawn and killed llama-server before exec, so the load failed
+    # with exit code 1 and no output at all (#7886). It also misses reparenting
+    # to a subreaper, whose pid is not 1.
     try:
         import ctypes
         ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
-        if os.getppid() == 1:
+        parent_pid = os.getppid()
+        orphaned = parent_pid != owner_pid if owner_pid is not None else parent_pid == 1
+        if orphaned:
             os._exit(1)
     except Exception:
         pass
@@ -168,20 +179,35 @@ def bind_current_process_to_parent_lifetime() -> None:
     """Bind the CURRENT process to its parent's death (Linux). For multiprocessing
     children, which cannot take a preexec_fn, so the parent cannot set
     PR_SET_PDEATHSIG for them -- the child must do it itself at startup."""
-    if _is_linux():
-        _pdeathsig_preexec()
+    if not _is_linux():
+        return
+    # multiprocessing records the pid of the process that created this worker,
+    # which the spawn and fork contexts (the only ones Unsloth uses) both make
+    # its direct parent. Passing it keeps the orphan check off the "reparented
+    # to init" fallback, which kills every worker of a pid-1 parent (#7886).
+    owner_pid = None
+    try:
+        import multiprocessing
+        parent = multiprocessing.parent_process()
+        if parent is not None:
+            owner_pid = parent.pid
+    except Exception:
+        pass
+    _pdeathsig_preexec(owner_pid)
 
 
-def compose_preexec(existing: Optional[Callable[[], None]]) -> Optional[Callable[[], None]]:
+def compose_preexec(
+    existing: Optional[Callable[[], None]],
+    owner_pid: Optional[int] = None,
+) -> Optional[Callable[[], None]]:
     """Run the PDEATHSIG hook then any caller-supplied preexec (Linux only)."""
     if not _is_linux():
         return existing
-    if existing is None:
-        return _pdeathsig_preexec
 
     def _composed() -> None:
-        _pdeathsig_preexec()
-        existing()
+        _pdeathsig_preexec(owner_pid)
+        if existing is not None:
+            existing()
 
     return _composed
 
@@ -194,7 +220,9 @@ def child_popen_kwargs(preexec_fn: Optional[Callable[[], None]] = None) -> dict:
     ``**child_popen_kwargs()`` alongside the caller's existing kwargs.
     """
     if _is_linux():
-        return {"preexec_fn": compose_preexec(preexec_fn)}
+        # os.getpid() runs in the spawning process, so the child can tell a real
+        # reparenting apart from a parent that is pid 1 (see _pdeathsig_preexec).
+        return {"preexec_fn": compose_preexec(preexec_fn, os.getpid())}
     return {}
 
 
