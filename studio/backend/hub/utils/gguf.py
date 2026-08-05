@@ -295,17 +295,13 @@ def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
     )
     for repo_dir in repo_dirs:
         snapshots_dir = repo_dir / "snapshots"
-        # Folded into the walk's own guard. is_dir() swallows only _IGNORED_ERRNOS
-        # (ENOENT, ENOTDIR, EBADF, ELOOP); EACCES is not in the set, so an unreadable cache
-        # raised PermissionError here up to 3.13, and 3.14 returns False for any OSError
-        # (gh-101357). One unreadable root has to skip, the way an unreadable listing already
-        # does, rather than 500 a request that other roots can still answer.
+        # is_dir() ignores only ENOENT/ENOTDIR/EBADF/ELOOP, so an unreadable root raised
+        # EACCES up to 3.13 (3.14 returns False, gh-101357). Skip it instead of 500ing.
         try:
             if not snapshots_dir.is_dir():
                 continue
             snapshots.extend(snap for snap in snapshots_dir.iterdir() if snap.is_dir())
         except OSError as e:
-            # Logged: skipping a root the user expected to be read is otherwise invisible.
             logger.debug("Skipping unreadable cache snapshots dir %s: %s", snapshots_dir, e)
             continue
 

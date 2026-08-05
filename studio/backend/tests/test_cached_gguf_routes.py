@@ -3675,12 +3675,7 @@ def _write_cached_gguf(
     filename: str,
     mtime: float | None = None,
 ) -> Path:
-    """One real snapshot under *hub_cache*, so the production listers do the walking.
-
-    *mtime* pins the snapshot selection order: a repo-wide walk pools every root's snapshots
-    and takes the newest, so a test that discriminates scoped from repo-wide has to control
-    which one that is rather than leave it to filesystem tie-breaks.
-    """
+    """One real snapshot under *hub_cache*; *mtime* pins which one a repo-wide walk picks."""
     import os
 
     repo_dir = hub_cache / ("models--" + repo_id.replace("/", "--"))
@@ -3722,17 +3717,14 @@ def _unreachable_hub(monkeypatch) -> None:
 def test_failed_hub_lists_the_selected_cache_not_another_one(monkeypatch, tmp_path):
     """A request pinned to one cache must list that cache's quants.
 
-    ``list_gguf_variants`` handles an unreachable Hub itself and used to read the cache
-    repo-wide, so whichever root the walk reached first answered. With the repo in the
-    active cache too, the row showed the active copy's quants for a request pinned to
-    another cache, and the pinned copy's own quants never appeared.
+    ``list_gguf_variants`` read the cache repo-wide on an unreachable Hub, so the active
+    copy's quants answered for a request pinned elsewhere.
     """
     active = tmp_path / "active" / "hub"
     selected = tmp_path / "selected" / "hub"
     active.mkdir(parents = True)
     selected.mkdir(parents = True)
-    # The active copy is the NEWER one, so a repo-wide walk prefers it. Only scoping the
-    # lookup to the pinned cache can surface the selected copy here.
+    # The active copy is newer, so only a scoped lookup can surface the selected one.
     _write_cached_gguf(active, "org/repo", "m-Q4_K_M.gguf", mtime = 2_000_000_000)
     selected_repo = _write_cached_gguf(selected, "org/repo", "m-Q8_0.gguf", mtime = 1_000_000_000)
 
@@ -3756,18 +3748,15 @@ def test_failed_hub_lists_the_selected_cache_not_another_one(monkeypatch, tmp_pa
         )
     )
     assert sorted(v.quant for v in response.variants) == ["Q8_0"]
-    # The context length has to come off the same copy, or the row pairs one cache's quants
-    # with another cache's context bound.
+    # The context length has to come off that same copy.
     assert context_calls == [(str(selected_repo), True)]
 
 
 def test_an_unreadable_cache_root_is_skipped_not_fatal(tmp_path):
     """One unreadable cache must not take down a walk the other roots can answer.
 
-    ``iter_hf_cache_snapshots`` probed ``<repo>/snapshots`` with a bare ``is_dir()``. That
-    swallows only ENOENT/ENOTDIR, so an unreadable root raised EACCES up to Python 3.13 and
-    turned a usable cached listing into a 500. Asserted on the walk rather than through the
-    route, so it pins the guard itself and not whatever the route falls back to.
+    A bare ``is_dir()`` on ``<repo>/snapshots`` let EACCES escape (up to 3.13) and turned a
+    usable listing into a 500. Asserted on the walk, so it pins the guard, not the fallback.
     """
     from hub.utils.gguf import iter_hf_cache_snapshots, list_gguf_variants_from_hf_cache
 
@@ -3804,10 +3793,8 @@ def test_an_unreadable_cache_root_is_skipped_not_fatal(tmp_path):
 def test_another_caches_quant_is_offered_as_a_download_not_as_downloaded(monkeypatch, tmp_path):
     """Readiness is counted against the cache the request names, never against another one.
 
-    With the pinned cache holding the repo but no GGUF yet (a download cancelled before a file
-    landed) and the Hub unreachable, the lister still answers repo-wide. Those variants have to
-    stay download targets: the row resolves through the pinned cache, so marking them downloaded
-    offers a load that cannot resolve.
+    The pinned cache holds the repo but no GGUF, so the lister answers repo-wide. Those
+    variants must stay download targets, or the row offers a load that cannot resolve.
     """
     pinned_root = tmp_path / "pinned" / "hub"
     other_root = tmp_path / "other" / "hub"

@@ -771,13 +771,10 @@ async def get_gguf_variants_answer(
                 )
 
         def _cache_fallback_response():
-            """This request's cached answer, scoped to the cache the request names, or None.
+            """Cached answer scoped to the cache this request names, or None.
 
-            Two callers need it: an unreachable Hub, and a listing the lister already served
-            from its own cache. That second read is repo-wide, so with the repo in the active
-            cache as well it answered for a request pinned elsewhere with the active copy's
-            quants. Redoing it here scopes the listing and, through ``answered_from``, keeps
-            its context metadata on the same copy.
+            The lister's own cache read is repo-wide, so redoing it here pins the listing and,
+            through ``answered_from``, its context metadata to the named copy.
             """
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
@@ -806,11 +803,8 @@ async def get_gguf_variants_answer(
                 return fallback
             raise
 
-        # siblings is None only when the lister answered from the cache rather than the Hub.
-        # Falling through when nothing scoped answers is deliberate: the listing then keeps
-        # the lister's repo-wide variants, but readiness is still counted below against this
-        # request's own cache, so a quant that lives only in another cache is offered as a
-        # download rather than claimed as already on disk.
+        # siblings is None only when the lister answered from its own repo-wide cache. Falling
+        # through is deliberate: readiness below still counts against this request's own cache.
         if siblings is None:
             fallback = _cache_fallback_response()
             if fallback is not None:
