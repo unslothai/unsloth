@@ -7713,6 +7713,31 @@ async def generate_stream(
     return _sse_streaming_response(stream())
 
 
+def _probe_llama_cpp_status(llama_backend) -> tuple[bool, dict]:
+    """Read llama.cpp capabilities and release freshness without raising."""
+    try:
+        binary = type(llama_backend)._find_llama_server_binary()
+        capabilities = type(llama_backend).probe_server_capabilities(binary)
+        # Treat a discovered but inconclusive binary as MTP-compatible.
+        supports_mtp = bool(
+            capabilities.get("supports_mtp", False)
+            or (
+                capabilities.get("found", False)
+                and capabilities.get("mtp_probe_inconclusive", False)
+            )
+        )
+    except Exception:
+        binary = None
+        supports_mtp = False  # no usable binary: MTP genuinely unavailable
+    try:
+        from utils.llama_cpp_freshness import check_prebuilt_freshness
+
+        freshness = check_prebuilt_freshness(binary)
+    except Exception:
+        freshness = {}
+    return supports_mtp, freshness
+
+
 @router.get("/status", response_model = InferenceStatusResponse)
 async def get_status(current_subject: str = Depends(get_current_subject)):
     """
@@ -7722,24 +7747,10 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
     try:
         llama_backend = get_llama_cpp_backend()
 
-        # MTP probe + freshness check (both cached); drive the UI banner.
-        try:
-            _bin = type(llama_backend)._find_llama_server_binary()
-            _caps = type(llama_backend).probe_server_capabilities(_bin)
-            # Fail open on inconclusive probes: False means a definitive
-            # "binary lacks MTP" to API consumers.
-            _supports_mtp = bool(
-                _caps.get("supports_mtp", False)
-                or (_caps.get("found", False) and _caps.get("mtp_probe_inconclusive", False))
-            )
-        except Exception:
-            _bin = None
-            _supports_mtp = False  # no usable binary: MTP genuinely unavailable
-        try:
-            from utils.llama_cpp_freshness import check_prebuilt_freshness
-            _freshness = check_prebuilt_freshness(_bin)
-        except Exception:
-            _freshness = {}
+        # The cold subprocess and GitHub probes must not block streaming.
+        _supports_mtp, _freshness = await asyncio.to_thread(
+            _probe_llama_cpp_status, llama_backend
+        )
         _stale = bool(_freshness.get("stale"))
         _installed_tag = _freshness.get("installed_tag")
         _latest_tag = _freshness.get("latest_tag")
