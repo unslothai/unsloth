@@ -469,3 +469,38 @@ class TestHealthHubEndpoint:
         monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: _Session())
         discovery._fetch_upstream("https://huggingface.co/api/models", None)
         assert seen["timeout"] <= discovery._REQUEST_TIMEOUT_SECONDS / 2
+
+
+class TestErrorDetailScrubbing:
+    def test_the_search_query_is_not_echoed_in_a_transport_error(self, monkeypatch):
+        # requests names the failing URL in its message, and for this proxy that
+        # URL carries the user's search terms.
+        def _boom(url, token):
+            raise RuntimeError(
+                "HTTPSConnectionPool(host='huggingface.co', port=443): Max retries "
+                "exceeded with url: /api/models?search=acme-internal&limit=100"
+            )
+
+        monkeypatch.setattr(discovery, "_fetch_upstream", _boom)
+        with pytest.raises(HTTPException) as excinfo:
+            _call([("search", "acme-internal")])
+        detail = str(excinfo.value.detail)
+        assert "acme-internal" not in detail
+        assert "/api/models?" not in detail
+
+    def test_a_mirror_hostname_is_not_echoed(self, monkeypatch):
+        def _boom(url, token):
+            raise RuntimeError("failed to connect to https://hf-mirror.internal.acme/api/models")
+
+        monkeypatch.setattr(discovery, "_fetch_upstream", _boom)
+        with pytest.raises(HTTPException) as excinfo:
+            _call([("search", "gemma")])
+        assert "hf-mirror.internal.acme" not in str(excinfo.value.detail)
+
+    def test_scrubbing_keeps_the_diagnosis_readable(self):
+        cleaned = discovery._scrub_detail(
+            "Max retries exceeded with url: /api/models?search=x", None
+        )
+        assert "Max retries exceeded" in cleaned, (
+            "stripping the URL must not strip the reason the request failed"
+        )

@@ -288,6 +288,16 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
         response.close()
 
 
+# requests puts the failing URL in its message ("... url: /api/models?search=x"),
+# which is the user's search terms and, on a private deployment, the mirror host.
+_URL_IN_MESSAGE_RE = re.compile(r"https?://\S+|\burl:\s*\S+", re.IGNORECASE)
+
+
+def _scrub_detail(message: str, hf_token: Optional[str]) -> str:
+    """Token scrub plus URL removal, for anything we hand back or log."""
+    return _URL_IN_MESSAGE_RE.sub("<url>", scrub_secrets(message, hf_token = hf_token))
+
+
 async def _proxy_get(url: str, hf_token: Optional[str]) -> tuple:
     """Fetch upstream and map every failure mode -> (payload, link_header)."""
     try:
@@ -295,7 +305,7 @@ async def _proxy_get(url: str, hf_token: Optional[str]) -> tuple:
     except HTTPException:
         raise
     except Exception as e:
-        scrubbed = scrub_secrets(str(e), hf_token = hf_token)
+        scrubbed = _scrub_detail(str(e), hf_token)
         mapped = hf_error_status(e)
         if mapped in (401, 403):
             raise HTTPException(status_code = _UPSTREAM_AUTH_STATUS, detail = scrubbed)

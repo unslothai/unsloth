@@ -71,6 +71,15 @@ function urlOf(input: Parameters<typeof fetch>[0]): string {
       : input.url;
 }
 
+/**
+ * Where to file a diagnosis. The saved failure names the Hub; `raw` may be the
+ * backend's own next-page link, whose origin is Studio's, and keying a Hub
+ * failure there leaves the Hub looking available with no cause on screen.
+ */
+function failureOrigin(failure: HubFailure, raw: string): string {
+  return failure.origin ?? hubUrlOf(raw)?.origin ?? DEFAULT_HUB_ENDPOINT;
+}
+
 function hubUrlOf(raw: string): URL | null {
   try {
     return new URL(raw, DEFAULT_HUB_ENDPOINT);
@@ -218,7 +227,7 @@ export function createHubTransport(
       // only path a later page takes, so the diagnosis is recorded here too.
       setHubProxyServing(false);
       if (directFailure && !wasAborted(init, error)) {
-        const origin = hubUrlOf(raw)?.origin ?? DEFAULT_HUB_ENDPOINT;
+        const origin = failureOrigin(directFailure, raw);
         markRemoteNetworkOffline(origin, undefined, directFailure, "discovery");
       }
       throw error;
@@ -229,10 +238,8 @@ export function createHubTransport(
     if (!response.ok && directFailure) {
       // authFetch resolves on a non-2xx, so without this the saved direct
       // failure is dropped and the panel loses the classified cause.
-      const origin = hubUrlOf(raw)?.origin;
-      if (origin) {
-        markRemoteNetworkOffline(origin, undefined, directFailure, "discovery");
-      }
+      const origin = failureOrigin(directFailure, raw);
+      markRemoteNetworkOffline(origin, undefined, directFailure, "discovery");
     }
     return response;
   };

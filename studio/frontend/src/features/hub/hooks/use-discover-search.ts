@@ -25,6 +25,7 @@ export interface DiscoverSearch {
   isLoadingMore: boolean;
   hasMore: boolean;
   fetchMore: () => boolean;
+  fetchMoreManual: () => boolean;
   searchError: string | null;
   /** Classified cause of the last failure, for a diagnosable error panel. */
   searchFailure: HubFailure | null;
@@ -156,6 +157,14 @@ export function useDiscoverSearch({
     if (!canProbe || !hasMore) return false;
     return rawFetchMore();
   }, [canProbe, hasMore, rawFetchMore]);
+  // The click path, on the same contract as Retry: the footer renders on
+  // hasMore and so outlives the failed page, and a visible button that silently
+  // does nothing for the whole backoff window is worse than a failed probe.
+  const fetchMoreManual = useCallback(() => {
+    if (!hasMore) return false;
+    clearRemoteBackoff();
+    return rawFetchMore();
+  }, [hasMore, rawFetchMore]);
 
   const handleRetrySearch = useCallback(() => {
     // Always re-probe: refusing during the backoff left users unable to test a
@@ -216,6 +225,7 @@ export function useDiscoverSearch({
     isLoadingMore,
     hasMore,
     fetchMore,
+    fetchMoreManual,
     searchError,
     searchFailure,
     handleRetrySearch,

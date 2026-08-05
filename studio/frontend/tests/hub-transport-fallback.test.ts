@@ -569,3 +569,36 @@ test("a direct listing success retires the proxy-serving flag", async () => {
   assert.equal(getLastHubFailure(HF_ORIGIN)?.kind, "csp-blocked");
   markRemoteNetworkOnline();
 });
+
+test("a failed later page is filed under the Hub, not the Studio origin", async () => {
+  markRemoteNetworkOnline();
+  let served = 0;
+  const backend = async (
+    _input: Parameters<typeof fetch>[0],
+    _init: Parameters<typeof fetch>[1],
+  ) => {
+    served += 1;
+    // Page one falls back cleanly; the next page finds the proxy gone too.
+    if (served === 1) return new Response("[]", { status: 200 });
+    throw new TypeError("Failed to fetch");
+  };
+  const transport = createHubTransport("models", {
+    direct: failWith("network-opaque"),
+    backend,
+  });
+
+  await transport(HF_URL, {});
+  // What the backend hands back is absolute and same-origin, so its origin is
+  // Studio's; filing the Hub's failure there would hide it from the panel.
+  await assert.rejects(
+    transport("http://127.0.0.1:8888/api/hub/discovery/models?p=1", {}),
+  );
+
+  assert.equal(
+    getLastHubFailure(HF_ORIGIN)?.kind,
+    "network-opaque",
+    "the cause must be readable for the Hub, which is what the catalog asks about",
+  );
+  assert.equal(getHubPhase(HF_ORIGIN), "unavailable");
+  markRemoteNetworkOnline();
+});

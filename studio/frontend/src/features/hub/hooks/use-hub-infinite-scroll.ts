@@ -24,6 +24,8 @@ export interface InfiniteScrollOptions {
    * instead of doing nothing.
    */
   manualEnabled?: boolean;
+  /** Used only by the click path, so it can probe where auto-fill must not. */
+  manualFetchMore?: () => boolean | void;
   onFetchIntent?: () => void;
   resultCount?: number;
   resetKey?: string | number | boolean | null;
@@ -43,6 +45,7 @@ export function useHubInfiniteScroll(
 ) {
   const enabled = options.enabled ?? true;
   const manualEnabled = options.manualEnabled ?? enabled;
+  const manualFetchMore = options.manualFetchMore;
   const onFetchIntent = options.onFetchIntent;
   const resultCount = options.resultCount ?? signal;
   const resetKey = options.resetKey ?? null;
@@ -58,6 +61,7 @@ export function useHubInfiniteScroll(
   const onFetchIntentRef = useRef(onFetchIntent);
   const enabledRef = useRef(enabled);
   const manualEnabledRef = useRef(manualEnabled);
+  const manualFetchMoreRef = useRef(manualFetchMore);
   const isFetchingRef = useRef(isFetching);
   useEffect(() => {
     fetchMoreRef.current = fetchMore;
@@ -71,6 +75,9 @@ export function useHubInfiniteScroll(
   useEffect(() => {
     manualEnabledRef.current = manualEnabled;
   }, [manualEnabled]);
+  useEffect(() => {
+    manualFetchMoreRef.current = manualFetchMore;
+  }, [manualFetchMore]);
   useEffect(() => {
     isFetchingRef.current = isFetching;
   }, [isFetching]);
@@ -99,22 +106,27 @@ export function useHubInfiniteScroll(
     }, 0);
   }, []);
 
-  const requestFetchMore = useCallback(() => {
-    const accepted = fetchMoreRef.current() !== false;
+  const requestWith = useCallback((fn: () => boolean | void) => {
+    const accepted = fn() !== false;
     if (accepted) {
       onFetchIntentRef.current?.();
     }
     return accepted;
   }, []);
 
+  const requestFetchMore = useCallback(
+    () => requestWith(fetchMoreRef.current),
+    [requestWith],
+  );
+
   const fetchMoreManually = useCallback(() => {
     // Not enabledRef: auto-fill stays off while the Hub is only probing, but a
     // button that is still on screen must honour an explicit click.
     if (!manualEnabledRef.current || isFetchingRef.current) return;
-    if (requestFetchMore()) {
+    if (requestWith(manualFetchMoreRef.current ?? fetchMoreRef.current)) {
       setManualFetchAvailable(false);
     }
-  }, [requestFetchMore, setManualFetchAvailable]);
+  }, [requestWith, setManualFetchAvailable]);
 
   useEffect(
     () => () => {
