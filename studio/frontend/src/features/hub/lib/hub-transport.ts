@@ -4,6 +4,7 @@
 import {
   fetchWithTimeout,
   type HubFailure,
+  type HubService,
   isHubFetchError,
   markRemoteNetworkOffline,
   setHubProxyServing,
@@ -27,9 +28,13 @@ const FALLBACK_KINDS = new Set([
   "browser-offline",
 ]);
 
+// The service tag is decided here, not by the caller: only this module knows
+// which URLs are the discovery listing and which are a repo-path lookup, and a
+// lookup tagged "discovery" would retire the catalog's diagnosis on success.
 type FetchLike = (
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1],
+  service?: HubService,
 ) => Promise<Response>;
 
 export interface HubTransportDeps {
@@ -78,6 +83,26 @@ function urlOf(input: Parameters<typeof fetch>[0]): string {
  */
 function failureOrigin(failure: HubFailure, raw: string): string {
   return failure.origin ?? hubUrlOf(raw)?.origin ?? DEFAULT_HUB_ENDPOINT;
+}
+
+/**
+ * A stand-in cause for the proxy-first (mirror) path, which never attempts the
+ * direct route and so has no saved failure to carry. Without one, nothing is
+ * ever recorded on a mirror: no backoff, no cause on screen, and the phase stays
+ * "available" over a dead feed. `origin` is left null so the panel says
+ * "Hugging Face" rather than naming the operator's internal mirror.
+ */
+function proxyOnlyFailure(status?: number): HubFailure {
+  return {
+    kind: status === undefined ? "network-opaque" : "http",
+    message:
+      status === undefined
+        ? "The server could not reach Hugging Face."
+        : `The server could not reach Hugging Face (${status}).`,
+    origin: null,
+    status,
+    retryable: true,
+  };
 }
 
 function hubUrlOf(raw: string): URL | null {
@@ -196,10 +221,10 @@ export function createHubTransport(
 ): typeof fetch {
   const direct =
     deps.direct ??
-    ((input, init) =>
+    ((input, init, service) =>
       fetchWithTimeout(input, init, undefined, {
         recordFailure: false,
-        service: "discovery",
+        service,
       }));
   const backend = deps.backend ?? defaultBackend;
   const proxyFirst = deps.proxyFirst ?? defaultProxyFirst;
@@ -226,20 +251,26 @@ export function createHubTransport(
       // available off a proxy that is gone. Once affinity is on this is the
       // only path a later page takes, so the diagnosis is recorded here too.
       setHubProxyServing(false);
-      if (directFailure && !wasAborted(init, error)) {
-        const origin = failureOrigin(directFailure, raw);
-        markRemoteNetworkOffline(origin, undefined, directFailure, "discovery");
+      if (!wasAborted(init, error)) {
+        const failure = directFailure ?? proxyOnlyFailure();
+        const origin = directFailure
+          ? failureOrigin(directFailure, raw)
+          : DEFAULT_HUB_ENDPOINT;
+        markRemoteNetworkOffline(origin, undefined, failure, "discovery");
       }
       throw error;
     }
     // Only that the backend can serve us. The origin's own state is left alone
     // so the direct clients stay suppressed instead of failing and re-marking.
     setHubProxyServing(response.ok);
-    if (!response.ok && directFailure) {
-      // authFetch resolves on a non-2xx, so without this the saved direct
-      // failure is dropped and the panel loses the classified cause.
-      const origin = failureOrigin(directFailure, raw);
-      markRemoteNetworkOffline(origin, undefined, directFailure, "discovery");
+    if (!response.ok) {
+      // authFetch resolves on a non-2xx, so without this the cause is dropped
+      // and the panel falls back to its generic wording.
+      const failure = directFailure ?? proxyOnlyFailure(response.status);
+      const origin = directFailure
+        ? failureOrigin(directFailure, raw)
+        : DEFAULT_HUB_ENDPOINT;
+      markRemoteNetworkOffline(origin, undefined, failure, "discovery");
     }
     return response;
   };
@@ -259,8 +290,24 @@ export function createHubTransport(
         const req = toInfoRequest(info, raw, resource, init);
         return backend(req.url, req.init);
       }
-      // Anything else keeps its path and stays on the direct route.
-      return direct(input, init);
+      if (!info) {
+        // Not a route the backend can serve, so direct is the only option.
+        return direct(input, init, "other");
+      }
+      try {
+        return await direct(input, init, "other");
+      } catch (error) {
+        // The same fallback the listing gets. Without it a blocked browser shows
+        // a working feed with no metadata on any deep link, pinned publisher or
+        // priority card, because these transports never run a listing and so
+        // never pick up the affinity that would have routed them.
+        if (!isHubFetchError(error) || !FALLBACK_KINDS.has(error.failure.kind)) {
+          throw error;
+        }
+        useProxy = true;
+        const req = toInfoRequest(info, raw, resource, init);
+        return backend(req.url, req.init);
+      }
     }
 
     if (useProxy || proxyFirst()) {
@@ -268,7 +315,7 @@ export function createHubTransport(
     }
 
     try {
-      const response = await direct(input, init);
+      const response = await direct(input, init, "discovery");
       // The browser fetched the listing itself, so the backend is not serving
       // the feed; a stale flag would force "available" and hide the next failure.
       setHubProxyServing(false);

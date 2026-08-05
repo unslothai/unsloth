@@ -292,15 +292,23 @@ test("a model-info request is never retargeted at the listing proxy", async () =
   assert.deepEqual(seen, []);
 });
 
-test("a model-info transport failure is not retried through the proxy", async () => {
+test("a model-info transport failure falls back, but never onto the listing", async () => {
   const backend = captureBackend();
   const transport = createHubTransport("models", {
     direct: failWith("network-opaque"),
     backend: backend.backend,
   });
 
-  await assert.rejects(transport(MODEL_INFO_URL, {}));
-  assert.equal(backend.calls.length, 0);
+  // A blocked browser must not leave deep links and pinned cards without
+  // metadata while the feed itself works through the same server.
+  await transport(MODEL_INFO_URL, {});
+  assert.equal(backend.calls.length, 1);
+  const { url } = backend.calls[0];
+  assert.ok(url.includes("/api/hub/discovery-info/models"));
+  // The listing route answers with an array, so a repo cached from it would
+  // have no id at all.
+  assert.ok(!url.includes("/api/hub/discovery/models"));
+  assert.ok(url.includes("repo=unsloth%2Fgemma-3-4b-it"));
 });
 
 // ---------------------------------------------------------------------------
@@ -600,5 +608,59 @@ test("a failed later page is filed under the Hub, not the Studio origin", async 
     "the cause must be readable for the Hub, which is what the catalog asks about",
   );
   assert.equal(getHubPhase(HF_ORIGIN), "unavailable");
+  markRemoteNetworkOnline();
+});
+
+test("a repo lookup that succeeds does not retire the feed's diagnosis", async () => {
+  markRemoteNetworkOnline();
+  markRemoteNetworkOffline(
+    HF_ORIGIN,
+    30_000,
+    { kind: "csp-blocked", message: "blocked", origin: HF_ORIGIN, retryable: true },
+    "discovery",
+  );
+  // The transport decides the tag from the URL, so a caller cannot mislabel a
+  // repo-path lookup as the feed. Whatever tag arrives here is the real one.
+  let seen: string | undefined;
+  const transport = createHubTransport("models", {
+    direct: async (_input, _init, service) => {
+      seen = service;
+      return new Response("{}", { status: 200 });
+    },
+    backend: async () => new Response("[]", { status: 200 }),
+  });
+
+  await transport(MODEL_INFO_URL, {});
+  assert.equal(seen, "other", "a /revision/ lookup is not the discovery feed");
+  assert.equal(
+    getLastHubFailure(HF_ORIGIN)?.kind,
+    "csp-blocked",
+    "a detail-pane success must not erase why the catalog failed",
+  );
+  markRemoteNetworkOnline();
+});
+
+test("a mirror-only failure is still recorded, with no saved direct failure", async () => {
+  markRemoteNetworkOnline();
+  // proxyFirst means the direct route is never attempted, so there is no saved
+  // failure to carry: without a stand-in nothing is ever recorded on a mirror.
+  const transport = createHubTransport("models", {
+    direct: async () => {
+      throw new Error("the direct route must not be used on a mirror");
+    },
+    backend: async () => new Response("bad gateway", { status: 502 }),
+    proxyFirst: () => true,
+  });
+
+  await transport(HF_URL, {});
+  const failure = getLastHubFailure(HF_ORIGIN);
+  assert.equal(failure?.kind, "http");
+  assert.equal(failure?.status, 502);
+  assert.equal(
+    failure?.origin,
+    null,
+    "the operator's internal mirror hostname is not ours to put on screen",
+  );
+  assert.equal(getHubPhase(HF_ORIGIN), "unavailable", "a mirror needs a backoff too");
   markRemoteNetworkOnline();
 });

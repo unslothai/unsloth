@@ -144,10 +144,10 @@ function withGgufExpand(input: Parameters<typeof fetch>[0]): string {
 function makeHfFetch(signal?: AbortSignal): typeof fetch {
   // Each call builds its own transport so pagination affinity is per-iterator.
   const transport = createHubTransport("models", {
-    direct: (input, init) =>
+    direct: (input, init, service) =>
       fetchWithTimeout(input, init, HF_SEARCH_TIMEOUT_MS, {
         recordFailure: false,
-        service: "discovery",
+        service,
       }),
     proxyFirst: hubProxyFirst,
   });
@@ -161,10 +161,10 @@ function makeSortFetch(
   signal?: AbortSignal,
 ): typeof fetch {
   const transport = createHubTransport("models", {
-    direct: (input, init) =>
+    direct: (input, init, service) =>
       fetchWithTimeout(input, init, HF_SEARCH_TIMEOUT_MS, {
         recordFailure: false,
-        service: "discovery",
+        service,
       }),
     proxyFirst: hubProxyFirst,
   });

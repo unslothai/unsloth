@@ -26,7 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from auth.authentication import get_current_subject
-from hub.dependencies import get_hf_token
+from hub.dependencies import HUB_HF_TOKEN_HEADER, get_hf_token
 from hub.utils.download_registry import scrub_secrets
 from hub.utils.hf_errors import hf_error_status
 from hub.utils.paths import is_valid_repo_id
@@ -291,11 +291,24 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
 # requests puts the failing URL in its message ("... url: /api/models?search=x"),
 # which is the user's search terms and, on a private deployment, the mirror host.
 _URL_IN_MESSAGE_RE = re.compile(r"https?://\S+|\burl:\s*\S+", re.IGNORECASE)
+# urllib3 names the target a second way, "HTTPSConnectionPool(host='...', port=)",
+# which survives the URL strip. On a proxied or TLS failure that host is the
+# egress proxy or the certificate's, neither of which we report anywhere else.
+_HOST_IN_MESSAGE_RE = re.compile(r"host\s*=\s*'[^']*'", re.IGNORECASE)
+
+# A listing is scoped to the caller's token, so an intermediary must not be
+# able to hand one reader's private repos to the next.
+_PRIVATE_HEADERS = {
+    "Cache-Control": "no-store",
+    "Vary": "Authorization, " + HUB_HF_TOKEN_HEADER,
+}
 
 
 def _scrub_detail(message: str, hf_token: Optional[str]) -> str:
-    """Token scrub plus URL removal, for anything we hand back or log."""
-    return _URL_IN_MESSAGE_RE.sub("<url>", scrub_secrets(message, hf_token = hf_token))
+    """Token scrub plus URL and host removal, for anything we hand back or log."""
+    cleaned = scrub_secrets(message, hf_token = hf_token)
+    cleaned = _URL_IN_MESSAGE_RE.sub("<url>", cleaned)
+    return _HOST_IN_MESSAGE_RE.sub("host='<host>'", cleaned)
 
 
 async def _proxy_get(url: str, hf_token: Optional[str]) -> tuple:
@@ -379,13 +392,16 @@ async def discovery_info(
     the repo and revision are validated and re-encoded here instead.
     """
     if not is_valid_repo_id(repo):
-        raise HTTPException(status_code = 400, detail = f"Invalid repo: {repo!r}")
+        raise HTTPException(
+            status_code = 400,
+            detail = _scrub_detail(f"Invalid repo: {repo!r}", hf_token),
+        )
     if not _REVISION_RE.match(revision):
         raise HTTPException(status_code = 400, detail = "Invalid revision")
     try:
         pairs = build_info_query(request.query_params)
     except DiscoveryQueryError as e:
-        raise HTTPException(status_code = 400, detail = str(e))
+        raise HTTPException(status_code = 400, detail = _scrub_detail(str(e), hf_token))
 
     base = hf_endpoint_url().rstrip("/")
     path = "/".join(quote(part, safe = "") for part in repo.split("/"))
@@ -393,7 +409,7 @@ async def discovery_info(
     if pairs:
         url += "?" + urlencode(pairs)
     payload, _ = await _proxy_get(url, hf_token)
-    return JSONResponse(content = payload)
+    return JSONResponse(content = payload, headers = dict(_PRIVATE_HEADERS))
 
 
 @router.get("/discovery/{resource}")
@@ -406,13 +422,13 @@ async def discovery_search(
     try:
         pairs = build_discovery_query(request.query_params)
     except DiscoveryQueryError as e:
-        raise HTTPException(status_code = 400, detail = str(e))
+        raise HTTPException(status_code = 400, detail = _scrub_detail(str(e), hf_token))
 
     url = build_upstream_url(resource, pairs)
 
     payload, link = await _proxy_get(url, hf_token)
 
-    headers = {}
+    headers = dict(_PRIVATE_HEADERS)
     # Absolute, not relative: the Hub client's link parser only recognises an
     # http(s) target. The browser never fetches it (the transport re-issues the
     # query same-origin), so deriving the host from the request is safe.

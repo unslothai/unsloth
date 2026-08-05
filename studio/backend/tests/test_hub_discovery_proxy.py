@@ -476,9 +476,10 @@ class TestErrorDetailScrubbing:
         # requests names the failing URL in its message, and for this proxy that
         # URL carries the user's search terms.
         def _boom(url, token):
+            # The real requests/urllib3 shape, which names the target twice.
             raise RuntimeError(
-                "HTTPSConnectionPool(host='huggingface.co', port=443): Max retries "
-                "exceeded with url: /api/models?search=acme-internal&limit=100"
+                "HTTPSConnectionPool(host='hf-mirror.acme.internal', port=443): Max "
+                "retries exceeded with url: /api/models?search=acme-internal&limit=100"
             )
 
         monkeypatch.setattr(discovery, "_fetch_upstream", _boom)
@@ -487,19 +488,27 @@ class TestErrorDetailScrubbing:
         detail = str(excinfo.value.detail)
         assert "acme-internal" not in detail
         assert "/api/models?" not in detail
+        assert "hf-mirror" not in detail
 
-    def test_a_mirror_hostname_is_not_echoed(self, monkeypatch):
+    def test_the_egress_proxy_host_is_not_echoed(self, monkeypatch):
+        # A proxied failure names the internal proxy, which we report nowhere else.
         def _boom(url, token):
-            raise RuntimeError("failed to connect to https://hf-mirror.internal.acme/api/models")
+            raise RuntimeError(
+                "ProxyError('Unable to connect to proxy', NameResolutionError("
+                "\"HTTPSConnection(host='squid.corp.internal', port=3128): "
+                "Failed to resolve\"))"
+            )
 
         monkeypatch.setattr(discovery, "_fetch_upstream", _boom)
         with pytest.raises(HTTPException) as excinfo:
             _call([("search", "gemma")])
-        assert "hf-mirror.internal.acme" not in str(excinfo.value.detail)
+        assert "squid.corp.internal" not in str(excinfo.value.detail)
 
     def test_scrubbing_keeps_the_diagnosis_readable(self):
         cleaned = discovery._scrub_detail(
-            "Max retries exceeded with url: /api/models?search=x", None
+            "HTTPSConnectionPool(host='h.example', port=443): Max retries exceeded "
+            "with url: /api/models?search=x",
+            None,
         )
         assert (
             "Max retries exceeded" in cleaned

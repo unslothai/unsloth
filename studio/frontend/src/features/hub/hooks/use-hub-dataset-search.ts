@@ -130,10 +130,10 @@ function makeDatasetSortFetch(
 ): typeof fetch {
   // Per-instance so pagination affinity follows this iterator.
   const transport = createHubTransport("datasets", {
-    direct: (input, init) =>
+    direct: (input, init, service) =>
       fetchWithTimeout(input, init, HF_DATASET_SEARCH_TIMEOUT_MS, {
         recordFailure: false,
-        service: "discovery",
+        service,
       }),
     proxyFirst: hubProxyFirst,
   });
