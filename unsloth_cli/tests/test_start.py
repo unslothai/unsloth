@@ -6577,6 +6577,37 @@ def test_codex_attach_check_probes_direct_paths_on_remote_servers(monkeypatch, c
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf")
 
 
+def test_codex_attach_check_defers_companion_paths_with_a_variant(monkeypatch, capsys):
+    # With an explicit variant the resolver scans the companion's marked parent
+    # and serves the named sibling, so the refused name is not what loads.
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [{"quant": "Q4_K_M", "filename": "model-Q4_K_M.gguf"}],
+            "resolved_locally": True,
+        },
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/m/mmproj-F16.gguf", "Q4_K_M")
+    # The parent's answer still decides: a quant it does not serve fails, and
+    # the companion's own label cannot vouch for itself either.
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [{"quant": "Q4_K_M", "filename": "model-Q4_K_M.gguf"}],
+            "resolved_locally": True,
+        },
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/m/mmproj-F16.gguf", "F16")
+    # Without a variant the companion is still refused outright.
+    monkeypatch.setattr(
+        start, "_http_json", lambda *a, **k: pytest.fail("no variant means no probe")
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/m/mmproj-F16.gguf")
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
+
+
 def test_codex_attach_check_strict_accepts_basename_quant_tokens(monkeypatch):
     # The loose-file resolver takes any whole quant token of the basename, so
     # the listing's own default (the other label of the same file) must pass.

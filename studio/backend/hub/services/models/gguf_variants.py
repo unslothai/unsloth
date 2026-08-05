@@ -567,8 +567,10 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
 
     llama.cpp resolves a split GGUF's siblings from the main shard's directory
     (see llama_cpp._snapshot_has_all_shards), so a lone shard is a load that
-    fails after the teardown. Unknown -- an unreadable directory, a nonsense
-    total -- reports whole, keeping the row as ready as it was.
+    fails after the teardown. A symlinked shard follows its target the way
+    _local_gguf_load_path does, since that is the set the load launches.
+    Unknown -- an unreadable directory, a nonsense total -- reports whole,
+    keeping the row as ready as it was.
     """
     match = _DIRECT_SPLIT_RE.match(path.name.rsplit(".", 1)[0])
     if match is None:
@@ -585,12 +587,18 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
         + r"\.gguf$",
         re.IGNORECASE,
     )
-    try:
-        found = {
+
+    def _indexes_beside(target: Path) -> set:
+        return {
             int(m.group(1))
-            for p in path.parent.iterdir()
+            for p in target.parent.iterdir()
             if (m := sibling.match(p.name)) and p.is_file() and p.stat().st_size > 0
         }
+
+    try:
+        found = _indexes_beside(path)
+        if not found >= set(range(1, total + 1)) and path.is_symlink():
+            found |= _indexes_beside(path.resolve())
     except OSError:
         return True
     # The declared indexes, not a count: a stray over-indexed shard must not

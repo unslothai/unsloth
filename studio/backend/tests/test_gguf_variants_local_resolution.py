@@ -306,6 +306,27 @@ def test_torn_direct_split_is_not_offered_as_downloaded(in_tmp_cwd):
     assert whole.downloaded is True and whole.partial is False
 
 
+def test_symlinked_split_follows_its_target_set(in_tmp_cwd):
+    # The load resolves a symlinked shard to its target's colocated set, so a
+    # link beside no siblings is still ready when the target set is whole.
+    real = in_tmp_cwd / "real"
+    real.mkdir()
+    (real / "m-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF")
+    (real / "m-Q4_K_M-00002-of-00002.gguf").write_bytes(b"GGUF")
+    links = in_tmp_cwd / "links"
+    links.mkdir()
+    link = links / "m-Q4_K_M-00001-of-00002.gguf"
+    link.symlink_to(real / "m-Q4_K_M-00001-of-00002.gguf")
+
+    row = _variants(os.fspath(link)).variants[0]
+    assert row.downloaded is True and row.partial is False
+
+    # A torn target set is still torn.
+    (real / "m-Q4_K_M-00002-of-00002.gguf").unlink()
+    torn = _variants(os.fspath(link)).variants[0]
+    assert torn.downloaded is False and torn.partial is True
+
+
 def test_stray_over_indexed_shard_does_not_complete_a_split(in_tmp_cwd):
     # Completeness is the declared index set, not a file count: a stray
     # 00003-of-00002 must not stand in for the missing shard 2.

@@ -2028,18 +2028,20 @@ def _attach_gguf_check_for_codex(
         and ":" not in repo
         and "\\" not in repo
     ):
-        # A companion is the exception: detect_gguf_model refuses mmproj files
-        # and the separate-file drafters, so the load falls through to the
-        # transformers path, which unloads the resident llama-server before it
-        # fails. Settled on the name, not by probing: the probe's own empty
-        # answer defers whenever the path exists for this process, which on the
-        # loopback attach this gate protects is exactly when it does.
-        if _direct_gguf_is_companion(repo):
-            _fail_codex_needs_gguf(repo)
-        # A big-endian build the server's detector refuses would fall through
-        # to the transformers path and evict; the quant-named-parent exemption
-        # keeps the shapes it does load.
-        if _direct_gguf_is_big_endian(repo):
+        # A companion or big-endian build is the exception: detect_gguf_model
+        # refuses mmproj files, the separate-file drafters and those builds, so
+        # the load falls through to the transformers path, which unloads the
+        # resident llama-server before it fails. Settled on the name, not by
+        # probing: the probe's own empty answer defers whenever the path exists
+        # for this process, which on the loopback attach this gate protects is
+        # exactly when it does.
+        #
+        # Only when the load would use THIS file, though: with an explicit
+        # variant the resolver scans the file's marked parent and serves the
+        # named sibling, so the refused name is not what gets loaded. Those
+        # requests go to the probe below, which judges the sibling's own row.
+        refused = _direct_gguf_is_companion(repo) or _direct_gguf_is_big_endian(repo)
+        if refused and not variant:
             _fail_codex_needs_gguf(repo)
         # The file names the one quant it is, so its own labels settle a
         # matching explicit variant without a probe. A different quant is not
@@ -2050,9 +2052,12 @@ def _attach_gguf_check_for_codex(
         # strict matching also judges the sibling's own row (torn rows do not
         # vouch), so the named file's bytes only matter when the load would
         # use this very file.
+        # A refused name never settles anything by itself: even its own label
+        # would resolve to the sibling the parent serves, so the probe answers.
         wanted = str(variant).strip().lower() if variant else ""
-        if not wanted or any(
-            wanted == label.lower() for label in _direct_gguf_variant_labels(repo)
+        if not refused and (
+            not wanted
+            or any(wanted == label.lower() for label in _direct_gguf_variant_labels(repo))
         ):
             # On a loopback attach this process sees the server's filesystem,
             # so an incomplete file is failed here: the server classifies the
