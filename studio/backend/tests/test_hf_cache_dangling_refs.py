@@ -3411,9 +3411,7 @@ def test_a_half_landed_shard_set_is_not_rescued_by_the_loose_scan(tmp_path):
 
 
 @pytest.mark.parametrize("escape", ["../vae/diffusion_pytorch_model.safetensors", "/absolute"])
-def test_a_denoiser_index_naming_a_shard_outside_the_component_is_not_a_denoiser(
-    escape, tmp_path
-):
+def test_a_denoiser_index_naming_a_shard_outside_the_component_is_not_a_denoiser(escape, tmp_path):
     """``component / shard`` follows ``..`` out to a sibling and drops the component entirely for
     an absolute name, so a corrupt map could be satisfied by the vae next door. Same rule the
     root-weight scanner applies to its own indexes."""

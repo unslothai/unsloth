@@ -1714,14 +1714,10 @@ def repo_pipeline_missing_denoiser(repo_info) -> bool:
         return False
     try:
         revisions = list(_current_revisions(repo_info))
-        scoped = [
-            getattr(rev, "snapshot_path", None) for rev in revisions
-        ]
+        scoped = [getattr(rev, "snapshot_path", None) for rev in revisions]
         scoped = [snapshot for snapshot in scoped if snapshot is not None]
         if scoped:
-            return all(
-                snapshot_pipeline_missing_denoiser(Path(snapshot)) for snapshot in scoped
-            )
+            return all(snapshot_pipeline_missing_denoiser(Path(snapshot)) for snapshot in scoped)
         for rev in revisions:
             snapshot = getattr(rev, "snapshot_path", None)
             for f in rev.files:

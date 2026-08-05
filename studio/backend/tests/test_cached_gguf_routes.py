@@ -2937,8 +2937,7 @@ def test_both_cached_listings_agree_on_a_torn_pipeline(extra_files, manifest_ext
                 snapshot_path = snapshot,
                 last_modified = float(snapshot.stat().st_mtime),
                 files = [
-                    SimpleNamespace(file_name = Path(n).name, file_path = snapshot / n)
-                    for n in files
+                    SimpleNamespace(file_name = Path(n).name, file_path = snapshot / n) for n in files
                 ],
             )
         ],
