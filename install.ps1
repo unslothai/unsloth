@@ -220,6 +220,11 @@ function Install-UnslothStudio {
     # the live python.org listing can't be fetched. The installer URL scheme is
     # stable so an older patch still installs. Bump alongside $PythonVersion.
     $PythonFallbackFullVersion = "3.13.13"
+    # Patch releases the stack cannot run; mirrors PYTHON_SKIP in install.sh.
+    # Windows resolves an installed interpreter and hands uv its path rather
+    # than a version, so uv never picks one of these -- but the machine may
+    # already have it, and $PythonFallbackFullVersion above is what replaces it.
+    $PythonSkip = @("3.13.8")
 
     # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then
     # STUDIO_HOME alias, then USERPROFILE-redirect, then default.
@@ -1469,6 +1474,25 @@ exit 0
         return (Find-CompatiblePython)
     }
 
+    # Find-CompatiblePython matches on the minor version, so a machine whose only
+    # 3.13 is a skipped patch would be "already installed" and the venv would be
+    # built on an interpreter that cannot import torch. Returning $null instead
+    # sends the caller down the install path, which pins $PythonFallbackFullVersion.
+    function Remove-SkippedPython {
+        param($Candidate)
+        if (-not $Candidate) { return $null }
+        try {
+            $raw = (& $Candidate.Path -c "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>$null | Select-Object -First 1)
+        } catch {
+            return $Candidate  # unreadable: not evidence of a bad version
+        }
+        if ($raw -and ($PythonSkip -contains $raw.Trim())) {
+            substep "Python $($raw.Trim()) cannot import torch -- installing another." "Yellow"
+            return $null
+        }
+        return $Candidate
+    }
+
     # ── Windows on ARM: get an x64 CPython ──
     # --architecture x64 forces winget off the ARM64 build; python.org takes the same override.
     function Install-X64Python {
@@ -1494,7 +1518,7 @@ exit 0
     # ── Install Python if no compatible version (3.11-3.13) found ──
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     Write-TauriLog "STEP" "Installing Python"
-    $DetectedPython = Find-CompatiblePython
+    $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
 
     if ($DetectedPython) {
         step "python" "Python $($DetectedPython.Version) already installed"
@@ -1522,7 +1546,7 @@ exit 0
             Refresh-SessionPath
 
             # Re-detect after install (PATH may have changed)
-            $DetectedPython = Find-CompatiblePython
+            $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
 
             if (-not $DetectedPython) {
                 # Python still not functional after winget -- force reinstall.
@@ -1537,7 +1561,7 @@ exit 0
                 } catch { $wingetExit = 1 }
                 $ErrorActionPreference = $prevEAP
                 Refresh-SessionPath
-                $DetectedPython = Find-CompatiblePython
+                $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
             }
         }
 

@@ -571,8 +571,14 @@ echo "=== Apple Silicon x86_64 (Rosetta) venv rebuild ==="
 # Extract the real guard block from install.sh so we exercise the shipped logic
 # (comment header down to its column-0 closing fi).
 _GUARD_FILE=$(mktemp)
-awk '/Guard against two independent Apple Silicon venv problems/{f=1} f{print} f&&/^fi$/{exit}' \
-    "$INSTALL_SH" > "$_GUARD_FILE"
+# The guard calls _python_is_skipped, so the skip list and its reader have to
+# come along or the version check silently never fires.
+{
+    sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"
+    sed -n '/^_python_is_skipped()/,/^}/p' "$INSTALL_SH"
+    awk '/Guard against two independent Apple Silicon venv problems/{f=1} f{print} f&&/^fi$/{exit}' \
+        "$INSTALL_SH"
+} > "$_GUARD_FILE"
 
 if [ ! -s "$_GUARD_FILE" ]; then
     echo "  FAIL: could not extract Apple Silicon venv guard from install.sh"
