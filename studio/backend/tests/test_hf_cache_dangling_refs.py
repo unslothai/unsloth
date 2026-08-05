@@ -3410,6 +3410,74 @@ def test_a_half_landed_shard_set_is_not_rescued_by_the_loose_scan(tmp_path):
     assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
 
 
+@pytest.mark.parametrize("escape", ["../vae/diffusion_pytorch_model.safetensors", "/absolute"])
+def test_a_denoiser_index_naming_a_shard_outside_the_component_is_not_a_denoiser(
+    escape, tmp_path
+):
+    """``component / shard`` follows ``..`` out to a sibling and drops the component entirely for
+    an absolute name, so a corrupt map could be satisfied by the vae next door. Same rule the
+    root-weight scanner applies to its own indexes."""
+    outside = tmp_path / "outside.safetensors"
+    outside.write_bytes(b"\0" * 256)
+    shard = str(outside) if escape == "/absolute" else escape
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                {"weight_map": {"a": shard}}
+            ).encode(),
+            "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
+def test_a_denoiser_index_short_of_the_total_its_shard_names_declare_is_torn(tmp_path):
+    """An index truncated to shard 1 of 2 satisfies every name it maps, but the loader opens the
+    map and nothing else, so the omitted half is silently dropped."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                {"weight_map": {"a": "diffusion_pytorch_model-00001-of-00002.safetensors"}}
+            ).encode(),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+    (snapshot / "transformer" / "diffusion_pytorch_model-00002-of-00002.safetensors").write_bytes(
+        b"\0" * 256
+    )
+    (snapshot / "transformer" / "diffusion_pytorch_model.safetensors.index.json").write_bytes(
+        _dual_format_shard_index(".safetensors")
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is False
+
+
+def test_a_whole_bin_set_does_not_stand_in_for_the_selected_safetensors_index(tmp_path):
+    """diffusers coerces an unset use_safetensors to True, so it resolves only
+    diffusion_pytorch_model.safetensors.index.json here; finding it makes the component sharded,
+    and both the IOError handler and the pickle fallback below it are gated on not is_sharded. The
+    whole .bin set beside it is never opened, so it cannot vouch for the component."""
+    snapshot = _pipeline_snapshot(
+        tmp_path,
+        _FLUX_INDEX,
+        {
+            "transformer/diffusion_pytorch_model.safetensors.index.json": (
+                _dual_format_shard_index(".safetensors")
+            ),
+            "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            "transformer/diffusion_pytorch_model.bin.index.json": _dual_format_shard_index(".bin"),
+            "transformer/diffusion_pytorch_model-00001-of-00002.bin": b"\0" * 256,
+            "transformer/diffusion_pytorch_model-00002-of-00002.bin": b"\0" * 256,
+        },
+    )
+    assert inventory_scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+
+
 def test_an_unsharded_denoiser_still_passes_on_presence_alone(tmp_path):
     """No index, so nothing to be incomplete against: presence alone stands."""
     snapshot = _pipeline_snapshot(

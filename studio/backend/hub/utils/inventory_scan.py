@@ -1492,6 +1492,11 @@ def _current_revisions(repo_info):
 # check so the two cannot drift into disagreeing about the same directory.
 _DENOISER_DIRS = ("transformer", "unet")
 _DENOISER_WEIGHT_SUFFIXES = (".safetensors", ".bin")
+# The one sharded index diffusers resolves inside a component under the default kwargs: with
+# use_safetensors unset it coerces to True, and _fetch_index_file then builds only
+# _add_variant(SAFE_WEIGHTS_INDEX_NAME, variant) -- so with variant unset this exact name and no
+# other. Our load path passes neither (core/inference/diffusion.py, core/inference/video.py).
+_SELECTED_DENOISER_INDEX = "diffusion_pytorch_model.safetensors.index.json"
 
 
 def snapshot_has_pipeline_index(snapshot: Optional[Path]) -> bool:
@@ -1548,6 +1553,23 @@ def _manifest_denoiser_components(snapshot: Path) -> Optional[tuple[str, ...]]:
     return tuple(found)
 
 
+def _denoiser_index_shards(index: Path) -> Optional[set[str]]:
+    """The shard names *index* maps, or None when it is absent, unparseable or maps nothing.
+
+    None is "no evidence" rather than "incomplete": an index we cannot read proves neither that the
+    component loads nor that it does not, so the caller keeps looking.
+    """
+    try:
+        with index.open("r", encoding = "utf-8") as fh:
+            weight_map = json.load(fh).get("weight_map")
+    except (OSError, ValueError, AttributeError, RecursionError):
+        # RecursionError: deeply nested json, otherwise escapes the caller's fail-open guard.
+        return None
+    if not isinstance(weight_map, dict):
+        return None
+    return {str(v) for v in weight_map.values() if v} or None
+
+
 def _component_weights_complete(component: Path) -> bool:
     """Whether *component* holds a denoiser the loader could actually read.
 
@@ -1555,8 +1577,15 @@ def _component_weights_complete(component: Path) -> bool:
     ``*.index.json`` naming every shard, and a fetch that landed shard 1 of 2 alone satisfies a
     first-match test while failing at load.
 
-    Each index is judged on its OWN shard set, not on the union, because one satisfied index is all
-    the loader needs. Some repos are simply published that way: ``stablediffusionapi/sdrealdream``
+    One index is not judged on its own, though: ``_SELECTED_DENOISER_INDEX`` is the only sharded
+    name diffusers resolves here, and a component carrying it is sharded, so the ``.bin`` set beside
+    it is never opened -- ``_get_checkpoint_shard_files`` raises FileNotFoundError on the first
+    missing shard, and both the ``except IOError`` and the pickle fallback below it are gated on
+    ``not is_sharded``. Readable-and-short there is therefore the whole answer. Unreadable is not:
+    that stays no-evidence, so a corrupt index cannot hide the whole weight beside it.
+
+    Every OTHER index is judged on its OWN shard set, not on the union, because one satisfied index
+    is all the loader needs. Some repos are simply published that way: ``stablediffusionapi/sdrealdream``
     ships ``unet/`` with two safetensors shards, a matching index, and a ``.bin.index.json`` naming
     two ``.bin`` shards that exist nowhere in the repo. Our own plan manufactures the same shape
     (``core/inference/diffusion.py`` drops a ``.bin`` whose directory also has a picked
@@ -1573,23 +1602,24 @@ def _component_weights_complete(component: Path) -> bool:
     # iterdir() raises on an unreadable dir, reaching the caller's fail-open guard; glob() would
     # swallow that OSError and read as "no weights".
     next(component.iterdir(), None)
+    # Selected before every other weight here and never fallen back from, so nothing beside it can
+    # vouch for the component once it is readable and short.
+    selected = component / _SELECTED_DENOISER_INDEX
+    if _denoiser_index_shards(selected) is not None:
+        return not _index_cannot_serve_its_shards(selected, set())
     claimed: set[str] = set()
     for index in component.glob("*.json"):
         if ".index." not in index.name:
             continue
-        try:
-            with index.open("r", encoding = "utf-8") as fh:
-                weight_map = json.load(fh).get("weight_map")
-        except (OSError, ValueError, AttributeError, RecursionError):
-            # An unreadable index cannot prove incompleteness.
+        # An unreadable index cannot prove incompleteness.
+        shards = _denoiser_index_shards(index)
+        if shards is None:
             continue
-        if not isinstance(weight_map, dict):
-            continue
-        shards = {str(v) for v in weight_map.values() if v}
-        if not shards:
-            continue
-        # is_file() follows the snapshot symlink, so a dangling blob is correctly absent.
-        if all((component / shard).is_file() for shard in shards):
+        # Same rule the root-weight scanner applies to its own indexes: every name has to resolve
+        # inside the component (``component / "/abs"`` drops the left operand and ``..`` walks out
+        # to a sibling, so a corrupt map could otherwise be satisfied by the vae), be non-empty on
+        # disk, and cover the shard total its own filename declares.
+        if not _index_cannot_serve_its_shards(index, set()):
             return True
         claimed |= shards
     # No whole set, so the last thing that could load is a weight NO index claims: an unsharded
@@ -1674,11 +1704,25 @@ def repo_pipeline_missing_denoiser(repo_info) -> bool:
     multi-GB transformer (the GGUF supplies it). :func:`is_snapshot_partial` misses this (every
     file the manifest expected did arrive), so callers OR the two signals together and mark such
     rows partial. Best-effort: any scan error reports not-missing so a glitch never hides a
-    genuinely complete pipeline."""
+    genuinely complete pipeline.
+
+    Judged by :func:`snapshot_pipeline_missing_denoiser` on the revision the loader opens, so the
+    compatibility ``/api/models/cached-models`` listing and the Hub inventory agree on a row. The
+    fixed-name/first-weight walk below it is only for a scan that records no ``snapshot_path``:
+    without a directory there is no manifest to read and no shard index to check."""
     if not repo_has_pipeline_index(repo_info):
         return False
     try:
-        for rev in _current_revisions(repo_info):
+        revisions = list(_current_revisions(repo_info))
+        scoped = [
+            getattr(rev, "snapshot_path", None) for rev in revisions
+        ]
+        scoped = [snapshot for snapshot in scoped if snapshot is not None]
+        if scoped:
+            return all(
+                snapshot_pipeline_missing_denoiser(Path(snapshot)) for snapshot in scoped
+            )
+        for rev in revisions:
             snapshot = getattr(rev, "snapshot_path", None)
             for f in rev.files:
                 name = str(getattr(f, "file_name", "") or "")
