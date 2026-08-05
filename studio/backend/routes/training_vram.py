@@ -490,11 +490,21 @@ def free_stt_model_for_training(reason: str) -> List[str]:
         from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
 
         mtmd = get_mtmd_stt_sidecar()
-        mtmd_model = mtmd.loaded_model
-        if mtmd_model or mtmd.is_loading():
-            logger.info("Unloading mtmd STT model '%s' for training (%s)", mtmd_model, reason)
-            mtmd.unload()
-            freed.append(f"stt:{mtmd_model or 'mtmd-loading'}")
+        if mtmd.is_loading() and mtmd.cancel_pending_load():
+            logger.info("Cancelling mtmd STT model load for training (%s)", reason)
+            # llama-server only becomes reachable through unload() once it is
+            # ready, so a startup has to be cancelled and reaped instead. Wait
+            # for that before training claims the memory it is allocating.
+            mtmd.wait_for_load_to_settle()
+            if mtmd.loaded_model:
+                mtmd.unload()
+            freed.append("stt:mtmd-loading")
+        else:
+            mtmd_model = mtmd.loaded_model
+            if mtmd_model:
+                logger.info("Unloading mtmd STT model '%s' for training (%s)", mtmd_model, reason)
+                mtmd.unload()
+                freed.append(f"stt:{mtmd_model}")
     except Exception as e:
         logger.warning("Could not unload mtmd STT model: %s", e)
 

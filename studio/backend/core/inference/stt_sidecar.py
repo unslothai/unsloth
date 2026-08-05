@@ -638,7 +638,7 @@ class _SnapshotDownloadState:
                 self._total_bytes = total or None
             # Out of process so cancel() can terminate it; a thread blocked in
             # snapshot_download could not be interrupted.
-            from core.inference.stt_download_worker import spawn_download
+            from core.inference.stt_download_worker import reap_download, spawn_download
 
             args = ["--repo-id", repo, "--revision", revision]
             for selected in selected_files:
@@ -649,7 +649,7 @@ class _SnapshotDownloadState:
                     # cancel() landed between start() and the spawn.
                     process.terminate()
                 self._process = process
-            _, stderr = process.communicate()
+            stderr = reap_download(process)
             if process.returncode != 0:
                 with self._lock:
                     if self._cancelled or process.returncode < 0:

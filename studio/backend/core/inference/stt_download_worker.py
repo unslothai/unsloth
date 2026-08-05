@@ -70,6 +70,22 @@ def spawn_download(args: Sequence[str], hf_token: Optional[str] = None) -> subpr
     return process
 
 
+def reap_download(process: subprocess.Popen) -> bytes:
+    """Wait for a worker and drop its PID. Returns its stderr.
+
+    Callers pair every spawn with this: an adopted PID that outlives the process
+    can be reused by something unrelated, which terminate_all would then signal
+    (macOS and Windows cannot pin a PID to an identity the way /proc does).
+    """
+    from utils.process_lifetime import forget_pid
+
+    try:
+        _, stderr = process.communicate()
+    finally:
+        forget_pid(process.pid)
+    return stderr or b""
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(description = "Download one dictation model.")
     parser.add_argument("--repo-id", required = True)

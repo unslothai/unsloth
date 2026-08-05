@@ -659,6 +659,11 @@ export function VoiceTab() {
     try {
       await startSttDownload(sttModel, hfApiToken(hfToken));
       trackSttDownload(sttModel);
+      // The status effect only re-polls while it can see a download. Its last
+      // read was before this one existed, and the on-demand branch schedules
+      // nothing, so without a nudge the tab shows Download for the whole
+      // transfer.
+      setStatusNonce((nonce) => nonce + 1);
     } catch (error) {
       toast.error(t("settings.voice.dictation.sttDownloadFailed"), {
         description: error instanceof Error ? error.message : undefined,

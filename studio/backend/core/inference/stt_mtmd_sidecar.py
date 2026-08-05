@@ -21,13 +21,14 @@ import subprocess
 import threading
 import time
 import urllib.request
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Iterator, Optional
 
 from loggers import get_logger
 
-from utils.process_lifetime import adopt_pid, child_popen_kwargs
+from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
 from core.inference.stt_sidecar import (
@@ -118,6 +119,30 @@ def ensure_engine_available() -> str:
             "Run `unsloth studio update` to install it."
         )
     return binary
+
+
+def _reap(process: Optional[subprocess.Popen]) -> None:
+    """Stop a child and wait for it, so its port and VRAM are actually free.
+
+    terminate() alone returns before the process has gone, and a child that
+    ignores SIGTERM would hold both until Studio exits.
+    """
+    if process is None:
+        return
+    try:
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(timeout = 10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout = 10)
+    except Exception as exc:  # noqa: BLE001 - shutdown must not raise
+        logger.warning("Could not reap llama-server (pid %s): %s", process.pid, exc)
+    finally:
+        # The PID is dead, so drop it before it can be reused by something else
+        # that terminate_all would then signal.
+        forget_pid(process.pid)
 
 
 def _cached_main_revision(repo: str) -> Optional[str]:
@@ -248,7 +273,7 @@ class _MtmdDownloadState:
             with self._lock:
                 self._total_bytes = total or None
 
-            from core.inference.stt_download_worker import spawn_download
+            from core.inference.stt_download_worker import reap_download, spawn_download
 
             # One worker per file. Both are required, so a cancel between them
             # leaves the model not downloaded. The first resolves "main" and the
@@ -267,7 +292,7 @@ class _MtmdDownloadState:
                     if self._cancelled:
                         process.terminate()
                     self._process = process
-                _, stderr = process.communicate()
+                stderr = reap_download(process)
                 if process.returncode == 0:
                     revision = revision or _cached_main_revision(spec.repo)
                     continue
@@ -312,9 +337,17 @@ class MtmdSttSidecar:
         self._port: Optional[int] = None
         self._model_id: Optional[str] = None
         self._loading = False
+        # Published as soon as Popen returns, so a startup can be preempted
+        # before _process is assigned (readiness takes up to three minutes).
+        self._starting_process: Optional[subprocess.Popen] = None
+        self._load_cancel_event: Optional[threading.Event] = None
+        self._update_in_progress = False
         self._keep_alive_seconds = keep_alive_seconds
         self._idle_timer: Optional[threading.Timer] = None
         self._generation = 0
+        # Transcription runs outside _lock and can outlast the keep-alive, so
+        # the idle timer stays disarmed while any request is in flight.
+        self._active_requests = 0
 
     @property
     def loaded_model(self) -> Optional[str]:
@@ -344,7 +377,7 @@ class MtmdSttSidecar:
 
     def _schedule_idle_unload_locked(self) -> None:
         self._cancel_idle_unload_locked()
-        if self._keep_alive_seconds <= 0:
+        if self._keep_alive_seconds <= 0 or self._active_requests:
             return
         generation = self._generation
         timer = threading.Timer(self._keep_alive_seconds, self._idle_unload, args = (generation,))
@@ -365,20 +398,67 @@ class MtmdSttSidecar:
         self._process = None
         self._port = None
         self._model_id = None
-        if process is None or process.poll() is not None:
-            return
-        try:
-            process.terminate()
-            process.wait(timeout = 10)
-        except Exception:
-            try:
-                process.kill()
-            except Exception:
-                pass
+        _reap(process)
 
     def unload(self) -> None:
         with self._lock:
             self._release_locked()
+
+    def cancel_pending_load(self) -> bool:
+        """Preempt a starting llama-server so training is not raced for VRAM.
+
+        _process is only assigned once the server answers /health, so unload()
+        cannot reach a child that is still allocating. Startup runs outside
+        _lock, so this acts without it: the event makes _wait_for_server give
+        up, and load() then reaps the child.
+        """
+        if not self._loading:
+            return False
+        event = self._load_cancel_event
+        if event is None:
+            return False
+        event.set()
+        process = self._starting_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except Exception:
+                pass
+        return True
+
+    def wait_for_load_to_settle(self) -> None:
+        """Block until a cancelled startup has been reaped and its VRAM freed.
+
+        load() holds _start_lock across startup and its cleanup, so taking it
+        is the wait.
+        """
+        with self._start_lock:
+            pass
+
+    def _raise_if_update_in_progress(self) -> None:
+        if self._update_in_progress:
+            raise SttUnavailableError(
+                "The local transcription runtime is being updated. Try dictation again shortly."
+            )
+
+    @contextmanager
+    def update_maintenance(self) -> Iterator[bool]:
+        """Block new loads while the llama.cpp tree this binary lives in is
+        replaced. The chat backend coordinates its own server; this sidecar runs
+        the same executable, so on Windows a live one blocks the swap.
+
+        The guard is published before waiting for the locks, so a load already
+        past its own check still cannot start a process against a half-swapped
+        tree. Yields whether a warm server had to be unloaded.
+        """
+        self._update_in_progress = True
+        try:
+            with self._start_lock, self._lock:
+                model_was_active = self._process_alive()
+                self._release_locked()
+                yield model_was_active
+        finally:
+            self._update_in_progress = False
 
     @staticmethod
     def _reserve_free_port() -> tuple[socket.socket, int]:
@@ -396,11 +476,13 @@ class MtmdSttSidecar:
         return paths
 
     def load(self, model: Optional[str] = None) -> None:
+        self._raise_if_update_in_progress()
         model_id = resolve_mtmd_model_id(model)
         binary = ensure_engine_available()
         # Startup happens outside _lock (it is slow), so this keeps two callers
         # from each spawning a server and orphaning the first.
         with self._start_lock:
+            self._raise_if_update_in_progress()
             self._load_locked(model_id, binary)
 
     def _load_locked(self, model_id: str, binary: str) -> None:
@@ -410,6 +492,8 @@ class MtmdSttSidecar:
                 return
             self._release_locked()
             model_path, mmproj_path = self._ensure_model_downloaded(model_id)
+            cancel_event = threading.Event()
+            self._load_cancel_event = cancel_event
             self._loading = True
         try:
             sock, port = self._reserve_free_port()
@@ -446,12 +530,19 @@ class MtmdSttSidecar:
                 # Die with Studio, so a crash never orphans a server on the GPU.
                 **child_popen_kwargs(),
             )
+            # Published before the wait, so training can preempt a startup that
+            # is already allocating; _process is not set for another 180s.
+            with self._lock:
+                self._starting_process = process
             adopt_pid(process.pid)  # terminate_all backstop for graceful exits
-            if not self._wait_for_server(process, port):
-                try:
-                    process.terminate()
-                except Exception:
-                    pass
+            if not self._wait_for_server(process, port, cancel_event):
+                # Reap it here: _process was never assigned, so unload() cannot
+                # reach a child that ignores SIGTERM and keeps port and VRAM.
+                _reap(process)
+                if cancel_event.is_set():
+                    raise SttUnavailableError(
+                        "Dictation model loading was cancelled so training could start."
+                    )
                 raise SttUnavailableError(f"llama-server did not become ready for '{model_id}'.")
             with self._lock:
                 self._process = process
@@ -462,12 +553,20 @@ class MtmdSttSidecar:
         finally:
             with self._lock:
                 self._loading = False
+                self._load_cancel_event = None
+                self._starting_process = None
 
     @staticmethod
-    def _wait_for_server(process: subprocess.Popen, port: int) -> bool:
+    def _wait_for_server(
+        process: subprocess.Popen,
+        port: int,
+        cancel_event: Optional[threading.Event] = None,
+    ) -> bool:
         deadline = time.monotonic() + _SERVER_START_TIMEOUT_SECONDS
         url = f"http://127.0.0.1:{port}/health"
         while time.monotonic() < deadline:
+            if cancel_event is not None and cancel_event.is_set():
+                return False
             if process.poll() is not None:
                 return False
             try:
@@ -501,14 +600,20 @@ class MtmdSttSidecar:
         self.load(model_id)
         with self._lock:
             port = self._port
-        if port is None:
-            raise SttUnavailableError("The dictation server is not running.")
+            if port is None:
+                raise SttUnavailableError("The dictation server is not running.")
+            # Long audio can outlast the keep-alive, and _post_transcribe runs
+            # outside the lock, so disarm the timer rather than let it kill
+            # llama-server mid-request and throw the dictation away.
+            self._active_requests += 1
+            self._cancel_idle_unload_locked()
         try:
             # Outside the lock: a held lock would block unload, including the
             # one a training run performs, for the whole request timeout.
             text = self._post_transcribe(port, model_id, wav_bytes)
         finally:
             with self._lock:
+                self._active_requests -= 1
                 self._schedule_idle_unload_locked()
         duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
         return {
