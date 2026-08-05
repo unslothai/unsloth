@@ -13,6 +13,7 @@ import {
 import type * as React from "react";
 
 import { isBlockedByActiveModal } from "@/components/ui/tooltip-modal-layer";
+import { resolveTooltipOpen } from "@/components/ui/tooltip-open-state";
 import { cn } from "@/lib/utils";
 
 type ToggleFn = () => void;
@@ -177,6 +178,11 @@ function Tooltip({
   // dialog, with the pointer somewhere else entirely.
   const [hoverOpen, setHoverOpen] = useState(false);
   const [clickOpen, setClickOpen] = useState(false);
+  // A controlled tooltip's owner cannot be reset from here, and it never saw
+  // the pointerleave a modal swallowed, so its `open` is still true when the
+  // modal closes. Stay shut until the owner says false at least once.
+  const [dismissedUntilOwnerResets, setDismissedUntilOwnerResets] =
+    useState(false);
   const [modalBlockStore] = useState(createModalBlockStore);
   const blocked = useSyncExternalStore(
     modalBlockStore.subscribe,
@@ -204,8 +210,16 @@ function Tooltip({
     if (!blocked) return;
     setHoverOpen(false);
     setClickOpen(false);
+    setDismissedUntilOwnerResets(true);
     controlledOnOpenChange?.(false);
   }, [blocked, controlledOnOpenChange]);
+
+  // `panel-resize-handle.tsx` passes `open` with no onOpenChange, so telling it
+  // does nothing and its `hovered` stays true. Releasing on its say-so alone
+  // would put the tooltip back with the pointer somewhere else entirely.
+  useEffect(() => {
+    if (controlledOpen === false) setDismissedUntilOwnerResets(false);
+  }, [controlledOpen]);
 
   // A pin must not outlive its interaction: once a dialog covers the trigger,
   // pointerleave never fires and Radix can no longer close it. Presses on a
@@ -249,9 +263,13 @@ function Tooltip({
           data-slot="tooltip"
           // Always a boolean, so Radix keeps no separate open state that could
           // survive a modal and resurface after it closes.
-          open={
-            blocked ? false : isControlled ? controlledOpen : hoverOpen || clickOpen
-          }
+          open={resolveTooltipOpen({
+            blocked,
+            controlledOpen,
+            dismissedUntilOwnerResets,
+            hoverOpen,
+            clickOpen,
+          })}
           onOpenChange={onOpenChange}
           {...props}
         />
