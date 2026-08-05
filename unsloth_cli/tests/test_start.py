@@ -6494,6 +6494,32 @@ def test_codex_attach_check_strict_accepts_the_full_stem(monkeypatch):
     start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "model-Q4_K_M")
 
 
+def test_codex_attach_check_strict_rejects_nested_basename_labels(monkeypatch):
+    # The local resolver answers the full relative stem, never the basename of
+    # a nested file, so the gate must not accept what the load cannot resolve.
+    _fake_variants(
+        monkeypatch,
+        {
+            "variants": [{"quant": "BF16", "filename": "BF16/model.gguf"}],
+            "resolved_locally": True,
+        },
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "model")
+
+
+def test_codex_attach_check_fails_all_partial_local_answers(monkeypatch, capsys):
+    # A local answer of only torn rows proves a load llama cannot serve; a hub
+    # answer keeps passing because the downloader resumes hub partials.
+    rows = {"variants": [{"quant": "Q4_K_M", "partial": True}], "resolved_locally": True}
+    _fake_variants(monkeypatch, rows)
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "./m")
+    assert "incomplete GGUF weights" in capsys.readouterr().err
+    _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M", "partial": True}]})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "unsloth/Qwen3-0.6B-GGUF")
+
+
 def test_codex_attach_check_local_answers_take_exact_labels_only(monkeypatch):
     # The local resolver accepts exact labels only, so a local answer must not
     # let the filename-token tier vouch for a shorter quant; hub answers keep

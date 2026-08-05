@@ -799,10 +799,18 @@ async def get_gguf_variants_answer(
                     size = local_target.stat().st_size
                 except OSError:
                     size = 0
+                # Label the row with the load resolver's own extractor over the
+                # same parent/name context it reads, so the advertised quant is
+                # by construction one the echoed load resolves (the hub-side
+                # extractor disagrees on shapes like F16-checkpoint-Q4_K_M).
+                from utils.models.model_config import _extract_quant_label
+
                 variants = [
                     GgufVariantInfo(
                         filename = local_target.name,
-                        quant = extract_quant_label(local_target.name),
+                        quant = _extract_quant_label(
+                            f"{local_target.parent.name}/{local_target.name}"
+                        ),
                         size_bytes = size,
                     )
                 ]

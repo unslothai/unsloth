@@ -1864,9 +1864,10 @@ def _answer_offers_variant(
             return True
         if isinstance(filename, str):
             # The local resolver also accepts the exact shard-stripped stem as
-            # a label, so strict mode still honors that full-name spelling.
+            # a label -- the full relative spelling only, never the basename of
+            # a nested file, which that resolver does not answer.
             stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", filename.rsplit(".", 1)[0]).lower()
-            if wanted in (stem, stem.rsplit("/", 1)[-1]):
+            if wanted == stem:
                 return True
         if strict:
             if not isinstance(quant, str):
@@ -2012,12 +2013,21 @@ def _attach_gguf_check_for_codex(
             # so the looser filename-token tier is for hub answers alone. The
             # server says which one answered (resolved_locally); path syntax
             # and bare names cover servers that predate the field.
+            local_answer = bool(info.get("resolved_locally"))
+            # A local answer of nothing but torn rows has no resumable side:
+            # llama-server would be handed the incomplete split only after the
+            # teardown, so the load it proves is one that cannot serve.
+            if local_answer and all(
+                isinstance(row, dict) and row.get("partial") is True for row in variants
+            ):
+                _fail(
+                    f"{candidate} has only incomplete GGUF weights on the server; "
+                    "finish or re-copy the download before pointing Codex at it."
+                )
             if variant and not _answer_offers_variant(
                 variants,
                 variant,
-                strict = bool(info.get("resolved_locally"))
-                or _is_model_path(candidate)
-                or "/" not in candidate,
+                strict = local_answer or _is_model_path(candidate) or "/" not in candidate,
             ):
                 _fail_codex_variant_missing(candidate, variant, variants)
             return

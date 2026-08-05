@@ -168,6 +168,10 @@ class GgufVariantsResponse(BaseModel):
         None,
         description = "Native max context from GGUF metadata; set once a variant is downloaded",
     )
+    resolved_locally: bool = Field(
+        False,
+        description = "Whether this answer came from resolving repo_id as a local path",
+    )
 
 
 class LocalModelInfo(BaseModel):

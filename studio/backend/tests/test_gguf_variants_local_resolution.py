@@ -136,6 +136,20 @@ def test_direct_gguf_file_quant_round_trips_case_insensitively(in_tmp_cwd):
     assert dir_config is not None and dir_config.is_gguf
 
 
+def test_direct_gguf_label_is_the_load_resolvers_label(in_tmp_cwd):
+    # The two extractors disagree on shapes like F16-checkpoint-Q4_K_M; the
+    # advertised quant must be the one the echoed load resolves.
+    from utils.models.model_config import ModelConfig
+
+    gguf = in_tmp_cwd / "F16-checkpoint-Q4_K_M.gguf"
+    gguf.write_bytes(b"GGUF")
+
+    quant = _variants(os.fspath(gguf)).variants[0].quant
+    config = ModelConfig.from_identifier(os.fspath(gguf), gguf_variant = quant)
+    assert config is not None and config.is_gguf
+    assert config.gguf_file == os.fspath(gguf)
+
+
 def test_direct_gguf_bpw_label_round_trips_through_the_load_path(in_tmp_cwd):
     # The hub-side extractor drops the bpw modifier, so the advertised quant is
     # the shorter label; echoing it back must still resolve this same file.
