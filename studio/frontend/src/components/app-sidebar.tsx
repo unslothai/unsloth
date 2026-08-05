@@ -2390,10 +2390,13 @@ export function AppSidebar() {
         <div
           aria-hidden="true"
           className={cn(
-            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
-            // Shorter fade when the update card sits above the profile so the
-            // list reads closer to it.
-            showUpdateCard ? "h-3" : "h-10",
+            // The scroll area hard-clips at the fade's bottom edge, so a plain
+            // ramp is still part-transparent there and slices the last row
+            // mid-glyph. from-[16px] holds it opaque across the clip.
+            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[16px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
+            // Shorter fade with the update card so the list reads closer to
+            // it, but still tall enough to clear a row.
+            showUpdateCard ? "h-9" : "h-14",
             canScrollDown ? "opacity-100" : "opacity-0",
           )}
         />
