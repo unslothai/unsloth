@@ -561,6 +561,21 @@ pub async fn start_managed_repair(
             );
         }
         Err(msg) => {
+            // A stop is the user quitting or cancelling, not a broken install. Running
+            // the installer here rewrites a working venv and leaves it half-built when
+            // the app exits underneath it.
+            if msg == update::UPDATE_STOPPED {
+                info!("Managed repair update stopped; skipping installer fallback");
+                // Only a user stop reaches this branch, and the support report prints
+                // final_status verbatim. Matches record_pending_elevation_canceled.
+                diagnostics::finish_repair_group(
+                    &diagnostics_state,
+                    &repair_group_id,
+                    "canceled",
+                    Some(msg.clone()),
+                );
+                return Err(msg);
+            }
             if msg.to_ascii_lowercase().contains("already running") {
                 error!("Managed repair update conflict: {}", msg);
                 diagnostics::finish_repair_group(
