@@ -75,8 +75,7 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
-      # Static file reads, so it runs first and fails in seconds. Repo-root
-      # pytest discovery is pinned to tests/security, so nothing else runs it.
+      # Static reads, so it runs first and fails fast; nothing else runs it.
       - name: Playwright locator contract (static)
         run: |
           python -m pip install --quiet 'pytest>=8'
