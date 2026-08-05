@@ -111,15 +111,22 @@ def _load_plain(model_max_seq_length = _MODEL_MAX_SEQ_LENGTH):
     return model.to("cpu"), tok
 
 
-def _build(tmp_path, dataset = None, model_max_seq_length = _MODEL_MAX_SEQ_LENGTH, **config_kwargs):
+def _build(
+    tmp_path,
+    dataset = None,
+    model_max_seq_length = _MODEL_MAX_SEQ_LENGTH,
+    **config_kwargs,
+):
     """Construct the Unsloth-patched SFTTrainer over a long, truncatable dataset."""
     from datasets import Dataset
     from trl import SFTConfig, SFTTrainer
 
     assert SFTTrainer.__name__ == "UnslothSFTTrainer", "SFT patch did not apply"
     model, tok = _load_plain(model_max_seq_length)
-    ds = dataset(tok) if callable(dataset) else Dataset.from_list(
-        [{"text": "The quick brown fox. " * 200}] * 4
+    ds = (
+        dataset(tok)
+        if callable(dataset)
+        else Dataset.from_list([{"text": "The quick brown fox. " * 200}] * 4)
     )
     cfg = SFTConfig(
         output_dir = str(tmp_path),
@@ -252,19 +259,19 @@ def test_unprepared_datasets_keep_their_length_cap(
     trainer = _build(tmp_path, dataset = dataset, **config_kwargs)
     args = trainer.args
 
-    assert args.max_length == _MODEL_MAX_SEQ_LENGTH, (
-        f"{name}: the length cap must not be cleared for an unprepared dataset"
-    )
+    assert (
+        args.max_length == _MODEL_MAX_SEQ_LENGTH
+    ), f"{name}: the length cap must not be cleared for an unprepared dataset"
     if trl_has_guard:
-        assert args.padding_free is False, (
-            f"{name}: padding-free must be dropped, since it disables truncation"
-        )
+        assert (
+            args.padding_free is False
+        ), f"{name}: padding-free must be dropped, since it disables truncation"
     # The rows themselves stay long: enforcement lives in the collator.
     assert _longest(trainer) > _MODEL_MAX_SEQ_LENGTH
     if getattr(trainer.data_collator, "max_length", None) is not None:
-        assert _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH, (
-            f"{name}: overlength rows reached the model"
-        )
+        assert (
+            _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH
+        ), f"{name}: overlength rows reached the model"
 
 
 def test_padding_free_off_keeps_max_length(tmp_path):
