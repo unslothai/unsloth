@@ -54,6 +54,10 @@ def _env_int(name: str, default: int) -> int:
 _STOP_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_GRACE_S", 15)
 _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
+# Same escalation for a run that ends on its own. The terminal event is the worker's last
+# act (model already on disk), so everything after it is teardown and killing loses
+# nothing. Longer than the stop grace: nobody is waiting on a cancel here.
+_COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S", 60)
 
 # Watchdog DB finalize: a few short retries so a transient SQLite lock doesn't lose the
 # terminal state, since the watchdog is the sole finalizer once _proc is dropped.
@@ -1136,10 +1140,15 @@ class TrainingBackend:
         self,
         cancel: bool,
         expected_job_id: Optional[str] = None,
+        grace_s: Optional[float] = None,
+        terminal_seen: bool = False,
     ) -> None:
-        """Start a daemon that force-terminates the worker if a requested stop does not
-        exit on its own. No-op if no worker is alive or a live watchdog already watches
-        this proc (a stale watchdog on an old proc never blocks a new run's watcher)."""
+        """Start a daemon that force-terminates the worker if it does not exit on its own.
+        Armed by a requested stop and by a run reaching its own terminal event, since a
+        worker wedged in teardown strands the UI either way. No-op if no worker is alive or
+        a live watchdog already watches this proc (a stale watchdog on an old proc never
+        blocks a new run's watcher). ``grace_s`` overrides the post-terminal grace;
+        ``terminal_seen`` starts it now, for an ending that never sets ``_complete_seen``."""
         with self._lock:
             if expected_job_id is not None and self.current_job_id != expected_job_id:
                 return
@@ -1155,6 +1164,7 @@ class TrainingBackend:
             watchdog = threading.Thread(
                 target = self._stop_watchdog_loop,
                 args = (proc, cancel, self.current_job_id),
+                kwargs = {"grace_s": grace_s, "terminal_seen": terminal_seen},
                 name = f"stop-watchdog-{self.current_job_id or 'unknown'}",
                 daemon = True,
             )
@@ -1167,12 +1177,16 @@ class TrainingBackend:
         target_proc: "mp.Process",
         cancel: bool,
         watched_job_id: Optional[str] = None,
+        grace_s: Optional[float] = None,
+        terminal_seen: bool = False,
     ) -> None:
-        """Escalate a stuck stop to force_terminate(): grace after "complete", else the
-        absolute backstop (see the module timeouts). No-ops on a clean exit; exits
-        silently if a new run replaces the worker."""
+        """Escalate a worker that will not exit to force_terminate(): grace after
+        "complete", else the absolute backstop (see the module timeouts). No-ops on a clean
+        exit; exits silently if a new run replaces the worker. ``grace_s`` overrides
+        ``_STOP_GRACE_S``; ``terminal_seen`` starts the grace at entry so an ending that
+        never sets ``_complete_seen`` (an error) does not sit out the whole backstop."""
         started = time.monotonic()
-        complete_at: Optional[float] = None
+        complete_at: Optional[float] = started if terminal_seen else None
         reason = ""
         while True:
             with self._lock:
@@ -1184,9 +1198,10 @@ class TrainingBackend:
                 return
             now = time.monotonic()
             abs_timeout = _CANCEL_TIMEOUT_S if cancelling else _STOP_TIMEOUT_S
+            grace = _STOP_GRACE_S if grace_s is None else grace_s
             if complete_at is None and self._complete_seen.is_set():
                 complete_at = now
-            if complete_at is not None and now - complete_at >= _STOP_GRACE_S:
+            if complete_at is not None and now - complete_at >= grace:
                 reason = "worker still alive after save"
                 break
             if now - started >= abs_timeout:
@@ -1254,9 +1269,12 @@ class TrainingBackend:
         with self._lock:
             if self.current_job_id != run_id:
                 return
-            self._progress.status_message = error_message or "Training stopped."
             if error_message:
-                self._progress.error = error_message
+                self._progress.status_message = self._progress.error = error_message
+            elif status != "completed":
+                self._progress.status_message = "Training stopped."
+            # A completed run keeps its own message: reaping a worker wedged in
+            # teardown after the save must not report the finished run as stopped.
         # Create the row if a start-time create failed (no-op otherwise; skips when the pump
         # is mid-create, in which case its create-then-finalize records the run instead).
         self._ensure_db_run_created()
@@ -1716,7 +1734,14 @@ class TrainingBackend:
                 self._safe_handle_event(event)
                 continue
 
-            if self._proc.is_alive():
+            # Snapshot: the watchdog drops _proc as its last step, so reading the
+            # attribute twice can hit None and kill this thread. A dropped handle
+            # means the watchdog already finalized the run.
+            proc = self._proc
+            if proc is None:
+                self._pump_running = False
+                return
+            if proc.is_alive():
                 continue
 
             # Worker exited. Drain the backlog and finalize, guarded so a slow or
@@ -2058,6 +2083,18 @@ class TrainingBackend:
             self._flush_metrics_to_db()
         elif db_action == "finalize":
             self._finalize_run_in_db(**db_action_kwargs)
+
+        # Bound how long a worker that will not exit can hold the UI: until _proc dies
+        # is_training_active() stays true, so /status reports "training" and the SSE
+        # never sends its final "complete" (bar stuck at 100%). No-ops on the normal
+        # prompt exit. Outside the lock: _start_stop_watchdog takes it, not reentrant.
+        if etype in ("complete", "error"):
+            self._start_stop_watchdog(
+                cancel = False,
+                expected_job_id = db_action_kwargs.get("expected_job_id"),
+                grace_s = _COMPLETE_EXIT_GRACE_S,
+                terminal_seen = True,
+            )
 
         if etype == "progress":
             self._log_training_progress()

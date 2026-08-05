@@ -1,13 +1,19 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stop-watchdog escalation for a stuck training stop.
+"""Watchdog escalation for a training worker that will not exit.
 
 A save-stop signals the worker and waits for it to save and exit. On some platforms the
 worker saves but then wedges in post-save GPU/driver teardown and never exits, leaving the
 run stuck in "Stopping..." forever. These tests pin the bounded recovery: the watchdog
 escalates to force_terminate() a short grace after "complete" (save done) or after an
 absolute timeout (hang during save), and never force-kills a worker that exits cleanly.
+
+Section (d) covers the same wedge on a run that ends by itself: the model is on disk but
+the process lingers, and since is_training_active() is liveness-based the bar sits at 100%
+forever (issue #7897). The pump arms the same watchdog on a terminal event, and the
+escalation must not relabel a completed run as stopped.
+
 Fakes only; no GPU, network, or subprocess.
 """
 
@@ -48,6 +54,7 @@ _stub("matplotlib", _mpl)
 _stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
+_hw.get_device = lambda *a, **k: None
 _stub("utils.hardware", _hw)
 _npl = _types.ModuleType("utils.native_path_leases")
 _npl.native_path_secret_removed_for_child_start = lambda: contextlib.nullcontext()
@@ -266,6 +273,8 @@ def test_new_run_gets_its_own_watchdog(monkeypatch):
         target_proc,
         cancel,
         watched_job_id = None,
+        grace_s = None,
+        terminal_seen = False,
     ):
         started.append(target_proc)
         # No timeout: the finally always releases this, so a superseded watchdog stays
@@ -905,3 +914,174 @@ def test_finish_stopped_run_error_leaves_new_run_untouched(monkeypatch):
     b._finish_stopped_run("job_old", None, [{"step": 1}], 1, None, None, [])
 
     assert b._run_finalized is True, "must not unclaim the new run's finalize"
+
+
+# ----------------------------------------------------------------------------
+# (d) A run that ends on its own and whose worker then wedges in teardown.
+# ----------------------------------------------------------------------------
+
+
+def _complete_event(output_dir = "/tmp/out"):
+    return {
+        "type": "complete",
+        "output_dir": output_dir,
+        "status_message": f"Training completed! Model saved to {output_dir}",
+    }
+
+
+def test_terminal_event_arms_watchdog_and_reaps_wedged_worker(monkeypatch):
+    # Saved, reported "complete", then never exited. Nothing used to reap it, so
+    # is_training_active() stayed true off _proc.is_alive() and the UI sat at 100%.
+    monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # ensure the grace fires, not the cap
+    b = TrainingBackend()
+    calls = _record_force_terminate(monkeypatch, b)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: None)
+
+    proc = _FakeProc(alive = True)
+    b._proc = proc
+    b.current_job_id = "job_1"
+
+    b._handle_event(_complete_event())
+
+    assert b._complete_seen.is_set()
+    assert b._stop_watchdog is not None, "a terminal event must arm the exit watchdog"
+    assert _wait_until(
+        lambda: calls == ["force", "final"]
+    ), "a worker still alive after the completion grace must be force-terminated"
+    b._stop_watchdog.join(timeout = 5)
+
+
+def test_terminal_error_event_also_arms_watchdog(monkeypatch):
+    # An error never sets _complete_seen, so terminal_seen starts the grace; without it
+    # the watchdog would wait out the full absolute backstop.
+    monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
+    b = TrainingBackend()
+    calls = _record_force_terminate(monkeypatch, b)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: None)
+
+    b._proc = _FakeProc(alive = True)
+    b.current_job_id = "job_1"
+
+    b._handle_event({"type": "error", "error": "boom", "stack": ""})
+
+    assert not b._complete_seen.is_set(), "an error is not a completed save"
+    assert _wait_until(lambda: calls == ["force", "final"])
+    b._stop_watchdog.join(timeout = 5)
+
+
+def test_normal_completion_never_force_terminates(monkeypatch):
+    # The common path: the worker exits a second or two after "complete". Arming on
+    # every run must stay invisible there.
+    monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 5.0)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 10.0)
+    b = TrainingBackend()
+    calls = _record_force_terminate(monkeypatch, b)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: None)
+
+    proc = _FakeProc(alive = True)
+    b._proc = proc
+    b.current_job_id = "job_1"
+
+    b._handle_event(_complete_event())
+    time.sleep(0.1)
+    proc._alive = False  # worker exits on its own, well inside the grace
+
+    b._stop_watchdog.join(timeout = 5)
+    assert calls == [], "a worker that exits on its own must never be force-terminated"
+
+
+def test_completion_watchdog_does_not_preempt_a_stop_watchdog(monkeypatch):
+    # A user stop already armed the tighter grace; the terminal event must not
+    # replace it with the longer completion grace.
+    b = TrainingBackend()
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: None)
+    monkeypatch.setattr(b, "_stop_watchdog_loop", lambda *a, **k: None)
+
+    b._proc = _FakeProc(alive = True)
+    b.current_job_id = "job_1"
+    b._start_stop_watchdog(cancel = False)
+    first = b._stop_watchdog
+    first.join(timeout = 5)
+
+    # Still the watcher of record for this proc while it is alive.
+    b._stop_watchdog = first
+    b._handle_event(_complete_event())
+    assert b._stop_watchdog is first or not first.is_alive()
+
+
+def test_escalation_finalize_keeps_completed_status_message(monkeypatch):
+    # Reaping a wedged worker after a successful save must not relabel the run: the
+    # message drives the UI banner.
+    b = TrainingBackend()
+    b.current_job_id = "job_1"
+    b._output_dir = "/tmp/out"
+    b._progress.is_completed = True
+    b._progress.status_message = "Training completed! Model saved to /tmp/out"
+    b._terminal_finalize_payload = {
+        "status": "completed",
+        "output_dir": "/tmp/out",
+        "clear_output_dir": False,
+        "expected_job_id": "job_1",
+    }
+    b._run_finalized = True  # the pump already recorded the terminal DB state
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+
+    proc = _FakeProc(alive = False)
+    b._proc = proc
+    b._finalize_stopped_after_escalation(target_proc = proc, watched_job_id = "job_1")
+
+    assert b._progress.status_message == "Training completed! Model saved to /tmp/out"
+    assert b._progress.error is None
+    assert b._progress.is_completed is True
+    assert b._progress.is_training is False
+    assert b._proc is None, "the handle must be dropped so is_training_active() goes false"
+
+
+def test_escalation_finalize_still_reports_a_stop_as_stopped(monkeypatch):
+    # The pre-existing stop path keeps its message.
+    b = TrainingBackend()
+    b.current_job_id = "job_1"
+    b._should_stop = True
+    b._output_dir = "/tmp/out"
+    b._terminal_finalize_payload = {
+        "status": "stopped",
+        "output_dir": "/tmp/out",
+        "clear_output_dir": False,
+        "expected_job_id": "job_1",
+    }
+    b._run_finalized = True
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+
+    proc = _FakeProc(alive = False)
+    b._proc = proc
+    b._finalize_stopped_after_escalation(target_proc = proc, watched_job_id = "job_1")
+
+    assert b._progress.status_message == "Training stopped."
+
+
+def test_pump_loop_exits_when_the_watchdog_drops_the_handle(monkeypatch):
+    # The watchdog drops _proc last. The pump read the attribute twice, so a drop
+    # between the two raised AttributeError and silently killed the pump.
+    b = TrainingBackend()
+    proc = _FakeProc(alive = True)
+    b._proc = proc
+    b._event_queue = queue.Queue()
+
+    def _read_queue(_q, timeout_sec = None):
+        b._proc = None  # watchdog finalizes concurrently
+        return None
+
+    monkeypatch.setattr(b, "_read_queue", _read_queue)
+
+    done = threading.Event()
+
+    def _run():
+        b._pump_loop()
+        done.set()
+
+    t = threading.Thread(target = _run, daemon = True)
+    t.start()
+    assert done.wait(timeout = 5), "pump must return cleanly, not die on a dropped handle"
+    assert b._pump_running is False
