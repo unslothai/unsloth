@@ -10,6 +10,7 @@ permissions:
 concurrency:
   group: release-desktop-${{ github.repository }}
   cancel-in-progress: false
+  queue: max
 
 jobs:
   publish-updater:
@@ -34,9 +35,35 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/desktop-updater" "$RUNNER_TEMP/desktop-current"
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            > "$RUNNER_TEMP/source-release.json"
           gh release download "$RELEASE_TAG" --pattern latest.json --dir "$RUNNER_TEMP/desktop-updater"
           test -s "$RUNNER_TEMP/desktop-updater/latest.json"
-          gh release download desktop-latest --pattern latest.json --dir "$RUNNER_TEMP/desktop-current" 2>/dev/null || true
+
+          channel_json="$RUNNER_TEMP/desktop-latest-release.json"
+          channel_error="$RUNNER_TEMP/desktop-latest-error.txt"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" \
+            > "$channel_json" 2> "$channel_error"; then
+            if python3 - "$channel_json" <<'PY'
+          import json
+          import pathlib
+          import sys
+
+          channel = json.loads(pathlib.Path(sys.argv[1]).read_text())
+          names = {asset.get('name') for asset in channel.get('assets', [])}
+          sys.exit(0 if 'latest.json' in names else 1)
+          PY
+            then
+              gh release download desktop-latest --pattern latest.json --dir "$RUNNER_TEMP/desktop-current"
+            else
+              echo "desktop-latest has no latest.json; allowing first channel publish."
+            fi
+          elif grep -Fq '(HTTP 404)' "$channel_error"; then
+            echo "No desktop-latest release found; allowing first channel publish."
+          else
+            cat "$channel_error" >&2
+            exit 1
+          fi
 
       - name: Remove standalone signature assets
         env:
@@ -59,6 +86,7 @@ jobs:
           import pathlib
           import re
           import sys
+          import urllib.parse
 
           def parse(value: str):
               value = value.removeprefix('v')
@@ -114,6 +142,12 @@ jobs:
           if not tag_match:
               sys.exit(f'Not a desktop version release: {release_tag}')
 
+          source_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'source-release.json')
+          source = json.loads(source_path.read_text())
+          if source.get('tag_name') != release_tag or source.get('draft'):
+              sys.exit(f'Source release is not the published release {release_tag}')
+          release_assets = {asset.get('name') for asset in source.get('assets', [])}
+
           latest_path = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-updater', 'latest.json')
           data = json.loads(latest_path.read_text())
           if not isinstance(data, dict):
@@ -137,6 +171,9 @@ jobs:
                   sys.exit(f'Platform {platform} URL must point at {release_tag}: {url}')
               if not isinstance(signature, str) or not signature.strip():
                   sys.exit(f'Platform {platform} missing signature')
+              bundle_name = urllib.parse.unquote(urllib.parse.urlparse(url).path.rsplit('/', 1)[-1])
+              if bundle_name not in release_assets:
+                  sys.exit(f'Platform {platform} bundle is missing from release assets: {bundle_name}')
               for family in required:
                   if platform == family or platform.startswith(family + '-'):
                       required[family] = True
