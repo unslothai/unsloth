@@ -1595,12 +1595,18 @@ def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "s
         bare = word.strip('"')
         if bare.startswith("-") or _is_start_switch(bare):
             break  # an option ends the path and starts the arguments
-        # Joining words is how a path holding spaces is recovered, and only a
-        # word carrying a SEPARATOR continues one: `C:\Program Files\PowerShell\
-        # 7\pwsh` runs pwsh, while the `rm` of `C:\tools\notepad rm` is a file
-        # notepad is being run on. The two are the same list of words otherwise,
-        # and joining both read the second as a program named rm.
-        if program and "\\" not in bare and "/" not in bare:
+        # Joining words is how a path holding spaces is recovered, and what
+        # continues one is a RELATIVE fragment: `C:\Program Files\PowerShell\7\
+        # pwsh` runs pwsh, while the `rm` of `C:\tools\notepad rm` is a file
+        # notepad is being run on. A word that opens a path of its own, or names
+        # a URL, is an argument however many separators it carries, and reading
+        # those as continuations hid the program behind them: the basename of
+        # `cmd /c "C:\tmp\curl http://x"` came back as `x`.
+        if program and (
+            ("\\" not in bare and "/" not in bare)
+            or _PATH_FRAGMENT_RE.match(bare)
+            or _URL_SCHEME_RE.match(bare)
+        ):
             break
         program.append(bare)
         if os.path.splitext(bare)[1].lower() in _WINDOWS_EXE_SUFFIXES:
@@ -2089,7 +2095,9 @@ def _find_blocked_commands(command: str) -> set[str]:
         blocked.update(re.findall(pattern, lowered))
 
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
-    _SHELLS_WIN = {"cmd", "cmd.exe"}
+    # cmd expands %COMSPEC% before it runs anything, and it names cmd.exe, so
+    # `%COMSPEC% /c powershell` is a shell invocation spelled the long way.
+    _SHELLS_WIN = {"cmd", "cmd.exe", "%comspec%"}
 
     def _start_is_run(i: int) -> bool:
         """Whether the START at ``tokens[i]`` is one the shell runs."""
@@ -2154,6 +2162,14 @@ def _find_blocked_commands(command: str) -> set[str]:
                     forwarded, _overflowed = _exec_child_index(target)
                     if forwarded not in (-1, target):
                         command_indexes.add(forwarded)
+                    for word in {target, forwarded} - {-1}:
+                        # The `e` scan reads its own list, built while the main
+                        # walk ran, so a sed START launches was never read as one:
+                        # `start "" sed '1e rm -f victim' input` runs that script
+                        # and shells out from it. Registered here for the same
+                        # reason `-exec` children are.
+                        if _is_sed_command(_token_basename(tokens[word])):
+                            sed_indexes.append(word)
                 continue
             # A shell runs the word behind its own -c or /c, which the outer
             # shell sees only as an argument. Gated on the shell itself being

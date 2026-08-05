@@ -1159,3 +1159,44 @@ def test_a_word_without_a_separator_does_not_continue_a_path(windows_terminal, c
 )
 def test_a_spaced_or_suffixless_program_path_is_still_read(windows_terminal, command):
     assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\tmp\\curl http://x"',
+        'start "" "C:\\tmp\\curl http://x"',
+        'cmd /c "C:\\tmp\\curl C:\\out\\x"',
+    ],
+)
+def test_an_argument_is_not_a_path_continuation(windows_terminal, command):
+    # What continues a path holding spaces is a RELATIVE fragment. A word that
+    # opens a path of its own, or names a URL, is an argument however many
+    # separators it carries, and reading those as continuations took the
+    # basename off the ARGUMENT: `C:\tmp\curl http://x` came back as `x`.
+    assert "curl" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "start \"\" sed '1e rm -f victim' input",
+        'cmd //c start "" sed "1e rm -f victim" input',
+    ],
+)
+def test_a_sed_that_start_launches_is_read_as_sed(windows_terminal, command):
+    # The `e` scan reads its own list, built while the main walk ran, so a sed
+    # START launches was never read as one even though the launch itself was
+    # published. GNU sed's `e` shells out, so that script really deletes.
+    assert "rm" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["%COMSPEC% /c powershell", 'cmd /c start "" %COMSPEC% /c powershell'],
+)
+def test_comspec_names_cmd(windows_terminal, command):
+    # cmd expands %COMSPEC% before running anything and it names cmd.exe, so
+    # this is a shell invocation spelled the long way. Comparing the literal
+    # token to the shell names left the payload behind its /c unread.
+    assert "powershell" in tools._find_blocked_commands(command)
