@@ -34,8 +34,8 @@ router = APIRouter()
 
 @router.post("/upload", response_model = UploadDatasetResponse, deprecated = True)
 async def upload_dataset(
-    file: UploadFile | None = File(None),
-    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+    file: Optional[UploadFile] = File(None),
+    native_path_lease: Optional[str] = Form(None, alias = "nativePathLease"),
     current_subject: str = Depends(get_current_subject),
 ) -> UploadDatasetResponse:
     return await local.upload_dataset_response(file, native_path_lease)
