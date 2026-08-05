@@ -108,7 +108,7 @@ def test_final_bound_port_uses_uvicorn_listener_for_ephemeral_bind():
     assert all(
         resolved < source.index(consumer, resolved)
         for consumer in (
-            "app.state.public_access_port",
+            "app.state.remote_access_port",
             "TAURI_PORT={port}",
             "start_studio_tunnel(port",
         )
@@ -251,12 +251,12 @@ def test_api_only_cors_tracks_published_public_url():
 
     from starlette.datastructures import Headers
 
-    from main import PublicAccessCORSMiddleware
+    from main import RemoteAccessCORSMiddleware
 
     state = SimpleNamespace(cloudflare_url = None)
-    middleware = PublicAccessCORSMiddleware(
+    middleware = RemoteAccessCORSMiddleware(
         lambda *_: None,
-        public_access_state = state,
+        remote_access_state = state,
         allow_origins = ["tauri://localhost"],
         allow_credentials = True,
         allow_methods = ["*"],
@@ -283,9 +283,9 @@ def test_run_server_exports_secure_env_for_cors():
     # profile can tell remote secure serving from local Tauri use.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert 'os.environ["UNSLOTH_SECURE"] = "1"' in src
-    assert "set_studio_tunnel_runtime_callback(set_public_connector_active)" in src
+    assert "set_studio_tunnel_runtime_callback(set_remote_connector_active)" in src
     main_src = (_BACKEND / "main.py").read_text()
-    assert "PublicAccessCORSMiddleware,\n    public_access_state = app.state" in main_src
+    assert "RemoteAccessCORSMiddleware,\n    remote_access_state = app.state" in main_src
 
 
 def test_run_server_emit_tauri_port_defaults_on():

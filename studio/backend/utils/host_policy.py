@@ -27,7 +27,7 @@ _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 # (embedders, tests) a stale loopback default must not carry into a later
 # public bind, so we only ever take back a value we set ourselves.
 _auto_enabled = False
-_public_connector_active = False
+_remote_connector_active = False
 
 
 def is_external_host(host: str) -> bool:
@@ -93,18 +93,18 @@ def loopback_default_active() -> bool:
     return _auto_enabled
 
 
-def set_public_connector_active(active: bool) -> None:
+def set_remote_connector_active(active: bool) -> None:
     """Publish whether a connector may carry requests from beyond loopback."""
-    global _public_connector_active
-    _public_connector_active = bool(active)
+    global _remote_connector_active
+    _remote_connector_active = bool(active)
 
 
-def public_connector_active() -> bool:
-    return _public_connector_active
+def remote_connector_active() -> bool:
+    return _remote_connector_active
 
 
 def _reset_loopback_default_state() -> None:
     """Test hook: forget runtime trust state applied earlier in this process."""
-    global _auto_enabled, _public_connector_active
+    global _auto_enabled, _remote_connector_active
     _auto_enabled = False
-    _public_connector_active = False
+    _remote_connector_active = False

@@ -62,12 +62,12 @@ from utils.preview_sharing_settings import (
     get_preview_sharing_enabled,
     set_preview_sharing_enabled,
 )
-from utils.public_access_settings import (
-    DEFAULT_PUBLIC_ACCESS_AUTO_START,
-    public_access_status,
-    set_public_access_auto_start,
-    start_public_access,
-    stop_public_access,
+from utils.remote_access_settings import (
+    DEFAULT_REMOTE_ACCESS_AUTO_START,
+    remote_access_status,
+    set_remote_access_auto_start,
+    start_remote_access,
+    stop_remote_access,
 )
 from utils.embedding_model_settings import (
     MAX_EMBEDDING_MODEL_LENGTH,
@@ -928,16 +928,16 @@ class PreviewSharingResponse(BaseModel):
     default_enabled: bool = DEFAULT_PREVIEW_SHARING_ENABLED
 
 
-class PublicAccessAutoStartPayload(BaseModel):
+class RemoteAccessAutoStartPayload(BaseModel):
     enabled: StrictBool
 
 
-class PublicAccessResponse(BaseModel):
+class RemoteAccessResponse(BaseModel):
     state: Literal["off", "starting", "online", "stopping", "error"]
     url: Optional[str] = None
     error: Optional[str] = None
     auto_start: bool
-    default_auto_start: bool = DEFAULT_PUBLIC_ACCESS_AUTO_START
+    default_auto_start: bool = DEFAULT_REMOTE_ACCESS_AUTO_START
     available: bool
     managed_by: Optional[Literal["launch", "settings", "colab"]] = None
     can_start: bool
@@ -948,44 +948,44 @@ class PublicAccessResponse(BaseModel):
 
 def _require_ui_session(via_api_key: bool = Depends(authenticated_via_api_key)) -> None:
     if via_api_key:
-        raise HTTPException(status_code = 403, detail = "Public access requires a UI session.")
+        raise HTTPException(status_code = 403, detail = "Remote access requires a UI session.")
 
 
-def _public_access_response(request: Request) -> PublicAccessResponse:
-    return PublicAccessResponse(**public_access_status(request.app.state))
+def _remote_access_response(request: Request) -> RemoteAccessResponse:
+    return RemoteAccessResponse(**remote_access_status(request.app.state))
 
 
-@router.get("/public-access", response_model = PublicAccessResponse)
-def get_public_access(
+@router.get("/remote-access", response_model = RemoteAccessResponse)
+def get_remote_access(
     request: Request,
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
-) -> PublicAccessResponse:
-    return _public_access_response(request)
+) -> RemoteAccessResponse:
+    return _remote_access_response(request)
 
 
-@router.post("/public-access/start", response_model = PublicAccessResponse)
-def start_public_access_route(
+@router.post("/remote-access/start", response_model = RemoteAccessResponse)
+def start_remote_access_route(
     request: Request,
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
-) -> PublicAccessResponse:
+) -> RemoteAccessResponse:
     try:
-        response = PublicAccessResponse(**start_public_access(request.app.state))
+        response = RemoteAccessResponse(**start_remote_access(request.app.state))
     except RuntimeError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
-    logger.info("settings.public_access_start_requested subject=%s", current_subject)
+    logger.info("settings.remote_access_start_requested subject=%s", current_subject)
     return response
 
 
-@router.post("/public-access/stop", response_model = PublicAccessResponse)
-def stop_public_access_route(
+@router.post("/remote-access/stop", response_model = RemoteAccessResponse)
+def stop_remote_access_route(
     request: Request,
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
-) -> PublicAccessResponse:
+) -> RemoteAccessResponse:
     try:
-        status = stop_public_access(request.app.state)
+        status = stop_remote_access(request.app.state)
     except RuntimeError as exc:
         raise HTTPException(status_code = 409, detail = str(exc)) from exc
     status.update(
@@ -996,27 +996,27 @@ def stop_public_access_route(
         can_start = False,
         can_stop = False,
     )
-    response = PublicAccessResponse(**status)
-    logger.info("settings.public_access_stop_requested subject=%s", current_subject)
+    response = RemoteAccessResponse(**status)
+    logger.info("settings.remote_access_stop_requested subject=%s", current_subject)
     return response
 
 
-@router.put("/public-access/auto-start", response_model = PublicAccessResponse)
-def update_public_access_auto_start(
+@router.put("/remote-access/auto-start", response_model = RemoteAccessResponse)
+def update_remote_access_auto_start(
     request: Request,
-    payload: PublicAccessAutoStartPayload,
+    payload: RemoteAccessAutoStartPayload,
     current_subject: str = Depends(get_current_subject),
     _ui_session: None = Depends(_require_ui_session),
-) -> PublicAccessResponse:
-    if bool(getattr(request.app.state, "public_access_is_colab", False)):
+) -> RemoteAccessResponse:
+    if bool(getattr(request.app.state, "remote_access_is_colab", False)):
         raise HTTPException(status_code = 409, detail = "colab")
-    set_public_access_auto_start(payload.enabled)
+    set_remote_access_auto_start(payload.enabled)
     logger.info(
-        "settings.public_access_auto_start_updated subject=%s enabled=%s",
+        "settings.remote_access_auto_start_updated subject=%s enabled=%s",
         current_subject,
         payload.enabled,
     )
-    return _public_access_response(request)
+    return _remote_access_response(request)
 
 
 @router.get("/preview-sharing", response_model = PreviewSharingResponse)

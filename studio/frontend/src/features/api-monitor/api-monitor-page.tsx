@@ -22,7 +22,7 @@ import type { ApiMonitorEntry } from "@/features/chat/types/api";
 import { isExternalModelId } from "@/features/chat/external-providers";
 import { modelIdsMatch } from "@/features/hub/lib/model-identity";
 import { useSettingsDialogStore } from "@/features/settings";
-import { publicApiOrigin } from "@/features/settings/api/public-access-state";
+import { remoteApiOrigin } from "@/features/settings/api/remote-access-state";
 import { getApiBase, isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
@@ -504,12 +504,12 @@ export function ApiMonitorPage(): ReactElement {
   const [unloadError, setUnloadError] = useState<string | null>(null);
 
   useEffect(() => {
-    const refreshPublicBase = () => {
+    const refreshRemoteBase = () => {
       void fetchDeviceType({ force: true });
     };
-    refreshPublicBase();
-    window.addEventListener("focus", refreshPublicBase);
-    return () => window.removeEventListener("focus", refreshPublicBase);
+    refreshRemoteBase();
+    window.addEventListener("focus", refreshRemoteBase);
+    return () => window.removeEventListener("focus", refreshRemoteBase);
   }, []);
 
   // Manual release so VRAM frees without the idle timer. /unload matches on the
@@ -632,7 +632,7 @@ export function ApiMonitorPage(): ReactElement {
   // dynamically. Same source as the Agents tab.
   const origin = typeof window === "undefined" ? "" : window.location.origin;
   const localOrigin = isTauri ? (serverUrl ?? getApiBase()) : origin;
-  const baseUrl = `${publicApiOrigin(cloudflareUrl, localOrigin)}/v1`;
+  const baseUrl = `${remoteApiOrigin(cloudflareUrl, localOrigin)}/v1`;
   const serverStatus = data?.status ?? "idle";
   // Older backends omit the field; only an explicit `false` means recording is off.
   const loggingDisabled = data?.logging_enabled === false;

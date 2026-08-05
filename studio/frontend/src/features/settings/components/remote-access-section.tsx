@@ -5,18 +5,18 @@ import { Button } from "@/components/ui/button";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import {
-  loadPublicAccess,
-  startPublicAccess,
-  stopPublicAccess,
-  updatePublicAccessAutoStart,
-} from "@/features/settings/api/public-access";
+  loadRemoteAccess,
+  startRemoteAccess,
+  stopRemoteAccess,
+  updateRemoteAccessAutoStart,
+} from "@/features/settings/api/remote-access";
 import {
-  type PublicAccessStatus,
-  publicAccessAutoStartReadOnly,
-  publicAccessBlockMessage,
-  publicAccessPollDelay,
-  publicAccessStopDisconnectsOrigin,
-} from "@/features/settings/api/public-access-state";
+  type RemoteAccessStatus,
+  remoteAccessAutoStartReadOnly,
+  remoteAccessBlockMessage,
+  remoteAccessPollDelay,
+  remoteAccessStopDisconnectsOrigin,
+} from "@/features/settings/api/remote-access-state";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
@@ -26,9 +26,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
 
-type PublicAccessOperation = "start" | "stop" | "auto";
+type RemoteAccessOperation = "start" | "stop" | "auto";
 
-const STATE_LABEL: Record<PublicAccessStatus["state"], string> = {
+const STATE_LABEL: Record<RemoteAccessStatus["state"], string> = {
   off: "Off",
   starting: "Starting",
   online: "Online",
@@ -37,7 +37,7 @@ const STATE_LABEL: Record<PublicAccessStatus["state"], string> = {
 };
 
 const OWNER_LABEL: Record<
-  Exclude<PublicAccessStatus["managedBy"], null>,
+  Exclude<RemoteAccessStatus["managedBy"], null>,
   string
 > = {
   launch: "Launch managed",
@@ -45,7 +45,7 @@ const OWNER_LABEL: Record<
   colab: "Colab managed",
 };
 
-function stateDotClass(state?: PublicAccessStatus["state"]): string {
+function stateDotClass(state?: RemoteAccessStatus["state"]): string {
   if (state === "online") {
     return "bg-emerald-500";
   }
@@ -55,7 +55,7 @@ function stateDotClass(state?: PublicAccessStatus["state"]): string {
   return state === "error" ? "bg-red-500" : "bg-muted-foreground";
 }
 
-function AccessStatus({ status }: { status: PublicAccessStatus | null }) {
+function AccessStatus({ status }: { status: RemoteAccessStatus | null }) {
   const owner = status?.managedBy ? OWNER_LABEL[status.managedBy] : null;
   return (
     <output
@@ -71,7 +71,7 @@ function AccessStatus({ status }: { status: PublicAccessStatus | null }) {
   );
 }
 
-function CopyPublicUrlButton({ url }: { url: string }) {
+function CopyRemoteUrlButton({ url }: { url: string }) {
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<number | null>(null);
   useEffect(() => {
@@ -107,16 +107,16 @@ function CopyPublicUrlButton({ url }: { url: string }) {
   );
 }
 
-export function PublicAccessSection() {
-  const [status, setStatus] = useState<PublicAccessStatus | null>(null);
-  const [busy, setBusy] = useState<PublicAccessOperation | null>(null);
+export function RemoteAccessSection() {
+  const [status, setStatus] = useState<RemoteAccessStatus | null>(null);
+  const [busy, setBusy] = useState<RemoteAccessOperation | null>(null);
   const [pollRevision, setPollRevision] = useState(0);
   const [pollEnabled, setPollEnabled] = useState(true);
   const mutationEpoch = useRef(0);
   const pollSuppressed = useRef(false);
   const selfStopDisconnectExpected = useRef(false);
 
-  const applyStatus = useCallback((next: PublicAccessStatus) => {
+  const applyStatus = useCallback((next: RemoteAccessStatus) => {
     setStatus(next);
     usePlatformStore.setState({ cloudflareUrl: next.url });
   }, []);
@@ -128,9 +128,9 @@ export function PublicAccessSection() {
     }
     let stopped = false;
     let timer: number | null = null;
-    const schedule = (next: PublicAccessStatus | null) => {
+    const schedule = (next: RemoteAccessStatus | null) => {
       if (!stopped && !pollSuppressed.current) {
-        timer = window.setTimeout(poll, publicAccessPollDelay(next));
+        timer = window.setTimeout(poll, remoteAccessPollDelay(next));
       }
     };
     const poll = () => {
@@ -138,7 +138,7 @@ export function PublicAccessSection() {
         return;
       }
       const epoch = mutationEpoch.current;
-      loadPublicAccess()
+      loadRemoteAccess()
         .then((next) => {
           if (
             !stopped &&
@@ -173,8 +173,8 @@ export function PublicAccessSection() {
   }, [applyStatus, pollEnabled, pollRevision]);
 
   const perform = async (
-    operation: PublicAccessOperation,
-    request: () => Promise<PublicAccessStatus>,
+    operation: RemoteAccessOperation,
+    request: () => Promise<RemoteAccessStatus>,
     pausePollingAfterSuccess = false,
   ) => {
     mutationEpoch.current += 1;
@@ -194,20 +194,21 @@ export function PublicAccessSection() {
     }
   };
 
-  const start = () => perform("start", startPublicAccess);
+  const start = () => perform("start", startRemoteAccess);
   const stop = () =>
     perform(
       "stop",
-      stopPublicAccess,
-      publicAccessStopDisconnectsOrigin(
+      stopRemoteAccess,
+      remoteAccessStopDisconnectsOrigin(
         status?.url ?? null,
         typeof window === "undefined" ? "" : window.location.origin,
       ),
     );
   const setAutoStart = (enabled: boolean) =>
-    perform("auto", () => updatePublicAccessAutoStart(enabled));
+    perform("auto", () => updateRemoteAccessAutoStart(enabled));
 
-  const blockMessage = publicAccessBlockMessage(status?.blockReason ?? null);
+  const statusDescription =
+    remoteAccessBlockMessage(status?.blockReason ?? null) ?? status?.error;
   const stopAction =
     status?.canStop === true ||
     status?.state === "starting" ||
@@ -226,13 +227,13 @@ export function PublicAccessSection() {
 
   return (
     <SettingsSection
-      title="Public access"
-      description="Make Unsloth and its APIs available through a temporary Cloudflare Quick Tunnel HTTPS URL."
+      title="Remote access"
+      description="Make Unsloth and its APIs available through a temporary Remote Secure Cloudflare URL."
     >
       <SettingsRow
         label="Status"
         labelAccessory={<AccessStatus status={status} />}
-        description={blockMessage}
+        description={statusDescription}
       >
         <Button
           type="button"
@@ -247,26 +248,26 @@ export function PublicAccessSection() {
 
       {status?.url ? (
         <SettingsRow
-          label="Public URL"
+          label="Remote Secure Cloudflare URL"
           description={
             <code className="block break-all whitespace-normal font-mono">
               {status.url}
             </code>
           }
         >
-          <CopyPublicUrlButton url={status.url} />
+          <CopyRemoteUrlButton url={status.url} />
         </SettingsRow>
       ) : null}
 
       <SettingsRow
-        label="Start public access when Unsloth starts"
-        description="Unsloth will create a new public URL each time it starts. Stopping public access now won’t turn this setting off."
+        label="Start remote access when Unsloth starts"
+        description="Unsloth will create a new remote URL each time it starts. Stopping remote access now won’t turn this setting off."
       >
         <Switch
           checked={status?.autoStart ?? false}
-          disabled={busy !== null || publicAccessAutoStartReadOnly(status)}
+          disabled={busy !== null || remoteAccessAutoStartReadOnly(status)}
           onCheckedChange={setAutoStart}
-          aria-label="Start public access when Unsloth starts"
+          aria-label="Start remote access when Unsloth starts"
         />
       </SettingsRow>
     </SettingsSection>

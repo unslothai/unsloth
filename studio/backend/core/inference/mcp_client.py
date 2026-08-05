@@ -148,9 +148,9 @@ def stdio_mcp_enabled() -> bool:
     if os.environ.get("UNSLOTH_STUDIO_ALLOW_STDIO_MCP") != "1":
         return False
     from state.tool_policy import get_tool_policy
-    from utils.host_policy import loopback_default_active, public_connector_active
+    from utils.host_policy import loopback_default_active, remote_connector_active
 
-    if loopback_default_active() and (public_connector_active() or get_tool_policy() is False):
+    if loopback_default_active() and (remote_connector_active() or get_tool_policy() is False):
         return False
     return True
 

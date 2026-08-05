@@ -1139,16 +1139,16 @@ async def _recipes_redirect(rest: str = ""):
 from utils.host_policy import cors_origins_for_mode  # noqa: E402
 
 
-class PublicAccessCORSMiddleware(CORSMiddleware):
+class RemoteAccessCORSMiddleware(CORSMiddleware):
     """Allow remote browser origins only while a Cloudflare URL is published."""
 
-    def __init__(self, cors_app, *, public_access_state, **kwargs):
-        self.public_access_state = public_access_state
+    def __init__(self, cors_app, *, remote_access_state, **kwargs):
+        self.remote_access_state = remote_access_state
         super().__init__(cors_app, **kwargs)
 
     def is_allowed_origin(self, origin: str) -> bool:
         return bool(
-            getattr(self.public_access_state, "cloudflare_url", None)
+            getattr(self.remote_access_state, "cloudflare_url", None)
         ) or super().is_allowed_origin(origin)
 
 
@@ -1158,17 +1158,17 @@ _cors_origins = cors_origins_for_mode(
 )
 
 app.add_middleware(
-    PublicAccessCORSMiddleware,
-    public_access_state = app.state,
+    RemoteAccessCORSMiddleware,
+    remote_access_state = app.state,
     allow_origins = _cors_origins,
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
 )
 
-from utils.public_access_settings import PublicAccessStopResponseMiddleware  # noqa: E402
+from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402
 
-app.add_middleware(PublicAccessStopResponseMiddleware)
+app.add_middleware(RemoteAccessStopResponseMiddleware)
 
 
 # ============ Register API Routes ============

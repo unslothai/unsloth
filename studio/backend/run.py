@@ -1994,7 +1994,7 @@ def run_server(
     _cloudflare_url = None
     _cloudflare_flag = cloudflare
     app.state.cloudflare_url = None
-    from utils.public_access_settings import configure_public_access
+    from utils.remote_access_settings import configure_remote_access
 
     _launch_tunnel_managed = _cloudflare_tunnel_should_start(
         cloudflare = cloudflare,
@@ -2003,7 +2003,7 @@ def run_server(
         api_only = api_only,
         is_colab = _IS_COLAB,
     )
-    configure_public_access(
+    configure_remote_access(
         app.state,
         port = port,
         intent = cloudflare_intent,
@@ -2100,7 +2100,7 @@ def run_server(
     port = _final_bound_port(_server, port)
     app.state.server_port = port
     app.state.server_url = f"http://{_url_host(_display_host_for_bind(host))}:{port}"
-    app.state.public_access_port = port
+    app.state.remote_access_port = port
 
     _write_pid_file(port, host)
     import atexit
@@ -2131,11 +2131,11 @@ def run_server(
         set_studio_tunnel_runtime_callback,
         set_studio_tunnel_url_callback,
     )
-    from utils.host_policy import set_public_connector_active
+    from utils.host_policy import set_remote_connector_active
 
-    set_studio_tunnel_runtime_callback(set_public_connector_active)
+    set_studio_tunnel_runtime_callback(set_remote_connector_active)
     set_studio_tunnel_url_callback(lambda url: _publish_cloudflare_url(app.state, url))
-    app.state.public_access_ready = True
+    app.state.remote_access_ready = True
 
     # Free trycloudflare.com tunnel for wildcard binds (the raw ip:port is often
     # unreachable). Started pre-banner and even when silent so the CLI banner can
@@ -2203,10 +2203,10 @@ def run_server(
     except Exception as e:  # best-effort: never block startup on the timeout
         logger.warning("Bootstrap timeout not armed: %s", e)
 
-    from utils.public_access_settings import maybe_auto_start_public_access
+    from utils.remote_access_settings import maybe_auto_start_remote_access
 
-    if maybe_auto_start_public_access(app.state):
-        logger.info("Public access auto-start scheduled")
+    if maybe_auto_start_remote_access(app.state):
+        logger.info("Remote access auto-start scheduled")
 
     if not silent:
         _emit_startup_output(host, port, display_host, secure = secure, enable_tools = enable_tools)

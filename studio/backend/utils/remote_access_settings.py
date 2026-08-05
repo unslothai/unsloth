@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Persisted policy and non-blocking runtime operations for Public access."""
+"""Persisted policy and non-blocking runtime operations for Remote access."""
 
 from __future__ import annotations
 
@@ -13,8 +13,8 @@ from loggers import get_logger
 
 logger = get_logger(__name__)
 
-PUBLIC_ACCESS_AUTO_START_KEY = "public_access_auto_start"
-DEFAULT_PUBLIC_ACCESS_AUTO_START = False
+REMOTE_ACCESS_AUTO_START_KEY = "remote_access_auto_start"
+DEFAULT_REMOTE_ACCESS_AUTO_START = False
 
 _worker_lock = threading.Lock()
 _start_worker: threading.Thread | None = None
@@ -26,7 +26,7 @@ _stop_responses_pending = 0
 _stop_response_admission_open = True
 
 
-class PublicAccessStopResponseMiddleware:
+class RemoteAccessStopResponseMiddleware:
     """Lease the connector for every Stop request from ASGI admission through response."""
 
     def __init__(self, app):
@@ -36,12 +36,12 @@ class PublicAccessStopResponseMiddleware:
         if not (
             scope.get("type") == "http"
             and scope.get("method") == "POST"
-            and scope.get("path") == "/api/settings/public-access/stop"
+            and scope.get("path") == "/api/settings/remote-access/stop"
         ):
             await self.app(scope, receive, send)
             return
 
-        release = acquire_public_access_stop_response()
+        release = acquire_remote_access_stop_response()
         if release is None:
             # Teardown has already linearized. Preserve downstream auth and
             # idempotent route behavior without admitting new drain work.
@@ -59,7 +59,7 @@ class PublicAccessStopResponseMiddleware:
             release()
 
 
-def acquire_public_access_stop_response() -> Callable[[], None] | None:
+def acquire_remote_access_stop_response() -> Callable[[], None] | None:
     """Hold connector teardown until this HTTP response has been finalized."""
     global _stop_responses_pending
     with _stop_response_condition:
@@ -82,14 +82,14 @@ def acquire_public_access_stop_response() -> Callable[[], None] | None:
     return _release
 
 
-def _open_public_access_stop_response_admission() -> None:
+def _open_remote_access_stop_response_admission() -> None:
     global _stop_response_admission_open
     with _stop_response_condition:
         _stop_response_admission_open = True
         _stop_response_condition.notify_all()
 
 
-def _drain_and_close_public_access_stop_responses() -> None:
+def _drain_and_close_remote_access_stop_responses() -> None:
     """Drain admitted responses, then close admission at the teardown boundary."""
     global _stop_response_admission_open
     deadline = time.monotonic() + 1.0
@@ -116,23 +116,23 @@ def _coerce_bool(value: Any) -> bool | None:
     return value if isinstance(value, bool) else None
 
 
-def get_public_access_auto_start() -> bool:
+def get_remote_access_auto_start() -> bool:
     """Read the preference, failing closed on missing, invalid, or unreadable data."""
     try:
         from storage.studio_db import get_app_setting
-        stored = get_app_setting(PUBLIC_ACCESS_AUTO_START_KEY, None)
+        stored = get_app_setting(REMOTE_ACCESS_AUTO_START_KEY, None)
     except Exception:
         return False
     parsed = _coerce_bool(stored)
-    return parsed if parsed is not None else DEFAULT_PUBLIC_ACCESS_AUTO_START
+    return parsed if parsed is not None else DEFAULT_REMOTE_ACCESS_AUTO_START
 
 
-def set_public_access_auto_start(enabled: bool) -> bool:
+def set_remote_access_auto_start(enabled: bool) -> bool:
     if not isinstance(enabled, bool):
-        raise ValueError("Public access auto-start must be true or false.")
+        raise ValueError("Remote access auto-start must be true or false.")
     from storage.studio_db import upsert_app_settings
 
-    upsert_app_settings({PUBLIC_ACCESS_AUTO_START_KEY: enabled})
+    upsert_app_settings({REMOTE_ACCESS_AUTO_START_KEY: enabled})
     return enabled
 
 
@@ -144,15 +144,15 @@ def _admin_password_ready() -> bool:
         return False
 
 
-def configure_public_access(
+def configure_remote_access(
     app_state, *, port: int, intent: str, is_colab: bool, launch_managed: bool
 ) -> None:
     """Publish immutable launch policy used by every settings request."""
-    app_state.public_access_port = port
-    app_state.public_access_intent = intent
-    app_state.public_access_is_colab = bool(is_colab)
-    app_state.public_access_launch_managed = bool(launch_managed)
-    app_state.public_access_ready = False
+    app_state.remote_access_port = port
+    app_state.remote_access_intent = intent
+    app_state.remote_access_is_colab = bool(is_colab)
+    app_state.remote_access_launch_managed = bool(launch_managed)
+    app_state.remote_access_ready = False
 
 
 def _worker_alive(worker: threading.Thread | None) -> bool:
@@ -167,7 +167,7 @@ def _worker_is_current(
     return current[1] in {admission[1], admission[1] + 1}
 
 
-def public_access_status(app_state) -> dict:
+def remote_access_status(app_state) -> dict:
     from cloudflare_tunnel import get_studio_tunnel_control_token, get_studio_tunnel_status
 
     status = get_studio_tunnel_status()
@@ -180,10 +180,10 @@ def public_access_status(app_state) -> dict:
     elif starting and status["state"] in {"off", "error"}:
         status.update(state = "starting", managed_by = "settings", url = None, error = None)
 
-    intent = getattr(app_state, "public_access_intent", "disabled")
-    is_colab = bool(getattr(app_state, "public_access_is_colab", False))
-    launch_managed = bool(getattr(app_state, "public_access_launch_managed", False))
-    ready = bool(getattr(app_state, "public_access_ready", False))
+    intent = getattr(app_state, "remote_access_intent", "disabled")
+    is_colab = bool(getattr(app_state, "remote_access_is_colab", False))
+    launch_managed = bool(getattr(app_state, "remote_access_launch_managed", False))
+    ready = bool(getattr(app_state, "remote_access_ready", False))
     owner = status["managed_by"]
     state = status["state"]
     stop_pending = bool(status.get("stop_pending"))
@@ -218,7 +218,7 @@ def public_access_status(app_state) -> dict:
         "state": state,
         "url": status["url"],
         "error": error,
-        "auto_start": get_public_access_auto_start(),
+        "auto_start": get_remote_access_auto_start(),
         "available": ready and not is_colab and intent != "disabled",
         "managed_by": owner,
         "can_start": can_start,
@@ -228,7 +228,7 @@ def public_access_status(app_state) -> dict:
     }
 
 
-def start_public_access(app_state) -> dict:
+def start_remote_access(app_state) -> dict:
     """Schedule a settings-owned start. Repeated requests are idempotent."""
     global _start_worker, _start_worker_admission
     from cloudflare_tunnel import (
@@ -239,7 +239,7 @@ def start_public_access(app_state) -> dict:
     admission = capture_studio_tunnel_start_admission()
     if admission is None:
         raise RuntimeError("server_shutting_down")
-    status = public_access_status(app_state)
+    status = remote_access_status(app_state)
     current = get_studio_tunnel_control_token()
     if current[0] != admission[0]:
         raise RuntimeError("server_lifecycle_changed")
@@ -248,7 +248,7 @@ def start_public_access(app_state) -> dict:
     if not status["can_start"]:
         raise RuntimeError(status["block_reason"] or "operation_in_progress")
 
-    port = getattr(app_state, "public_access_port", None)
+    port = getattr(app_state, "remote_access_port", None)
     if not isinstance(port, int) or port <= 0:
         raise RuntimeError("server_port_unavailable")
     if get_studio_tunnel_control_token() != admission:
@@ -260,16 +260,16 @@ def start_public_access(app_state) -> dict:
         if url:
             logger.info("Secure link access via Cloudflare: %s", url)
 
-    _open_public_access_stop_response_admission()
+    _open_remote_access_stop_response_admission()
     with _worker_lock:
         if not _worker_is_current(_start_worker, _start_worker_admission, admission):
             _start_worker = threading.Thread(target = _start, daemon = True)
             _start_worker_admission = admission
             _start_worker.start()
-    return public_access_status(app_state)
+    return remote_access_status(app_state)
 
 
-def stop_public_access(app_state) -> dict:
+def stop_remote_access(app_state) -> dict:
     """Schedule a settings-owned stop without changing the auto-start preference."""
     global _stop_worker, _stop_worker_admission
     from cloudflare_tunnel import (
@@ -280,7 +280,7 @@ def stop_public_access(app_state) -> dict:
     admission = capture_studio_tunnel_start_admission()
     if admission is None:
         raise RuntimeError("server_shutting_down")
-    status = public_access_status(app_state)
+    status = remote_access_status(app_state)
     current = get_studio_tunnel_control_token()
     if current[0] != admission[0]:
         raise RuntimeError("server_lifecycle_changed")
@@ -312,10 +312,10 @@ def stop_public_access(app_state) -> dict:
             # Every Stop admitted before this teardown decision must finish
             # traversing cloudflared. Closing admission at the end of the drain
             # prevents a later request from creating an unobserved lease.
-            _drain_and_close_public_access_stop_responses()
+            _drain_and_close_remote_access_stop_responses()
             current = get_studio_tunnel_control_token()
             if current[0] != admission[0] or get_studio_tunnel_status()["managed_by"] != "settings":
-                _open_public_access_stop_response_admission()
+                _open_remote_access_stop_response_admission()
                 return
             with _worker_lock:
                 if _stop_worker is threading.current_thread():
@@ -323,9 +323,9 @@ def stop_public_access(app_state) -> dict:
             try:
                 stop_studio_tunnel(admission = current)
                 if get_studio_tunnel_status().get("stop_pending"):
-                    _open_public_access_stop_response_admission()
+                    _open_remote_access_stop_response_admission()
             except Exception:
-                _open_public_access_stop_response_admission()
+                _open_remote_access_stop_response_admission()
                 raise
 
     with _worker_lock:
@@ -333,15 +333,15 @@ def stop_public_access(app_state) -> dict:
             _stop_worker = threading.Thread(target = _stop, daemon = True)
             _stop_worker_admission = admission
             _stop_worker.start()
-    return public_access_status(app_state)
+    return remote_access_status(app_state)
 
 
-def maybe_auto_start_public_access(app_state) -> bool:
+def maybe_auto_start_remote_access(app_state) -> bool:
     """Schedule persisted auto-start when current launch policy permits it."""
-    if not get_public_access_auto_start():
+    if not get_remote_access_auto_start():
         return False
     try:
-        start_public_access(app_state)
+        start_remote_access(app_state)
     except RuntimeError:
         return False
     return True

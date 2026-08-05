@@ -18,7 +18,7 @@ if str(_BACKEND) not in sys.path:
 
 import cloudflare_tunnel  # noqa: E402
 import routes.settings as routes  # noqa: E402
-import utils.public_access_settings as public_access  # noqa: E402
+import utils.remote_access_settings as remote_access  # noqa: E402
 from storage import studio_db  # noqa: E402
 
 
@@ -28,11 +28,11 @@ def _state(
     launch_managed = False,
 ):
     return SimpleNamespace(
-        public_access_intent = intent,
-        public_access_is_colab = is_colab,
-        public_access_launch_managed = launch_managed,
-        public_access_port = 8888,
-        public_access_ready = True,
+        remote_access_intent = intent,
+        remote_access_is_colab = is_colab,
+        remote_access_launch_managed = launch_managed,
+        remote_access_port = 8888,
+        remote_access_ready = True,
     )
 
 
@@ -42,17 +42,17 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch):
         studio_db, "get_app_setting", lambda key, fallback: stored.get(key, fallback)
     )
     monkeypatch.setattr(studio_db, "upsert_app_settings", lambda values: stored.update(values))
-    assert public_access.get_public_access_auto_start() is False
-    stored[public_access.PUBLIC_ACCESS_AUTO_START_KEY] = "yes"
-    assert public_access.get_public_access_auto_start() is False
-    assert public_access.set_public_access_auto_start(True) is True
-    assert public_access.get_public_access_auto_start() is True
+    assert remote_access.get_remote_access_auto_start() is False
+    stored[remote_access.REMOTE_ACCESS_AUTO_START_KEY] = "yes"
+    assert remote_access.get_remote_access_auto_start() is False
+    assert remote_access.set_remote_access_auto_start(True) is True
+    assert remote_access.get_remote_access_auto_start() is True
     with pytest.raises(ValueError):
-        routes.PublicAccessAutoStartPayload(enabled = "true")
+        routes.RemoteAccessAutoStartPayload(enabled = "true")
     monkeypatch.setattr(
         studio_db, "get_app_setting", lambda *args: (_ for _ in ()).throw(OSError())
     )
-    assert public_access.get_public_access_auto_start() is False
+    assert remote_access.get_remote_access_auto_start() is False
 
 
 @pytest.mark.parametrize(
@@ -62,10 +62,10 @@ def test_auto_start_persistence_is_strict_and_fail_closed(monkeypatch):
 def test_enabled_intent_blocks_only_selected_launch_path(
     monkeypatch, launch_managed, expected_block, can_start
 ):
-    monkeypatch.setattr(public_access, "_start_worker", None)
-    monkeypatch.setattr(public_access, "_stop_worker", None)
-    monkeypatch.setattr(public_access, "get_public_access_auto_start", lambda: False)
-    monkeypatch.setattr(public_access, "_admin_password_ready", lambda: True)
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+    monkeypatch.setattr(remote_access, "_stop_worker", None)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
     monkeypatch.setattr(
         cloudflare_tunnel,
         "get_studio_tunnel_status",
@@ -73,7 +73,7 @@ def test_enabled_intent_blocks_only_selected_launch_path(
     )
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
 
-    status = public_access.public_access_status(
+    status = remote_access.remote_access_status(
         _state(intent = "enabled", launch_managed = launch_managed)
     )
     assert status["block_reason"] == expected_block
@@ -81,10 +81,10 @@ def test_enabled_intent_blocks_only_selected_launch_path(
 
 
 def test_failed_stop_remains_retryable(monkeypatch):
-    monkeypatch.setattr(public_access, "_start_worker", None)
-    monkeypatch.setattr(public_access, "_stop_worker", None)
-    monkeypatch.setattr(public_access, "get_public_access_auto_start", lambda: False)
-    monkeypatch.setattr(public_access, "_admin_password_ready", lambda: True)
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+    monkeypatch.setattr(remote_access, "_stop_worker", None)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
     monkeypatch.setattr(
         cloudflare_tunnel,
         "get_studio_tunnel_status",
@@ -97,15 +97,15 @@ def test_failed_stop_remains_retryable(monkeypatch):
         },
     )
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
-    status = public_access.public_access_status(_state())
+    status = remote_access.remote_access_status(_state())
     assert status["can_start"] is False and status["can_stop"] is True
-    source = Path(public_access.__file__).read_text()
+    source = Path(remote_access.__file__).read_text()
     assert 'if get_studio_tunnel_status().get("stop_pending"):' in source
 
 
 def test_workers_and_stops_are_scoped_to_backend_lifecycle(monkeypatch):
-    public_access._start_worker = public_access._stop_worker = None
-    public_access._start_worker_admission = public_access._stop_worker_admission = None
+    remote_access._start_worker = remote_access._stop_worker = None
+    remote_access._start_worker_admission = remote_access._stop_worker_admission = None
     cloudflare_tunnel.stop_studio_tunnel()
     cloudflare_tunnel.open_studio_tunnel_lifecycle()
     entered, reopened, release = (threading.Event() for _ in range(3))
@@ -122,21 +122,21 @@ def test_workers_and_stops_are_scoped_to_backend_lifecycle(monkeypatch):
 
     monkeypatch.setattr(cloudflare_tunnel, "start_studio_tunnel", _delayed)
     monkeypatch.setattr(cloudflare_tunnel, "ensure_cloudflared", lambda: pytest.fail("stale start"))
-    monkeypatch.setattr(public_access, "get_public_access_auto_start", lambda: False)
-    monkeypatch.setattr(public_access, "_admin_password_ready", lambda: True)
-    public_access._stop_response_admission_open = False
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    remote_access._stop_response_admission_open = False
     assert (
-        public_access.public_access_status(_state())
-        and not public_access._stop_response_admission_open
+        remote_access.remote_access_status(_state())
+        and not remote_access._stop_response_admission_open
     )
-    public_access.start_public_access(_state())
-    assert entered.wait(1) and public_access._stop_response_admission_open
-    old_worker = public_access._start_worker
+    remote_access.start_remote_access(_state())
+    assert entered.wait(1) and remote_access._stop_response_admission_open
+    old_worker = remote_access._start_worker
     old_token = attempts[0]
     cloudflare_tunnel.close_studio_tunnel_lifecycle()
     cloudflare_tunnel.open_studio_tunnel_lifecycle()
-    monkeypatch.setattr(public_access, "get_public_access_auto_start", lambda: True)
-    assert public_access.maybe_auto_start_public_access(_state()) and reopened.wait(1)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: True)
+    assert remote_access.maybe_auto_start_remote_access(_state()) and reopened.wait(1)
     release.set()
     old_worker.join(1)
     current = cloudflare_tunnel.get_studio_tunnel_control_token()
@@ -147,8 +147,8 @@ def test_workers_and_stops_are_scoped_to_backend_lifecycle(monkeypatch):
 
 @pytest.mark.parametrize("trigger", ["manual", "auto"])
 def test_settings_start_logs_public_url_when_tunnel_is_ready(monkeypatch, trigger):
-    monkeypatch.setattr(public_access, "_start_worker", None)
-    monkeypatch.setattr(public_access, "_start_worker_admission", None)
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+    monkeypatch.setattr(remote_access, "_start_worker_admission", None)
     ready = threading.Event()
     messages = []
     status = {
@@ -162,23 +162,23 @@ def test_settings_start_logs_public_url_when_tunnel_is_ready(monkeypatch, trigge
         ready.set()
         return "https://example.trycloudflare.com"
 
-    monkeypatch.setattr(public_access, "get_public_access_auto_start", lambda: True)
-    monkeypatch.setattr(public_access, "public_access_status", lambda _: status)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: True)
+    monkeypatch.setattr(remote_access, "remote_access_status", lambda _: status)
     monkeypatch.setattr(cloudflare_tunnel, "capture_studio_tunnel_start_admission", lambda: (1, 1))
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 1))
     monkeypatch.setattr(cloudflare_tunnel, "start_studio_tunnel", _start)
     monkeypatch.setattr(
-        public_access.logger,
+        remote_access.logger,
         "info",
         lambda message, url: messages.append(message % url),
     )
 
     if trigger == "auto":
-        assert public_access.maybe_auto_start_public_access(_state())
+        assert remote_access.maybe_auto_start_remote_access(_state())
     else:
-        public_access.start_public_access(_state())
+        remote_access.start_remote_access(_state())
     assert ready.wait(1)
-    public_access._start_worker.join(1)
+    remote_access._start_worker.join(1)
     assert messages == ["Secure link access via Cloudflare: https://example.trycloudflare.com"]
 
 
@@ -200,27 +200,27 @@ def test_request_cannot_adopt_reopened_lifecycle(monkeypatch, operation):
         cloudflare_tunnel.open_studio_tunnel_lifecycle()
         return {"block_reason": None, **status}
 
-    monkeypatch.setattr(public_access, "public_access_status", _status)
+    monkeypatch.setattr(remote_access, "remote_access_status", _status)
     with pytest.raises(RuntimeError, match = "server_lifecycle_changed"):
-        getattr(public_access, f"{operation}_public_access")(_state())
+        getattr(remote_access, f"{operation}_remote_access")(_state())
     monkeypatch.setattr(
-        public_access,
-        "public_access_status",
+        remote_access,
+        "remote_access_status",
         lambda _: (cloudflare_tunnel.stop_studio_tunnel(), satisfied)[1],
     )
-    assert getattr(public_access, f"{operation}_public_access")(_state()) == satisfied
+    assert getattr(remote_access, f"{operation}_remote_access")(_state()) == satisfied
 
 
 def test_management_rejects_api_keys():
     with pytest.raises(HTTPException) as exc:
         routes._require_ui_session(True)
     assert exc.value.status_code == 403
-    assert public_access.public_access_status(_state())["streaming_supported"] is True
+    assert remote_access.remote_access_status(_state())["streaming_supported"] is True
     source = Path(routes.__file__).read_text()
     assert source.count("_ui_session: None = Depends(_require_ui_session)") == 4
 
 
-def test_public_stop_returns_terminal_state(monkeypatch):
+def test_remote_stop_returns_terminal_state(monkeypatch):
     def _stop(_state):
         return {
             "state": "stopping",
@@ -235,9 +235,9 @@ def test_public_stop_returns_terminal_state(monkeypatch):
             "streaming_supported": True,
         }
 
-    monkeypatch.setattr(routes, "stop_public_access", _stop)
+    monkeypatch.setattr(routes, "stop_remote_access", _stop)
     request = SimpleNamespace(app = SimpleNamespace(state = _state()))
-    response = routes.stop_public_access_route(request, "admin", None)
+    response = routes.stop_remote_access_route(request, "admin", None)
     assert response.state == "off" and response.managed_by is None
 
 
@@ -249,7 +249,7 @@ def test_stop_response_middleware_holds_lease_through_body(monkeypatch):
         acquired.set()
         return released.set
 
-    monkeypatch.setattr(public_access, "acquire_public_access_stop_response", _acquire)
+    monkeypatch.setattr(remote_access, "acquire_remote_access_stop_response", _acquire)
 
     async def _app(scope, receive, send):
         assert acquired.is_set() and not released.is_set()
@@ -260,13 +260,13 @@ def test_stop_response_middleware_holds_lease_through_body(monkeypatch):
     async def _send(_message):
         return None
 
-    middleware = public_access.PublicAccessStopResponseMiddleware(_app)
+    middleware = remote_access.RemoteAccessStopResponseMiddleware(_app)
     asyncio.run(
         middleware(
             {
                 "type": "http",
                 "method": "POST",
-                "path": "/api/settings/public-access/stop",
+                "path": "/api/settings/remote-access/stop",
             },
             None,
             _send,
@@ -274,26 +274,26 @@ def test_stop_response_middleware_holds_lease_through_body(monkeypatch):
     )
     assert released.is_set()
     assert (
-        "app.add_middleware(PublicAccessStopResponseMiddleware)"
+        "app.add_middleware(RemoteAccessStopResponseMiddleware)"
         in (_BACKEND / "main.py").read_text()
     )
 
 
 def test_stop_worker_waits_for_every_concurrent_response(monkeypatch):
-    public_access._start_worker = public_access._stop_worker = None
-    public_access._start_worker_admission = public_access._stop_worker_admission = None
-    public_access._stop_response_admission_open = True
+    remote_access._start_worker = remote_access._stop_worker = None
+    remote_access._start_worker_admission = remote_access._stop_worker_admission = None
+    remote_access._stop_response_admission_open = True
     stopped = threading.Event()
 
-    release_first = public_access.acquire_public_access_stop_response()
-    release_second = public_access.acquire_public_access_stop_response()
+    release_first = remote_access.acquire_remote_access_stop_response()
+    release_second = remote_access.acquire_remote_access_stop_response()
     assert release_first is not None and release_second is not None
     status = {
         "state": "online",
         "managed_by": "settings",
         "block_reason": None,
     }
-    monkeypatch.setattr(public_access, "public_access_status", lambda _: status)
+    monkeypatch.setattr(remote_access, "remote_access_status", lambda _: status)
     monkeypatch.setattr(cloudflare_tunnel, "capture_studio_tunnel_start_admission", lambda: (1, 1))
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 1))
     monkeypatch.setattr(
@@ -303,20 +303,20 @@ def test_stop_worker_waits_for_every_concurrent_response(monkeypatch):
     )
     monkeypatch.setattr(cloudflare_tunnel, "stop_studio_tunnel", lambda **_: stopped.set())
 
-    public_access.stop_public_access(_state())
+    remote_access.stop_remote_access(_state())
     release_first()
     assert not stopped.wait(0.1)
     release_second()
     assert stopped.wait(1)
-    assert public_access.acquire_public_access_stop_response() is None
-    public_access._open_public_access_stop_response_admission()
+    assert remote_access.acquire_remote_access_stop_response() is None
+    remote_access._open_remote_access_stop_response_admission()
 
 
 def test_stop_response_wait_accepts_admission_after_initial_zero(monkeypatch):
-    public_access._stop_responses_pending = 0
-    public_access._stop_response_admission_open = True
+    remote_access._stop_responses_pending = 0
+    remote_access._stop_response_admission_open = True
     entered_quiet_window, advance_clock, finished = (threading.Event() for _ in range(3))
-    real_monotonic = public_access.time.monotonic
+    real_monotonic = remote_access.time.monotonic
     advanced_at = monotonic_calls = 0
 
     def _monotonic():
@@ -329,29 +329,29 @@ def test_stop_response_wait_accepts_admission_after_initial_zero(monkeypatch):
         return 0.0
 
     def _wait():
-        public_access._drain_and_close_public_access_stop_responses()
+        remote_access._drain_and_close_remote_access_stop_responses()
         finished.set()
 
-    monkeypatch.setattr(public_access.time, "monotonic", _monotonic)
+    monkeypatch.setattr(remote_access.time, "monotonic", _monotonic)
     waiter = threading.Thread(target = _wait)
     waiter.start()
     assert entered_quiet_window.wait(0.5)
-    release = public_access.acquire_public_access_stop_response()
+    release = remote_access.acquire_remote_access_stop_response()
     assert release is not None
     assert not finished.wait(0.1)
     advanced_at = real_monotonic()
     advance_clock.set()
     release()
     assert finished.wait(1)
-    assert public_access.acquire_public_access_stop_response() is None
-    public_access._open_public_access_stop_response_admission()
+    assert remote_access.acquire_remote_access_stop_response() is None
+    remote_access._open_remote_access_stop_response_admission()
     waiter.join()
 
 
 def test_colab_auto_start_setting_is_read_only(monkeypatch):
-    monkeypatch.setattr(routes, "set_public_access_auto_start", lambda *_: pytest.fail("persisted"))
+    monkeypatch.setattr(routes, "set_remote_access_auto_start", lambda *_: pytest.fail("persisted"))
     request = SimpleNamespace(app = SimpleNamespace(state = _state(is_colab = True)))
-    payload = routes.PublicAccessAutoStartPayload(enabled = True)
+    payload = routes.RemoteAccessAutoStartPayload(enabled = True)
     with pytest.raises(HTTPException) as exc:
-        routes.update_public_access_auto_start(request, payload, "admin", None)
+        routes.update_remote_access_auto_start(request, payload, "admin", None)
     assert exc.value.status_code == 409
