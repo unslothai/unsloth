@@ -1652,7 +1652,11 @@ def _find_blocked_commands(command: str) -> set[str]:
     # sees only as an argument, so screen what start actually launches. Only
     # inside a cmd payload: a bare `start` is data (echo start rm), and on
     # POSIX nothing launches it at all.
-    for i in range(min(cmd_payload_from), len(tokens)) if cmd_payload_from else ():
+    start_scan = range(min(cmd_payload_from), len(tokens)) if cmd_payload_from else ()
+    for i in start_scan:
+        # A separator ends the payload; a `start` past it is data again.
+        if tokens[i] in _SHELL_SEPARATORS:
+            break
         if os.path.basename(tokens[i]).lower() not in ("start", "start.exe"):
             continue
         j = i + 1
@@ -1664,6 +1668,8 @@ def _find_blocked_commands(command: str) -> set[str]:
             j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
         # cmd reads a quoted first argument as the window title, but shlex has
         # already dropped the quotes, so screen both it and what follows it.
+        # A title whose first word is a blocked name over-blocks; that is the
+        # safe direction, and the rest of the title is not at command position.
         for candidate in tokens[j : j + 2]:
             if candidate:
                 blocked |= _find_blocked_commands(candidate)

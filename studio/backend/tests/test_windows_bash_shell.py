@@ -309,6 +309,9 @@ def test_cmd_shellout_is_screened_through_mangled_switches(command):
         "echo start rm",
         "grep start rm file",
         "start rm",
+        # ...including after a cmd payload has ended at a separator.
+        "cmd /c dir && echo start rm",
+        "cmd /c dir; grep start rm file",
     ],
 )
 def test_detached_windows_stay_launchable(command):
