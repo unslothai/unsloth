@@ -6433,6 +6433,28 @@ def test_codex_attach_check_direct_variant_matches_without_probe(monkeypatch):
     )
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-bar.gguf", "bar")
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q8_0/foo-Q4_K_M.gguf", "Q4_K_M")
+    # The hub-style bpw-stripped spelling resolves server-side, so it passes.
+    start._attach_gguf_check_for_codex(
+        BASE, "sk-test", "/models/model-IQ4_XS-3.53bpw.gguf", "IQ4_XS"
+    )
+
+
+def test_codex_attach_check_refuses_big_endian_direct_files(monkeypatch, capsys):
+    # detect_gguf_model refuses these names, so the load would fall through to
+    # the transformers path and evict; a quant-named parent keeps its exemption.
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: pytest.fail("a direct .gguf file needs no variants probe"),
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/model-Q4_K_M-be.gguf")
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/stories260K-be.gguf")
+    # The shapes the server loads stay untouched.
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q4_K_M/model-be.gguf")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/model-BF16.gguf")
 
 
 def test_codex_attach_check_asks_server_for_foreign_direct_variant(monkeypatch, capsys):

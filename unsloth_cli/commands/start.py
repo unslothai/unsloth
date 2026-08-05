@@ -1769,11 +1769,58 @@ def _direct_gguf_variant_labels(path: str) -> tuple:
         match = _QUANT_LABEL_RE.search(norm.rsplit("/", 2)[-2])
     labels = [stem]
     if match is not None:
-        labels.append(f"{match.group(1) or ''}{match.group(2)}{match.group(3) or ''}")
+        label = f"{match.group(1) or ''}{match.group(2)}{match.group(3) or ''}"
+        labels.append(label)
+        # The resolver also accepts the hub-style bpw-stripped spelling.
+        stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", label, flags = re.IGNORECASE)
+        if stripped != label:
+            labels.append(stripped)
     else:
         # The extractor's own fallback: the last hyphen-separated segment.
         labels.append(stem.split("-")[-1])
     return tuple(labels)
+
+
+# Mirrors hub.utils.gguf._BIG_ENDIAN_GGUF_FILENAME_RE; change in lockstep.
+_BIG_ENDIAN_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
+
+
+def _direct_gguf_is_big_endian(path: str) -> bool:
+    """Mirrors hub.utils.gguf.is_big_endian_gguf_path over the same one-parent
+    context detect_gguf_model reads; change in lockstep. A quant-named parent
+    exempts a bare -be basename (that file loads); a be marker at or after a
+    basename quant does not.
+    """
+    norm = path.replace("\\", "/").rstrip("/")
+    parts = [segment for segment in norm.split("/") if segment]
+    name = parts[-1]
+    stem = name.rsplit(".", 1)[0].lower()
+    quant_stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", stem)
+    match = _QUANT_LABEL_RE.search(quant_stem)
+    parent = parts[-2].lower() if len(parts) > 1 else ""
+    if match is None and parent:
+        match = _QUANT_LABEL_RE.search(parent)
+    quant_key = (
+        f"{match.group(1) or ''}{match.group(2)}{match.group(3) or ''}".lower()
+        if match is not None
+        else quant_stem.split("-")[-1]
+    )
+    quant_index = stem.find(quant_key) if quant_key else -1
+    quant_in_parent_only = (
+        bool(parent)
+        and quant_index < 0
+        and (
+            (quant_key and quant_key in parent)
+            or (not quant_key and _QUANT_LABEL_RE.search(parent))
+        )
+    )
+    for be in _BIG_ENDIAN_FILENAME_RE.finditer(stem):
+        if quant_index >= 0 and quant_index < be.start():
+            return True
+        tail = stem[be.end() :].lstrip("._-")
+        if not tail or _QUANT_LABEL_RE.search(tail) is None:
+            return not quant_in_parent_only
+    return False
 
 
 # Mirrors gguf_variants._DIRECT_SPLIT_RE; change in lockstep.
@@ -1860,8 +1907,11 @@ def _answer_offers_variant(
         filename = row.get("filename")
         if not isinstance(quant, str) and not isinstance(filename, str):
             return True
-        if isinstance(quant, str) and quant.strip().lower() == wanted:
-            return True
+        if isinstance(quant, str):
+            label = quant.strip().lower()
+            # The resolver also accepts the hub-style bpw-stripped spelling.
+            if wanted in (label, re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", label)):
+                return True
         if isinstance(filename, str):
             # The local resolver also accepts the exact shard-stripped stem as
             # a label -- the full relative spelling only, never the basename of
@@ -1965,6 +2015,11 @@ def _attach_gguf_check_for_codex(
         # answer defers whenever the path exists for this process, which on the
         # loopback attach this gate protects is exactly when it does.
         if _direct_gguf_is_companion(repo):
+            _fail_codex_needs_gguf(repo)
+        # A big-endian build the server's detector refuses would fall through
+        # to the transformers path and evict; the quant-named-parent exemption
+        # keeps the shapes it does load.
+        if _direct_gguf_is_big_endian(repo):
             _fail_codex_needs_gguf(repo)
         # On a loopback attach this process sees the server's filesystem, so an
         # incomplete file is failed here: the server classifies the extension
