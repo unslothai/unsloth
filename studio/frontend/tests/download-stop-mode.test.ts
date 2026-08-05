@@ -44,3 +44,19 @@ test("the accessible label matches what the button does", () => {
   assert.equal(downloadActionAriaLabel(true, true, "pause"), "Cancelling…");
   assert.equal(downloadActionAriaLabel(false, false, "pause"), undefined);
 });
+
+test("a Xet run that fell back to HTTP still cancels, not pauses", () => {
+  // The retry reclaims the job as HTTP but keeps the Xet cancel marker, so
+  // stopping it leaves a partial that has to start over.
+  assert.equal(downloadStopMode("http", null, "xet"), "cancel");
+});
+
+test("an HTTP job whose marker is also HTTP still pauses", () => {
+  assert.equal(downloadStopMode("http", null, "http"), "pause");
+});
+
+test("no marker leaves the live transport in charge", () => {
+  assert.equal(downloadStopMode("http", null, null), "pause");
+  assert.equal(downloadStopMode("http", null, undefined), "pause");
+  assert.equal(downloadStopMode("xet", "http", null), "cancel");
+});

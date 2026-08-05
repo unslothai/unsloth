@@ -21,8 +21,12 @@ export function partialResumeLabel(transport: string | null | undefined): string
 export function downloadStopMode(
   activeTransport: string | null | undefined,
   partialTransport?: string | null,
+  cancelTransport?: string | null,
 ): DownloadStopMode {
-  const transport = activeTransport ?? partialTransport;
+  // The cancel marker wins where there is one: a Xet run that fell back to
+  // HTTP still cancels into a restart-only partial, so Pause would promise a
+  // resume the marker does not allow.
+  const transport = cancelTransport ?? activeTransport ?? partialTransport;
   return transport === "http" ? "pause" : "cancel";
 }
 
@@ -99,7 +103,11 @@ export function useDownloadCardState({
     starting,
     variant,
   ]);
-  const stopMode = downloadStopMode(job.transport, partialTransport);
+  const stopMode = downloadStopMode(
+    job.transport,
+    partialTransport,
+    job.cancelTransport,
+  );
   return {
     downloading,
     cancelling,

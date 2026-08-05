@@ -95,6 +95,10 @@ class ActiveDownload(BaseModel):
     repo_id: Optional[str] = None
     variant: Optional[str] = None
     transport: Optional[str] = None
+    # Set only on a job that fell back from Xet to HTTP mid-flight: cancelling
+    # it still writes the original transport's marker, so the partial is
+    # restart-only even though the worker is on resumable HTTP.
+    cancel_transport: Optional[str] = None
     state: str
     files: Optional[List[str]] = Field(
         None,

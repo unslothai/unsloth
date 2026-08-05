@@ -61,6 +61,9 @@ export interface ActiveModelDownload {
   repo_id?: string;
   variant: string | null;
   transport?: TransportMode | null;
+  // Set only on a Xet run that fell back to HTTP: stopping it still leaves a
+  // restart-only partial, so this and not `transport` decides the stop control.
+  cancel_transport?: TransportMode | null;
   state: DownloadJobState;
   generation?: number;
   // Scoped jobs only: the exact files this job is fetching. Every file set of one repo rides the same "@scope" slot, so an
@@ -72,6 +75,7 @@ export interface ActiveDatasetDownload {
   repo_id: string;
   variant: null;
   transport?: TransportMode | null;
+  cancel_transport?: TransportMode | null;
   state: DownloadJobState;
   generation?: number;
 }

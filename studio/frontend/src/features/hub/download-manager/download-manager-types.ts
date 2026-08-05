@@ -32,6 +32,10 @@ export interface ManagedDownload {
   // keeps a resumable partial. Absent only when neither the backend nor
   // persisted state identifies an adopted job's transport.
   transport?: ResolvedTransport;
+  /** A Xet run that fell back to HTTP keeps its original cancel marker, so
+   * stopping it still leaves a restart-only partial. Set only in that case,
+   * and it, not `transport`, decides the stop control. */
+  cancelTransport?: ResolvedTransport;
 }
 
 export interface DownloadRequest {

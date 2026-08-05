@@ -66,3 +66,33 @@ def test_an_available_xet_request_is_left_alone(monkeypatch):
     )
     use_xet, _reason = download_lifecycle.resolve_requested_use_xet("xet", True)
     assert download_lifecycle.resolve_transport(use_xet) == "xet"
+
+
+def test_a_fallback_run_publishes_the_marker_that_decides_its_stop_control():
+    """The Xet-to-HTTP retry reclaims as HTTP but keeps the Xet cancel marker,
+    so stopping it is a restart even though the worker is on HTTP."""
+    from hub.services.download_lifecycle import active_download_refs
+
+    registry = DownloadRegistry()
+    key = "unsloth/Qwen3-4B-GGUF"
+    assert registry.claim(
+        key,
+        "http",
+        repo_type = "model",
+        repo_id = key,
+        cancel_marker_transport = "xet",
+    )[0] is True
+
+    ref = active_download_refs(registry, key, with_variant = True)[0]
+    assert ref.transport == "http", "the worker really is on HTTP"
+    assert ref.cancel_transport == "xet", "but cancelling writes the Xet marker"
+
+
+def test_an_ordinary_run_publishes_no_cancel_marker():
+    from hub.services.download_lifecycle import active_download_refs
+
+    registry = DownloadRegistry()
+    key = "unsloth/Qwen3-4B-GGUF"
+    registry.claim(key, "http", repo_type = "model", repo_id = key)
+    ref = active_download_refs(registry, key, with_variant = True)[0]
+    assert ref.cancel_transport is None

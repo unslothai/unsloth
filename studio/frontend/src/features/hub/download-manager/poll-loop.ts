@@ -591,6 +591,7 @@ export async function startJob(
     generation?: number;
     state?: DownloadJobState;
     transport?: ResolvedTransport;
+    cancelTransport?: ResolvedTransport;
   } = {},
 ): Promise<void> {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
@@ -682,6 +683,11 @@ export async function startJob(
     // An adopted job prefers the backend's live transport, then a persisted
     // value. It never claims the HTTP placeholder used to skip resolution.
     ...(activeTransport ? { transport: activeTransport } : {}),
+    // A fallback run's cancel marker, when the backend reported one. Only an
+    // adopted job can have it: the fallback happens long after a start.
+    ...(opts.adopt && opts.cancelTransport
+      ? { cancelTransport: opts.cancelTransport }
+      : {}),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }
       : {}),
@@ -903,6 +909,7 @@ export function adoptJob(
   generation?: number,
   state?: DownloadJobState,
   transport?: ResolvedTransport,
+  cancelTransport?: ResolvedTransport,
 ): void {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
   if (runtimeRegistry.runtimes.get(key)?.pollingStarted) {
@@ -914,6 +921,7 @@ export function adoptJob(
     if (transport && probeDescribesCurrentRun(known, generation)) {
       patchJob(key, {
         transport,
+        ...(cancelTransport ? { cancelTransport } : {}),
         ...(Number.isSafeInteger(known) ? {} : { serverGeneration: generation }),
       });
     }
@@ -924,6 +932,7 @@ export function adoptJob(
     generation,
     state,
     ...(transport ? { transport } : {}),
+    ...(cancelTransport ? { cancelTransport } : {}),
   });
 }
 
@@ -965,6 +974,9 @@ export async function probeAndAdopt(
           active.generation,
           active.state,
           isResolvedTransport(active.transport) ? active.transport : undefined,
+          isResolvedTransport(active.cancel_transport)
+            ? active.cancel_transport
+            : undefined,
         );
       }
       return;
@@ -975,14 +987,19 @@ export async function probeAndAdopt(
     // transfer that would have resumed.
     const datasets = await getActiveDatasetDownloads(signal, repoId);
     if (signal.aborted) return;
+    // No repo compare here: the endpoint resolves the cached casing before it
+    // filters, so an exact match against the card's spelling would drop the
+    // very row it just asked for.
     for (const active of datasets) {
-      if (active.repo_id !== repoId) continue;
       if (active.state !== "running" && active.state !== "cancelling") continue;
       adoptJob(
         { kind, repoId, variant: null, expectedBytes: 0 },
         active.generation,
         active.state,
         isResolvedTransport(active.transport) ? active.transport : undefined,
+        isResolvedTransport(active.cancel_transport)
+          ? active.cancel_transport
+          : undefined,
       );
     }
   } catch (error) {
