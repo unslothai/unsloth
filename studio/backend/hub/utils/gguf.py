@@ -295,11 +295,14 @@ def iter_hf_cache_snapshots(repo_id: str, root: Optional[Path] = None):
     )
     for repo_dir in repo_dirs:
         snapshots_dir = repo_dir / "snapshots"
-        if not snapshots_dir.is_dir():
-            continue
+        # is_dir() ignores only ENOENT/ENOTDIR/EBADF/ELOOP, so an unreadable root raised
+        # EACCES up to 3.13 (3.14 returns False, gh-101357). Skip it instead of 500ing.
         try:
+            if not snapshots_dir.is_dir():
+                continue
             snapshots.extend(snap for snap in snapshots_dir.iterdir() if snap.is_dir())
-        except OSError:
+        except OSError as e:
+            logger.debug("Skipping unreadable cache snapshots dir %s: %s", snapshots_dir, e)
             continue
 
     # Same key the inventory row selects with, so both name one snapshot.

@@ -3667,3 +3667,157 @@ def test_switching_cache_storage_does_not_join_a_stuck_scan(monkeypatch, tmp_pat
     assert any("wedgedvol" in root for root in scanned), scanned
     assert answered, "the new request waited on the scan stuck against the old cache"
     assert any("healthyvol" in root for root in scanned), scanned
+
+
+def _write_cached_gguf(
+    hub_cache: Path,
+    repo_id: str,
+    filename: str,
+    mtime: float | None = None,
+) -> Path:
+    """One real snapshot under *hub_cache*; *mtime* pins which one a repo-wide walk picks."""
+    import os
+
+    repo_dir = hub_cache / ("models--" + repo_id.replace("/", "--"))
+    snapshot = repo_dir / "snapshots" / "rev"
+    snapshot.mkdir(parents = True, exist_ok = True)
+    (snapshot / filename).write_bytes(b"GGUF" + b"\0" * 32)
+    if mtime is not None:
+        os.utime(snapshot, (mtime, mtime))
+    return repo_dir
+
+
+def _pin_caches(monkeypatch, active: Path, roots: list[Path]) -> None:
+    import utils.hf_cache_settings as hf_cache_settings
+    from hub.utils import hf_cache_state
+
+    monkeypatch.setattr(
+        hf_cache_settings,
+        "get_hf_cache_paths",
+        lambda: SimpleNamespace(
+            hf_home = active.parent,
+            hub_cache = active,
+            xet_cache = active.parent / "xet",
+            source = "test",
+        ),
+    )
+    monkeypatch.setattr(hf_cache_state, "hf_cache_roots", lambda: list(roots))
+
+
+def _unreachable_hub(monkeypatch) -> None:
+    """Fail only the network call, so the real cache fallback inside the lister runs."""
+    import huggingface_hub
+
+    def _boom(self, *args, **kwargs):
+        raise OSError("hub unreachable")
+
+    monkeypatch.setattr(huggingface_hub.HfApi, "model_info", _boom)
+
+
+def test_failed_hub_lists_the_selected_cache_not_another_one(monkeypatch, tmp_path):
+    """A request pinned to one cache must list that cache's quants.
+
+    ``list_gguf_variants`` read the cache repo-wide on an unreachable Hub, so the active
+    copy's quants answered for a request pinned elsewhere.
+    """
+    active = tmp_path / "active" / "hub"
+    selected = tmp_path / "selected" / "hub"
+    active.mkdir(parents = True)
+    selected.mkdir(parents = True)
+    # The active copy is newer, so only a scoped lookup can surface the selected one.
+    _write_cached_gguf(active, "org/repo", "m-Q4_K_M.gguf", mtime = 2_000_000_000)
+    selected_repo = _write_cached_gguf(selected, "org/repo", "m-Q8_0.gguf", mtime = 1_000_000_000)
+
+    _pin_caches(monkeypatch, active, [active, selected])
+    _unreachable_hub(monkeypatch)
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+
+    context_calls = []
+    monkeypatch.setattr(
+        models_route,
+        "_read_native_context_length",
+        lambda model, *, is_local: context_calls.append((str(model), is_local)) or 4096,
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            local_path = str(selected_repo),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert sorted(v.quant for v in response.variants) == ["Q8_0"]
+    # The context length has to come off that same copy.
+    assert context_calls == [(str(selected_repo), True)]
+
+
+def test_an_unreadable_cache_root_is_skipped_not_fatal(tmp_path):
+    """One unreadable cache must not take down a walk the other roots can answer.
+
+    A bare ``is_dir()`` on ``<repo>/snapshots`` let EACCES escape (up to 3.13) and turned a
+    usable listing into a 500. Asserted on the walk, so it pins the guard, not the fallback.
+    """
+    from hub.utils.gguf import iter_hf_cache_snapshots, list_gguf_variants_from_hf_cache
+
+    blocked_root = tmp_path / "blocked" / "hub"
+    readable_root = tmp_path / "readable" / "hub"
+    blocked_root.mkdir(parents = True)
+    readable_root.mkdir(parents = True)
+    blocked_repo = _write_cached_gguf(blocked_root, "org/repo", "m-Q4_K_M.gguf")
+    _write_cached_gguf(readable_root, "org/repo", "m-Q8_0.gguf")
+
+    blocked_repo.chmod(0o000)
+    try:
+        try:
+            (blocked_repo / "snapshots").is_dir()
+        except OSError:
+            pass
+        else:
+            pytest.skip("filesystem does not enforce the permission (root?)")
+
+        # Scoped at the unreadable root: no snapshots, and no exception.
+        assert list(iter_hf_cache_snapshots("org/repo", root = blocked_root)) == []
+        assert list_gguf_variants_from_hf_cache("org/repo", root = blocked_root) is None
+
+        # A readable root is still walked normally.
+        readable = list(iter_hf_cache_snapshots("org/repo", root = readable_root))
+        assert len(readable) == 1
+        listed = list_gguf_variants_from_hf_cache("org/repo", root = readable_root)
+        assert listed is not None
+        assert [v.quant for v in listed[0]] == ["Q8_0"]
+    finally:
+        blocked_repo.chmod(0o755)
+
+
+def test_another_caches_quant_is_offered_as_a_download_not_as_downloaded(monkeypatch, tmp_path):
+    """Readiness is counted against the cache the request names, never against another one.
+
+    The pinned cache holds the repo but no GGUF, so the lister answers repo-wide. Those
+    variants must stay download targets, or the row offers a load that cannot resolve.
+    """
+    pinned_root = tmp_path / "pinned" / "hub"
+    other_root = tmp_path / "other" / "hub"
+    pinned_root.mkdir(parents = True)
+    other_root.mkdir(parents = True)
+    pinned_repo = pinned_root / "models--org--repo"
+    (pinned_repo / "snapshots" / "rev").mkdir(parents = True)
+    _write_cached_gguf(other_root, "org/repo", "m-Q8_0.gguf")
+
+    _pin_caches(monkeypatch, pinned_root, [pinned_root, other_root])
+    _unreachable_hub(monkeypatch)
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+    monkeypatch.setattr(
+        models_route, "_read_native_context_length", lambda model, *, is_local: None
+    )
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            local_path = str(pinned_repo),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert [v.quant for v in response.variants] == ["Q8_0"]
+    assert [v.downloaded for v in response.variants] == [False]
