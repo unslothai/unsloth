@@ -52,7 +52,10 @@ def _blocks() -> tuple:
     is a syntax error before 3.12, and this repo is 3.9+ (ruff targets py311).
     """
     return (
-        _extract(r"    # Patch releases the stack cannot run.*?\$PythonSkip = @\([^\)]*\)"),
+        _extract(
+            r"    # Patch releases the stack cannot run.*?"
+            r"if \(\$SkipTorch\) \{ \$PythonSkip = @\(\) \}"
+        ),
         _extract(r"    function Remove-SkippedPython \{.*?\n    \}"),
     )
 
@@ -78,6 +81,7 @@ def _run(tmp_path: Path, version: str | None) -> str:
     skip_block, screen_block = _blocks()
     script = f"""
 $ErrorActionPreference = "Stop"
+$SkipTorch = $false
 # Write-Host, like the real substep: Write-Output would put the message on
 # the pipeline, so the function would return @(message, $null) and every
 # `if ($DetectedPython)` downstream would read it as truthy.
@@ -120,6 +124,7 @@ def test_an_unreadable_interpreter_is_not_treated_as_bad(tmp_path):
     skip_block, screen_block = _blocks()
     script = f"""
 $ErrorActionPreference = "Stop"
+$SkipTorch = $false
 # Write-Host, like the real substep: Write-Output would put the message on
 # the pipeline, so the function would return @(message, $null) and every
 # `if ($DetectedPython)` downstream would read it as truthy.
@@ -242,6 +247,7 @@ def _resolve(tmp_path: Path, versions: dict[str, str]) -> str:
     resolver_block = _extract(r"    function Find-CompatiblePython \{.*?\n    \}")
     script = f"""
 $ErrorActionPreference = "Stop"
+$SkipTorch = $false
 $env:PATH = "{root}"
 $PythonVersion = "3.13"
 function substep {{ param($m, $c) Write-Host "SUBSTEP: $m" }}
@@ -287,3 +293,41 @@ def test_nothing_usable_is_still_nothing(tmp_path):
     # control this case would pass on a machine where it proves nothing.
     assert _resolve(tmp_path / "good", {"3.13": "3.13.13"}) == "3.13"
     assert _resolve(tmp_path / "bad", {"3.13": "3.13.8"}) == "none"
+
+
+@_POSIX_LAUNCHER_ONLY
+def test_no_torch_mode_keeps_the_skipped_patch(tmp_path):
+    """The list is about `import torch`; -NoTorch never imports it.
+
+    A locked-down GGUF-only machine whose only Python is 3.13.8 would otherwise
+    be pushed into winget/python.org recovery it may not be able to complete.
+    """
+    root = tmp_path / "bin"
+    _fake_launcher(root, {"3.13": "3.13.8"})
+    skip_block, screen_block = _blocks()
+    conda_block = _extract(r"    function Test-IsCondaPython \{.*?\n    \}")
+    tag_block = _extract(r"    function Get-PythonPlatformTag \{.*?\n    \}")
+    resolver_block = _extract(r"    function Find-CompatiblePython \{.*?\n    \}")
+    script = f"""
+$ErrorActionPreference = "Stop"
+$SkipTorch = $true
+$env:PATH = "{root}"
+$PythonVersion = "3.13"
+function substep {{ param($m, $c) Write-Host "SUBSTEP: $m" }}
+function Get-HostMachineArch {{ return "x86_64" }}
+{skip_block}
+$script:CondaSkipPattern = '(?i)(conda|miniconda|anaconda|miniforge|mambaforge)'
+{conda_block}
+{tag_block}
+{resolver_block}
+$found = Find-CompatiblePython
+if ($null -eq $found) {{ Write-Output "RESULT: none" }}
+else {{ Write-Output "RESULT: $($found.Version)" }}
+"""
+    completed = subprocess.run(
+        ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
+        capture_output = True,
+        text = True,
+    )
+    out = completed.stdout + completed.stderr
+    assert "RESULT: 3.13" in out, out

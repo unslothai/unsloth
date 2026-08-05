@@ -577,13 +577,14 @@ _GUARD_FILE=$(mktemp)
 {
     printf 'substep() { :; }\n'
     sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"
+    sed -n '/^_python_skip_applies()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_python_is_skipped()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_start_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_discard_venv_for_recreate()/,/^}/p' "$INSTALL_SH"
     awk '/Guard against two independent Apple Silicon venv problems/{f=1} f{print} f&&/^fi$/{exit}' \
         "$INSTALL_SH"
 } > "$_GUARD_FILE"
-for _needed in _python_is_skipped _start_studio_venv_replacement _discard_venv_for_recreate; do
+for _needed in _python_skip_applies _python_is_skipped _start_studio_venv_replacement _discard_venv_for_recreate; do
     grep -q "^$_needed()" "$_GUARD_FILE" || {
         echo "  FAIL: could not extract $_needed from install.sh"
         FAIL=$((FAIL + 1))

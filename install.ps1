@@ -225,6 +225,11 @@ function Install-UnslothStudio {
     # than a version, so uv never picks one of these -- but the machine may
     # already have it, and $PythonFallbackFullVersion above is what replaces it.
     $PythonSkip = @("3.13.8")
+    # The entry above is skipped for one reason: it cannot `import torch`. A
+    # -NoTorch install never imports it, so refusing the interpreter would send a
+    # locked-down GGUF-only machine into winget/python.org recovery it may not be
+    # able to complete, over a package it will not install.
+    if ($SkipTorch) { $PythonSkip = @() }
 
     # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then
     # STUDIO_HOME alias, then USERPROFILE-redirect, then default.

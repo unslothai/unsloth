@@ -2295,7 +2295,16 @@ version_ge() {
 #   expedited release carrying only that fix.
 PYTHON_SKIP="3.13.8"
 
+# Every entry above is skipped for one reason: it cannot `import torch`. A
+# --no-torch install never imports it, so refusing the interpreter there would
+# fail a GGUF-only setup on a locked-down host over a package it will not
+# install. SKIP_TORCH is set well before any of this runs.
+_python_skip_applies() {
+    [ "$SKIP_TORCH" != true ]
+}
+
 _python_is_skipped() {  # full x.y.z version
+    _python_skip_applies || return 1
     for _bad in $PYTHON_SKIP; do
         [ "$1" = "$_bad" ] && return 0
     done
@@ -2314,14 +2323,21 @@ _python_is_skipped() {  # full x.y.z version
 # --offline: "3.13" gives 3.13.8, ">=3.13.9,<3.14" errors, ">=3.13,<3.14,!=3.13.8"
 # gives 3.13.7.
 _python_request() {  # requested version -> what uv is asked for
+    _python_skip_applies || { echo "$1"; return 0; }
     case "$1" in
         # An explicit patch is the caller's own choice, and a path or a uv
         # download name is not a version at all. Pass those through untouched.
-        [0-9]*.[0-9]*.*) echo "$1"; return 0 ;;
+        [0-9]*.[0-9]*.*|*/*|*\\*) echo "$1"; return 0 ;;
         [0-9]*.[0-9]*) ;;
         *) echo "$1"; return 0 ;;
     esac
     _req_minor=${1#*.}
+    # Only a plain X.Y gets a range. "3.13rc1", or a relative path like
+    # "3.13/bin/python" that slipped past the globs above, would otherwise reach
+    # the arithmetic below, and dash aborts the whole install on "Illegal number".
+    case "$_req_minor" in
+        ''|*[!0-9]*) echo "$1"; return 0 ;;
+    esac
     _req=">=$1,<${1%%.*}.$((_req_minor + 1))"
     for _bad in $PYTHON_SKIP; do
         case "$_bad" in
@@ -2352,7 +2368,11 @@ if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
     # present: that is a minimal image without awk, not an old uv.
     _uv_present_before=false
     if command -v uv >/dev/null 2>&1; then
-        _uv_prev_ver=$(uv --version 2>/dev/null | awk '{print $2}' 2>/dev/null)
+        # `|| _uv_prev_ver=`: on an image with no awk the pipeline exits 127 and
+        # set -e would kill the install here, which is exactly the host this
+        # block exists to keep working.
+        _uv_prev_ver=$(uv --version 2>/dev/null | awk '{print $2}' 2>/dev/null) \
+            || _uv_prev_ver=""
         if [ -z "$_uv_prev_ver" ] || _uv_version_ok uv "$UV_OFFLINE_MIN_VERSION"; then
             _uv_present_before=true
         fi

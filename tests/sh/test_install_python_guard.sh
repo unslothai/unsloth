@@ -30,13 +30,14 @@ _HELPERS=$(mktemp)
     # Quiet stand-ins for the reporting helpers the extracted functions call.
     printf 'substep() { :; }\nrollback_substep() { :; }\n'
     sed -n '/^PYTHON_SKIP=/p' "$INSTALL_SH"
+    sed -n '/^_python_skip_applies()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_python_is_skipped()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_python_request()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_start_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_discard_venv_for_recreate()/,/^}/p' "$INSTALL_SH"
     sed -n '/^_restore_studio_venv_replacement()/,/^}/p' "$INSTALL_SH"
 } > "$_HELPERS"
-for _needed in _python_is_skipped _python_request _start_studio_venv_replacement \
+for _needed in _python_skip_applies _python_is_skipped _python_request _start_studio_venv_replacement \
                _discard_venv_for_recreate _restore_studio_venv_replacement; do
     grep -q "^$_needed()" "$_HELPERS" || {
         echo "  FAIL: could not extract $_needed from install.sh"
@@ -69,6 +70,56 @@ assert_eq "every skipped patch in the series is excluded" \
 assert_eq "a skipped patch from another series is not" \
     ">=3.12,<3.13,!=3.12.4" "$(_python_request 3.12)"
 PYTHON_SKIP="$_saved_skip"
+
+echo "=== values that are not a plain X.Y ==="
+
+# dash aborts the whole install on "Illegal number", so anything that could
+# reach the arithmetic has to be turned away before it.
+assert_eq "a relative path whose first segment looks like a version" \
+    "3.13/bin/python" "$(_python_request 3.13/bin/python)"
+assert_eq "a Windows-style path" \
+    "C:\\Python313\\python.exe" "$(_python_request 'C:\Python313\python.exe')"
+assert_eq "a prerelease tag is not arithmetic" \
+    "3.13rc1" "$(_python_request 3.13rc1)"
+assert_eq "a uv download name is passed through" \
+    "cpython-3.13-macos-aarch64-none" "$(_python_request cpython-3.13-macos-aarch64-none)"
+
+echo "=== --no-torch does not need a torch-capable interpreter ==="
+
+_saved_skip_torch="${SKIP_TORCH:-false}"
+SKIP_TORCH=true
+assert_eq "the request is left alone when torch is never installed" \
+    "3.13" "$(_python_request 3.13)"
+if _python_is_skipped "3.13.8"; then
+    assert_eq "a skipped patch is usable without torch" "no" "yes"
+else
+    assert_eq "a skipped patch is usable without torch" "no" "no"
+fi
+SKIP_TORCH="$_saved_skip_torch"
+if _python_is_skipped "3.13.8"; then
+    assert_eq "and is skipped again once torch is back" "yes" "yes"
+else
+    assert_eq "and is skipped again once torch is back" "yes" "no"
+fi
+
+echo "=== the uv version probe on an image with no awk ==="
+
+# The comment on that block says an unreadable version counts as "uv present".
+# Without the guard the pipeline exits 127 and set -e kills the install first,
+# which is exactly the host the block exists to keep working.
+_PROBE=$(mktemp)
+sed -n '/^        _uv_prev_ver=\$(uv --version/,/_uv_prev_ver=""$/p' "$INSTALL_SH" > "$_PROBE"
+[ -s "$_PROBE" ] || { echo "  FAIL: could not extract the uv version probe"; exit 1; }
+_probe_work=$(mktemp -d)
+mkdir -p "$_probe_work/bin"
+printf '#!/bin/sh\necho "uv 0.9.2"\n' > "$_probe_work/bin/uv"
+chmod +x "$_probe_work/bin/uv"
+# PATH is narrowed inside the child, not around it: narrowing it around the
+# child would hide `sh` itself and the test would pass for the wrong reason.
+_probe_out=$(sh -c "PATH='$_probe_work/bin'; export PATH; set -e; . '$_PROBE'; echo \"SURVIVED:\${_uv_prev_ver:-empty}\"" 2>&1 || true)
+assert_eq "no awk means an unreadable version, not a dead install" \
+    "SURVIVED:empty" "$(printf '%s' "$_probe_out" | tail -1)"
+rm -rf "$_probe_work" "$_PROBE"
 
 echo "=== the skip list ==="
 
