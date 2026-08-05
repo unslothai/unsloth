@@ -71,11 +71,23 @@ def test_capability_detection_caches_are_token_aware():
     """Every capability cache is keyed by (model, token_fingerprint) so an unauthenticated
     miss cannot poison a later authenticated lookup (the audio-cache regression)."""
     src = (_BACKEND / "utils" / "models" / "model_config.py").read_text(encoding = "utf-8")
+    # Resolve type aliases first: a cache annotated with an alias is still tuple-keyed, and
+    # matching the literal "Dict[Tuple" fails the moment the key type is given a name.
+    tuple_aliases = {
+        line.split("=", 1)[0].strip()
+        for line in src.splitlines()
+        if "=" in line
+        and not line.startswith((" ", "\t"))
+        and ("Tuple[" in line.split("=", 1)[1] or "tuple[" in line.split("=", 1)[1])
+    }
     offenders = []
     for line in src.splitlines():
         stripped = line.strip()
         if "_detection_cache:" in stripped and stripped.endswith("= {}"):
-            if "Dict[Tuple" not in stripped and "Dict[tuple" not in stripped:
+            key = stripped.split("Dict[", 1)[-1].split(",", 1)[0].strip()
+            if not (
+                "Dict[Tuple" in stripped or "Dict[tuple" in stripped or key in tuple_aliases
+            ):
                 offenders.append(stripped)
     assert not offenders, (
         "A capability cache must be keyed by (model, token_fingerprint), not the bare "
