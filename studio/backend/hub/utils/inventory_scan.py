@@ -1566,7 +1566,9 @@ def _component_weights_complete(component: Path) -> bool:
     Unfetched variants behave the same way, hence the ``.index.`` match rather than an
     ``.index.json`` suffix: diffusers' ``_add_variant`` splits on ``.`` and inserts the variant
     before the last part, so a bf16 index is
-    ``diffusion_pytorch_model.safetensors.index.bf16.json``.
+    ``diffusion_pytorch_model.safetensors.index.bf16.json`` -- the real name
+    ``genmo/mochi-1-preview`` ships beside its default index. A survey that filters on the
+    ``.index.json`` suffix will not see it, which is the same blind spot this match exists to fix.
     """
     # iterdir() raises on an unreadable dir, reaching the caller's fail-open guard; glob() would
     # swallow that OSError and read as "no weights".
