@@ -161,7 +161,7 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertNotIn("lora_random_state", config)
 
     def test_mlx_max_grad_norm_defaults_to_the_cuda_threshold(self):
-        # Unset must reach the trainer as the CUDA text path's 1.0, the mode
+        # Unset must reach the trainer as 1.0 (the CUDA text default), the mode
         # that also makes MLX report the gradient norm the chart plots.
         from pydantic import ValidationError
 
@@ -189,8 +189,8 @@ class TestTrainingRawSupport(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             request(max_grad_norm = float("inf"))
-        # An unset request must stay unset all the way to the resolver: a
-        # schema default of 0.0 would turn global-norm clipping off first.
+        # Unset must survive to the resolver; a schema default of 0.0 would turn
+        # global-norm clipping off first.
         self.assertIsNone(request().max_grad_norm)
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
         self.assertIn(
@@ -199,9 +199,8 @@ class TestTrainingRawSupport(unittest.TestCase):
         )
 
     def test_start_training_leaves_unset_max_grad_norm_for_worker_default(self):
-        # A None here is what lets the worker apply the CUDA-matching default;
-        # a coerced 0.0 would silently drop every UI run back off global-norm
-        # clipping, which is what emptied the gradient-norm chart.
+        # None is what lets the worker apply the default; a coerced 0.0 would drop
+        # every UI run back off global-norm clipping and re-empty the chart.
         backend = TrainingBackend()
 
         class DummyProcess:
@@ -293,13 +292,10 @@ class TestTrainingRawSupport(unittest.TestCase):
         )
 
     def test_training_backend_normalizes_explicit_none_seed_and_dtypes(self):
-        # Raw / backend callers can pass `random_seed=None` and
-        # `cast_norm_output_to_input_dtype=None` (or omit them), and those must
-        # NOT leak the `None` past `TrainingBackend.start_training`. Otherwise
-        # transformers.set_seed(None) raises, PEFT init becomes
-        # nondeterministic, and the MLX norm-output cast silently flips. The
-        # MLX clip knobs are the exception: None survives, so each one's owner
-        # (the MLX trainer, or the worker for max_grad_norm) picks the default.
+        # `random_seed=None` and `cast_norm_output_to_input_dtype=None` must not
+        # leak past `TrainingBackend.start_training`: set_seed(None) raises, PEFT
+        # init goes nondeterministic, and the MLX norm-output cast flips. The MLX
+        # clip knobs are the exception, where None means "owner picks the default".
         from core.training.training import (
             _coerce_seed,
             _coerce_optional_bool,
@@ -328,16 +324,14 @@ class TestTrainingRawSupport(unittest.TestCase):
         with self.assertRaises(ValueError):
             _coerce_optional_nonneg_float("max_grad_leaf_norm", -1)
 
-        # inf clears >= 0 but never binds, so it would train unclipped while
-        # the config reports a threshold. Same hazard on all three knobs.
+        # inf clears >= 0 but never binds, on all three knobs alike.
         for name in ("max_grad_norm", "max_grad_value", "max_grad_leaf_norm"):
             for bad in (float("inf"), float("-inf"), float("nan")):
                 with self.assertRaises(ValueError):
                     _coerce_optional_nonneg_float(name, bad)
 
     def test_mlx_clip_knobs_reject_non_finite_at_every_layer(self):
-        # The schema, the normalizer and the worker each guard the three clip
-        # knobs, because raw worker callers reach none of the layers above them.
+        # All three layers guard, since raw worker callers reach none above them.
         import math
 
         from pydantic import ValidationError

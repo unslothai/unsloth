@@ -1985,9 +1985,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         eval_steps_val = int(eval_steps_val)
 
-    # Re-validate for direct worker callers (training.py normalizes the main
-    # path). Clipping globally also yields the pre-clip norm the gradient-norm
-    # chart plots, at the same cost the opt-in report_grad_norm would pay.
+    # Re-validate for direct worker callers; training.py normalizes the main path.
+    # Global clipping also yields the pre-clip norm the gradient-norm chart plots.
     max_grad_norm = _resolve_mlx_max_grad_norm(config.get("max_grad_norm"))
     max_grad_value = config.get("max_grad_value")
     if max_grad_value is not None:

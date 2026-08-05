@@ -109,11 +109,7 @@ def _coerce_optional_bool(value, default: bool) -> bool:
 
 
 def _coerce_optional_nonneg_float(name: str, value):
-    """Reject negatives and non-finite; HTTP `ge=0` misses raw `**kwargs` callers.
-
-    inf clears `ge=0` but never binds, so the run would train unclipped while
-    the config reports a threshold.
-    """
+    """Reject negatives and non-finite; `ge=0` misses raw callers, and inf never binds."""
     if value is None:
         return None
     try:
