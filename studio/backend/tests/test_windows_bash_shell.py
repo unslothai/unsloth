@@ -272,22 +272,28 @@ def test_notes_say_where_commands_run(monkeypatch):
     assert "opens a window on the user's desktop" in tools._build_terminal_shell_note()
 
 
+# powershell/pwsh only join _BLOCKED_COMMANDS on win32, so these name `rm`
+# from the common set to stay meaningful on the Linux CI runner.
 @pytest.mark.parametrize(
     "command",
     [
-        "cmd /c powershell -Command ls",
-        "cmd //c powershell -Command ls",
-        "cmd //k powershell -Command ls",
-        'cmd //c start "" powershell -Command ls',
-        'cmd //c start /b "" pwsh -Command ls',
-        'cmd //c start //min "" powershell -Command ls',
-        r'cmd //c start /d C:/tmp "" powershell -Command ls',
+        "cmd /c rm -rf x",
+        "cmd //c rm -rf x",
+        "cmd //k rm -rf x",
+        'cmd //c start "" rm -rf x',
+        'cmd //c start /b "" rm -rf x',
+        'cmd //c start //min "" rm -rf x',
+        r'cmd //c start /d C:/tmp "" rm -rf x',
+        # cmd reads a quoted first argument as a title, and shlex drops the
+        # quotes, so a named window must not hide the program behind it.
+        'cmd //c start "Studio" rm -rf x',
+        'cmd //c start //min "Title" rm -rf x',
     ],
 )
 def test_cmd_shellout_is_screened_through_mangled_switches(command):
     # Git Bash turns a lone /c into a path, so a model writes //c. That spelling
-    # skipped the nested scan, making `cmd //c powershell` reachable where
-    # `cmd /c powershell` was blocked, and `start` launches its argument too.
+    # skipped the nested scan, making `cmd //c rm` reachable where `cmd /c rm`
+    # was blocked, and `start` launches its argument too.
     assert tools._find_blocked_commands(command)
 
 
@@ -295,12 +301,27 @@ def test_cmd_shellout_is_screened_through_mangled_switches(command):
     "command",
     [
         'cmd //c start "" bash -c "bash /c/x.sh"',
+        'cmd //c start "Matrix" bash -c "bash /c/x.sh"',
         "cmd //c start wt",
         "cmd //c dir",
         "start notepad",
+        # `start` outside a cmd payload is data, not a launcher.
+        "echo start rm",
+        "grep start rm file",
+        "start rm",
     ],
 )
 def test_detached_windows_stay_launchable(command):
     # `start` is the only route to a window on the user's desktop, which the
     # terminal description promises, so screening must not blanket-block cmd.
     assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["cmd /c del notes.txt", "cmd //c del notes.txt", "cmd //c git clean -fd"],
+)
+def test_auto_approval_sees_through_mangled_switches(command):
+    # del and git clean are not hard-blocked, so if the high-risk scan misses
+    # the //c spelling auto mode approves a destructive payload unprompted.
+    assert tools._terminal_is_high_risk(command)

@@ -1620,6 +1620,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     # recursively scan the nested command string.
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
     _SHELLS_WIN = {"cmd", "cmd.exe"}
+    cmd_payload_from: list[int] = []
     for i, token in enumerate(tokens):
         tok_lower = token.lower()
         # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)
@@ -1644,12 +1645,15 @@ def _find_blocked_commands(command: str) -> set[str]:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             elif is_win_c and prev_base in _SHELLS_WIN:
                 blocked |= _find_blocked_commands(tokens[i + 1])
+                cmd_payload_from.append(i + 1)
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
-    # sees only as an argument, so screen what start actually launches.
-    for i, token in enumerate(tokens):
-        if os.path.basename(token).lower() not in ("start", "start.exe"):
+    # sees only as an argument, so screen what start actually launches. Only
+    # inside a cmd payload: a bare `start` is data (echo start rm), and on
+    # POSIX nothing launches it at all.
+    for i in range(min(cmd_payload_from), len(tokens)) if cmd_payload_from else ():
+        if os.path.basename(tokens[i]).lower() not in ("start", "start.exe"):
             continue
         j = i + 1
         while j < len(tokens):
@@ -1658,11 +1662,11 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
             # /d C:\dir and friends carry their value in the next token.
             j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
-        # `start ""` is the idiom for "no title"; anything else is the program.
-        if j < len(tokens) and tokens[j] == "":
-            j += 1
-        if j < len(tokens):
-            blocked |= _find_blocked_commands(tokens[j])
+        # cmd reads a quoted first argument as the window title, but shlex has
+        # already dropped the quotes, so screen both it and what follows it.
+        for candidate in tokens[j : j + 2]:
+            if candidate:
+                blocked |= _find_blocked_commands(candidate)
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The
@@ -5776,7 +5780,7 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 continue
             # cmd.exe /c (or /k) runs the following token as a nested command. /c is
             # not a `-`-flag, so it is handled here in argument position after cmd.
-            if current_command in _CMD_SHELLS and raw.lower() in ("/c", "/k"):
+            if current_command in _CMD_SHELLS and _win_switch(raw.lower()) in ("/c", "/k"):
                 shell_c_pending = True
                 continue
             # The payload of a shell `-c`, screened recursively (bounded depth).
