@@ -484,7 +484,7 @@ with sync_playwright() as p:
                 soft_fail(f"tab '{tab_name}' not found in /studio")
             else:
                 info(f"OK tab '{tab_name}' visible")
-        for anchor in ("studio-model", "studio-dataset", "studio-params"):
+        for anchor in ("studio-model-picker", "studio-dataset", "studio-params"):
             el = page.locator(f'[data-tour="{anchor}"]').first
             if el.count() == 0:
                 soft_fail(f"[data-tour='{anchor}'] not found")
