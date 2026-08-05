@@ -294,6 +294,7 @@ class TestSandboxEnvIsolation:
             "LANG",
             "TERM",
             "PYTHONIOENCODING",
+            "MPLBACKEND",
             "PYTHONPATH",
             "VIRTUAL_ENV",
             "SystemRoot",
@@ -302,6 +303,7 @@ class TestSandboxEnvIsolation:
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
+        assert env["MPLBACKEND"] == "Agg"
         # PYTHONPATH is whitelist-built, never inherited: only the sandbox
         # sitecustomize shim dir (code-interpreter path remap).
         assert env["PYTHONPATH"].endswith("sandbox_site")

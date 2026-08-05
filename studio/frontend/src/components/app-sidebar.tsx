@@ -132,6 +132,7 @@ import {
   usePinnedChatsStore,
   usePinnedProjectsStore,
   useChatPreferencesStore,
+  usePromptQueueUI,
   type ProjectRecord,
   type SidebarItem,
 } from "@/features/chat";
@@ -385,6 +386,10 @@ function NavItem({
       {children}
     </SidebarMenuItem>
   );
+}
+
+function getSidebarItemThreadIds(item: SidebarItem) {
+  return item.threadIds?.length ? item.threadIds : [item.id];
 }
 
 const WORKFLOW_UNAVAILABLE = "The loaded model cannot do this";
@@ -750,12 +755,12 @@ export function AppSidebar() {
   const storeThreadId = useChatRuntimeStore((s) => s.activeThreadId);
   const setActiveThreadId = useChatRuntimeStore((s) => s.setActiveThreadId);
   // The whole map, so each row can show its own spinner.
-  const runningThreadIds = useChatRuntimeStore((s) => s.runningByThreadId);
+  const runningByThreadId = useChatRuntimeStore((s) => s.runningByThreadId);
   // Rows, not raw thread ids: a compare conversation runs two pane threads but is one chat
   // in the sidebar, so counting the map said "2 Chats" for a single compare row.
   const runningChatCount = useMemo(() => {
     const running = new Set(
-      Object.entries(runningThreadIds)
+      Object.entries(runningByThreadId)
         .filter(([, on]) => on)
         .map(([id]) => id),
     );
@@ -771,13 +776,13 @@ export function AppSidebar() {
     }
     // Anything left belongs to no known row (a first turn mid-persist); count it as one.
     return rows + running.size;
-  }, [runningThreadIds, allChatItems]);
+  }, [runningByThreadId, allChatItems]);
   const anyChatRunning = runningChatCount > 0;
   // Where "Return to Chat" lands: the newest running chat, not the empty draft New Chat left
   // active (map insertion order is start order). A compare row runs pane threads that /chat
   // cannot address, so resolve those back to the pair id the route expects.
   const runningTarget = useMemo(() => {
-    const ids = Object.entries(runningThreadIds)
+    const ids = Object.entries(runningByThreadId)
       .filter(([, on]) => on)
       .map(([id]) => id);
     const id = ids.length > 0 ? ids[ids.length - 1] : null;
@@ -788,13 +793,73 @@ export function AppSidebar() {
     return pair
       ? { id: pair.id, compare: true as const }
       : { id, compare: false as const };
-  }, [runningThreadIds, allChatItems]);
+  }, [runningByThreadId, allChatItems]);
   const activeThreadId = isChatRoute
     ? (search.thread as string | undefined) ??
       (search.compare as string | undefined) ??
       storeThreadId ??
       undefined
     : undefined;
+  const queueByThreadId = usePromptQueueUI((s) => s.byThreadId);
+  const [unreadThreadIds, setUnreadThreadIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const previousRunningByThreadIdRef = useRef<Record<string, boolean>>({});
+  const activeVisibleThreadIds = useMemo(() => {
+    if (!activeThreadId) {
+      return [];
+    }
+    const activeItem = allChatItems.find((item) => item.id === activeThreadId);
+    return activeItem ? getSidebarItemThreadIds(activeItem) : [activeThreadId];
+  }, [activeThreadId, allChatItems]);
+  const activeVisibleThreadIdKey = activeVisibleThreadIds.join("\n");
+
+  useEffect(() => {
+    const activeVisibleThreadIdSet = new Set(
+      activeVisibleThreadIdKey ? activeVisibleThreadIdKey.split("\n") : [],
+    );
+    const previousRunningByThreadId = previousRunningByThreadIdRef.current;
+    const completedThreadIds: string[] = [];
+
+    for (const [threadId, wasRunning] of Object.entries(
+      previousRunningByThreadId,
+    )) {
+      if (
+        wasRunning &&
+        !runningByThreadId[threadId] &&
+        !activeVisibleThreadIdSet.has(threadId)
+      ) {
+        completedThreadIds.push(threadId);
+      }
+    }
+
+    if (completedThreadIds.length > 0 || activeVisibleThreadIdSet.size > 0) {
+      queueMicrotask(() => {
+        setUnreadThreadIds((current) => {
+          let next: Set<string> | null = null;
+          const mutable = () => {
+            next ??= new Set(current);
+            return next;
+          };
+
+          for (const threadId of completedThreadIds) {
+            if (!current.has(threadId)) {
+              mutable().add(threadId);
+            }
+          }
+
+          for (const threadId of activeVisibleThreadIdSet) {
+            if (current.has(threadId)) {
+              mutable().delete(threadId);
+            }
+          }
+
+          return next ?? current;
+        });
+      });
+    }
+    previousRunningByThreadIdRef.current = runningByThreadId;
+  }, [activeVisibleThreadIdKey, runningByThreadId]);
 
   // Training runs: surfaced as sidebar "Recents" on Train, Recipes, and Export,
   // falling back to chat recents when there are no runs yet.
@@ -927,7 +992,6 @@ export function AppSidebar() {
     video: {
       icon: FlimSlateIcon,
       label: t("shell.navigation.video"),
-      badge: t("shell.navigation.newBadge"),
       active: pathname === "/video" || pathname.startsWith("/video/"),
       disabled: chatOnly,
       tooltip: chatOnly
@@ -1306,17 +1370,45 @@ export function AppSidebar() {
     }
   }
 
+  function clearChatNotifications(item: SidebarItem) {
+    const threadIds = getSidebarItemThreadIds(item);
+    setUnreadThreadIds((current) => {
+      if (!threadIds.some((threadId) => current.has(threadId))) {
+        return current;
+      }
+      const next = new Set(current);
+      for (const threadId of threadIds) {
+        next.delete(threadId);
+      }
+      return next;
+    });
+  }
+
   function renderChatSidebarItem(
     item: SidebarItem,
     variant: "project" | "recent",
   ) {
+    const threadIds = getSidebarItemThreadIds(item);
     const isPinned = pinnedIdSet.has(item.id);
     // A compare row's id is the pair id while runningByThreadId is keyed per pane thread,
     // so aggregate its member threads instead.
     const isGenerating =
       item.type === "compare"
-        ? (item.threadIds ?? []).some((id) => Boolean(runningThreadIds[id]))
-        : Boolean(runningThreadIds[item.id]);
+        ? (item.threadIds ?? []).some((id) => Boolean(runningByThreadId[id]))
+        : Boolean(runningByThreadId[item.id]);
+    const hasQueuedActivity = threadIds.some((threadId) =>
+      Boolean(queueByThreadId[threadId]),
+    );
+    // Active generation and queued work share the established in-row spinner
+    // slot so their size and position cannot drift apart.
+    const showQueuedActivity = hasQueuedActivity && !isGenerating;
+    const showWorkSpinner = isGenerating || showQueuedActivity;
+    const hasUnreadActivity =
+      !isGenerating &&
+      !hasQueuedActivity &&
+      threadIds.some((threadId) => unreadThreadIds.has(threadId));
+    const hasSecondaryRowAction =
+      variant === "project" || (variant === "recent" && isPinned);
     const itemClass =
       variant === "project"
         ? "group/project-chat-item relative"
@@ -1332,21 +1424,32 @@ export function AppSidebar() {
       variant === "project" ? "pl-[39px]" : "pl-3",
       // Pinned chats carry a chat icon, so add the nav-item icon gap.
       isPinned && variant !== "project" && "gap-[8.5px]",
+      showWorkSpinner
+        ? hasSecondaryRowAction
+          ? "pr-16"
+          : undefined
+        : hasUnreadActivity
+          ? "pr-7"
+          : undefined,
       variant === "project"
-        ? // Room for the hover pin quick-action plus the kebab.
-          "group-hover/project-chat-item:pr-14 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8 [@media(pointer:coarse)]:pr-14"
+        ? showWorkSpinner
+          ? undefined
+          : // Room for the hover pin quick-action plus the kebab.
+            "group-hover/project-chat-item:pr-14 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:pr-8 [@media(pointer:coarse)]:pr-14"
         : isPinned
-          ? // Pinned rows show an extra unpin button on hover, so reserve more room
-            // (pr-8 when the menu is open keeps the unpin button clear of the title).
-            "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-16"
-          : isGenerating
+          ? showWorkSpinner
+            ? undefined
+            : // Pinned rows show an extra unpin button on hover, so reserve more room
+              // (pr-8 when the menu is open keeps the unpin button clear of the title).
+              "group-hover/recent-item:pr-16 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-16"
+          : showWorkSpinner
             ? // A spinner glyph cannot truncate, so clear the kebab's 30px inset (pr-1.5 + size-6).
               "group-hover/recent-item:pr-8 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-8 [@media(pointer:coarse)]:pr-10"
             : // Hover room for the kebab only; title keeps one more character.
               // Touch rows clear the full always-visible kebab hit area (pr-10).
               "group-hover/recent-item:pr-6 group-has-[.sidebar-row-action[data-state=open]]/recent-item:pr-6 [@media(pointer:coarse)]:pr-10",
       // A focused kebab is revealed without hover, so a spinner row reserves the same room.
-      isGenerating &&
+      showWorkSpinner &&
         (variant === "project"
           ? "group-has-[.sidebar-row-action:focus-visible]/project-chat-item:pr-14"
           : isPinned
@@ -1391,6 +1494,7 @@ export function AppSidebar() {
           isActive={activeThreadId === item.id}
           className={buttonClass}
           onClick={() => {
+            clearChatNotifications(item);
             navigate({
               to: "/chat",
               search:
@@ -1413,15 +1517,32 @@ export function AppSidebar() {
           <span className="truncate">
             {pendingRename?.id === item.id ? pendingRename.title : item.title}
           </span>
-          {isGenerating && (
+          {showWorkSpinner && (
             <Spinner
               data-testid="chat-row-spinner"
               // role="status" + label: announced, not motion-only.
-              label={translate("shell.navigation.chatGenerating")}
+              label={
+                isGenerating
+                  ? translate("shell.navigation.chatGenerating")
+                  : "Queued"
+              }
               className="ml-auto size-3.5 shrink-0 text-muted-foreground"
             />
           )}
         </SidebarMenuButton>
+        {hasUnreadActivity ? (
+          <span
+            className={cn(
+              "pointer-events-none absolute right-2 top-1/2 z-10 flex size-4 -translate-y-1/2 items-center justify-center text-muted-foreground transition-opacity",
+              variant === "project"
+                ? "group-hover/project-chat-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/project-chat-item:opacity-0"
+                : "group-hover/recent-item:opacity-0 group-has-[.sidebar-row-action[data-state=open]]/recent-item:opacity-0",
+            )}
+            aria-hidden
+          >
+            <span className="size-2 rounded-full bg-[#d07a5f] dark:bg-[#df8a6f]" />
+          </span>
+        ) : null}
         {variant === "project" && (
           <button
             type="button"
