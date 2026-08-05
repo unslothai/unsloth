@@ -15,6 +15,8 @@ export interface TrainingRunSummary {
   final_loss: number | null;
   output_dir: string | null;
   can_resume: boolean;
+  /** Why resume is unavailable, when the resource provenance is the cause. */
+  resume_blocked_reason?: string | null;
   resumed_later: boolean;
   artifacts_available?: boolean;
   has_preview_model: boolean;

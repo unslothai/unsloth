@@ -80,6 +80,22 @@ def _preview_fields(output_dir: Optional[str], sharing_on: bool) -> dict:
     }
 
 
+def _resume_blocked_reason(row: dict) -> Optional[str]:
+    """The provenance gate's own explanation, for runs it refuses.
+
+    Only consulted for a row that is already known unresumable, so the extra work is
+    bounded to those. Returns None when the checkpoint is what is missing, leaving the
+    client's existing wording in place for that case.
+    """
+    from core.training.provenance import resource_provenance_resume_blocker
+    from core.training.resume import training_run_config
+
+    try:
+        return resource_provenance_resume_blocker(training_run_config(row))
+    except Exception:
+        return None
+
+
 def _summary_from_row(
     row: dict,
     sharing_on: bool,
@@ -94,6 +110,7 @@ def _summary_from_row(
         **{
             **{k: v for k, v in row.items() if k != "config_json"},
             "can_resume": can_resume,
+            "resume_blocked_reason": None if can_resume else _resume_blocked_reason(row),
             "artifacts_available": artifacts_present(row.get("output_dir")),
             **_preview_fields(row.get("output_dir"), sharing_on),
         }

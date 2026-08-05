@@ -89,8 +89,7 @@ def _parse_lr(v: Any) -> float:
         raise ValueError(f"learning_rate must be > 0 (got {lr!r}); typical range is 1e-6 .. 1e-3")
     if lr >= _MAX_LR_VALUE:
         raise ValueError(
-            f"learning_rate must be < 1.0 (got {lr!r}); "
-            "values that large always diverge training"
+            f"learning_rate must be < 1.0 (got {lr!r}); values that large always diverge training"
         )
     return lr
 
@@ -308,7 +307,7 @@ class TrainingStartRequest(BaseModel):
             return 1
         if v < 1 or v > _MAX_GRAD_ACCUM:
             raise ValueError(
-                f"gradient_accumulation_steps must be in [1, {_MAX_GRAD_ACCUM}] " f"(got {v!r})"
+                f"gradient_accumulation_steps must be in [1, {_MAX_GRAD_ACCUM}] (got {v!r})"
             )
         return v
 
@@ -378,9 +377,7 @@ class TrainingStartRequest(BaseModel):
         if v is None:
             return v
         if not isinstance(v, int) or v < 0 or v > _MAX_STEPS:
-            raise ValueError(
-                f"warmup_steps must be a non-negative int <= {_MAX_STEPS} " f"(got {v!r})"
-            )
+            raise ValueError(f"warmup_steps must be a non-negative int <= {_MAX_STEPS} (got {v!r})")
         return v
 
     @field_validator("warmup_ratio")
@@ -735,6 +732,10 @@ class TrainingRunSummary(BaseModel):
     error_message: Optional[str] = None
     loss_sparkline: Optional[List[float]] = None
     can_resume: bool = False
+    # Why resume is unavailable, when the reason is the recorded resource provenance
+    # rather than the checkpoint. None when the run is resumable or when the checkpoint
+    # itself is the problem, so the client keeps its existing wording for that case.
+    resume_blocked_reason: Optional[str] = None
     resumed_later: bool = False
     artifacts_available: bool = False
     has_preview_model: bool = False
