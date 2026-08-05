@@ -6,17 +6,15 @@ import test from "node:test";
 import { readFile } from "node:fs/promises";
 
 // The Discover footer renders on `hasMore`, which useHubPaginatedSearch keeps
-// after a page fails, so the button outlives the outage that broke it. Auto-fill
-// must still stand down while the Hub is only probing, but a click is an
-// explicit request and has to reach fetchMore.
+// after a page fails, so the button outlives the outage. Auto-fill still stands
+// down while the Hub is only probing, but a click has to reach fetchMore.
 
 function read(path: string): Promise<string> {
   return readFile(new URL(path, import.meta.url), "utf8");
 }
 
-// The callback body only, so the dependency array (which names both switches)
-// cannot satisfy the assertions below. Comments go too: this is a claim about
-// what the code reads, not about how it is described.
+// The callback body only, minus comments: the dependency array names both
+// switches, and a claim about what the code reads must not match prose.
 function body(source: string, start: string, what: string): string {
   const at = source.indexOf(start);
   assert.notEqual(at, -1, `could not find ${what}`);

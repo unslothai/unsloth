@@ -376,8 +376,8 @@ export function ModelsPage() {
   // even while the browser itself cannot reach the Hub.
   const hubPhase = useHubAvailability().phase;
   const online = hubPhase === "available";
-  // The footer survives a failed page, so its button must too: auto-fill stays
-  // off while probing, but a click is the user asking us to try again.
+  // The Discover footer renders on hasMore, so it outlives the failed page and
+  // its button must too: auto-fill stays off while probing, a click still runs.
   const canProbe = online || hubPhase === "probing";
   const deviceType = usePlatformStore((s) => s.deviceType);
   const hubSearch = useSearch({ from: "/hub" });

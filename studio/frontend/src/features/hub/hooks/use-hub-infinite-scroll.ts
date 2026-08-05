@@ -19,9 +19,9 @@ const DEFAULT_MAX_AUTO_FILL_FETCHES = 40;
 export interface InfiniteScrollOptions {
   enabled?: boolean;
   /**
-   * Whether a click on Load more may fetch, when auto-fill itself is off.
-   * Defaults to `enabled`. A caller that keeps the footer visible through an
-   * outage sets this so the button probes instead of doing nothing.
+   * Whether a Load more click may fetch while auto-fill is off. Defaults to
+   * `enabled`; set it when the footer outlives an outage, so the button probes
+   * instead of doing nothing.
    */
   manualEnabled?: boolean;
   onFetchIntent?: () => void;
@@ -108,8 +108,8 @@ export function useHubInfiniteScroll(
   }, []);
 
   const fetchMoreManually = useCallback(() => {
-    // Not enabledRef: auto-fill stays off while the Hub is only probing, but an
-    // explicit click is the user asking us to try, and the footer is on screen.
+    // Not enabledRef: auto-fill stays off while the Hub is only probing, but a
+    // button that is still on screen must honour an explicit click.
     if (!manualEnabledRef.current || isFetchingRef.current) return;
     if (requestFetchMore()) {
       setManualFetchAvailable(false);

@@ -66,8 +66,7 @@ const lastFailureByKey = new Map<string, HubFailure>();
 
 /**
  * Which feed a request belongs to. A block can be per-path, so the catalog panel
- * reads discovery's own history: an avatar success must not retire the cause on
- * screen, and an avatar failure must not keep the catalog from recovering.
+ * reads discovery's own history: an avatar result, good or bad, cannot move it.
  */
 export type HubService = "discovery" | "other";
 
@@ -183,8 +182,8 @@ export function markRemoteNetworkOnline(
     emitNetworkStatusChange();
     return;
   }
-  // Reachability is origin-wide; the cause on screen is not, so a success
-  // retires only its own feed's diagnosis.
+  // Reachability is origin-wide, the cause on screen is per feed: a success
+  // retires only its own.
   const hadWindow = remoteOfflineUntilByOrigin.delete(origin);
   const hadFailure = lastFailureByKey.delete(failureKey(origin, service));
   if (!hadWindow && !hadFailure) {
@@ -428,8 +427,8 @@ export async function fetchWithTimeout(
   // re-renders consumers, which aborts the very fallback about to run.
   options: { recordFailure?: boolean; service?: HubService } = {},
 ): Promise<Response> {
-  // Defaults to the feed with a panel: a caller that does not opt out is one
-  // whose failure the user should see. Auxiliary clients pass "other".
+  // Defaults to the feed with a panel: an unmarked caller's failure is one the
+  // user should see. Auxiliary clients pass "other".
   const service = options.service ?? "discovery";
   const parentSignal = init.signal;
   const controller = new AbortController();
