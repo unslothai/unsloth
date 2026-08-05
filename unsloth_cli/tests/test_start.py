@@ -6559,6 +6559,37 @@ def test_codex_attach_check_rejects_a_requested_torn_local_variant(monkeypatch):
     start._attach_gguf_check_for_codex(BASE, "sk-test", "./m", "Q8_0")
 
 
+def test_codex_attach_check_probes_direct_paths_on_remote_servers(monkeypatch, capsys):
+    # A remote server's filesystem is not ours, and the load takes the .gguf
+    # suffix as authoritative, so a missing file evicts before failing.
+    remote = "http://studio.example:8888"
+    _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(remote, "sk-test", "/models/gone-Q4_K_M.gguf")
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
+    # A server that has it answers with rows, and loopback still short-circuits.
+    _fake_variants(
+        monkeypatch,
+        {"variants": [{"quant": "Q4_K_M", "partial": False}], "resolved_locally": True},
+    )
+    start._attach_gguf_check_for_codex(remote, "sk-test", "/models/foo-Q4_K_M.gguf")
+    monkeypatch.setattr(start, "_http_json", lambda *a, **k: pytest.fail("loopback needs no probe"))
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf")
+
+
+def test_codex_attach_check_allows_short_shard_like_names(tmp_path, monkeypatch):
+    # The load path's split grammar is five digits exactly; a -001-of-002 name
+    # loads as an ordinary file, so it must not be judged a torn split.
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: pytest.fail("a direct .gguf file needs no variants probe"),
+    )
+    lone = tmp_path / "model-Q4_K_M-001-of-002.gguf"
+    lone.write_bytes(b"GGUF")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(lone))
+
+
 def test_codex_attach_check_rejects_broken_direct_symlinks(tmp_path, monkeypatch, capsys):
     # A broken symlink is visible to this process, and the extension alone
     # still classifies it as a GGUF load that fails after the teardown.

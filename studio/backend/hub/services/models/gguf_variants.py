@@ -554,10 +554,12 @@ def _direct_gguf_loads(path: Path) -> bool:
     )
 
 
-# llama.cpp's split naming, as hub.utils.inventory_scan._GGUF_SPLIT_RE reads it.
-_DIRECT_SPLIT_RE = re.compile(
-    r"^(?P<stem>.+)-(?P<index>\d{3,})-of-(?P<total>\d{3,})$", re.IGNORECASE
-)
+# llama.cpp's split naming, as the LOAD path reads it
+# (model_config._GGUF_SPLIT_FILE_RE): five digits exactly. The cache scan's
+# looser -\d{3,}- form is for resume bookkeeping; a shorter name loads as an
+# ordinary file, so judging it a torn split here would call a working model
+# incomplete.
+_DIRECT_SPLIT_RE = re.compile(r"^(?P<stem>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})$", re.IGNORECASE)
 
 
 def _direct_gguf_split_is_whole(path: Path) -> bool:

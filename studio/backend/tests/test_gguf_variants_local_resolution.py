@@ -203,6 +203,28 @@ def test_dir_resolver_accepts_the_advertised_hub_style_label(in_tmp_cwd):
     assert config is not None and config.is_gguf
 
 
+def test_local_listing_filters_what_the_local_detector_refuses(in_tmp_cwd):
+    # The local detector reads F16 before the be marker and refuses the file;
+    # the listing must not advertise a row the load cannot serve.
+    from utils.models.model_config import detect_gguf_model
+
+    (in_tmp_cwd / "config.json").write_text("{}")
+    (in_tmp_cwd / "F16-be-checkpoint-Q4_K_M.gguf").write_bytes(b"GGUF")
+
+    assert detect_gguf_model(os.fspath(in_tmp_cwd)) is None
+    assert _variants(os.fspath(in_tmp_cwd)).variants == []
+
+
+def test_short_shard_like_name_is_not_a_torn_split(in_tmp_cwd):
+    # Five digits exactly is the load path's split grammar; a -001-of-002 file
+    # loads on its own, so it must be offered as ready.
+    lone = in_tmp_cwd / "model-Q4_K_M-001-of-002.gguf"
+    lone.write_bytes(b"GGUF")
+
+    row = _variants(os.fspath(lone)).variants[0]
+    assert row.downloaded is True and row.partial is False
+
+
 def test_remote_listing_filters_what_the_remote_detector_refuses(monkeypatch):
     # The remote detector extracts F16 and refuses the be marker; the listing
     # must not advertise a row for the same sibling.

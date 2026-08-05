@@ -1823,9 +1823,12 @@ def _direct_gguf_is_big_endian(path: str) -> bool:
     return False
 
 
-# Mirrors gguf_variants._DIRECT_SPLIT_RE; change in lockstep.
+# Mirrors gguf_variants._DIRECT_SPLIT_RE and the load path's own
+# _GGUF_SPLIT_FILE_RE; change in lockstep. Five digits exactly: a shorter
+# -001-of-002 name loads as an ordinary file, so judging it a torn split
+# would reject a working model.
 _DIRECT_SPLIT_FILE_RE = re.compile(
-    r"^(?P<stem>.+)-(?P<index>\d{3,})-of-(?P<total>\d{3,})$", re.IGNORECASE
+    r"^(?P<stem>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})$", re.IGNORECASE
 )
 
 
@@ -2047,12 +2050,17 @@ def _attach_gguf_check_for_codex(
             # so an incomplete file is failed here: the server classifies the
             # extension as a GGUF load and llama-server only finds the missing
             # bytes or shards after the resident model is torn down.
-            if is_loopback_url(base) and not _direct_gguf_file_is_ready(repo):
-                _fail(
-                    f"{repo} is incomplete (zero bytes or a split missing shards); "
-                    "re-download or re-copy it before pointing Codex at it."
-                )
-            return
+            if is_loopback_url(base):
+                if not _direct_gguf_file_is_ready(repo):
+                    _fail(
+                        f"{repo} is incomplete (zero bytes or a split missing shards); "
+                        "re-download or re-copy it before pointing Codex at it."
+                    )
+                return
+            # A remote server's filesystem is not ours to read, and the load
+            # takes the .gguf suffix as authoritative without checking that
+            # the file is there, so ask the server whether it has one. Its
+            # error paths defer as always.
     # Mirror the load path's shorthand precedence: the raw name first (it may
     # be a directory relative to the server's cwd), then the unsloth/<name>
     # canonical form the load falls back to only when the raw name resolves to
