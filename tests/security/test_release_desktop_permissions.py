@@ -51,12 +51,9 @@ def test_build_matrix_hands_off_assets_without_release_credentials():
     assert "build" in publish["needs"]
 
     release_step = next(
-        step
-        for step in publish["steps"]
-        if step.get("name") == "Create or validate versioned release"
+        step for step in publish["steps"] if step.get("name") == "Create versioned release"
     )
-    assert "gh release view" in release_step["run"]
-    assert "--json tagName,isDraft,isPrerelease" in release_step["run"]
+    assert "gh release create" in release_step["run"]
 
 
 def test_versioned_release_hides_updater_signature_assets():
@@ -64,8 +61,8 @@ def test_versioned_release_hides_updater_signature_assets():
     publish = next(step for step in steps if step.get("name") == "Publish versioned release assets")
 
     assert '[[ "$asset" == *.sig ]] || release_assets+=("$asset")' in publish["run"]
-    assert "gh release delete-asset" in publish["run"]
     assert '"${release_assets[@]}"' in publish["run"]
+    assert "--clobber" not in publish["run"]
 
 
 def test_publishing_draft_advances_updater_without_rebuilding():

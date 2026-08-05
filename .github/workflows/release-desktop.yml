@@ -177,6 +177,29 @@ jobs:
               print(f'pypi_version={pypi_version}', file=output)
           PY
 
+      # Fail before building and notarizing a version publish-release will reject.
+      - name: Guard against republishing an existing version
+        shell: bash
+        env:
+          GH_REPO: ${{ github.repository }}
+          GH_TOKEN: ${{ github.token }}
+          DESKTOP_RELEASE_TAG: ${{ steps.prepare.outputs.desktop_release_tag }}
+        run: |
+          set -euo pipefail
+          # Deleting without --cleanup-tag leaves a tag this guard rejects.
+          retry_hint="To retry a failed publish of this version, remove the release and its tag together: gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag"
+          if gh api "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" >/dev/null 2>&1; then
+            echo "Tag ${DESKTOP_RELEASE_TAG} already exists. Release a new studio_version instead of rebuilding a shipped one." >&2
+            echo "$retry_hint" >&2
+            exit 1
+          fi
+          # A read token cannot see drafts, so publish-release repeats this check.
+          if gh release view "$DESKTOP_RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Release ${DESKTOP_RELEASE_TAG} already exists. Release a new studio_version instead of rebuilding a shipped one." >&2
+            echo "$retry_hint" >&2
+            exit 1
+          fi
+
       - name: Verify PyPI package and Unsloth stamp
         shell: bash
         env:
@@ -1268,50 +1291,56 @@ jobs:
           print('\n'.join(sorted(actual_names)))
           PY
 
-      - name: Create or validate versioned release
+      - name: Create versioned release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_DRAFT: ${{ inputs.draft }}
         run: |
           set -euo pipefail
+          # Repeat with write access so drafts are visible before creation.
+          if gh api "repos/${GH_REPO}/git/ref/tags/${DESKTOP_RELEASE_TAG}" >/dev/null 2>&1 \
+            || gh release view "$DESKTOP_RELEASE_TAG" >/dev/null 2>&1; then
+            echo "Refusing to republish ${DESKTOP_RELEASE_TAG}: a release or tag for this version already exists." >&2
+            echo "Release a new studio_version, or, to retry this one, remove the release and its tag together:" >&2
+            echo "  gh release delete ${DESKTOP_RELEASE_TAG} --cleanup-tag" >&2
+            echo "A plain 'gh release delete' leaves the tag behind, which this guard also rejects." >&2
+            exit 1
+          fi
+
+          # Keep provenance out of the notes shown in the update popup.
           notes_file="$RUNNER_TEMP/desktop-release-notes.md"
           printf '%s\n' "$DESKTOP_RELEASE_NOTES" > "$notes_file"
 
-          release_json="$RUNNER_TEMP/versioned-release.json"
-          # REST tag lookup omits drafts; `gh release view` also checks pending tags.
-          if gh release view "$DESKTOP_RELEASE_TAG" \
-            --json tagName,isDraft,isPrerelease > "$release_json" 2>/dev/null; then
-            python3 <<'PY'
-          import json
-          import os
-          import pathlib
-          import sys
-
-          release = json.loads(pathlib.Path(os.environ['RUNNER_TEMP'], 'versioned-release.json').read_text())
-          expected_draft = os.environ['RELEASE_DRAFT'].lower() == 'true'
-          expected_prerelease = os.environ['DESKTOP_PRERELEASE'].lower() == 'true'
-          if release.get('tagName') != os.environ['DESKTOP_RELEASE_TAG']:
-              sys.exit('Existing desktop release tag does not match the requested tag')
-          if bool(release.get('isDraft')) != expected_draft:
-              sys.exit('Existing desktop release draft state does not match the workflow input')
-          if bool(release.get('isPrerelease')) != expected_prerelease:
-              sys.exit('Existing desktop release prerelease state does not match the requested version')
-          PY
-          else
-            release_flags=(
-              --title "Unsloth ${STUDIO_VERSION}"
-              --notes-file "$notes_file"
-              --target "$GITHUB_SHA"
+          # Record the source and asset digests in the GitHub release body.
+          body_file="$RUNNER_TEMP/desktop-release-body.md"
+          {
+            cat "$notes_file"
+            printf '\n### Build provenance\n\n'
+            printf 'Source commit: %s\n\n' "$GITHUB_SHA"
+            printf 'Asset SHA-256:\n\n```\n'
+            (
+              cd "$RUNNER_TEMP/desktop-release-assets"
+              for asset in *; do
+                [[ "$asset" == *.sig ]] || sha256sum -- "$asset"
+              done
             )
-            if [ "$RELEASE_DRAFT" = "true" ]; then
-              release_flags+=(--draft)
-            fi
-            if [ "$DESKTOP_PRERELEASE" = "true" ]; then
-              release_flags+=(--prerelease)
-            fi
-            gh release create "$DESKTOP_RELEASE_TAG" "${release_flags[@]}"
+            printf '```\n'
+          } > "$body_file"
+          cat "$body_file"
+
+          release_flags=(
+            --title "Unsloth ${STUDIO_VERSION}"
+            --notes-file "$body_file"
+            --target "$GITHUB_SHA"
+          )
+          if [ "$RELEASE_DRAFT" = "true" ]; then
+            release_flags+=(--draft)
           fi
+          if [ "$DESKTOP_PRERELEASE" = "true" ]; then
+            release_flags+=(--prerelease)
+          fi
+          gh release create "$DESKTOP_RELEASE_TAG" "${release_flags[@]}"
 
       - name: Publish versioned release assets
         shell: bash
@@ -1319,19 +1348,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          signature_assets="$(
-            gh release view "$DESKTOP_RELEASE_TAG" --json assets \
-              --jq '.assets[].name | select(endswith(".sig"))'
-          )"
-          while IFS= read -r asset_name; do
-            [[ -z "$asset_name" ]] || gh release delete-asset "$DESKTOP_RELEASE_TAG" "$asset_name" --yes
-          done <<< "$signature_assets"
-
           release_assets=()
           for asset in "$RUNNER_TEMP/desktop-release-assets"/*; do
             [[ "$asset" == *.sig ]] || release_assets+=("$asset")
           done
-          gh release upload "$DESKTOP_RELEASE_TAG" "${release_assets[@]}" --clobber
+          # Preserve the published digests by refusing existing asset names.
+          gh release upload "$DESKTOP_RELEASE_TAG" "${release_assets[@]}"
 
       - name: Generate and publish versioned updater metadata
         shell: bash
@@ -1394,7 +1416,7 @@ jobs:
           output = pathlib.Path(os.environ['RUNNER_TEMP'], 'latest.json')
           output.write_text(json.dumps(metadata, indent=2) + '\n')
           PY
-          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json" --clobber
+          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/latest.json"
 
       - name: Download versioned updater metadata
         if: ${{ !inputs.draft }}
@@ -1612,6 +1634,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # The channel pointer is intentionally mutable.
           gh release upload desktop-latest "$RUNNER_TEMP/desktop-updater/latest.json" --clobber
           gh api "repos/${GITHUB_REPOSITORY}/releases/tags/desktop-latest" > "$RUNNER_TEMP/desktop-latest-release.json"
           python3 <<'PY'
