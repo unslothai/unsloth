@@ -270,3 +270,37 @@ def test_notes_say_where_commands_run(monkeypatch):
     monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
     assert "user's own machine" in tools._build_sandbox_paths_note()
     assert "opens a window on the user's desktop" in tools._build_terminal_shell_note()
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c powershell -Command ls",
+        "cmd //c powershell -Command ls",
+        "cmd //k powershell -Command ls",
+        'cmd //c start "" powershell -Command ls',
+        'cmd //c start /b "" pwsh -Command ls',
+        'cmd //c start //min "" powershell -Command ls',
+        r'cmd //c start /d C:/tmp "" powershell -Command ls',
+    ],
+)
+def test_cmd_shellout_is_screened_through_mangled_switches(command):
+    # Git Bash turns a lone /c into a path, so a model writes //c. That spelling
+    # skipped the nested scan, making `cmd //c powershell` reachable where
+    # `cmd /c powershell` was blocked, and `start` launches its argument too.
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd //c start "" bash -c "bash /c/x.sh"',
+        "cmd //c start wt",
+        "cmd //c dir",
+        "start notepad",
+    ],
+)
+def test_detached_windows_stay_launchable(command):
+    # `start` is the only route to a window on the user's desktop, which the
+    # terminal description promises, so screening must not blanket-block cmd.
+    assert not tools._find_blocked_commands(command)

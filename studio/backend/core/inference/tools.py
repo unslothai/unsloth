@@ -1333,6 +1333,16 @@ def _exec_scan_layout(
     return frozenset(exec_flags), frozenset(stops), frozenset(redirects)
 
 
+def _win_switch(token: str) -> str:
+    """Collapse a Git Bash `//x` switch to the `/x` cmd.exe actually receives."""
+    return token[1:] if token.startswith("//") else token
+
+
+# `start` launches its argument as a program, so that argument is a command
+# position. These switches precede it; the value-taking ones eat a token.
+_START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -1616,7 +1626,9 @@ def _find_blocked_commands(command: str) -> set[str]:
         is_unix_c = tok_lower == "-c" or (
             tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
         )
-        is_win_c = tok_lower == "/c"
+        # Git Bash mangles a lone /c into a path, so models write //c and MSYS
+        # hands cmd back a single slash; /k runs the payload the same way.
+        is_win_c = _win_switch(tok_lower) in ("/c", "/k")
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
             continue
         # Look back past flags for the shell binary. Windows flags and absolute
@@ -1633,6 +1645,24 @@ def _find_blocked_commands(command: str) -> set[str]:
             elif is_win_c and prev_base in _SHELLS_WIN:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             break  # stop at first non-flag token
+
+    # `cmd /c start "" prog` puts prog in a command position the scan above
+    # sees only as an argument, so screen what start actually launches.
+    for i, token in enumerate(tokens):
+        if os.path.basename(token).lower() not in ("start", "start.exe"):
+            continue
+        j = i + 1
+        while j < len(tokens):
+            switch = _win_switch(tokens[j].lower())
+            if not switch.startswith("/"):
+                break
+            # /d C:\dir and friends carry their value in the next token.
+            j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
+        # `start ""` is the idiom for "no title"; anything else is the program.
+        if j < len(tokens) and tokens[j] == "":
+            j += 1
+        if j < len(tokens):
+            blocked |= _find_blocked_commands(tokens[j])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The
