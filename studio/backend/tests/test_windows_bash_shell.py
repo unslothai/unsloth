@@ -276,15 +276,12 @@ def test_notes_say_where_commands_run(monkeypatch):
 def windows_terminal(request, monkeypatch):
     """A Windows host, in both shell configurations _get_shell_cmd produces.
 
-    Faking sys.platform, which is all the rest of this file needs, does not
-    reach _BLOCKED_COMMANDS: it folds in _BLOCKED_COMMANDS_WIN at import, so on
-    the Linux runner powershell/pwsh are simply not blocked names and every
-    assertion below passes or fails for the wrong reason. Patch the constant.
-
-    The shell matters as well. With no trusted bash, _shell_is_posix() is False
-    and the blocklist lexes with shlex(posix = False), which keeps quote marks
-    on `""` and on a quoted payload. That is the configuration cmd screening
-    exists for, so both are parameters rather than one representative host.
+    Faking sys.platform, which is all the rest of this file needs, cannot reach
+    _BLOCKED_COMMANDS: it folds in _BLOCKED_COMMANDS_WIN at import, so on the
+    Linux runner powershell/pwsh are not blocked names and every assertion below
+    would pass or fail for the wrong reason. Both shells are parameters because
+    with no trusted bash the blocklist lexes with shlex(posix = False), which
+    keeps the quote marks cmd screening exists for.
     """
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(
@@ -319,8 +316,7 @@ def test_cmd_shellout_is_screened_through_mangled_switches(windows_terminal, com
     # Git Bash turns a lone /c into a path, so a model writes //c. That spelling
     # skipped the nested scan, making `cmd //c powershell` reachable where
     # `cmd /c powershell` was blocked, and `start` launches its argument too.
-    # The quoted spellings are the ones the cmd lexer hands back with their
-    # quote marks still attached (see _unwrap_quotes).
+    # The quoted spellings reach the scan with their quotes on (_unwrap_quotes).
     assert tools._find_blocked_commands(command)
 
 

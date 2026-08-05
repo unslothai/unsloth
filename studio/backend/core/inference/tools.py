@@ -1339,17 +1339,13 @@ def _win_switch(token: str) -> str:
 
 
 def _unwrap_quotes(token: str) -> str:
-    """Drop one surrounding quote pair, which the cmd lexer keeps.
+    """Drop one surrounding quote pair, which shlex(posix = False) keeps.
 
-    shlex(posix = False) hands back `"prog args"` with its quote marks attached
-    where the posix lexer strips them, and that is the lexer a Windows host with
-    no trusted bash uses. So `cmd /c "powershell -Command ls"` -- the ordinary
-    Windows spelling -- recursed into a payload whose first word was
-    `"powershell`, and `start ""` never matched the empty-title idiom, leaving
-    the program behind the title unscreened. Both are command positions.
-
-    Unquoting only ever widens what is screened, so the posix path, where there
-    is nothing left to unwrap, reaches the same verdict.
+    That non-posix lexer is the one a Windows host with no trusted bash uses, so
+    `cmd /c "powershell -Command ls"` recursed into `"powershell` and `start ""`
+    never matched the empty-title idiom, leaving both command positions
+    unscreened. Unwrapping only widens what is screened, so the posix path, with
+    no quotes left to drop, reaches the same verdict.
     """
     if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
         return token[1:-1]
