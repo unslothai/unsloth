@@ -62,6 +62,10 @@ import {
   ggufSelectionOverrideMatchesIntent,
 } from "../lib/gguf-filename";
 import {
+  recommendedGgufVariant,
+  shouldShowGgufRecommendation,
+} from "../lib/gguf-recommendation";
+import {
   ggufVariantDisplayLabel,
   ggufVariantDownloadSizeBytes,
   sortDownloadableGgufVariants,
@@ -430,12 +434,21 @@ export function QuantOptionsMenu({
   );
 }
 
+function GgufRecommendationLabel() {
+  return (
+    <span className="shrink-0 text-ui-9 font-sans font-medium text-primary/70">
+      recommended
+    </span>
+  );
+}
+
 const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   repoId,
   item,
   selected,
   loaded,
   liveActive,
+  recommended,
   showFitInfo,
   onSelect,
   onDelete,
@@ -445,6 +458,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
   selected: boolean;
   loaded: boolean;
   liveActive: boolean;
+  recommended: boolean;
   showFitInfo: boolean;
   onSelect: (quant: string) => void;
   onDelete: (quant: string) => void;
@@ -512,6 +526,7 @@ const GgufVariantMenuRow = memo(function GgufVariantMenuRow({
             </TooltipContent>
           </Tooltip>
         )}
+        {recommended && <GgufRecommendationLabel />}
       </span>
       <span className="ml-auto flex shrink-0 items-center gap-1.5">
         <span className={cn(CHIP_BASE, CHIP_DEFAULT)}>
@@ -574,7 +589,7 @@ export function GgufDownloadCard({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const localVariantPath = cachePath?.trim() || null;
-  const { variants, loading, error, refreshError, refresh } =
+  const { variants, defaultVariant, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({
       repoId,
       hfToken,
@@ -639,7 +654,18 @@ export function GgufDownloadCard({
     () => createGgufVariantMenuItems(sortedVariants, { gpuGb, systemRamGb }),
     [gpuGb, sortedVariants, systemRamGb],
   );
-
+  const recommendedVariant = useMemo(
+    () =>
+      sortedVariants
+        ? recommendedGgufVariant(
+            sortedVariants,
+            defaultVariant,
+            (sizeBytes) =>
+              classifyGgufFit(sizeBytes, { gpuGb, systemRamGb }) !== "oom",
+          )
+        : null,
+    [defaultVariant, gpuGb, sortedVariants, systemRamGb],
+  );
   const selectedQuant =
     (selectedQuantOverride
       ? sortedVariants?.find((v) =>
@@ -982,6 +1008,9 @@ export function GgufDownloadCard({
                     </TooltipContent>
                   </Tooltip>
                 )}
+                {shouldShowGgufRecommendation(selected, recommendedVariant) && (
+                  <GgufRecommendationLabel />
+                )}
                 <DotTag tone="gguf" label="GGUF" />
                 {selected &&
                   selectedDownloadSizeLabel &&
@@ -1016,6 +1045,10 @@ export function GgufDownloadCard({
                     selected={item.key === selectedVariantKey}
                     loaded={isActive && item.key === activeVariantKey}
                     liveActive={liveActive}
+                    recommended={shouldShowGgufRecommendation(
+                      item,
+                      recommendedVariant,
+                    )}
                     showFitInfo={showFitInfo}
                     onSelect={handleSelectVariant}
                     onDelete={handleDeleteVariant}

@@ -37,6 +37,7 @@ import {
   deleteCachedModel,
   invalidateGgufVariantsCache,
   listGgufVariants as listGgufVariantsCached,
+  recommendedGgufVariant,
   useGgufVariantsCacheVersions,
   useHubInfiniteScroll,
 } from "@/features/hub";
@@ -1256,18 +1257,13 @@ function GgufVariantExpander({
     ) {
       return defaultVariant;
     }
-    const defaultV = variants.find((v) => v.quant === defaultVariant);
-    if (defaultV && getGgufFit(defaultV.size_bytes) !== "oom")
-      return defaultVariant;
-    // Largest non-OOM variant (best quality that fits)
-    const fitting = variants.filter((v) => getGgufFit(v.size_bytes) !== "oom");
-    if (fitting.length > 0) {
-      fitting.sort((a, b) => b.size_bytes - a.size_bytes);
-      return fitting[0].quant;
-    }
-    // All OOM -- recommend smallest (most likely to partially run)
-    const sorted = [...variants].sort((a, b) => a.size_bytes - b.size_bytes);
-    return sorted[0]?.quant ?? defaultVariant;
+    return (
+      recommendedGgufVariant(
+        variants,
+        defaultVariant,
+        (sizeBytes) => getGgufFit(sizeBytes) !== "oom",
+      )?.quant ?? defaultVariant
+    );
   }, [variants, defaultVariant, totalBudgetGb, budgetKnown, getGgufFit]);
 
   const sortedVariants = useMemo(() => {
