@@ -49,9 +49,9 @@ _WIN_BASH = r"C:\Program Files\Git\bin\bash.exe"
 def _fake_windows_screening(monkeypatch, bash = _WIN_BASH):
     """Screen a command the way a Windows host would, on any runner.
 
-    Faking sys.platform is not enough: _BLOCKED_COMMANDS is derived at import,
-    so powershell/pwsh are absent off Windows and the assertions pass on nothing.
-    The bash resolver is patched too, since the lexer branch keys off it.
+    _BLOCKED_COMMANDS is derived at import, so faking sys.platform alone leaves
+    powershell/pwsh absent and the assertions pass on nothing. The bash resolver
+    is patched too, since the lexer branch keys off it.
     """
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
@@ -292,9 +292,7 @@ def test_notes_say_where_commands_run(monkeypatch):
 
 
 def test_windows_only_names_are_not_blocked_off_windows():
-    # Why the tests below fake the blocklist as well as the platform:
-    # _BLOCKED_COMMANDS is derived at import, so off Windows powershell is not
-    # blocked and `assert _find_blocked_commands(...)` asserts the empty set.
+    # Why the tests below fake the blocklist as well as the platform.
     if sys.platform == "win32":
         pytest.skip("the win32 union is already live on this host")
     assert "powershell" in tools._BLOCKED_COMMANDS_WIN
@@ -345,9 +343,8 @@ def test_detached_windows_stay_launchable(monkeypatch, command, bash):
 @pytest.mark.parametrize(
     "command",
     [
-        # A SPACED title is the other spelling that puts the program one token
-        # later, and it reads that way under either shell (see below for why a
-        # title without spaces does not).
+        # A SPACED title puts the program one token later under either shell
+        # (see below for why a title without spaces does not).
         'cmd //c start "My Window" powershell -Command ls',
         'cmd //c start /b "Build Step" pwsh -Command ls',
         # The cmd lexer keeps quote marks, so quoted names and payloads never
@@ -375,12 +372,11 @@ def test_a_title_without_spaces_reads_differently_per_shell(
     monkeypatch, command, blocked_under_cmd
 ):
     # Same text, opposite correct answers. Under cmd the quotes survive on the
-    # token, so the word really is a title and the NEXT one is the program.
-    # Under bash the quotes are gone before exec and the MSYS runtime re-emits
-    # a word with no space bare (cygwin winf.cc, linebuf::fromargv), so cmd
-    # receives `start explorer .`, the word itself is the program, and the token
-    # behind it is only an argument. Screening it there hard-blocked a
-    # legitimate launch on the `.` source builtin.
+    # token, so the word is a title and the NEXT one is the program. Under bash
+    # they are gone before exec and the MSYS runtime re-emits a space-free word
+    # bare (cygwin winf.cc, linebuf::fromargv), so cmd receives
+    # `start explorer .`: the word itself is the program and the token behind it
+    # is only an argument, whose `.` source builtin hard-blocked the launch.
     _fake_windows_screening(monkeypatch, bash = None)
     assert tools._find_blocked_commands(command) == {blocked_under_cmd}
     _fake_windows_screening(monkeypatch, bash = _WIN_BASH)
@@ -397,9 +393,9 @@ def test_a_title_without_spaces_reads_differently_per_shell(
     ],
 )
 def test_a_wrapped_find_exec_start_is_still_reachable(monkeypatch, command, bash):
-    # A command prefix forwards to its target, so the child of the -exec is
-    # `start`, not the wrapper. Testing the word directly after the flag read
-    # `env` and stopped, leaving the program start launches unscreened.
+    # A prefix forwards to its target, so the -exec child is `start`, not the
+    # wrapper. Testing the word right after the flag read `env` and stopped,
+    # leaving the program start launches unscreened.
     _fake_windows_screening(monkeypatch, bash = bash)
     assert tools._find_blocked_commands(command)
 
@@ -433,11 +429,10 @@ def test_posix_start_scan_is_unaffected():
 @pytest.mark.parametrize(
     "command",
     [
-        # cmd.exe has no single-quote syntax, and bash strips them before cmd
-        # sees the word, so these reach it as the bare `start explorer .` the
-        # test above already keeps launchable. Reading the quotes as a title
-        # moved the program one token right and hard-blocked the `.` behind it
-        # as the POSIX source builtin.
+        # cmd has no single-quote syntax and bash strips them before cmd sees
+        # the word, so these arrive as the bare `start explorer .` kept
+        # launchable above. Reading the quotes as a title moved the program one
+        # token right and hard-blocked the `.` source builtin behind it.
         "cmd //c start 'explorer' .",
         "cmd //c start 'code' .",
         # The same false title from a quote that belongs to another command.
@@ -456,10 +451,10 @@ def test_double_quoted_start_titles_still_move_the_program_along(monkeypatch, ba
 
 
 def test_a_spaced_single_quoted_start_title_moves_the_program_under_bash(monkeypatch):
-    # A title reaches cmd quoted when its CONTENT forces the MSYS runtime to
-    # re-quote it, which a space does whichever quote style bash was handed; the
-    # program is then the token behind it. cmd itself has no single-quote
-    # syntax, so this spelling only reads as a title on the bash host.
+    # A title reaches cmd quoted when its CONTENT makes the MSYS runtime
+    # re-quote it, which a space does whichever quote style bash was handed, so
+    # the program is the token behind it. cmd has no single-quote syntax, so
+    # this spelling reads as a title only on the bash host.
     _fake_windows_screening(monkeypatch, bash = _WIN_BASH)
     assert tools._find_blocked_commands("cmd //c start 'My Window' powershell -Command ls")
 
@@ -468,9 +463,9 @@ def test_a_spaced_single_quoted_start_title_moves_the_program_under_bash(monkeyp
 @pytest.mark.parametrize(
     "command",
     [
-        # The quoted word belongs to the echo, not to start, so the head after
-        # `start` is the program. Screening only the token behind a title would
-        # read this as titled and let the program through unscreened.
+        # The quoted word belongs to the echo, not to start, so the head is the
+        # program. Screening only the token behind a title reads this as titled
+        # and lets the program through unscreened.
         'echo "powershell" && cmd //c start powershell -Command ls',
         "echo 'rm' && cmd //c start rm -rf /",
     ],
@@ -484,13 +479,13 @@ def test_a_quote_elsewhere_cannot_hide_the_start_program(monkeypatch, command, b
 @pytest.mark.parametrize(
     "command",
     [
-        # cmd keeps the quotes around the string after /c when it names an
-        # executable file (`cmd /?` rule 1) and never splits a quoted command
-        # token on its spaces, and start reads its program argument the same
-        # way, so all three really launch pwsh. Only re-lexing the payload split
-        # it into `C:/Program` and `Files/...` and the program went unscreened.
-        # The sandbox PATH carries System32 but not Program Files, so the full
-        # path is the spelling left once the bare `pwsh` is not found.
+        # cmd keeps the quotes when the string after /c names an executable
+        # file and never splits a quoted token on its spaces, and start reads
+        # its program argument the same way, so all three launch pwsh.
+        # Re-lexing alone split it into `C:/Program` and `Files/...` and the
+        # program went unscreened. The sandbox PATH carries System32 but not
+        # Program Files, so the full path is what is left once bare `pwsh`
+        # is not found.
         'cmd //c "C:/Program Files/PowerShell/7/pwsh.exe" -Command ls',
         'cmd //c start "" "C:/Program Files/PowerShell/7/pwsh.exe"',
         'cmd //c start "My Window" "C:/Program Files/PowerShell/7/pwsh.exe"',
@@ -506,8 +501,7 @@ def test_quoted_program_paths_with_spaces_are_screened(monkeypatch, command, bas
     "command",
     [
         # Only a payload that is ENTIRELY one executable path reads as a
-        # program, so an ordinary argument list that merely mentions one keeps
-        # working: cmd splits these itself and runs the word in front.
+        # program; cmd splits these itself and runs the word in front.
         'cmd //c "C:/Program Files/Git/bin/git.exe" status',
         'cmd //c "C:/Program Files/Microsoft VS Code/Code.exe"',
         'cmd //c "type C:/logs/curl"',
@@ -525,9 +519,9 @@ def test_quoted_payloads_are_not_read_as_programs_by_mistake(monkeypatch, comman
     "command",
     [
         # A `start` the shell never runs launches nothing, so the quoted word
-        # behind it is not a title and the word behind THAT is not a program.
-        # Reading them as one hard-refused a grep and an echo on a program that
-        # never starts. The head is still screened, whatever position it is in.
+        # behind it is no title and the word behind THAT no program; reading
+        # them as such hard-refused a grep and an echo. The head is screened
+        # whatever position it is in.
         'echo start "title" powershell',
         'printf "%s" start "title" powershell',
         'grep -rn start "src/my dir" curl',
@@ -544,7 +538,7 @@ def test_a_start_in_argument_position_launches_nothing(monkeypatch, command, bas
     [
         # Every route by which the shell really reaches a start: `cmd /c` hands
         # control one token past a switch, which is no command position of its
-        # own, and find/xargs run their child directly.
+        # own; find/xargs run their child directly.
         'cmd //c start "My Window" pwsh -Command ls',
         'cmd /c start "" powershell -Command ls',
         r'find . -exec start "" powershell \;',
@@ -573,8 +567,8 @@ def _fake_git_for_windows(monkeypatch, tmp_path):
 
 
 def test_bash_userland_is_on_the_sandbox_path(monkeypatch, tmp_path):
-    # _build_safe_env builds PATH from scratch and bash -c is non-login, so
-    # nothing sources /etc/profile: without this ls / cat / grep are missing.
+    # PATH is built from scratch and `bash -c` is non-login, so nothing sources
+    # /etc/profile: without this, ls / cat / grep are all missing.
     bin_dir, usr_bin = _fake_git_for_windows(monkeypatch, tmp_path)
     entries = tools._build_safe_env(str(tmp_path / "work"))["PATH"].split(os.pathsep)
     assert os.path.realpath(bin_dir) in entries
@@ -584,18 +578,18 @@ def test_bash_userland_is_on_the_sandbox_path(monkeypatch, tmp_path):
 
 
 def test_bash_userland_outranks_the_system32_dos_twins(monkeypatch, tmp_path):
-    # System32 ships find.exe and sort.exe, which are the DOS commands, not the
-    # POSIX ones. Behind them a bare `find . -name '*.py'` in the bash this tool
-    # advertises answered "FIND: Parameter format not correct".
+    # System32's find.exe and sort.exe are the DOS commands, not the POSIX ones:
+    # behind them a bare `find . -name '*.py'` in the bash this tool advertises
+    # answered "FIND: Parameter format not correct".
     _, usr_bin = _fake_git_for_windows(monkeypatch, tmp_path)
-    # Read as one string: os.pathsep is ':' on a Linux runner, which would split
-    # the faked C:\Windows drive letter off into its own entry.
+    # One string, not split entries: os.pathsep is ':' on a Linux runner and
+    # would cut the faked C:\Windows drive letter off into its own entry.
     path = tools._build_safe_env(str(tmp_path / "work"))["PATH"]
     system32 = os.path.join(r"C:\Windows", "System32")
     assert system32 in path
     assert path.index(os.path.realpath(usr_bin)) < path.index(system32)
     # ...and the interpreter still outranks the userland, so a Git-shipped
-    # python.exe cannot shadow the environment this server runs in.
+    # python.exe cannot shadow this server's own.
     assert path.index(os.path.dirname(sys.executable)) < path.index(os.path.realpath(usr_bin))
 
 
@@ -637,7 +631,7 @@ def test_no_bash_leaves_the_windows_path_exactly_as_it_was(monkeypatch, tmp_path
 
 
 def test_windows_repoints_temp_and_tmp_at_the_workdir(monkeypatch, tmp_path):
-    # Windows reads TEMP/TMP, not TMPDIR, so a native program fell back to
+    # Windows reads TEMP/TMP, not TMPDIR: a native program fell back to
     # GetTempPath and wrote outside the sandbox.
     _fake_git_for_windows(monkeypatch, tmp_path)
     workdir = str(tmp_path / "work")
@@ -674,7 +668,7 @@ def test_start_behind_cmd_control_flow_is_still_screened(monkeypatch, command, b
 @pytest.mark.parametrize(
     "command",
     [
-        # A shell name a program merely prints or searches for is data. Reading
+        # A shell name a program merely prints or searches for is data; reading
         # it as a real invocation hard-blocked the payload behind it.
         'echo "cmd" /c powershell',
         "echo cmd /c powershell",
@@ -691,9 +685,8 @@ def test_a_shell_name_in_argument_position_invokes_nothing(monkeypatch, command,
 @pytest.mark.parametrize(
     "command",
     [
-        # Double-quoted: cmd has no single-quote syntax, so the single-quoted
-        # spelling is only a real invocation on the host that has bash, and it
-        # is covered by the bash-lexer cases elsewhere in this file.
+        # Double-quoted: cmd has no single-quote syntax, so that spelling is a
+        # real invocation only on the bash host, covered elsewhere here.
         'bash -c "rm -rf x"',
         'env FOO=1 bash -c "rm -rf x"',
         r'find . -exec bash -c "rm -rf x" \;',
