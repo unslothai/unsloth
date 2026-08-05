@@ -347,9 +347,8 @@ def select_gguf_cache_snapshot(
 ) -> Optional[tuple[list[GgufVariantInfo], bool, set, Path]]:
     """``list_gguf_variants_from_hf_cache`` plus the snapshot it answered from.
 
-    A repo cache dir holds every revision, so a caller that goes on to read metadata off
-    "wherever this listing came from" needs the snapshot: given the repo dir it can read a
-    revision this listing skipped.
+    A repo dir holds every revision, so a caller that then reads metadata from wherever this
+    listing came from needs the snapshot, not the dir: the dir includes revisions it skipped.
     """
     # Local import: inventory_scan imports this module.
     from hub.utils.inventory_scan import complete_snapshot_variants

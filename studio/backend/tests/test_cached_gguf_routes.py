@@ -3834,8 +3834,7 @@ def test_another_caches_quant_is_offered_as_a_download_not_as_downloaded(monkeyp
 def test_context_follows_the_answering_revision_not_a_sibling(monkeypatch, tmp_path):
     """The context read is pinned to the snapshot that answered, not the repo dir.
 
-    One repo dir holds every revision and the read walks it whole, so naming the dir let a
-    revision the listing skipped supply the length for a quant it does not hold.
+    The read walks the whole dir, so naming the dir let a skipped revision supply the length.
     """
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir(parents = True)
@@ -3871,8 +3870,8 @@ def test_context_follows_the_answering_revision_not_a_sibling(monkeypatch, tmp_p
 def test_a_case_variant_repo_dir_still_names_its_snapshot(monkeypatch, tmp_path):
     """Provenance survives a repo_id whose case differs from the cached dir's.
 
-    The lister matches case-insensitively but the repo dir was rebuilt from repo_id, so on a
-    case-sensitive filesystem it failed ``is_dir()`` and the length fell back to a repo-wide walk.
+    The lister folds case, but the repo dir was rebuilt from repo_id, so it failed ``is_dir()``
+    on a case-sensitive filesystem and the length fell back to a repo-wide walk.
     """
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir(parents = True)
