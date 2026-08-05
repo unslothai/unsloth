@@ -499,14 +499,16 @@ function FloatingMonitorPanel({
             )}
             {separateInferenceGpu && (
               <div className="flex justify-between gap-2 text-ui-11 font-mono">
-                <span className="text-muted-foreground">GGUF inference</span>
+                <span className="text-muted-foreground">
+                  {t("settings.resources.gpu.ggufInference")}
+                </span>
                 <span className="uppercase text-foreground">
                   {separateInferenceGpu.backend ?? "GPU"}
                   {separateInferenceGpu.available
                     ? inferenceVramTotal
                       ? ` · ${formatGiB(inferenceVramTotal)}`
                       : ""
-                    : " · unavailable"}
+                    : ` · ${t("settings.resources.gpu.unavailable")}`}
                 </span>
               </div>
             )}

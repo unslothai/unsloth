@@ -152,7 +152,7 @@ export function DataTab() {
       await downloadChatExport();
     } catch (error) {
       if (!isDownloadCancelled(error)) {
-        toast.error("Could not export chats", {
+        toast.error(t("settings.data.exportFailed"), {
           description: error instanceof Error ? error.message : String(error),
         });
       }
@@ -368,7 +368,7 @@ export function DataTab() {
           <button
             type="button"
             onClick={() => setSubpage("main")}
-            aria-label={`Back to ${t("settings.data.title")}`}
+            aria-label={t("settings.data.backToData")}
             className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
@@ -421,7 +421,7 @@ export function DataTab() {
           <button
             type="button"
             onClick={() => setSubpage("main")}
-            aria-label={`Back to ${t("settings.data.title")}`}
+            aria-label={t("settings.data.backToData")}
             className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
           >
             <HugeiconsIcon icon={ArrowLeft01Icon} className="size-4" />
