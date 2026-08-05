@@ -4,8 +4,11 @@
 export {
   DownloadProgressBar,
   downloadManager,
+  finishExternalJob,
   jobKeyOf,
+  startExternalJob,
   subscribeJobListeners,
+  updateExternalJob,
   useDownloadManagerStore,
 } from "./download-manager";
 export {

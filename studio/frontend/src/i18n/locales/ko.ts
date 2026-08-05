@@ -53,6 +53,11 @@ export const ko = {
       projects: "프로젝트",
       train: "학습",
       recipes: "레시피",
+      images: "이미지",
+      video: "동영상",
+      more: "더 보기",
+      customizeSidebar: "사이드바 사용자 지정",
+      newBadge: "신규",
       export: "내보내기",
       recents: "최근 항목",
       noChatsYet: "아직 채팅이 없습니다",
@@ -151,10 +156,20 @@ export const ko = {
         sttNotDownloaded: "다운로드되지 않음",
         sttDownloadStatusFailed: "다운로드 상태를 확인하지 못했습니다",
         sttDownload: "다운로드",
+        sttDownloadConfirmTitle: "{model}을(를) 다운로드할까요?",
+        sttDownloadConfirmBody:
+          "로컬 받아쓰기는 완전히 오프라인으로 동작하지만, 먼저 {model} 음성 모델이 필요합니다. 약 {size} 크기이며 Hugging Face 캐시에 한 번만 다운로드합니다.",
+        sttDownloadConfirmBodyUnsized:
+          "로컬 받아쓰기는 완전히 오프라인으로 동작하지만, 먼저 {model} 음성 모델이 필요합니다. Hugging Face 캐시에 한 번만 다운로드합니다.",
+        sttOpenVoiceSettings: "음성 설정 열기",
+        sttDownloadStarted: "{model} 다운로드 중",
         sttDownloading: "다운로드 중… {progress}%",
         sttCancelDownload: "취소",
         sttCancellingDownload: "취소하는 중…",
+        sttCancelDownloadFailed: "다운로드를 취소하지 못했습니다",
         sttDownloadComplete: "음성 인식 모델을 다운로드했습니다",
+        sttModelReady: "{model}을(를) 받아쓰기에 사용할 수 있습니다",
+        sttRecommended: "권장",
         sttDownloadFailed: "음성 인식 모델을 다운로드하지 못했습니다",
         sttLoad: "로드",
         sttUnload: "해제",
@@ -597,6 +612,14 @@ export const ko = {
         compactSidebarDescription:
           "사이드바를 아이콘으로 접지 않고 펼친 상태로 유지합니다.",
       },
+      sidebarNav: {
+        title: "사이드바 탐색",
+        description:
+          "사이드바 탭을 고정하고 순서를 바꿉니다. 고정하지 않은 탭은 ‘더 보기’ 메뉴에 모입니다. 고정하지 않은 탭이 하나뿐이면 항목이 하나뿐인 메뉴를 만들지 않고 그 탭을 숨깁니다. 새 채팅은 항상 고정됩니다.",
+        dragToReorder: "끌어서 순서 변경",
+        pinToSidebar: "{name}을(를) 사이드바에 고정",
+        moreHolds: "더 보기({count})",
+      },
       sidebarMenu: {
         title: "사이드바 메뉴",
         description:
@@ -781,10 +804,10 @@ export const ko = {
         title: "모델 선택 설정",
         expandQuantizations: "양자화 펼치기",
         expandQuantizationsDescription:
-          "켬: 기기 내 GGUF 모델의 양자화 옵션을 즉시 표시합니다. 끔: 모델을 클릭하면 양자화 옵션이 표시됩니다.",
+          "켬: ‘On Device’의 GGUF 모델 양자화 옵션을 즉시 표시합니다. 끔: 모델을 클릭하면 양자화 옵션이 표시됩니다.",
         showAllQuantizations: "모든 양자화 표시",
         showAllQuantizationsDescription:
-          "켬: 아직 다운로드하지 않은 항목을 포함해 기기 내 모든 양자화를 표시합니다. 끔: 다운로드한 양자화만 표시합니다.",
+          "켬: 아직 다운로드하지 않은 항목을 포함해 ‘On Device’의 모든 양자화를 표시합니다. 끔: 다운로드한 양자화만 표시합니다.",
       },
       menu: {
         title: "채팅 메뉴",
@@ -1511,6 +1534,7 @@ export const ko = {
         loadingDataset: "데이터셋 로딩 중",
         configuring: "구성 중",
         training: "학습 중",
+        finalizing: "모델 저장 중",
         completed: "완료됨",
         error: "오류",
         stopped: "중지됨",

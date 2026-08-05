@@ -168,9 +168,9 @@ def test_it_runs_before_unsloth_zoo_is_imported():
 def test_it_is_imported_and_cleaned_up():
     src = GPU_INIT.read_text(encoding = "utf-8")
     assert "fix_torchao_torch_symbol_skew," in src, "not imported"
-    assert "del fix_torchao_torch_symbol_skew" in src, (
-        "every other fix is deleted after use; this one must be too"
-    )
+    assert (
+        "del fix_torchao_torch_symbol_skew" in src
+    ), "every other fix is deleted after use; this one must be too"
 
 
 def test_the_symbol_list_matches_what_torchao_imports():
@@ -256,9 +256,9 @@ def test_the_cleanup_in_the_test_above_is_real():
     import torch.nn.functional as F
     for n in _TORCHAO_TORCH_SYMBOLS:
         obj = getattr(F, n, None)
-        assert not getattr(obj, "__unsloth_placeholder__", False), (
-            f"a placeholder for {n} leaked out of a test"
-        )
+        assert not getattr(
+            obj, "__unsloth_placeholder__", False
+        ), f"a placeholder for {n} leaked out of a test"
 
 
 # ---- the Mac / MLX path ---------------------------------------------------

@@ -440,9 +440,9 @@ def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp
     try:
         assert IF.fix_torchao_torch_symbol_skew() is True  # the _gpu_init order
         directory = IF.propagate_torchao_fix_to_subprocesses()
-        assert directory is not None, (
-            "staged nothing: the in-process placeholders defeated the gate"
-        )
+        assert (
+            directory is not None
+        ), "staged nothing: the in-process placeholders defeated the gate"
         assert os.path.isfile(os.path.join(directory, "sitecustomize.py"))
         assert directory in os.environ["PYTHONPATH"].split(os.pathsep)
     finally:
