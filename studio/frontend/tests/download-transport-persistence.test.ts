@@ -147,8 +147,7 @@ test("the cancel marker is written with the persisted job", () => {
 });
 
 test("a running job is the activity the desktop quit path asks about", () => {
-  // What set_renderer_activity mirrors into Rust, so the close button can warn
-  // before the backend is reaped out from under a multi-GB transfer.
+  // What set_renderer_activity mirrors into Rust, so the close button warns first.
   assert.equal(hasActiveDownloadJob(getState().jobs), true);
 });
 

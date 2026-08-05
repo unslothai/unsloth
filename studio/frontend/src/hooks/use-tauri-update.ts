@@ -69,8 +69,7 @@ const DEFAULT_UPDATE_POLICY: DesktopUpdatePolicy = {
   releaseTagPrefix: "desktop-v",
 };
 
-// Desktop quit never fires beforeunload; Rust asks instead, from the tray and (outside
-// macOS) the close button. The Tauri shell installer is the renderer's alone to report.
+// Desktop quit never fires beforeunload, and only the renderer sees the shell installer.
 function publishShellUpdateActive(active: boolean): void {
   if (!isTauri) return;
   void import("@tauri-apps/api/core")
@@ -359,8 +358,8 @@ export function useTauriUpdate(isExternalServer = false) {
 
       let downloaded = 0;
       let contentLength = 0;
-      // Past this point the Rust `update::is_update_running` flag is already false, so
-      // mirror the shell installer's own run: quitting through it leaves a half-updated app.
+      // `update::is_update_running` is already false here, and quitting mid-install
+      // leaves a half-updated app.
       publishShellUpdateActive(true);
       try {
         await update.downloadAndInstall((event) => {

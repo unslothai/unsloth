@@ -256,15 +256,14 @@ export const setState = useDownloadManagerStore.setState;
 export const getState = useDownloadManagerStore.getState;
 
 /**
- * Downloads run in the backend, which the desktop quit path reaps, but only this store
- * knows they are in flight. A Tauri quit never fires beforeunload, so mirror the state
- * to Rust exactly as training runs are mirrored, and let it ask before killing them.
+ * Downloads run in the backend, which the quit path reaps, but only this store knows they
+ * are in flight. A Tauri quit never fires beforeunload, so mirror it to Rust to ask first.
  */
 export function hasActiveDownloadJob(
   jobs: Record<string, ManagedDownload>,
 ): boolean {
-  // External jobs count too, unlike in `partialize`: the STT sidecars that own them
-  // are reached through the backend, so a quit kills those transfers as well.
+  // External jobs count too, unlike in `partialize`: their STT sidecars are reached
+  // through the backend, so a quit kills those transfers as well.
   return Object.values(jobs).some((job) => ACTIVE_STATES.has(job.state));
 }
 
@@ -277,8 +276,7 @@ function publishDownloadsActive(active: boolean): void {
     .catch(() => {});
 }
 
-// Transitions only: the poll loop patches progress several times a second, and every
-// one of those ticks lands here.
+// Transitions only: the poll loop patches progress several times a second.
 let lastPublishedDownloadsActive: boolean | null = null;
 
 function syncDownloadsActivity(state: DownloadManagerState): void {

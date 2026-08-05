@@ -32,10 +32,9 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent}
 use tauri::{Emitter, Manager};
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
-/// Serializes the exit paths that must reap the backend: `request_quit` (tray "Quit"
-/// and, outside macOS, the close button), the Unix signal listener, and `RunEvent::Exit`.
-/// Exactly one runs cleanup; the others block until it is done, so the process never
-/// exits out from under a cleanup that is still killing the backend tree.
+/// Serializes the exit paths that reap the backend: `request_quit` (tray "Quit" and,
+/// outside macOS, the close button), the Unix signal listener, and `RunEvent::Exit`.
+/// Exactly one runs cleanup; the others block, so the process never exits mid-reap.
 static TERMINATION_CLEANUP: Once = Once::new();
 
 #[tauri::command]
@@ -133,10 +132,9 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
-/// Two more states only the renderer knows about, mirrored here for the same reason: Hub
-/// downloads, which the backend runs but only the frontend download manager tracks, and the
-/// Tauri shell self-update, which `update::is_update_running` stops covering the moment
-/// `downloadAndInstall` takes over from `start_backend_update`.
+/// Renderer-only activity, mirrored here for the same reason: Hub downloads, which the
+/// backend runs but only the frontend tracks, and the Tauri shell self-update, which
+/// `update::is_update_running` stops covering once `downloadAndInstall` takes over.
 #[derive(Default)]
 pub struct RendererActivity {
     pub downloads: bool,
@@ -149,7 +147,7 @@ fn new_renderer_activity_state() -> RendererActivityState {
     std::sync::Arc::new(std::sync::Mutex::new(RendererActivity::default()))
 }
 
-/// The command body, minus the `tauri::State` wrapper, so the tests can drive it directly.
+/// The command body without the `tauri::State` wrapper, so tests can drive it directly.
 fn apply_renderer_activity(state: &RendererActivityState, kind: &str, active: bool) {
     if let Ok(mut activity) = state.lock() {
         match kind {
@@ -375,12 +373,11 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-/// One quit confirmation at a time. The dialogs are async and not parented to the
-/// window, so without this every further close-button press would stack another one.
+/// One quit confirmation at a time: the dialogs are unparented, so repeat close
+/// presses would stack another one.
 static QUIT_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
-/// Clears the flag on cancel and on panic alike, so an unwinding quit cannot leave
-/// the close button inert for the rest of the session.
+/// Clears the flag on cancel or panic, so a quit cannot leave the close button inert.
 struct QuitGuard;
 
 impl Drop for QuitGuard {
@@ -393,9 +390,8 @@ fn begin_quit() -> Option<QuitGuard> {
     (!QUIT_IN_PROGRESS.swap(true, Ordering::SeqCst)).then_some(QuitGuard)
 }
 
-/// Confirm, reap the backend, then exit. Always off the caller's thread: the confirmations
-/// block, and neither a tray callback nor the window event loop may. Exiting before the
-/// tree is reaped would orphan the backend.
+/// Confirm, reap the backend, then exit. Off the caller's thread because the confirmations
+/// block, and never exit first: that would orphan the backend tree.
 fn request_quit(app: &tauri::AppHandle) {
     let Some(guard) = begin_quit() else {
         info!("Quit already awaiting confirmation, ignoring the repeat request");
@@ -564,15 +560,14 @@ fn main() {
                     .note_dropped_paths(paths);
             }
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
-                // Never close directly: this is the only window, so closing it would exit
-                // before the backend is reaped, and macOS needs it alive to reopen.
+                // Never close directly: the only window, so closing exits before the reap.
                 api.prevent_close();
                 if cfg!(target_os = "macos") {
                     // Closing a window leaves the app in the Dock; Reopen restores it.
                     let _ = window.hide();
                 } else {
-                    // Elsewhere the close button means quit: same guarded path as the tray
-                    // item, rather than hiding a tree the user believes they just closed.
+                    // Elsewhere the close button means quit, not hiding what the user
+                    // believes they just closed.
                     request_quit(window.app_handle());
                 }
             }
