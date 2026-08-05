@@ -53,6 +53,11 @@ export const ru = {
       projects: "Проекты",
       train: "Обучение",
       recipes: "Рецепты",
+      images: "Изображения",
+      video: "Видео",
+      more: "Ещё",
+      customizeSidebar: "Настроить боковую панель",
+      newBadge: "Новое",
       export: "Экспорт",
       recents: "Недавние",
       noChatsYet: "Пока нет чатов",
@@ -152,10 +157,20 @@ export const ru = {
         sttNotDownloaded: "Не скачано",
         sttDownloadStatusFailed: "Не удалось проверить состояние скачивания",
         sttDownload: "Скачать",
+        sttDownloadConfirmTitle: "Скачать {model}?",
+        sttDownloadConfirmBody:
+          "Локальная диктовка работает полностью офлайн, но сначала ей нужна речевая модель {model}. Около {size}, скачивается один раз в ваш кэш Hugging Face.",
+        sttDownloadConfirmBodyUnsized:
+          "Локальная диктовка работает полностью офлайн, но сначала ей нужна речевая модель {model}. Она скачивается один раз в ваш кэш Hugging Face.",
+        sttOpenVoiceSettings: "Открыть настройки «Голос»",
+        sttDownloadStarted: "Скачивание {model}",
         sttDownloading: "Скачивание… {progress}%",
         sttCancelDownload: "Отмена",
         sttCancellingDownload: "Отмена скачивания…",
+        sttCancelDownloadFailed: "Не удалось отменить скачивание",
         sttDownloadComplete: "Модель распознавания речи скачана",
+        sttModelReady: "Модель {model} готова к диктовке",
+        sttRecommended: "Рекомендуется",
         sttDownloadFailed: "Не удалось скачать модель распознавания речи",
         sttLoad: "Загрузить",
         sttUnload: "Выгрузить",
@@ -599,6 +614,14 @@ export const ru = {
         compactSidebar: "Закреплять боковую панель по умолчанию",
         compactSidebarDescription:
           "Держать боковую панель развёрнутой, а не свёрнутой в значки.",
+      },
+      sidebarNav: {
+        title: "Навигация боковой панели",
+        description:
+          "Закрепляйте вкладки боковой панели и меняйте их порядок. Незакреплённые вкладки собираются в меню «Ещё»; если незакреплённая вкладка всего одна, она просто скрывается, а не превращается в меню из одного пункта. «Новый чат» остаётся на месте.",
+        dragToReorder: "Перетащите, чтобы изменить порядок",
+        pinToSidebar: "Закрепить на боковой панели: {name}",
+        moreHolds: "Ещё ({count})",
       },
       sidebarMenu: {
         title: "Меню боковой панели",
