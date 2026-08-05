@@ -904,8 +904,7 @@ def test_llama_runtime_pairs_reads_the_published_tree_when_the_marker_has_none(m
 
     monkeypatch.setattr(M, "_download_host_json_once", fake)
     assert (
-        M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = LLAMA_REPO)
-        is False
+        M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = LLAMA_REPO) is False
     )
     assert len(fetched) == 2
 
@@ -943,8 +942,7 @@ def test_published_ggml_tree_survives_an_unreachable_release(monkeypatch):
     monkeypatch.setattr(M, "_download_host_json_once", boom)
     assert M.published_llama_ggml_tree(SUFFIX_SHARED_A) is None
     assert (
-        M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = LLAMA_REPO)
-        is True
+        M.llama_runtime_pairs(SUFFIX_SHARED_A, SUFFIX_SHARED_B, installed_repo = LLAMA_REPO) is True
     )
 
 
