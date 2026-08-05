@@ -33,6 +33,23 @@ def _clear_bash_cache():
     cached.cache_clear()
 
 
+@pytest.fixture
+def _windows_blocklist(monkeypatch):
+    """Screen against the Windows blocklist whatever the host is.
+
+    `_BLOCKED_COMMANDS` is built at import time from `sys.platform`, so on the
+    Linux-only studio-backend-ci runner powershell/pwsh are simply not in it.
+    Faking `sys.platform` the way the rest of this file does cannot help here:
+    the set was already bound when the module was imported. Patch the set that
+    `_find_blocked_commands` actually reads on every call instead.
+    """
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+
+
 def _fake_trusted_root(monkeypatch, root):
     """Point the Program Files trust check at ``root``.
 
@@ -284,7 +301,7 @@ def test_notes_say_where_commands_run(monkeypatch):
         r'cmd //c start /d C:/tmp "" powershell -Command ls',
     ],
 )
-def test_cmd_shellout_is_screened_through_mangled_switches(command):
+def test_cmd_shellout_is_screened_through_mangled_switches(command, _windows_blocklist):
     # Git Bash turns a lone /c into a path, so a model writes //c. That spelling
     # skipped the nested scan, making `cmd //c powershell` reachable where
     # `cmd /c powershell` was blocked, and `start` launches its argument too.
@@ -300,7 +317,7 @@ def test_cmd_shellout_is_screened_through_mangled_switches(command):
         "start notepad",
     ],
 )
-def test_detached_windows_stay_launchable(command):
+def test_detached_windows_stay_launchable(command, _windows_blocklist):
     # `start` is the only route to a window on the user's desktop, which the
     # terminal description promises, so screening must not blanket-block cmd.
     assert not tools._find_blocked_commands(command)
