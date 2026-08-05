@@ -22,6 +22,20 @@ def apply() -> None:
     if getattr(torch.cuda, "_unsloth_consolidated_spoof", False):
         return
 
+    # Settle bitsandbytes against the real torch first. Its __init__ does
+    # `if torch.cuda.is_available(): from .backends.cuda import ops`, and that
+    # module reads torch._C._cuda_getCurrentRawStream at import. On a CPU-only
+    # wheel that attribute is absent, so a bitsandbytes imported AFTER this
+    # spoof raises AttributeError (or OSError hunting libhipblas for the ROCm
+    # spoof) rather than ImportError, which slips past the `except ImportError`
+    # guards its importers use. Importing it here, while is_available() is
+    # still False, caches the CPU path in sys.modules for everything that
+    # follows.
+    try:
+        import bitsandbytes  # noqa: F401
+    except Exception:
+        pass
+
     # Device probes (cheap, value-returning)
     torch.cuda.is_available = lambda: True
     torch.cuda.device_count = lambda: 1

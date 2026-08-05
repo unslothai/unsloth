@@ -5,9 +5,10 @@
 
 from unsloth import FastLanguageModel, FastVisionModel
 from unsloth.chat_templates import get_chat_template
-from transformers import TextStreamer
+from transformers import TextIteratorStreamer, TextStreamer
 from peft import PeftModel, PeftModelForCausalLM
 
+import contextlib
 import json
 import sys
 import torch
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Optional, Union, Generator, Tuple
 from utils.models import ModelConfig, get_base_model_from_lora
 from utils.paths import is_model_cached
+from utils.transformers_dtype import dtype_kwargs
 from utils.utils import format_error_message
 from utils.hardware import (
     get_device,
@@ -30,6 +32,13 @@ from core.inference.message_content import content_to_text
 from core.inference.chat_eos import (
     chat_eos_repair,
     resolve_chat_turn_end_eos_ids_using,
+)
+from core.inference.chat_template_helpers import (
+    ReasoningChannelNormalizer,
+    detect_reasoning_channel_markers,
+    detect_think_prefill,
+    neutralize_control_markup_in_messages,
+    neutralize_tts_prompt_text,
 )
 from core.inference.presence_penalty import _make_presence_penalty_processor
 from io import StringIO
@@ -184,6 +193,53 @@ class HarmonyTextStreamer:
                 if new_content:
                     self._final_emitted = len(content)
                     self._queue.put(new_content)
+
+
+class ReasoningTextIteratorStreamer(TextIteratorStreamer):
+    """TextIteratorStreamer that preserves native channel tokens until parsed."""
+
+    def __init__(
+        self,
+        tokenizer,
+        *,
+        markers: tuple[str, str],
+        skip_prompt: bool = True,
+        timeout: float = 0.2,
+        cancel_event = None,
+        **decode_kwargs,
+    ):
+        decode_kwargs["skip_special_tokens"] = False
+        super().__init__(tokenizer, skip_prompt = skip_prompt, timeout = timeout, **decode_kwargs)
+        self._normalizer = ReasoningChannelNormalizer(*markers)
+        self._cancel_event = cancel_event
+        self._aborted = False
+
+    def abort(self):
+        """Mark generation as failed so ``end`` drains without closing."""
+        self._aborted = True
+
+    def on_finalized_text(
+        self,
+        text: str,
+        stream_end: bool = False,
+    ):
+        """Queue canonical deltas, closing only on natural stream completion."""
+        delta = self._normalizer.feed(text)
+        if delta:
+            self.text_queue.put(delta, timeout = self.timeout)
+
+        if stream_end:
+            cancelled = self._aborted or (
+                self._cancel_event is not None and self._cancel_event.is_set()
+            )
+            tail = self._normalizer.drain() if cancelled else self._normalizer.finish()
+            if tail:
+                self.text_queue.put(tail, timeout = self.timeout)
+            self.text_queue.put(self.stop_signal, timeout = self.timeout)
+
+
+class _GenerationThreadError(RuntimeError):
+    """Generation worker failures that should propagate through stream routes."""
 
 
 class InferenceBackend:
@@ -440,7 +496,7 @@ class InferenceBackend:
                         feature_extractor = tokenizer.feature_extractor,
                         processor = tokenizer,
                         return_language = True,
-                        torch_dtype = torch.float16,
+                        **dtype_kwargs(torch.float16),
                     )
                     self.models[model_name]["model"] = model
                     self.models[model_name]["tokenizer"] = tokenizer
@@ -513,7 +569,7 @@ class InferenceBackend:
                         _meta_path = Path(config.path) / "export_metadata.json"
                         try:
                             if _meta_path.exists():
-                                _meta = json.loads(_meta_path.read_text())
+                                _meta = json.loads(_meta_path.read_text(encoding = "utf-8-sig"))
                                 if _meta.get("base_model"):
                                     processor_source = _meta["base_model"]
                         except Exception:
@@ -832,8 +888,10 @@ class InferenceBackend:
         nudge_tool_calls: Optional[bool] = None,
         tool_call_timeout: int = 300,
         session_id: Optional[str] = None,
+        thread_id: Optional[str] = None,
         rag_scope: Optional[dict] = None,
         presence_penalty: float = 0.0,
+        reasoning_prefilled: bool = False,
     ):
         """Run an agentic tool loop on top of ``generate_chat_response``.
 
@@ -874,7 +932,29 @@ class InferenceBackend:
         if system_prompt:
             initial = [{"role": "system", "content": system_prompt}] + initial
 
+        # Same profile the renderer uses, so the controller never drops a tool over a
+        # marker this model does not treat as structure. The controller is also given the
+        # catalog safe under every template this turn could select, because the
+        # native-template fallback renders with a different profile (#7066).
+        from core.inference.chat_template_helpers import (
+            mapped_chat_template,
+            markup_for_tokenizer,
+            renderable_tool_catalog,
+        )
+
+        _model_info = self.models.get(self.active_model_name) or {}
+        # Resolved BEFORE the profile: the mapper installs its template during the render.
+        _mapped_tpl = mapped_chat_template(_model_info, self.active_model_name)
+
         yield from run_safetensors_tool_loop(
+            markup = markup_for_tokenizer(_model_info.get("tokenizer"), tools, _mapped_tpl),
+            renderable_tools = renderable_tool_catalog(
+                tools,
+                _model_info.get("tokenizer"),
+                _model_info,
+                active_model_name = self.active_model_name,
+                template = _mapped_tpl,
+            ),
             single_turn = _single_turn,
             messages = initial,
             tools = tools,
@@ -885,7 +965,9 @@ class InferenceBackend:
             max_tool_iterations = max_tool_iterations,
             tool_call_timeout = tool_call_timeout,
             session_id = session_id,
+            thread_id = thread_id,
             rag_scope = rag_scope,
+            reasoning_prefilled = reasoning_prefilled,
         )
 
     def generate_chat_response(
@@ -957,8 +1039,7 @@ class InferenceBackend:
         thread can toggle adapters under the generation lock.
         """
         if not self.active_model_name:
-            yield "Error: No active model"
-            return
+            raise RuntimeError("No active model")
 
         model_info = self.models[self.active_model_name]
         is_vision = model_info.get("is_vision", False)
@@ -1046,6 +1127,7 @@ class InferenceBackend:
             template_messages = [{"role": "system", "content": system_prompt}] + messages
         else:
             template_messages = messages
+        reasoning_channel_markers_resolved = False
         try:
             if not (hasattr(tokenizer, "chat_template") and tokenizer.chat_template):
                 raise ValueError(
@@ -1055,6 +1137,7 @@ class InferenceBackend:
                     f"Please use a model that includes a chat template, or manually set "
                     f"one via tokenizer.chat_template before inference."
                 )
+            reasoning_channel_markers = None
             formatted_prompt = self._apply_chat_template_for_generation(
                 tokenizer,
                 template_messages,
@@ -1070,7 +1153,7 @@ class InferenceBackend:
                 render_with_native_template_fallback,
             )
 
-            formatted_prompt = render_with_native_template_fallback(
+            render_result = render_with_native_template_fallback(
                 formatted_prompt = formatted_prompt,
                 tokenizer = tokenizer,
                 model_info = model_info,
@@ -1082,13 +1165,19 @@ class InferenceBackend:
                 preserve_thinking = preserve_thinking,
                 apply_fn = self._apply_chat_template_for_generation,
                 hf_token = model_info.get("hf_token"),
+                return_metadata = True,
             )
+            formatted_prompt = render_result.prompt
+            reasoning_channel_markers = render_result.reasoning_channel_markers
+            reasoning_channel_markers_resolved = True
 
             logger.debug(f"Formatted prompt: {formatted_prompt[:200]}...")
         except Exception as e:
             logger.error(f"Error applying chat template: {e}")
             # Fall back to manual formatting
             formatted_prompt = self.format_chat_prompt(messages, system_prompt)
+            reasoning_channel_markers = None
+            reasoning_channel_markers_resolved = True
 
         # Step 3: generate
         yield from self.generate_stream(
@@ -1102,6 +1191,8 @@ class InferenceBackend:
             cancel_event = cancel_event,
             _adapter_state = _adapter_state,
             presence_penalty = presence_penalty,
+            reasoning_channel_markers = reasoning_channel_markers,
+            reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
         )
 
     def _generate_vision_response(
@@ -1156,6 +1247,16 @@ class InferenceBackend:
             else:
                 vision_messages = [user_msg]
 
+            # Processor's own template skips the choke point (#7066). Rebind user_msg
+            # so the no-system retry keeps the copy. Profiled from the processor, so a
+            # vision request is gated on the loaded model exactly as the text path is.
+            from core.inference.chat_template_helpers import markup_for_tokenizer
+
+            vision_messages = neutralize_control_markup_in_messages(
+                vision_messages, None, markup_for_tokenizer(processor)
+            )
+            user_msg = vision_messages[-1]
+
             try:
                 input_text = processor.apply_chat_template(
                     vision_messages, add_generation_prompt = True, tokenize = False
@@ -1187,21 +1288,27 @@ class InferenceBackend:
 
         # Stream with TextIteratorStreamer + background thread
         try:
-            from core.inference.chat_template_helpers import detect_think_prefill
-
             # Re-emit an open <think> prefill swallowed by skip_prompt (see
             # generate_stream).
             think_prefix = detect_think_prefill(
                 prompt_text, getattr(raw_tokenizer, "all_special_tokens", None)
             )
-            from transformers import TextIteratorStreamer
             import threading
 
-            streamer = TextIteratorStreamer(
+            streamer = self._make_text_streamer(
                 raw_tokenizer,
+                protocol_source = processor,
+                # The text-only VLM fallback above did not render with the
+                # processor template, so its native markers do not describe
+                # this request's response protocol.
+                reasoning_channel_markers = detect_reasoning_channel_markers(processor)
+                if image
+                else None,
+                reasoning_channel_markers_resolved = True,
                 skip_prompt = True,
-                skip_special_tokens = True,
                 timeout = 0.2,
+                cancel_event = cancel_event,
+                use_harmony = self._is_gpt_oss_model(),
             )
 
             generation_kwargs = dict(
@@ -1223,6 +1330,10 @@ class InferenceBackend:
                 )
                 if _pp is not None:
                     generation_kwargs["logits_processor"] = _pp
+            stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+            if stopping_criteria is not None:
+                generation_kwargs["stopping_criteria"] = stopping_criteria
+            active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
 
             err: dict[str, str] = {}
 
@@ -1232,6 +1343,8 @@ class InferenceBackend:
                         model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
+                        if hasattr(streamer, "abort"):
+                            streamer.abort()
                         logger.error(f"Vision generation error in thread: {e}")
                     finally:
                         try:
@@ -1248,12 +1361,17 @@ class InferenceBackend:
             if think_prefix:
                 yield think_prefix
             from queue import Empty
+            import time
 
             generation_complete = False
+            cancel_deadline = None
             try:
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
-                        break
+                        if cancel_deadline is None:
+                            cancel_deadline = time.monotonic() + 10
+                        elif time.monotonic() >= cancel_deadline:
+                            break
                     try:
                         new_token = next(streamer)
                     except StopIteration:
@@ -1262,27 +1380,48 @@ class InferenceBackend:
                     except Empty:
                         if not thread.is_alive():
                             generation_complete = True
+                            output = yield from self._drain_streamer_tail(
+                                streamer, output, active_stop_token_ids
+                            )
+                            break
+                        if cancel_deadline is not None:
+                            remaining = cancel_deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            thread.join(timeout = remaining)
+                            if thread.is_alive():
+                                break
+                            generation_complete = True
+                            output = yield from self._drain_streamer_tail(
+                                streamer, output, active_stop_token_ids
+                            )
                             break
                         continue
                     if new_token:
-                        output += new_token
-                        cleaned = self._clean_generated_text(output)
+                        output, cleaned = self._append_stream_delta(
+                            output, new_token, active_stop_token_ids
+                        )
                         yield cleaned
             finally:
                 if cancel_event is not None and not generation_complete:
                     cancel_event.set()
-                thread.join(timeout = 10)
+                join_timeout = 10
+                if cancel_deadline is not None:
+                    join_timeout = max(0, cancel_deadline - time.monotonic())
+                thread.join(timeout = join_timeout)
                 if thread.is_alive():
                     logger.warning(
                         "Vision generation thread did not exit after cancel/join timeout"
                     )
 
             if err.get("msg"):
-                yield f"Error: {err['msg']}"
+                raise _GenerationThreadError(err["msg"])
 
+        except _GenerationThreadError:
+            raise
         except Exception as e:
             logger.error(f"Vision generation error: {e}")
-            yield f"Error: {str(e)}"
+            raise
 
     def generate_audio_input_response(
         self,
@@ -1295,11 +1434,13 @@ class InferenceBackend:
         min_p,
         max_new_tokens,
         repetition_penalty,
+        use_adapter: Optional[Union[bool, str]] = None,
         cancel_event = None,
     ) -> Generator[str, None, None]:
         """Audio-input (ASR) generation: takes an audio numpy array, streams text.
 
         Uses processor.apply_chat_template with audio embedded in messages (Gemma 3n pattern).
+        use_adapter: see _apply_adapter_state; None leaves the loaded state alone.
         """
         import threading
         import numpy as np
@@ -1332,6 +1473,14 @@ class InferenceBackend:
                 ],
             },
         ]
+
+        # Direct processor render like the vision path, so neutralize here too, with
+        # this processor's own profile so another family's marker stays untouched (#7066).
+        from core.inference.chat_template_helpers import markup_for_tokenizer
+
+        audio_messages = neutralize_control_markup_in_messages(
+            audio_messages, None, markup_for_tokenizer(processor)
+        )
 
         # apply_chat_template does audio embedding + tokenization in one step
         inputs = processor.apply_chat_template(
@@ -1368,6 +1517,9 @@ class InferenceBackend:
             def generate_fn():
                 with self._generation_lock:
                     try:
+                        # As in the text path: apply under the lock so Base-vs-LoRA
+                        # compare doesn't run the adapter on both sides (None = no-op).
+                        self._apply_adapter_state(use_adapter)
                         model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
@@ -1407,11 +1559,13 @@ class InferenceBackend:
                     )
 
             if err.get("msg"):
-                yield f"Error: {err['msg']}"
+                raise _GenerationThreadError(err["msg"])
 
+        except _GenerationThreadError:
+            raise
         except Exception as e:
             logger.error(f"Audio input generation error: {e}")
-            yield f"Error: {str(e)}"
+            raise
 
     def generate_whisper_response(
         self,
@@ -1444,6 +1598,86 @@ class InferenceBackend:
         from utils.datasets import is_gpt_oss_model_name
         return is_gpt_oss_model_name(model_name or self.active_model_name or "")
 
+    def _make_text_streamer(
+        self,
+        tokenizer,
+        *,
+        protocol_source = None,
+        reasoning_channel_markers = None,
+        reasoning_channel_markers_resolved: bool = False,
+        skip_prompt: bool = True,
+        timeout: float = 0.2,
+        cancel_event = None,
+        use_harmony: bool = False,
+    ):
+        """Create the streamer matching this model's native response protocol."""
+        if use_harmony:
+            try:
+                return HarmonyTextStreamer(
+                    tokenizer,
+                    skip_prompt = skip_prompt,
+                    timeout = timeout,
+                )
+            except Exception as e:
+                logger.warning(f"HarmonyTextStreamer init failed, falling back: {e}")
+                return TextIteratorStreamer(
+                    tokenizer,
+                    skip_prompt = skip_prompt,
+                    skip_special_tokens = True,
+                    timeout = timeout,
+                )
+
+        markers = (
+            reasoning_channel_markers
+            if reasoning_channel_markers_resolved
+            else reasoning_channel_markers
+            or detect_reasoning_channel_markers(protocol_source or tokenizer)
+        )
+        if markers is not None:
+            return ReasoningTextIteratorStreamer(
+                tokenizer,
+                markers = markers,
+                skip_prompt = skip_prompt,
+                timeout = timeout,
+                cancel_event = cancel_event,
+            )
+        return TextIteratorStreamer(
+            tokenizer,
+            skip_prompt = skip_prompt,
+            skip_special_tokens = True,
+            timeout = timeout,
+        )
+
+    def _append_stream_delta(
+        self,
+        output: str,
+        new_token: str,
+        stop_token_ids = None,
+    ):
+        """Append a streamer delta and apply response-boundary cleanup."""
+        output += new_token
+        return output, self._clean_generated_text(output, stop_token_ids = stop_token_ids)
+
+    def _drain_streamer_tail(
+        self,
+        streamer,
+        output: str,
+        stop_token_ids = None,
+    ):
+        """Drain queued streamer text after the producer exits."""
+        while True:
+            try:
+                new_token = next(streamer)
+            except StopIteration:
+                return output
+            except Exception:
+                return output
+            if new_token:
+                output, cleaned = self._append_stream_delta(
+                    output, new_token, stop_token_ids = stop_token_ids
+                )
+                yield cleaned
+
     def generate_stream(
         self,
         prompt: str,
@@ -1456,6 +1690,8 @@ class InferenceBackend:
         cancel_event = None,
         _adapter_state = None,
         presence_penalty: float = 0.0,
+        reasoning_channel_markers = None,
+        reasoning_channel_markers_resolved: bool = False,
     ) -> Generator[str, None, None]:
         """Generate a streaming text response (text models only).
 
@@ -1464,8 +1700,7 @@ class InferenceBackend:
         ``presence_penalty`` matches the GGUF sampling path via a logits processor (0 disables it).
         """
         if not self.active_model_name:
-            yield "Error: No active model"
-            return
+            raise RuntimeError("No active model")
 
         model_info = self.models[self.active_model_name]
         model = model_info["model"]
@@ -1478,9 +1713,7 @@ class InferenceBackend:
         try:
             inputs = tokenizer(prompt, return_tensors = "pt").to(model.device)
 
-            from transformers import TextIteratorStreamer
             import threading
-            from core.inference.chat_template_helpers import detect_think_prefill
 
             # skip_prompt swallows an open <think> prefilled by the template;
             # re-emit it so the frontend can render the thinking block.
@@ -1491,30 +1724,16 @@ class InferenceBackend:
                 else detect_think_prefill(prompt, getattr(tokenizer, "all_special_tokens", None))
             )
 
-            # gpt-oss models: HarmonyTextStreamer parses the multi-channel
-            # harmony protocol into <think> tags
-            if self._is_gpt_oss_model():
-                try:
-                    streamer = HarmonyTextStreamer(
-                        tokenizer,
-                        skip_prompt = True,
-                        timeout = 0.2,
-                    )
-                except Exception as e:
-                    logger.warning(f"HarmonyTextStreamer init failed, falling back: {e}")
-                    streamer = TextIteratorStreamer(
-                        tokenizer,
-                        skip_prompt = True,
-                        skip_special_tokens = True,
-                        timeout = 0.2,
-                    )
-            else:
-                streamer = TextIteratorStreamer(
-                    tokenizer,
-                    skip_prompt = True,
-                    skip_special_tokens = True,
-                    timeout = 0.2,
-                )
+            streamer = self._make_text_streamer(
+                tokenizer,
+                protocol_source = model_info.get("tokenizer"),
+                reasoning_channel_markers = reasoning_channel_markers,
+                reasoning_channel_markers_resolved = reasoning_channel_markers_resolved,
+                skip_prompt = True,
+                timeout = 0.2,
+                cancel_event = cancel_event,
+                use_harmony = self._is_gpt_oss_model(),
+            )
 
             generation_kwargs = dict(
                 **inputs,
@@ -1532,27 +1751,16 @@ class InferenceBackend:
                 if tokenizer.pad_token_id is None
                 else tokenizer.pad_token_id,
             )
+            active_stop_token_ids = self._generation_stop_token_ids(model, generation_kwargs)
             # Presence penalty (GGUF parity); prompt_len excludes prompt tokens.
             _pp = _make_presence_penalty_processor(
                 presence_penalty, int(inputs["input_ids"].shape[1])
             )
             if _pp is not None:
                 generation_kwargs["logits_processor"] = _pp
-            if cancel_event is not None:
-                from transformers.generation.stopping_criteria import (
-                    StoppingCriteria,
-                    StoppingCriteriaList,
-                )
-                class _CancelCriteria(StoppingCriteria):
-                    def __init__(self, ev):
-                        self.ev = ev
-
-                    def __call__(self, input_ids, scores, **kwargs):
-                        return self.ev.is_set()
-
-                generation_kwargs["stopping_criteria"] = StoppingCriteriaList(
-                    [_CancelCriteria(cancel_event)]
-                )
+            stopping_criteria = self._cancel_stopping_criteria(cancel_event)
+            if stopping_criteria is not None:
+                generation_kwargs["stopping_criteria"] = stopping_criteria
 
             def generate_fn():
                 with self._generation_lock:
@@ -1562,6 +1770,8 @@ class InferenceBackend:
                         model.generate(**generation_kwargs)
                     except Exception as e:
                         err["msg"] = str(e)
+                        if hasattr(streamer, "abort"):
+                            streamer.abort()
                         logger.error(f"Generation error: {e}")
                     finally:
                         try:
@@ -1579,12 +1789,17 @@ class InferenceBackend:
             if think_prefix:
                 yield think_prefix
             from queue import Empty
+            import time
 
             generation_complete = False
+            cancel_deadline = None
             try:
                 while True:
                     if cancel_event is not None and cancel_event.is_set():
-                        break
+                        if cancel_deadline is None:
+                            cancel_deadline = time.monotonic() + 10
+                        elif time.monotonic() >= cancel_deadline:
+                            break
                     try:
                         new_token = next(streamer)
                     except StopIteration:
@@ -1593,11 +1808,27 @@ class InferenceBackend:
                     except Empty:
                         if not thread.is_alive():
                             generation_complete = True
+                            output = yield from self._drain_streamer_tail(
+                                streamer, output, active_stop_token_ids
+                            )
+                            break
+                        if cancel_deadline is not None:
+                            remaining = cancel_deadline - time.monotonic()
+                            if remaining <= 0:
+                                break
+                            thread.join(timeout = remaining)
+                            if thread.is_alive():
+                                break
+                            generation_complete = True
+                            output = yield from self._drain_streamer_tail(
+                                streamer, output, active_stop_token_ids
+                            )
                             break
                         continue
                     if new_token:
-                        output += new_token
-                        cleaned = self._clean_generated_text(output)
+                        output, cleaned = self._append_stream_delta(
+                            output, new_token, active_stop_token_ids
+                        )
                         yield cleaned
             finally:
                 # Set cancel_event only on early exit (user cancel), NOT on
@@ -1606,16 +1837,21 @@ class InferenceBackend:
                 # disrupt the next serialized request (e.g. compare mode).
                 if cancel_event is not None and not generation_complete:
                     cancel_event.set()
-                thread.join(timeout = 10)
+                join_timeout = 10
+                if cancel_deadline is not None:
+                    join_timeout = max(0, cancel_deadline - time.monotonic())
+                thread.join(timeout = join_timeout)
                 if thread.is_alive():
                     logger.warning("Generation thread did not exit after cancel/join timeout")
 
             if err.get("msg"):
-                yield f"Error: {err['msg']}"
+                raise _GenerationThreadError(err["msg"])
 
+        except _GenerationThreadError:
+            raise
         except Exception as e:
             logger.error(f"Error during generation: {e}")
-            yield f"Error: {str(e)}"
+            raise
 
     # ── Audio (TTS) Generation ────────────────────────────────────
 
@@ -1645,6 +1881,9 @@ class InferenceBackend:
             raise RuntimeError(f"Model {self.active_model_name} is not an audio model")
 
         top_k = self._normalize_top_k(top_k)
+        # Every codec below concatenates its prompt instead of templating it, so this
+        # is the one choke point for all four (#7066).
+        text = neutralize_tts_prompt_text(text, audio_type)
 
         with self._generation_lock:
             if use_adapter is not None:
@@ -1754,8 +1993,30 @@ class InferenceBackend:
             + text
             + "<|text_end|>\n<|audio_start|><|global_features_start|>\n"
         )
+
         with torch.inference_mode():
-            with torch.amp.autocast("cuda", dtype = model.dtype):
+            # Derive the autocast device from the loaded model, not from the
+            # global backend: a CPU-fallback DAC on an XPU/CUDA host must not
+            # open a GPU autocast context around CPU tensors.
+            device_type = (
+                model.device.type
+                if hasattr(model.device, "type")
+                else str(model.device).split(":", 1)[0]
+            )
+            # Clamp to autocast-supported backends so exotic devices
+            # (e.g. "meta" during accelerate offloaded loading) do not raise.
+            # MPS is autocast-supported since torch 2.3, keep it in the set.
+            if device_type not in ("cuda", "xpu", "mps", "cpu"):
+                device_type = "cpu"
+            # CPU and XPU autocast only accept bfloat16/float16. For a
+            # float32 model, skip autocast entirely to avoid raising or
+            # producing a warning on every generate call.
+            autocast_dtype_supported = model.dtype in (torch.bfloat16, torch.float16)
+            if device_type in ("cpu", "xpu") and not autocast_dtype_supported:
+                autocast_ctx = contextlib.nullcontext()
+            else:
+                autocast_ctx = torch.amp.autocast(device_type, dtype = model.dtype)
+            with autocast_ctx:
                 inputs = tokenizer([prompt], return_tensors = "pt").to(model.device)
                 generated = model.generate(
                     **inputs,
@@ -1891,6 +2152,15 @@ class InferenceBackend:
         if chat_messages and chat_messages[-1]["role"] == "assistant":
             logger.debug("Removing final assistant message to ensure proper alternation")
             chat_messages.pop()
+
+        # Direct tokenizer render bypasses the choke point, and the user sub above
+        # leaves system_prompt and replayed assistant text raw. Profiled off this same
+        # tokenizer, so the sweep matches what the text path would do (#7066).
+        from core.inference.chat_template_helpers import markup_for_tokenizer
+
+        chat_messages = neutralize_control_markup_in_messages(
+            chat_messages, None, markup_for_tokenizer(tokenizer)
+        )
 
         logger.info(f"Sending {len(chat_messages)} messages to tokenizer:")
         for i, msg in enumerate(chat_messages):
@@ -2070,8 +2340,13 @@ class InferenceBackend:
         except Exception as e:
             logger.warning(f"Could not fully reset model state for {model_name}: {e}")
 
-    def reset_generation_state(self):
-        """Reset any cached generation state to prevent hanging after errors"""
+    def reset_generation_state(self, caller_cancel_event = None):
+        """Reset any cached generation state to prevent hanging after errors
+
+        ``caller_cancel_event`` is accepted for signature parity with the
+        orchestrator, which uses it to drop a reset from a request that never
+        started. Nothing here cancels a live generation, so it is unused.
+        """
         try:
             # Clear cached state for ALL loaded models
             for model_name in self.models.keys():
@@ -2104,8 +2379,42 @@ class InferenceBackend:
             return img.resize(new_size, Image.Resampling.LANCZOS)
         return img
 
-    def _clean_generated_text(self, text: str) -> str:
-        """Strip leaked special tokens using the tokenizer's own token list."""
+    def _generation_stop_token_ids(self, model, generation_kwargs: dict):
+        """Return the stop-token ids active for a ``generate`` call."""
+        if "eos_token_id" in generation_kwargs:
+            return generation_kwargs.get("eos_token_id")
+        generation_config = getattr(model, "generation_config", None)
+        eos_token_id = getattr(generation_config, "eos_token_id", None)
+        if eos_token_id is not None:
+            return eos_token_id
+        config = getattr(model, "config", None)
+        return getattr(config, "eos_token_id", None)
+
+    def _cancel_stopping_criteria(self, cancel_event):
+        """Build a Transformers stopping criteria list for user cancellation."""
+        if cancel_event is None:
+            return None
+        from transformers.generation.stopping_criteria import (
+            StoppingCriteria,
+            StoppingCriteriaList,
+        )
+
+        class _CancelCriteria(StoppingCriteria):
+            def __init__(self, ev):
+                self.ev = ev
+
+            def __call__(self, input_ids, scores, **kwargs):
+                return self.ev.is_set()
+
+        return StoppingCriteriaList([_CancelCriteria(cancel_event)])
+
+    def _clean_generated_text(
+        self,
+        text: str,
+        *,
+        stop_token_ids = None,
+    ) -> str:
+        """Strip leaked response-boundary tokens after streaming."""
         if self._is_gpt_oss_model():
             # HarmonyTextStreamer emits clean <think>...</think>. Strip any
             # harmony protocol tokens and other gpt-oss tokens (e.g.
@@ -2115,10 +2424,28 @@ class InferenceBackend:
             return text.strip()
 
         tokenizer = self.models.get(self.active_model_name, {}).get("tokenizer")
+        tokenizer = getattr(tokenizer, "tokenizer", tokenizer)
         if tokenizer:
-            for token in getattr(tokenizer, "all_special_tokens", []):
-                if token in text:
-                    text = text.replace(token, "")
+            if stop_token_ids is None:
+                stop_token_ids = self.models.get(self.active_model_name, {}).get(
+                    "chat_turn_end_eos_ids"
+                )
+            if isinstance(stop_token_ids, int):
+                stop_token_ids = (stop_token_ids,)
+            for token_id in stop_token_ids or ():
+                try:
+                    token = tokenizer.convert_ids_to_tokens(int(token_id))
+                except Exception:
+                    token = None
+                if isinstance(token, str) and token and text.endswith(token):
+                    text = text[: -len(token)]
+                elif (
+                    isinstance(token, str)
+                    and token
+                    and text.endswith("</think>")
+                    and text[: -len("</think>")].endswith(token)
+                ):
+                    text = text[: -len("</think>") - len(token)] + "</think>"
         return text.strip()
 
     def _load_chat_template_info(self, model_name: str):

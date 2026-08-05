@@ -12,10 +12,12 @@ export interface UserProfileState {
   nickname: string;
   avatarDataUrl: string | null;
   avatarShape: AvatarShape;
+  showGreetingSloth: boolean;
   setDisplayName: (displayName: string) => void;
   setNickname: (nickname: string) => void;
   setAvatarDataUrl: (avatarDataUrl: string | null) => void;
   setAvatarShape: (avatarShape: AvatarShape) => void;
+  setShowGreetingSloth: (showGreetingSloth: boolean) => void;
 }
 
 export const useUserProfileStore = create<UserProfileState>()(
@@ -25,10 +27,12 @@ export const useUserProfileStore = create<UserProfileState>()(
       nickname: "",
       avatarDataUrl: null,
       avatarShape: "circle",
+      showGreetingSloth: true,
       setDisplayName: (displayName) => set({ displayName }),
       setNickname: (nickname) => set({ nickname }),
       setAvatarDataUrl: (avatarDataUrl) => set({ avatarDataUrl }),
       setAvatarShape: (avatarShape) => set({ avatarShape }),
+      setShowGreetingSloth: (showGreetingSloth) => set({ showGreetingSloth }),
     }),
     { name: "unsloth_user_profile" },
   ),

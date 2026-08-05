@@ -1,5 +1,5 @@
 {
-  "_comment": "scan_packages.py allowlist. Each entry is a CRITICAL/HIGH finding manually judged benign. Matched on (package, package-relative file, check, evidence_hash); evidence_hash is over the matched code with L<NN>: markers stripped, so version bumps and line shifts do not reopen an entry but changed code does. severity and evidence are for review only. Regenerate with --write-baseline AFTER reviewing every line.",
+  "_comment": "scan_packages.py allowlist (reviewed). Each entry is a CRITICAL/HIGH finding manually judged benign. Matched on (package, package-relative file, check, evidence_hash); evidence_hash is over the matched code with L<NN>: markers stripped, so version bumps and line shifts do not reopen an entry but changed code does. severity and evidence are for review only. Regenerate with --write-baseline AFTER reviewing every line.",
   "version": 1,
   "entries": [
     {
@@ -95,8 +95,16 @@
       "file": "fastapi/routing.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L586:                                 while True: sha256:251135b5ebfdd1248916449f32262575e003ef64382501c65b7e4061d67bda45",
-      "evidence_hash": "365aef4449c8089753d9398417cd76ab762cef547d75db70d87bca9c0b550ab5"
+      "evidence": "L587:                                 while True: sha256:06c2c7f15d73bf192e5e3272c5ff5fcaeff7f6774fef5f4eca6ef473ae50e2b3",
+      "evidence_hash": "57acd497f404c203e4450d0580ad85aa8a33406e8d64ad06fbac6cf47d97b24d"
+    },
+    {
+      "package": "fastapi",
+      "file": "fastapi/routing.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L592:                                 while True: sha256:84283c09277ded3296998b2a6a838744457b606829cf5ab5d0da6f222ff020a0",
+      "evidence_hash": "a7295004315e26a8f3c64fb837521e9fdd7268219bb43e000fb0236ab0259223"
     },
     {
       "package": "fastmcp-slim",
@@ -129,6 +137,14 @@
       "severity": "CRITICAL",
       "evidence": "L1420:         __import__(\"fontTools.ttLib.tables.\" + pyTag)",
       "evidence_hash": "512ecbb7539ddfd5296f8ea2d132ef4000a71033fd444d8a7539f6936dc9ad01"
+    },
+    {
+      "package": "gguf",
+      "file": "gguf/utility.py",
+      "check": "Harvests environment variables/secrets AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "Env: L268:         if os.environ.get(\"HF_TOKEN\"): | L269:             headers[\"Authorization\"] = f\"Bearer {os.environ['HF_TOKEN']}\"\nNetwork: L236:         response = requests.get(url, allow_redirects=True, headers=headers) | L258:             response = requests.head(url, allow_redirects=True, headers=headers)",
+      "evidence_hash": "231235fe72f6c47331494b67dd0cba2bdb7b75b901f4fe59b434ce9a1ffbd50e"
     },
     {
       "package": "httpx",
@@ -303,8 +319,8 @@
       "file": "openai/_base_client.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L264:         while True: sha256:95ca67e46d42354ae650abbdc5b0d97df8b0ed43187800bf40f5690c3901b94b",
-      "evidence_hash": "a57d8d15fed0bf04f9967dcc18a18b80bb19f4095675bccbb78ac0450d7fce14"
+      "evidence": "L274:         while True: sha256:90a38e5c1e26893c7c273354143612640e9a9c0f079d3e2b60612d79f24e80a6",
+      "evidence_hash": "1022e8e8649436ec64a98a9d9141d085452c49549fd2157b0278fc369a83ac66"
     },
     {
       "package": "openai",
@@ -319,8 +335,8 @@
       "file": "openai/auth/_workload.py",
       "check": "Accesses cloud metadata/IMDS AND makes network calls",
       "severity": "CRITICAL",
-      "evidence": "IMDS: L96:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L149:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L77:     http_client: httpx.Client | None = None, | L108:                 with httpx.Client() as client: | L133:     http_client: httpx.Client | None = None, | L155:                 with httpx.Client() as client: | L248:         with httpx.Client() as client:",
-      "evidence_hash": "1581d9f4a23393e9af23fbe5ef9f66807b22c5b5a3f1fe167254c9ebee108567"
+      "evidence": "IMDS: L97:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L150:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L78:     http_client: httpx.Client | None = None, | L109:                 with httpx.Client() as client: | L134:     http_client: httpx.Client | None = None, | L156:                 with httpx.Client() as client: | L251:         exchange_client = DefaultHttpx2Client(follow_redirects=False) if self._use_httpx2 else httpx.Client()",
+      "evidence_hash": "9717e51cb961dc14c458955d91a1e48e3753997346ecea0106bded3a8d64bfe0"
     },
     {
       "package": "openai",
@@ -343,8 +359,8 @@
       "file": "openai/resources/beta/responses/responses.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L3999:         while True: sha256:df298b6eaf3416589b79f4ef283f8fb76e54d505bfda8840673f8e6419117e2e",
-      "evidence_hash": "10ce5cb5a7097fcff4042ddcfb4802edda60aa4b7b113c8b926a52ddb76f78c2"
+      "evidence": "L4000:         while True: sha256:f8ab538118daba9ec06e27399dbdc90a4521c3390e6a47a6348a1f180a83effd",
+      "evidence_hash": "31481ea83c687acc27144d72d3832d4fb98dd1c79fb5e0ddd85080de95997b9f"
     },
     {
       "package": "openai",
@@ -359,16 +375,16 @@
       "file": "openai/resources/realtime/realtime.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L310:         while True: sha256:458198ff3d3f05870bf98c9564cbfd68c739e57b9bbe4120ed81e3eb6af74a05",
-      "evidence_hash": "a3165d21e46b3ce553795daeae53e8f80e8e89c5cb228e68e6dcaff54bca5a89"
+      "evidence": "L311:         while True: sha256:5b63313072aae9ca28677e03426513ccf12221e4f4e0ea6c31efbe09790633b5",
+      "evidence_hash": "05e1af469d651b51673763a7c4cdf759af9472fb627b7b470adc28cc237bd650"
     },
     {
       "package": "openai",
       "file": "openai/resources/responses/responses.py",
       "check": "C2 polling/beaconing loop detected",
       "severity": "CRITICAL",
-      "evidence": "L3950:         while True: sha256:1ce0b5a388c747945cdfda1a71b77afdfd03ae840d7aa9fa62f02eb00aa5e29f",
-      "evidence_hash": "6de300ebb5e6e17cb51c89cbcdf08515a44655182f0776f0908a9d1043ebbcd7"
+      "evidence": "L3951:         while True: sha256:d68ef896bf0743ca430cfacb9a3353da1f3b9c51c3a21b6450a07a32b55aa2ac",
+      "evidence_hash": "160eecdd79b521bffbe8476f782b69a0724c35d1b19376a7600807165fd54f9f"
     },
     {
       "package": "openai",
@@ -633,6 +649,14 @@
       "severity": "CRITICAL",
       "evidence": "L1221:       os.dup2(self.ostream.fileno(), self.orig_stream_fileno) | L1226:       os.dup2(self.orig_stream_dup, self.orig_stream_fileno)",
       "evidence_hash": "bba233b67f8ea4f0723b2fecaabf56528531bccd77ace836165bf38b47246bcc"
+    },
+    {
+      "package": "sentencepiece",
+      "file": "sentencepiece/__init__.py",
+      "check": "Reverse shell / bind shell pattern",
+      "severity": "CRITICAL",
+      "evidence": "L772:             os.dup2(self.ostream.fileno(), self.orig_stream_fileno) | L777:             os.dup2(self.orig_stream_dup, self.orig_stream_fileno)",
+      "evidence_hash": "65b5a11cce128fe09b3f238c01bed7c883d1740d7d46d659118f67940f6c17dc"
     },
     {
       "package": "setuptools",
@@ -1537,6 +1561,166 @@
       "severity": "HIGH",
       "evidence": "Obfusc: L836:         code = compile(module, \"<werkzeug routing>\", \"exec\")\nExec: L736:         exec(code, globs, locs)",
       "evidence_hash": "5c0992c90f05c772abd94d00784f157de337e1f8567f8b3aee1b15e46c96cd5d"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_save_export_regressions.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L165:         temporary_location=\"/tmp/ignored\", sha256:ab5c587f9ec31a0cc10ee55698ab133a417148d9d3f371bbc81b1e13fa119c13",
+      "evidence_hash": "93a11159147aad94f353ec4d2e0b8486b256abef88cd96d741813222cd32b138"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_vision_collator_audio.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L111:         out = extract_audio_info(msgs({\"type\": \"audio\", key: \"/tmp/a.wav\"})) sha256:2efe23ffbe2b91b8403aec9b700736919b59e5ca770f8e1f5501651b44b7d398",
+      "evidence_hash": "d416b79dd17b24214f3f7653ac01354507d7bf0fc464dee30a4a4b8998f063ba"
+    },
+    {
+      "package": "openai",
+      "file": "openai/_base_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L274:         while True: sha256:90a38e5c1e26893c7c273354143612640e9a9c0f079d3e2b60612d79f24e80a6",
+      "evidence_hash": "1022e8e8649436ec64a98a9d9141d085452c49549fd2157b0278fc369a83ac66"
+    },
+    {
+      "package": "openai",
+      "file": "openai/auth/_workload.py",
+      "check": "Accesses cloud metadata/IMDS AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "IMDS: L97:             url = \"http://169.254.169.254/metadata/identity/oauth2/token\" | L150:             url = \"http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/identity\"\nNetwork: L78:     http_client: httpx.Client | None = None, | L109:                 with httpx.Client() as client: | L134:     http_client: httpx.Client | None = None, | L156:                 with httpx.Client() as client: | L251:         exchange_client = DefaultHttpx2Client(follow_redirects=False) if self._use_httpx2 else httpx.Client()",
+      "evidence_hash": "9717e51cb961dc14c458955d91a1e48e3753997346ecea0106bded3a8d64bfe0"
+    },
+    {
+      "package": "openai",
+      "file": "openai/resources/beta/responses/responses.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L4000:         while True: sha256:f8ab538118daba9ec06e27399dbdc90a4521c3390e6a47a6348a1f180a83effd",
+      "evidence_hash": "31481ea83c687acc27144d72d3832d4fb98dd1c79fb5e0ddd85080de95997b9f"
+    },
+    {
+      "package": "openai",
+      "file": "openai/resources/realtime/realtime.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L311:         while True: sha256:5b63313072aae9ca28677e03426513ccf12221e4f4e0ea6c31efbe09790633b5",
+      "evidence_hash": "05e1af469d651b51673763a7c4cdf759af9472fb627b7b470adc28cc237bd650"
+    },
+    {
+      "package": "openai",
+      "file": "openai/resources/responses/responses.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L3951:         while True: sha256:d68ef896bf0743ca430cfacb9a3353da1f3b9c51c3a21b6450a07a32b55aa2ac",
+      "evidence_hash": "160eecdd79b521bffbe8476f782b69a0724c35d1b19376a7600807165fd54f9f"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_gemma4_forced_float32_ple_dtype.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L277:     compile(rewritten + _GEMMA4_PLE_CAST_HELPER, \"<gemma4-ple-generated>\", \"exec\") | L440:     compile(on, \"<gemma4-ple-append>\", \"exec\") | L468:     compile(generated, \"<gemma4-ple-crosspath>\", \"exec\")\nExec: L19:     exec(_GEMMA4_PLE_CAST_HELPER, namespace)",
+      "evidence_hash": "a85e24d8e7c431563cbd83b70f91a3b971abde0f37083d68e70984147960cc70"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_vision_collator_audio.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L111:         out = extract_audio_info(msgs({\"type\": \"audio\", key: \"/tmp/a.wav\"})) sha256:022f81dd21acfc6a35a058de96132834c218404a9e37b3d09a7768a8c8f6c728",
+      "evidence_hash": "2d1e75446af120d9133a42aa8af426a839d3434d9dc109cc1d6c1b22ca1ddb75"
+    },
+    {
+      "package": "fastapi",
+      "file": "fastapi/routing.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L594:                                 while True: sha256:ad3361ce18383161849f910370bdeccebfc6191e3ecdf28e2711ff66e37cd977",
+      "evidence_hash": "d30c02e72381458de1b79bd23652b5ae9928a93e6626592cf33002fd0339f224"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/_sandbox.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L84: d=/tmp/.sbx-server\nL85: if command -v wget >/dev/null 2>&1; then wget -q -O \"$d\" \"$SBX_SERVER_URL\"\nL86: elif command -v curl >/dev/null 2>&1; then curl -fsSL -o \"$d\" \"$SBX_SERVER_URL\"\nL87: else cp \"$SBX_SERVER_MOUNT/sbx-server\" \"$d\"; fi\nL88: chmod +x \"$d\"",
+      "evidence_hash": "4e8ce7444ac0d4a788dcaf389ae8e26dd0221a226938d764810181a593d53d36"
+    },
+    {
+      "package": "huggingface-hub",
+      "file": "huggingface_hub/hf_api.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L4811:         while True: sha256:278dc3fe19e4aec12ef4dc9cf040320e9c1665e79762cf82d58941ac82af251a",
+      "evidence_hash": "700650886c3879597857b61c13e7bfecec9bf54b28d869d4694608eab01d1e58"
+    },
+    {
+      "package": "ipython",
+      "file": "IPython/core/interactiveshell.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L2998:                 exec(compiler(f.read(), fname, \"exec\"), glob, loc)",
+      "evidence_hash": "99dbd9b2cf5ede37fe3123e0789439bd3f82648a5443482e451ec04105be3c12"
+    },
+    {
+      "package": "ipython",
+      "file": "IPython/core/interactiveshell.py",
+      "check": "Enumerates filesystem AND makes network calls",
+      "severity": "CRITICAL",
+      "evidence": "FS: L78: from IPython.core.history import HistoryManager, HistoryOutput sha256:d8df7b3aead9d1fc528b62f68a017797cc6ce9184746338eba1586eab9d52174\nNetwork: L4075:                 from urllib.request import urlopen | L4076:                 response = urlopen(target)",
+      "evidence_hash": "11831b523706de852722b6d342d38e1f5367dd1ad6e6c4d44fccf638eaec7361"
+    },
+    {
+      "package": "openai",
+      "file": "openai/_base_client.py",
+      "check": "C2 polling/beaconing loop detected",
+      "severity": "CRITICAL",
+      "evidence": "L276:         while True: sha256:79ff4e83ede832fc90b106033123e68a957560f55288a5c654788ff4af9b48d1",
+      "evidence_hash": "a279dacdb18186c44bdb93c99347dc42c15adbabd6a609a6485bb745965f5007"
+    },
+    {
+      "package": "traitlets",
+      "file": "traitlets/config/loader.py",
+      "check": "Downloads and executes remote code",
+      "severity": "CRITICAL",
+      "evidence": "L646:             exec(compile(f.read(), conf_filename, \"exec\"), namespace, namespace)",
+      "evidence_hash": "98aa843deb66e5ee86c917c79f054bc0cefcbaa4e81702d75a873629580b7b28"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_save_export_regressions.py",
+      "check": "Writes to /tmp and executes (staged dropper)",
+      "severity": "CRITICAL",
+      "evidence": "L246:         temporary_location=\"/tmp/ignored\", sha256:8490a5315ad79cd319e5c5557b844fb7fd1ec8cfcc9f66bf195fca14fc8c2534",
+      "evidence_hash": "70468ab21abc3c38adc1a920e04e5b06a8fa2161aebef59b938f2778715a2d6a"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_compiler_decorated_forward.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L146:     compile(generated, \"<fake-bare-closure-codegen>\", \"exec\") | L206:     compile(generated, \"<fake-bare-closure-plain>\", \"exec\")\nExec: L181:     exec(generated, namespace)",
+      "evidence_hash": "c490dc739ffb2358a0693c338e90c324d17fc0906c99ac8894c97411e984eca8"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "tests/test_mlx_trainer_internals.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L2355:     assert ppl == pytest.approx(__import__(\"math\").exp(2.5))\nExec: L2333:         def eval(self): | L3164:         deepstack_visual_embeds = mx.eval([]) | L3294:             return grid_thw, mask, mx.eval([]) | L5704:             def eval(self):",
+      "evidence_hash": "d42950e5c98a4578d6dc588ab2cfcdde97934e1d55f8db9bb5babaa95c1a693a"
+    },
+    {
+      "package": "unsloth-zoo",
+      "file": "unsloth_zoo/mlx/loader.py",
+      "check": "Advanced obfuscation (marshal/compile/zlib) + exec/eval",
+      "severity": "HIGH",
+      "evidence": "Obfusc: L4096:             _mod = __import__(module_name, fromlist=[\"_\"])\nExec: L155:     mx.eval(model.parameters()) | L187:     mx.eval(model.parameters()) | L975:                 mx.eval(model.parameters()) | L976:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L1042:             mx.eval(model.parameters()) | L1045:                 mx.eval(mx.distributed.all_sum(mx.array(1.0), stream=mx.cpu)) | L3744:         model.eval() | L4483:         mx.eval(model.parameters()) | L4598:         mx.eval(module.weight) | L7241:                     lambda: mx.eval(model.parameters()), | L7301:                     lambda: mx.eval(model.parameters()), | L7463:                 mx.eval(model.parameters())",
+      "evidence_hash": "99be0b8b885c428ef382cdf98fe5cc7691a3fe65fdf2ff2d1ebfb3a152711dc0"
     }
   ]
 }

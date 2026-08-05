@@ -124,10 +124,12 @@ def apply_tool_strip_patterns(
 
 
 # Pre-compiled patterns for tool-call XML parsing.
-_TC_JSON_START_RE = re.compile(r"<tool_call>\s*\{")
+# <|content_invoke_tool_json|> is TML Inkling's native call marker; its JSON uses
+# an ``args`` key and the block closes with <|end_message|>.
+_TC_JSON_START_RE = re.compile(r"(?:<tool_call>|<\|content_invoke_tool_json\|>)\s*\{")
 _TC_GEMMA_START_RE = re.compile(r"<\|tool_call>\s*call\s*:\s*([\w.\-]+)\s*\{")
 _TC_FUNC_START_RE = re.compile(r"<function=([\w-]+)>\s*")
-_TC_END_TAG_RE = re.compile(r"</tool_call>")
+_TC_END_TAG_RE = re.compile(r"</tool_call>|<\|end_message\|>")
 _TC_GEMMA_END_TAG_RE = re.compile(r"<tool_call\|>")
 _TC_FUNC_CLOSE_RE = re.compile(r"\s*</function>\s*$")
 # Horizontal-whitespace trailing class keeps the wrapping newline; _trim_param_value trims it.
@@ -686,12 +688,24 @@ def parse_tool_calls_from_text(
             if kind == "json":
                 obj = json.loads(content[m.end() - 1 : brace_end + 1])
                 name = obj.get("name", "")
-                # Accept ``parameters`` alias for ``arguments`` (Llama-3.2 drift inside Hermes).
+                # Accept ``parameters`` alias for ``arguments`` (Llama-3.2 drift inside
+                # Hermes) and ``args`` (TML Inkling native calls).
                 arguments = obj.get("arguments")
                 if arguments is None:
-                    arguments = obj.get("parameters", {})
+                    arguments = obj.get("parameters")
+                if arguments is None:
+                    arguments = obj.get("args", {})
                 if isinstance(arguments, dict):
                     arguments = json.dumps(arguments)
+                # Inkling echoes the bare tool name (and a role opener) before the
+                # marker: <|message_model|>NAME<|content_invoke_tool_json|>{...}.
+                # Fold that echo into the markup span so promotion removes it too.
+                if name and content.startswith("<|content_invoke_tool_json|>", start):
+                    pre = content[:start]
+                    if pre.endswith(name):
+                        start -= len(name)
+                        if content[:start].endswith("<|message_model|>"):
+                            start -= len("<|message_model|>")
             else:
                 name = m.group(1)
                 arguments = json.dumps(_gemma_arguments_to_json(content[m.end() : brace_end]))

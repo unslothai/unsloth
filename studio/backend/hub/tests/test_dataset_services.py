@@ -72,57 +72,115 @@ def test_dataset_cache_scan_merges_raw_and_processed_rows(monkeypatch):
     assert rows[0]["partial"] is False
 
 
-def test_delete_cached_dataset_attempts_all_roots_before_raising(monkeypatch):
+def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_path):
+    """A dataset present in the active cache and a previously selected cache is
+    deleted only from the selected root, so the other cache's copy survives."""
     calls = []
-    purged_state = []
+    target_hub = tmp_path / "active" / "hub"
+    other_hub = tmp_path / "previous" / "hub"
+    for hub in (target_hub, other_hub):
+        (hub / "datasets--Org--Data").mkdir(parents = True)
 
     class _DeleteStrategy:
-        def __init__(self, label: str, fail: bool):
+        def __init__(self, label: str):
             self.label = label
-            self.fail = fail
 
         def execute(self):
             calls.append(self.label)
-            if self.fail:
-                raise RuntimeError(f"{self.label} failed")
 
-    class _Cache:
-        def __init__(self, label: str, fail: bool):
-            self.cache_dir = label
-            self.repos = [
+    def _cache(label: str, hub):
+        return SimpleNamespace(
+            cache_dir = label,
+            repos = [
                 SimpleNamespace(
                     repo_type = "dataset",
                     repo_id = "Org/Data",
+                    repo_path = str(hub / "datasets--Org--Data"),
                     revisions = [SimpleNamespace(commit_hash = f"{label}-rev")],
                 )
-            ]
-            self.fail = fail
-
-        def delete_revisions(self, *_revisions):
-            return _DeleteStrategy(self.cache_dir, self.fail)
+            ],
+            delete_revisions = lambda *_revs, _label = label: _DeleteStrategy(_label),
+        )
 
     monkeypatch.setattr(
         cache_inventory,
         "_collect_hf_cache_scans",
-        lambda: ([_Cache("first", True), _Cache("second", False)], set()),
+        lambda: ([_cache("active", target_hub), _cache("previous", other_hub)], set()),
     )
     monkeypatch.setattr(
         cache_inventory,
         "_delete_processed_dataset_cache",
-        lambda _repo_id: (True, []),
+        lambda _repo_id, **_kwargs: (False, []),
     )
     monkeypatch.setattr(
         cache_inventory.download_manifest,
         "purge_all_state_for_repo",
-        lambda *_args: purged_state.append(True) or 1,
+        lambda *_args, **_kwargs: 0,
+    )
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: SimpleNamespace(hub_cache = target_hub),
+    )
+    monkeypatch.setattr(
+        "hub.utils.hf_cache_state.hf_cache_roots",
+        lambda: [target_hub, other_hub],
     )
 
-    with pytest.raises(HTTPException) as exc_info:
-        cache_inventory._delete_cached_dataset_blocking("Org/Data")
+    result = cache_inventory._delete_cached_dataset_blocking("Org/Data")
 
-    assert exc_info.value.status_code == 500
-    assert calls == ["first", "second"]
-    assert purged_state == []
+    assert result == {"status": "deleted", "repo_id": "Org/Data"}
+    # Only the selected (active) cache's revision is deleted; the previous
+    # cache's copy is never touched.
+    assert calls == ["active"]
+    assert not (target_hub / "datasets--Org--Data").exists()
+    assert (other_hub / "datasets--Org--Data").exists()
+
+
+def test_delete_processed_only_dataset_accepts_processed_cache_path(monkeypatch, tmp_path):
+    """A processed-only dataset row sends its Arrow cache path (<owner>___<repo>
+    under HF_DATASETS_CACHE), which is not a Hub datasets-- dir. The delete must
+    accept it and run the processed-cache delete instead of raising 400."""
+    datasets_root = tmp_path / "datasets"
+    processed_dir = datasets_root / "Org___Data"
+    processed_dir.mkdir(parents = True)
+
+    # No Hub-cache copy exists; only the processed Arrow cache holds this repo.
+    monkeypatch.setattr(cache_inventory, "_collect_hf_cache_scans", lambda: ([], set()))
+    monkeypatch.setattr(cache_inventory, "_hf_datasets_cache_roots", lambda: [datasets_root])
+    processed_calls: list[str] = []
+    monkeypatch.setattr(
+        cache_inventory,
+        "_delete_processed_dataset_cache",
+        lambda repo_id, **_kwargs: (processed_calls.append(repo_id) or True, []),
+    )
+
+    result = cache_inventory._delete_cached_dataset_blocking("Org/Data", str(processed_dir))
+
+    assert result == {"status": "deleted", "repo_id": "Org/Data"}
+    assert processed_calls == ["Org/Data"]
+
+
+def test_delete_processed_dataset_scopes_to_selected_root(monkeypatch, tmp_path):
+    """A dataset processed under two HF_DATASETS_CACHE roots is deleted only from
+    the selected root; the copy under the other cache home survives (real delete,
+    not stubbed)."""
+    selected_root = tmp_path / "selected" / "datasets"
+    other_root = tmp_path / "other" / "datasets"
+    for root in (selected_root, other_root):
+        (root / "Org___Data").mkdir(parents = True)
+
+    monkeypatch.setattr(cache_inventory, "_collect_hf_cache_scans", lambda: ([], set()))
+    monkeypatch.setattr(
+        cache_inventory, "_hf_datasets_cache_roots", lambda: [selected_root, other_root]
+    )
+
+    result = cache_inventory._delete_cached_dataset_blocking(
+        "Org/Data", str(selected_root / "Org___Data")
+    )
+
+    assert result == {"status": "deleted", "repo_id": "Org/Data"}
+    assert not (selected_root / "Org___Data").exists()  # the selected copy is deleted
+    assert (other_root / "Org___Data").exists()  # the other cache home is untouched
 
 
 def test_delete_cached_dataset_purges_blob_only_repo_dir(monkeypatch):
@@ -139,22 +197,22 @@ def test_delete_cached_dataset_purges_blob_only_repo_dir(monkeypatch):
     monkeypatch.setattr(
         cache_inventory,
         "_delete_processed_dataset_cache",
-        lambda _repo_id: (False, []),
+        lambda _repo_id, **_kwargs: (False, []),
     )
     monkeypatch.setattr(
         cache_inventory,
         "purge_repo_cache_dirs",
-        lambda _repo_type, repo_id: purged_dirs.append(repo_id) or True,
+        lambda _repo_type, repo_id, **_kwargs: purged_dirs.append(repo_id) or True,
     )
     monkeypatch.setattr(
         cache_inventory,
         "purge_partial_repo",
-        lambda *_args: False,
+        lambda *_args, **_kwargs: False,
     )
     monkeypatch.setattr(
         cache_inventory.download_manifest,
         "purge_all_state_for_repo",
-        lambda *_args: 0,
+        lambda *_args, **_kwargs: 0,
     )
 
     result = cache_inventory._delete_cached_dataset_blocking("Org/Data")
@@ -172,22 +230,22 @@ def test_delete_cached_dataset_absent_everywhere_raises_404(monkeypatch):
     monkeypatch.setattr(
         cache_inventory,
         "_delete_processed_dataset_cache",
-        lambda _repo_id: (False, []),
+        lambda _repo_id, **_kwargs: (False, []),
     )
     monkeypatch.setattr(
         cache_inventory,
         "purge_repo_cache_dirs",
-        lambda *_args: False,
+        lambda *_args, **_kwargs: False,
     )
     monkeypatch.setattr(
         cache_inventory,
         "purge_partial_repo",
-        lambda *_args: False,
+        lambda *_args, **_kwargs: False,
     )
     monkeypatch.setattr(
         cache_inventory.download_manifest,
         "purge_all_state_for_repo",
-        lambda *_args: 0,
+        lambda *_args, **_kwargs: 0,
     )
 
     with pytest.raises(HTTPException) as exc_info:

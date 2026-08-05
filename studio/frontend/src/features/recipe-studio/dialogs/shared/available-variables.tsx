@@ -2,12 +2,12 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Badge } from "@/components/ui/badge";
-import { ArrowDown01Icon } from "@hugeicons/core-free-icons";
+import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { type ReactElement, useMemo, useState } from "react";
 import { useRecipeStudioStore } from "../../stores/recipe-studio";
-import { getAvailableVariableEntries } from "../../utils/variables";
 import { RECIPE_STUDIO_REFERENCE_BADGE_TONES } from "../../utils/ui-tones";
+import { getAvailableVariableEntries } from "../../utils/variables";
 
 type AvailableVariablesProps = {
   configId: string;
@@ -27,7 +27,10 @@ export function AvailableVariables({
   const [showUserFields, setShowUserFields] = useState(false);
   const configs = useRecipeStudioStore((state) => state.configs);
   const vars = getAvailableVariableEntries(configs, configId);
-  const variableNames = useMemo(() => new Set(vars.map((entry) => entry.name)), [vars]);
+  const variableNames = useMemo(
+    () => new Set(vars.map((entry) => entry.name)),
+    [vars],
+  );
   const hasUserRoot = variableNames.has("user");
   const userFieldEntries = useMemo(
     () =>
@@ -71,19 +74,22 @@ export function AvailableVariables({
               onClick={() => setShowUserFields((prev) => !prev)}
               className="cursor-pointer"
               aria-expanded={showUserFields}
-              aria-label={showUserFields ? "Hide user fields" : "Show user fields"}
+              aria-label={
+                showUserFields ? "Hide user fields" : "Show user fields"
+              }
             >
               <Badge variant="secondary" className={className}>
                 <span>{`{{ ${v.name} }}`}</span>
                 <HugeiconsIcon
-                  icon={ArrowDown01Icon}
+                  icon={ChevronDownStandardIcon}
                   className={`size-3 transition-transform ${showUserFields ? "rotate-180" : ""}`}
                 />
               </Badge>
             </button>
           );
         })}
-        {hasUserRoot && showUserFields &&
+        {hasUserRoot &&
+          showUserFields &&
           userFieldEntries.map((entry) => (
             <Badge
               key={`user-expanded:${entry.name}`}

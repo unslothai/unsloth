@@ -125,8 +125,9 @@ export function buildTrainingStartPayload(
     lora_dropout: config.loraDropout,
     target_modules: adapterMethod ? config.targetModules : [],
     gradient_checkpointing: config.gradientCheckpointing,
-    use_rslora: config.loraVariant === "rslora",
-    use_loftq: config.loraVariant === "loftq",
+    use_rslora: adapterMethod && config.loraVariant === "rslora",
+    use_loftq: adapterMethod && config.loraVariant === "loftq",
+    use_dora: adapterMethod && config.loraVariant === "dora",
     // CPT always trains on full sequences (no chat format masking)
     train_on_completions: (isEmbedding || isCpt || isRawText) ? false : config.trainOnCompletions,
     finetune_vision_layers: config.finetuneVisionLayers,

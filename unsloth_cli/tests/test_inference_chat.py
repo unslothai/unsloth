@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import inspect
+import json
 import sys
 import types
 from pathlib import Path
@@ -372,7 +373,7 @@ def test_find_studio_server_none_when_not_running(monkeypatch):
 
 
 def test_find_studio_server_prefers_ipv4_loopback_for_localhost(monkeypatch):
-    # localhost resolving ::1-first must not hide a Studio bound to 127.0.0.1:
+    # localhost resolving ::1-first must not hide an Unsloth bound to 127.0.0.1:
     # discovery tries each loopback address and returns the one that answers.
     import socket
     import urllib.request
@@ -435,13 +436,29 @@ def test_http_backend_streams_cumulative_text(monkeypatch):
     assert out == ["He", "Hello"]
 
 
+class _FakeLoadResponse:
+    """A /api/inference/load reply that records whether its body was drained.
+
+    Closing a padded body at the headers resumes before the load finishes and discards
+    a late failure, so the fake must distinguish read() from close().
+    """
+
+    def __init__(self, body: bytes = b'{"status": "loaded"}') -> None:
+        self._body = body
+        self.reads = 0
+        self.closed = False
+
+    def read(self) -> bytes:
+        self.reads += 1
+        return self._body
+
+    def close(self) -> None:
+        self.closed = True
+
+
 def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
     backend = HttpChatBackend("http://localhost:8888", "token")
     requests = []
-
-    class _OK:
-        def close(self):
-            pass
 
     def fake_request(
         method,
@@ -450,7 +467,7 @@ def test_http_backend_load_forwards_gguf_runtime_options(monkeypatch):
         timeout = None,
     ):
         requests.append((method, path, payload, timeout))
-        return _OK()
+        return _FakeLoadResponse()
 
     monkeypatch.setattr(backend, "_request", fake_request)
 
@@ -484,16 +501,12 @@ def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
     backend = HttpChatBackend("http://localhost:8888", "token")
     requests = []
 
-    class _OK:
-        def close(self):
-            pass
-
     monkeypatch.setattr(
         backend,
         "_request",
         lambda method, path, payload = None, timeout = None: (
             requests.append((method, path, payload, timeout)),
-            _OK(),
+            _FakeLoadResponse(),
         )[1],
     )
 
@@ -508,17 +521,185 @@ def test_http_backend_load_sends_explicit_false_tensor_parallel(monkeypatch):
     assert requests[0][2]["tensor_parallel"] is False
 
 
-def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
+# ── A load slower than the proxy timer (see routes/inference.py _tunnel_safe_json) ──
+
+
+def test_http_backend_load_drains_the_padded_body(monkeypatch):
+    """Closing at the headers would start generating while the model is still loading."""
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    # What a padded slow load looks like on the wire: spaces, then the payload.
+    response = _FakeLoadResponse(b'   {"status": "loaded"}')
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
+
+    backend.ensure_loaded(
+        "org/model-GGUF",
+        hf_token = None,
+        max_seq_length = 4096,
+        load_in_4bit = True,
+    )
+
+    assert response.reads == 1, "the padded body must be drained, not closed at the headers"
+    assert response.closed
+
+
+def test_http_backend_load_fails_on_a_deferred_error(monkeypatch, capsys):
+    """A failure found after the 200 committed rides in the body; a 200 is not success."""
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    response = _FakeLoadResponse(
+        json.dumps(
+            {"_deferred_error": {"status_code": 507, "detail": "CUDA out of memory"}}
+        ).encode()
+    )
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        backend.ensure_loaded(
+            "org/model-GGUF",
+            hf_token = None,
+            max_seq_length = 4096,
+            load_in_4bit = True,
+        )
+
+    # Same exit code as an early HTTP failure: ensure_loaded's except block is reused.
+    assert excinfo.value.exit_code == 1
+    err = capsys.readouterr().err
+    assert "Model load failed" in err
+    assert "507" in err and "CUDA out of memory" in err
+
+
+@pytest.mark.parametrize(
+    ("body", "what"),
+    [
+        (b"", "an empty body"),
+        (b"   ", "pad bytes only"),
+        (b'  {"status": "loa', "a payload cut in half"),
+        (b"null", "a literal null"),
+        (b"{}", "an empty object"),
+    ],
+)
+def test_http_backend_load_rejects_a_truncated_padded_body(monkeypatch, capsys, body, what):
+    """A proxy that gives up mid-pad leaves a 200 the padded route never finished.
+
+    Measured: one byte at t=90s then silence is killed ~125s later and the client sees
+    a 200 with an EMPTY body. Accepting it reports an unfinished load as done.
+    """
+    backend = HttpChatBackend("http://localhost:8888", "token")
+    response = _FakeLoadResponse(body)
+    monkeypatch.setattr(backend, "_request", lambda *a, **k: response)
+
+    with pytest.raises(typer.Exit) as excinfo:
+        backend.ensure_loaded(
+            "org/model-GGUF",
+            hf_token = None,
+            max_seq_length = 4096,
+            load_in_4bit = True,
+        )
+
+    assert excinfo.value.exit_code == 1, what
+    err = capsys.readouterr().err
+    assert "Model load failed" in err
+    assert "did not report completion" in err
+    # Still drained, so the load is not abandoned at the headers.
+    assert response.reads == 1 and response.closed
+
+
+def test_padded_body_helper_passes_a_real_payload_through():
+    from unsloth_cli._inference import require_completed_padded_body
+
+    body = {"status": "loaded", "model": "org/model-GGUF"}
+    assert require_completed_padded_body("http://x/api/inference/load", body) is body
+    assert require_completed_padded_body("http://x", {"status": "unloaded"}) == {
+        "status": "unloaded"
+    }
+
+
+def test_padded_body_helper_names_the_route_and_the_recovery():
+    from unsloth_cli._inference import require_completed_padded_body
+    url = "http://x/api/inference/load"
+    for body in (None, {}, [], "", 0, "loaded"):
+        with pytest.raises(RuntimeError) as excinfo:
+            require_completed_padded_body(url, body)
+        message = str(excinfo.value)
+        assert message.startswith(f"{url} did not report completion")
+        assert "Check the model's status" in message
+
+
+def test_deferred_error_helper_passes_a_normal_body_through():
+    from unsloth_cli._inference import raise_for_deferred_error
+
+    body = {"status": "loaded", "model": "org/model-GGUF"}
+    assert raise_for_deferred_error("http://x/api/inference/load", body) is body
+    # Not a dict, and a look-alike that is not the documented shape, both pass.
+    assert raise_for_deferred_error("http://x", [1, 2]) == [1, 2]
+    assert raise_for_deferred_error("http://x", {"_deferred_error": None}) == {
+        "_deferred_error": None
+    }
+
+
+def test_deferred_error_helper_reads_like_a_real_error_response():
+    """Callers recover the detail with exc.read(), exactly as for a real 5xx."""
+    import urllib.error
+
+    from unsloth_cli._inference import raise_for_deferred_error
+
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        raise_for_deferred_error(
+            "http://x/api/inference/load",
+            {"_deferred_error": {"status_code": 500, "detail": "llama-server died"}},
+        )
+    exc = excinfo.value
+    assert exc.code == 500
+    assert json.loads(exc.read().decode()) == {"detail": "llama-server died"}
+    assert "llama-server died" in str(exc)
+
+
+def test_deferred_error_helper_defaults_a_missing_status():
+    import urllib.error
+
+    from unsloth_cli._inference import raise_for_deferred_error
+
+    with pytest.raises(urllib.error.HTTPError) as excinfo:
+        raise_for_deferred_error("http://x", {"_deferred_error": {}})
+    assert excinfo.value.code == 500
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_source"),
+    [
+        (
+            {"gguf_hf_repo": "org/model-GGUF"},
+            {"hf_repo": "org/model-GGUF", "hf_token": "hf_x"},
+        ),
+        (
+            {
+                "gguf_hf_repo": None,
+                "gguf_file": "/models/model.gguf",
+                "gguf_mmproj_file": "/models/mmproj.gguf",
+                "gguf_mtp_file": "/models/mtp.gguf",
+            },
+            {
+                "gguf_path": "/models/model.gguf",
+                "mmproj_path": "/models/mmproj.gguf",
+                "mtp_draft_path": "/models/mtp.gguf",
+            },
+        ),
+    ],
+    ids = ("hugging-face", "local"),
+)
+def test_load_gguf_backend_forwards_source_and_runtime_options(
+    monkeypatch, source, expected_source
+):
     import unsloth_cli._inference as inference
 
     calls = []
 
     class _FakeLlamaCppBackend:
-        def load_model(self, **kwargs):
-            calls.append(kwargs)
+        def load_model(self, intent):
+            calls.append(intent)
             return True
 
     fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.GgufLoadIntent = lambda **kwargs: SimpleNamespace(**kwargs)
     fake_llama_cpp.LlamaCppBackend = _FakeLlamaCppBackend
     fake_args = types.ModuleType("core.inference.llama_server_args")
     fake_args.validate_extra_args = lambda args: list(args or [])
@@ -547,7 +728,7 @@ def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
         gguf_variant = "Q4_K_M",
         identifier = "org/model-GGUF",
         is_vision = False,
-        gguf_hf_repo = "org/model-GGUF",
+        **source,
     )
 
     backend = inference._load_gguf_backend(
@@ -559,16 +740,15 @@ def test_load_gguf_backend_forwards_local_runtime_options(monkeypatch):
     )
 
     assert isinstance(backend, ChatBackend)
-    assert calls == [
+    assert [vars(intent) for intent in calls] == [
         {
-            "hf_repo": "org/model-GGUF",
-            "hf_token": "hf_x",
             "hf_variant": "Q4_K_M",
             "model_identifier": "org/model-GGUF",
             "is_vision": False,
             "n_ctx": 8192,
             "tensor_parallel": True,
             "extra_args": ["--top-k", "20"],
+            **expected_source,
         }
     ]
 
@@ -577,6 +757,7 @@ def test_load_gguf_backend_exits_cleanly_on_invalid_extra_args(monkeypatch):
     import unsloth_cli._inference as inference
 
     fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.GgufLoadIntent = object
     fake_llama_cpp.LlamaCppBackend = object
     fake_args = types.ModuleType("core.inference.llama_server_args")
 
@@ -619,11 +800,12 @@ def test_load_gguf_backend_uses_tensor_fallback(monkeypatch):
     fallback_calls = []
 
     class _FakeLlamaCppBackend:
-        def load_model(self, **kwargs):
-            calls.append(kwargs)
-            return kwargs["tensor_parallel"] is False
+        def load_model(self, intent):
+            calls.append(intent)
+            return intent.tensor_parallel is False
 
     fake_llama_cpp = types.ModuleType("core.inference.llama_cpp")
+    fake_llama_cpp.GgufLoadIntent = lambda **kwargs: SimpleNamespace(**kwargs)
     fake_llama_cpp.LlamaCppBackend = _FakeLlamaCppBackend
     fake_args = types.ModuleType("core.inference.llama_server_args")
     fake_args.validate_extra_args = lambda args: list(args or [])
@@ -668,8 +850,8 @@ def test_load_gguf_backend_uses_tensor_fallback(monkeypatch):
 
     assert isinstance(backend, ChatBackend)
     assert fallback_calls == [(True, [], "org/model-GGUF")]
-    assert [call["tensor_parallel"] for call in calls] == [True, False]
-    assert calls[1]["extra_args"] == ["--split-mode", "layer"]
+    assert [intent.tensor_parallel for intent in calls] == [True, False]
+    assert calls[1].extra_args == ["--split-mode", "layer"]
 
 
 def test_http_backend_merges_emoji_split_across_deltas(monkeypatch):
@@ -871,6 +1053,104 @@ def test_chat_compare_on_mlx_loads_base_model_side_by_side(monkeypatch):
     assert loads == [("tuned-run", False), ("fake/base", True)]
     assert ("base", None) in streamed and ("tuned", None) in streamed
     assert set(closed) == {"tuned", "base"}
+
+
+@pytest.mark.parametrize(
+    ("chunk_kind", "expected_exit"),
+    [
+        ("answer", 0),
+        ("model_text_error", 0),
+        ("real_error", 1),
+    ],
+)
+def test_inference_local_handles_stream(monkeypatch, chunk_kind, expected_exit):
+    from unsloth_cli.commands import inference as infermod
+    from unsloth_cli._inference import ensure_studio_backend_path
+
+    ensure_studio_backend_path()
+    from core.inference.orchestrator import GenStreamError
+
+    chunks = {
+        "answer": ["answer"],
+        "model_text_error": ["Error: printed by the model, not a backend failure"],
+        "real_error": [GenStreamError("Error: generation failed")],
+    }[chunk_kind]
+    closed = []
+
+    class _FakeBackend:
+        def stream(self, messages, **kwargs):
+            return iter(chunks)
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(
+        infermod,
+        "connect_studio_server",
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("server disabled")),
+    )
+    monkeypatch.setattr(infermod, "load_chat_backend", lambda *a, **k: _FakeBackend())
+
+    result = CliRunner().invoke(
+        _inference_app(),
+        ["fake-model", "hello", "--no-server"],
+    )
+
+    assert result.exit_code == expected_exit, result.output
+    assert closed == [True]
+    if chunk_kind == "real_error":
+        assert result.stdout == "Assistant:\n"
+        assert result.stderr == "Error: generation failed\n"
+    else:
+        assert chunks[0] in result.output
+
+
+@pytest.mark.parametrize("chunk_kind", ["answer", "model_text_error", "real_error"])
+def test_chat_local_handles_stream(monkeypatch, chunk_kind):
+    from unsloth_cli._inference import ensure_studio_backend_path
+
+    ensure_studio_backend_path()
+    from core.inference.orchestrator import GenStreamError
+
+    first_chunk = {
+        "answer": "answer",
+        "model_text_error": "Error: printed by the model, not a backend failure",
+        "real_error": GenStreamError("Error: generation failed"),
+    }[chunk_kind]
+    calls, closed = [], []
+
+    class _FakeChatBackend:
+        def stream(self, messages, **kwargs):
+            calls.append([dict(message) for message in messages])
+            return iter([first_chunk if len(calls) == 1 else "second answer"])
+
+        def close(self):
+            closed.append(True)
+
+    monkeypatch.setattr(chatmod, "resolve_model_config", lambda *a, **k: _FakeConfig())
+    monkeypatch.setattr(chatmod, "connect_studio_server", lambda *a, **k: None)
+    monkeypatch.setattr(chatmod, "load_chat_backend", lambda *a, **k: _FakeChatBackend())
+    monkeypatch.setattr(chatmod, "_compare_needs_second_model", lambda: False)
+
+    result = CliRunner().invoke(
+        _chat_app(),
+        ["fake-model"],
+        input = "first\nsecond\n/exit\n",
+    )
+
+    assert result.exit_code == 0, result.output
+    assert closed == [True]
+    if chunk_kind == "real_error":
+        assert calls[1] == [{"role": "user", "content": "second"}]
+        assert "(error: generation failed)" in result.output
+        assert "Error: generation failed" not in result.output
+    else:
+        assert calls[1] == [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": first_chunk},
+            {"role": "user", "content": "second"},
+        ]
+        assert first_chunk in result.output
 
 
 @pytest.mark.parametrize(

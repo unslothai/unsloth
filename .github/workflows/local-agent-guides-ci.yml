@@ -154,7 +154,7 @@ jobs:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Gated off PR (see note above); public GGUF still downloads.
@@ -167,7 +167,9 @@ jobs:
       # ── boot the server under test (factored helper) ──────────────────
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
-          unsloth studio reset-password
+          # Wipe, not reset-password: since #7573 the reset rotates in place and
+          # prints the new passphrase, which would land unmasked in the job log.
+          rm -rf ~/.unsloth/studio/auth
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
             --port "$STUDIO_PORT" --log-dir logs \
@@ -256,7 +258,7 @@ jobs:
             done
           fi
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           # Guard the PID: an unset/zero UNSLOTH_SERVER_PID would make
@@ -359,7 +361,7 @@ jobs:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Gated off PR (see note above); public GGUF still downloads.
@@ -371,7 +373,7 @@ jobs:
 
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
             --port "$STUDIO_PORT" --log-dir logs \
@@ -448,7 +450,7 @@ jobs:
             done
           fi
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           # Guard the PID: an unset/zero UNSLOTH_SERVER_PID would make
@@ -543,7 +545,7 @@ jobs:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
@@ -554,7 +556,7 @@ jobs:
 
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           bash .github/scripts/serve-unsloth-run.sh \
             --gguf-file "$GITHUB_WORKSPACE/gguf-cache/${GGUF_FILE}" \
             --port "$STUDIO_PORT" --log-dir logs \
@@ -620,7 +622,7 @@ jobs:
             done
           fi
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           if [ -n "${UNSLOTH_SERVER_PID:-}" ] && [ "${UNSLOTH_SERVER_PID}" != "0" ]; then
@@ -706,7 +708,7 @@ jobs:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
-      - name: Install Studio (--local, --no-torch)
+      - name: Install Unsloth (--local, --no-torch)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Gated off PR (see note above); public GGUF still downloads.
@@ -718,7 +720,7 @@ jobs:
 
       - name: Serve unsloth run --disable-tools (gemma-3-270m)
         run: |
-          unsloth studio reset-password
+          rm -rf ~/.unsloth/studio/auth
           bash .github/scripts/serve-unsloth-run.sh \
             --model "$GGUF_REPO" --gguf-variant "$GGUF_VARIANT" \
             --port "$STUDIO_PORT" --log-dir logs \
@@ -764,7 +766,7 @@ jobs:
             done
           fi
 
-      - name: Stop Studio
+      - name: Stop Unsloth
         if: always()
         run: |
           # Guard the PID: an unset/zero UNSLOTH_SERVER_PID would make

@@ -16,6 +16,11 @@ import os, importlib.util, platform
 
 os.environ["UNSLOTH_IS_PRESENT"] = "1"
 
+# Relax Metal's context-store timeout before MLX modules can initialize Metal.
+# Keep an explicit user value authoritative.
+if platform.system() == "Darwin" and platform.machine() == "arm64":
+    os.environ.setdefault("AGX_RELAX_CDM_CTXSTORE_TIMEOUT", "1")
+
 # ── Windows console UTF-8 safety ─────────────────────────────────────────────
 # Legacy Windows consoles (cp1252) can't encode Unsloth's emoji/box-drawing
 # glyphs and crash with UnicodeEncodeError. Force stdout/stderr to UTF-8 only on

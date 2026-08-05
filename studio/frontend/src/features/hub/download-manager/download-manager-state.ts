@@ -12,6 +12,7 @@ import {
   DOWNLOAD_KIND,
   type DownloadKind,
   isDownloadKind,
+  isResolvedTransport,
 } from "./constants";
 import {
   ACTIVE_STATES,
@@ -71,6 +72,16 @@ function sanitizePersistedJob(value: unknown): ManagedDownload | null {
     ...(Number.isSafeInteger(value.serverGeneration)
       ? { serverGeneration: Number(value.serverGeneration) }
       : {}),
+    ...(Array.isArray(value.scopedFiles) &&
+    value.scopedFiles.every((f) => typeof f === "string")
+      ? { scopedFiles: value.scopedFiles as string[] }
+      : {}),
+    ...(isResolvedTransport(value.transport)
+      ? { transport: value.transport }
+      : {}),
+    ...(isResolvedTransport(value.cancelTransport)
+      ? { cancelTransport: value.cancelTransport }
+      : {}),
   };
 }
 
@@ -108,6 +119,14 @@ function toPersistedJob(
     startedAt: job.startedAt,
     ...(job.serverGeneration !== undefined
       ? { serverGeneration: job.serverGeneration }
+      : {}),
+    ...(job.scopedFiles !== undefined ? { scopedFiles: job.scopedFiles } : {}),
+    ...(job.transport !== undefined ? { transport: job.transport } : {}),
+    // Alongside the transport, never instead of it: a fallback run reads as
+    // plain HTTP without this and the reloaded card offers Pause for a stop
+    // that leaves a restart-only partial.
+    ...(job.cancelTransport !== undefined
+      ? { cancelTransport: job.cancelTransport }
       : {}),
   };
 }
@@ -167,6 +186,10 @@ function collectCompletedInventoryHints(
 ): InventoryHint[] {
   return Object.values(jobs).flatMap((job) => {
     if (job.state !== "complete") return [];
+    // A dictation download is not a chat model arriving. A custom Whisper repo
+    // is only hidden once the backend has scanned its config, so an optimistic
+    // hint would surface it in the chat inventory for the hint's whole TTL.
+    if (job.external) return [];
     const kind = completedInventoryHintKind(job.kind, job.variant);
     if (
       runtimeRegistry.suppressedCompletedInventoryHints.has(
@@ -219,7 +242,8 @@ export const useDownloadManagerStore = create<DownloadManagerState>()(
     partialize: (state) => ({
       jobs: Object.fromEntries(
         Object.entries(state.jobs)
-          .filter(([, job]) => ACTIVE_STATES.has(job.state))
+          // External jobs have no hub job to resume into, so they are not saved.
+          .filter(([, job]) => !job.external && ACTIVE_STATES.has(job.state))
           .map(([key, job]) => [key, toPersistedJob(job)] as const),
       ),
       conflicts: {},

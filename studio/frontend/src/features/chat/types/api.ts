@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -33,6 +35,11 @@ export interface ListLorasResponse {
 
 export interface LoadModelRequest {
   model_path: string;
+  /**
+     * Stop any chats still generating instead of getting a 409: a load replaces the single
+     * llama-server they all decode on. Set only after the user confirms.
+     */
+  force_cancel_active?: boolean;
   nativePathLease?: string | null;
   hf_token: string | null;
   max_seq_length: number;
@@ -59,10 +66,27 @@ export interface LoadModelRequest {
    */
   spec_draft_n_max?: number | null;
   /**
+   * Parallel decode slots for llama-server (--parallel), 1..64. Omit/null =
+   * the launch default. The VRAM fitter may launch fewer to stay on GPU.
+   */
+  n_parallel?: number | null;
+  /**
    * Split the model across GPUs by tensor (--split-mode tensor) instead
    * of by layer for GGUF models. Multi-GPU only; no effect on a single GPU.
    */
   tensor_parallel?: boolean | null;
+  /** GPU memory strategy for GGUF models. "auto" (default): Unsloth selects GPUs
+   *  and caps context to fit VRAM. "manual": you own the offload -- gpu_layers
+   *  -1 (Auto) hands sizing to llama.cpp's --fit, >= 0 pins layers/n_cpu_moe. */
+  gpu_memory_mode?: "auto" | "manual";
+  /** Manual mode: layers to offload to GPU (--gpu-layers, --fit off); -1 = Auto (--fit). */
+  gpu_layers?: number;
+  /** Manual mode: MoE expert layers to keep on CPU (--n-cpu-moe); 0 = none. */
+  n_cpu_moe?: number;
+  /** Manual mode: relative model share per GPU (--tensor-split), in GPU order. */
+  tensor_split?: number[] | null;
+  /** Picked CUDA/ROCm physical IDs or Vulkan ordinals (omit/empty = automatic). */
+  gpu_ids?: number[];
 }
 
 export interface ValidateModelResponse {
@@ -71,6 +95,10 @@ export interface ValidateModelResponse {
   identifier?: string | null;
   display_name?: string | null;
   is_gguf?: boolean;
+  is_diffusion?: boolean;
+  /** The diffusion check was inconclusive, so `is_diffusion: false` above means
+   *  "not known to be diffusion", not "known to be ordinary". */
+  diffusion_unknown?: boolean;
   is_lora?: boolean;
   is_vision?: boolean;
   requires_trust_remote_code?: boolean;
@@ -78,6 +106,20 @@ export interface ValidateModelResponse {
   requires_security_review?: boolean;
   /** Native context length from the local GGUF header; null until downloaded. */
   context_length?: number | null;
+  /** Total layer count (GGUF block_count); the manual gpu-layers ceiling is
+   * this + 1 (llama.cpp counts the output layer as offloadable too); null
+   *  until downloaded. */
+  layer_count?: number | null;
+  /** MoE expert-layer count from the GGUF header (manual --n-cpu-moe ceiling);
+   *  0 for dense models, null until downloaded. */
+  moe_layer_count?: number | null;
+  /** Embedded GGUF chat template, returned when include_chat_template is set
+   *  (native lease-backed picks); null for non-GGUF, over-cap, or not read. */
+  chat_template?: string | null;
+  /** Architecture only shipped by a newer transformers; UI pauses on the upgrade dialog. */
+  requires_transformers_upgrade?: boolean;
+  /** Set only when requires_transformers_upgrade. */
+  transformers_upgrade?: TransformersUpgradeInfo | null;
 }
 
 export interface GgufVariantDetail {
@@ -87,6 +129,8 @@ export interface GgufVariantDetail {
   download_size_bytes?: number;
   downloaded?: boolean;
   update_available?: boolean;
+  /** An interrupted download: some shards are missing, so it cannot load yet. */
+  partial?: boolean;
 }
 
 export interface GgufVariantsResponse {
@@ -124,7 +168,12 @@ export interface LoadModelResponse {
   is_vision: boolean;
   is_lora: boolean;
   is_gguf?: boolean;
+  is_local_model?: boolean;
   is_diffusion?: boolean;
+  /** GPU-layer count the diffusion runner was ASKED for, when it differs from what
+   *  it applied: a shim without --ngl runs Auto, so gpu_layers reports -1 while
+   *  this carries the standing request. */
+  diffusion_requested_ngl?: number | null;
   is_audio?: boolean;
   audio_type?: string | null;
   has_audio_input?: boolean;
@@ -141,7 +190,10 @@ export interface LoadModelResponse {
   max_context_length?: number | null;
   native_context_length?: number | null;
   supports_reasoning?: boolean;
-  reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoning_style?:
+    | "enable_thinking"
+    | "reasoning_effort"
+    | "enable_thinking_effort";
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
@@ -153,10 +205,30 @@ export interface LoadModelResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  gpu_memory_mode?: "auto" | "manual";
+  gpu_layers?: number;
+  n_cpu_moe?: number;
+  tensor_split?: number[] | null;
+  n_layers?: number | null;
+  /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
+  n_moe_layers?: number;
+  /** Effective GPU placement after fit-time narrowing. */
+  gpu_ids?: number[] | null;
+  /** User-requested GPU placement pool before fit-time narrowing. */
+  requested_gpu_ids?: number[] | null;
+  /** Slots the load was invoked with (else the --parallel default). Null for
+   * non-GGUF loads. */
+  requested_parallel_slots?: number | null;
+  /** Slots llama-server actually runs, after any fit-time reduction. Null for
+   * non-GGUF loads. */
+  parallel_slots?: number | null;
 }
 
 export interface UnloadModelRequest {
   model_path: string;
+  /** Stop any chats still generating instead of getting a 409: the unload takes down the
+   * llama-server they all decode on. */
+  force_cancel_active?: boolean;
 }
 
 export interface InferenceStatusResponse {
@@ -164,7 +236,12 @@ export interface InferenceStatusResponse {
   model_identifier?: string | null;
   is_vision: boolean;
   is_gguf?: boolean;
+  is_local_model?: boolean;
   is_diffusion?: boolean;
+  /** GPU-layer count the diffusion runner was ASKED for, when it differs from what
+   *  it applied: a shim without --ngl runs Auto, so gpu_layers reports -1 while
+   *  this carries the standing request. */
+  diffusion_requested_ngl?: number | null;
   gguf_variant?: string | null;
   is_audio?: boolean;
   audio_type?: string | null;
@@ -181,7 +258,10 @@ export interface InferenceStatusResponse {
   } | null;
   requires_trust_remote_code?: boolean;
   supports_reasoning?: boolean;
-  reasoning_style?: "enable_thinking" | "reasoning_effort" | "enable_thinking_effort";
+  reasoning_style?:
+    | "enable_thinking"
+    | "reasoning_effort"
+    | "enable_thinking_effort";
   reasoning_effort_levels?: string[];
   reasoning_always_on?: boolean;
   supports_preserve_thinking?: boolean;
@@ -197,6 +277,26 @@ export interface InferenceStatusResponse {
   spec_draft_n_max?: number | null;
   /** Whether tensor-parallel split (--split-mode tensor) is active. */
   tensor_parallel?: boolean;
+  gpu_memory_mode?: "auto" | "manual";
+  gpu_layers?: number;
+  n_cpu_moe?: number;
+  tensor_split?: number[] | null;
+  /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a
+   * Manual + Auto-layers context pin on hydration. Null for non-GGUF. */
+  requested_context_length?: number | null;
+  /** Effective GPU placement after fit-time narrowing. */
+  gpu_ids?: number[] | null;
+  /** User-requested GPU placement pool before fit-time narrowing. */
+  requested_gpu_ids?: number[] | null;
+  /** Slots the active load was invoked with (else the --parallel default).
+   * Null when no GGUF model is loaded. */
+  requested_parallel_slots?: number | null;
+  /** Slots llama-server actually runs, after any fit-time reduction. Null when
+   * no GGUF model is loaded. */
+  parallel_slots?: number | null;
+  n_layers?: number | null;
+  /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
+  n_moe_layers?: number;
   /**
    * Why MTP was disabled on the loaded model despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
@@ -215,6 +315,8 @@ export interface ApiMonitorEntry {
   model: string;
   prompt?: string;
   reply?: string;
+  // True for API-key callers, not UI sessions: the panel auto-opens off this.
+  via_api_key: boolean;
   prompt_preview: string;
   reply_preview: string;
   prompt_truncated: boolean;
@@ -230,13 +332,24 @@ export interface ApiMonitorEntry {
   completion_tokens?: number | null;
   total_tokens?: number | null;
   error?: string | null;
+  // "lifecycle" is a model load/unload/download: event/reason instead of a prompt.
+  kind?: "request" | "lifecycle";
+  event?: "load" | "unload" | "download" | null;
+  reason?: "manual" | "idle" | "api" | null;
+  // 0-100 while a download row is running.
+  progress?: number | null;
 }
 
 export interface ApiMonitorResponse {
   status: "idle" | "ready" | "generating";
+  // Server wall clock (seconds) at snapshot, so started_at can be dated without trusting
+  // the browser's clock. Absent on a backend older than the field.
+  server_time?: number;
   active_model?: string | null;
   context_length?: number | null;
   active_requests: number;
+  /** Absent on older backends -- treat only an explicit `false` as disabled. */
+  logging_enabled?: boolean;
   entries: ApiMonitorEntry[];
 }
 
@@ -336,13 +449,22 @@ export interface OpenAIChatCompletionsRequest {
     | "xhigh"
     | null;
   preserve_thinking?: boolean | null;
-  thinking?: {type: "disabled" | "enabled";} | null;
+  thinking?: { type: "disabled" | "enabled" } | null;
   enable_tools?: boolean | null;
   enabled_tools?: string[];
   /** Local models + enable_tools only. */
   mcp_enabled?: boolean;
   /** Local models + enable_tools only. */
   confirm_tool_calls?: boolean;
+  /**
+   * Local models + enable_tools only. Gate level for local tool calls: "ask"
+   * prompts on every call, "auto" prompts only on calls flagged unsafe, "off"
+   * never prompts, "full" never prompts and drops the sandbox. Unset behaves
+   * as "ask".
+   */
+  permission_mode?: "ask" | "auto" | "off" | "full";
+  /** Local models + enable_tools only. Full-access escape hatch. */
+  bypass_permissions?: boolean;
   /** `kb_id` is exclusive; otherwise project and thread scopes may combine. */
   rag_scope?: {
     kb_id?: string;

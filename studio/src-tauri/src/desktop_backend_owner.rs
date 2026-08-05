@@ -14,6 +14,9 @@ static TEST_METADATA: std::sync::Mutex<Option<DesktopBackendMetadata>> =
 
 pub(crate) const OWNER_TOKEN_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_TOKEN";
 pub(crate) const OWNER_KIND_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_KIND";
+// The app's own pid, so the backend can watch the exact owner process instead
+// of sampling getppid (racy under a subreaper when the app dies mid-startup).
+pub(crate) const OWNER_PID_ENV: &str = "UNSLOTH_STUDIO_DESKTOP_OWNER_PID";
 pub(crate) const OWNER_KIND_TAURI: &str = "tauri";
 
 const METADATA_SCHEMA_VERSION: u8 = 1;
@@ -528,7 +531,7 @@ fn lifecycle_control_block_reason(liveness: &DesktopLiveness) -> Option<String> 
         return Some("desktop_auth_unsupported".to_string());
     }
     if liveness.desktop_manageability_version.unwrap_or(0)
-        < crate::preflight::DESKTOP_MANAGEABILITY_VERSION
+        < crate::preflight::DESKTOP_BACKEND_MANAGEABILITY_VERSION
     {
         return Some("desktop_manageability_unsupported".to_string());
     }
@@ -548,17 +551,37 @@ fn ready_for_use_status(health: Option<&HealthResponse>) -> OwnedBackendReadines
     }
 }
 
-async fn health_ready_status(port: u16) -> OwnedBackendReadiness {
-    match fetch_health(port).await {
-        Ok(health) => ready_for_use_status(health.as_ref()),
-        Err(reason) => OwnedBackendReadiness::Stale { reason },
+async fn health_ready_status(
+    port: u16,
+    access_token: Option<&str>,
+) -> Result<OwnedBackendReadiness, String> {
+    match fetch_health(port, access_token).await {
+        Ok(health) => {
+            let authenticated_version = health
+                .as_ref()
+                .and_then(|health| health.version.as_deref())
+                .filter(|version| !version.is_empty());
+            if access_token.is_some() {
+                let Some(version) = authenticated_version else {
+                    return Err("desktop_auth_health_unverified".to_string());
+                };
+                return match crate::preflight::backend_version_stale_reason(Some(version)) {
+                    None => Ok(OwnedBackendReadiness::Ready),
+                    Some(reason) if reason == "desktop_backend_version_too_old" => {
+                        Ok(OwnedBackendReadiness::Stale { reason })
+                    }
+                    Some(reason) => Err(reason),
+                };
+            }
+            Ok(ready_for_use_status(health.as_ref()))
+        }
+        Err(reason) if access_token.is_some() => Err(reason),
+        Err(reason) => Ok(OwnedBackendReadiness::Stale { reason }),
     }
 }
 
 async fn fetch_liveness(port: u16) -> Result<Option<DesktopLiveness>, reqwest::Error> {
-    let client = reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()?;
+    let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT)?;
     for path in ["/api/liveness", "/api/health"] {
         let response = client
             .get(format!("http://127.0.0.1:{port}{path}"))
@@ -590,16 +613,24 @@ fn fetch_liveness_blocking(port: u16) -> Result<Option<DesktopLiveness>, String>
     }
     Ok(None)
 }
-async fn fetch_health(port: u16) -> Result<Option<HealthResponse>, String> {
-    let client = reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
-    let response = client
-        .get(format!("http://127.0.0.1:{port}/api/health"))
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
+async fn fetch_health(
+    port: u16,
+    access_token: Option<&str>,
+) -> Result<Option<HealthResponse>, String> {
+    let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT).map_err(|e| e.to_string())?;
+    let mut request = client.get(format!("http://127.0.0.1:{port}/api/health"));
+    if let Some(access_token) = access_token {
+        request = request.bearer_auth(access_token);
+    }
+    let response = request.send().await.map_err(|e| e.to_string())?;
+    if access_token.is_some()
+        && matches!(
+            response.status(),
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        )
+    {
+        return Err("desktop_auth_token_rejected".to_string());
+    }
     if !response.status().is_success() {
         return Ok(None);
     }
@@ -611,10 +642,7 @@ async fn fetch_health(port: u16) -> Result<Option<HealthResponse>, String> {
 }
 
 async fn desktop_login_route_compatible(port: u16) -> bool {
-    let client = match reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()
-    {
+    let client = match crate::loopback_http::client(LOCAL_HTTP_TIMEOUT) {
         Ok(client) => client,
         Err(_) => return false,
     };
@@ -631,28 +659,36 @@ async fn desktop_login_route_compatible(port: u16) -> bool {
     }
 }
 
-async fn desktop_secret_login_compatible(port: u16) -> Result<(), String> {
-    let secret = read_desktop_secret()?.ok_or_else(|| "desktop_auth_secret_missing".to_string())?;
-    let client = reqwest::Client::builder()
-        .timeout(LOCAL_HTTP_TIMEOUT)
-        .build()
-        .map_err(|e| e.to_string())?;
+async fn desktop_secret_login(port: u16, secret: &str) -> Result<String, String> {
+    let client = crate::loopback_http::client(LOCAL_HTTP_TIMEOUT).map_err(|e| e.to_string())?;
     let response = client
         .post(format!("http://127.0.0.1:{port}/api/auth/desktop-login"))
-        .json(&DesktopLoginPayload { secret: &secret })
+        .json(&DesktopLoginPayload { secret })
         .send()
         .await
         .map_err(|_| "desktop_auth_secret_probe_failed".to_string())?;
-    if response.status().is_success() {
-        Ok(())
-    } else if response.status() == reqwest::StatusCode::UNAUTHORIZED {
+    if response.status() == reqwest::StatusCode::UNAUTHORIZED {
         Err("desktop_auth_secret_rejected".to_string())
-    } else {
+    } else if !response.status().is_success() {
         Err(format!(
             "desktop_auth_secret_probe_http_{}",
             response.status()
         ))
+    } else {
+        response
+            .json::<TokenResponse>()
+            .await
+            .map(|tokens| tokens.access_token)
+            .map_err(|_| "desktop_auth_token_response_invalid".to_string())
     }
+}
+
+async fn authenticated_health_ready_status(
+    port: u16,
+    secret: &str,
+) -> Result<OwnedBackendReadiness, String> {
+    let access_token = desktop_secret_login(port, secret).await?;
+    health_ready_status(port, Some(&access_token)).await
 }
 
 pub(crate) async fn probe_owned_backend_state(
@@ -689,12 +725,28 @@ pub(crate) async fn probe_owned_backend_state(
                 reason: "desktop_login_probe_failed".to_string(),
             };
         }
-        if require_desktop_secret {
-            if let Err(reason) = desktop_secret_login_compatible(port).await {
-                return OwnedBackendProbe::Unmanageable { port, reason };
+        let readiness = if require_desktop_secret {
+            let secret = match read_desktop_secret() {
+                Ok(Some(secret)) => secret,
+                Ok(None) => {
+                    return OwnedBackendProbe::Unmanageable {
+                        port,
+                        reason: "desktop_auth_secret_missing".to_string(),
+                    }
+                }
+                Err(reason) => return OwnedBackendProbe::Unmanageable { port, reason },
+            };
+            match authenticated_health_ready_status(port, &secret).await {
+                Ok(readiness) => readiness,
+                Err(reason) => return OwnedBackendProbe::Unmanageable { port, reason },
             }
-        }
-        verified.push((port, health_ready_status(port).await));
+        } else {
+            // Spawned backends were launched from the already-probed managed
+            // install. Adopted backends pass `true` on their initial probe;
+            // later watchdog checks only need ownership and liveness.
+            OwnedBackendReadiness::Ready
+        };
+        verified.push((port, readiness));
     }
 
     if verified.len() != 1 {
@@ -935,6 +987,61 @@ mod tests {
     const ROOT_ID: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     const TOKEN: &str = "desktop-owner-token";
 
+    async fn http_sequence_server(
+        responses: Vec<(&'static str, &'static str)>,
+    ) -> (
+        u16,
+        std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let seen_task = seen.clone();
+        let task = tokio::spawn(async move {
+            for (status, body) in responses {
+                let (mut socket, _) = listener.accept().await.unwrap();
+                let mut raw = Vec::new();
+                loop {
+                    let mut chunk = [0u8; 2048];
+                    let count = socket.read(&mut chunk).await.unwrap();
+                    if count == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&chunk[..count]);
+                    let Some(header_end) = raw.windows(4).position(|w| w == b"\r\n\r\n") else {
+                        continue;
+                    };
+                    let headers = String::from_utf8_lossy(&raw[..header_end]);
+                    let content_length = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.to_ascii_lowercase()
+                                .strip_prefix("content-length:")
+                                .and_then(|value| value.trim().parse::<usize>().ok())
+                        })
+                        .unwrap_or(0);
+                    if raw.len() >= header_end + 4 + content_length {
+                        break;
+                    }
+                }
+                seen_task
+                    .lock()
+                    .unwrap()
+                    .push(String::from_utf8_lossy(&raw).into_owned());
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                socket.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        (port, seen, task)
+    }
+
     fn metadata(app_pid: u32, port: Option<u16>) -> DesktopBackendMetadata {
         DesktopBackendMetadata {
             schema_version: METADATA_SCHEMA_VERSION,
@@ -985,6 +1092,103 @@ mod tests {
         port
     }
 
+    #[tokio::test]
+    async fn authenticated_health_uses_login_bearer_and_accepts_ready_version() {
+        let (port, seen, server) = http_sequence_server(vec![
+            ("200 OK", r#"{"access_token":"test-access-token"}"#),
+            ("200 OK", r#"{"version":"2026.5.3"}"#),
+        ])
+        .await;
+
+        let readiness = authenticated_health_ready_status(port, "desktop-test-secret")
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        assert!(matches!(readiness, OwnedBackendReadiness::Ready));
+        let seen = seen.lock().unwrap();
+        assert!(seen[0].contains(r#""secret":"desktop-test-secret""#));
+        assert!(seen[1]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test-access-token"));
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_preserves_genuinely_old_version_as_stale() {
+        let (port, _, server) = http_sequence_server(vec![
+            ("200 OK", r#"{"access_token":"test-access-token"}"#),
+            ("200 OK", r#"{"version":"2026.5.2"}"#),
+        ])
+        .await;
+
+        let readiness = authenticated_health_ready_status(port, "desktop-test-secret")
+            .await
+            .unwrap();
+        server.await.unwrap();
+
+        assert!(matches!(
+            readiness,
+            OwnedBackendReadiness::Stale { reason }
+                if reason == "desktop_backend_version_too_old"
+        ));
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_rejects_malformed_version() {
+        let (port, _, server) = http_sequence_server(vec![
+            ("200 OK", r#"{"access_token":"test-access-token"}"#),
+            ("200 OK", r#"{"version":"not-a-version"}"#),
+        ])
+        .await;
+
+        let result = authenticated_health_ready_status(port, "desktop-test-secret").await;
+        server.await.unwrap();
+
+        assert_eq!(result.unwrap_err(), "desktop_backend_version_invalid");
+    }
+
+    #[tokio::test]
+    async fn rejected_desktop_secret_fails_before_health() {
+        let (port, seen, server) = http_sequence_server(vec![("401 Unauthorized", "{}")]).await;
+
+        let result = authenticated_health_ready_status(port, "wrong-secret").await;
+        server.await.unwrap();
+
+        assert_eq!(result.unwrap_err(), "desktop_auth_secret_rejected");
+        assert_eq!(seen.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn rejected_health_bearer_is_not_downgraded_to_auto_repairable_stale() {
+        let (port, _, server) = http_sequence_server(vec![
+            ("200 OK", r#"{"access_token":"test-access-token"}"#),
+            ("401 Unauthorized", "{}"),
+        ])
+        .await;
+
+        let result = authenticated_health_ready_status(port, "desktop-test-secret").await;
+        server.await.unwrap();
+
+        assert_eq!(result.unwrap_err(), "desktop_auth_token_rejected");
+    }
+
+    #[tokio::test]
+    async fn authenticated_health_rejects_public_payload_without_version() {
+        let (port, _, server) = http_sequence_server(vec![
+            ("200 OK", r#"{"access_token":"test-access-token"}"#),
+            (
+                "200 OK",
+                r#"{"status":"healthy","service":"Unsloth UI Backend","supports_desktop_auth":true}"#,
+            ),
+        ])
+        .await;
+
+        let result = authenticated_health_ready_status(port, "desktop-test-secret").await;
+        server.await.unwrap();
+
+        assert_eq!(result.unwrap_err(), "desktop_auth_health_unverified");
+    }
+
     #[test]
     fn parse_studio_root_id_requires_lowercase_64_hex_chars() {
         assert_eq!(parse_studio_root_id(ROOT_ID), Some(ROOT_ID.to_string()));
@@ -1014,14 +1218,12 @@ mod tests {
         assert!(!metadata_is_well_formed(&metadata));
     }
 
-    #[test]
-    fn liveness_verification_requires_root_kind_and_token_sha() {
-        let metadata = metadata(1, Some(8888));
-        let liveness = DesktopLiveness {
+    fn owned_liveness(manageability: u16) -> DesktopLiveness {
+        DesktopLiveness {
             status: Some("alive".to_string()),
             service: Some("Unsloth UI Backend".to_string()),
             desktop_protocol_version: Some(1),
-            desktop_manageability_version: Some(1),
+            desktop_manageability_version: Some(manageability),
             supports_desktop_auth: Some(true),
             supports_desktop_backend_ownership: Some(true),
             studio_root_id: Some(ROOT_ID.to_string()),
@@ -1029,7 +1231,57 @@ mod tests {
                 kind: Some(OWNER_KIND_TAURI.to_string()),
                 token_sha256: Some(token_sha256(TOKEN)),
             }),
-        };
+        }
+    }
+
+    #[test]
+    fn legacy_manageability_backend_stays_lifecycle_controllable() {
+        // A backend from the previous app version reports manageability 1.
+        // studio_install_ok is CLI-side, not part of this backend's HTTP
+        // contract: blocking makes preflight answer ExternalConflict and never
+        // adopt a process the root id and token already prove is ours.
+        assert_eq!(lifecycle_control_block_reason(&owned_liveness(1)), None);
+        assert_eq!(
+            lifecycle_control_block_reason(&owned_liveness(
+                crate::preflight::DESKTOP_MANAGEABILITY_VERSION
+            )),
+            None
+        );
+
+        // The bits a live backend really must carry are still enforced.
+        let mut no_ownership = owned_liveness(1);
+        no_ownership.supports_desktop_backend_ownership = Some(false);
+        assert_eq!(
+            lifecycle_control_block_reason(&no_ownership).as_deref(),
+            Some("desktop_backend_ownership_unsupported")
+        );
+
+        let mut no_auth = owned_liveness(1);
+        no_auth.supports_desktop_auth = Some(false);
+        assert_eq!(
+            lifecycle_control_block_reason(&no_auth).as_deref(),
+            Some("desktop_auth_unsupported")
+        );
+
+        let mut old_protocol = owned_liveness(1);
+        old_protocol.desktop_protocol_version = Some(0);
+        assert_eq!(
+            lifecycle_control_block_reason(&old_protocol).as_deref(),
+            Some("desktop_protocol_incompatible")
+        );
+
+        let mut no_manageability = owned_liveness(1);
+        no_manageability.desktop_manageability_version = None;
+        assert_eq!(
+            lifecycle_control_block_reason(&no_manageability).as_deref(),
+            Some("desktop_manageability_unsupported")
+        );
+    }
+
+    #[test]
+    fn liveness_verification_requires_root_kind_and_token_sha() {
+        let metadata = metadata(1, Some(8888));
+        let liveness = owned_liveness(1);
         assert!(liveness_verifies_metadata(&liveness, &metadata));
 
         let mut wrong_root = liveness;

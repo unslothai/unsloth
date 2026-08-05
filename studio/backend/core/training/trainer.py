@@ -11,8 +11,10 @@ import os
 import sys
 import types
 
-# Prevent tokenizer parallelism deadlocks when datasets forks.
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
+# Off on Linux so datasets' forked map() workers can't deadlock. On spawn platforms
+# (Windows/macOS) map() runs in-process, so keep the fast tokenizer's Rust threads on
+# (the only parallelism single-process tokenize gets; off makes prep run serially).
+os.environ["TOKENIZERS_PARALLELISM"] = "true" if sys.platform in ("win32", "darwin") else "false"
 
 # Make compiled cache modules importable by any subprocess. On spawn platforms
 # (Windows/macOS) spawned dataset.map() workers re-import top-level modules, and
@@ -66,7 +68,6 @@ import pandas as pd
 from datasets import Dataset
 from utils.datasets.cache_safe import load_dataset_cache_safe as load_dataset
 
-from core.inference.llama_cpp import _hf_offline_if_dns_dead
 from utils.models import is_vision_model, detect_audio_type
 from utils.models.model_config import _env_offline
 from utils.datasets import format_and_template_dataset
@@ -249,6 +250,13 @@ class UnslothTrainer:
         trainer_ref = self
 
         class _ProgressCallback(TrainerCallback):
+            def on_train_begin(self, args, state, control, **kwargs):
+                # on_log reports an empty status, so without this the UI stays on the
+                # pre-train "Starting training..." for the whole run.
+                if trainer_ref.should_stop:
+                    return
+                trainer_ref._update_progress(status_message = "Training in progress...")
+
             def on_log(
                 self,
                 args,
@@ -795,7 +803,7 @@ class UnslothTrainer:
                 )
                 logger.info("Loaded text model")
 
-            raise_if_offloaded(self.model, device_map, "Studio training")
+            raise_if_offloaded(self.model, device_map, "Unsloth training")
 
             if self.should_stop:
                 return False
@@ -889,6 +897,7 @@ class UnslothTrainer:
         use_gradient_checkpointing: str = "unsloth",
         use_rslora: bool = False,
         use_loftq: bool = False,
+        use_dora: bool = False,
         modules_to_save: list = None,
     ) -> bool:
         """
@@ -931,7 +940,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = "unsloth"
                 elif use_gradient_checkpointing in ("true", "1", "yes"):
                     use_gradient_checkpointing = True
-                elif use_gradient_checkpointing in ("false", "0", "no"):
+                elif use_gradient_checkpointing in ("false", "0", "no", "none", "off"):
                     use_gradient_checkpointing = False
                 else:
                     # Invalid value -> "unsloth"
@@ -991,6 +1000,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                 )
                 # Audio VLM models support VLM-style layer selection
@@ -1021,6 +1031,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     task_type = None,
                 )
@@ -1040,6 +1051,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                 )
 
@@ -1065,6 +1077,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     modules_to_save = modules_to_save,
                 )
@@ -1085,6 +1098,7 @@ class UnslothTrainer:
                     use_gradient_checkpointing = use_gradient_checkpointing,
                     random_state = 3407,
                     use_rslora = use_rslora,
+                    use_dora = use_dora,
                     loftq_config = {"loftq_bits": 4, "loftq_iter": 1} if use_loftq else None,
                     modules_to_save = modules_to_save,
                 )
@@ -1479,6 +1493,9 @@ class UnslothTrainer:
 
         SNAC_MODEL_NAME = "hubertsiuzdak/snac_24khz"
         SNAC_SAMPLE_RATE = 24000
+
+        # SNAC codec unvalidated on Intel XPU; keep the pre-PR CPU
+        # fallback for non-CUDA hosts.
         device = "cuda" if torch.cuda.is_available() else "cpu"
         max_length = self.max_seq_length or 2048
         tokenizer = self.tokenizer
@@ -1640,7 +1657,8 @@ class UnslothTrainer:
         del snac_model
 
         gc.collect()
-        torch.cuda.empty_cache()
+
+        clear_gpu_cache()
         self._cuda_audio_used = True
 
         if not processed_examples:
@@ -1667,6 +1685,8 @@ class UnslothTrainer:
         import numpy as np
         import torchaudio.transforms as T
 
+        # Spark-TTS BiCodec unvalidated on Intel XPU; keep the pre-PR CPU
+        # fallback for non-CUDA hosts.
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         # sparktts lives in the SparkAudio/Spark-TTS GitHub repo, not the HF model
@@ -1855,7 +1875,8 @@ class UnslothTrainer:
         del audio_tokenizer
 
         gc.collect()
-        torch.cuda.empty_cache()
+
+        clear_gpu_cache()
         self._cuda_audio_used = True
 
         if not processed_examples:
@@ -1892,6 +1913,8 @@ class UnslothTrainer:
         from datasets import Dataset as HFDataset
         from utils.paths import ensure_dir, tmp_root
 
+        # OuteTTS DAC/Whisper preprocess unvalidated on Intel XPU; keep the
+        # pre-PR CPU fallback for non-CUDA hosts.
         device = "cuda" if torch.cuda.is_available() else "cpu"
 
         # Clone OuteTTS repo (same as audio_codecs._load_dac)
@@ -2063,7 +2086,8 @@ class UnslothTrainer:
         del prompt_processor
 
         gc.collect()
-        torch.cuda.empty_cache()
+
+        clear_gpu_cache()
         self._cuda_audio_used = True
 
         if not processed_examples:
@@ -3423,15 +3447,19 @@ class UnslothTrainer:
                     logger.info(
                         f"CPT: using UnslothTrainer with embedding_learning_rate={embedding_lr}\n"
                     )
+                    cpt_args = _UnslothTrainingArguments(
+                        embedding_learning_rate = embedding_lr,
+                        **config_args,
+                    )
+                    if config_args.get("packing", False):
+                        cpt_args.packing_strategy = "wrapped"
+                        logger.info("CPT packing strategy: wrapped\n")
                     trainer_kwargs = {
                         "model": self.model,
                         "tokenizer": sft_tokenizer,
                         "train_dataset": dataset["dataset"],
                         "data_collator": data_collator,
-                        "args": _UnslothTrainingArguments(
-                            embedding_learning_rate = embedding_lr,
-                            **config_args,
-                        ),
+                        "args": cpt_args,
                     }
                     if eval_dataset is not None:
                         trainer_kwargs["eval_dataset"] = eval_dataset

@@ -27,6 +27,8 @@ pub(crate) struct DesktopUpdatePolicy {
 pub(crate) struct ManualUpdateInfo {
     version: String,
     current_version: String,
+    // Backend release this desktop build pins; CHANGELOG.md is keyed by it.
+    pypi_version: Option<String>,
     body: Option<String>,
     date: Option<String>,
 }
@@ -34,8 +36,12 @@ pub(crate) struct ManualUpdateInfo {
 #[derive(Debug, serde::Deserialize)]
 struct ChannelMetadata {
     version: String,
-    body: Option<String>,
-    date: Option<String>,
+    // latest.json publishes Tauri's `notes`/`pub_date`; aliases keep older metadata working.
+    pypi_version: Option<String>,
+    #[serde(alias = "body")]
+    notes: Option<String>,
+    #[serde(alias = "date")]
+    pub_date: Option<String>,
     platforms: HashMap<String, ChannelPlatform>,
 }
 
@@ -64,19 +70,20 @@ pub(crate) async fn check_desktop_manual_update() -> Result<Option<ManualUpdateI
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
-    let response = match client.get(DESKTOP_UPDATER_CHANNEL_URL).send().await {
-        Ok(response) => response,
-        Err(error) => {
+    let response = client
+        .get(DESKTOP_UPDATER_CHANNEL_URL)
+        .send()
+        .await
+        .map_err(|error| {
             log::warn!("Manual update metadata check failed: {}", error);
-            return Ok(None);
-        }
-    };
+            format!("Could not check for desktop updates: {error}")
+        })?;
     if !response.status().is_success() {
-        log::warn!(
-            "Manual update metadata check returned HTTP {}",
-            response.status()
-        );
-        return Ok(None);
+        let status = response.status();
+        log::warn!("Manual update metadata check returned HTTP {}", status);
+        return Err(format!(
+            "Could not check for desktop updates: server returned HTTP {status}"
+        ));
     }
 
     let metadata = response
@@ -99,8 +106,9 @@ pub(crate) async fn check_desktop_manual_update() -> Result<Option<ManualUpdateI
     Ok(Some(ManualUpdateInfo {
         version: latest_version,
         current_version: current_version.to_string(),
-        body: metadata.body,
-        date: metadata.date,
+        pypi_version: metadata.pypi_version,
+        body: metadata.notes,
+        date: metadata.pub_date,
     }))
 }
 

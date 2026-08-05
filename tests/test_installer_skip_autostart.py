@@ -1,4 +1,4 @@
-"""Regression tests for the installers' post-install autostart opt-out."""
+"""Regression tests for installer controls and process exits."""
 
 from __future__ import annotations
 
@@ -118,6 +118,27 @@ def test_windows_skip_autostart_bypasses_only_the_interactive_prompt():
     assert source.index("Start Unsloth Studio now? [Y/n]") < source.index(
         'step "launch" "manual commands:"'
     )
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "PowerShell is unavailable")
+def test_windows_installer_invalid_package_fails():
+    result = subprocess.run(
+        [
+            "pwsh",
+            "-NoProfile",
+            "-NonInteractive",
+            "-File",
+            str(INSTALL_PS1),
+            "--package",
+            "bad!",
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 30,
+    )
+
+    assert result.returncode != 0
+    assert "package name contains invalid characters" in result.stdout + result.stderr
 
 
 def test_skip_autostart_is_documented_for_all_installers():

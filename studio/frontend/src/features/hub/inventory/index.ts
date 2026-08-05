@@ -70,7 +70,10 @@ export {
   type HubInventoryKind,
   type HubInventory,
 } from "./use-hub-inventory";
-export { useGgufVariantsCacheVersion } from "./use-gguf-variants-cache-version";
+export {
+  useGgufVariantsCacheVersion,
+  useGgufVariantsCacheVersions,
+} from "./use-gguf-variants-cache-version";
 export type {
   CachedInventoryRow,
   InventoryHint,
