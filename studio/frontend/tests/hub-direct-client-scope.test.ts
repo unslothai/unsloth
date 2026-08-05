@@ -18,33 +18,52 @@ function read(path: string): Promise<string> {
 
 // gate file -> the module that issues its fetch, and the origin that fetch
 // targets. Both halves have to line up or the window is unreachable.
+// gate file -> the exported function that issues its fetch, and the origin that
+// fetch targets. Both halves have to line up or the window is unreachable.
 const DIRECT_CLIENTS = [
   {
     gate: "../src/features/hub/lib/hf-owner-avatar.ts",
     fetcher: "../src/features/hub/lib/hf-owner-avatar.ts",
+    fn: "async function fetchAvatarUrl",
     origin: undefined,
   },
   {
     gate: "../src/features/hub/catalog/model-readme.tsx",
     fetcher: "../src/features/hub/lib/hf-readme.ts",
+    fn: "async function fetchReadmeOnce",
     origin: undefined,
   },
   {
     gate: "../src/features/hub/hooks/use-dataset-size.ts",
     fetcher: "../src/features/hub/lib/dataset-size.ts",
+    fn: "export function fetchDatasetSize",
     origin: "DATASETS_SERVER_ORIGIN",
+  },
+  {
+    gate: "../src/features/hub/catalog/safetensors-download-card.tsx",
+    fetcher: "../src/features/hub/lib/dataset-size.ts",
+    fn: "export function fetchModelSize",
+    origin: undefined,
   },
 ];
 
-test("the module behind each gate really tags its failures 'other'", async () => {
-  for (const { gate, fetcher } of DIRECT_CLIENTS) {
+/** The body of one function, so a sibling producer cannot satisfy the check. */
+function bodyOf(src: string, marker: string): string {
+  const at = src.lastIndexOf(marker);
+  assert.notEqual(at, -1, `could not find ${marker}`);
+  const after = src.slice(at + marker.length);
+  const next = after.search(/\n(?:export )?(?:async )?function /);
+  return next === -1 ? after : after.slice(0, next);
+}
+
+test("the function behind each gate really tags its failures 'other'", async () => {
+  for (const { gate, fetcher, fn } of DIRECT_CLIENTS) {
     const src = await read(fetcher);
-    // Asserted on the module that calls fetchWithTimeout, not on the gate: the
-    // gate merely imports it, so a name check there passes on the import line
-    // alone and pins nothing.
+    // Scoped to the function, not the file: dataset-size.ts hosts two separate
+    // producers, so a file-wide search passes off the wrong one.
     assert.ok(
-      src.includes('service: "other"'),
-      `${fetcher} arms no "other" window, so ${gate} could never back off`,
+      bodyOf(src, fn).includes('service: "other"'),
+      `${fn} arms no "other" window, so ${gate} could never back off`,
     );
   }
 });
@@ -61,11 +80,22 @@ test("and each gate reads the origin its own fetch targets", async () => {
       `${gate} would stop fetching over a dead listing, and never re-arm`,
     );
     if (origin) {
-      // The default is the Hub's origin, which this client never fetches, so it
-      // would read a window nothing it does can arm or clear.
       assert.match(src, new RegExp(`useDirectHubOnline\\(${origin}\\)`), gate);
     }
   }
+});
+
+test("the datasets-server constant is the host that client actually calls", async () => {
+  const network = await read("../src/features/hub/lib/network.ts");
+  const decl = /DATASETS_SERVER_ORIGIN = "([^"]+)"/.exec(network);
+  assert.ok(decl, "could not find DATASETS_SERVER_ORIGIN");
+  const sizes = await read("../src/features/hub/lib/dataset-size.ts");
+  // Naming the wrong host leaves both checks above green while the gate reads a
+  // window nothing arms, which is the whole failure this file exists to catch.
+  assert.ok(
+    bodyOf(sizes, "export function fetchDatasetSize").includes(`${decl[1]}/`),
+    `fetchDatasetSize does not call ${decl[1]}`,
+  );
 });
 
 test("clients that only read, and never fetch the Hub, stay origin-wide", async () => {

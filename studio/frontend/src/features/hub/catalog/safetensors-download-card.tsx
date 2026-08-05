@@ -17,7 +17,7 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { useEffect, useState } from "react";
 import { TrainIcon } from "../components/train-icon";
 import { useRepoDownload } from "../download-manager";
-import { useOnlineStatus } from "../hooks/use-online-status";
+import { useDirectHubOnline } from "../hooks/use-online-status";
 import { deleteCachedModel } from "../inventory";
 import type { ModelInventoryFormat } from "../inventory";
 import { fetchModelSize } from "../lib/dataset-size";
@@ -87,7 +87,7 @@ export function SafetensorsDownloadCard({
   onChange?: () => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
-  const online = useOnlineStatus();
+  const online = useDirectHubOnline();
   const sizeKey = `${repoId}::${fingerprintToken(hfToken)}`;
   const [modelSize, setModelSize] = useState<{
     key: string;

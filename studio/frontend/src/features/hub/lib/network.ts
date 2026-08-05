@@ -103,7 +103,7 @@ export function getBrowserOfflineRetryDelayMs(): number {
   // waking on the longest would leave it reporting a state it had already left.
   return Math.max(
     0,
-    getEarliestRemoteOfflineUntil(HUGGING_FACE_ORIGIN) - Date.now(),
+    getEarliestRemoteOfflineUntil() - Date.now(),
   );
 }
 
@@ -135,15 +135,22 @@ function getRemoteOfflineUntil(
   return until;
 }
 
-/** The soonest live window on an origin, or 0 when nothing is backing off. */
-function getEarliestRemoteOfflineUntil(scope: RemoteNetworkScope): number {
+/**
+ * The soonest live window anywhere, or 0 when nothing is backing off. Every
+ * origin, not just the Hub's: a client gated on another one (dataset sizes read
+ * datasets-server) would otherwise back off with nothing scheduled to wake it,
+ * and its own gate is shut, so no request could report the recovery either.
+ */
+function getEarliestRemoteOfflineUntil(): number {
+  const now = Date.now();
   let until = 0;
-  for (const origin of normalizeScope(scope)) {
-    for (const service of HUB_SERVICES) {
-      const value = offlineUntil(origin, service);
-      if (value > 0 && (until === 0 || value < until)) {
-        until = value;
-      }
+  for (const [key, value] of remoteOfflineUntilByKey) {
+    if (value <= now) {
+      remoteOfflineUntilByKey.delete(key);
+      continue;
+    }
+    if (until === 0 || value < until) {
+      until = value;
     }
   }
   return until;
