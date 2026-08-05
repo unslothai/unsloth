@@ -75,13 +75,16 @@ def test_a_fallback_run_publishes_the_marker_that_decides_its_stop_control():
 
     registry = DownloadRegistry()
     key = "unsloth/Qwen3-4B-GGUF"
-    assert registry.claim(
-        key,
-        "http",
-        repo_type = "model",
-        repo_id = key,
-        cancel_marker_transport = "xet",
-    )[0] is True
+    assert (
+        registry.claim(
+            key,
+            "http",
+            repo_type = "model",
+            repo_id = key,
+            cancel_marker_transport = "xet",
+        )[0]
+        is True
+    )
 
     ref = active_download_refs(registry, key, with_variant = True)[0]
     assert ref.transport == "http", "the worker really is on HTTP"
