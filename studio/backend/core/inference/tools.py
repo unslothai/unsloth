@@ -1980,9 +1980,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # and `start "" env "cmd /c powershell"` reduced to a basename of
                 # `c powershell` and matched nothing.
                 blocked |= _screen_cmd_payload(_unquote(tokens[forwarded]))
-                blocked |= _blocked_quoted_program(
-                    _unquote(tokens[forwarded]), _BLOCKED_COMMANDS
-                )
+                blocked |= _blocked_quoted_program(_unquote(tokens[forwarded]), _BLOCKED_COMMANDS)
             blocked |= _screen_cmd_payload(program)
             # Same split-path shape as the /c payload: START documents a title
             # followed by the program, and `start "" "C:\Program Files\...
