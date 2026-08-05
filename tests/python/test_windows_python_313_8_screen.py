@@ -191,6 +191,17 @@ def test_every_enumerated_candidate_is_screened():
     )
 
 
+# The launcher below is a /bin/sh script. Windows has no shebang and no PATHEXT
+# entry for an extensionless file, so `Get-Command py` does not find it and the
+# resolver reports "none" whatever the versions are -- which would make the
+# negative case pass for the wrong reason. The PowerShell under test is the same
+# text on every platform, and pwsh runs it here, so these three cases run on
+# POSIX and the rest of the file still covers Windows.
+_POSIX_LAUNCHER_ONLY = pytest.mark.skipif(
+    os.name == "nt", reason = "the fake py launcher is a /bin/sh script"
+)
+
+
 def _fake_launcher(root: Path, versions: dict[str, str]) -> Path:
     """A `py` launcher over fake interpreters, one per minor in ``versions``."""
     root.mkdir(parents = True, exist_ok = True)
@@ -255,6 +266,7 @@ else {{ Write-Output "RESULT: $($found.Version)" }}
     return match.group(1)
 
 
+@_POSIX_LAUNCHER_ONLY
 def test_the_resolver_falls_through_to_the_next_minor(tmp_path):
     # The offline/locked-down case: 3.13.8 and a healthy 3.12 both installed and
     # nothing installable. Ending the search on the 3.13 would leave the caller
@@ -263,9 +275,15 @@ def test_the_resolver_falls_through_to_the_next_minor(tmp_path):
     assert _resolve(tmp_path, {"3.13": "3.13.8", "3.12": "3.12.11"}) == "3.12"
 
 
+@_POSIX_LAUNCHER_ONLY
 def test_a_good_preferred_minor_still_wins(tmp_path):
     assert _resolve(tmp_path, {"3.13": "3.13.13", "3.12": "3.12.11"}) == "3.13"
 
 
+@_POSIX_LAUNCHER_ONLY
 def test_nothing_usable_is_still_nothing(tmp_path):
-    assert _resolve(tmp_path, {"3.13": "3.13.8"}) == "none"
+    # Paired with a positive control over the same tree, because "none" is also
+    # what a harness that cannot run the launcher at all reports: without the
+    # control this case would pass on a machine where it proves nothing.
+    assert _resolve(tmp_path / "good", {"3.13": "3.13.13"}) == "3.13"
+    assert _resolve(tmp_path / "bad", {"3.13": "3.13.8"}) == "none"
