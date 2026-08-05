@@ -167,12 +167,35 @@ export function hfModelFitsDevice(
   });
 }
 
+/** The budget a task-scoped (Images / Video) row may claim. Those loads put the
+ * whole pipeline on ONE device -- the backend resolves a bare "cuda", which torch
+ * reads as the current device, the lowest visible ordinal -- so fit is judged
+ * against that card, never the multi-GPU sum, which would recommend a checkpoint
+ * that OOMs where the load lands. Chat can split, so it keeps the sum. */
+export function loadScopedGpu<
+  T extends {
+    available: boolean;
+    memoryTotalGb: number;
+    maxDeviceMemoryGb: number;
+    loadDeviceMemoryGb: number;
+  },
+>(gpu: T, taskScoped: boolean): T {
+  if (!taskScoped || !gpu.available) return gpu;
+  const deviceGb = gpu.loadDeviceMemoryGb || gpu.maxDeviceMemoryGb;
+  return deviceGb > 0 ? { ...gpu, memoryTotalGb: deviceGb } : gpu;
+}
+
 /** Order Recommended: curated seeds first in catalog order, then the rest of the
  * listing, each id once. A seed hands off only to a row that survived `keep`
  * (the metadata filters), so a painted curated row does not vanish when the
  * listing reports its id with metadata those filters reject. Device fit is
- * judged on whichever row renders. */
-export function orderRecommendedRows<T extends { id: string }>(opts: {
+ * judged on whichever row renders, and the taking-over row inherits the seed's
+ * curated size: a Hub listing never carries one, so without it a prequantized
+ * artifact would flip from the catalog's real size to the params guess (which
+ * assumes a quant still to come) the moment the response lands. */
+export function orderRecommendedRows<
+  T extends { id: string; curatedSizeBytes?: number },
+>(opts: {
   seeds: readonly T[];
   results: readonly T[];
   keep: (row: T) => boolean;
@@ -180,7 +203,13 @@ export function orderRecommendedRows<T extends { id: string }>(opts: {
   fits: (row: T) => boolean;
 }): T[] {
   const { seeds, results, keep, deviceFiltered, fits } = opts;
-  const rows = results.filter(keep);
+  const seedById = new Map(seeds.map((s) => [s.id, s]));
+  const rows = results.filter(keep).map((row) => {
+    const curatedSizeBytes = seedById.get(row.id)?.curatedSizeBytes;
+    return curatedSizeBytes != null && row.curatedSizeBytes == null
+      ? { ...row, curatedSizeBytes }
+      : row;
+  });
   const byId = new Map(rows.map((r) => [r.id, r]));
   const curated: T[] = [];
   for (const seed of seeds) {

@@ -119,6 +119,7 @@ import {
   isMlxId,
   isMobileVariant,
   isRecommendableFormat,
+  loadScopedGpu,
   matchesFormatFilter,
   orderRecommendedRows,
   paramsFromId,
@@ -2402,10 +2403,14 @@ export function HubModelPicker({
     // Hub search too. "recommended" always device-filters; the "Fits on device"
     // tick extends that to the other sorts.
     const deviceFiltered = recommendedSort === "recommended" || fitOnDeviceOnly;
+    // A task-scoped load lands on one device, so it may claim that card only.
+    const taskScoped = Boolean(task);
+    const rowGpu = loadScopedGpu(gpu, taskScoped);
+    const rowInferenceGpu = loadScopedGpu(inferenceGpu, taskScoped);
     const fits = (r: HfModelResult) =>
       // Downloaded models show regardless of fit.
       downloadedSet.has(r.id.toLowerCase()) ||
-      hfModelFitsDevice(r, r.isGguf ? inferenceGpu : gpu);
+      hfModelFitsDevice(r, r.isGguf ? rowInferenceGpu : rowGpu);
     // Curated rows lead in catalog order, so the list does not reshuffle.
     return orderRecommendedRows({
       seeds: catalogSeedRows,
@@ -2546,11 +2551,7 @@ export function HubModelPicker({
   // Task-scoped loads put the whole pipeline on ONE device, so quant fit uses the device the load lands on (the lowest visible ordinal), not the multi-GPU sum or the largest card: sizing against the bigger card OOMs the smaller one. Chat keeps the sum.
   // The source is picked per row (a GGUF row sizes against the inference GPU, anything else against the system view); this only decides how much of it a row may claim.
   const expanderGpuGbFrom = (info: typeof inferenceGpu) =>
-    info.available
-      ? task
-        ? info.loadDeviceMemoryGb || info.maxDeviceMemoryGb
-        : info.memoryTotalGb
-      : undefined;
+    info.available ? loadScopedGpu(info, Boolean(task)).memoryTotalGb : undefined;
   const expanderGpuGb = expanderGpuGbFrom(inferenceGpu);
   const expanderSystemGpuGb = expanderGpuGbFrom(gpu);
 
@@ -2894,8 +2895,14 @@ export function HubModelPicker({
                 id,
                 totalParams: recommendedParamCountById.get(id),
                 isGguf: isKnownGgufRepo(id),
+                curatedSizeBytes: catalog
+                  ? curatedSizeBytesFor(id, catalog)
+                  : undefined,
               },
-              isKnownGgufRepo(id) ? inferenceGpu : gpu,
+              loadScopedGpu(
+                isKnownGgufRepo(id) ? inferenceGpu : gpu,
+                Boolean(task),
+              ),
             ),
         )
     );
@@ -2910,6 +2917,8 @@ export function HubModelPicker({
     recommendedParamCountById,
     gpu,
     inferenceGpu,
+    catalog,
+    task,
   ]);
 
   const recommendedSet = useMemo(

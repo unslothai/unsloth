@@ -11,6 +11,7 @@ import {
 } from "../src/features/model-picker/components/model-selector/model-catalog.ts";
 import {
   hfModelFitsDevice,
+  loadScopedGpu,
   orderRecommendedRows,
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
 
@@ -208,4 +209,63 @@ test("a listing row still overrides the catalog size it seeded with", () => {
     ),
     [],
   );
+});
+
+// unsloth owns this one, so the listing DOES report it, and the seed hands off.
+const BNB = "unsloth/Z-Image-Turbo-unsloth-bnb-4bit";
+
+test("a listing row inherits the curated size of the seed it takes over", () => {
+  // 8 GB card -> 5.6 GB budget.
+  const card = { memoryTotalGb: 8, systemRamAvailableGb: 0, budgetKnown: true };
+  const bnbSeed = seed(BNB);
+  assert.equal(bnbSeed.curatedSizeBytes, 8 * 1024 ** 3);
+  // The Hub row carries params only, and the smallest-quant guess assumes a
+  // quant still to come: 6B -> 2.4 GB for a repo that is already 4-bit and 8 GB
+  // resident. Without the handoff the row would flip to fitting.
+  const listed: Row = { id: BNB, isGguf: false, totalParams: 6e9 };
+  assert.equal(hfModelFitsDevice(listed, card), true);
+  assert.equal(hfModelFitsDevice(bnbSeed, card), false);
+  assert.deepEqual(
+    ids(
+      orderRecommendedRows({
+        seeds: [bnbSeed],
+        results: [listed],
+        keep: () => true,
+        deviceFiltered: true,
+        fits: (r: Row) => hfModelFitsDevice(r, card),
+      }),
+    ),
+    [],
+  );
+});
+
+test("a task row is sized against the device the load lands on", () => {
+  const twoCards = {
+    available: true,
+    budgetKnown: true,
+    memoryTotalGb: 16,
+    maxDeviceMemoryGb: 8,
+    loadDeviceMemoryGb: 8,
+    systemRamAvailableGb: 0,
+  };
+  // Chat may split across both cards; an image/video pipeline lands on one.
+  assert.equal(loadScopedGpu(twoCards, false).memoryTotalGb, 16);
+  assert.equal(loadScopedGpu(twoCards, true).memoryTotalGb, 8);
+  // SDXL Turbo is 8 GB: inside the 11.2 GB aggregate budget, past the 5.6 GB
+  // one card offers, so only the load-scoped budget hides the OOM.
+  const sdxl = seed(SDXL);
+  assert.equal(hfModelFitsDevice(sdxl, twoCards), true);
+  assert.equal(hfModelFitsDevice(sdxl, loadScopedGpu(twoCards, true)), false);
+});
+
+test("a GPU-less host keeps its unified-memory budget", () => {
+  const mac = {
+    available: false,
+    budgetKnown: true,
+    memoryTotalGb: 0,
+    maxDeviceMemoryGb: 0,
+    loadDeviceMemoryGb: 0,
+    systemRamAvailableGb: 64,
+  };
+  assert.equal(loadScopedGpu(mac, true), mac);
 });
