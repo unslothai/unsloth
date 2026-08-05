@@ -2,19 +2,17 @@
 
 peft's ``transformers_weight_conversion`` imports 3 names from
 ``transformers.conversion_mapping`` and 8 from ``transformers.core_model_loading``
-at module top level. Unsloth already stubs those submodules when they are
-absent, but a submodule that IS importable can still be missing individual
-symbols: transformers 5.0.0.dev0 ships ``conversion_mapping`` WITHOUT
-``_MODEL_TO_CONVERSION_PATTERN``, and peft's import then fails with
+at module top level. Unsloth stubs those submodules when absent, but an
+importable submodule can still lack individual symbols: transformers 5.0.0.dev0
+ships ``conversion_mapping`` WITHOUT ``_MODEL_TO_CONVERSION_PATTERN``, so
 
     ImportError: cannot import name '_MODEL_TO_CONVERSION_PATTERN'
                  from 'transformers.conversion_mapping'
 
-which took down `import unsloth` in Ministral_3_(3B)_Reinforcement_Learning.
+took down `import unsloth` in Ministral_3_(3B)_Reinforcement_Learning.
 
-The old guard only asked "is the submodule importable", so it did nothing here.
-Backfilling must be strictly additive -- a real transformers module must never
-be replaced, and symbols it already defines must never be overwritten.
+The old guard only asked whether the submodule imported. Backfilling must be
+strictly additive: never replace a real module, never overwrite a real symbol.
 """
 
 import importlib.util
@@ -73,7 +71,6 @@ def test_backfills_only_the_missing_symbol():
     )
     added = backfill(CONV)
     assert added == ("_MODEL_TO_CONVERSION_PATTERN",)
-    # The two real symbols must be untouched.
     assert mod.get_checkpoint_conversion_mapping is sentinel_fn
     assert mod.get_model_conversion_mapping is sentinel_fn
 
@@ -109,8 +106,7 @@ def test_idempotent():
 
 
 def test_core_model_loading_classes_are_subclassable():
-    # peft subclasses ConversionOps at module top, so a placeholder is not
-    # enough -- the backfilled object has to be a real class.
+    # peft subclasses ConversionOps at module top, so it must be a real class.
     _fake_real_module(CORE, dot_natural_key = lambda k: k)
     added = backfill(CORE)
     assert "dot_natural_key" not in added
@@ -140,12 +136,10 @@ def test_required_symbols_match_peft_import_list():
 
 # ---- saying so when the stand-in is not equivalent -----------------------
 #
-# The donors are inert by design: an empty pattern, mapping lookups that return
-# None. That is the truth on transformers 4 and on a transformers 5 that never
-# had the symbol. It is NOT the truth for a transformers 5 that has conversions
-# and renamed one, where peft would then skip work it should have done. Every
-# released 5.0.0 through 5.6.0 ships all eleven names, so this is a dev-build
-# path, but it must not be a silent one.
+# The donors are inert by design (empty pattern, lookups returning None), which
+# is the truth wherever the symbol never existed but NOT for a transformers 5
+# that has conversions and renamed one, where peft would skip work it should
+# have done. A dev-build path, but it must not be a silent one.
 
 
 def test_a_missing_mapping_function_is_announced():
@@ -165,8 +159,8 @@ def test_a_missing_conversion_class_is_announced():
 
 
 def test_only_the_pattern_is_quiet():
-    """An empty pattern is what peft starts from anyway, and it is the only
-    name ever seen missing. Warning about it would be noise on every load."""
+    """An empty pattern is what peft starts from anyway, so warning about it
+    would be noise on every load."""
     import warnings
 
     _fake_real_module(

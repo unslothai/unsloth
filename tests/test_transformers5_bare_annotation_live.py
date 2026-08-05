@@ -11,19 +11,14 @@ inherited default one:
     TypeError: non-default argument 'vision_config' follows default argument
                'problem_type'
 
-That fires while *importing* `vllm.transformers_utils.configs`, which takes
-down `import vllm` and, because unsloth imports vLLM, `import unsloth` too.
-It was seen in the wild as `unsloth: "ABSENT: TypeError"`.
+That fires while importing `vllm.transformers_utils.configs`, taking down
+`import vllm` and with it `import unsloth`, seen in the wild as
+`unsloth: "ABSENT: TypeError"`.
 
-The other tests for this fix assert on source text. This one reproduces the
-exact failing shape and checks the outcome, so it would catch the fix
-silently ceasing to work -- which is the failure mode that matters, and which
-source-level assertions cannot see.
-
-No vLLM install is needed: the config class above IS the reproduction, and
-building it by hand avoids pulling several GB to test four lines of
-behaviour. It skips on transformers 4.x, where subclasses are not converted
-to dataclasses and there is nothing to fix.
+The other tests for this fix assert on source text; this one reproduces the
+failing shape and checks the outcome, so it catches the fix silently ceasing
+to work. No vLLM install needed: the config class above IS the reproduction.
+Skips on transformers 4.x, where configs are not dataclasses.
 """
 
 import pytest
@@ -56,9 +51,8 @@ def _build(tag):
 def unpatched():
     """Remove the patch so the failure can be observed, then restore it.
 
-    Install it first: run on its own, this file reaches the fixture before
-    anything has imported unsloth, so there would be nothing to unwrap and the
-    control would skip itself rather than prove the failure is real.
+    Installed first: run on its own, this file reaches the fixture before
+    anything imported unsloth, leaving nothing to unwrap.
     """
     import unsloth  # noqa: F401 - installs the patch we are about to remove
 
@@ -78,8 +72,8 @@ def unpatched():
 
 
 def test_the_failure_is_real_without_the_fix(unpatched):
-    """Guards the premise. If this ever stops raising on a transformers that
-    does NOT build configs kw_only, the fix has stopped testing anything."""
+    """Guards the premise: if this stops raising on a non-kw_only
+    transformers, the fix has stopped testing anything."""
     from unsloth.import_fixes import (
         _transformers_configs_are_kw_only,
         fix_transformers5_bare_annotation_configs,
@@ -98,12 +92,11 @@ def test_the_failure_is_real_without_the_fix(unpatched):
 
 
 def test_the_fix_stands_down_when_transformers_handles_it():
-    """kw_only=True fixed this upstream. Patching anyway would be an untested
-    monkey patch on every config subclass for no benefit.
+    """kw_only=True fixed this upstream, so patching anyway would be an
+    untested monkey patch on every config subclass for no benefit.
 
-    5.5.1, not 5.6.0: the change was backported, landing on the 5.5 release
-    branch at 5.5.1 and on main at 5.6.0. Since 5.6.0 is the next release after
-    the 5.5.x line, a single >= 5.5.1 threshold covers both.
+    5.5.1, not 5.6.0: the change landed on the 5.5 branch at 5.5.1 and on main
+    at 5.6.0, and 5.6.0 follows the 5.5.x line, so >= 5.5.1 covers both.
     """
     from unsloth.import_fixes import (
         _transformers_configs_are_kw_only,
@@ -144,7 +137,7 @@ def test_applying_twice_is_a_no_op():
 
 def test_ordinary_configs_are_unaffected():
     """The patch runs for EVERY config subclass, so it must not disturb the
-    overwhelming majority that were always fine."""
+    majority that were always fine."""
     from unsloth.import_fixes import fix_transformers5_bare_annotation_configs
     from transformers.configuration_utils import PretrainedConfig
 

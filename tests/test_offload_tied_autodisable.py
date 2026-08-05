@@ -1,15 +1,13 @@
-"""Tests _resolve_offload_embedding in vision.py.
+"""Tests _resolve_offload_embedding in vision.py. No GPU needed.
 
 `offload_embedding = True` on a model with tied word embeddings used to raise
 NotImplementedError and abort the load. It is a VRAM optimisation, not a
-correctness switch, so a model it cannot help should turn it off and carry on
--- which is already what the fast_inference case does a few lines earlier.
+correctness switch, so it should turn itself off instead, as the
+fast_inference case a few lines earlier already does.
 
-Two shipped notebooks (NeMo-Gym-Sudoku, NeMo-Gym-Multi-Environment) pass
-offload_embedding = True against unsloth/Qwen2.5-1.5B-Instruct, which ties its
-embeddings, and died at model load because of the raise.
-
-No GPU needed.
+Two shipped notebooks (NeMo-Gym-Sudoku, NeMo-Gym-Multi-Environment) died at
+model load this way: offload_embedding = True against
+unsloth/Qwen2.5-1.5B-Instruct, which ties its embeddings.
 """
 
 import ast, os
@@ -85,13 +83,12 @@ def test_tied_model_disables_offload_instead_of_raising():
 
 
 def test_opaque_model_leaves_request_alone():
-    # Cannot inspect it, so do not guess -- and above all do not crash.
+    # Cannot inspect it, so do not guess, and do not crash.
     assert resolve(_Opaque(), True) is True
 
 
 def test_wsl_and_windows_are_untouched():
-    # These platforms skip the offload block entirely; probing embeddings there
-    # would be a code path that never used to run.
+    # These platforms skip the offload block entirely.
     for var in ("WSL_DISTRO_NAME", "WSL_INTEROP"):
         old = os.environ.get(var)
         os.environ[var] = "1"
@@ -114,7 +111,7 @@ def test_wsl_and_windows_are_untouched():
 
 def test_resolved_before_multidevice_hooks():
     # _attach_bnb_multidevice_hooks returns early while offload_embedding is
-    # still True, so resolving after it would silently skip hook attachment.
+    # still True, so resolving after it would skip hook attachment.
     call = _SRC.index("offload_embedding = _resolve_offload_embedding(")
     # Anchor on the indented CALL, not the module-level `def`.
     hooks = _SRC.index("\n                _attach_bnb_multidevice_hooks(")
