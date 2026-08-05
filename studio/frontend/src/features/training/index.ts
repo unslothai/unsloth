@@ -118,6 +118,11 @@ export {
   isUntrainableModelFormat,
 } from "./lib/model-support";
 export {
+  modelInventoryIdentityMatches,
+  selectModelCacheReference,
+} from "./lib/model-cache-reference";
+export type { ModelCacheReference } from "./lib/model-cache-reference";
+export {
   inferTrainingModelTypeFromFlags,
   type ModelTypeCapabilityFlags,
 } from "./lib/model-type-capabilities";

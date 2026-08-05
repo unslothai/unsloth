@@ -666,7 +666,10 @@ def _reject_untrainable_model_request(
         model_local_path = (
             normalize_path(request.model_local_path) if request.model_local_path else None
         )
-        from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
+        from hub.utils.hf_cache_state import (
+            latest_snapshot_from_cache_path,
+            with_load_subdirs,
+        )
 
         snapshot = None
         offline_mode = hf_env_offline()
@@ -675,7 +678,7 @@ def _reject_untrainable_model_request(
                 request.model_snapshot_path,
                 "model",
                 canonical_model_repo_id(actual_model_repo_id or request.model_name),
-                ("config.json", "adapter_config.json"),
+                with_load_subdirs(request.model_name, ("config.json", "adapter_config.json")),
             )
         elif request.model_known_cached or request.model_local_path or offline_mode:
             from core.training.training import _resolve_model_snapshot

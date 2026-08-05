@@ -5,9 +5,7 @@ import {
   type CachedDatasetRepo,
   type CachedModelRepo,
   type LocalModelInfo,
-  type ModelInventoryFormat,
   fetchInventorySource,
-  normalizeModelIdentity,
   useDeviceInventoryStore,
   useHfTokenStore,
   useInventoryVersion,
@@ -20,7 +18,7 @@ import {
   createDatasetCacheUsabilityIdentity,
   datasetCacheUsabilityIdentitiesEqual,
   isLocalTrainingModelSelection,
-  isTrainableModelFormat,
+  selectModelCacheReference,
   trainingDatasetCacheRejections,
   useTrainingConfigStore,
 } from "@/features/training";
@@ -28,11 +26,6 @@ import { translate } from "@/i18n";
 import { toast } from "@/lib/toast";
 import { useEffect } from "react";
 import { useShallow } from "zustand/react/shallow";
-
-type ModelCacheReference = {
-  localPath: string | null;
-  modelFormat: ModelInventoryFormat | null;
-};
 
 function findDatasetReference(
   rows: readonly CachedDatasetRepo[],
@@ -70,54 +63,6 @@ function datasetReferenceInventoryIdentity(
     sizeBytes: reference.size_bytes,
     partial: reference.partial,
     partialTransport: reference.partial_transport,
-  };
-}
-
-function modelIdentityMatches(
-  row: CachedModelRepo | LocalModelInfo,
-  key: string,
-): boolean {
-  return (
-    ("repo_id" in row && normalizeModelIdentity(row.repo_id) === key) ||
-    ("model_id" in row &&
-      row.model_id != null &&
-      normalizeModelIdentity(row.model_id) === key) ||
-    (row.load_id != null && normalizeModelIdentity(row.load_id) === key) ||
-    ("id" in row && normalizeModelIdentity(row.id) === key)
-  );
-}
-
-function findModelReference(
-  cachedRows: readonly CachedModelRepo[],
-  localRows: readonly LocalModelInfo[],
-  model: string,
-): ModelCacheReference | null {
-  const key = normalizeModelIdentity(model);
-  const cachedMatch = cachedRows.find(
-    (row) =>
-      !row.partial &&
-      isTrainableModelFormat(row.model_format) &&
-      modelIdentityMatches(row, key),
-  );
-  if (cachedMatch) {
-    return {
-      localPath: cachedMatch.cache_path ?? null,
-      modelFormat: cachedMatch.model_format ?? null,
-    };
-  }
-  const localMatch = localRows.find(
-    (row) =>
-      row.source === "hf_cache" &&
-      !row.partial &&
-      isTrainableModelFormat(row.model_format) &&
-      modelIdentityMatches(row, key),
-  );
-  if (!localMatch) {
-    return null;
-  }
-  return {
-    localPath: localMatch.path,
-    modelFormat: localMatch.model_format ?? null,
   };
 }
 
@@ -228,7 +173,12 @@ function reconcileModelReference(
   if (current.selectedModel !== expectedModel) {
     return;
   }
-  const reference = findModelReference(cachedRows, localRows, expectedModel);
+  const reference = selectModelCacheReference(
+    cachedRows,
+    localRows,
+    expectedModel,
+    expectedLocalPath,
+  );
   if (wasKnownCached) {
     if (!current.modelKnownCached) {
       return;
