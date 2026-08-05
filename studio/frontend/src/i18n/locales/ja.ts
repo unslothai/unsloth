@@ -114,7 +114,7 @@ export const ja = {
       chat: "チャット",
       connections: "接続",
       apiKeys: "API",
-      about: "Unsloth について",
+      about: "情報",
       voice: "音声",
       data: "データ",
       agents: "エージェント",
