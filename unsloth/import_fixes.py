@@ -466,8 +466,12 @@ def _transformers_configs_are_kw_only(PretrainedConfig):
     "non-default follows default" rule this fix exists for. Read from the
     source rather than pinned to a version, since the change was itself
     backported: 5.5.1 got it on the 5.5 release branch, 5.6.0 on main.
-    Unreadable source returns False, so the fix still applies and the worst
-    case is a harmless backfill.
+
+    Source is not always readable: a stripped or frozen install ships
+    bytecode only. Answering False there would patch a 5.5.1+ install that
+    needs nothing, and the backfill runs before the upstream hook, so fields
+    upstream means to be required keyword arguments would silently gain a
+    `None` default. Fall back to the version window instead.
     """
     import inspect
 
@@ -478,7 +482,29 @@ def _transformers_configs_are_kw_only(PretrainedConfig):
     try:
         return "kw_only=True" in inspect.getsource(hook)
     except Exception:
+        pass
+    return not _transformers_needs_bare_annotation_fix()
+
+
+def _transformers_needs_bare_annotation_fix():
+    """Is transformers inside 5.4.0 to 5.5.0, the only window that has the
+    dataclass ordering rule and no `kw_only=True`?
+
+    A version this cannot read or parse answers False. Without positive
+    evidence that the install needs the patch, the better failure is the loud
+    `TypeError` the patch would have prevented, not a config that quietly
+    accepts a missing required field.
+    """
+    try:
+        import transformers
+        # TrueVersion, not this module's Version(): that wrapper raises on
+        # anything its regex cannot match, and it rewrites pre-release
+        # suffixes upwards, which moves builds across the window edges.
+        installed = TrueVersion(str(transformers.__version__))
+    except Exception:
         return False
+    # Half open: 5.5.0.post1 and other 5.5.0 rebuilds still need the fix.
+    return TrueVersion("5.4.0") <= installed < TrueVersion("5.5.1")
 
 
 def fix_transformers5_bare_annotation_configs():

@@ -15,6 +15,8 @@ unsloth_zoo, so a dependency-light run would fail before reaching the helper.
 """
 
 import importlib.util
+import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -31,7 +33,9 @@ def _load_module():
     return module
 
 
-_backfill_dataclass_defaults = _load_module()._backfill_dataclass_defaults
+_MODULE = _load_module()
+_backfill_dataclass_defaults = _MODULE._backfill_dataclass_defaults
+_transformers_configs_are_kw_only = _MODULE._transformers_configs_are_kw_only
 
 
 def test_an_inherited_default_is_not_shadowed():
@@ -75,6 +79,80 @@ def test_an_inherited_method_of_the_same_name_counts_too():
 
     assert _backfill_dataclass_defaults(Child) == []
     assert Child().helper() == 1
+
+
+class _KwOnlyConfig:
+    """Stands in for transformers 5.5.1+, whose hook passes kw_only=True."""
+    def __init_subclass__(cls, **kwargs):
+        _fake_dataclass(cls, kw_only=True)
+
+
+class _OrderedConfig:
+    """Stands in for 5.4.0 to 5.5.0, whose hook does not."""
+    def __init_subclass__(cls, **kwargs):
+        _fake_dataclass(cls)
+
+
+def _fake_dataclass(cls, **kwargs):
+    return cls
+
+
+def _config_without_readable_source():
+    """A hook whose source cannot be read, as on a stripped or frozen install.
+
+    Compiling under a filename that is not on disk is the honest reproduction:
+    the class object is fine, `inspect.getsource` is what fails.
+    """
+    namespace = {}
+    exec(compile(
+        "class Config:\n"
+        "    def __init_subclass__(cls, **kwargs):\n"
+        "        pass\n",
+        "<unsloth-test-no-source-on-disk>", "exec"), namespace)
+    return namespace["Config"]
+
+
+def _pretend_transformers_is(monkeypatch, version):
+    module = types.ModuleType("transformers")
+    module.__version__ = version
+    monkeypatch.setitem(sys.modules, "transformers", module)
+
+
+def test_the_source_beats_the_version_fallback(monkeypatch):
+    """The version is only a fallback. Where the source can be read it decides,
+    because the change was backported and the version alone cannot see that."""
+    _pretend_transformers_is(monkeypatch, "5.4.0")
+    assert _transformers_configs_are_kw_only(_KwOnlyConfig) is True
+    _pretend_transformers_is(monkeypatch, "5.5.1")
+    assert _transformers_configs_are_kw_only(_OrderedConfig) is False
+
+
+def test_unreadable_source_on_5_5_1_stands_down(monkeypatch):
+    """The case that matters. Returning False here would patch a transformers
+    that already passes kw_only=True, and the backfill would then give a None
+    default to fields upstream requires as keyword arguments."""
+    _pretend_transformers_is(monkeypatch, "5.5.1")
+    assert _transformers_configs_are_kw_only(_config_without_readable_source())
+
+
+def test_unreadable_source_inside_the_window_still_patches(monkeypatch):
+    """5.4.0 to 5.5.0 is where the fix is needed, source readable or not."""
+    for version in ("5.4.0", "5.5.0", "5.5.0.post1"):
+        _pretend_transformers_is(monkeypatch, version)
+        assert not _transformers_configs_are_kw_only(
+            _config_without_readable_source()), version
+
+
+def test_an_unreadable_version_does_not_raise(monkeypatch):
+    """Dev builds, git suffixes and vendored forks can carry a version string
+    packaging will not parse, and a missing transformers must not raise out of
+    a probe either. No evidence of the window means stand down."""
+    for version in ("not-a-version", "", None):
+        _pretend_transformers_is(monkeypatch, version)
+        assert _transformers_configs_are_kw_only(
+            _config_without_readable_source()), repr(version)
+    monkeypatch.setitem(sys.modules, "transformers", None)
+    assert _transformers_configs_are_kw_only(_config_without_readable_source())
 
 
 if __name__ == "__main__":
