@@ -84,3 +84,22 @@ test("the persisted transport survives a probe that omits it too", () => {
     { transport: "http", cancelTransport: "xet" },
   );
 });
+
+test("a reported null clears a marker left by an earlier run", () => {
+  // /active-downloads always carries the field, so null is the backend saying
+  // this run has no marker, not a source that cannot report one.
+  assert.deepEqual(
+    adoptedTransports(
+      { transport: "http", cancelTransport: null },
+      { transport: "xet", cancelTransport: "xet" },
+    ),
+    { transport: "http", cancelTransport: undefined },
+  );
+});
+
+test("a reported null with nothing stored still holds no marker", () => {
+  assert.deepEqual(
+    adoptedTransports({ transport: "http", cancelTransport: null }, undefined),
+    { transport: "http", cancelTransport: undefined },
+  );
+});

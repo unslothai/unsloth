@@ -98,9 +98,11 @@ async function adoptActiveModelDownloads(): Promise<void> {
       safeGeneration(download.generation),
       download.state,
       isResolvedTransport(download.transport) ? download.transport : undefined,
+      // null, not undefined: this endpoint always reports the marker, so "no
+      // marker" has to clear one a previous run left in storage.
       isResolvedTransport(download.cancel_transport)
         ? download.cancel_transport
-        : undefined,
+        : null,
     );
   }
 }
@@ -123,9 +125,11 @@ async function adoptActiveDatasetDownloads(): Promise<void> {
       safeGeneration(download.generation),
       download.state,
       isResolvedTransport(download.transport) ? download.transport : undefined,
+      // null, not undefined: this endpoint always reports the marker, so "no
+      // marker" has to clear one a previous run left in storage.
       isResolvedTransport(download.cancel_transport)
         ? download.cancel_transport
-        : undefined,
+        : null,
     );
   }
 }

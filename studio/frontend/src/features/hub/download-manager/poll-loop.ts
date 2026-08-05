@@ -592,7 +592,7 @@ export async function startJob(
     generation?: number;
     state?: DownloadJobState;
     transport?: ResolvedTransport;
-    cancelTransport?: ResolvedTransport;
+    cancelTransport?: ResolvedTransport | null;
   } = {},
 ): Promise<void> {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
@@ -921,7 +921,9 @@ export function adoptJob(
   generation?: number,
   state?: DownloadJobState,
   transport?: ResolvedTransport,
-  cancelTransport?: ResolvedTransport,
+  // null is the backend reporting no marker, which must clear a stored one;
+  // undefined is a caller that cannot report one at all.
+  cancelTransport?: ResolvedTransport | null,
 ): void {
   const key = jobKeyOf(req.kind, req.repoId, req.variant);
   if (runtimeRegistry.runtimes.get(key)?.pollingStarted) {
@@ -933,7 +935,9 @@ export function adoptJob(
     if (transport && probeDescribesCurrentRun(known, generation)) {
       patchJob(key, {
         transport,
-        ...(cancelTransport ? { cancelTransport } : {}),
+        ...(cancelTransport === undefined
+          ? {}
+          : { cancelTransport: cancelTransport ?? undefined }),
         ...(Number.isSafeInteger(known) ? {} : { serverGeneration: generation }),
       });
     }
@@ -944,7 +948,7 @@ export function adoptJob(
     generation,
     state,
     ...(transport ? { transport } : {}),
-    ...(cancelTransport ? { cancelTransport } : {}),
+    ...(cancelTransport === undefined ? {} : { cancelTransport }),
   });
 }
 
@@ -988,7 +992,7 @@ export async function probeAndAdopt(
           isResolvedTransport(active.transport) ? active.transport : undefined,
           isResolvedTransport(active.cancel_transport)
             ? active.cancel_transport
-            : undefined,
+            : null,
         );
       }
       return;
@@ -1011,7 +1015,7 @@ export async function probeAndAdopt(
         isResolvedTransport(active.transport) ? active.transport : undefined,
         isResolvedTransport(active.cancel_transport)
           ? active.cancel_transport
-          : undefined,
+          : null,
       );
     }
   } catch (error) {

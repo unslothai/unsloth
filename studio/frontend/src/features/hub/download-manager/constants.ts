@@ -63,19 +63,31 @@ export type AdoptedTransports = {
   cancelTransport?: ResolvedTransport;
 };
 
+/** What a probe says about the pair. `cancelTransport: null` is the backend
+ * reporting no marker, which is not the same as a source that cannot report one
+ * at all (undefined). */
+export type ReportedTransports = {
+  transport?: ResolvedTransport;
+  cancelTransport?: ResolvedTransport | null;
+};
+
 /** What an adopted job records for its transport pair: what the backend just
  * reported, else what was restored from storage.
  *
  * Both fields together, so a probe carrying only one cannot erase the other.
  * `/download-status` has no cancel marker at all, and it can win the hydration
- * race against `/active-downloads`, which does. */
+ * race against `/active-downloads`, which does. A reported null still clears a
+ * stored marker: the run being adopted is the one the backend just described. */
 export function adoptedTransports(
-  reported: AdoptedTransports,
+  reported: ReportedTransports,
   existing: AdoptedTransports | undefined,
 ): AdoptedTransports {
   return {
     transport: reported.transport ?? existing?.transport,
-    cancelTransport: reported.cancelTransport ?? existing?.cancelTransport,
+    cancelTransport:
+      reported.cancelTransport === undefined
+        ? existing?.cancelTransport
+        : (reported.cancelTransport ?? undefined),
   };
 }
 
