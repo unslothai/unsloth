@@ -199,9 +199,10 @@ from .import_fixes import (
     patch_accelerate_recursively_apply,
 )
 
-# MUST be first: installs the PretrainedConfig guard before anything
-# imports vLLM, whose config classes otherwise raise TypeError at
-# import time under transformers 5.x and take `import unsloth` down.
+# Runs early: installs the PretrainedConfig guard before anything imports
+# vLLM's config modules. `import vllm` is lazy, so those classes are only
+# defined on demand, but once they are, transformers 5.4.0 to 5.5.0 raise
+# TypeError at class-definition time and take `import unsloth` down.
 fix_transformers5_bare_annotation_configs()
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()

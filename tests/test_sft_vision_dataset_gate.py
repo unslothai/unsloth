@@ -9,7 +9,7 @@ and transformers strips every column:
     signature ... The following columns have been ignored: [text]
 
 Magistral_(24B)-Reasoning-Conversational hits this; it pins trl==0.22.2.
-TRL 0.25.1+ keys the same decisions off `_is_vision_dataset`, which this
+TRL 0.24.0+ keys the same decisions off `_is_vision_dataset`, which this
 back-ports.
 
 The patch is textual, so the tests run it over the actual sft_trainer.py of
@@ -60,7 +60,7 @@ TRL_022_EXCERPT = textwrap.dedent('''\
                 train_dataset = self._prepare_dataset(train_dataset)
 ''')
 
-# TRL 0.25.1+ already computes the flag itself.
+# TRL 0.24.0+ already computes the flag itself.
 TRL_MODERN_EXCERPT = textwrap.dedent('''\
     class SFTTrainer:
         def __init__(self, train_dataset, args, data_collator, model):

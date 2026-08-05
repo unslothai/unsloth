@@ -765,7 +765,7 @@ def _backport_vision_dataset_gate(RLTrainer_source):
     signature columns (done above) is not enough, because with preparation
     skipped none of those tokenized columns are ever produced.
 
-    TRL 0.25.1+ fixed this by keying the decisions off `_is_vision_dataset`,
+    TRL 0.24.0+ fixed this by keying the decisions off `_is_vision_dataset`,
     so back-port precisely that. No-op when TRL already defines the flag, so
     newer versions keep their own logic.
 
@@ -779,7 +779,7 @@ def _backport_vision_dataset_gate(RLTrainer_source):
     RLTrainer_source = RLTrainer_source.replace(
         anchor,
         anchor
-        + "        # Unsloth: back-port of TRL 0.25.1's dataset-based check, so a\n"
+        + "        # Unsloth: back-port of TRL 0.24.0's dataset-based check, so a\n"
           "        # text-only fine-tune of a VLM is prepared and collated as text.\n"
           '        self._is_vision_dataset = "image" in dataset_sample or "images" in dataset_sample\n',
         1,
@@ -1818,7 +1818,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             RLTrainer_source = RLTrainer_source.replace(_vlm_check_original, _vlm_check_patched)
 
         # Fix TRL 0.22.x: VLM models with text-only datasets. It checks _is_vlm
-        # (model type), not _is_vision_dataset (added in 0.25.1+); with
+        # (model type), not _is_vision_dataset (added in 0.24.0+); with
         # _is_vlm=True the vision-only signature columns don't overlap tokenized
         # text columns. Fix: merge both column sets into the VLM branch. Extra
         # columns are ignored by _remove_unused_columns (raises only on zero match).

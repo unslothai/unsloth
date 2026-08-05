@@ -462,11 +462,12 @@ def _backfill_dataclass_defaults(cls):
 def _transformers_configs_are_kw_only(PretrainedConfig):
     """Does this transformers already build config dataclasses `kw_only`?
 
-    transformers 5.6.0 started passing `kw_only=True`, which removes the
+    transformers 5.5.1 started passing `kw_only=True`, which removes the
     "non-default follows default" rule this fix exists for. Read from the
-    source rather than pinned to a version, since the change could be
-    backported. Unreadable source returns False, so the fix still applies and
-    the worst case is a harmless backfill.
+    source rather than pinned to a version, since the change was itself
+    backported: 5.5.1 got it on the 5.5 release branch, 5.6.0 on main.
+    Unreadable source returns False, so the fix still applies and the worst
+    case is a harmless backfill.
     """
     import inspect
 
@@ -486,16 +487,16 @@ def fix_transformers5_bare_annotation_configs():
     vLLM's ``transformers_utils/configs/deepseek_vl2.py`` declares
     ``vision_config: VisionEncoderConfig`` with no default. Under transformers
     5.x that raises ``TypeError`` while *importing*
-    ``vllm.transformers_utils.configs``, which takes down ``import vllm`` and,
-    because unsloth imports vLLM, ``import unsloth`` as well -- observed in
-    the wild as ``unsloth: "ABSENT: TypeError"``.
+    ``vllm.transformers_utils.configs``, which is what fails once unsloth
+    reaches vLLM -- observed in the wild as ``unsloth: "ABSENT: TypeError"``.
 
     Patches ``PretrainedConfig.__init_subclass__`` rather than rewriting
     vLLM's source, so it covers every affected class in any vLLM version
-    instead of one file. No-ops on transformers 4.x, which does not convert
-    config subclasses to dataclasses at all, and on 5.6.0+, which passes
+    instead of one file. No-ops on transformers below 5.4.0, which has no
+    ``PretrainedConfig.__init_subclass__`` and does not convert config
+    subclasses to dataclasses at all, and on 5.5.1+, which passes
     ``kw_only=True`` to the dataclass and so has no ordering rule left to
-    break. The window that needs this is 5.0.0 to 5.5.0.
+    break. The window that needs this is 5.4.0 to 5.5.0.
     """
     try:
         import transformers
