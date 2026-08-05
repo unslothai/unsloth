@@ -1414,9 +1414,14 @@ def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "s
     if not program:
         return set()
     # cmd searches PATHEXT, so the suffix is optional: `...\PowerShell\7\pwsh`
-    # launches the same program. os.path.basename does not split a backslash off
-    # Windows, and %VAR% is expanded before the path is read.
-    stem = os.path.splitext(program[-1])[0]
+    # launches the same program. Any OTHER suffix names a document opened
+    # through its file association, so `My Documents\powershell.docx` is a file
+    # that happens to be called powershell, not a shell.
+    stem, ext = os.path.splitext(program[-1])
+    if ext and ext.lower() not in _WINDOWS_EXE_SUFFIXES:
+        return set()
+    # os.path.basename does not split a backslash off Windows, and %VAR% is
+    # expanded before the path is read.
     base = os.path.basename(stem.replace("\\", "/")).lower()
     return {base} if base in blocked_names else set()
 
@@ -1431,7 +1436,11 @@ def _is_start_title(token: str, lexed_posix: bool) -> bool:
     one token further on instead.
     """
     if lexed_posix:
-        return token == ""
+        # The marks are gone, so a title is provable only by the whitespace it
+        # holds: nothing else survives lexing as one token. A bare word is taken
+        # as the program, since `start notepad readme.txt` is the ordinary shape
+        # and guessing the other way blocks the argument.
+        return token == "" or any(char.isspace() for char in token)
     return len(token) >= 2 and token[0] == '"' == token[-1]
 
 
@@ -1794,8 +1803,25 @@ def _find_blocked_commands(command: str) -> set[str]:
     for i, token in enumerate(tokens):
         if os.path.basename(token).lower() not in ("start", "start.exe"):
             continue
+        # Only a START the shell RUNS. `echo start "job" powershell` prints
+        # three words, and treating them as a launch hard-blocks text output.
+        # Command position cannot be taken from the main scan here: the outer
+        # shell runs only token 0 of `cmd //c start "" powershell`, which is the
+        # very command this exists for. So: first word, after a separator, or
+        # handed to cmd by its own /c or /k.
+        previous = tokens[i - 1] if i else ""
+        if i and not (
+            # `echo hi; start x` keeps the `;` glued on under the cmd lexer,
+            # which never splits it off, so test the tail as well as the token.
+            _looks_like_separator(previous)
+            or previous.endswith((";", "&", "|", "(", "`"))
+            or previous in _SHELL_KEYWORDS_AS_SEP
+            or _win_switch(previous.lower()) in ("/c", "/k")
+        ):
+            continue
         j = i + 1
         titled = False
+        title_at = -1
         while j < len(tokens):
             switch = _win_switch(tokens[j].lower())
             if _is_start_switch(tokens[j].lower()):
@@ -1807,9 +1833,15 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # stepped over, which read `start "job" powershell` as a program
                 # named job and left powershell in argument position.
                 titled = True
+                title_at = j
                 j += 1
             else:
                 break
+        if titled and lexed_posix:
+            # Posix proves a title only by its whitespace, and a quoted COMMAND
+            # LINE looks the same: `start "ssh a@b"` has no program behind it
+            # because that was the program. Screened as well as skipped.
+            blocked |= _screen_cmd_payload(_unquote(tokens[title_at]))
         if j < len(tokens):
             program = _unquote(tokens[j])
             blocked |= _screen_cmd_payload(program)
@@ -1817,19 +1849,6 @@ def _find_blocked_commands(command: str) -> set[str]:
             # followed by the program, and `start "" "C:\Program Files\...
             # \pwsh.exe"` is one quoted word until it is re-lexed.
             blocked |= _blocked_quoted_program(program, _BLOCKED_COMMANDS)
-            if (
-                lexed_posix
-                and not titled
-                and j + 1 < len(tokens)
-                and any(char.isspace() for char in tokens[j])
-            ):
-                # Posix dropped the quote marks, so a title is only still
-                # provable by the whitespace it holds: nothing else survives
-                # lexing as one token. A bare word is taken as the program,
-                # since `start notepad powershell.txt` is the ordinary shape and
-                # guessing there blocks the argument. Under cmd the marks
-                # survive and no guess is needed.
-                blocked |= _find_blocked_commands(tokens[j + 1])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

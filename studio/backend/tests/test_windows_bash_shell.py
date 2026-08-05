@@ -524,3 +524,64 @@ def test_an_unquoted_start_program_keeps_its_arguments(monkeypatch):
     assert not tools._find_blocked_commands("cmd //c start notepad powershell -Command ls")
     # A space could only have come from quoting, so that one is still a title.
     assert tools._find_blocked_commands('cmd //c start "my window" pwsh -Command ls')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        r'cmd //c start "" "C:\Users\me\My Documents\powershell.docx"',
+        r'start "" "C:\Users\me\My Reports\rm.docx"',
+        r'cmd /c start "" "C:\Users\me\My Notes\curl.pdf"',
+    ],
+)
+def test_a_document_named_after_a_shell_is_still_a_document(windows_terminal, command):
+    # Dropping the .exe requirement so PATHEXT spellings resolve also accepted
+    # every other suffix, so a file called powershell.docx read as the program.
+    # cmd hands a non-executable suffix to its file association, never runs it.
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd //c start "my window" /min powershell -Command ls',
+        'cmd //c start "my window" /b ssh a@b',
+        'start "my window" /min pwsh -Command ls',
+    ],
+)
+def test_switches_may_follow_the_title(windows_terminal, command):
+    # START takes its title first and its switches after, so the walk has to
+    # keep alternating rather than stop at the title. Only the cmd lexer kept
+    # the marks that prove one, so this went unread under Git Bash.
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'echo start "" powershell',
+        'echo start "job" powershell -Command ls',
+        'cmd //c echo start "" powershell',
+    ],
+)
+def test_a_printed_start_is_not_a_launched_one(windows_terminal, command):
+    # The word has to sit where the shell would RUN it. Screening it anywhere
+    # turns printing the line into a hard block, and this scan cannot borrow the
+    # main loop's command position: the outer shell runs only token 0 of
+    # `cmd //c start "" powershell`, which is the case the walk exists for.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_a_quoted_command_line_is_not_only_a_title(monkeypatch):
+    # Under bash a title is provable only by its whitespace, and a quoted
+    # command line looks identical: `start "ssh a@b"` has no program after it
+    # because that WAS the program. Screened as well as skipped over.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert "ssh" in tools._find_blocked_commands('cmd //c start "ssh a@b"')
+    assert "rm" in tools._find_blocked_commands("cmd //c start 'sudo rm -rf /'")
