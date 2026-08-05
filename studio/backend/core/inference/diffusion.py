@@ -845,9 +845,7 @@ class DiffusionBackend:
             elsewhere = try_to_load_from_cache(repo_id, gguf_filename, cache_dir = None)
             if isinstance(elsewhere, str) and Path(elsewhere).is_file():
                 try:
-                    return hf_hub_download(
-                        repo_id, gguf_filename, token = hf_token, cache_dir = None
-                    )
+                    return hf_hub_download(repo_id, gguf_filename, token = hf_token, cache_dir = None)
                 except Exception:  # noqa: BLE001 — revalidation is a bonus, never a new failure
                     return elsewhere
         return hf_hub_download(repo_id, gguf_filename, token = hf_token, cache_dir = cache_dir)
