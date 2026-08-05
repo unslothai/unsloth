@@ -150,7 +150,11 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./types";
-import { type CatalogGroup, artifactForRepoId } from "./model-catalog";
+import {
+  type CatalogGroup,
+  artifactForRepoId,
+  curatedSizeBytesFor,
+} from "./model-catalog";
 import { describeVariantListingError } from "./variant-listing-error";
 import {
   shouldMountVariantExpander,
@@ -2371,8 +2375,13 @@ export function HubModelPicker({
         downloads: 0,
         likes: 0,
         isGguf: isKnownGgufRepo(id),
+        // Judge device fit on the catalog's own size. Most curated ids carry no
+        // "<n>B" token, so without it the fit filters read them as unsized and
+        // requireKnown hid them; the ones outside the unsloth listing (SDXL,
+        // FLUX bf16, Wan, ...) never get a row to correct that.
+        curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined,
       }));
-  }, [models, formatFilter, isKnownGgufRepo, isMac, task]);
+  }, [catalog, models, formatFilter, isKnownGgufRepo, isMac, task]);
 
   // Recommended suggests GGUF anywhere; on Mac also MLX and safetensors. The
   // "recommended" sort also drops models too big for the device. Already-

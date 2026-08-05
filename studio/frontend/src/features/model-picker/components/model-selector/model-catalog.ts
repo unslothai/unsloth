@@ -499,6 +499,17 @@ export function artifactForRepoId(
   return group ? { group, artifact } : null;
 }
 
+const BYTES_PER_GB = 1024 ** 3;
+
+/** The curated resident size (bytes) of an exact artifact id, or undefined when the catalog does not size it (every GGUF entry: its quant ladder self-fits). Lets a curated row be judged on catalog data instead of an id "<n>B" guess. */
+export function curatedSizeBytesFor(
+  repoId: string,
+  catalog: CatalogGroup[],
+): number | undefined {
+  const gb = artifactForRepoId(repoId, catalog)?.artifact.approxSizeGb;
+  return gb && gb > 0 ? gb * BYTES_PER_GB : undefined;
+}
+
 /** Back-compat: the flat ModelOption list the ModelSelector `models` prop expects, one option per ARTIFACT. */
 export function catalogToModelOptions(catalog: CatalogGroup[]): ModelOption[] {
   const options: ModelOption[] = [];

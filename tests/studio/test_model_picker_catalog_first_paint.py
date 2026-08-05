@@ -36,6 +36,9 @@ def test_curated_catalog_becomes_rows_without_a_request():
     # Same format policy as the listing rows, so nothing vanishes when one lands.
     assert "isRecommendableFormat(id, isG, isMac)" in seed
     assert "matchesFormatFilter(id, isG, formatFilter)" in seed
+    # Device fit reads the catalog's own size, not an id "<n>B" guess
+    # (see recommended-catalog-seeds.test.ts).
+    assert "curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined," in seed
 
 
 def test_listing_takes_over_each_id_once_it_reports_it():

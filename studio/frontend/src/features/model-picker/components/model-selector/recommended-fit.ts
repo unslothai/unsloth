@@ -127,14 +127,18 @@ export function fitsDevice(opts: {
  * MLX repos: always the params-based smallest-quant estimate, matching the
  * VRAM badge's quantized-load assumption; their estimatedSizeBytes is the
  * full-precision checkpoint and would wrongly hide models the quantized load
- * path can run. Anything unsizable is hidden (requireKnown) so over-budget
- * models with no metadata don't slip through. An unknown device budget keeps
- * everything. */
+ * path can run. A curated row carries `curatedSizeBytes`, the catalog's own
+ * measured size for that exact artifact, which outranks both: it is real data,
+ * where the others are estimates (and the id guess is absent for 25 of the 26
+ * sized catalog artifacts, whose ids carry no "<n>B" token). Anything still
+ * unsizable is hidden (requireKnown) so over-budget models with no metadata
+ * don't slip through. An unknown device budget keeps everything. */
 export function hfModelFitsDevice(
   model: {
     id: string;
     totalParams?: number;
     estimatedSizeBytes?: number;
+    curatedSizeBytes?: number;
     isGguf?: boolean;
   },
   gpu: {
@@ -151,9 +155,11 @@ export function hfModelFitsDevice(
     return true;
   const params = model.totalParams ?? paramsFromId(model.id);
   const quantBytes = params ? estimateQuantBytes(params) : undefined;
-  const sizeBytes = isGgufId(model.id, model.isGguf)
-    ? (model.estimatedSizeBytes ?? quantBytes)
-    : (quantBytes ?? model.estimatedSizeBytes);
+  const sizeBytes =
+    model.curatedSizeBytes ??
+    (isGgufId(model.id, model.isGguf)
+      ? (model.estimatedSizeBytes ?? quantBytes)
+      : (quantBytes ?? model.estimatedSizeBytes));
   return fitsDevice({
     sizeBytes,
     gpuGb: gpu.memoryTotalGb,

@@ -5,6 +5,11 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  IMAGE_CATALOG,
+  VIDEO_CATALOG,
+  curatedSizeBytesFor,
+} from "../src/features/model-picker/components/model-selector/model-catalog.ts";
+import {
   hfModelFitsDevice,
   orderRecommendedRows,
 } from "../src/features/model-picker/components/model-selector/recommended-fit.ts";
@@ -13,6 +18,7 @@ interface Row {
   id: string;
   isGguf?: boolean;
   totalParams?: number;
+  curatedSizeBytes?: number;
   pipelineTag?: string;
 }
 
@@ -138,5 +144,69 @@ test("an unlisted seed is sized from its id, and hidden when it cannot be", () =
       }),
     ),
     [KLEIN],
+  );
+});
+
+// Neither of these is unsloth-owned, and Recommended lists `owner: unsloth`
+// only, so their seed is the only row they ever get.
+const SDXL = "stabilityai/sdxl-turbo";
+const WAN = "Wan-AI/Wan2.2-TI2V-5B-Diffusers";
+// The seed rows the picker builds: catalog size, no listing metadata.
+const seed = (id: string, catalog = IMAGE_CATALOG): Row => ({
+  id,
+  isGguf: false,
+  curatedSizeBytes: curatedSizeBytesFor(id, catalog),
+});
+
+test("a catalog-sized seed is judged on the catalog size, not on its id", () => {
+  // 24 GB card -> 16.8 GB budget.
+  const card = { memoryTotalGb: 24, systemRamAvailableGb: 0, budgetKnown: true };
+  const sdxl = seed(SDXL);
+  const wan = seed(WAN, VIDEO_CATALOG);
+  // SDXL Turbo is 8 GB in the catalog but its id has no "<n>B" token, so the id
+  // guess cannot size it at all; Wan 2.2 TI2V is 30 GB but "5B" reads as 2 GB.
+  assert.equal(sdxl.curatedSizeBytes, 8 * 1024 ** 3);
+  assert.equal(wan.curatedSizeBytes, 30 * 1024 ** 3);
+  assert.equal(hfModelFitsDevice(sdxl, card), true);
+  assert.equal(hfModelFitsDevice(wan, card), false);
+  assert.deepEqual(
+    ids(
+      orderRecommendedRows({
+        seeds: [sdxl, wan],
+        results: [],
+        keep: () => true,
+        deviceFiltered: true,
+        fits: (r: Row) => hfModelFitsDevice(r, card),
+      }),
+    ),
+    [SDXL],
+  );
+});
+
+test("a listing row still overrides the catalog size it seeded with", () => {
+  const card = { memoryTotalGb: 24, systemRamAvailableGb: 0, budgetKnown: true };
+  // GGUF groups carry no catalog size (the quant ladder self-fits), so an
+  // unsized GGUF seed stays hidden exactly as before this change.
+  assert.equal(curatedSizeBytesFor(LTX, VIDEO_CATALOG), undefined);
+  assert.equal(hfModelFitsDevice({ id: LTX, isGguf: true }, card), false);
+  // And where a row does arrive, it is the row that is measured: klein-9B seeds
+  // as a fit, then its listing row cuts it on real metadata.
+  const listedKlein: Row = {
+    id: KLEIN,
+    isGguf: true,
+    totalParams: 200e9,
+    pipelineTag: "text-to-video",
+  };
+  assert.deepEqual(
+    ids(
+      orderRecommendedRows({
+        seeds: SEEDS,
+        results: [listedKlein],
+        keep: keepVideo,
+        deviceFiltered: true,
+        fits: (r: Row) => hfModelFitsDevice(r, card),
+      }),
+    ),
+    [],
   );
 });
