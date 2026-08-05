@@ -711,6 +711,9 @@ class DiffusionBackend:
         (estimate failure, config-only base, local repo) -> hub id as before."""
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
+        # Fetch the companions from the ungated mirror when there is one. Only the BYTES move; the
+        # caller keeps the upstream id for the load state and status().
+        base = prefer_ungated_mirror(base, hf_token)
         # Callers without a per-load event (tests, direct use) fall back to the current one.
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         # GGUF transformer (hub repos only; a local path is already on disk).
@@ -1077,6 +1080,11 @@ class DiffusionBackend:
         component folder (config, shard index, tokenizer) is kept -- the pre-cast loader
         meta-inits the encoder from the base repo's config."""
         from huggingface_hub import HfApi
+
+        # No mirror swap here on purpose. The Hub gates only the BYTE endpoint, so model_info
+        # answers for a gated base anonymously, and the mirrors are byte-identical, so the sizes
+        # and the file list are the same either way. _prefetch_files does the swap when it comes
+        # time to actually pull, and it takes this list as-is because the names match exactly.
 
         from .diffusion_te_prequant import is_prequant_covered_weight
 
@@ -1761,7 +1769,8 @@ class DiffusionBackend:
                                 )
                             )
                             pipe = pipeline_cls.from_pretrained(
-                                _base_local_dir or base, **pipe_kwargs
+                                _base_local_dir or prefer_ungated_mirror(base, hf_token),
+                                **pipe_kwargs,
                             )
 
                 # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays bit-identical `off`.
@@ -2194,6 +2203,10 @@ class DiffusionBackend:
     ) -> Any:
         """Assemble the diffusers pipeline around ``transformer`` and place it on ``device``
         (a no-op for an already-placed pre-quantized transformer; it moves the companions)."""
+        # Everything below reads ``base`` only to FETCH companions, so the mirror applies here.
+        # It matters when ``base_local_dir`` is None: the prefetch staged nothing and this call
+        # would otherwise sweep the gated hub id and 401.
+        base = prefer_ungated_mirror(base, hf_token)
         if getattr(fam, "name", None) == KREA2_FAMILY_NAME:
             # krea ships transformers-5.x configs and no top-level tokenizer files, so assemble per-component.
             krea_te = None
@@ -3371,7 +3384,9 @@ def _resolve_base_repo(
         tag = _hf_base_model(repo_id, hf_token)
         if tag and _is_trusted_diffusion_repo(tag):
             base = tag
-    return prefer_ungated_mirror(resolve_base_repo(fam, base), hf_token)
+    # Returns the UPSTREAM id. The ungated-mirror swap happens at the fetch sites only, so the id
+    # stored on the load state and reported by status() stays the one the user picked.
+    return resolve_base_repo(fam, base)
 
 
 def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:

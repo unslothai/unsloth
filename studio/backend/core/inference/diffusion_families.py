@@ -515,11 +515,6 @@ def canonical_base(repo_id: Optional[str]) -> str:
     return _MIRROR_UPSTREAM.get(base.lower(), base)
 
 
-# One reachability verdict per mirror per process: it cannot change under a running Studio, and
-# every load path resolves a base more than once.
-_MIRROR_REACHABLE: dict[str, bool] = {}
-
-
 def _upstream_is_cached(repo_id: str) -> bool:
     """Whether ``repo_id`` already has blobs in the LIVE hub cache root.
 
@@ -549,27 +544,25 @@ def prefer_ungated_mirror(base: str, hf_token: Optional[str] = None) -> str:
     UI shows, what saved configs hold and what a trained LoRA's base_model tag records, so nothing
     a user already stored changes meaning.
 
-    Three ways to decline, each landing on exactly today's behaviour:
+    Two ways to decline, each landing on exactly today's behaviour:
       * ``UNSLOTH_DIFFUSION_NO_MIRROR`` is set, for anyone who wants the vendor repo and has a
         token for it,
-      * the upstream is already cached, so switching would re-pull tens of GiB for no gain,
-      * the mirror does not answer, which covers a withdrawn repo and a typo in the table alike.
+      * the upstream is already cached, so switching would re-pull tens of GiB for no gain.
+
+    PURE: a table lookup, an env read and a local stat, with no network call. An earlier version
+    probed the mirror with ``model_info`` and fell back on failure, but this runs inside pipeline
+    assembly, so that put a Hub round trip on the load path and made the outcome depend on
+    connectivity -- unit tests silently reached the network and would have flipped answer offline.
+    The twelve mirrors are ours and verified, so a missing one is our own doing and surfaces as
+    the ordinary download error for the repo that is actually being fetched.
+
+    ``hf_token`` is unused and kept so callers can pass it without caring which way this resolves.
     """
+    del hf_token  # noqa: F841 -- signature stability only; nothing here authenticates
     mirror = mirror_repo(base)
     if not mirror or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
         return base
-    if _upstream_is_cached(base):
-        return base
-    reachable = _MIRROR_REACHABLE.get(mirror)
-    if reachable is None:
-        try:
-            from huggingface_hub import HfApi
-            HfApi().model_info(mirror, token = hf_token)
-            reachable = True
-        except Exception:  # noqa: BLE001 -- offline or missing mirror, upstream is the fallback
-            reachable = False
-        _MIRROR_REACHABLE[mirror] = reachable
-    return mirror if reachable else base
+    return base if _upstream_is_cached(base) else mirror
 
 
 # Default (steps, guidance) per model for callers that cannot pass them. Matched by substring, most specific first; same values as the UI MODEL_DEFAULTS table, keep in sync.

@@ -162,20 +162,6 @@ def _no_cache(monkeypatch):
         "core.inference.diffusion_families._upstream_is_cached", lambda repo_id: False
     )
     monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
-    monkeypatch.setattr("core.inference.diffusion_families._MIRROR_REACHABLE", {}, raising = False)
-
-
-def _mirror_reachable(monkeypatch, reachable = True):
-    """Answer the mirror reachability probe without touching the network."""
-    class _Api:
-        def model_info(self, repo_id, token = None):
-            if not reachable:
-                raise RuntimeError("no such repo")
-            return object()
-
-    import huggingface_hub
-
-    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
 
 
 def test_gated_mirror_table_round_trips():
@@ -193,7 +179,6 @@ def test_gated_mirror_table_round_trips():
 
 def test_prefer_ungated_mirror_swaps_gated_bases(monkeypatch):
     _no_cache(monkeypatch)
-    _mirror_reachable(monkeypatch)
     for upstream, mirror in _GATED_MIRROR_PAIRS:
         assert prefer_ungated_mirror(upstream) == mirror
     # Ungated bases are untouched, and cost no probe.
@@ -206,21 +191,14 @@ def test_prefer_ungated_mirror_declines(monkeypatch):
 
     # 1. explicit opt-out
     _no_cache(monkeypatch)
-    _mirror_reachable(monkeypatch)
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     assert prefer_ungated_mirror(gated) == gated
 
     # 2. upstream already on disk: switching would re-pull tens of GiB
     _no_cache(monkeypatch)
-    _mirror_reachable(monkeypatch)
     monkeypatch.setattr(
         "core.inference.diffusion_families._upstream_is_cached", lambda repo_id: True
     )
-    assert prefer_ungated_mirror(gated) == gated
-
-    # 3. mirror does not answer (withdrawn repo, offline, typo in the table)
-    _no_cache(monkeypatch)
-    _mirror_reachable(monkeypatch, reachable = False)
     assert prefer_ungated_mirror(gated) == gated
 
 
@@ -1997,6 +1975,44 @@ def test_prefetch_downloads_gguf_and_base(monkeypatch, tmp_path):
     assert ("base/repo", "vae/x.safetensors") in calls
 
 
+def test_prefetch_pulls_companions_from_the_ungated_mirror(monkeypatch, tmp_path):
+    """The companions are the whole reason a gated base blocked a GGUF pick, so this is the
+    call that has to move. The estimate deliberately still runs on the upstream id, and the
+    file names are identical either way, so the list passes through untouched."""
+    backend = DiffusionBackend()
+    calls: list = []
+    monkeypatch.setattr(
+        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
+        lambda repo, fn, tok, **k: (calls.append((repo, fn)), f"/cache/{fn}")[1],
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion_families._upstream_is_cached", lambda repo_id: False
+    )
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+    backend._prefetch_files(
+        "unsloth/FLUX.1-dev-GGUF",
+        "flux1-dev-Q4_K_M.gguf",
+        "black-forest-labs/FLUX.1-dev",
+        ["vae/diffusion_pytorch_model.safetensors"],
+        None,
+    )
+    assert ("unsloth/FLUX.1-dev", "vae/diffusion_pytorch_model.safetensors") in calls
+    assert all(repo != "black-forest-labs/FLUX.1-dev" for repo, _ in calls)
+    # The GGUF itself is a different repo and is never rewritten.
+    assert ("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf") in calls
+
+    # An upstream already on disk keeps its cache rather than re-pulling tens of GiB.
+    calls.clear()
+    monkeypatch.setattr(
+        "core.inference.diffusion_families._upstream_is_cached", lambda repo_id: True
+    )
+    backend._prefetch_files(
+        "unsloth/FLUX.1-dev-GGUF", None, "black-forest-labs/FLUX.1-dev",
+        ["vae/diffusion_pytorch_model.safetensors"], None,
+    )
+    assert ("black-forest-labs/FLUX.1-dev", "vae/diffusion_pytorch_model.safetensors") in calls
+
+
 # fp16-incompatible guard + dtype promotion
 
 
@@ -3231,7 +3247,9 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         fam = types.SimpleNamespace(name = "krea-2"),
     )
     assert isinstance(pipe, Pipe)
-    assert calls == {"base": "krea/Krea-2-Turbo", "transformer": marker, "device": "cuda:0"}
+    # _assemble_pipe only ever reads base to FETCH, so it hands the loader the ungated
+    # mirror. krea/Krea-2-Turbo is gated; unsloth/Krea-2-Turbo is the byte-identical copy.
+    assert calls == {"base": "unsloth/Krea-2-Turbo", "transformer": marker, "device": "cuda:0"}
 
 
 def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_path, monkeypatch):

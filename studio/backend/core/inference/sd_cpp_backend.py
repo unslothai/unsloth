@@ -429,9 +429,7 @@ class SdCppDiffusionBackend:
         if not family_sd_cpp_supported(fam):
             raise ValueError(f"Family '{fam.name}' has no native sd.cpp asset mapping.")
 
-        # Same ungated-mirror preference the diffusers path applies: this backend pulls the VAE and
-        # text encoders off the base too, so a gated base blocks a native load identically.
-        base = prefer_ungated_mirror(resolve_base_repo(fam, base_repo), hf_token)
+        base = resolve_base_repo(fam, base_repo)
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
@@ -762,6 +760,10 @@ class SdCppDiffusionBackend:
         # Callers without a per-load event (tests, direct use) fall back to the current one.
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         paths: dict[str, str] = {}
+        # The asset repos, not the base, are what this backend fetches, and some are gated: the
+        # FLUX.1 VAE comes out of black-forest-labs/FLUX.1-schnell. Redirect each to its ungated
+        # mirror where one exists.
+        assets = [(prefer_ungated_mirror(repo, hf_token), fn, kind) for repo, fn, kind in assets]
         for repo, fn, kind in assets:
             if cancel.is_set():
                 raise SdCppCancelled("load cancelled")
