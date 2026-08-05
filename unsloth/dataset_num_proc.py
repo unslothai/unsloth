@@ -187,7 +187,10 @@ CGROUP_ROOT = "/sys/fs/cgroup"
 
 def _cgroup_first_line(path: str) -> Optional[str]:
     try:
-        with open(path, "r") as f:
+        # encoding named explicitly: these are ASCII kernel files, but a
+        # locale-dependent read crashes or produces mojibake on a Windows
+        # console codepage, and CI polices every read/write for it.
+        with open(path, "r", encoding = "utf-8") as f:
             return f.readline().strip()
     except OSError:
         return None
@@ -228,7 +231,7 @@ def _cgroup_dirs(root: str, rel: Optional[str]) -> list:
 
 def _proc_self_cgroup() -> list:
     try:
-        with open("/proc/self/cgroup", "r") as f:
+        with open("/proc/self/cgroup", "r", encoding = "utf-8") as f:
             return [line.strip() for line in f if line.strip()]
     except OSError:
         return []  # not Linux, or procfs is hidden
