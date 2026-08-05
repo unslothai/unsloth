@@ -1674,17 +1674,29 @@ def _find_blocked_commands(command: str) -> set[str]:
                 k += 1
                 continue
             indexes.append(k)
-            if _token_basename(_cmd_unquote(token)) not in _CMD_CONTROL_FLOW:
+            base = _token_basename(_cmd_unquote(token))
+            if base not in _CMD_CONTROL_FLOW:
                 k, expect = k + 1, False
                 continue
-            # `if [/i] [not] exist FILE prog`, and the else/do/for forms whose
-            # command is simply the next word.
             k += 1
-            while k < len(tokens) and _cmd_unquote(tokens[k]).lower() in ("/i", "not"):
-                k += 1
-            if k < len(tokens):
-                condition = _cmd_unquote(tokens[k]).lower()
-                k += 2 if condition in ("exist", "defined", "errorlevel") else 1
+            if base == "for":
+                # `for %i in (set) do CMD`: the body is whatever follows `do`,
+                # not a short condition, so stepping a fixed width recorded the
+                # loop variable and left the body unscreened.
+                while k < len(tokens) and tokens[k] not in _SHELL_SEPARATORS:
+                    is_do = _cmd_unquote(tokens[k]).lower() == "do"
+                    k += 1
+                    if is_do:
+                        break
+            elif base == "if":
+                # `if [/i] [not] exist|defined|errorlevel OPERAND CMD`, else the
+                # comparison is one token.
+                while k < len(tokens) and _cmd_unquote(tokens[k]).lower() in ("/i", "not"):
+                    k += 1
+                if k < len(tokens):
+                    condition = _cmd_unquote(tokens[k]).lower()
+                    k += 2 if condition in ("exist", "defined", "errorlevel") else 1
+            # `else` / `do`: the command is simply the next word.
         return indexes
 
     def _runnable_index(idx: int) -> bool:
@@ -1731,8 +1743,25 @@ def _find_blocked_commands(command: str) -> set[str]:
             if is_unix_c and prev_runs and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(_cmd_unquote(tokens[i + 1]))
             elif is_win_c and prev_runs and prev_base in _SHELLS_WIN:
-                # Tell the start scan below where cmd hands control over.
-                win_c_payloads.update(_cmd_payload_commands(i + 1))
+                # Tell the start scan below where cmd hands control over, and
+                # screen those words here: the walk above reads the payload with
+                # bash grammar, so a program cmd runs from its own control flow
+                # (`cmd /c if exist FILE powershell`) sat in argument position
+                # and no pass ever looked at it.
+                payload_commands = _cmd_payload_commands(i + 1)
+                win_c_payloads.update(payload_commands)
+                for payload_index in payload_commands:
+                    payload_word = _cmd_unquote(tokens[payload_index])
+                    if any(char in payload_word for char in " \t"):
+                        # A whole command line in one quoted token, which
+                        # _scan_cmd_payload already reads with its own rules;
+                        # a basename here would read `type C:/logs/curl` as curl.
+                        continue
+                    payload_base = _token_basename(payload_word)
+                    if payload_base in _BLOCKED_COMMANDS:
+                        blocked.add(payload_base)
+                    else:
+                        blocked |= _blocked_matching_glob(payload_base)
                 blocked |= _scan_cmd_payload(_cmd_unquote(tokens[i + 1]))
             break  # stop at first non-flag token
 

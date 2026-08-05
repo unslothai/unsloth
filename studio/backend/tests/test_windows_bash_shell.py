@@ -730,3 +730,23 @@ def test_a_start_cmd_really_runs_is_still_screened(monkeypatch, command, bash):
     # The guard above must not cost the cmd control-flow cases their coverage.
     _fake_windows_screening(monkeypatch, bash = bash)
     assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # cmd runs the FOR body after `do`, not a word a fixed width along.
+        "cmd /c for %i in (1) do powershell -Command ls",
+        "cmd /c for %i in (1) do rm -rf x",
+        r'cmd /c for /f %i in (list.txt) do start "" powershell',
+        # ...and the IF body is a command in its own right, which no pass
+        # looked at while these indexes were only recorded for later scans.
+        r"cmd /c if exist C:\Windows powershell -Command ls",
+        "cmd /c if defined FOO rm -rf x",
+        r"cmd /c if not exist C:\nope pwsh -Command ls",
+    ],
+)
+def test_a_cmd_control_flow_body_is_screened(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
