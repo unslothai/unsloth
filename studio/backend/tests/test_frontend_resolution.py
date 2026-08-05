@@ -27,6 +27,7 @@ def _load_helpers_only():
         "_DEFAULT_FRONTEND_PATH",
         "_iter_frontend_fallback_candidates",
         "_resolve_frontend_path",
+        "_frontend_serving_mode",
     }
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -42,6 +43,13 @@ def _load_helpers_only():
     ns: dict = {"__file__": str(_RUN_PY), "__name__": "_run_helpers_test"}
     exec(code, ns)
     return ns
+
+
+def test_frontend_serving_mode_is_tunnel_only_for_desktop_api_only():
+    mode = _load_helpers_only()["_frontend_serving_mode"]
+    assert mode(api_only = False, desktop_owned = False) == (True, False)
+    assert mode(api_only = True, desktop_owned = False) == (False, False)
+    assert mode(api_only = True, desktop_owned = True) == (True, True)
 
 
 def test_resolver_returns_none_when_nothing_exists(tmp_path, monkeypatch):

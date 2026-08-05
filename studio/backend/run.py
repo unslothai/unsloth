@@ -1293,6 +1293,11 @@ def _resolve_frontend_path(frontend_path: Path) -> tuple[Optional[Path], list[Pa
     return None, attempted
 
 
+def _frontend_serving_mode(*, api_only: bool, desktop_owned: bool) -> tuple[bool, bool]:
+    tunnel_only = api_only and desktop_owned
+    return not api_only or tunnel_only, tunnel_only
+
+
 class _TeeStream:
     """Mirror writes to the original stream and a session log file.
 
@@ -1746,7 +1751,8 @@ def run_server(
         port: Port to bind to (auto-increments if in use)
         frontend_path: Path to frontend build directory (optional)
         silent: Suppress startup messages
-        api_only: API server only, no frontend (for Tauri desktop app)
+        api_only: API server only, except that a Tauri-owned backend serves its
+            packaged frontend exclusively through a live Cloudflare tunnel
         llama_parallel_slots: parallel slots for llama-server (default
             _PARALLEL_DEFAULT_PLAIN, matching the CLI entry points)
         cloudflare: opt in to the public Cloudflare HTTPS tunnel for a wildcard
@@ -1845,7 +1851,7 @@ def run_server(
 
     import_started = time.perf_counter()
 
-    from main import app, setup_frontend, _IS_COLAB
+    from main import app, setup_frontend, _desktop_owner, _IS_COLAB
 
     logger.info(
         "Imported FastAPI app in %.1fms",
@@ -1894,11 +1900,17 @@ def run_server(
             print("=" * 50)
             print("")
 
-    # Setup frontend (skip in api-only). Falls back through alternate locations if
-    # the default lacks a built dist; errors loudly rather than 404 on `/`.
-    if frontend_path and not api_only:
+    _serve_frontend, _tunnel_only_frontend = _frontend_serving_mode(
+        api_only = api_only,
+        desktop_owned = _desktop_owner() is not None,
+    )
+
+    # A desktop-owned API-only backend mounts the packaged SPA behind a
+    # Cloudflare-only request gate so Remote access can serve the WebUI without
+    # changing the direct local API-only surface.
+    if frontend_path and _serve_frontend:
         chosen, attempted = _resolve_frontend_path(Path(frontend_path))
-        if chosen is not None and setup_frontend(app, chosen):
+        if chosen is not None and setup_frontend(app, chosen, tunnel_only = _tunnel_only_frontend):
             if not silent:
                 # Resolve so logs show an absolute path for support.
                 try:

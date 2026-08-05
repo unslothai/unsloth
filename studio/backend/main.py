@@ -1929,7 +1929,37 @@ class _AssetGZipMiddleware(GZipMiddleware):
         await super().__call__(scope, receive, send)
 
 
-def setup_frontend(app: FastAPI, build_path: Path):
+def _is_live_cloudflare_frontend_request(scope, app_state) -> bool:
+    cloudflare_url = getattr(app_state, "cloudflare_url", None)
+    headers = dict(scope.get("headers", ()))
+    if not cloudflare_url or not headers.get(b"cf-connecting-ip"):
+        return False
+    try:
+        expected_host = urlparse(cloudflare_url).hostname
+        request_host = urlparse(f"//{headers.get(b'host', b'').decode('latin-1')}").hostname
+    except (UnicodeDecodeError, ValueError):
+        return False
+    return bool(expected_host) and request_host == expected_host
+
+
+class _TunnelOnlyFrontend:
+    def __init__(self, frontend_app, app_state):
+        self.frontend_app = frontend_app
+        self.app_state = app_state
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http" or _is_live_cloudflare_frontend_request(scope, self.app_state):
+            await self.frontend_app(scope, receive, send)
+            return
+        await Response(status_code = 404)(scope, receive, send)
+
+
+def setup_frontend(
+    app: FastAPI,
+    build_path: Path,
+    *,
+    tunnel_only: bool = False,
+):
     """Mount frontend static files (optional)"""
     if not build_path.exists():
         return False
@@ -1941,7 +1971,12 @@ def setup_frontend(app: FastAPI, build_path: Path):
             minimum_size = 1024,
             compresslevel = 6,
         )
+        if tunnel_only:
+            assets_app = _TunnelOnlyFrontend(assets_app, app.state)
         app.mount("/assets", assets_app, name = "assets")
+
+    def _frontend_request_allowed(request: Request) -> bool:
+        return not tunnel_only or _is_live_cloudflare_frontend_request(request.scope, app.state)
 
     def _build_index_response(request: Request) -> Response:
         content = (build_path / "index.html").read_bytes()
@@ -1967,6 +2002,8 @@ def setup_frontend(app: FastAPI, build_path: Path):
 
     @app.get("/")
     async def serve_root(request: Request):
+        if not _frontend_request_allowed(request):
+            return Response(status_code = 404)
         return _build_index_response(request)
 
     @app.get("/{full_path:path}")
@@ -1977,6 +2014,8 @@ def setup_frontend(app: FastAPI, build_path: Path):
         # request path is "/" + full_path.
         if full_path in {"api", "v1"} or full_path.startswith(("api/", "v1/")):
             raise HTTPException(status_code = 404, detail = "API endpoint not found")
+        if not _frontend_request_allowed(request):
+            return Response(status_code = 404)
 
         file_path = (build_path / full_path).resolve()
 
