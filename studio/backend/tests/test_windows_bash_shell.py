@@ -324,6 +324,8 @@ def test_cmd_shellout_is_screened_through_mangled_switches(windows_terminal, com
     # skipped the nested scan, making `cmd //c powershell` reachable where
     # `cmd /c powershell` was blocked, and `start` launches its argument too.
     # The quoted spellings reach the scan with their quotes on (_unwrap_quotes).
+    # windows_terminal fakes the resolved blocklist the way #7934 did, and adds
+    # the shell, since which lexer runs is what decides half of these cases.
     assert tools._find_blocked_commands(command)
 
 
