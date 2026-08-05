@@ -24,6 +24,7 @@ export {
   DEFAULT_CUSTOMIZATION,
   applyCustomizationToDocument,
   isDefaultCustomization,
+  migrateShippedSidebarNavDefault,
   prefersReducedMotion,
   sanitizeCustomization,
   useAppearanceCustomStore,
