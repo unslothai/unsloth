@@ -1298,9 +1298,8 @@ class TrainingBackend:
         Hook failures never block the start.
         """
         with self._lock:
-            if (
-                (self._spawn_in_progress and not spawn_already_reserved)
-                or (self._proc is not None and self._proc.is_alive())
+            if (self._spawn_in_progress and not spawn_already_reserved) or (
+                self._proc is not None and self._proc.is_alive()
             ):
                 logger.warning("Training subprocess already running")
                 return False
@@ -1363,9 +1362,7 @@ class TrainingBackend:
         from utils.transformers_version import sidecar_swap_in_progress
 
         spawn_reservation = (
-            nullcontext(True)
-            if spawn_already_reserved
-            else self._new_job_spawn_reservation(job_id)
+            nullcontext(True) if spawn_already_reserved else self._new_job_spawn_reservation(job_id)
         )
         with spawn_reservation as spawn_reserved:
             if not spawn_reserved:

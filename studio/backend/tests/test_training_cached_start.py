@@ -812,14 +812,11 @@ def test_unadvertised_cache_pin_reaches_worker(monkeypatch, tmp_path, offline):
     assert config["model_snapshot_path"] == str(snapshot.resolve())
     assert config["model_revision"] == "rev"
     assert config["require_validated_model_snapshot"] is True
-    assert (
-        worker._cache_artifact_fallback_allowed(
-            config,
-            ValueError("Either model_file or model_proto must be specified."),
-            "model",
-        )
-        is (not offline)
-    )
+    assert worker._cache_artifact_fallback_allowed(
+        config,
+        ValueError("Either model_file or model_proto must be specified."),
+        "model",
+    ) is (not offline)
 
 
 def test_selected_cached_model_tokenizer_failure_allows_hub_fallback(tmp_path):
@@ -864,18 +861,14 @@ def test_selected_cached_model_tokenizer_failure_allows_hub_fallback(tmp_path):
 @pytest.mark.parametrize(
     "error",
     [
-        TypeError(
-            "stat: path should be string, bytes, os.PathLike or integer, not NoneType"
-        ),
+        TypeError("stat: path should be string, bytes, os.PathLike or integer, not NoneType"),
         TypeError("expected str, bytes or os.PathLike object, not NoneType"),
         OSError("Can't load processor for 'org/model'."),
         OSError("Can't load image processor for 'org/model'."),
         OSError("Can't load feature extractor for 'org/model'."),
     ],
 )
-def test_worker_model_cache_fallback_recognizes_missing_tokenizer_and_processor(
-    monkeypatch, error
-):
+def test_worker_model_cache_fallback_recognizes_missing_tokenizer_and_processor(monkeypatch, error):
     from core.training import worker
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -2525,7 +2518,7 @@ def test_embedding_hf_loader_bounds_cached_train_slice():
     "cached_eval_error",
     [
         FileNotFoundError("validation"),
-        ValueError('Unknown split "validation". Should be one of [\'train\'].'),
+        ValueError("Unknown split \"validation\". Should be one of ['train']."),
     ],
 )
 def test_worker_cached_eval_failure_reloads_remote_pair(cached_eval_error):

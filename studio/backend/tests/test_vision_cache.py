@@ -460,10 +460,7 @@ class TestRevisionAwareVisionDetection:
         monkeypatch.setattr(mc, "is_local_path", lambda *_a, **_k: False)
         monkeypatch.setattr("huggingface_hub.hf_hub_download", download)
 
-        assert mc._raw_config_has_vision_config(
-            "org/model",
-            revision = "commit-a",
-        ) is False
+        assert mc._raw_config_has_vision_config("org/model", revision = "commit-a") is False
         assert download.call_args.kwargs["revision"] == "commit-a"
 
         assert mc._raw_config_has_vision_config("org/model") is False
@@ -478,11 +475,14 @@ class TestRevisionAwareVisionDetection:
         cfg.architectures = ["LlamaForCausalLM"]
         mock_load.return_value = cfg
 
-        assert _is_vision_model_uncached(
-            "org/model",
-            hf_token = "hf_x",
-            revision = "commit-a",
-        ) is False
+        assert (
+            _is_vision_model_uncached(
+                "org/model",
+                hf_token = "hf_x",
+                revision = "commit-a",
+            )
+            is False
+        )
         mock_load.assert_called_once_with(
             "org/model",
             use_auth = True,
@@ -494,17 +494,15 @@ class TestRevisionAwareVisionDetection:
     @patch("utils.models.model_config._is_vision_model_subprocess", return_value = True)
     @patch("utils.transformers_version.needs_transformers_5", return_value = True)
     @patch("utils.models.model_config._raw_config_has_vision_config", return_value = None)
-    def test_transformers_5_fallback_uses_revision(
-        self,
-        mock_raw,
-        mock_needs_t5,
-        mock_subprocess,
-    ):
-        assert _is_vision_model_uncached(
-            "org/model",
-            hf_token = "hf_x",
-            revision = "commit-a",
-        ) is True
+    def test_transformers_5_fallback_uses_revision(self, mock_raw, mock_needs_t5, mock_subprocess):
+        assert (
+            _is_vision_model_uncached(
+                "org/model",
+                hf_token = "hf_x",
+                revision = "commit-a",
+            )
+            is True
+        )
         mock_subprocess.assert_called_once_with(
             "org/model",
             hf_token = "hf_x",
@@ -520,11 +518,14 @@ class TestRevisionAwareVisionDetection:
             stderr = "",
         )
 
-        assert _is_vision_model_subprocess(
-            "org/model",
-            hf_token = "hf_x",
-            revision = "commit-a",
-        ) is False
+        assert (
+            _is_vision_model_subprocess(
+                "org/model",
+                hf_token = "hf_x",
+                revision = "commit-a",
+            )
+            is False
+        )
         assert run.call_args.args[0][-3:] == ["org/model", "hf_x", "commit-a"]
         assert 'kwargs["revision"] = revision' in run.call_args.args[0][2]
 
@@ -899,8 +900,7 @@ class TestRevisionAwareAudioReads:
     def _tokenizer_config(*tokens):
         return {
             "added_tokens_decoder": {
-                str(index): {"content": token}
-                for index, token in enumerate(tokens)
+                str(index): {"content": token} for index, token in enumerate(tokens)
             }
         }
 
@@ -949,10 +949,7 @@ class TestRevisionAwareAudioReads:
         monkeypatch.setattr(mc, "_env_offline", lambda: False)
         monkeypatch.setattr(requests, "get", get)
 
-        assert _detect_audio_from_tokenizer(
-            "org/model",
-            revision = "refs/pr/7",
-        ) == ("csm", True)
+        assert _detect_audio_from_tokenizer("org/model", revision = "refs/pr/7") == ("csm", True)
         assert get.call_args.args[0] == (
             "https://huggingface.co/org/model/resolve/refs%2Fpr%2F7/tokenizer_config.json"
         )
@@ -973,6 +970,7 @@ class TestRevisionAwareAudioReads:
         assert get.call_args.args[0] == (
             "https://huggingface.co/org/model/resolve/main/tokenizer_config.json"
         )
+
 
 class TestEnvOfflineParsing:
     """_env_offline accepts the canonical truthy set (strip+lower, on/true/yes/1); it gates

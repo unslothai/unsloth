@@ -536,10 +536,7 @@ def _loaded_model_is_4bit(model: Any) -> bool:
             return True
         if _object_value(current, "_unsloth_quantized_source") == "runtime":
             policy = _object_value(current, "_unsloth_quantization_policy")
-            if (
-                _object_value(policy, "enabled") is True
-                and _object_value(policy, "bits") == 4
-            ):
+            if _object_value(policy, "enabled") is True and _object_value(policy, "bits") == 4:
                 return True
     return False
 
@@ -553,10 +550,8 @@ def _loaded_model_refs(model: Any) -> set[tuple[str, str]]:
                 _object_value(current, "_unsloth_base_commit_hash"),
             ),
             (
-                _object_value(current, "_name_or_path")
-                or _object_value(current, "name_or_path"),
-                _object_value(current, "_commit_hash")
-                or _object_value(current, "commit_hash"),
+                _object_value(current, "_name_or_path") or _object_value(current, "name_or_path"),
+                _object_value(current, "_commit_hash") or _object_value(current, "commit_hash"),
             ),
         )
         for repo_value, commit_value in candidates:

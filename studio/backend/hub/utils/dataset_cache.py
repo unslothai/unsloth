@@ -541,6 +541,7 @@ def load_cached_hf_dataset(
             rows = list(stream.take(row_limit))
             del stream, streams
         from datasets import Dataset
+
         schema = features or getattr(info, "features", None)
         if not rows and schema is not None:
             return Dataset.from_dict(

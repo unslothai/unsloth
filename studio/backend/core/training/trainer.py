@@ -660,6 +660,7 @@ class UnslothTrainer:
             if "/" in model_name and not local_files_only and not _env_offline():
                 try:
                     from huggingface_hub import model_info as hf_model_info
+
                     model_info_kwargs = {"token": hf_token or None}
                     if model_revision:
                         model_info_kwargs["revision"] = model_revision
@@ -2387,13 +2388,12 @@ class UnslothTrainer:
             dataset_loaded_from_cache = False
 
             def _load_selected_cached_dataset(
-                split_name: Optional[str],
-                *,
-                row_limit: Optional[int] = None,
+                split_name: Optional[str], *, row_limit: Optional[int] = None
             ):
                 if not dataset_source or not dataset_local_path:
                     return None
                 from hub.utils.dataset_cache import load_cached_hf_dataset
+
                 kwargs = {
                     "subset": subset,
                     "split": split_name or "train",
@@ -3052,9 +3052,7 @@ class UnslothTrainer:
             f"Auto-splitting: {eval_size} rows for eval from {n} total "
             f"(minimum total: {MIN_TOTAL_ROWS_FOR_EVAL})\n"
         )
-        logger.info(
-            f"Split complete: {len(train_dataset)} train, {len(eval_dataset)} eval\n"
-        )
+        logger.info(f"Split complete: {len(train_dataset)} train, {len(eval_dataset)} eval\n")
         return train_dataset, eval_dataset
 
     def start_training(

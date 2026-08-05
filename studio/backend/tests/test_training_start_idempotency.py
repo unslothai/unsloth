@@ -108,11 +108,14 @@ def test_start_training_reserves_early_and_rejects_an_overlapping_start(monkeypa
     first.start()
     assert first_entered.wait(timeout = 5)
 
-    assert backend.start_training(
-        "job-2",
-        start_request_id = "request-2",
-        model_name = "unsloth/test",
-    ) is False
+    assert (
+        backend.start_training(
+            "job-2",
+            start_request_id = "request-2",
+            model_name = "unsloth/test",
+        )
+        is False
+    )
     assert calls == [("job-1", "request-1")]
 
     release_first.set()

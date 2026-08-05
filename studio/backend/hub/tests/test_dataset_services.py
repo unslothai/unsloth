@@ -571,11 +571,7 @@ def test_check_format_rejects_invalid_path_as_400():
         ),
     ],
 )
-def test_check_format_missing_local_path_never_reaches_hub(
-    monkeypatch,
-    tmp_path,
-    spelling,
-):
+def test_check_format_missing_local_path_never_reaches_hub(monkeypatch, tmp_path, spelling):
     studio_home = tmp_path / ".unsloth" / "studio"
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.setenv("USERPROFILE", str(tmp_path))

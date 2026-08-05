@@ -679,6 +679,7 @@ def _raw_config_has_vision_config(
             config_path = Path(normalize_path(model_name)).expanduser() / "config.json"
         else:
             from huggingface_hub import hf_hub_download
+
             download_kwargs = {
                 "repo_id": model_name,
                 "filename": "config.json",
@@ -688,9 +689,7 @@ def _raw_config_has_vision_config(
             }
             if revision is not None:
                 download_kwargs["revision"] = revision
-            config_path = Path(
-                hf_hub_download(**download_kwargs)
-            )
+            config_path = Path(hf_hub_download(**download_kwargs))
         config = json.loads(config_path.read_text(encoding = "utf-8-sig"))
         architectures = config.get("architectures") or []
         model_type = config.get("model_type")

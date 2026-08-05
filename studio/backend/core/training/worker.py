@@ -149,7 +149,6 @@ def _is_model_cache_artifact_error(error: BaseException | None) -> bool:
 def _model_offline_mode_enabled() -> bool:
     try:
         from utils.utils import hf_env_offline
-
         return hf_env_offline()
     except Exception:
         pass
@@ -178,15 +177,11 @@ def _cache_artifact_fallback_allowed(
     return _is_model_cache_artifact_error(error)
 
 
-def _model_cache_fallback_error(
-    config: dict, error: BaseException | None
-) -> RuntimeError | None:
+def _model_cache_fallback_error(config: dict, error: BaseException | None) -> RuntimeError | None:
     """Return an actionable error when an incomplete cache cannot be repaired."""
     if not _is_model_cache_artifact_error(error):
         return None
-    if config.get("require_exact_resume_resources") or config.get(
-        "require_exact_model_resource"
-    ):
+    if config.get("require_exact_resume_resources") or config.get("require_exact_model_resource"):
         return RuntimeError(
             "The exact cached model snapshot is incomplete, so this run cannot "
             "preserve its recorded model resources. Restore the missing model, "
@@ -213,8 +208,10 @@ def _mlx_revision_fallback_error(config: dict) -> RuntimeError | None:
     """
     model_name = str(config.get("model_name") or "")
     revision = config.get("model_revision")
-    if revision and model_name.startswith("unsloth/") and model_name.endswith(
-        ("-unsloth-bnb-4bit", "-bnb-4bit")
+    if (
+        revision
+        and model_name.startswith("unsloth/")
+        and model_name.endswith(("-unsloth-bnb-4bit", "-bnb-4bit"))
     ):
         return RuntimeError(
             "The cached model snapshot is incomplete, but MLX cannot safely retry "
@@ -434,8 +431,7 @@ def _load_hf_train_and_eval_datasets(
     revision = config.get("dataset_revision")
     eval_enabled = evaluation_enabled(config.get("eval_steps"))
     require_exact = bool(
-        config.get("require_exact_resume_resources")
-        or config.get("require_exact_dataset_resource")
+        config.get("require_exact_resume_resources") or config.get("require_exact_dataset_resource")
     )
     dataset = None
     loaded_from_cache = False
@@ -2630,7 +2626,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
             MIN_TOTAL_ROWS_FOR_EVAL,
             split_dataset_for_evaluation,
         )
-
         split_result = split_dataset_for_evaluation(dataset)
         if split_result is None:
             _send(

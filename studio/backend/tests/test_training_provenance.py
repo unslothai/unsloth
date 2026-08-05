@@ -375,11 +375,7 @@ def test_mlx_runtime_4bit_metadata_attests_unpinned_hub_load(tmp_path):
         ("runtime_dense_nf4", {"enabled": True, "bits": 4}),
     ],
 )
-def test_mlx_runtime_4bit_attestation_requires_exact_runtime_policy(
-    tmp_path,
-    source,
-    policy,
-):
+def test_mlx_runtime_4bit_attestation_requires_exact_runtime_policy(tmp_path, source, policy):
     _model_snapshot(tmp_path, "org/model", "model-commit")
     dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
     model = SimpleNamespace(

@@ -118,8 +118,7 @@ def test_mlx_training_repairs_identity_after_all_model_load_branches():
     restore_call = next(
         node
         for node in calls
-        if isinstance(node.func, ast.Name)
-        and node.func.id == "restore_hf_cache_repo_identity"
+        if isinstance(node.func, ast.Name) and node.func.id == "restore_hf_cache_repo_identity"
     )
     peft_call = next(
         node
@@ -162,9 +161,7 @@ def test_training_worker_forwards_attested_redirect_identity_to_torch_loader():
     assert len(load_calls) == 2
     for load_call in load_calls:
         actual_repo = next(
-            keyword.value
-            for keyword in load_call.keywords
-            if keyword.arg == "actual_model_repo_id"
+            keyword.value for keyword in load_call.keywords if keyword.arg == "actual_model_repo_id"
         )
         assert ast.unparse(actual_repo) == "config.get('actual_model_repo_id')"
 

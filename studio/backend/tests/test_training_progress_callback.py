@@ -191,9 +191,7 @@ def test_training_warning_is_emitted_once_and_survives_later_status_updates():
     assert [event["message"] for event in warning_events] == [
         "Evaluation fell back to a held-out training split."
     ]
-    assert backend._progress.warnings == [
-        "Evaluation fell back to a held-out training split."
-    ]
+    assert backend._progress.warnings == ["Evaluation fell back to a held-out training split."]
     assert backend._progress.status_message == ACTIVE
 
 

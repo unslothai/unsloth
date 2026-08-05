@@ -130,7 +130,11 @@ class _SizedDataset:
 
 
 class _SplittableDataset(_SizedDataset):
-    def __init__(self, size, calls = None):
+    def __init__(
+        self,
+        size,
+        calls = None,
+    ):
         super().__init__(size)
         self.calls = [] if calls is None else calls
 
@@ -288,7 +292,6 @@ def test_auto_eval_probe_failure_records_a_durable_warning(monkeypatch):
 )
 def test_evaluation_enabled_accepts_only_finite_positive_intervals(value, expected):
     from core.training.eval_dataset import evaluation_enabled
-
     assert evaluation_enabled(value) is expected
 
 
@@ -533,7 +536,7 @@ def test_manual_eager_slice_attests_original_hub_stream(monkeypatch, tmp_path):
     "cached_eval_error",
     [
         FileNotFoundError("validation"),
-        ValueError('Unknown split "validation". Should be one of [\'train\'].'),
+        ValueError("Unknown split \"validation\". Should be one of ['train']."),
     ],
 )
 def test_cached_explicit_eval_failure_reloads_remote_pair(monkeypatch, cached_eval_error):
@@ -891,11 +894,7 @@ def test_run_mlx_training_process_applies_side_effects_before_hardware_detection
     )
 
     event = event_queue.get_nowait()
-    assert order == [
-        "validate",
-        ("activate", "mlx-community/Gemma-4-12B", None),
-        "detect",
-    ]
+    assert order == ["validate", ("activate", "mlx-community/Gemma-4-12B", None), "detect"]
     assert os.environ["HF_HUB_DISABLE_XET"] == "1"
     assert os.environ["HF_HUB_ENABLE_HF_TRANSFER"] == "0"
     assert "MLX training requires Apple Silicon" in event["error"]
@@ -928,8 +927,7 @@ def test_run_mlx_training_process_rejects_untrainable_format_before_side_effects
 
 
 def test_run_mlx_training_process_rejects_invalid_exact_pin_before_side_effects(
-    tmp_path,
-    monkeypatch,
+    tmp_path, monkeypatch
 ):
     _load_trainer_module(monkeypatch, "mlx")
     from core.training import worker

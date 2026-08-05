@@ -342,10 +342,7 @@ def test_cached_snapshot_row_limit_keeps_bracketed_split_eager(monkeypatch, tmp_
     )
 
 
-def test_cached_snapshot_row_limit_reports_missing_split_for_hub_fallback(
-    monkeypatch,
-    tmp_path,
-):
+def test_cached_snapshot_row_limit_reports_missing_split_for_hub_fallback(monkeypatch, tmp_path):
     repo_id = "Org/Data"
     repo_root, snapshot = _dataset_repo(tmp_path, repo_id)
     (snapshot / "train.parquet").write_bytes(b"rows")
@@ -373,7 +370,7 @@ def test_cached_snapshot_row_limit_reports_missing_split_for_hub_fallback(
             row_limit = 2,
         )
 
-    assert str(raised.value) == 'Unknown split "validation". Should be one of [\'train\'].'
+    assert str(raised.value) == "Unknown split \"validation\". Should be one of ['train']."
     assert (
         dataset_cache.dataset_cache_fallback_allowed(
             raised.value,
@@ -776,10 +773,7 @@ def test_preview_snapshot_returns_immutable_revision_with_cache_pin(monkeypatch,
     assert revision == "commit-preview"
 
 
-def test_training_cache_pin_prefers_processed_cache_without_explicit_path(
-    monkeypatch,
-    tmp_path,
-):
+def test_training_cache_pin_prefers_processed_cache_without_explicit_path(monkeypatch, tmp_path):
     repo_id = "Org/Data"
     repo_root, snapshot = _dataset_repo(tmp_path, repo_id, "commit-preview")
     (snapshot / "README.md").write_text("metadata only", encoding = "utf-8")
