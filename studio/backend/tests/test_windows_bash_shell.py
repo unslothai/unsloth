@@ -386,6 +386,57 @@ def test_posix_start_scan_is_unaffected():
     assert not tools._find_blocked_commands("start explorer .")
 
 
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # cmd.exe has no single-quote syntax, and bash strips them before cmd
+        # sees the word, so these reach it as the bare `start explorer .` the
+        # test above already keeps launchable. Reading the quotes as a title
+        # moved the program one token right and hard-blocked the `.` behind it
+        # as the POSIX source builtin.
+        "cmd //c start 'explorer' .",
+        "cmd //c start 'code' .",
+        # The same false title from a quote that belongs to another command.
+        "echo 'explorer' && cmd //c start explorer .",
+    ],
+)
+def test_single_quoted_start_targets_are_not_titles(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+def test_double_quoted_start_titles_still_move_the_program_along(monkeypatch, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands('cmd //c start "My Window" pwsh -Command ls')
+
+
+def test_a_spaced_single_quoted_start_title_moves_the_program_under_bash(monkeypatch):
+    # A title reaches cmd quoted when its CONTENT forces the MSYS runtime to
+    # re-quote it, which a space does whichever quote style bash was handed; the
+    # program is then the token behind it. cmd itself has no single-quote
+    # syntax, so this spelling only reads as a title on the bash host.
+    _fake_windows_screening(monkeypatch, bash = _WIN_BASH)
+    assert tools._find_blocked_commands("cmd //c start 'My Window' powershell -Command ls")
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The quoted word belongs to the echo, not to start, so the head after
+        # `start` is the program. Screening only the token behind a title would
+        # read this as titled and let the program through unscreened.
+        'echo "powershell" && cmd //c start powershell -Command ls',
+        "echo 'rm' && cmd //c start rm -rf /",
+    ],
+)
+def test_a_quote_elsewhere_cannot_hide_the_start_program(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
 def _fake_git_for_windows(monkeypatch, tmp_path):
     """A trusted Git for Windows layout under a faked Program Files root."""
     program_files = tmp_path / "Program Files"
@@ -410,6 +461,24 @@ def test_bash_userland_is_on_the_sandbox_path(monkeypatch, tmp_path):
     assert os.path.realpath(usr_bin) in entries
     # This server's interpreter stays pinned ahead of a Git-shipped one.
     assert entries[0] == os.path.dirname(sys.executable)
+
+
+def test_bash_userland_outranks_the_system32_dos_twins(monkeypatch, tmp_path):
+    # System32 ships find.exe and sort.exe, which are the DOS commands, not the
+    # POSIX ones. Behind them a bare `find . -name '*.py'` in the bash this tool
+    # advertises answered "FIND: Parameter format not correct".
+    _, usr_bin = _fake_git_for_windows(monkeypatch, tmp_path)
+    # Read as one string: os.pathsep is ':' on a Linux runner, which would split
+    # the faked C:\Windows drive letter off into its own entry.
+    path = tools._build_safe_env(str(tmp_path / "work"))["PATH"]
+    system32 = os.path.join(r"C:\Windows", "System32")
+    assert system32 in path
+    assert path.index(os.path.realpath(usr_bin)) < path.index(system32)
+    # ...and the interpreter still outranks the userland, so a Git-shipped
+    # python.exe cannot shadow the environment this server runs in.
+    assert path.index(os.path.dirname(sys.executable)) < path.index(
+        os.path.realpath(usr_bin)
+    )
 
 
 def test_usr_bin_is_found_from_either_install_layout(monkeypatch, tmp_path):

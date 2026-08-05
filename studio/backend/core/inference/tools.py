@@ -1674,15 +1674,35 @@ def _find_blocked_commands(command: str) -> set[str]:
         if j >= len(tokens):
             continue
         # `start ["title"] prog`: cmd reads the first argument as a window title
-        # ONLY when quoted, so an unquoted token here is the program and the
-        # next one just its argument. Screening both would block
+        # ONLY when DOUBLE quoted, so an unquoted token here is the program and
+        # the next one just its argument. Screening both would block
         # `start explorer .` on the `.` source builtin. The cmd lexer keeps the
         # quotes; the posix one drops them, so the raw text is consulted there.
         head = tokens[j]
         if not lexed_posix:
             titled = head.startswith('"')
         else:
-            titled = head == "" or '"%s"' % head in command or "'%s'" % head in command
+            # Single quotes are NOT title quotes: cmd has no single-quote
+            # syntax, and bash strips them before cmd ever sees the word, so
+            # `start 'explorer' .` reaches cmd as the bare `start explorer .`
+            # and hard-blocked a legitimate command on the `.` behind it.
+            # What survives the hand-off is decided by CONTENT, not by the
+            # quote style written: the MSYS runtime Git Bash uses re-quotes an
+            # argument for CreateProcess exactly when it is empty or holds a
+            # space/tab/newline/quote (cygwin winf.cc, linebuf::fromargv:
+            # `if (len != 0 && !strpbrk (a, " \t\n\r\""))` emits it bare).
+            # `start 'My Window' prog` therefore still reads as a title, and
+            # the raw double-quoted spelling is kept as it was.
+            titled = (
+                head == ""
+                or any(char in head for char in ' \t\n\r"')
+                or '"%s"' % head in command
+            )
+        # The head is screened WHATEVER `titled` says. It is a heuristic under
+        # the posix lexer, and a false positive there must cost an over-block,
+        # never an under-block: `echo "powershell" && cmd //c start powershell
+        # -Command ls` reports titled from the echo, so skipping the head on a
+        # title would let the powershell start launches through unscreened.
         blocked |= _find_blocked_commands(_cmd_unquote(head))
         if titled and j + 1 < len(tokens):
             blocked |= _find_blocked_commands(_cmd_unquote(tokens[j + 1]))
@@ -6585,9 +6605,10 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     operator's cached creds. PYTHONPATH carries only the sandbox sitecustomize
     shim directory.
 
-    PATH starts with the Studio interpreter / venv and OS system dirs so
-    ``python``/``pip`` stay pinned. On Windows only, Git-for-Windows install
-    dirs from the host PATH are appended so bare ``git`` resolves (#7317).
+    PATH starts with the Studio interpreter / venv so ``python``/``pip`` stay
+    pinned, then the OS system dirs. On Windows only, Git-for-Windows install
+    dirs are inserted between the two so bare ``git`` resolves (#7317) and the
+    userland beats the System32 DOS twins of POSIX names (``find``, ``sort``).
     User-writable host PATH entries (venv, ``node_modules/.bin``, etc.) are
     never inherited — they could shadow auto-safe terminal commands.
     """
@@ -6603,28 +6624,35 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         if venv_bin not in path_entries:
             path_entries.append(venv_bin)
 
-    if sys.platform == "win32":
-        sysroot = os.environ.get("SystemRoot", r"C:\Windows")
-        path_entries.extend([os.path.join(sysroot, "System32"), sysroot])
-    else:
-        path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
-
     # Windows Git installs live outside System32; inherit the dir of the git
     # the HOST shell resolves, but ONLY when it sits under a system install
     # root (Program Files, windir). A user-writable dir (Scoop/Choco shims)
     # is refused: it would let an attacker drop rg.exe/jq.exe beside git and
     # have an auto-approved bare command execute it (#7317).
     git_ext = ""
+    win_git_entries: list[str] = []
     if sys.platform == "win32":
-        # Append the CANONICAL (realpath) trusted git dir, scanning past any
-        # untrusted user shim that sorts first on PATH; the canonical path
-        # cannot be retargeted via a junction after the trust check.
+        # The CANONICAL (realpath) trusted git dir, scanning past any untrusted
+        # user shim that sorts first on PATH; the canonical path cannot be
+        # retargeted via a junction after the trust check.
         _trusted_git_dir, git_ext = _resolve_trusted_windows_git()
         if _trusted_git_dir:
-            path_entries.append(_trusted_git_dir)
-        # The shell's own userland, same trust boundary. Last, so a Git-shipped
-        # python.exe/git.exe cannot shadow the interpreter pinned first.
-        path_entries.extend(_windows_bash_userland_dirs())
+            win_git_entries.append(_trusted_git_dir)
+        # The shell's own userland, same trust boundary.
+        win_git_entries.extend(_windows_bash_userland_dirs())
+
+    if sys.platform == "win32":
+        sysroot = os.environ.get("SystemRoot", r"C:\Windows")
+        # AHEAD of System32, because System32 ships DOS twins of POSIX names:
+        # find.exe and sort.exe are there, so a bare `find . -name '*.py'` in
+        # the bash this tool advertises resolved to the DOS FIND and answered
+        # "FIND: Parameter format not correct" instead of running GNU find.
+        # Still behind the interpreter dirs above, so a Git-shipped python.exe
+        # cannot shadow the interpreter this server runs in.
+        path_entries.extend(win_git_entries)
+        path_entries.extend([os.path.join(sysroot, "System32"), sysroot])
+    else:
+        path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
 
     # Deduplicate, preserving order.
     deduped = list(dict.fromkeys(p for p in path_entries if p))
