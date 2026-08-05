@@ -591,7 +591,15 @@ def unsloth_base_fast_generate(self, *args, **kwargs):
         autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = torch.float16)
         dtype = torch.float16
     else:
-        autocaster = torch.autocast(device_type = DEVICE_TYPE_TORCH, dtype = dtype)
+        # CUDA autocast does not validate its dtype the way the CPU/XPU/MPS paths do,
+        # so autocast(dtype = torch.float32) enters ENABLED rather than turning into a
+        # no-op, and the compiled graph then returns inf/NaN logits. A float32 model has
+        # nothing to autocast to; disable instead of asking for a dtype that is not one.
+        autocaster = torch.autocast(
+            device_type = DEVICE_TYPE_TORCH,
+            dtype = dtype,
+            enabled = dtype in (torch.float16, torch.bfloat16),
+        )
     # Prepare LoRA
     # state_dict = convert_lora_modules(self, dtype = dtype)
 

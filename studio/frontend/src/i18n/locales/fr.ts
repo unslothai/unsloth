@@ -53,8 +53,13 @@ export const fr = {
       projects: "Projets",
       train: "Entraîner",
       recipes: "Recettes",
+      images: "Images",
+      video: "Vidéo",
+      more: "Plus",
+      customizeSidebar: "Personnaliser la barre latérale",
+      newBadge: "Nouveau",
       export: "Exporter",
-      recents: "Discussions récentes",
+      recents: "Récents",
       noChatsYet: "Aucune discussion pour le moment",
       settings: "Paramètres",
       api: "API",
@@ -155,10 +160,20 @@ export const fr = {
         sttDownloadStatusFailed:
           "Impossible de vérifier l'état du téléchargement",
         sttDownload: "Télécharger",
+        sttDownloadConfirmTitle: "Télécharger {model} ?",
+        sttDownloadConfirmBody:
+          "La dictée locale fonctionne entièrement hors ligne, mais elle a d'abord besoin du modèle de reconnaissance vocale {model}. Environ {size}, téléchargé une seule fois dans votre cache Hugging Face.",
+        sttDownloadConfirmBodyUnsized:
+          "La dictée locale fonctionne entièrement hors ligne, mais elle a d'abord besoin du modèle de reconnaissance vocale {model}. Il est téléchargé une seule fois dans votre cache Hugging Face.",
+        sttOpenVoiceSettings: "Ouvrir les paramètres Voix",
+        sttDownloadStarted: "Téléchargement de {model}",
         sttDownloading: "Téléchargement… {progress} %",
         sttCancelDownload: "Annuler",
         sttCancellingDownload: "Annulation…",
+        sttCancelDownloadFailed: "Impossible d'annuler le téléchargement",
         sttDownloadComplete: "Modèle de reconnaissance vocale téléchargé",
+        sttModelReady: "{model} est prêt pour la dictée",
+        sttRecommended: "Recommandé",
         sttDownloadFailed:
           "Impossible de télécharger le modèle de reconnaissance vocale",
         sttLoad: "Charger",
@@ -272,7 +287,7 @@ export const fr = {
       hideToken: "Masquer le jeton",
       showToken: "Afficher le jeton",
       clearToken: "Effacer",
-      checkingToken: "Vérification du token...",
+      checkingToken: "Vérification du jeton...",
       tokenValidated: "Jeton validé",
       password: "Mot de passe",
       passwordDescription:
@@ -615,6 +630,14 @@ export const fr = {
         compactSidebarDescription:
           "Garder la barre latérale déployée au lieu de la réduire en icônes.",
       },
+      sidebarNav: {
+        title: "Navigation de la barre latérale",
+        description:
+          "Épinglez et réorganisez les onglets de la barre latérale. Les onglets non épinglés sont regroupés dans le menu « Plus » ; s'il ne reste qu'un seul onglet non épinglé, il est masqué au lieu de créer un menu à une seule entrée. « Nouvelle discussion » reste fixe.",
+        dragToReorder: "Faites glisser pour réorganiser",
+        pinToSidebar: "Épingler {name} dans la barre latérale",
+        moreHolds: "Plus ({count})",
+      },
       sidebarMenu: {
         title: "Menu de la barre latérale",
         description:
@@ -633,7 +656,7 @@ export const fr = {
       liveMonitor: {
         title: "Moniteur en direct",
         apiTitle: "Moniteur d’API",
-        summary: "Requêtes en cours, erreurs et utilisation des jetons",
+        summary: "Requêtes en cours, erreurs et utilisation des tokens",
         status: "{active} actives · {recent} récentes · {model}",
         noModelLoaded: "aucun modèle chargé",
         autoOpen: "Afficher automatiquement le moniteur flottant",
@@ -808,10 +831,10 @@ export const fr = {
         title: "Paramètres de sélection du modèle",
         expandQuantizations: "Développer les quantifications",
         expandQuantizationsDescription:
-          "Activé : les modèles GGUF sur l’appareil affichent immédiatement leurs quantifications. Désactivé : cliquez sur un modèle pour afficher ses quantifications.",
+          "Activé : les modèles GGUF de « On Device » affichent immédiatement leurs quantifications. Désactivé : cliquez sur un modèle pour afficher ses quantifications.",
         showAllQuantizations: "Afficher toutes les quantifications",
         showAllQuantizationsDescription:
-          "Activé : affiche toutes les quantifications sur l’appareil, y compris celles qui ne sont pas téléchargées. Désactivé : affiche uniquement les quantifications téléchargées.",
+          "Activé : affiche toutes les quantifications de « On Device », y compris celles qui ne sont pas téléchargées. Désactivé : affiche uniquement les quantifications téléchargées.",
       },
       menu: {
         title: "Menu du chat",
@@ -986,7 +1009,7 @@ export const fr = {
       osWindows: "Windows",
       secureHttps: "HTTPS sécurisé",
       secureHttpsHint:
-        "Le service lié à l’adresse 0.0.0.0 reste accessible sur toutes les interfaces réseau. Pour une sécurité complète, lancez Unsloth avec --secure afin de n’exposer que ce lien HTTPS.",
+        "Le service lié à l’adresse 0.0.0.0 reste accessible depuis n’importe où. Pour une sécurité complète, lancez Unsloth avec --secure afin de n’exposer que ce lien HTTPS.",
       copyTunnelUrl: "Copier l'URL du tunnel",
       copySnippet: "Copier l'extrait",
       copy: "Copier",
@@ -1182,9 +1205,9 @@ export const fr = {
         "QLoRA utilise la quantification 4 bits pour la VRAM la plus faible. LoRA utilise 16 bits. Full met à jour tous les poids. CPT (Continued Pretraining) entraîne sur du texte brut pour adapter le modèle à un nouveau domaine sans formatage de discussion.",
       readMore: "En savoir plus",
       fullFineTune: "Fine-tune complet",
-      checkingToken: "Vérification du token...",
-      getOrUpdateToken: "Obtenir ou mettre à jour le token",
-      huggingFaceTokenOptional: "Token Hugging Face (facultatif)",
+      checkingToken: "Vérification du jeton...",
+      getOrUpdateToken: "Obtenir ou mettre à jour le jeton",
+      huggingFaceTokenOptional: "Jeton Hugging Face (facultatif)",
       continuedPretraining: "Pré-entraînement continu",
       localModels: "Modèles locaux",
       localModelsFound: "{count} modèles locaux/en cache trouvés",
@@ -1252,8 +1275,8 @@ export const fr = {
       uploadOneFileAtATime: "Téléversez un fichier à la fois",
       uploadSingleFileDescription:
         "Le téléversement du jeu de données d'entraînement accepte un seul fichier.",
-      checkingToken: "Vérification du token...",
-      getOrUpdateToken: "Obtenir ou mettre à jour le token",
+      checkingToken: "Vérification du jeton...",
+      getOrUpdateToken: "Obtenir ou mettre à jour le jeton",
       preview: "Aperçu du jeu de données",
       split: "Split",
       subset: "Sous-ensemble",

@@ -23,6 +23,7 @@ import {
   useAppearanceCustomStore,
   useTheme,
 } from "@/features/settings";
+import { SttDownloadPrompt } from "@/features/settings/components/stt-download-prompt";
 import { TauriUpdateContext } from "@/hooks/tauri-update-context";
 import { type BackendStatus, useTauriBackend } from "@/hooks/use-tauri-backend";
 import { useTauriUpdate } from "@/hooks/use-tauri-update";
@@ -320,6 +321,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     isExternalServer,
     currentStepIndex,
     progressDetail,
+    startupMessage,
     elevationPackages,
     startInstall,
     retry,
@@ -463,6 +465,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       error={error}
       currentStepIndex={currentStepIndex}
       progressDetail={startupProgressDetail}
+      startupMessage={startupMessage}
       elevationPackages={elevationPackages}
       onInstall={startInstall}
       onRetry={retry}
@@ -544,6 +547,7 @@ export function AppProvider({ children }: AppProviderProps) {
         <AppearanceCustomizationEffect />
         <DeepLinkHandler />
         <TauriWrapper>{children}</TauriWrapper>
+        <SttDownloadPrompt />
         <Toaster
           position="top-right"
           visibleToasts={2}

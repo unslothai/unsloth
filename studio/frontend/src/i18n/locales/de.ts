@@ -53,6 +53,11 @@ export const de = {
       projects: "Projekte",
       train: "Trainieren",
       recipes: "Rezepte",
+      images: "Bilder",
+      video: "Video",
+      more: "Mehr",
+      customizeSidebar: "Seitenleiste anpassen",
+      newBadge: "Neu",
       export: "Exportieren",
       recents: "Zuletzt verwendet",
       noChatsYet: "Noch keine Chats",
@@ -156,10 +161,20 @@ export const de = {
         sttDownloadStatusFailed:
           "Der Download-Status konnte nicht geprüft werden",
         sttDownload: "Herunterladen",
+        sttDownloadConfirmTitle: "{model} herunterladen?",
+        sttDownloadConfirmBody:
+          "Das lokale Diktat läuft vollständig offline, benötigt aber zuerst das Spracherkennungsmodell {model}. Etwa {size}, wird einmalig in Ihren Hugging Face-Cache geladen.",
+        sttDownloadConfirmBodyUnsized:
+          "Das lokale Diktat läuft vollständig offline, benötigt aber zuerst das Spracherkennungsmodell {model}. Es wird einmalig in Ihren Hugging Face-Cache geladen.",
+        sttOpenVoiceSettings: "Einstellungen für Sprachfunktionen öffnen",
+        sttDownloadStarted: "{model} wird heruntergeladen",
         sttDownloading: "Wird heruntergeladen… {progress} %",
         sttCancelDownload: "Abbrechen",
         sttCancellingDownload: "Wird abgebrochen…",
+        sttCancelDownloadFailed: "Der Download konnte nicht abgebrochen werden",
         sttDownloadComplete: "Spracherkennungsmodell heruntergeladen",
+        sttModelReady: "{model} ist bereit für das Diktat",
+        sttRecommended: "Empfohlen",
         sttDownloadFailed:
           "Das Spracherkennungsmodell konnte nicht heruntergeladen werden",
         sttLoad: "Laden",
@@ -617,6 +632,14 @@ export const de = {
         compactSidebarDescription:
           "Hält die Seitenleiste ausgeklappt, statt sie zu Symbolen einzuklappen.",
       },
+      sidebarNav: {
+        title: "Seitenleisten-Navigation",
+        description:
+          "Tabs der Seitenleiste anheften und neu anordnen. Nicht angeheftete Tabs sammeln sich im Menü „Mehr“; ein einzelner nicht angehefteter Tab wird ausgeblendet, statt ein Menü mit nur einem Eintrag zu erhalten. „Neuer Chat“ bleibt fest.",
+        dragToReorder: "Zum Neuanordnen ziehen",
+        pinToSidebar: "{name} an die Seitenleiste anheften",
+        moreHolds: "Mehr ({count})",
+      },
       sidebarMenu: {
         title: "Seitenleistenmenü",
         description:
@@ -1020,7 +1043,7 @@ export const de = {
         "Laden Sie ein Modell oder laden Sie eines herunter, um ausführbare Beispiele zu sehen. Dieser Server kennt noch kein Modell, das in den Beispielen verwendet werden könnte.",
     },
     about: {
-      title: "Über",
+      title: "Info",
       description: "Dokumentation, Versionshinweise, Feedback und Build-Infos.",
       studioVersion: "Unsloth-Version",
       packageVersion: "Paketversion",
@@ -1424,7 +1447,7 @@ export const de = {
       cancelAction: "Training abbrechen",
       stopTitle: "Training stoppen",
       stopDescription:
-        "Wählen Sie, wie Sie den aktuellen Trainingslauf stoppen möchten.",
+        "Wählen Sie, wie Sie den aktuellen Trainingslauf stoppen möchten. „Stoppen und speichern“ schreibt einen Checkpoint, von dem aus Sie später fortsetzen können; ein einfach gestopptes Training kann nicht fortgesetzt werden.",
       stopAction: "Stoppen",
       stopping: "Wird gestoppt...",
       stopAndSave: "Stoppen und speichern",
