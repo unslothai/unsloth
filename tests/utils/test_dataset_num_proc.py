@@ -363,6 +363,13 @@ def test_env_override_is_uncapped(monkeypatch, dnp):
     _force_start_method(monkeypatch, dnp, "fork")
     monkeypatch.setenv(dnp.NUM_PROC_ENV_VAR, "100")
     assert dnp.get_dataset_num_proc(None) == 100
+    # Above the auto cap is the easy half. The memory clamp is the one that
+    # matters: the fixture leaves room for 512 workers, so without pinning it
+    # this asserts nothing about the exemption. map_failure_diagnostics points
+    # users at this hatch on exactly the host where the clamp would bite.
+    monkeypatch.setattr(dnp, "_affordable_workers", lambda: 2)
+    assert dnp.get_dataset_num_proc(None) == 100
+    assert dnp.get_dataset_num_proc(4) == 100
 
 
 def test_invalid_env_override_is_ignored_with_a_warning(monkeypatch, dnp, capsys):
@@ -493,6 +500,23 @@ def test_start_method_probe_matches_the_pool_multiprocess_would_build(dnp):
 # ---------- the generated trainer's import must match the real module ----------
 
 
+def _rl_serial_as_none(tree, source, trainer_file):
+    """Evaluate rl.py's own serial_as_none rule rather than restating it.
+
+    Restating it made every codegen case below self-fulfilling: they passed
+    whatever rl.py decided, so flipping SFT to True -- losing the config
+    sentinel these modules exist to protect -- was caught only by the one test
+    that matches the emitted literal, which is the line a developer would edit
+    in the same change.
+    """
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign) and getattr(node.targets[0], "id", "") == "_serial_as_none":
+            return eval(  # noqa: S307
+                ast.get_source_segment(source, node.value), {"trainer_file": trainer_file}
+            )
+    raise AssertionError("_serial_as_none assignment not found in unsloth/models/rl.py")
+
+
 def _rl_num_proc_snippet(trainer_file = "sft_trainer"):
     """The snippet rl.py would splice into that trainer's generated config.
 
@@ -507,8 +531,9 @@ def _rl_num_proc_snippet(trainer_file = "sft_trainer"):
             # Parenthesised: the segment starts at the first literal, so its
             # continuation lines are an IndentationError on their own.
             expression = "(" + ast.get_source_segment(source, node.value) + ")"
-            serial_as_none = "False" if trainer_file == "sft_trainer" else "True"
-            return eval(expression, {"_serial_as_none": serial_as_none})  # noqa: S307
+            return eval(  # noqa: S307
+                expression, {"_serial_as_none": _rl_serial_as_none(tree, source, trainer_file)}
+            )
     raise AssertionError("num_proc_check literal not found in unsloth/models/rl.py")
 
 
@@ -990,6 +1015,17 @@ def test_unrelated_errors_pass_through_untouched(dnp):
         with dnp.map_failure_diagnostics(4):
             raise key
     assert caught_key.value is key
+
+    # The identity assertions above hold under `except Exception` as well, since
+    # the guard re-raises the same object. This one does not: it carries the
+    # dead-worker text, so a widened clause would rewrite it into a RuntimeError.
+    lookalike = ValueError(
+        "One of the subprocesses has abruptly died during map operation."
+    )
+    with pytest.raises(ValueError) as caught_other:
+        with dnp.map_failure_diagnostics(4):
+            raise lookalike
+    assert caught_other.value is lookalike
 
 
 def test_successful_map_is_not_disturbed(dnp):

@@ -47,6 +47,21 @@ def _fork_platform(monkeypatch):
     monkeypatch.setattr(sys, "platform", "linux")
 
 
+@pytest.fixture(autouse = True)
+def _memory_headroom(monkeypatch):
+    """Pin the memory ceiling the shared policy applies.
+
+    Every count these tests assert is bounded by free RAM, so on a small runner
+    ``dataset_map_num_proc(4) == 4`` quietly becomes a test of the clamp. The
+    cases that are about the clamp pin their own value afterwards, which wins.
+    """
+    try:
+        import unsloth_zoo.dataset_num_proc as policy
+    except ImportError:
+        return
+    monkeypatch.setattr(policy, "_affordable_workers", lambda: 64)
+
+
 def _require_fork(multiprocess):
     """Skip when this host cannot fork.
 
