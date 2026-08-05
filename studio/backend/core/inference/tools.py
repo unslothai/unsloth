@@ -1218,6 +1218,13 @@ def _start_title_indexes(tokens: "list[str]", lexed_posix: bool) -> "frozenset[i
     )
 
 
+# cmd ends a command word at these whether or not whitespace surrounds them.
+_CMD_OPERATOR_RE = re.compile(r"[&|<>]")
+# cmd commands that take the rest of their segment as text, so a `start` behind
+# one is a word being printed or assigned rather than a program being launched.
+_CMD_TEXT_COMMANDS = frozenset({"echo", "rem", "set", "title", "prompt"})
+
+
 def _strip_cmd_quotes(token: str) -> str:
     """``token`` without the quotes cmd strips before it resolves a program.
 
@@ -1243,8 +1250,14 @@ def _blocked_start_program(token: str) -> "set[str]":
     Backslashes separate here whatever the host is: this only ever reads a
     Windows program, and posixpath leaves `C:\\Windows\\System32\\powershell.exe`
     whole, so the name never matched on the Linux CI that runs these tests.
+
+    A cmd operator glued to the name ends it, since the cmd lexer takes no
+    punctuation_chars and leaves `powershell&` whole where cmd reads an operator
+    and runs powershell. The recursive scan this replaced stripped those, so
+    matching the raw token dropped a name the older code caught.
     """
-    base = os.path.basename(_strip_cmd_quotes(token).replace("\\", "/")).lower()
+    target = _CMD_OPERATOR_RE.split(_strip_cmd_quotes(token), 1)[0]
+    base = os.path.basename(target.replace("\\", "/")).lower()
     stem, ext = os.path.splitext(base)
     if ext in {".exe", ".com", ".bat", ".cmd"}:
         base = stem
@@ -1521,6 +1534,31 @@ def _find_blocked_commands(command: str) -> set[str]:
             base = stem
         return base
 
+    def _cmd_start_positions(begin: int) -> "set[int]":
+        """Indexes of the `start` words that launch a program in the cmd command
+        line running from ``begin`` to the end.
+
+        cmd keeps parsing past its own conditionals and operators, so promoting
+        only the first word missed `cmd //c if exist . start "" powershell`,
+        which cmd runs and which the scan had caught before it was gated. Each
+        segment is read down to its leading word instead, so a start that is an
+        argument of one that takes text stays an argument: `cmd //c echo start
+        "my title" powershell` prints and launches nothing.
+        """
+        found: "set[int]" = set()
+        head = -1
+        for index in range(begin, len(tokens)):
+            if _looks_like_separator(tokens[index]):
+                head = -1
+                continue
+            if head < 0:
+                head = index
+            if _token_basename(tokens[index]) != "start":
+                continue
+            if head == index or _token_basename(tokens[head]) not in _CMD_TEXT_COMMANDS:
+                found.add(index)
+        return found
+
     def _exec_child_index(start: int) -> "tuple[int, bool]":
         """The command a `find -exec` actually runs, as ``(index, overflowed)``;
         the index is -1 when the action holds no command word at all.
@@ -1769,12 +1807,11 @@ def _find_blocked_commands(command: str) -> set[str]:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             elif is_win_c and prev_base in _SHELLS_WIN:
                 blocked |= _find_blocked_commands(tokens[i + 1])
-                # The nested command line starts here, so a start word in this
-                # position is a launch even though the outer scan reads it as an
-                # argument of cmd. Recursing alone does not reach it: only the
-                # one token is passed on, and `start` by itself blocks nothing.
-                if _token_basename(tokens[i + 1]) == "start":
-                    start_indexes.add(i + 1)
+                # Everything from here on is cmd's command line, which the outer
+                # scan can only read as arguments of cmd. Recursing does not
+                # reach it either: only the one token is passed on, and `start`
+                # by itself blocks nothing.
+                start_indexes |= _cmd_start_positions(i + 1)
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
@@ -1782,6 +1819,11 @@ def _find_blocked_commands(command: str) -> set[str]:
     title_tokens: "frozenset[int] | None" = None
     source_quoted: "frozenset[int] | None" = None
     source_quoted_built = False
+    # `start` launches a program in cmd. On a POSIX host it is whatever the user
+    # has by that name, its arguments are arguments, and reading them as cmd
+    # syntax refused `start "dry run" rm` on Linux and macOS.
+    if sys.platform != "win32":
+        start_indexes.clear()
     # Only a start that is really a launch. `echo start "my title" powershell`
     # prints text, and reading every token named start walked the title branch
     # into a hard block for it.

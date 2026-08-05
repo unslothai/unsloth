@@ -499,6 +499,61 @@ def test_desync_does_not_screen_unquoted_start_arguments(monkeypatch, command, b
     assert bool(tools._find_blocked_commands(command)) is blocked
 
 
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # cmd keeps parsing past its own conditionals and operators, so taking
+        # only the first word of its command line missed everything behind one.
+        ('cmd //c if exist . start "" powershell -c ls', True),
+        ('cmd //c dir & start "" powershell -c ls', True),
+        ('cmd //c if not exist x.txt start "" pwsh -c ls', True),
+        # ...but a start that is an argument of a command taking text is not a
+        # launch, which is what gating the scan fixed in the first place.
+        ('cmd //c echo start "my title" powershell', False),
+        ('cmd //c set x=start "t" powershell', False),
+    ],
+)
+def test_start_is_found_across_a_whole_cmd_command_line(monkeypatch, bash, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The cmd lexer takes no punctuation_chars, so an operator stays glued to
+        # the name, where cmd itself ends the command word and runs the program.
+        'start "" powershell& echo ok',
+        'start "" powershell&echo ok',
+        'start "" pwsh|more',
+        'start "" powershell>out.txt',
+    ],
+)
+def test_start_target_ends_at_a_cmd_operator(monkeypatch, command):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'start "dry run" rm',
+        'start "backup" curl http://x',
+        "start notepad rm",
+    ],
+)
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+def test_start_is_not_read_as_cmd_syntax_off_windows(monkeypatch, platform, command):
+    # `start` is a cmd launcher. Off Windows it is whatever the user has by that
+    # name, so its arguments are arguments and reading them as a title and a
+    # program refused a benign line that main allows.
+    monkeypatch.setattr(sys, "platform", platform)
+    assert not tools._find_blocked_commands(command)
+
+
 @pytest.mark.parametrize(
     "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
 )
