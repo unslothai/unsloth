@@ -15,10 +15,13 @@ built:
 Measured on Colab at transformers 5.13.1 + trl 0.25.1 running NeMo-Gym-Sudoku.
 
 unsloth already guards it, but only inside the source it GENERATES for the
-compiled trainer (`models/rl.py`), so the guard exists exactly when compilation
-does. UNSLOTH_COMPILE_DISABLE=1 removes the generated module and the guard with
-it while trl's write stays. The wrapper in `trainer.py` runs in both modes, so
-the guard belongs there as well.
+compiled trainer (`models/rl.py`), so the guard exists exactly when that
+generation succeeds. When it fails, unsloth falls back to trl's own class and
+the write is unguarded again, which is the gap the `trainer.py` wrapper closes.
+
+Not UNSLOTH_COMPILE_DISABLE=1, despite the obvious guess: measured with a fresh
+cache, that mode still writes `unsloth_compiled_cache/UnslothGRPOTrainer.py`
+with the guard in it, and `trl.GRPOTrainer` is still the generated class.
 
 trainer.py is loaded by AST here, not imported: importing `unsloth.trainer`
 drags in GPU init, and none of this logic needs a GPU.
@@ -275,13 +278,19 @@ def test_the_generated_compiled_guard_is_still_there():
 
 
 def test_trl_still_writes_the_attribute_unconditionally():
-    """If trl ever guards it themselves, this whole file can go."""
+    """If trl ever guards it themselves, the guard becomes a no-op.
+
+    trl 1.x already did: the main trainers dropped the write, and the three
+    experimental ones that kept it wrap it in `if hasattr(model, ...)`. So this
+    is a signal, not a requirement -- asserting it would fail the whole file on
+    every supported trl >= 1.0."""
     trl = pytest.importorskip("trl")
     grpo = Path(trl.__file__).parent / "trainer" / "grpo_trainer.py"
     if not grpo.exists():
         pytest.skip("trl layout changed")
     text = grpo.read_text(encoding = "utf-8")
-    assert 'model.warnings_issued["estimate_tokens"] = True' in text
+    if 'model.warnings_issued["estimate_tokens"] = True' not in text:
+        pytest.skip(f"trl {trl.__version__} no longer writes warnings_issued unguarded")
 
 
 def test_the_installed_transformers_tells_us_which_side_of_5_1_we_are_on():
@@ -304,7 +313,11 @@ def test_every_trl_trainer_that_writes_it_goes_through_the_wrapper():
     that loop's rule is "XTrainer and XConfig both exist in trl.trainer" -- not
     an explicit list. Eight trainers write the attribute; measured on trl
     0.25.1 all eight satisfy the rule. A future trl that ships a writer without
-    a matching Config would slip through silently."""
+    a matching Config would slip through silently.
+
+    Only UNGUARDED writers outside trl.experimental count: trl 1.x's sdft / ssd
+    / sdpo trainers already test `hasattr(model, "warnings_issued")` first and
+    are not exported from `trl.trainer`, so they need no wrapper."""
     trl = pytest.importorskip("trl")
     import trl.trainer
 
@@ -316,11 +329,15 @@ def test_every_trl_trainer_that_writes_it_goes_through_the_wrapper():
     root = Path(trl.__file__).parent
     writers = set()
     for path in root.rglob("*_trainer.py"):
+        if "experimental" in path.relative_to(root).parts:
+            continue  # not exported from trl.trainer, so never wrapped by design
         try:
             text = path.read_text(encoding = "utf-8")
         except OSError:
             continue
         if 'model.warnings_issued["estimate_tokens"] = True' in text:
+            if 'hasattr(model, "warnings_issued")' in text:
+                continue  # trl guards it itself here
             writers.add(path.stem[: -len("_trainer")])
 
     if not writers:

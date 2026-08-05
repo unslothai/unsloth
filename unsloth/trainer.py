@@ -612,8 +612,11 @@ def _ensure_warnings_issued(model):
         AttributeError: 'Qwen2ForCausalLM' object has no attribute 'warnings_issued'
 
     models/rl.py already guards this, but only in the source it GENERATES, so the
-    guard exists exactly when compilation does and UNSLOTH_COMPILE_DISABLE=1 takes
-    it away while trl's write remains. This wrapper runs in both modes.
+    guard exists exactly when that generation succeeds. When it does not, unsloth
+    falls back to trl's own class and the write is unguarded again. Measured, so
+    the weaker claim is the right one: UNSLOTH_COMPILE_DISABLE=1 does NOT remove
+    the generated module, which is still written with the guard in it, so that is
+    not the gap this closes. The fallback is.
 
     Best-effort, and no stricter than the generated guard: a non-module (trl also
     accepts a repo id string) is left alone.
