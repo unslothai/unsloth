@@ -956,16 +956,27 @@ class DiffusionBackend:
 
         # Callers without a per-load event (tests, direct use) fall back to the current one.
         cancel = cancel_event if cancel_event is not None else self._cancel_event
+        # A file cached only under huggingface_hub's import-time root resolves through that root
+        # instead of being pulled again into the live one. The preflight clears a base found under
+        # EITHER root, so without this a cache-folder change turns an already-downloaded gated or
+        # private base into the bare Hub token error mid-prefetch (and every other moved asset
+        # into a needless multi-GB re-download) on a load the preflight just accepted.
         # GGUF transformer (hub repos only; a local path is already on disk).
         if gguf_filename and not Path(repo_id).expanduser().exists():
-            hf_hub_download_with_xet_fallback(repo_id, gguf_filename, hf_token, cancel_event = cancel)
+            hf_hub_download_with_xet_fallback(
+                repo_id,
+                gguf_filename,
+                hf_token,
+                cancel_event = cancel,
+                reuse_other_cache_root = True,
+            )
         # Base repo (VAE / text-encoder / scheduler); list comes from the estimate.
         snapshot_root: Optional[str] = None
         for rfilename in base_files:
             if cancel.is_set():
                 raise RuntimeError("Cancelled")
             local = hf_hub_download_with_xet_fallback(
-                base, rfilename, hf_token, cancel_event = cancel
+                base, rfilename, hf_token, cancel_event = cancel, reuse_other_cache_root = True
             )
             if rfilename == "model_index.json":
                 snapshot_root = str(Path(local).parent)

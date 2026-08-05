@@ -806,7 +806,13 @@ class SdCppDiffusionBackend:
             if kind == "diffusion_model" and local_root.exists():
                 path = str(resolve_local_gguf_child(local_root, fn))
             else:
-                path = hf_hub_download_with_xet_fallback(repo, fn, hf_token, cancel_event = cancel)
+                # An asset cached only under huggingface_hub's import-time root resolves through
+                # that root, matching the preflight, which clears a base found under EITHER root.
+                # Pinned to the live one, a cache-folder change re-downloads every moved asset and
+                # turns an already-downloaded gated/private base into the bare Hub token error.
+                path = hf_hub_download_with_xet_fallback(
+                    repo, fn, hf_token, cancel_event = cancel, reuse_other_cache_root = True
+                )
             paths[kind] = path
             with self._lock:
                 if self._loading is not None:

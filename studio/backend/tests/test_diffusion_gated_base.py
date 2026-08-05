@@ -712,3 +712,72 @@ def test_the_native_load_probes_the_asset_it_stages_and_honours_the_cache(monkey
     b._run_load(**kwargs)
     assert probed == []
     assert len(fetched) == 1  # got past the preflight, exactly as before this check existed
+
+
+def _stub_shared_download(monkeypatch, tmp_path, cached_elsewhere = ()):
+    """Record the cache root each companion download resolves against.
+
+    ``cached_elsewhere`` names the files that exist ONLY under huggingface_hub's import-time root
+    (Studio's cache folder was changed mid-session), so the live root is a miss for them.
+    """
+    import utils.hf_xet_fallback as X
+
+    seen: list = []
+
+    def _shared(repo_id, filename, token, **k):
+        seen.append((filename, k.get("cache_dir")))
+        return f"/somewhere/{filename}"
+
+    monkeypatch.setattr(X, "_shared_hf_hub_download_with_xet_fallback", _shared)
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: types.SimpleNamespace(hub_cache = "/live-hub"),
+    )
+    other = tmp_path / "other-hub" / "blob"
+    other.parent.mkdir(parents = True, exist_ok = True)
+    other.write_bytes(b"cached under the import-time root")
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda repo_id, filename, cache_dir = None, **k: (
+            str(other) if cache_dir is None and filename in cached_elsewhere else None
+        ),
+    )
+    return seen
+
+
+def test_the_prefetch_reuses_a_base_asset_cached_under_the_other_root(monkeypatch, tmp_path):
+    """The preflight clears a base found under EITHER cache root, but the companion downloads are
+    pinned to the live one, so after a cache-folder change the load re-fetches every already-cached
+    asset -- and with no valid token for a gated or private base it 401s outright, which is the
+    bare Hub token error the preflight exists to replace. The download has to resolve through the
+    root that actually holds the file, exactly as the GGUF and pre-quant resolvers do."""
+    seen = _stub_shared_download(monkeypatch, tmp_path, cached_elsewhere = {"ae.safetensors"})
+    DiffusionBackend()._prefetch_files(
+        "unsloth/FLUX.1-dev-GGUF",
+        None,
+        "black-forest-labs/FLUX.1-dev",
+        ["ae.safetensors", "text_encoder/model.safetensors"],
+        "no-access",
+    )
+    assert seen == [
+        # cached only under the import-time root: reached through it, not re-pulled into the live one
+        ("ae.safetensors", None),
+        # nowhere on disk: a real download, still pinned to the root Studio is reading
+        ("text_encoder/model.safetensors", "/live-hub"),
+    ]
+
+
+def test_the_native_fetch_reuses_a_base_asset_cached_under_the_other_root(monkeypatch, tmp_path):
+    """Same for the native sd.cpp loader, whose preflight grants the same two-root escape."""
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+
+    seen = _stub_shared_download(monkeypatch, tmp_path, cached_elsewhere = {"ae.safetensors"})
+    b = SdCppDiffusionBackend(engine = None)
+    b._fetch_assets(
+        [
+            ("black-forest-labs/FLUX.1-dev", "ae.safetensors", "vae"),
+            ("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", "diffusion_model"),
+        ],
+        "no-access",
+    )
+    assert seen == [("ae.safetensors", None), ("flux1-dev-Q4_K_M.gguf", "/live-hub")]

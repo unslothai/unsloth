@@ -562,12 +562,40 @@ def hf_hub_download_with_xet_fallback(
     on_status: Optional[Callable[[str], None]] = None,
     force_download: bool = False,
     cache_dir: Optional[str] = None,
+    reuse_other_cache_root: bool = False,
 ) -> str:
     """Single-file download via the shared fallback with Unsloth's marker-aware HTTP-retry prep.
-    ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path)."""
+    ``force_download`` re-fetches a newer blob over a cached one (Unsloth's model-update path).
+
+    ``reuse_other_cache_root`` (opt-in) lets a file that is cached ONLY under huggingface_hub's
+    import-time root resolve through that root instead of being re-fetched into the live one.
+    Studio's cache folder is a setting, so after it changes every companion asset already on disk
+    is invisible to a call pinned to the new root: multiple GB re-download, and for a gated or
+    private base with no valid token the pull 401s outright even though the bytes are right
+    there -- while the preflight, which looks in BOTH roots, already cleared the load. Reached
+    THROUGH the other root rather than by returning the raw path, so the ref still resolves and a
+    republished file is picked up; the blob is reused, so nothing is re-fetched when it has not
+    changed, and offline/401 hf_hub_download keeps the failed HEAD and serves the cached pointer.
+    Off for ``force_download``, whose whole point is to re-fetch."""
     if cache_dir is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         cache_dir = str(get_hf_cache_paths().hub_cache)
+    if reuse_other_cache_root and not force_download and cache_dir is not None:
+        try:
+            from huggingface_hub import try_to_load_from_cache
+
+            # Only a str is a cached path; a miss is None and a known-absent file is a sentinel.
+            here = try_to_load_from_cache(
+                repo_id, filename, repo_type = repo_type, revision = revision, cache_dir = cache_dir
+            )
+            if not isinstance(here, str):
+                elsewhere = try_to_load_from_cache(
+                    repo_id, filename, repo_type = repo_type, revision = revision, cache_dir = None
+                )
+                if isinstance(elsewhere, str) and Path(elsewhere).is_file():
+                    cache_dir = None
+        except Exception:  # noqa: BLE001 — a cache we cannot read just keeps the live root
+            pass
     # Omit rather than forward None: an older unsloth_zoo hands `interval` straight to Event.wait(),
     # where None blocks forever and a hung Xet download never falls back. Omitting also lets the
     # shared layer pick its per-transport defaults.
