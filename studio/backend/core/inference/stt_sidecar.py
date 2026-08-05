@@ -98,6 +98,10 @@ class SttModelNotDownloadedError(RuntimeError):
     """The selected model is not complete in the shared Hub cache."""
 
 
+class SttModelBusyError(RuntimeError):
+    """A switch was asked for while the current model is mid-transcription."""
+
+
 class SttModelIdError(ValueError):
     """The requested custom model is not a valid Hugging Face repository id."""
 

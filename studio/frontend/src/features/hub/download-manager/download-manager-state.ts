@@ -172,6 +172,10 @@ function collectCompletedInventoryHints(
 ): InventoryHint[] {
   return Object.values(jobs).flatMap((job) => {
     if (job.state !== "complete") return [];
+    // A dictation download is not a chat model arriving. A custom Whisper repo
+    // is only hidden once the backend has scanned its config, so an optimistic
+    // hint would surface it in the chat inventory for the hint's whole TTL.
+    if (job.external) return [];
     const kind = completedInventoryHintKind(job.kind, job.variant);
     if (
       runtimeRegistry.suppressedCompletedInventoryHints.has(

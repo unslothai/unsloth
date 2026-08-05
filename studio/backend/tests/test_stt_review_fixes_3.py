@@ -203,3 +203,89 @@ def _swallow(sidecar, model_id):
         sidecar.load(model_id)
     except Exception:
         pass
+
+
+def test_a_switch_to_a_missing_model_keeps_the_working_one(spawned, monkeypatch):
+    """Releasing before the cache check cost a usable server on a 409."""
+    made, _, _ = spawned
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    sidecar.load("qwen3-asr-0.6b")
+    assert sidecar.loaded_model == "qwen3-asr-0.6b"
+
+    def missing(self, model_id):
+        raise mtmd_mod.SttModelNotDownloadedError(f"'{model_id}' is not downloaded.")
+
+    monkeypatch.setattr(MtmdSttSidecar, "_ensure_model_downloaded", missing)
+    with pytest.raises(mtmd_mod.SttModelNotDownloadedError):
+        sidecar.load("qwen3-asr-1.7b")
+
+    assert sidecar.loaded_model == "qwen3-asr-0.6b", "the working server was torn down"
+    assert made[0].poll() is None
+    sidecar.unload()
+
+
+def test_a_model_switch_never_kills_a_running_transcription(spawned, monkeypatch):
+    made, _, _ = spawned
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    sidecar.load("qwen3-asr-0.6b")
+    with sidecar._lock:
+        sidecar._active_requests = 1  # mid _post_transcribe, outside the lock
+
+    with pytest.raises(mtmd_mod.SttModelBusyError):
+        sidecar.load("qwen3-asr-1.7b")
+    assert made[0].poll() is None, "the in-flight request's server was killed"
+
+    # The same model is a no-op, so a concurrent transcribe is never refused.
+    sidecar.load("qwen3-asr-0.6b")
+    with sidecar._lock:
+        sidecar._active_requests = 0
+    sidecar.unload()
+
+
+def test_a_dead_server_can_still_be_replaced_while_a_request_is_pending(spawned, monkeypatch):
+    made, _, _ = spawned
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    sidecar.load("qwen3-asr-0.6b")
+    made[0]._returncode = 1  # crashed under the request
+    with sidecar._lock:
+        sidecar._active_requests = 1
+
+    sidecar.load("qwen3-asr-1.7b")
+    assert sidecar.loaded_model == "qwen3-asr-1.7b"
+    with sidecar._lock:
+        sidecar._active_requests = 0
+    sidecar.unload()
+
+
+def test_the_output_cap_follows_the_length_of_the_audio():
+    budget = mtmd_mod._transcript_token_budget
+    # A fixed 2048 truncated anything past roughly ten minutes of speech.
+    assert budget(30 * 60) > 2048
+    assert budget(1.0) == mtmd_mod._MIN_TRANSCRIPT_TOKENS
+    assert budget(None) == mtmd_mod._MIN_TRANSCRIPT_TOKENS
+    assert budget(0) == mtmd_mod._MIN_TRANSCRIPT_TOKENS
+    assert budget(-5) == mtmd_mod._MIN_TRANSCRIPT_TOKENS
+    # Bounded, so it stays inside the context that also holds the audio.
+    assert budget(10**6) == mtmd_mod._MAX_TRANSCRIPT_TOKENS
+    assert budget(120) > budget(60)
+
+
+def test_the_engine_is_unavailable_without_pyav(monkeypatch):
+    """whisper.cpp already refuses here; every transcription 501s on decode."""
+    import builtins
+
+    monkeypatch.setattr(mtmd_mod, "find_llama_server_binary", lambda: "/bin/llama-server")
+    assert mtmd_mod.is_available() is True
+
+    real_import = builtins.__import__
+
+    def no_av(name, *args, **kwargs):
+        if name == "av":
+            raise ImportError("No module named 'av'")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_av)
+    assert mtmd_mod.is_available() is False

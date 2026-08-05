@@ -8271,6 +8271,7 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
     """Load the selected STT model after the user starts local dictation."""
     from core.inference.stt_sidecar import (
         SttLoadCancelledError,
+        SttModelBusyError,
         SttModelCompatibilityError,
         SttModelIdError,
         SttModelNotDownloadedError,
@@ -8288,6 +8289,8 @@ async def stt_load(payload: SttLoadRequest, current_subject: str = Depends(get_c
     except SttUnavailableError as e:
         raise HTTPException(status_code = 501, detail = str(e))
     except SttLoadCancelledError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
+    except SttModelBusyError as e:
         raise HTTPException(status_code = 409, detail = str(e))
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))

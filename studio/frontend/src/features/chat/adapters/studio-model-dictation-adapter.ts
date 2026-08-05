@@ -383,13 +383,15 @@ export class StudioModelDictationAdapter implements DictationAdapter {
     let finalCutDone = false;
     let reportedTranscriptionError = false;
 
-    const reportTranscriptionError = (error: unknown) => {
+    const reportTranscriptionError = (
+      error: unknown,
+      stage: "preload" | "segment" = "segment",
+    ) => {
       if (reportedTranscriptionError || cancelled || ended) return;
       reportedTranscriptionError = true;
       console.error("STT transcription error:", error);
       // An undownloaded model is the ordinary first-run state, not a failure.
-      // Point at the download; never start it here. Recording has already begun
-      // by this point, so end it: nothing spoken now could be transcribed.
+      // Point at the download; never start it here.
       if (error instanceof SttModelNotDownloadedError) {
         requestSttDownload(sessionModel);
         finishSession("cancelled");
@@ -405,6 +407,11 @@ export class StudioModelDictationAdapter implements DictationAdapter {
           onClick: () => useSettingsDialogStore.getState().openDialog("voice"),
         },
       });
+      // The preload runs cache-only, so nothing it reports is transient: a
+      // missing runtime or a load refused for training means no segment of
+      // this session can be transcribed. End it rather than let the user keep
+      // speaking into a recorder whose audio is already lost.
+      if (stage === "preload") finishSession("cancelled");
     };
 
     const buildTranscript = () =>
@@ -687,8 +694,8 @@ export class StudioModelDictationAdapter implements DictationAdapter {
         }
         // Warm the model only after mic access. The backend loads cache-only
         // and never downloads here.
-        void loadSttModel(sessionModel, sessionEngine).catch(
-          reportTranscriptionError,
+        void loadSttModel(sessionModel, sessionEngine).catch((error: unknown) =>
+          reportTranscriptionError(error, "preload"),
         );
         stopLevelMeter = startDictationLevelMeter(stream, (rawRms, now) => {
           onAudioFrame(rawRms, now);

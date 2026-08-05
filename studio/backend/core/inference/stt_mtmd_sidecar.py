@@ -33,6 +33,7 @@ from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
 from core.inference.stt_sidecar import (
     STT_KEEP_ALIVE_SECONDS,
+    SttModelBusyError,
     SttModelIdError,
     SttModelNotDownloadedError,
     SttUnavailableError,
@@ -76,6 +77,23 @@ MTMD_STT_MODELS: dict[str, MtmdSttModel] = {
 # ASR are too: llama.cpp has the audio graphs but not the text architectures.
 
 _TRANSCRIBE_PROMPT = "Transcribe the audio."
+# Output cap per second of audio. Speech runs about 3 tokens a second in
+# English and more in scripts with no word boundaries, so this is deliberately
+# generous: generation stops at EOS long before it, and the cap only exists so
+# a looping model cannot run to the request timeout.
+_TRANSCRIPT_TOKENS_PER_SECOND = 30
+_MIN_TRANSCRIPT_TOKENS = 512
+# Well under any of these models' trained context, which also has to hold the
+# audio. llama-server is left on its default context (loaded from the model).
+_MAX_TRANSCRIPT_TOKENS = 16384
+
+
+def _transcript_token_budget(audio_seconds: Optional[float]) -> int:
+    """Output cap for a clip. A fixed one silently truncated long audio."""
+    if not audio_seconds or audio_seconds <= 0:
+        return _MIN_TRANSCRIPT_TOKENS
+    scaled = int(audio_seconds * _TRANSCRIPT_TOKENS_PER_SECOND)
+    return max(_MIN_TRANSCRIPT_TOKENS, min(scaled, _MAX_TRANSCRIPT_TOKENS))
 _SERVER_START_TIMEOUT_SECONDS = 180.0
 _TRANSCRIBE_TIMEOUT_SECONDS = 600.0
 
@@ -101,8 +119,16 @@ def find_llama_server_binary() -> Optional[str]:
 
 
 def is_available() -> bool:
-    """True when llama-server is installed; the engine needs nothing else."""
-    return find_llama_server_binary() is not None
+    """True when llama-server is installed and audio can be decoded."""
+    if find_llama_server_binary() is None:
+        return False
+    try:
+        import av  # noqa: F401
+    except Exception:
+        # No PyAV means every transcription 501s on decode, so offering a
+        # multi-gigabyte download here would be a waste.
+        return False
+    return True
 
 
 def _llama_server_child_env(binary: str) -> dict:
@@ -490,8 +516,17 @@ class MtmdSttSidecar:
             if self._process_alive() and self._model_id == model_id:
                 self._schedule_idle_unload_locked()
                 return
-            self._release_locked()
+            # Before the release: a 409 for a model that is not downloaded
+            # must not cost the user the server they were already using.
             model_path, mmproj_path = self._ensure_model_downloaded(model_id)
+            # Only when there is a live server to protect: a request against a
+            # server that already died must not block recovery.
+            if self._active_requests and self._process_alive():
+                raise SttModelBusyError(
+                    "A transcription is still running on the current dictation model. "
+                    "Try again in a moment."
+                )
+            self._release_locked()
             cancel_event = threading.Event()
             self._load_cancel_event = cancel_event
             self._loading = True
@@ -597,6 +632,7 @@ class MtmdSttSidecar:
         self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio)
         wav_bytes = _pcm_to_wav_bytes(decoded_audio)
+        audio_seconds = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
         self.load(model_id)
         with self._lock:
             port = self._port
@@ -610,20 +646,25 @@ class MtmdSttSidecar:
         try:
             # Outside the lock: a held lock would block unload, including the
             # one a training run performs, for the whole request timeout.
-            text = self._post_transcribe(port, model_id, wav_bytes)
+            text = self._post_transcribe(port, model_id, wav_bytes, audio_seconds)
         finally:
             with self._lock:
                 self._active_requests -= 1
                 self._schedule_idle_unload_locked()
-        duration = (len(decoded_audio) / _TARGET_SAMPLE_RATE) if len(decoded_audio) else None
         return {
             "text": text,
             "language": normalize_whisper_language(language),
-            "duration": duration,
+            "duration": audio_seconds,
             "model": model_id,
         }
 
-    def _post_transcribe(self, port: int, model_id: str, wav_bytes: bytes) -> str:
+    def _post_transcribe(
+        self,
+        port: int,
+        model_id: str,
+        wav_bytes: bytes,
+        audio_seconds: Optional[float] = None,
+    ) -> str:
         spec = MTMD_STT_MODELS[model_id]
         payload = {
             "messages": [
@@ -643,7 +684,7 @@ class MtmdSttSidecar:
             ],
             # Greedy: a transcript, not a sampled paraphrase.
             "temperature": 0,
-            "max_tokens": 2048,
+            "max_tokens": _transcript_token_budget(audio_seconds),
         }
         request = urllib.request.Request(
             f"http://127.0.0.1:{port}/v1/chat/completions",
