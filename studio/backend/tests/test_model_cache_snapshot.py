@@ -289,7 +289,9 @@ def test_training_pin_ignores_weight_names_the_start_route_rejects(tmp_path):
 
     repo_root = _model_repo(tmp_path, "Org/Model")
     loadable = _snapshot(repo_root, "commit-loadable", ("config.json", "model.safetensors"))
-    consolidated = _snapshot(repo_root, "commit-consolidated", ("config.json", "consolidated.safetensors"))
+    consolidated = _snapshot(
+        repo_root, "commit-consolidated", ("config.json", "consolidated.safetensors")
+    )
     past = time.time() - 3600
     os.utime(loadable, (past, past))
 
