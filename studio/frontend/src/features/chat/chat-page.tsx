@@ -3198,7 +3198,7 @@ export function ChatPage({
 
   const tourSteps = useMemo(
     () =>
-      // eslint-disable-next-line react-hooks/refs -- buildChatTourSteps stores callbacks without invoking them during render.
+       
       buildChatTourSteps({
         canCompare,
         openModelSelector,

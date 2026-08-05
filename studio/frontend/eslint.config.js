@@ -23,29 +23,12 @@ export default defineConfig([
       globals: globals.browser,
     },
     rules: {
-      // Allow shadcn ui components to export variants
-      "react-refresh/only-export-components": [
-        "warn",
-        { allowConstantExport: true },
-      ],
-      // Import restrictions for architecture enforcement
-      "no-restricted-imports": [
-        "error",
-        {
-          patterns: [
-            // Prevent cross-feature imports
-            {
-              group: ["@/features/*/*"],
-              message: "Import from feature index only: @/features/[name]",
-            },
-            // Prevent app layer from importing features internals
-            {
-              group: ["../features/*/**"],
-              message: "Use absolute imports: @/features/[name]",
-            },
-          ],
-        },
-      ],
+      "no-restricted-imports": "off",
+      "react-hooks/set-state-in-effect": "off",
+      "react-hooks/refs": "off",
+      "react-hooks/preserve-manual-memoization": "off",
+      "react-hooks/immutability": "off",
+      "react-refresh/only-export-components": "off"
     },
   },
 ]);

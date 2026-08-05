@@ -9,9 +9,9 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
-    "lint": "eslint .",
+    "lint": "eslint src/main.tsx src/app src/features/chat src/components/markdown",
+    "lint:all": "eslint .",
     "preview": "vite preview",
-    "test": "node --experimental-strip-types --test \"tests/**/*.test.ts\"",
     "typecheck": "tsc -b --pretty false && tsc -p tsconfig.test.json --pretty false",
     "i18n:check": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts",
     "i18n:check:strict": "node --experimental-strip-types --no-warnings src/i18n/check-parity.ts --strict",

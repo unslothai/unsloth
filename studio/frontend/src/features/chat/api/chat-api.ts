@@ -5,11 +5,11 @@ import { authFetch } from "@/features/auth";
 import { prepareHfTokenForUse } from "@/features/hf-auth";
 // These helpers are deliberately API-layer-only and are not part of their
 // features' React-facing public barrels.
-// eslint-disable-next-line no-restricted-imports
+ 
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
-// eslint-disable-next-line no-restricted-imports
+ 
 import { isHuggingFaceOffline } from "@/features/hub/lib/network";
-// eslint-disable-next-line no-restricted-imports
+ 
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
 import type {
