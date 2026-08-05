@@ -492,3 +492,55 @@ def test_a_busy_transcription_is_a_retry_not_a_server_error(monkeypatch):
         )
     assert excinfo.value.status_code == 409
     assert "Try again" in str(excinfo.value.detail)
+
+
+def test_dictation_still_works_on_cpu_during_training(spawned, monkeypatch):
+    """load() starts at -ngl 0 while a run is active, so refusing here only
+    threw away a recording the preload had said was fine."""
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(lambda *a, **k: True))
+    monkeypatch.setattr(mtmd_mod, "_training_active", lambda: True)
+    monkeypatch.setattr(mtmd_mod, "_decode_audio_bounded", lambda audio: b"\x00\x00" * 16000)
+    monkeypatch.setattr(mtmd_mod, "_pcm_to_wav_bytes", lambda pcm: b"RIFFwav")
+    monkeypatch.setattr(
+        MtmdSttSidecar,
+        "_post_transcribe",
+        lambda self, port, model_id, wav, seconds = None: "on cpu",
+    )
+
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    result = sidecar.transcribe(b"audio", model = "qwen3-asr-0.6b")
+    assert result["text"] == "on cpu"
+    sidecar.unload()
+
+
+def test_a_startup_cancelled_for_training_is_retryable_not_unavailable(spawned, monkeypatch):
+    """501 reads as a broken runtime; this is ordinary preemption, so 409."""
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    started = threading.Event()
+    raised = []
+
+    def never_ready(process, port, cancel_event = None):
+        started.set()
+        while not (cancel_event is not None and cancel_event.is_set()):
+            time.sleep(0.01)
+        return False
+
+    monkeypatch.setattr(MtmdSttSidecar, "_wait_for_server", staticmethod(never_ready))
+
+    def load_and_record():
+        try:
+            sidecar.load("qwen3-asr-0.6b")
+        except Exception as exc:
+            raised.append(exc)
+
+    loader = threading.Thread(target = load_and_record)
+    loader.start()
+    try:
+        assert started.wait(2), "startup never began"
+        sidecar.cancel_pending_load()
+    finally:
+        loader.join(timeout = 5)
+
+    assert raised and isinstance(raised[0], mtmd_mod.SttLoadCancelledError)
+    # Not the 501 class: the route separates them by exception type.
+    assert not isinstance(raised[0], mtmd_mod.SttUnavailableError)

@@ -33,6 +33,7 @@ from utils.process_lifetime import adopt_pid, child_popen_kwargs, forget_pid
 from core.inference.stt_ggml_sidecar import _pcm_to_wav_bytes
 from core.inference.stt_sidecar import (
     STT_KEEP_ALIVE_SECONDS,
+    SttLoadCancelledError,
     SttModelBusyError,
     SttModelIdError,
     SttModelNotDownloadedError,
@@ -604,7 +605,9 @@ class MtmdSttSidecar:
                 # reach a child that ignores SIGTERM and keeps port and VRAM.
                 _reap(process)
                 if cancel_event.is_set():
-                    raise SttUnavailableError(
+                    # 409 through the route, like the other sidecars: expected
+                    # preemption, not a broken or missing runtime (501).
+                    raise SttLoadCancelledError(
                         "Dictation model loading was cancelled so training could start."
                     )
                 raise SttUnavailableError(f"llama-server did not become ready for '{model_id}'.")
@@ -656,8 +659,10 @@ class MtmdSttSidecar:
         """
         ensure_engine_available()
         model_id = resolve_mtmd_model_id(model)
-        if _training_active():
-            raise SttUnavailableError("Dictation is paused while a training run is using the GPU.")
+        # No training guard here on purpose: load() starts the server with
+        # -ngl 0 --no-mmproj-offload while a run is active, so this transcribes
+        # on CPU exactly as whisper.cpp and Transformers do. Refusing after a
+        # preload that succeeded only discarded the user's recording.
         # Reject a missing model before decoding, matching the other sidecars.
         self._ensure_model_downloaded(model_id)
         decoded_audio = _decode_audio_bounded(audio)

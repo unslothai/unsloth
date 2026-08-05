@@ -16,6 +16,9 @@ import {
 import type { DictationAdapter } from "@assistant-ui/react";
 import { toast } from "sonner";
 import { startDictationLevelMeter } from "./dictation-level";
+import { SttModelNotDownloadedError, sttRequestError } from "./stt-errors";
+// Re-exported so the one public entry point for dictation is unchanged.
+export { SttModelNotDownloadedError } from "./stt-errors";
 import {
   beginDictationSession,
   markDictationFailed,
@@ -110,7 +113,7 @@ export async function transcribeAudioBlob(
         "Speech-to-text is not available on this server. Run `unsloth studio update` to install it.",
       );
     }
-    throw new Error(detail);
+    throw sttRequestError(response.status, detail);
   }
   const data = (await response.json()) as { text?: string };
   return (data.text ?? "").trim();
@@ -213,14 +216,6 @@ export async function validateSttModel(
   }
 }
 
-/** The selected local model has not been downloaded yet. */
-export class SttModelNotDownloadedError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = "SttModelNotDownloadedError";
-  }
-}
-
 /** Load a selected model that is already downloaded. */
 export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
   const resolvedEngine = engine ?? sttEngineFor(model);
@@ -235,11 +230,7 @@ export function loadSttModel(model: string, engine?: SttEngine): Promise<void> {
         detail?: string;
       } | null;
       const detail = body?.detail ?? `HTTP ${response.status}`;
-      // 409 also covers a load cancelled for training; the detail separates them.
-      if (response.status === 409 && /not downloaded/i.test(detail)) {
-        throw new SttModelNotDownloadedError(detail);
-      }
-      throw new Error(detail);
+      throw sttRequestError(response.status, detail);
     }
   });
 }
