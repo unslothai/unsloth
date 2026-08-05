@@ -3105,7 +3105,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 <img
                   src={selectedSrc}
                   alt={selected.prompt}
-                  className="max-h-full max-w-full rounded-xl object-contain shadow-sm"
+                  className="max-h-full max-w-full object-contain shadow-sm"
                 />
                 {/* Actions grouped in one glass toolbar so they stay legible over any image. Size/seed live in the Recipe popover. */}
                 <div className="absolute bottom-4 right-4 flex items-center gap-0.5 rounded-xl bg-background/80 p-1 shadow-lg ring-1 ring-border backdrop-blur">
@@ -3233,7 +3233,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                   )}
                   {/* Selection marker on a non-focusable overlay, so the button own focus state can never mask it. */}
                   {image.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 rounded-lg border-2 border-primary" />
+                    <span className="pointer-events-none absolute inset-0 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
                   )}
                 </button>
               ))}
