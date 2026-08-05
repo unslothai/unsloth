@@ -8363,6 +8363,7 @@ async def _transcribe_audio_bytes(
         SttAudioTooLongError,
         SttLanguageError,
         SttLoadCancelledError,
+        SttModelBusyError,
         SttModelCompatibilityError,
         SttModelIdError,
         SttModelNotDownloadedError,
@@ -8388,6 +8389,10 @@ async def _transcribe_audio_bytes(
     except SttLoadCancelledError as e:
         raise HTTPException(status_code = 409, detail = str(e))
     except SttModelNotDownloadedError as e:
+        raise HTTPException(status_code = 409, detail = str(e))
+    except SttModelBusyError as e:
+        # Another client switching the dictation model is ordinary concurrency,
+        # so say retry rather than report a server failure.
         raise HTTPException(status_code = 409, detail = str(e))
     except SttModelIdError as e:
         raise HTTPException(status_code = 422, detail = str(e))

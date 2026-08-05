@@ -461,3 +461,32 @@ def test_audio_is_never_sent_to_a_server_another_client_swapped_in(spawned, monk
     with pytest.raises(mtmd_mod.SttModelBusyError):
         sidecar.transcribe(b"audio", model = "qwen3-asr-0.6b")
     assert posted == [], "audio went to the model the other client loaded"
+
+
+def test_a_busy_transcription_is_a_retry_not_a_server_error(monkeypatch):
+    """The model-switch race is ordinary concurrency, so the client is told to
+    try again rather than shown a 500."""
+    import asyncio
+
+    import routes.inference as ri
+    from core.inference.stt_sidecar import SttModelBusyError
+    from fastapi import HTTPException
+
+    def busy(*args, **kwargs):
+        raise SttModelBusyError("The dictation model changed. Try again.")
+
+    monkeypatch.setattr(ri, "_stt_sidecar_for", lambda engine: type("S", (), {"transcribe": busy})())
+    monkeypatch.setattr(ri, "_resolve_serving_stt_engine", lambda engine: "mtmd")
+
+    with pytest.raises(HTTPException) as excinfo:
+        asyncio.run(
+            ri._transcribe_audio_bytes(
+                b"audio",
+                model = "qwen3-asr-0.6b",
+                language = None,
+                fast = True,
+                engine = "mtmd",
+            )
+        )
+    assert excinfo.value.status_code == 409
+    assert "Try again" in str(excinfo.value.detail)
