@@ -14,6 +14,15 @@ Unsloth auto-enables padding-free whenever the user leaves `padding_free` at its
 those TRLs the `None` they ask for and keeps truncating through
 `max_seq_length`, which is what Unsloth's own dataset prep reads.
 
+Two things the swap must not break, both pinned below:
+
+* the resolved length is unchanged, so `max_seq_length` still wins over
+  `max_length` exactly as it does on TRL < 1.0.0;
+* the swap only happens when Unsloth's dataset prep really runs its truncating
+  tokenize pass. For an already-tokenized dataset, or for
+  `dataset_kwargs={"skip_prepare_dataset": True}`, nothing would truncate, so
+  padding-free is turned off and `max_length` kept instead.
+
 The assertions branch on whether the installed TRL actually carries the guard,
 so the same file pins the new behaviour on TRL >= 1.0.0 and the untouched old
 behaviour on TRL < 1.0.0.
@@ -88,7 +97,7 @@ def trl_has_guard():
     return "`max_length` is not enforced" in inspect.getsource(sft_trainer)
 
 
-def _load_plain():
+def _load_plain(model_max_seq_length = _MODEL_MAX_SEQ_LENGTH):
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
     try:
@@ -98,18 +107,20 @@ def _load_plain():
         pytest.skip(f"could not fetch {_MODEL} (network/hub): {str(e)[:150]}")
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
-    model.max_seq_length = _MODEL_MAX_SEQ_LENGTH
+    model.max_seq_length = model_max_seq_length
     return model.to("cpu"), tok
 
 
-def _build(tmp_path, **config_kwargs):
+def _build(tmp_path, dataset = None, model_max_seq_length = _MODEL_MAX_SEQ_LENGTH, **config_kwargs):
     """Construct the Unsloth-patched SFTTrainer over a long, truncatable dataset."""
     from datasets import Dataset
     from trl import SFTConfig, SFTTrainer
 
     assert SFTTrainer.__name__ == "UnslothSFTTrainer", "SFT patch did not apply"
-    model, tok = _load_plain()
-    ds = Dataset.from_list([{"text": "The quick brown fox. " * 200}] * 4)
+    model, tok = _load_plain(model_max_seq_length)
+    ds = dataset(tok) if callable(dataset) else Dataset.from_list(
+        [{"text": "The quick brown fox. " * 200}] * 4
+    )
     cfg = SFTConfig(
         output_dir = str(tmp_path),
         per_device_train_batch_size = 2,
@@ -146,23 +157,114 @@ def test_default_sft_construction_does_not_trip_the_guard(tmp_path, trl_has_guar
     assert _longest(trainer) == _MODEL_MAX_SEQ_LENGTH
 
 
-def test_explicit_max_length_is_still_truncated_to(tmp_path, trl_has_guard):
-    """An explicit `max_length` is honoured, not silently dropped.
+def test_explicit_max_length_resolves_the_same_on_every_trl(tmp_path, trl_has_guard):
+    """The resolved truncation length does not depend on the TRL version.
 
-    Under padding-free the length is enforced during Unsloth's dataset prep
-    (via `max_seq_length`) rather than by TRL, so the user keeps both their
-    truncation length and the padding-free speedup.
+    Unsloth's precedence (documented by the `max_length_check` codegen: the
+    model / args `max_seq_length` wins) already resolved `max_length` before the
+    padding-free swap runs, and the swap only moves that same number across to
+    `max_seq_length`. It must never reinstate the raw user `max_length`.
     """
     trainer = _build(tmp_path, max_length = _USER_MAX_LENGTH)
     args = trainer.args
 
     assert args.padding_free is True
+    assert args.max_seq_length == _MODEL_MAX_SEQ_LENGTH
     if trl_has_guard:
         assert args.max_length is None
-        assert args.max_seq_length == _USER_MAX_LENGTH
     else:
         assert args.max_length == _MODEL_MAX_SEQ_LENGTH
-    assert _longest(trainer) == (_USER_MAX_LENGTH if trl_has_guard else _MODEL_MAX_SEQ_LENGTH)
+    assert _longest(trainer) == _MODEL_MAX_SEQ_LENGTH
+
+
+def test_max_seq_length_still_beats_max_length(tmp_path, trl_has_guard):
+    """`max_seq_length=4096, max_length=512` must truncate at 4096, not 512.
+
+    The bridge above the padding-free block copies `max_seq_length` into
+    `max_length`, so `max_seq_length` wins. Re-reading the user's raw
+    `max_length` inside the padding-free branch would silently invert that and
+    train on a quarter of the requested context on TRL >= 1.0.0 only.
+    """
+    from datasets import Dataset
+
+    big, small = 4096, 512
+
+    def _long_text(tok):
+        return Dataset.from_list([{"text": "The quick brown fox. " * 4000}] * 4)
+
+    trainer = _build(
+        tmp_path,
+        dataset = _long_text,
+        model_max_seq_length = 8192,
+        max_seq_length = big,
+        max_length = small,
+    )
+    args = trainer.args
+
+    assert args.max_seq_length == big
+    if trl_has_guard:
+        assert args.max_length is None
+    else:
+        assert args.max_length == big
+    assert _longest(trainer) == big
+
+
+def _tokenized_dataset(tok, with_labels = False):
+    from datasets import Dataset
+
+    ids = tok("The quick brown fox. " * 200)["input_ids"]
+    assert len(ids) > _MODEL_MAX_SEQ_LENGTH, "row must be overlength to be interesting"
+    row = {"input_ids": ids, "attention_mask": [1] * len(ids)}
+    if with_labels:
+        row["labels"] = list(ids)
+    return Dataset.from_list([dict(row) for _ in range(4)])
+
+
+def _collated_width(trainer):
+    rows = [trainer.train_dataset[i] for i in range(2)]
+    return int(trainer.data_collator(rows)["input_ids"].shape[-1])
+
+
+@pytest.mark.parametrize(
+    "name, dataset, config_kwargs",
+    [
+        ("input_ids", lambda tok: _tokenized_dataset(tok), {}),
+        ("labels", lambda tok: _tokenized_dataset(tok, with_labels = True), {}),
+        (
+            "skip_prepare_dataset",
+            lambda tok: _tokenized_dataset(tok),
+            {"dataset_kwargs": {"skip_prepare_dataset": True}},
+        ),
+    ],
+)
+def test_unprepared_datasets_keep_their_length_cap(
+    tmp_path, trl_has_guard, name, dataset, config_kwargs
+):
+    """Nothing truncates these, so `max_length` must survive.
+
+    Unsloth's `sft_prepare_dataset` skips its tokenize pass entirely when the
+    dataset already carries `input_ids` / `labels`, and TRL skips the whole
+    prepare step for `skip_prepare_dataset=True`. Clearing `args.max_length`
+    there would tell TRL the caller supplied truncated rows, and overlength rows
+    would reach padding-free training untouched. Drop padding-free instead and
+    let TRL's collator enforce the cap.
+    """
+    trainer = _build(tmp_path, dataset = dataset, **config_kwargs)
+    args = trainer.args
+
+    assert args.max_length == _MODEL_MAX_SEQ_LENGTH, (
+        f"{name}: the length cap must not be cleared for an unprepared dataset"
+    )
+    if trl_has_guard:
+        assert args.padding_free is False, (
+            f"{name}: padding-free must be dropped, since it disables truncation"
+        )
+    # The rows themselves stay long: enforcement lives in the collator.
+    assert _longest(trainer) > _MODEL_MAX_SEQ_LENGTH
+    if getattr(trainer.data_collator, "max_length", None) is not None:
+        assert _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH, (
+            f"{name}: overlength rows reached the model"
+        )
 
 
 def test_padding_free_off_keeps_max_length(tmp_path):
@@ -187,6 +289,11 @@ def test_generator_only_emits_the_none_for_a_trl_that_guards():
 
     source = inspect.getsource(rl)
     assert '"`max_length` is not enforced" in old_RLTrainer_source' in source
+    # The swap is conditional on Unsloth's prep actually truncating ...
+    assert "_unsloth_prep_truncates" in source
+    assert "skip_prepare_dataset" in source
+    # ... and never re-reads the raw user `max_length` over the resolved one.
+    assert "_unsloth_requested_max_length" not in source
 
 
 @pytest.mark.parametrize(
