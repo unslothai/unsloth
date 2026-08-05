@@ -2351,6 +2351,31 @@ export function HubModelPicker({
   const hubRowsShowSize =
     formatFilter === "mlx" || formatFilter === "safetensors";
 
+  // The curated catalog as rows, ready before any request goes out. Recommended
+  // rendered the HF listing alone, so a task-scoped picker whose models were
+  // already in memory sat on a spinner for a whole round trip; these stand in per
+  // id until the listing reports that id, which then takes over (params, size,
+  // capability icons, device fit). Chat has no catalog and is unaffected.
+  const catalogSeedRows = useMemo<HfModelResult[]>(() => {
+    if (!task) return [];
+    return dedupe(models.map((model) => model.id))
+      .filter((id) => !isHiddenModelId(id))
+      .filter((id) => !isMobileVariant(id))
+      .filter((id) => !isImageEditModel(id))
+      .filter((id) => {
+        const isG = isKnownGgufRepo(id);
+        return formatFilter === "all"
+          ? isRecommendableFormat(id, isG, isMac)
+          : matchesFormatFilter(id, isG, formatFilter);
+      })
+      .map((id) => ({
+        id,
+        downloads: 0,
+        likes: 0,
+        isGguf: isKnownGgufRepo(id),
+      }));
+  }, [models, formatFilter, isKnownGgufRepo, isMac, task]);
+
   // Recommended suggests GGUF anywhere; on Mac also MLX and safetensors. The
   // "recommended" sort also drops models too big for the device. Already-
   // downloaded models stay visible (badged), never hidden.
@@ -2376,14 +2401,30 @@ export function HubModelPicker({
     }
     // Members would render under their canonical group row, which does not exist yet (see recommendedIds): filtering here removed curated models from Hub
     // search too. The "recommended" sort always applies the device-fit filter; the shared "Fits on device" tick extends it to the other sorts.
-    if (recommendedSort !== "recommended" && !fitOnDeviceOnly) return rows;
-    return rows.filter((r) => {
+    const deviceFiltered = recommendedSort === "recommended" || fitOnDeviceOnly;
+    const fits = (r: HfModelResult) =>
       // Downloaded models always show, regardless of device fit.
-      if (downloadedSet.has(r.id.toLowerCase())) return true;
-      return hfModelFitsDevice(r, r.isGguf ? inferenceGpu : gpu);
-    });
+      downloadedSet.has(r.id.toLowerCase()) ||
+      hfModelFitsDevice(r, r.isGguf ? inferenceGpu : gpu);
+    if (deviceFiltered) rows = rows.filter(fits);
+    // Curated rows lead, in catalog order, so the list does not reshuffle under the
+    // pointer as pages land; anything else the listing found follows in its order.
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    const listed = new Set(recommendedSearch.results.map((r) => r.id));
+    const curated: HfModelResult[] = [];
+    for (const seed of catalogSeedRows) {
+      const listedRow = byId.get(seed.id);
+      if (listedRow) {
+        curated.push(listedRow);
+      } else if (!listed.has(seed.id) && (!deviceFiltered || fits(seed))) {
+        curated.push(seed);
+      }
+    }
+    const curatedIds = new Set(curated.map((r) => r.id));
+    return [...curated, ...rows.filter((r) => !curatedIds.has(r.id))];
   }, [
     recommendedSearch.results,
+    catalogSeedRows,
     downloadedSet,
     recommendedSort,
     fitOnDeviceOnly,
@@ -4769,9 +4810,14 @@ export function HubModelPicker({
                     {recommendedSearch.hasMore && (
                       <>
                         <div ref={recommendedSentinelRef} className="h-px" />
-                        <div className="flex items-center justify-center py-2">
-                          <Spinner className="size-3.5 text-muted-foreground" />
-                        </div>
+                        {/* Only while a page is actually in flight: keyed on hasMore
+                            it sat under an already-usable list for as long as pages
+                            remained, which reads as "still loading". */}
+                        {recommendedSearch.isLoadingMore ? (
+                          <div className="flex items-center justify-center py-2">
+                            <Spinner className="size-3.5 text-muted-foreground" />
+                          </div>
+                        ) : null}
                       </>
                     )}
                   </>
