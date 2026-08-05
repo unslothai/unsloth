@@ -519,7 +519,11 @@ def test_a_startup_cancelled_for_training_is_retryable_not_unavailable(spawned, 
     started = threading.Event()
     raised = []
 
-    def never_ready(process, port, cancel_event = None):
+    def never_ready(
+        process,
+        port,
+        cancel_event = None,
+    ):
         started.set()
         while not (cancel_event is not None and cancel_event.is_set()):
             time.sleep(0.01)
