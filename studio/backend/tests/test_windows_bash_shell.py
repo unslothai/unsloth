@@ -344,3 +344,24 @@ def test_start_scan_survives_non_posix_lexing(monkeypatch, command):
     # covers both lexers without special-casing either.
     monkeypatch.setattr(tools, "_shell_is_posix", lambda: False)
     assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # cmd is the shell, so `cmd /c` wraps the whole command and a top-level
+        # start really launches, with no cmd token in the string to key on.
+        ("start rm -rf x", True),
+        ('start "" rm -rf x', True),
+        ('start "Studio" rm -rf x', True),
+        ("dir && start rm -rf x", True),
+        # ...but a start that is not at command position is still just data.
+        ("echo start rm", False),
+        ("grep start rm file", False),
+        ("dir && echo start rm", False),
+        ("start notepad", False),
+    ],
+)
+def test_top_level_start_launches_when_cmd_is_the_shell(monkeypatch, command, blocked):
+    monkeypatch.setattr(tools, "_shell_is_posix", lambda: False)
+    assert bool(tools._find_blocked_commands(command)) is blocked

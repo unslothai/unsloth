@@ -1652,11 +1652,25 @@ def _find_blocked_commands(command: str) -> set[str]:
     # sees only as an argument, so screen what start actually launches. Only
     # inside a cmd payload: a bare `start` is data (echo start rm), and on
     # POSIX nothing launches it at all.
-    start_scan = range(min(cmd_payload_from), len(tokens)) if cmd_payload_from else ()
-    for i in start_scan:
-        # A separator ends the payload; a `start` past it is data again.
-        if tokens[i] in _SHELL_SEPARATORS:
-            break
+    start_scan: set[int] = set()
+    if cmd_payload_from:
+        for i in range(min(cmd_payload_from), len(tokens)):
+            # A separator ends the payload; a `start` past it is data again.
+            if tokens[i] in _SHELL_SEPARATORS:
+                break
+            start_scan.add(i)
+    if not _shell_is_posix():
+        # cmd IS the shell, so the whole command already runs as `cmd /c ...`
+        # and a top-level `start prog` launches for real, with no cmd token to
+        # key on. Command position only: `echo start rm` is still data.
+        start_scan.update(
+            i
+            for i in range(len(tokens))
+            if i == 0
+            or tokens[i - 1] in _SHELL_SEPARATORS
+            or tokens[i - 1] in _SHELL_KEYWORDS_AS_SEP
+        )
+    for i in sorted(start_scan):
         if os.path.basename(tokens[i]).lower() not in ("start", "start.exe"):
             continue
         j = i + 1
