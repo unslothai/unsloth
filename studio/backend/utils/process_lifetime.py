@@ -166,6 +166,7 @@ def _pdeathsig_preexec(owner_pid: Optional[int] = None) -> None:
     # to a subreaper, whose pid is not 1.
     try:
         import ctypes
+
         ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
         parent_pid = os.getppid()
         orphaned = parent_pid != owner_pid if owner_pid is not None else parent_pid == 1
@@ -197,8 +198,7 @@ def bind_current_process_to_parent_lifetime() -> None:
 
 
 def compose_preexec(
-    existing: Optional[Callable[[], None]],
-    owner_pid: Optional[int] = None,
+    existing: Optional[Callable[[], None]], owner_pid: Optional[int] = None
 ) -> Optional[Callable[[], None]]:
     """Run the PDEATHSIG hook then any caller-supplied preexec (Linux only)."""
     if not _is_linux():
