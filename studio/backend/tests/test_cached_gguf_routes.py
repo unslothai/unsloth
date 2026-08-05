@@ -3843,9 +3843,7 @@ def test_context_follows_the_answering_revision_not_a_sibling(monkeypatch, tmp_p
     repo_dir = _write_cached_gguf(
         hub_cache, "org/repo", "m-Q4_K_M.gguf", mtime = 1_000_000_000, revision = "older"
     )
-    _write_cached_gguf(
-        hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer"
-    )
+    _write_cached_gguf(hub_cache, "org/repo", "m-Q8_0.gguf", mtime = 2_000_000_000, revision = "newer")
 
     _pin_caches(monkeypatch, hub_cache, [hub_cache])
     _unreachable_hub(monkeypatch)
