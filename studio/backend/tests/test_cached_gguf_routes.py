@@ -3799,3 +3799,36 @@ def test_an_unreadable_cache_root_is_skipped_not_fatal(tmp_path):
         assert [v.quant for v in listed[0]] == ["Q8_0"]
     finally:
         blocked_repo.chmod(0o755)
+
+
+def test_another_caches_quant_is_offered_as_a_download_not_as_downloaded(monkeypatch, tmp_path):
+    """Readiness is counted against the cache the request names, never against another one.
+
+    With the pinned cache holding the repo but no GGUF yet (a download cancelled before a file
+    landed) and the Hub unreachable, the lister still answers repo-wide. Those variants have to
+    stay download targets: the row resolves through the pinned cache, so marking them downloaded
+    offers a load that cannot resolve.
+    """
+    pinned_root = tmp_path / "pinned" / "hub"
+    other_root = tmp_path / "other" / "hub"
+    pinned_root.mkdir(parents = True)
+    other_root.mkdir(parents = True)
+    pinned_repo = pinned_root / "models--org--repo"
+    (pinned_repo / "snapshots" / "rev").mkdir(parents = True)
+    _write_cached_gguf(other_root, "org/repo", "m-Q8_0.gguf")
+
+    _pin_caches(monkeypatch, pinned_root, [pinned_root, other_root])
+    _unreachable_hub(monkeypatch)
+    monkeypatch.setattr(GV, "list_partial_gguf_variants_from_state", lambda *a, **k: None)
+    monkeypatch.setattr(models_route, "_read_native_context_length", lambda model, *, is_local: None)
+
+    response = asyncio.run(
+        models_route.get_gguf_variants(
+            repo_id = "org/repo",
+            local_path = str(pinned_repo),
+            hf_token = None,
+            current_subject = "test-user",
+        )
+    )
+    assert [v.quant for v in response.variants] == ["Q8_0"]
+    assert [v.downloaded for v in response.variants] == [False]

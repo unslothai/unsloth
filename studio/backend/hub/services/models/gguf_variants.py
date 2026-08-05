@@ -792,15 +792,6 @@ async def get_gguf_variants_answer(
                 return _with_state_partials(
                     _local_response(repo_id, variants, has_vision, complete)
                 )
-            # Last resort: a repo cached only under another root still lists, rather than the
-            # row going empty. No single directory answered, so provenance stays unset and the
-            # context read falls back repo-wide with it -- wrong together beats mismatched.
-            cached = list_gguf_variants_from_hf_cache(repo_id)
-            if cached is not None:
-                variants, has_vision, complete = cached
-                return _with_state_partials(
-                    _local_response(repo_id, variants, has_vision, complete)
-                )
             partial = list_partial_gguf_variants_from_state(repo_id, hub_cache = hub_cache)
             if partial is not None:
                 variants, has_vision = partial
@@ -816,6 +807,10 @@ async def get_gguf_variants_answer(
             raise
 
         # siblings is None only when the lister answered from the cache rather than the Hub.
+        # Falling through when nothing scoped answers is deliberate: the listing then keeps
+        # the lister's repo-wide variants, but readiness is still counted below against this
+        # request's own cache, so a quant that lives only in another cache is offered as a
+        # download rather than claimed as already on disk.
         if siblings is None:
             fallback = _cache_fallback_response()
             if fallback is not None:
