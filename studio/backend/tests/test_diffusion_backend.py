@@ -30,7 +30,13 @@ from core.inference.diffusion import (
 import core.inference.diffusion_eager_patches  # noqa: E402,F401
 import core.inference.diffusion_arch_patches  # noqa: E402,F401
 from core.inference.diffusion_families import (
+    _GATED_MIRROR_PAIRS,
+    assert_flux2_gguf_matches_base,
+    canonical_base,
     detect_family,
+    family_prequant_repo,
+    mirror_repo,
+    prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
@@ -148,6 +154,123 @@ def test_resolve_base_repo():
     assert resolve_base_repo(fam, None) == fam.base_repo
     assert resolve_base_repo(fam, "   ") == fam.base_repo
     assert resolve_base_repo(fam, "custom/base") == "custom/base"
+
+
+def _no_cache(monkeypatch):
+    """Report every upstream as uncached, so the mirror decision is not masked by local files."""
+    monkeypatch.setattr(
+        "core.inference.diffusion_families._upstream_is_cached", lambda repo_id: False
+    )
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+    monkeypatch.setattr("core.inference.diffusion_families._MIRROR_REACHABLE", {}, raising = False)
+
+
+def _mirror_reachable(monkeypatch, reachable = True):
+    """Answer the mirror reachability probe without touching the network."""
+    class _Api:
+        def model_info(self, repo_id, token = None):
+            if not reachable:
+                raise RuntimeError("no such repo")
+            return object()
+
+    import huggingface_hub
+
+    monkeypatch.setattr(huggingface_hub, "HfApi", _Api)
+
+
+def test_gated_mirror_table_round_trips():
+    """Both directions, exact case: canonical_base must hand back a real repo id."""
+    assert len(_GATED_MIRROR_PAIRS) == 12
+    for upstream, mirror in _GATED_MIRROR_PAIRS:
+        assert mirror_repo(upstream) == mirror
+        assert canonical_base(mirror) == upstream
+        # Case-insensitive on the way in, since a card tag may carry any casing.
+        assert mirror_repo(upstream.upper()) == mirror
+    # An ungated base is left completely alone.
+    assert mirror_repo("Qwen/Qwen-Image") is None
+    assert canonical_base("Qwen/Qwen-Image") == "Qwen/Qwen-Image"
+
+
+def test_prefer_ungated_mirror_swaps_gated_bases(monkeypatch):
+    _no_cache(monkeypatch)
+    _mirror_reachable(monkeypatch)
+    for upstream, mirror in _GATED_MIRROR_PAIRS:
+        assert prefer_ungated_mirror(upstream) == mirror
+    # Ungated bases are untouched, and cost no probe.
+    assert prefer_ungated_mirror("Qwen/Qwen-Image") == "Qwen/Qwen-Image"
+
+
+def test_prefer_ungated_mirror_declines(monkeypatch):
+    """Each decline path lands on the upstream id, i.e. exactly today's behaviour."""
+    gated = "black-forest-labs/FLUX.1-dev"
+
+    # 1. explicit opt-out
+    _no_cache(monkeypatch)
+    _mirror_reachable(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    assert prefer_ungated_mirror(gated) == gated
+
+    # 2. upstream already on disk: switching would re-pull tens of GiB
+    _no_cache(monkeypatch)
+    _mirror_reachable(monkeypatch)
+    monkeypatch.setattr(
+        "core.inference.diffusion_families._upstream_is_cached", lambda repo_id: True
+    )
+    assert prefer_ungated_mirror(gated) == gated
+
+    # 3. mirror does not answer (withdrawn repo, offline, typo in the table)
+    _no_cache(monkeypatch)
+    _mirror_reachable(monkeypatch, reachable = False)
+    assert prefer_ungated_mirror(gated) == gated
+
+
+def test_mirrored_base_still_trips_the_flux2_shape_guard():
+    """The regression the whole two-helper split exists for.
+
+    ``assert_flux2_gguf_matches_base`` fails OPEN on an unmapped base, so if a mirror id ever
+    reached ``_FLUX2_BASE_INNER_DIM`` the guard would go quiet and the mismatch would resurface as
+    the bare quantizer shape error it was written to replace. Assert the RAISE, not just the
+    absence of a crash: a disabled guard passes any weaker check.
+    """
+    # "flux.2-klein", not "flux.2": there is no family by that bare name, and detect_family would
+    # hand back None, whose empty name makes the guard return before it ever reads the file.
+    fam = detect_family("x", override = "flux.2-klein")
+    assert fam is not None and fam.name.startswith("flux.2")
+
+    def _reader_for(inner_dim):
+        class _Reader:
+            def __init__(self, _path):
+                self.tensors = [
+                    type("T", (), {"name": "double_stream_modulation_img.lin.weight",
+                                   "shape": (inner_dim,)})()
+                ]
+        return _Reader
+
+    import gguf
+
+    original = gguf.GGUFReader
+    try:
+        # klein-4B is ungated and therefore has NO mirror, so the id that has to normalise is the
+        # 9B one. A 4B GGUF (inner_dim 3072) against the mirrored 9B base must still raise.
+        gguf.GGUFReader = _reader_for(3072)
+        for base in ("black-forest-labs/FLUX.2-klein-9B", "unsloth/FLUX.2-klein-9B"):
+            with pytest.raises(ValueError, match = "klein"):
+                assert_flux2_gguf_matches_base(fam, base, "some-klein-4b.gguf")
+        # A matching pair stays silent through the mirror id too.
+        gguf.GGUFReader = _reader_for(4096)
+        for base in ("black-forest-labs/FLUX.2-klein-9B", "unsloth/FLUX.2-klein-9B"):
+            assert assert_flux2_gguf_matches_base(fam, base, "some-klein-9b.gguf") is None
+    finally:
+        gguf.GGUFReader = original
+
+
+def test_family_prequant_repo_accepts_either_id():
+    """prequant_variant_repos is keyed on upstream ids, so a mirror must normalise to the same hit."""
+    fam = detect_family("x", override = "flux.1")
+    for scheme in ("int8", "fp8"):
+        upstream = family_prequant_repo(fam, scheme, "black-forest-labs/FLUX.1-dev")
+        mirrored = family_prequant_repo(fam, scheme, "unsloth/FLUX.1-dev")
+        assert upstream == mirrored == "unsloth/FLUX.1-dev-FP8"
 
 
 def test_resolve_local_gguf_child(tmp_path):

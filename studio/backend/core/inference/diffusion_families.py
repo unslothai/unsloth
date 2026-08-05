@@ -14,6 +14,7 @@ diffusers classes and base repo needed to assemble the full pipeline.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
@@ -467,6 +468,110 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
     return base or fam.base_repo
 
 
+# Ungated unsloth mirrors of the Hub-GATED vendor bases, keyed by lowercased upstream id.
+# A GGUF or FP8 pick ships only the denoiser, so the VAE / text encoder / tokenizer / scheduler /
+# model_index.json still come from the base -- which means picking unsloth/FLUX.1-dev-GGUF used to
+# die on a 401 for a repo the user never chose. Each mirror is byte identical to its upstream and
+# republished under the terms the upstream licence sets for redistribution.
+#
+# NOT applied here. ``resolve_base_repo`` is the pure resolver whose result keys the two tables
+# below, both of which hold UPSTREAM ids; substituting a mirror at this level would silently void
+# them. The swap happens at fetch time in ``diffusion._resolve_base_repo``, and anything that
+# looks a base up in a table runs it through ``canonical_base`` first.
+# Canonically cased on BOTH sides, so canonical_base hands back a real repo id rather than a
+# lowercased lookup key. The two indexes below carry the case-insensitive matching.
+_GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
+    ("black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"),
+    ("black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell"),
+    ("black-forest-labs/FLUX.1-Kontext-dev", "unsloth/FLUX.1-Kontext-dev"),
+    ("black-forest-labs/FLUX.1-Krea-dev", "unsloth/FLUX.1-Krea-dev"),
+    ("black-forest-labs/FLUX.2-dev", "unsloth/FLUX.2-dev"),
+    ("black-forest-labs/FLUX.2-klein-9B", "unsloth/FLUX.2-klein-9B"),
+    ("black-forest-labs/FLUX.2-klein-base-9B", "unsloth/FLUX.2-klein-base-9B"),
+    ("krea/Krea-2-Turbo", "unsloth/Krea-2-Turbo"),
+    ("krea/Krea-2-Raw", "unsloth/Krea-2-Raw"),
+    ("ideogram-ai/ideogram-4-fp8", "unsloth/ideogram-4-fp8"),
+    ("ideogram-ai/ideogram-4-nf4", "unsloth/ideogram-4-nf4"),
+    ("ideogram-ai/ideogram-4-nf4-diffusers", "unsloth/ideogram-4-nf4-diffusers"),
+)
+_GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _GATED_MIRROR_PAIRS}
+_MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _GATED_MIRROR_PAIRS}
+
+
+def mirror_repo(repo_id: Optional[str]) -> Optional[str]:
+    """The ungated unsloth mirror of ``repo_id``, or None when it is not a gated vendor base."""
+    return _GATED_MIRRORS.get((repo_id or "").strip().lower())
+
+
+def canonical_base(repo_id: Optional[str]) -> str:
+    """``repo_id`` with a mirror mapped back to the upstream id it copies, else unchanged.
+
+    Every table keyed on a base holds the UPSTREAM id, so each lookup normalises through here.
+    Without it a mirrored base misses ``_FLUX2_BASE_INNER_DIM`` and the shape guard fails OPEN by
+    construction -- no error, just the bare quantizer crash it was written to replace. Also covers
+    a user who passes the mirror id by hand, which was always reachable.
+    """
+    base = (repo_id or "").strip()
+    return _MIRROR_UPSTREAM.get(base.lower(), base)
+
+
+# One reachability verdict per mirror per process: it cannot change under a running Studio, and
+# every load path resolves a base more than once.
+_MIRROR_REACHABLE: dict[str, bool] = {}
+
+
+def _upstream_is_cached(repo_id: str) -> bool:
+    """Whether ``repo_id`` already has blobs in the LIVE hub cache root.
+
+    The live setting, not huggingface_hub's import-time constant: a mid-session cache-folder
+    change never updates the constant, so reading it would probe a root the download no longer
+    writes to and report "not cached" for a base sitting right there.
+    """
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+        blobs = (
+            Path(active_hf_hub_cache()) / f"models--{repo_id.replace('/', '--')}" / "blobs"
+        )
+        return blobs.is_dir() and any(blobs.iterdir())
+    except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
+        return False
+
+
+def prefer_ungated_mirror(base: str, hf_token: Optional[str] = None) -> str:
+    """``base``, or the ungated unsloth mirror of it when that is the better repo to FETCH from.
+
+    A GGUF or FP8 pick carries only the denoiser, so the VAE, text encoder, tokenizer and
+    scheduler still come from the base. When that base is one of the gated vendor repos the load
+    dies on a 401 for a repo the user never picked. The mirrors are byte identical, so preferring
+    one removes the gate without changing a single weight.
+
+    Deliberately invisible: the result is only ever used to fetch. The upstream id stays what the
+    UI shows, what saved configs hold and what a trained LoRA's base_model tag records, so nothing
+    a user already stored changes meaning.
+
+    Three ways to decline, each landing on exactly today's behaviour:
+      * ``UNSLOTH_DIFFUSION_NO_MIRROR`` is set, for anyone who wants the vendor repo and has a
+        token for it,
+      * the upstream is already cached, so switching would re-pull tens of GiB for no gain,
+      * the mirror does not answer, which covers a withdrawn repo and a typo in the table alike.
+    """
+    mirror = mirror_repo(base)
+    if not mirror or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+        return base
+    if _upstream_is_cached(base):
+        return base
+    reachable = _MIRROR_REACHABLE.get(mirror)
+    if reachable is None:
+        try:
+            from huggingface_hub import HfApi
+            HfApi().model_info(mirror, token = hf_token)
+            reachable = True
+        except Exception:  # noqa: BLE001 -- offline or missing mirror, upstream is the fallback
+            reachable = False
+        _MIRROR_REACHABLE[mirror] = reachable
+    return mirror if reachable else base
+
+
 # Default (steps, guidance) per model for callers that cannot pass them. Matched by substring, most specific first; same values as the UI MODEL_DEFAULTS table, keep in sync.
 _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("z-image-turbo", 9, 0.0),
@@ -525,7 +630,8 @@ def family_prequant_repo(
     baked from ONE base's weights and the loader refuses it for any other base, so a variant
     without its own entry still returns the family default (harmless: the base_model_id
     validation then falls back to dense-quantise, exactly as before this table existed)."""
-    base = (base_repo or "").strip().lower()
+    # prequant_variant_repos is keyed on upstream ids, so a mirrored base normalises back first.
+    base = canonical_base(base_repo).lower()
     if base:
         for entry_base, entry_scheme, repo_id in fam.prequant_variant_repos:
             if entry_base == base and entry_scheme == scheme:
@@ -680,7 +786,9 @@ def assert_flux2_gguf_matches_base(fam, base_repo: str, gguf_path) -> None:
     unmapped base leaves the load exactly as it was."""
     if gguf_path is None or not str(getattr(fam, "name", "")).startswith("flux.2"):
         return
-    want = _FLUX2_BASE_INNER_DIM.get((base_repo or "").strip().lower())
+    # Keyed on upstream ids, and this guard fails OPEN on an unmapped base, so a mirrored base
+    # would disable it in silence. Normalise before the lookup, never after.
+    want = _FLUX2_BASE_INNER_DIM.get(canonical_base(base_repo).lower())
     got = gguf_flux2_inner_dim(gguf_path)
     if want is None or got is None or want == got:
         return

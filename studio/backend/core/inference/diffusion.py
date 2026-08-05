@@ -40,6 +40,7 @@ from .diffusion_families import (
     default_generation_params,
     detect_family_for_pick,
     excluded_model_reason,
+    prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
@@ -3370,7 +3371,7 @@ def _resolve_base_repo(
         tag = _hf_base_model(repo_id, hf_token)
         if tag and _is_trusted_diffusion_repo(tag):
             base = tag
-    return resolve_base_repo(fam, base)
+    return prefer_ungated_mirror(resolve_base_repo(fam, base), hf_token)
 
 
 def _hf_base_model(repo_id: str, hf_token: Optional[str]) -> Optional[str]:

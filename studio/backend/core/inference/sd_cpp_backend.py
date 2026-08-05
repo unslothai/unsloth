@@ -40,6 +40,7 @@ from core.inference.diffusion_families import (
     DiffusionFamily,
     detect_family_for_pick,
     family_sd_cpp_supported,
+    prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
     sd_cpp_text_encoders_for,
@@ -428,7 +429,9 @@ class SdCppDiffusionBackend:
         if not family_sd_cpp_supported(fam):
             raise ValueError(f"Family '{fam.name}' has no native sd.cpp asset mapping.")
 
-        base = resolve_base_repo(fam, base_repo)
+        # Same ungated-mirror preference the diffusers path applies: this backend pulls the VAE and
+        # text encoders off the base too, so a gated base blocks a native load identically.
+        base = prefer_ungated_mirror(resolve_base_repo(fam, base_repo), hf_token)
         with self._lock:
             if self._loading is not None and self._loading.error is None:
                 raise RuntimeError("A diffusion load is already in progress.")
