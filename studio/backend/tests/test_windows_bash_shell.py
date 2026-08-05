@@ -380,6 +380,9 @@ def test_top_level_start_launches_when_cmd_is_the_shell(monkeypatch, command, bl
         ('cmd /c dir; cmd /c start "" rm -rf x', True),
         ("cmd /c dir && echo start rm", False),
         ("echo start rm", False),
+        # echo makes it an argument inside the payload too; cmd would just
+        # print the string, so the scan must not treat it as a launcher.
+        ("cmd //c echo start rm", False),
     ],
 )
 def test_start_launches_through_cmd_under_bash(monkeypatch, command, blocked):

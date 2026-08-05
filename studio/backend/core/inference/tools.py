@@ -1351,7 +1351,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     etc.), or a command-prefix wrapper like `env` / `time` / `xargs` (next
     token is the real command). Tokens in argument position (`grep -r curl .`,
     `echo source the data`, `ls /usr/bin/curl`) pass through. Also scans
-    `find ... -exec CMD` and recurses into bash -c / cmd /c.
+    `find ... -exec CMD`, recurses into bash -c / cmd /c, and screens what a
+    command-position `start` launches, including its window-title slot, which
+    is the one argument-position token that can be flagged.
     """
     blocked: set[str] = set()
 
@@ -1652,18 +1654,12 @@ def _find_blocked_commands(command: str) -> set[str]:
     # sees only as an argument, so screen what start actually launches. Only
     # inside a cmd payload: a bare `start` is data (echo start rm), and on
     # POSIX nothing launches it at all.
-    start_scan: set[int] = set()
-    for payload in cmd_payload_from:
-        # Each payload separately: a separator ends that one, not the scan, so
-        # `cmd /c dir && cmd /c start "" rm` still reaches the second.
-        for i in range(payload, len(tokens)):
-            if tokens[i] in _SHELL_SEPARATORS:
-                break
-            start_scan.add(i)
     # A `start` at command position launches through cmd under every shell:
     # Git for Windows ships /usr/bin/start as a `"$COMSPEC" //c start ...`
-    # wrapper, and with no trusted bash cmd is the shell outright. Command
-    # position is the whole test, so `echo start rm` stays data.
+    # wrapper, and with no trusted bash cmd is the shell outright. The first
+    # token of each cmd payload is a command position too, which the separator
+    # rule below cannot see. `echo start rm` is an argument either way.
+    start_scan = set(cmd_payload_from)
     start_scan.update(
         i
         for i in range(len(tokens))
