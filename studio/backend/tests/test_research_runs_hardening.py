@@ -860,6 +860,181 @@ def test_stream_completion_timeout_is_absolute_despite_keepalives(monkeypatch):
     assert state == {"iteratorClosed": True, "responseClosed": True}
 
 
+def test_stream_completion_times_out_when_output_stalls(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.1)
+
+    class _StalledStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"started"}}]}'
+            while True:
+                await asyncio.sleep(0.01)
+                yield ": keep-alive"
+
+    _install_fake_client(monkeypatch, [_StalledStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelOutputIdleTimeout):
+        _run_stream(supervisor, timeout_seconds = 1.0)
+
+
+def test_stream_cleanup_error_does_not_replace_output_stall(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.05)
+
+    class _BrokenStalledStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            raise httpx.CloseError("socket already failed")
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"content":"started"}}]}'
+            while True:
+                await asyncio.sleep(0.01)
+                yield ": keep-alive"
+
+    _install_fake_client(monkeypatch, [_BrokenStalledStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelOutputIdleTimeout):
+        _run_stream(supervisor, timeout_seconds = 1.0)
+
+
+def test_stream_completion_semantic_output_resets_the_idle_timeout(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(research_runs.db, "append_worker_event", lambda *args, **kwargs: 1)
+
+    class _ProgressStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            await asyncio.sleep(0.04)
+            yield 'data: {"choices":[{"delta":{"reasoning_content":"thinking"}}]}'
+            await asyncio.sleep(0.04)
+            yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
+            await asyncio.sleep(0.04)
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_ProgressStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "thinking", "stop")
+
+
+def test_stream_completion_does_not_apply_idle_timeout_during_prefill(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.03)
+
+    class _SlowPrefillStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            for _ in range(5):
+                await asyncio.sleep(0.02)
+                yield ": keep-alive"
+            yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_SlowPrefillStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop")
+
+
+def test_stream_completion_counts_whitespace_tokens_as_output(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.15)
+
+    class _WhitespaceStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            for text in (" ", "\n", "\t"):
+                await asyncio.sleep(0.04)
+                yield f'data: {{"choices":[{{"delta":{{"content":{json.dumps(text)}}}}}]}}'
+            yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_WhitespaceStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == (" \n\treport", "", "stop")
+
+
+def test_stream_completion_stops_at_done_even_if_socket_stays_open(monkeypatch):
+    state = {"iteratorClosed": False, "responseClosed": False}
+
+    class _OpenSocketAfterDone:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            state["responseClosed"] = True
+
+        async def aiter_lines(self):
+            try:
+                yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
+                yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+                yield "data: [DONE]"
+                await asyncio.Event().wait()
+            finally:
+                state["iteratorClosed"] = True
+
+    _install_fake_client(monkeypatch, [_OpenSocketAfterDone()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop")
+    assert state == {"iteratorClosed": True, "responseClosed": True}
+
+
+@pytest.mark.parametrize(
+    ("exc", "message"),
+    (
+        (
+            research_runs.ModelOutputIdleTimeout("idle"),
+            "Local model stopped producing output before completion",
+        ),
+        (
+            research_runs.ModelWallClockTimeout("wall"),
+            "Local model request exhausted its total time budget",
+        ),
+    ),
+)
+def test_research_timeout_errors_are_distinct(exc, message):
+    assert research_runs._safe_error(exc) == message
+
+
 def test_wall_clock_timeout_supports_python_without_asyncio_timeout(monkeypatch):
     # raising=False: on Python 3.10 asyncio.timeout does not exist to begin with,
     # which is the very case these tests cover.

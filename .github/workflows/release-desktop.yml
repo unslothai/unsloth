@@ -2,17 +2,32 @@ name: Release Desktop App
 
 on:
   workflow_dispatch:
+    # Both version inputs are free text in the dispatch UI, and studio_version
+    # alone decides the release tag, all nine asset filenames and the updater
+    # manifest version together. Near-miss tags are the failure mode worth
+    # guarding, because they look right at a glance:
+    #
+    #   studio_version   v0.1.52-beta     correct
+    #                    v.0.1.52-beta    rejected: stray dot after the leading v
+    #                    0.1.52-beta      rejected: missing leading v
+    #                    2026.8.3         rejected: that is the PyPI version
+    #
+    #   pypi_version     2026.8.3         correct, no leading v
+    #
+    # "Validate release versions" below rejects each of those by name before any
+    # binary is built. Keep the examples here, in the descriptions, and in that
+    # step's error messages on the same version so they cannot drift apart.
     inputs:
       studio_version:
-        description: 'Unsloth version tag to release (for example, v0.1.39-beta)'
+        description: 'Unsloth SemVer tag to release, leading v with no dot after it (for example, v0.1.52-beta)'
         type: string
         required: true
       pypi_version:
-        description: 'Exact PyPI unsloth version just published/stamped (for example, 2026.5.3); leave blank to use MIN_DESKTOP_BACKEND_VERSION'
+        description: 'Exact PyPI unsloth version just published/stamped, no leading v (for example, 2026.8.3); leave blank to use MIN_DESKTOP_BACKEND_VERSION'
         type: string
         required: false
       draft:
-        description: 'Create as draft release; draft runs do not advance desktop-latest updater channel'
+        description: 'Create as draft; publishing it later advances desktop-latest without rebuilding'
         type: boolean
         default: true
 
@@ -68,16 +83,29 @@ jobs:
 
           studio_version = os.environ['INPUT_STUDIO_VERSION'].strip()
           if not studio_version:
-              sys.exit('studio_version is required, for example v0.1.39-beta')
+              sys.exit('studio_version is required, for example v0.1.52-beta')
           if re.fullmatch(r'v?20\d{2}\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?', studio_version):
               sys.exit(f'studio_version must be an Unsloth SemVer tag, not a date-style backend version: {studio_version}')
+
+          # Name the single wrong character for the near-miss shapes. The generic
+          # SemVer error below is easy to skim past when everything except one
+          # separator looks correct, so spell out the correction instead.
+          separator_after_v = re.fullmatch(r'v[._\-](\d[0-9A-Za-z.\-+]*)', studio_version)
+          if separator_after_v:
+              suggestion = f'v{separator_after_v.group(1)}'
+              sys.exit(
+                  'studio_version must not have a separator after the leading v: '
+                  f'{studio_version} (did you mean {suggestion}?)'
+              )
 
           semver_tag = re.compile(
               r'^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)'
               r'(?:-[0-9A-Za-z.][0-9A-Za-z.-]*)?$'
           )
+          if semver_tag.fullmatch(f'v{studio_version}'):
+              sys.exit(f'studio_version must start with v, for example v{studio_version}')
           if not semver_tag.fullmatch(studio_version):
-              sys.exit(f'studio_version must be a SemVer tag with leading v, for example v0.1.39-beta: {studio_version}')
+              sys.exit(f'studio_version must be a SemVer tag with leading v, for example v0.1.52-beta: {studio_version}')
 
           app_version = studio_version.removeprefix('v')
           asset_version = re.sub(r'[^0-9A-Za-z]+', '_', app_version).strip('_')
@@ -343,6 +371,9 @@ jobs:
       STUDIO_VERSION: ${{ needs.prepare-version.outputs.studio_version }}
       DESKTOP_RELEASE_TAG: ${{ needs.prepare-version.outputs.desktop_release_tag }}
       DESKTOP_PRERELEASE: ${{ needs.prepare-version.outputs.prerelease }}
+      # Compiled in by preflight/version.rs. Without it the app only knows the
+      # floor, so a shared venv left by the CLI installer is never upgraded again.
+      UNSLOTH_DESKTOP_BACKEND_VERSION: ${{ needs.prepare-version.outputs.pypi_version }}
 
     steps:
       # harden-runner in audit mode: surfaces every egress destination in
@@ -1137,12 +1168,12 @@ jobs:
           suffix_names = (
               ('.app.tar.gz.sig', f'{base_name}-ARM64.app.tar.gz.sig'),
               ('.app.tar.gz', f'{base_name}-ARM64.app.tar.gz'),
-              ('.AppImage.sig', f'{base_name}-Ubuntu.AppImage.sig'),
-              ('.AppImage', f'{base_name}-Ubuntu.AppImage'),
+              ('.AppImage.sig', f'{base_name}-Linux.AppImage.sig'),
+              ('.AppImage', f'{base_name}-Linux.AppImage'),
               ('-setup.exe.sig', f'{base_name}-Windows.exe.sig'),
               ('-setup.exe', f'{base_name}-Windows.exe'),
               ('.dmg', f'{base_name}-MacOS.dmg'),
-              ('.deb', f'{base_name}-Linux.deb'),
+              ('.deb', f'{base_name}-Ubuntu.deb'),
           )
           staged = []
           for raw_path in artifact_paths:
@@ -1223,9 +1254,9 @@ jobs:
               f'{base_name}-MacOS.dmg',
               f'{base_name}-ARM64.app.tar.gz',
               f'{base_name}-ARM64.app.tar.gz.sig',
-              f'{base_name}-Ubuntu.AppImage',
-              f'{base_name}-Ubuntu.AppImage.sig',
-              f'{base_name}-Linux.deb',
+              f'{base_name}-Linux.AppImage',
+              f'{base_name}-Linux.AppImage.sig',
+              f'{base_name}-Ubuntu.deb',
               f'{base_name}-Windows.exe',
               f'{base_name}-Windows.exe.sig',
           }
@@ -1291,7 +1322,19 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          gh release upload "$DESKTOP_RELEASE_TAG" "$RUNNER_TEMP/desktop-release-assets"/* --clobber
+          signature_assets="$(
+            gh release view "$DESKTOP_RELEASE_TAG" --json assets \
+              --jq '.assets[].name | select(endswith(".sig"))'
+          )"
+          while IFS= read -r asset_name; do
+            [[ -z "$asset_name" ]] || gh release delete-asset "$DESKTOP_RELEASE_TAG" "$asset_name" --yes
+          done <<< "$signature_assets"
+
+          release_assets=()
+          for asset in "$RUNNER_TEMP/desktop-release-assets"/*; do
+            [[ "$asset" == *.sig ]] || release_assets+=("$asset")
+          done
+          gh release upload "$DESKTOP_RELEASE_TAG" "${release_assets[@]}" --clobber
 
       - name: Generate and publish versioned updater metadata
         shell: bash

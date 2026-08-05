@@ -53,8 +53,13 @@ export const hi = {
       projects: "प्रोजेक्ट",
       train: "ट्रेनिंग",
       recipes: "रेसिपी",
+      images: "इमेज",
+      video: "वीडियो",
+      more: "अधिक",
+      customizeSidebar: "साइडबार कस्टमाइज़ करें",
+      newBadge: "नया",
       export: "एक्सपोर्ट",
-      recents: "हाल की चैट",
+      recents: "हाल के",
       noChatsYet: "अभी तक कोई चैट नहीं",
       settings: "सेटिंग्स",
       api: "API",
@@ -151,10 +156,20 @@ export const hi = {
         sttNotDownloaded: "डाउनलोड नहीं हुआ",
         sttDownloadStatusFailed: "डाउनलोड स्थिति जाँची नहीं जा सकी",
         sttDownload: "डाउनलोड करें",
+        sttDownloadConfirmTitle: "{model} डाउनलोड करें?",
+        sttDownloadConfirmBody:
+          "लोकल डिक्टेशन पूरी तरह ऑफ़लाइन चलता है, लेकिन इसके लिए पहले {model} स्पीच मॉडल चाहिए। यह लगभग {size} का है और आपके Hugging Face कैश में एक ही बार डाउनलोड होता है।",
+        sttDownloadConfirmBodyUnsized:
+          "लोकल डिक्टेशन पूरी तरह ऑफ़लाइन चलता है, लेकिन इसके लिए पहले {model} स्पीच मॉडल चाहिए। यह आपके Hugging Face कैश में एक ही बार डाउनलोड होता है।",
+        sttOpenVoiceSettings: "आवाज़ सेटिंग्स खोलें",
+        sttDownloadStarted: "{model} डाउनलोड हो रहा है",
         sttDownloading: "डाउनलोड हो रहा है… {progress}%",
         sttCancelDownload: "रद्द करें",
         sttCancellingDownload: "रद्द हो रहा है…",
+        sttCancelDownloadFailed: "डाउनलोड रद्द नहीं किया जा सका",
         sttDownloadComplete: "स्पीच रिकग्निशन मॉडल डाउनलोड हो गया",
+        sttModelReady: "{model} डिक्टेशन के लिए तैयार है",
+        sttRecommended: "अनुशंसित",
         sttDownloadFailed: "स्पीच रिकग्निशन मॉडल डाउनलोड नहीं हो सका",
         sttLoad: "लोड करें",
         sttUnload: "अनलोड करें",
@@ -600,6 +615,14 @@ export const hi = {
         compactSidebarDescription:
           "साइडबार को आइकन में संक्षिप्त करने के बजाय विस्तारित रखें।",
       },
+      sidebarNav: {
+        title: "साइडबार नेविगेशन",
+        description:
+          "साइडबार के टैब पिन करें और उनका क्रम बदलें। जो टैब पिन नहीं हैं वे “अधिक” मेन्यू में इकट्ठा हो जाते हैं; यदि सिर्फ़ एक ही टैब पिन नहीं है तो एक आइटम वाला मेन्यू बनाने के बजाय उसे छिपा दिया जाता है। नई चैट अपनी जगह पर तय रहती है।",
+        dragToReorder: "क्रम बदलने के लिए खींचें",
+        pinToSidebar: "{name} को साइडबार में पिन करें",
+        moreHolds: "अधिक ({count})",
+      },
       sidebarMenu: {
         title: "साइडबार मेन्यू",
         description:
@@ -786,10 +809,10 @@ export const hi = {
         title: "मॉडल चुनने की सेटिंग्स",
         expandQuantizations: "क्वांटाइज़ेशन विस्तृत रूप में दिखाएँ",
         expandQuantizationsDescription:
-          "चालू: डिवाइस पर मौजूद GGUF मॉडल के क्वांटाइज़ेशन तुरंत दिखेंगे। बंद: किसी मॉडल के क्वांटाइज़ेशन देखने के लिए उस पर क्लिक करें।",
+          "चालू: “On Device” के GGUF मॉडल के क्वांटाइज़ेशन तुरंत दिखेंगे। बंद: किसी मॉडल के क्वांटाइज़ेशन देखने के लिए उस पर क्लिक करें।",
         showAllQuantizations: "सभी क्वांटाइज़ेशन दिखाएँ",
         showAllQuantizationsDescription:
-          "चालू: डिवाइस पर मौजूद सभी क्वांटाइज़ेशन की सूची दिखेगी, जिनमें डाउनलोड न किए गए क्वांटाइज़ेशन भी शामिल हैं। बंद: केवल डाउनलोड किए गए क्वांटाइज़ेशन दिखेंगे।",
+          "चालू: “On Device” के सभी क्वांटाइज़ेशन की सूची दिखेगी, जिनमें डाउनलोड न किए गए क्वांटाइज़ेशन भी शामिल हैं। बंद: केवल डाउनलोड किए गए क्वांटाइज़ेशन दिखेंगे।",
       },
       menu: {
         title: "चैट मेन्यू",
@@ -823,7 +846,7 @@ export const hi = {
       exportingAction: "एक्सपोर्ट हो रहा है...",
       exportConversations: "हाल के और प्रोजेक्ट एक्सपोर्ट करें",
       exportConversationsDescription:
-        "हाल की चैट या हाल की और प्रोजेक्ट चैट को Raw JSONL, CSV या ShareGPT JSONL के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग।",
+        "हाल के या हाल के और प्रोजेक्ट चैट को Raw JSONL, CSV या ShareGPT JSONL के रूप में डाउनलोड करें, एक संयुक्त फ़ाइल में या हर चैट के लिए अलग-अलग।",
       exportConversationsAction: "एक्सपोर्ट करें",
       exportScopeRecents: "हाल के",
       exportScopeAll: "हाल के + प्रोजेक्ट",
@@ -957,7 +980,7 @@ export const hi = {
       osWindows: "Windows",
       secureHttps: "सुरक्षित HTTPS",
       secureHttpsHint:
-        "0.0.0.0 वाला पोर्ट अब भी सभी नेटवर्क इंटरफ़ेस से पहुँचा जा सकता है। पूरी सुरक्षा के लिए Unsloth को --secure के साथ शुरू करें, ताकि केवल यह HTTPS लिंक उपलब्ध हो।",
+        "0.0.0.0 वाला पोर्ट अब भी विश्व स्तर पर पहुँचा जा सकता है। पूरी सुरक्षा के लिए Unsloth को --secure के साथ शुरू करें, ताकि केवल यह HTTPS लिंक उपलब्ध हो।",
       copyTunnelUrl: "टनल URL कॉपी करें",
       copySnippet: "स्निपेट कॉपी करें",
       copy: "कॉपी करें",
@@ -1375,7 +1398,7 @@ export const hi = {
       cancelAction: "ट्रेनिंग रद्द करें",
       stopTitle: "ट्रेनिंग रोकें",
       stopDescription:
-        "चुनें कि आप वर्तमान ट्रेनिंग रन को कैसे रोकना चाहते हैं। “रोकें और सहेजें” एक चेकपॉइंट बनाता है, जिससे आप बाद में ट्रेनिंग फिर शुरू कर सकते हैं; केवल “रोकें” चुनने पर ट्रेनिंग फिर शुरू नहीं की जा सकती।",
+        "चुनें कि आप वर्तमान ट्रेनिंग रन को कैसे रोकना चाहते हैं। “रोकें और सहेजें” एक चेकपॉइंट बनाता है, जिससे आप बाद में ट्रेनिंग फिर शुरू कर सकते हैं; बिना सहेजे रोकने पर ट्रेनिंग फिर शुरू नहीं की जा सकती।",
       stopAction: "रोकें",
       stopping: "रोका जा रहा है...",
       stopAndSave: "रोकें और सहेजें",
@@ -1515,6 +1538,7 @@ export const hi = {
         loadingDataset: "डेटासेट लोड हो रहा है",
         configuring: "कॉन्फ़िगर हो रहा है",
         training: "ट्रेनिंग हो रही है",
+        finalizing: "मॉडल सेव हो रहा है",
         completed: "पूर्ण",
         error: "त्रुटि",
         stopped: "रोका गया",

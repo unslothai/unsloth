@@ -193,6 +193,71 @@ fn is_elevation_request(code: i32, packages: &[String]) -> bool {
     code == 2 && !packages.is_empty()
 }
 
+/// Windows PowerShell 5.1 applies `RemoteSigned` authorization differently to
+/// Win32 verbatim paths (`\\?\C:\...`) than to their ordinary drive/UNC forms.
+/// Tauri resolves resources through `canonicalize`, which always returns the
+/// verbatim form, so convert only the two lossless filesystem forms PowerShell
+/// understands before passing a script to `-File`.
+#[cfg(windows)]
+fn powershell_script_path(path: &Path) -> PathBuf {
+    use std::ffi::OsString;
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+
+    // Everything after `\\?\` reaches the object manager, which is case insensitive.
+    fn is(unit: Option<&u16>, ascii: u8) -> bool {
+        unit.is_some_and(|value| *value < 128 && (*value as u8).eq_ignore_ascii_case(&ascii))
+    }
+
+    let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    let verbatim: Vec<u16> = r"\\?\".encode_utf16().collect();
+    if !wide.starts_with(&verbatim) {
+        return path.to_path_buf();
+    }
+    let rest = &wide[verbatim.len()..];
+
+    let is_drive = rest.first().is_some_and(|value| {
+        (b'A' as u16..=b'Z' as u16).contains(value) || (b'a' as u16..=b'z' as u16).contains(value)
+    }) && rest.get(1) == Some(&(b':' as u16))
+        && rest.get(2) == Some(&(b'\\' as u16));
+
+    let normalized = if is(rest.first(), b'U')
+        && is(rest.get(1), b'N')
+        && is(rest.get(2), b'C')
+        && rest.get(3) == Some(&(b'\\' as u16))
+    {
+        let mut value: Vec<u16> = r"\\".encode_utf16().collect();
+        value.extend_from_slice(&rest[4..]);
+        value
+    } else if is_drive {
+        rest.to_vec()
+    } else {
+        return path.to_path_buf();
+    };
+
+    // Only the verbatim form addresses a path past MAX_PATH; stripping it there
+    // would trade an authorization error for a "path too long" one. MAX_PATH
+    // counts the terminating NUL, so 259 units is the longest legacy path.
+    if normalized.len() >= 260 {
+        return path.to_path_buf();
+    }
+
+    PathBuf::from(OsString::from_wide(&normalized))
+}
+
+/// `Command::new` searches the running executable's own directory before the
+/// system one, and a `currentUser` install puts that directory somewhere the
+/// user can write, so resolve the interpreter absolutely.
+#[cfg(windows)]
+fn powershell_exe() -> PathBuf {
+    let system_root = std::env::var_os("SystemRoot").unwrap_or_else(|| r"C:\Windows".into());
+    let absolute = Path::new(&system_root).join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+    if absolute.is_file() {
+        absolute
+    } else {
+        PathBuf::from("powershell.exe")
+    }
+}
+
 // ── Script Resolution ──
 
 /// Returns (script_path, args) depending on dev vs production mode.
@@ -323,7 +388,7 @@ fn spawn_script(
         .stderr(Stdio::piped());
 
     #[cfg(windows)]
-    let mut cmd = Command::new("powershell.exe");
+    let mut cmd = Command::new(powershell_exe());
     // No -WindowStyle Hidden / -ExecutionPolicy Bypass: that pair is a Microsoft
     // detection signature, CREATE_NO_WINDOW below already hides the console, and
     // NSIS writes resources without a mark-of-the-web so RemoteSigned loads them.
@@ -336,7 +401,7 @@ fn spawn_script(
         "RemoteSigned",
         "-File",
     ])
-    .arg(script)
+    .arg(powershell_script_path(script))
     .args(args)
     .current_dir(&work_dir)
     .stdout(Stdio::piped())
@@ -1065,6 +1130,87 @@ fn capped_output_text(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_script_path_normalizes_verbatim_filesystem_paths() {
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\C:\Users\Owner\install.ps1")),
+            PathBuf::from(r"C:\Users\Owner\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\UNC\server\share\install.ps1")),
+            PathBuf::from(r"\\server\share\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"C:\Users\Owner\install.ps1")),
+            PathBuf::from(r"C:\Users\Owner\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\Volume{1234}\install.ps1")),
+            PathBuf::from(r"\\?\Volume{1234}\install.ps1")
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_script_path_leaves_unsupported_spellings_verbatim() {
+        // The object manager is case insensitive, so `unc` must normalize too.
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\unc\server\share\install.ps1")),
+            PathBuf::from(r"\\server\share\install.ps1")
+        );
+        assert_eq!(
+            powershell_script_path(Path::new(r"\\?\c:\Users\Owner\install.ps1")),
+            PathBuf::from(r"c:\Users\Owner\install.ps1")
+        );
+        // A drive letter with no separator is drive-relative, not the same path.
+        for unchanged in [
+            r"\\?\C:",
+            r"\\?\",
+            r"\\?\1:\install.ps1",
+            r"\\?\GLOBALROOT\Device\HarddiskVolume1\install.ps1",
+            r"\\.\C:\install.ps1",
+            r"\\server\share\install.ps1",
+            r"install.ps1",
+        ] {
+            assert_eq!(
+                powershell_script_path(Path::new(unchanged)),
+                PathBuf::from(unchanged),
+                "{unchanged} should be passed through untouched"
+            );
+        }
+        // MAX_PATH counts the terminating NUL, so 259 units still fits but 260 does not.
+        let fits = format!(r"C:\{}\install.ps1", "a".repeat(244));
+        assert_eq!(fits.len(), 259);
+        assert_eq!(
+            powershell_script_path(Path::new(&format!(r"\\?\{fits}"))),
+            PathBuf::from(&fits)
+        );
+        for over in [
+            format!(r"\\?\C:\{}\install.ps1", "a".repeat(245)),
+            format!(r"\\?\C:\{}\install.ps1", "a".repeat(300)),
+        ] {
+            assert_eq!(
+                powershell_script_path(Path::new(&over)),
+                PathBuf::from(&over),
+                "a path past MAX_PATH must stay verbatim"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn powershell_exe_resolves_under_the_system_directory() {
+        let resolved = powershell_exe();
+        assert!(resolved.is_absolute(), "{resolved:?} should be absolute");
+        assert!(resolved.is_file(), "{resolved:?} should exist");
+        let system_root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
+        assert!(
+            resolved.starts_with(&system_root),
+            "{resolved:?} escaped {system_root}"
+        );
+    }
 
     #[test]
     fn elevated_output_cap_is_utf8_boundary_safe() {
