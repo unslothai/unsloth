@@ -553,7 +553,7 @@ with sync_playwright() as p:
             except Exception as exc:
                 soft_fail(f"Settings tab '{tab_name}' click failed: {exc!r}")
         step("Voice model picker: real mouse-wheel scrolling")
-        # By test id too: the tab label is translated, and it gates everything below.
+        # By test id: the tab label is translated, and it gates everything below.
         voice_tab = page.get_by_test_id("settings-tab-voice").first
         if voice_tab.count() == 0:
             fail("Voice settings tab not found")
@@ -564,10 +564,8 @@ with sync_playwright() as p:
             # recovery; on Linux/Windows a crash and any live-page failure stay a hard fail.
             try:
                 voice_tab.click()
-                # All four by test id. Every one of these was bound to
-                # t()-rendered English, and they gate the same popover, so a
-                # reword of any of them reproduces the #7835 outage a line or
-                # two earlier than the one that actually fired.
+                # All four by test id: each was bound to t()-rendered English,
+                # so any reword reproduced the #7835 outage.
                 page.get_by_test_id("dictation-engine-trigger").click()
                 page.get_by_test_id("dictation-engine-model").click()
                 page.get_by_test_id("stt-model-trigger").click()

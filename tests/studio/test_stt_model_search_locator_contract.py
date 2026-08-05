@@ -2,18 +2,11 @@
 """The dictation model search box must be reachable by test id, not by copy.
 
 `playwright_extra_ui.py` located this input with
-`get_by_placeholder("Search model")`. That placeholder is rendered through
-`t("settings.voice.dictation.sttModelSearchPlaceholder")`, so it is both
-translated and free to be reworded, and #7835 reworded the English string to
-"Search any model on HF". `get_by_placeholder` matches on substring, and
-"Search model" is not a substring of that, so the step failed with
-
-    Locator.fill: Timeout 60000ms exceeded.
-      waiting for get_by_placeholder("Search model")
-
-That takes the whole Chat UI Tests job down, on every PR, for a copy edit that
-touched no behaviour. The results container beside it already had
-`data-testid="stt-model-results"`; the input now has one too.
+`get_by_placeholder("Search model")`, but the placeholder is translated copy
+and #7835 reworded it to "Search any model on HF". The substring no longer
+matched, so `Locator.fill` timed out and took the whole Chat UI Tests job down
+on every PR for a copy edit. The input now carries a test id, like the results
+container beside it already did.
 """
 
 import ast
@@ -29,7 +22,7 @@ SETTINGS_DIALOG = REPO / "studio/frontend/src/features/settings/settings-dialog.
 EXTRA_UI = REPO / "tests/studio/playwright_extra_ui.py"
 EN_LOCALE = REPO / "studio/frontend/src/i18n/locales/en.ts"
 
-# Every element the dictation step drives, and the i18n key each one used to be
+# Every element the dictation step drives, and the i18n key it used to be
 # located by. All four gate the same popover.
 TEST_IDS = {
     "dictation-engine-trigger": "settings.voice.dictation.engineLabel",
@@ -50,8 +43,8 @@ def test_the_element_carries_the_test_id(test_id):
 
 @pytest.mark.parametrize("test_id,key", sorted(TEST_IDS.items()))
 def test_the_test_id_sits_on_the_right_element(test_id, key):
-    """A test id on the wrong element would still satisfy the check above, so
-    each one is required to sit beside the i18n key it replaced."""
+    """A test id on the wrong element passes the check above, so require each
+    one to sit beside the i18n key it replaced."""
     source = VOICE_TAB.read_text(encoding = "utf-8")
     index = source.index(f'data-testid="{test_id}"')
     block = source[max(0, index - 400) : index + 400]
@@ -65,16 +58,16 @@ def test_the_driver_uses_it(test_id):
 
 
 def test_the_voice_settings_tab_is_reachable_by_test_id():
-    """The step's first click is the Voice tab itself, and its label is
-    translated too, so the tab buttons carry a test id keyed by tab id."""
+    """The step's first click is the Voice tab, whose label is translated too,
+    so the tab buttons carry a test id keyed by tab id."""
     source = SETTINGS_DIALOG.read_text(encoding = "utf-8")
     assert TAB_TEST_ID in source, SETTINGS_DIALOG
     assert 'id: "voice"' in source, SETTINGS_DIALOG
     assert 'get_by_test_id("settings-tab-voice")' in EXTRA_UI.read_text(encoding = "utf-8")
 
 
-# Locators that resolve through user-visible copy. get_by_role is only one of
-# these when it is given a name.
+# Locators that resolve through user-visible copy. get_by_role only counts
+# when given a name.
 COPY_LOCATORS = (
     "get_by_placeholder",
     "get_by_label",
@@ -89,10 +82,9 @@ PER_LINE = r"get_by_(placeholder|label)\(|get_by_role\([^)]*name\s*="
 def copy_locator_calls(source, first_line, last_line):
     """Copy-bound locator calls starting between two 1-based lines.
 
-    Walks the parsed module rather than matching physical lines: a call split
-    over several lines is one node, so `get_by_role(` + a `name =` on the next
-    line is caught. Parses the whole file, because the sliced step on its own
-    starts mid-statement and indented, so it is not parseable alone.
+    Walks the AST rather than physical lines, so a call split over several
+    lines is still one node. Parses the whole file: the sliced step starts
+    mid-statement and indented, so it is not parseable alone.
     """
     offenders = []
     for node in ast.walk(ast.parse(source)):
@@ -116,8 +108,8 @@ def line_range(source, start, end):
 
 
 def test_the_dictation_step_binds_to_no_translated_copy_at_all():
-    """The whole step, not just the input. These lines sit together and gate
-    one popover, so a reword of any of them reproduces the same outage."""
+    """The whole step, not just the input: it all gates one popover, so a
+    reword anywhere in it reproduces the same outage."""
     source = EXTRA_UI.read_text(encoding = "utf-8")
     start = source.index("Voice model picker: real mouse-wheel scrolling")
     end = source.index("results.hover()", start)
@@ -134,8 +126,8 @@ page.get_by_test_id("stt-model-search").fill("whisper")
 
 
 def test_the_guard_catches_a_multi_line_copy_locator():
-    """A call split across lines hides `name =` from any per-line match: the
-    first line has no `name =` and the third has no `get_by_role(`."""
+    """A split call hides `name =` from any per-line match: the first line has
+    no `name =` and the third has no `get_by_role(`."""
     assert [l for l in MULTI_LINE_SAMPLE.splitlines() if re.search(PER_LINE, l)] == []
     offenders = copy_locator_calls(MULTI_LINE_SAMPLE, 1, 5)
     assert len(offenders) == 1, offenders
@@ -153,8 +145,8 @@ def test_the_guard_ignores_calls_outside_the_range():
 
 
 def test_no_playwright_step_locates_this_input_by_its_copy():
-    """The regression itself. Any placeholder-based locator here is one copy
-    edit away from taking the job down again."""
+    """The regression itself: a placeholder-based locator here is one copy edit
+    away from taking the job down again."""
     source = EXTRA_UI.read_text(encoding = "utf-8")
     offenders = [
         line.strip()
@@ -166,14 +158,14 @@ def test_no_playwright_step_locates_this_input_by_its_copy():
 
 def test_ci_actually_runs_this_file():
     """Repo-root pytest discovery is pinned to tests/security, so this file is
-    only a guard if a workflow names it. The UI workflow runs it as a step."""
+    only a guard if a workflow names it."""
     workflow = (REPO / ".github/workflows/studio-ui-smoke.yml").read_text(encoding = "utf-8")
     assert f"pytest tests/studio/{Path(__file__).name}" in workflow, workflow
     assert "tests/studio/**" in workflow, "the workflow must trigger on this path"
 
 
 def test_the_english_copy_is_still_free_to_change():
-    """States the point: this file must keep passing whatever the wording is,
-    so it deliberately does not assert the string."""
+    """This file must keep passing whatever the wording is, so it deliberately
+    asserts the key, not the string."""
     source = EN_LOCALE.read_text(encoding = "utf-8")
     assert "sttModelSearchPlaceholder:" in source, EN_LOCALE

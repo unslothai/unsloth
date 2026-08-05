@@ -392,7 +392,7 @@ export function SettingsDialog() {
                   return (
                     <button
                       key={tab.id}
-                      // Stable handle for UI tests; the label is translated.
+                      // Stable handle for UI tests: the label is translated.
                       data-testid={`settings-tab-${tab.id}`}
                       ref={(node) => {
                         tabButtonRefs.current[tab.id] = node;
