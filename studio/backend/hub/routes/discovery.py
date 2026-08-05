@@ -419,8 +419,24 @@ async def discovery_info(
     url = f"{base}/api/{resource}/{path}/revision/{quote(revision, safe = '')}"
     if pairs:
         url += "?" + urlencode(pairs)
-    payload, _ = await _proxy_get(url, hf_token)
+    try:
+        payload, _ = await _proxy_get(url, hf_token)
+    except HTTPException as e:
+        return _stamped(e)
     return JSONResponse(content = payload, headers = dict(_PRIVATE_HEADERS))
+
+
+def _stamped(exc: HTTPException) -> JSONResponse:
+    """Errors carry the marker too, so only a response we did not produce lacks it.
+
+    Without this an upstream 404 passed through by _proxy_get is indistinguishable
+    from the SPA catch-all, and the frontend disables the fallback for the session.
+    """
+    return JSONResponse(
+        status_code = exc.status_code,
+        content = {"detail": exc.detail},
+        headers = dict(_PRIVATE_HEADERS),
+    )
 
 
 _README_BRANCH_RE = re.compile(r"^(main|master)$")
@@ -451,13 +467,18 @@ async def discovery_readme(
     prefix = "datasets/" if resource == "datasets" else ""
     path = "/".join(quote(part, safe = "") for part in repo.split("/"))
     url = f"{base}/{prefix}{path}/raw/{branch}/README.md"
-    status, body, _ = await asyncio.to_thread(_fetch_upstream, url, hf_token)
+    try:
+        status, body, _ = await asyncio.to_thread(_fetch_upstream, url, hf_token)
+    except HTTPException as e:
+        return _stamped(e)
     if status == 404:
-        raise HTTPException(status_code = 404, detail = "No repo card")
+        return _stamped(HTTPException(status_code = 404, detail = "No repo card"))
     if status >= 400:
-        raise HTTPException(
-            status_code = _UPSTREAM_AUTH_STATUS if status in (401, 403) else 502,
-            detail = "Could not read the repo card",
+        return _stamped(
+            HTTPException(
+                status_code = _UPSTREAM_AUTH_STATUS if status in (401, 403) else 502,
+                detail = "Could not read the repo card",
+            )
         )
     return Response(
         content = body,
@@ -476,11 +497,16 @@ async def discovery_search(
     try:
         pairs = build_discovery_query(request.query_params)
     except DiscoveryQueryError as e:
-        raise HTTPException(status_code = 400, detail = _scrub_detail(str(e), hf_token))
+        return _stamped(
+            HTTPException(status_code = 400, detail = _scrub_detail(str(e), hf_token))
+        )
 
     url = build_upstream_url(resource, pairs)
 
-    payload, link = await _proxy_get(url, hf_token)
+    try:
+        payload, link = await _proxy_get(url, hf_token)
+    except HTTPException as e:
+        return _stamped(e)
 
     headers = dict(_PRIVATE_HEADERS)
     # Absolute, not relative: the Hub client's link parser only recognises an

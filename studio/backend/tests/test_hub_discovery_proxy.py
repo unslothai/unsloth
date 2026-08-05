@@ -35,6 +35,24 @@ class _Request:
         self.base_url = base_url
 
 
+class _Err:
+    """Either form of failure, so a test asserts on the outcome not the mechanism."""
+
+    def __init__(self, status_code, detail):
+        self.status_code = status_code
+        self.detail = detail
+
+
+def _error(fn, *args, **kwargs):
+    """Call a route and return its failure, whether raised or returned stamped."""
+    try:
+        response = fn(*args, **kwargs)
+    except HTTPException as e:
+        return _Err(e.status_code, e.detail)
+    body = json.loads(response.body)
+    return _Err(response.status_code, body.get("detail"))
+
+
 def _call(items, hf_token = None):
     return asyncio.run(
         discovery.discovery_search(
@@ -117,43 +135,37 @@ class TestDestinationIsServerControlled:
 class TestUpstreamFailureMapping:
     def test_upstream_401_is_not_surfaced_as_401(self, monkeypatch):
         monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (401, b"", ""))
-        with pytest.raises(HTTPException) as excinfo:
-            _call([("search", "gemma")])
-        assert excinfo.value.status_code != 401, (
+        err = _error(_call, [("search", "gemma")])
+        assert err.status_code != 401, (
             "an HF 401 echoed as our own 401 makes authFetch clear the Studio "
             "session and log the user out"
         )
-        assert excinfo.value.status_code == discovery._UPSTREAM_AUTH_STATUS
+        assert err.status_code == discovery._UPSTREAM_AUTH_STATUS
 
     def test_upstream_403_is_not_surfaced_as_403(self, monkeypatch):
         monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (403, b"", ""))
-        with pytest.raises(HTTPException) as excinfo:
-            _call([("search", "gemma")])
-        assert excinfo.value.status_code == discovery._UPSTREAM_AUTH_STATUS
+        err = _error(_call, [("search", "gemma")])
+        assert err.status_code == discovery._UPSTREAM_AUTH_STATUS
 
     def test_redirects_are_refused_not_followed(self, monkeypatch):
         monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (302, b"", ""))
-        with pytest.raises(HTTPException) as excinfo:
-            _call([("search", "gemma")])
-        assert excinfo.value.status_code == 502
-        assert "redirect" in str(excinfo.value.detail).lower()
+        err = _error(_call, [("search", "gemma")])
+        assert err.status_code == 502
+        assert "redirect" in str(err.detail).lower()
 
     def test_upstream_5xx_becomes_502(self, monkeypatch):
         monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (503, b"", ""))
-        with pytest.raises(HTTPException) as excinfo:
-            _call([("search", "gemma")])
-        assert excinfo.value.status_code == 502
+        err = _error(_call, [("search", "gemma")])
+        assert err.status_code == 502
 
     def test_malformed_json_becomes_502(self, monkeypatch):
         monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (200, b"not json", ""))
-        with pytest.raises(HTTPException) as excinfo:
-            _call([("search", "gemma")])
-        assert excinfo.value.status_code == 502
+        err = _error(_call, [("search", "gemma")])
+        assert err.status_code == 502
 
     def test_bad_query_is_400(self):
-        with pytest.raises(HTTPException) as excinfo:
-            _call([("endpoint", "http://127.0.0.1")])
-        assert excinfo.value.status_code == 400
+        err = _error(_call, [("endpoint", "http://127.0.0.1")])
+        assert err.status_code == 400
 
 
 class TestTokenHandling:
@@ -164,9 +176,8 @@ class TestTokenHandling:
             raise RuntimeError(f"connection failed using {secret}")
 
         monkeypatch.setattr(discovery, "_fetch_upstream", _boom)
-        with pytest.raises(HTTPException) as excinfo:
-            _call([("search", "gemma")], hf_token = secret)
-        assert secret not in str(excinfo.value.detail)
+        err = _error(_call, [("search", "gemma")], hf_token = secret)
+        assert secret not in str(err.detail)
 
     def test_token_is_never_echoed_in_a_success(self, monkeypatch):
         secret = "hf_averysecrettokenvalue"
@@ -322,20 +333,17 @@ class TestInfoRoute:
 
     @pytest.mark.parametrize("repo", ["../../etc/passwd", "a b", "", "x" * 300])
     def test_invalid_repos_are_rejected(self, repo):
-        with pytest.raises(HTTPException) as excinfo:
-            self._info(repo = repo)
-        assert excinfo.value.status_code == 400
+        err = _error(self._info, repo = repo)
+        assert err.status_code == 400
 
     @pytest.mark.parametrize("revision", ["a b", "rev;rm -rf", "..\\x"])
     def test_invalid_revisions_are_rejected(self, revision):
-        with pytest.raises(HTTPException) as excinfo:
-            self._info(revision = revision)
-        assert excinfo.value.status_code == 400
+        err = _error(self._info, revision = revision)
+        assert err.status_code == 400
 
     def test_listing_filters_are_not_accepted_here(self):
-        with pytest.raises(HTTPException) as excinfo:
-            self._info(items = [("search", "gemma")])
-        assert excinfo.value.status_code == 400
+        err = _error(self._info, items = [("search", "gemma")])
+        assert err.status_code == 400
 
 
 class TestStreamDeadline:
@@ -483,9 +491,8 @@ class TestErrorDetailScrubbing:
             )
 
         monkeypatch.setattr(discovery, "_fetch_upstream", _boom)
-        with pytest.raises(HTTPException) as excinfo:
-            _call([("search", "acme-internal")])
-        detail = str(excinfo.value.detail)
+        err = _error(_call, [("search", "acme-internal")])
+        detail = str(err.detail)
         assert "acme-internal" not in detail
         assert "/api/models?" not in detail
         assert "hf-mirror" not in detail
@@ -500,9 +507,8 @@ class TestErrorDetailScrubbing:
             )
 
         monkeypatch.setattr(discovery, "_fetch_upstream", _boom)
-        with pytest.raises(HTTPException) as excinfo:
-            _call([("search", "gemma")])
-        assert "squid.corp.internal" not in str(excinfo.value.detail)
+        err = _error(_call, [("search", "gemma")])
+        assert "squid.corp.internal" not in str(err.detail)
 
     def test_scrubbing_keeps_the_diagnosis_readable(self):
         cleaned = discovery._scrub_detail(
@@ -572,30 +578,66 @@ class TestReadmeRoute:
 
     @pytest.mark.parametrize("branch", ["../../etc/passwd", "main;rm", "HEAD"])
     def test_only_main_and_master_are_accepted(self, branch):
-        with pytest.raises(HTTPException) as excinfo:
-            self._call(branch = branch)
-        assert excinfo.value.status_code == 400
+        err = _error(self._call, branch = branch)
+        assert err.status_code == 400
 
     def test_a_bad_repo_is_rejected(self):
-        with pytest.raises(HTTPException) as excinfo:
-            self._call(repo = "../../secrets")
-        assert excinfo.value.status_code == 400
+        err = _error(self._call, repo = "../../secrets")
+        assert err.status_code == 400
 
     def test_upstream_auth_is_not_surfaced_as_our_own(self, monkeypatch):
         monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (401, b"", ""))
-        with pytest.raises(HTTPException) as excinfo:
-            self._call()
-        assert excinfo.value.status_code == discovery._UPSTREAM_AUTH_STATUS
+        err = _error(self._call)
+        assert err.status_code == discovery._UPSTREAM_AUTH_STATUS
 
     def test_a_missing_card_is_a_plain_404(self, monkeypatch):
         monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (404, b"", ""))
-        with pytest.raises(HTTPException) as excinfo:
-            self._call()
-        assert excinfo.value.status_code == 404
+        err = _error(self._call)
+        assert err.status_code == 404
 
     def test_the_card_is_returned_with_the_private_headers(self, monkeypatch):
         monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (200, b"# card", ""))
         response = self._call()
         assert response.body == b"# card"
         assert response.headers.get("cache-control") == "no-store"
+        assert response.headers.get(discovery.HUB_PROXY_MARKER_HEADER.lower()) == "1"
+
+
+class TestEveryResponseCarriesTheMarker:
+    """The frontend reads a 404 without the marker as "this backend has no route".
+
+    An upstream 404 is passed through with its own status, so if error responses
+    were unstamped a real Hub 404 would look identical to the SPA catch-all and
+    the fallback would be disabled for the session.
+    """
+
+    def _listing(self, monkeypatch, status):
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token: (status, b"{}", "")
+        )
+        return asyncio.run(
+            discovery.discovery_search(
+                "models",
+                _Request([("search", "gemma")]),
+                hf_token = None,
+                current_subject = "tester",
+            )
+        )
+
+    @pytest.mark.parametrize("status", [404, 429, 500, 401])
+    def test_an_upstream_failure_is_still_stamped(self, monkeypatch, status):
+        response = self._listing(monkeypatch, status)
+        assert response.status_code >= 400
+        assert response.headers.get(discovery.HUB_PROXY_MARKER_HEADER.lower()) == "1"
+
+    def test_a_rejected_query_is_stamped_too(self):
+        response = asyncio.run(
+            discovery.discovery_search(
+                "models",
+                _Request([("endpoint", "http://127.0.0.1")]),
+                hf_token = None,
+                current_subject = "tester",
+            )
+        )
+        assert response.status_code == 400
         assert response.headers.get(discovery.HUB_PROXY_MARKER_HEADER.lower()) == "1"
