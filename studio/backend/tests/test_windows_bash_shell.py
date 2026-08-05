@@ -700,7 +700,7 @@ def test_a_quoted_cmd_payload_is_not_a_program_name(windows_terminal):
     "command",
     [
         '"C:\\Windows\\System32\\cmd.exe" /c start "" powershell -Command ls',
-        "C:/Windows/System32/cmd.exe /c start \"\" powershell -Command ls",
+        'C:/Windows/System32/cmd.exe /c start "" powershell -Command ls',
         '"C:\\Windows\\System32\\cmd.exe" /c env start "" powershell -Command ls',
     ],
 )
@@ -725,5 +725,5 @@ def test_bash_eats_an_unquoted_backslash_path(monkeypatch):
         tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
     )
     assert "powershell" not in tools._find_blocked_commands(
-        "C:\\Windows\\System32\\cmd.exe /c start \"\" powershell"
+        'C:\\Windows\\System32\\cmd.exe /c start "" powershell'
     )
