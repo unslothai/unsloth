@@ -6414,6 +6414,24 @@ def test_codex_attach_check_skips_direct_gguf_files(monkeypatch):
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/dflash/Qwen-DFlash-Q4_K_M.gguf")
 
 
+def test_codex_attach_check_refuses_contradictory_direct_variant(monkeypatch, capsys):
+    # A direct file names the one quant it is; a contradictory explicit variant
+    # makes the server resolve nothing and the load evicts before failing.
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: pytest.fail("a direct .gguf file needs no variants probe"),
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf", "Q8_0")
+    assert "no GGUF variant Q8_0" in capsys.readouterr().err
+    # The file's own quant passes, in any case spelling, shards included.
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf", "q4_k_m")
+    start._attach_gguf_check_for_codex(
+        BASE, "sk-test", "C:\\models\\bar-Q4_K_M-00001-of-00002.gguf", "Q4_K_M"
+    )
+
+
 @pytest.mark.parametrize(
     "path",
     [

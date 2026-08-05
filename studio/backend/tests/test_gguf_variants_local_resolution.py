@@ -150,6 +150,27 @@ def test_torn_direct_split_is_not_offered_as_downloaded(in_tmp_cwd):
     assert whole.downloaded is True and whole.partial is False
 
 
+def test_stray_over_indexed_shard_does_not_complete_a_split(in_tmp_cwd):
+    # Completeness is the declared index set, not a file count: a stray
+    # 00003-of-00002 must not stand in for the missing shard 2.
+    shard = in_tmp_cwd / "model-Q4_K_M-00001-of-00002.gguf"
+    shard.write_bytes(b"GGUF")
+    (in_tmp_cwd / "model-Q4_K_M-00003-of-00002.gguf").write_bytes(b"GGUF")
+
+    row = _variants(os.fspath(shard)).variants[0]
+    assert row.downloaded is False and row.partial is True
+
+
+def test_zero_byte_direct_gguf_is_partial(in_tmp_cwd):
+    # The directory scan treats an empty gguf as incomplete (an interrupted
+    # copy), so the direct-file fallback must not call the same bytes ready.
+    empty = in_tmp_cwd / "foo-Q4_K_M.gguf"
+    empty.write_bytes(b"")
+
+    row = _variants(os.fspath(empty)).variants[0]
+    assert row.downloaded is False and row.partial is True
+
+
 def test_local_dir_answer_ignores_the_hub_cache_of_the_same_name(in_tmp_cwd, monkeypatch):
     # A repo-shaped id that exists as a directory is resolved existence-first by
     # the load, so this answer describes that directory. An empty leftover

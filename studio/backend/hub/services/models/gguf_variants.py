@@ -570,18 +570,20 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
         return True
     sibling = re.compile(
         re.escape(match.group("stem"))
-        + r"-\d{"
+        + r"-(\d{"
         + str(len(match.group("index")))
-        + r"}-of-"
+        + r"})-of-"
         + re.escape(match.group("total"))
         + r"\.gguf$",
         re.IGNORECASE,
     )
     try:
-        found = {p.name.lower() for p in path.parent.iterdir() if sibling.match(p.name)}
+        found = {int(m.group(1)) for p in path.parent.iterdir() if (m := sibling.match(p.name))}
     except OSError:
         return True
-    return len(found) >= total
+    # The declared indexes, not a count: a stray over-indexed shard must not
+    # stand in for a missing one.
+    return found >= set(range(1, total + 1))
 
 
 def _complete_quants_under(snapshot: str):
@@ -803,9 +805,10 @@ async def get_gguf_variants_answer(
                 # unmarked one leaves it walking a file: it answers "no complete
                 # quant" and the row this file IS would read as not downloaded.
                 # Nothing to judge there, so report it as the load sees it --
-                # except for the one thing the file itself does answer, a split
-                # missing a sibling, which the directory scan marks partial too.
-                complete = None if _direct_gguf_split_is_whole(local_target) else set()
+                # except what the file itself does answer: a split missing a
+                # sibling, or a zero-byte interrupted copy, both of which the
+                # directory scan marks partial too.
+                complete = None if size > 0 and _direct_gguf_split_is_whole(local_target) else set()
             answered_from[0] = repo_id
             answered_locally[0] = True
             return _local_response(repo_id, variants, has_vision, complete)
