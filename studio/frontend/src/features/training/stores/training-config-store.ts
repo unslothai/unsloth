@@ -22,6 +22,10 @@ import {
   datasetCacheUsabilityIdentitiesEqual,
   trainingDatasetCacheRejections,
 } from "../lib/dataset-cache-rejection";
+import {
+  claimDatasetCacheRecheck,
+  datasetCacheRecheckKey,
+} from "../lib/dataset-recheck-budget";
 import { resolveDeletedLocalDatasetSelection } from "../lib/dataset-selection";
 import { isMissingLocalDatasetCacheError } from "../lib/local-cache-errors";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
@@ -68,6 +72,7 @@ export { hasSeparateStreamingEvalSplit } from "./training-config-policy";
 
 // AbortController for in-flight dataset multimodal checks.
 let _datasetCheckController: AbortController | null = null;
+
 
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
@@ -541,11 +546,28 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   requestedCacheValidation,
                 )
               ) {
-                if (_datasetCheckController === controller) {
+                if (
+                  _datasetCheckController === controller &&
+                  claimDatasetCacheRecheck(
+                    datasetCacheRecheckKey(datasetName, split),
+                  )
+                ) {
                   runDatasetCheck(datasetName, split, {
                     preferLocalCache: true,
                   });
+                  return;
                 }
+                // Retry budget spent: stop trusting the cache for this selection and
+                // resolve it remotely rather than spinning on a churning inventory.
+                set({
+                  datasetKnownCached: false,
+                  datasetLocalPath: null,
+                  browseDatasetSelection:
+                    createHfBrowseDatasetSelection(datasetName),
+                });
+                runDatasetCheck(datasetName, split, {
+                  preferLocalCache: false,
+                });
                 return;
               }
               set({
