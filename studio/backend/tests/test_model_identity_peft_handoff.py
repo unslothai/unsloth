@@ -79,12 +79,7 @@ def test_restore_is_still_correct_once_the_model_is_wrapped_by_peft():
 def test_a_repo_mismatch_leaves_the_instance_name_untouched():
     model = _loaded_model()
 
-    assert (
-        restore_hf_cache_repo_identity(
-            model, _SNAPSHOT, expected_repo_id = "someone/else"
-        )
-        is None
-    )
+    assert restore_hf_cache_repo_identity(model, _SNAPSHOT, expected_repo_id = "someone/else") is None
     assert model.name_or_path == _SNAPSHOT
 
 
