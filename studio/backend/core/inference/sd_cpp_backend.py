@@ -40,6 +40,7 @@ from core.inference.diffusion_families import (
     DiffusionFamily,
     detect_family_for_pick,
     family_sd_cpp_supported,
+    mirror_repo,
     prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
@@ -321,6 +322,38 @@ def _map_guidance(
     return cfg, None
 
 
+def _fetch_repo_map(
+    assets: list[tuple[str, str, str]], hf_token: Optional[str]
+) -> dict[str, str]:
+    """upstream asset repo -> the repo to actually fetch from (its ungated mirror, or itself).
+
+    Decided once per REPO over that repo's whole file list, the same input ``download_plan`` uses,
+    so the staged entry and the load agree even when a repo carries several assets."""
+    by_repo: dict[str, list[str]] = {}
+    for repo, filename, _kind in assets:
+        by_repo.setdefault(repo, []).append(filename)
+    return {
+        repo: prefer_ungated_mirror(repo, hf_token, files = names)
+        for repo, names in by_repo.items()
+    }
+
+
+def _with_mirrors(repo_ids) -> tuple[str, ...]:
+    """``repo_ids`` plus the ungated mirror of each, de-duplicated, order preserved.
+
+    The delete-cached guard has to protect whichever of the pair the bytes landed in, and the
+    mirror decision is re-taken per load; naming both is cheap and cannot under-protect."""
+    out: list[str] = []
+    for rid in repo_ids:
+        if not rid:
+            continue
+        out.append(rid)
+        mirror = mirror_repo(rid)
+        if mirror:
+            out.append(mirror)
+    return tuple(dict.fromkeys(out))
+
+
 class SdCppDiffusionBackend:
     """Native sd.cpp backend with the diffusers ``DiffusionBackend`` method surface."""
 
@@ -512,7 +545,12 @@ class SdCppDiffusionBackend:
                 if engine.version() is None:
                     raise RuntimeError("sd-cli binary is present but not runnable.")
 
-            assets = self._asset_specs(repo_id, gguf_filename, fam)
+            # Swap ONCE, here, so the size probe and the download agree on the repo: the sizes
+            # come from paths-info, which -- unlike model_info -- 401s anonymously on a gated repo,
+            # so probing the upstream drops the VAE from the progress total the mirror then pulls.
+            specs = self._asset_specs(repo_id, gguf_filename, fam)
+            fetch_repo = _fetch_repo_map(specs, hf_token)
+            assets = [(fetch_repo[repo], fn, kind) for repo, fn, kind in specs]
             self._set_expected_bytes(assets, hf_token)
             paths = self._fetch_assets(assets, hf_token, cancel_event = cancel_event)
 
@@ -671,6 +709,13 @@ class SdCppDiffusionBackend:
             if filename not in names:
                 names.append(filename)
 
+        # The manager STAGES these entries before the load runs, so each has to name the repo
+        # _fetch_assets will pull from: some asset repos are gated (the FLUX.1 VAE lives in
+        # black-forest-labs/FLUX.1-schnell) and an anonymous user would 401 at staging, never
+        # reaching the swap. Same per-repo file list on both sides, so both take the same decision.
+        fetch_repo = _fetch_repo_map(specs, hf_token)
+        by_repo = {fetch_repo[repo]: names for repo, names in by_repo.items()}
+        fetch_repo_id = fetch_repo.get(repo_id, repo_id)
         sizes = self._plan_file_sizes(by_repo, hf_token)
         entries: list[dict[str, Any]] = []
         total = 0
@@ -683,7 +728,7 @@ class SdCppDiffusionBackend:
                     "files": names,
                     "bytes": repo_bytes,
                     # Only the transformer entry carries the GGUF filename; the VAE / encoder entries are plain single files.
-                    "gguf_filename": gguf_filename if repo == repo_id else None,
+                    "gguf_filename": gguf_filename if repo == fetch_repo_id else None,
                 }
             )
         return {"entries": entries, "total_bytes": total}
@@ -761,8 +806,11 @@ class SdCppDiffusionBackend:
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         paths: dict[str, str] = {}
         # This backend fetches the ASSET repos, never the base, and some are gated (the FLUX.1 VAE
-        # lives in black-forest-labs/FLUX.1-schnell), so the mirror swap goes here.
-        assets = [(prefer_ungated_mirror(repo, hf_token), fn, kind) for repo, fn, kind in assets]
+        # lives in black-forest-labs/FLUX.1-schnell), so the mirror swap goes here. Decided per
+        # REPO over that repo's whole file list, exactly as download_plan does, so the load pulls
+        # from the repo the manager already staged.
+        fetch_repo = _fetch_repo_map(assets, hf_token)
+        assets = [(fetch_repo[repo], fn, kind) for repo, fn, kind in assets]
         for repo, fn, kind in assets:
             if cancel.is_set():
                 raise SdCppCancelled("load cancelled")
@@ -798,12 +846,14 @@ class SdCppDiffusionBackend:
         Mirrors the diffusers backend so the delete-cached guard can query whichever
         engine is active without caring which one it got. Includes the companion
         VAE / text-encoder repos: deleting one of those mid-load would remove files
-        the committed SdCppModelFiles paths need."""
+        the committed SdCppModelFiles paths need, and the ungated mirror of each, which is
+        where those bytes land once a gated asset repo is swapped out."""
         with self._lock:
             loading = self._loading
             if loading is None or loading.error is not None:
                 return ()
-            return tuple(r for r in (loading.repo_id, loading.base_repo, *loading.asset_repos) if r)
+            ids = (loading.repo_id, loading.base_repo, *loading.asset_repos)
+            return _with_mirrors(ids)
 
     def loaded_repo_ids(self) -> tuple[str, ...]:
         """Repo ids the COMMITTED native model reads from disk (empty when unloaded).
@@ -812,7 +862,9 @@ class SdCppDiffusionBackend:
         cache on every generation (server mode keeps them in the resident process, but the
         extra ids are harmless there), so the delete-cached guard must refuse those
         companion repos while the model is loaded -- status().repo_id covers only the main
-        GGUF. Reconstructed from the committed family, mirroring loading_repo_ids()."""
+        GGUF. Reconstructed from the committed family, mirroring loading_repo_ids(), and
+        carrying the ungated mirrors for the same reason: one-shot sd-cli re-reads whichever
+        of the pair the load fetched."""
         with self._lock:
             state = self._state
             if state is None:
@@ -828,7 +880,7 @@ class SdCppDiffusionBackend:
                     fam, state.repo_id, state.gguf_filename
                 )
             )
-            return tuple(dict.fromkeys(r for r in repos if r))
+            return _with_mirrors(repos)
 
     # ── Generate ───────────────────────────────────────────────────────────
 

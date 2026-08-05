@@ -417,7 +417,16 @@ def _validate_checkpoint(
 
 def _same_base_model(a: str, b: str) -> bool:
     """Tolerant base-model id compare: exact, or same final path/repo segment (e.g.
-    ``/models/Z-Image-Turbo`` vs ``Tongyi-MAI/Z-Image-Turbo``)."""
+    ``/models/Z-Image-Turbo`` vs ``Tongyi-MAI/Z-Image-Turbo``).
+
+    Both sides normalise through ``canonical_base`` first: an ungated mirror id reaching a baked
+    ``base_model_id`` check must not silently refuse the checkpoint and send the load down the
+    multi-GB dense download. The tail compare happens to cover today's mirrors (they keep the repo
+    name), but this must not depend on that.
+    """
+    from .diffusion_families import canonical_base
+
+    a, b = canonical_base(a), canonical_base(b)
 
     def _tail(x: str) -> str:
         return x.replace("\\", "/").rstrip("/").split("/")[-1].lower()

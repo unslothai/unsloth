@@ -18,7 +18,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Optional
+from typing import Optional, Sequence
 
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both engines raise them verbatim.
@@ -506,27 +506,70 @@ def canonical_base(repo_id: Optional[str]) -> str:
     return _MIRROR_UPSTREAM.get(base.lower(), base)
 
 
-def _upstream_is_cached(repo_id: str) -> bool:
-    """Whether ``repo_id`` has blobs in the LIVE cache root -- not huggingface_hub's import-time
-    constant, which goes stale after a mid-session cache-folder change."""
+# Extensions that mean "a weight file", used to tell a usable upstream snapshot from the stray
+# config an interrupted (or previously tokened) attempt leaves behind.
+_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".pt", ".ckpt", ".gguf"})
+
+
+def _upstream_is_cached(repo_id: str, files: Optional[Sequence[str]] = None) -> bool:
+    """Whether the upstream load is SATISFIABLE from the local cache.
+
+    Not "has any blob": one config left by an interrupted or previously-tokened pull would then
+    pin every later load to the gated upstream and re-raise the 401 the mirror exists to avoid.
+    So the revision must hold ``files`` outright, or -- when the caller has no file list -- at
+    least one real weight file. Snapshot entries are symlinks into ``blobs/``, so an
+    ``.incomplete`` download does not resolve and counts as absent.
+
+    Scoped to the revision ``refs/main`` names, because that is the only one a gated fetch can
+    fall back to: on a 401 the HEAD call fails and ``hf_hub_download`` resolves ``refs/<revision>``
+    to ONE commit and returns its pointer or re-raises. A complete but superseded revision would
+    otherwise read as cached and hand the loader a repo it cannot fetch from. With no ref (a
+    download pinned to an explicit commit) any revision counts, as before.
+
+    Reads the LIVE cache root, not huggingface_hub's import-time constant, which goes stale after
+    a mid-session cache-folder change.
+    """
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
-        blobs = Path(active_hf_hub_cache()) / f"models--{repo_id.replace('/', '--')}" / "blobs"
-        return blobs.is_dir() and any(blobs.iterdir())
-    except Exception:  # noqa: BLE001 -- an unreadable cache just means "not cached"
+        root = Path(active_hf_hub_cache()) / f"models--{repo_id.replace('/', '--')}"
+        wanted = tuple(files or ())
+        ref = root / "refs" / "main"
+        revs = (
+            [root / "snapshots" / ref.read_text().strip()]
+            if ref.is_file()
+            else sorted((root / "snapshots").iterdir())
+        )
+        for rev in revs:
+            if not rev.is_dir():
+                continue
+            if wanted:
+                if all((rev / name).exists() for name in wanted):
+                    return True
+            elif any(
+                p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")
+            ):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
         return False
 
 
-def prefer_ungated_mirror(base: str, hf_token: Optional[str] = None) -> str:
+def prefer_ungated_mirror(
+    base: str, hf_token: Optional[str] = None, *, files: Optional[Sequence[str]] = None
+) -> str:
     """``base``, or the ungated unsloth mirror of it when that is the better repo to FETCH from.
 
     A GGUF/FP8 pick carries only the denoiser, so the companions still come from the base, and a
     gated base 401s on a repo the user never picked. The mirrors are byte identical, so this drops
-    the gate without changing a weight. Used only to fetch: the upstream id stays what the UI shows,
-    what saved configs hold and what a trained LoRA's base_model tag records.
+    the gate without changing a weight. Used only to fetch: the upstream id stays what the model
+    picker and status() show, what saved configs hold and what a trained LoRA's base_model tag
+    records. The one place the swapped id is visible is the download manager row, which names the
+    repo it is actually pulling -- staging the gated id there is the 401 this exists to remove.
 
     Declines back to today's behaviour when ``UNSLOTH_DIFFUSION_NO_MIRROR`` is set, or when the
-    upstream is already cached and switching would re-pull tens of GiB for no gain.
+    upstream already satisfies the load from cache and switching would re-pull tens of GiB for no
+    gain. ``files`` sharpens that second test to the exact repo-relative names the caller is about
+    to fetch; without it any cached weight file counts.
 
     PURE: table lookup, env read, local stat, no network. This runs inside pipeline assembly, so an
     earlier ``model_info`` probe of the mirror put a Hub round trip on the load path and made the
@@ -537,7 +580,7 @@ def prefer_ungated_mirror(base: str, hf_token: Optional[str] = None) -> str:
     mirror = mirror_repo(base)
     if not mirror or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
         return base
-    return base if _upstream_is_cached(base) else mirror
+    return base if _upstream_is_cached(base, files) else mirror
 
 
 # Default (steps, guidance) per model for callers that cannot pass them. Matched by substring, most specific first; same values as the UI MODEL_DEFAULTS table, keep in sync.

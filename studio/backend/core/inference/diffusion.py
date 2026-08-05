@@ -37,6 +37,7 @@ from .diffusion_families import (
     DiffusionFamily,
     assert_flux2_gguf_matches_base,
     assert_pipeline_class_available,
+    canonical_base,
     default_generation_params,
     detect_family_for_pick,
     excluded_model_reason,
@@ -490,6 +491,10 @@ class _LoadingState:
     base_repo: str
     expected_bytes: int = 0
     error: Optional[str] = None
+    # The repo the companion BYTES actually come from: ``base_repo`` when nothing was swapped, else
+    # its ungated mirror. Never surfaced -- ``base_repo`` stays the upstream id status() reports --
+    # but the cache scan and the delete guard must look where the files land.
+    fetch_repo: Optional[str] = None
 
 
 @dataclass
@@ -697,6 +702,7 @@ class DiffusionBackend:
         base_files: list[str],
         hf_token: Optional[str],
         cancel_event: Optional[threading.Event] = None,
+        fetch_base: Optional[str] = None,
     ) -> Optional[str]:
         """Pre-download the GGUF + the given ``base_files`` into the HF cache,
         WITHOUT the lock and honoring ``cancel_event`` (this load's own event, so a
@@ -712,8 +718,9 @@ class DiffusionBackend:
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
         # Pull the companions from the ungated mirror; only the BYTES move, the caller keeps the
-        # upstream id.
-        base = prefer_ungated_mirror(base, hf_token)
+        # upstream id. ``fetch_base`` is the load-wide decision when the caller made one, so every
+        # later fetch in this load agrees with what was staged here.
+        base = fetch_base or prefer_ungated_mirror(base, hf_token, files = base_files)
         # Callers without a per-load event (tests, direct use) fall back to the current one.
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         # GGUF transformer (hub repos only; a local path is already on disk).
@@ -951,10 +958,16 @@ class DiffusionBackend:
             kwargs["_transformer_prefetched"] = any(
                 f.startswith("transformer/") for f in base_files
             )
+            # ONE mirror decision for the whole load, taken here with the staged file list in hand
+            # and carried into load_pipeline: a per-call-site decision could stage one repo and then
+            # assemble from the other, which is the 401 this feature exists to remove.
+            fetch_base = prefer_ungated_mirror(base, kwargs.get("hf_token"), files = base_files)
+            kwargs["_fetch_base"] = fetch_base
             with self._lock:
                 # Stamp progress only if this load is still current (a superseder has its own token).
                 if self._load_token == token and self._loading is not None:
                     self._loading.base_repo = base
+                    self._loading.fetch_repo = fetch_base
                     self._loading.expected_bytes = expected
             # Download outside the lock so unload/an eviction can preempt the pull.
             kwargs["_base_local_dir"] = self._prefetch_files(
@@ -964,6 +977,7 @@ class DiffusionBackend:
                 base_files,
                 kwargs.get("hf_token"),
                 cancel_event = cancel_event,
+                fetch_base = fetch_base,
             )
             self.load_pipeline(**kwargs)
             with self._lock:
@@ -996,9 +1010,12 @@ class DiffusionBackend:
             return _progress("ready" if self._state is not None else None)
 
         # Sum checkpoint + companion cache; for a full-pipeline load base IS the repo, so count once.
+        # Scan the repo the bytes LAND in (the mirror when one was swapped in), else a mirrored
+        # companion download reads as zero and the bar sits still for the whole pull.
         downloaded = self._cache_bytes(loading.repo_id)
-        if loading.base_repo and loading.base_repo != loading.repo_id:
-            downloaded += self._cache_bytes(loading.base_repo)
+        companion = loading.fetch_repo or loading.base_repo
+        if companion and companion != loading.repo_id:
+            downloaded += self._cache_bytes(companion)
         expected = loading.expected_bytes
         # Downloads done, still finalizing. The cache scan can exceed the estimate, so clamp to 100%.
         if expected > 0 and downloaded >= expected * 0.999:
@@ -1013,12 +1030,15 @@ class DiffusionBackend:
 
         The delete-cached guard needs this: during a load ``status()["loaded"]`` is
         still False, but deleting the target repo (or its companion base) would yank
-        blobs and snapshot files from under the download/assembly."""
+        blobs and snapshot files from under the download/assembly. Includes the ungated
+        mirror when one was swapped in: that is where the companion bytes actually land,
+        so guarding only the upstream id would leave the live download deletable."""
         with self._lock:
             loading = self._loading
             if loading is None or loading.error is not None:
                 return ()
-            return tuple(r for r in (loading.repo_id, loading.base_repo) if r)
+            ids = (loading.repo_id, loading.base_repo, loading.fetch_repo)
+            return tuple(dict.fromkeys(r for r in ids if r))
 
     @staticmethod
     def _te_prequant_plan_files(
@@ -1213,9 +1233,13 @@ class DiffusionBackend:
                 }
             )
         if base_files and not Path(base).expanduser().exists():
+            # The manager STAGES this entry before the loader runs, so it must name the repo the
+            # loader will fetch from: leaving the gated upstream here 401s an anonymous user at
+            # staging and the mirror is never reached. Sizes stay keyed on the upstream -- the Hub
+            # gates only the byte endpoint, so model_info answered for it, and the bytes match.
             entries.append(
                 {
-                    "repo_id": base,
+                    "repo_id": prefer_ungated_mirror(base, hf_token, files = base_files),
                     "files": base_files,
                     "bytes": int(sizes.get(base, 0)),
                     "gguf_filename": None,
@@ -1363,6 +1387,9 @@ class DiffusionBackend:
         # True when the prefetch staged the base repo's ``transformer/`` shards, the only condition under which the dense-quant
         # fallback may materialise them. Defaults True for a direct call, which has no prefetch phase.
         _transformer_prefetched: bool = True,
+        # The repo the background load already staged the companions from (the mirror when one was
+        # swapped in). Re-derived below for a direct call, which has no prefetch phase.
+        _fetch_base: Optional[str] = None,
     ) -> dict[str, Any]:
         # A blank token must degrade to anonymous, not be passed as a credential. Normalize once.
         hf_token = hf_token.strip() if isinstance(hf_token, str) else hf_token
@@ -1388,6 +1415,11 @@ class DiffusionBackend:
         base = (
             repo_id if kind == "pipeline" else _resolve_base_repo(repo_id, base_repo, fam, hf_token)
         )
+        # ``base`` stays the UPSTREAM id everything reported and every table lookup keys on;
+        # ``fetch_base`` is the only id handed to something that downloads. One decision per load
+        # (the background path already took it before staging), so nothing can stage one repo and
+        # then assemble from the other.
+        fetch_base = _fetch_base or prefer_ungated_mirror(base, hf_token)
         target = self._resolve_device_target(fam)
         device, dtype = target.device, target.dtype
 
@@ -1448,6 +1480,7 @@ class DiffusionBackend:
                     cpu_offload,
                     kind = kind,
                     repo_id = repo_id,
+                    fetch_base = fetch_base,
                 )
 
                 # Dtype tri-state: unset/"auto" -> hardware ladder; "none"/"off" pins GGUF-as-is; an explicit scheme pins it.
@@ -1501,6 +1534,7 @@ class DiffusionBackend:
                                     cpu_offload,
                                     kind = kind,
                                     repo_id = repo_id,
+                                    fetch_base = fetch_base,
                                     transformer_resident_override_mib = (
                                         candidate.transient_transformer_mib
                                     ),
@@ -1554,8 +1588,9 @@ class DiffusionBackend:
                             if scheme is not None
                             else None
                         )
+                        # Reads the cache, so it has to look where the prefetch wrote.
                         dense_mib = int(
-                            self._dense_transformer_resident_bytes(base) // (1024 * 1024)
+                            self._dense_transformer_resident_bytes(fetch_base) // (1024 * 1024)
                         )
                         if dense_mib > 0:
                             dense_plan = self._plan_memory(
@@ -1567,6 +1602,7 @@ class DiffusionBackend:
                                 cpu_offload,
                                 kind = kind,
                                 repo_id = repo_id,
+                                fetch_base = fetch_base,
                                 transformer_resident_override_mib = dense_mib,
                             )
                             if dense_plan.offload_policy != OFFLOAD_NONE:
@@ -1598,6 +1634,7 @@ class DiffusionBackend:
                             allow_dense_fallback = dense_fallback_allowed,
                             lora_specs = loras,
                             text_encoder_quant = text_encoder_quant,
+                            fetch_base = fetch_base,
                         )
                     except Exception as exc:  # noqa: BLE001 — fall back to the GGUF build
                         logger.warning(
@@ -1636,13 +1673,15 @@ class DiffusionBackend:
                         # Full diffusers repo: from_pretrained pulls every component and re-applies embedded quant config.
                         if fam.name == KREA2_FAMILY_NAME:
                             # krea ships transformers-5.x configs the 4.x line cannot parse, so assemble per-component; that path never sees pipe_kwargs, so pass the pre-cast TE.
+                            # This loader fetches EVERY component from the id it is given, so the
+                            # gated krea repo has to arrive already swapped for the mirror.
                             pipe = load_krea2_pipeline(
-                                repo_id,
+                                fetch_base,
                                 dtype,
                                 hf_token = hf_token,
                                 text_encoder = te_prequant_pipe_kwargs(
                                     fam,
-                                    repo_id,
+                                    fetch_base,
                                     te_quant_mode = text_encoder_quant,
                                     target = target,
                                     dtype = dtype,
@@ -1651,8 +1690,8 @@ class DiffusionBackend:
                                 ).get("text_encoder"),
                             )
                         elif fam.name == IDEOGRAM4_FAMILY_NAME:
-                            # ideogram ships the same transformers-5.x Qwen stack as krea; assemble per-component too.
-                            pipe = load_ideogram4_pipeline(repo_id, dtype, hf_token = hf_token)
+                            # ideogram ships the same transformers-5.x Qwen stack as krea; assemble per-component too, from the mirror for the same reason.
+                            pipe = load_ideogram4_pipeline(fetch_base, dtype, hf_token = hf_token)
                         else:
                             pipe_kwargs: dict[str, Any] = {
                                 "torch_dtype": dtype,
@@ -1675,7 +1714,7 @@ class DiffusionBackend:
                             pipe_kwargs.update(
                                 te_prequant_pipe_kwargs(
                                     fam,
-                                    repo_id,
+                                    fetch_base,
                                     te_quant_mode = text_encoder_quant,
                                     target = target,
                                     dtype = dtype,
@@ -1685,13 +1724,15 @@ class DiffusionBackend:
                             )
                             # The prefetched snapshot dir keeps from_pretrained off the hub (24 GB per FLUX.1 otherwise).
                             pipe = pipeline_cls.from_pretrained(
-                                _base_local_dir or repo_id, **pipe_kwargs
+                                _base_local_dir or fetch_base, **pipe_kwargs
                             )
                     elif kind == "single_file" and fam.single_file_is_pipeline:
                         # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline class with ``config`` on the base repo.
                         sf_pipe_kwargs: dict[str, Any] = {
                             "torch_dtype": dtype,
-                            "config": base,
+                            # ``config`` is a REPO FETCH that runs before any mirrored load below,
+                            # so it takes the swapped id or a gated base 401s here first.
+                            "config": fetch_base,
                             "cache_dir": hub_cache_dir(),
                         }
                         if hf_token:
@@ -1701,9 +1742,10 @@ class DiffusionBackend:
                         # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
                         sf_kwargs: dict[str, Any] = {
                             "torch_dtype": dtype,
-                            "config": base,
+                            # Same fetch-before-load ordering as the whole-pipeline branch above.
+                            "config": fetch_base,
                             "subfolder": "transformer",
-                            # Config is fetched from the (possibly gated) base before auth.
+                            # Config is fetched from the base before auth, hence the mirror.
                             "token": hf_token,
                             "cache_dir": hub_cache_dir(),
                         }
@@ -1721,14 +1763,14 @@ class DiffusionBackend:
 
                         if fam.name == KREA2_FAMILY_NAME:
                             pipe = load_krea2_pipeline(
-                                base,
+                                fetch_base,
                                 dtype,
                                 hf_token = hf_token,
                                 transformer = transformer,
                                 # Same pre-cast TE hand-in as the full-pipeline branch.
                                 text_encoder = te_prequant_pipe_kwargs(
                                     fam,
-                                    base,
+                                    fetch_base,
                                     te_quant_mode = text_encoder_quant,
                                     target = target,
                                     dtype = dtype,
@@ -1759,7 +1801,7 @@ class DiffusionBackend:
                             pipe_kwargs.update(
                                 te_prequant_pipe_kwargs(
                                     fam,
-                                    base,
+                                    fetch_base,
                                     te_quant_mode = text_encoder_quant,
                                     target = target,
                                     dtype = dtype,
@@ -1768,8 +1810,7 @@ class DiffusionBackend:
                                 )
                             )
                             pipe = pipeline_cls.from_pretrained(
-                                _base_local_dir or prefer_ungated_mirror(base, hf_token),
-                                **pipe_kwargs,
+                                _base_local_dir or fetch_base, **pipe_kwargs
                             )
 
                 # Effective speed: GGUF defaults to `default` (~2.2x, below the quant noise floor); dense stays bit-identical `off`.
@@ -2065,6 +2106,7 @@ class DiffusionBackend:
         allow_dense_fallback: bool = True,
         lora_specs: Optional[list[tuple[str, float]]] = None,
         text_encoder_quant: Optional[str] = None,
+        fetch_base: Optional[str] = None,
     ) -> tuple[Any, str]:
         """Build the opt-in fast pipeline and return ``(pipe, engaged_scheme)``.
 
@@ -2087,7 +2129,13 @@ class DiffusionBackend:
         Raises if the scheme is unsupported or quantisation fails, so ``load_pipeline``
         catches it and falls back to the GGUF build. Quantisation runs ON the device and
         BEFORE the loader compiles the repeated block, so the order stays quantize ->
-        compile -> placement."""
+        compile -> placement.
+
+        ``base`` keeps the UPSTREAM id for the prequant table lookup and the checkpoint's
+        base_model_id check; ``fetch_base`` is the id every download here uses, since both the
+        prequant config read and the dense transformer pull would otherwise 401 on a gated base --
+        and with a nonzero baked LoRA the GGUF fallback is refused, so that 401 fails the load."""
+        fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
         scheme = select_transformer_quant_scheme(target, mode, family = getattr(fam, "name", None))
         if scheme is None:
@@ -2102,7 +2150,7 @@ class DiffusionBackend:
             if source is not None:
                 transformer = load_prequantized_transformer(
                     transformer_cls,
-                    base,
+                    fetch_base,
                     source,
                     device = device,
                     dtype = dtype,
@@ -2126,6 +2174,7 @@ class DiffusionBackend:
                         fam = fam,
                         te_quant_mode = text_encoder_quant,
                         target = target,
+                        fetch_base = fetch_base,
                     )
                     return pipe, scheme
 
@@ -2136,7 +2185,7 @@ class DiffusionBackend:
                 "prequant checkpoint unavailable and the dense transformer does not fit resident"
             )
         transformer = transformer_cls.from_pretrained(
-            base,
+            fetch_base,
             subfolder = "transformer",
             torch_dtype = dtype,
             token = hf_token,
@@ -2153,6 +2202,7 @@ class DiffusionBackend:
             fam = fam,
             te_quant_mode = text_encoder_quant,
             target = target,
+            fetch_base = fetch_base,
         )
         if lora_specs:
             # Bake the adapters BEFORE quantize_: peft wraps the dense Linears (post-quant torchao dispatch would TypeError),
@@ -2199,12 +2249,15 @@ class DiffusionBackend:
         fam: Optional[DiffusionFamily] = None,
         te_quant_mode: Optional[str] = None,
         target: Any = None,
+        fetch_base: Optional[str] = None,
     ) -> Any:
         """Assemble the diffusers pipeline around ``transformer`` and place it on ``device``
-        (a no-op for an already-placed pre-quantized transformer; it moves the companions)."""
-        # Everything below reads ``base`` only to FETCH, so the mirror applies. It matters when
-        # ``base_local_dir`` is None: nothing was staged, so this would otherwise 401 on the gate.
-        base = prefer_ungated_mirror(base, hf_token)
+        (a no-op for an already-placed pre-quantized transformer; it moves the companions).
+
+        Everything below reads the base only to FETCH, so it uses ``fetch_base`` (the load-wide
+        mirror decision, re-derived for a direct call). It matters when ``base_local_dir`` is None:
+        nothing was staged, so a gated upstream would 401 here."""
+        base = fetch_base or prefer_ungated_mirror(base, hf_token)
         if getattr(fam, "name", None) == KREA2_FAMILY_NAME:
             # krea ships transformers-5.x configs and no top-level tokenizer files, so assemble per-component.
             krea_te = None
@@ -2275,6 +2328,7 @@ class DiffusionBackend:
         repo_id: Optional[str] = None,
         transformer_resident_override_mib: Optional[int] = None,
         companion_override_mib: Optional[int] = None,
+        fetch_base: Optional[str] = None,
     ):
         """Build the memory plan for this load: snapshot free device memory and
         estimate the model's resident footprint, then let the planner pick an
@@ -2292,16 +2346,22 @@ class DiffusionBackend:
         ``companion_override_mib`` likewise replaces the cached companion total on that
         re-plan, so the base repo's PREFETCHED transformer/ shards -- which land in the
         same blob cache _companion_cache_bytes sums -- are not counted as companions on
-        top of transformer_resident_override_mib (a double-count of the transformer)."""
+        top of transformer_resident_override_mib (a double-count of the transformer).
+
+        ``fetch_base`` is the repo the bytes were staged from (the ungated mirror when one was
+        swapped in). Every cache scan below reads it, since sizing an upstream id whose cache is
+        empty folds the VAE/text-encoder to zero and wrongly picks resident placement; ``base`` and
+        ``repo_id`` keep the upstream identity for the family/variant checks."""
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full.
         device_memory = settled_snapshot_device_memory(target)
         if kind == "pipeline":
             # The whole repo is one cached download, so cached bytes are the resident estimate; a LOCAL path is not cached, so sum its on-disk weights.
             local_repo = Path(repo_id).expanduser() if repo_id else None
+            cache_repo = fetch_base or repo_id
             if local_repo is not None and local_repo.is_dir():
                 cached = self._local_dir_weight_bytes(local_repo, exclude_transformer = False)
             else:
-                cached = self._cache_bytes(repo_id) if repo_id else 0
+                cached = self._cache_bytes(cache_repo) if cache_repo else 0
             cached_mib = int(cached // (1024 * 1024)) if cached else None
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
             # A repo can store weights NARROWER than the loaded dtype (ideogram-4 ships raw float8), so cached bytes
@@ -2343,7 +2403,7 @@ class DiffusionBackend:
                 # Re-planning the dense candidate: the prefetched transformer/ shards land in the same cache, so use the estimate instead of double-counting.
                 companion_mib = companion_override_mib
             else:
-                companion = self._companion_cache_bytes(base)
+                companion = self._companion_cache_bytes(fetch_base or base)
                 companion_mib = int(companion // (1024 * 1024)) if companion else None
             model_dense_mib = None
             if transformer_resident is not None:
@@ -3381,7 +3441,11 @@ def _resolve_base_repo(
     if not base:
         tag = _hf_base_model(repo_id, hf_token)
         if tag and _is_trusted_diffusion_repo(tag):
-            base = tag
+            # The mirrors are real unsloth/* repos, so a card tag may now name one and would clear
+            # the trust bar. Map it back: this value becomes status()["base_repo"] and the default
+            # base_model a trained adapter records, both of which must stay the vendor id. An
+            # EXPLICIT base_repo is the caller's own choice and is honoured verbatim.
+            base = canonical_base(tag)
     # Returns the UPSTREAM id: the mirror swap happens at the fetch sites only, so the load state
     # and status() keep the id the user picked.
     return resolve_base_repo(fam, base)
