@@ -1200,3 +1200,31 @@ def test_comspec_names_cmd(windows_terminal, command):
     # this is a shell invocation spelled the long way. Comparing the literal
     # token to the shell names left the payload behind its /c unread.
     assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c echo hi& cmd /c powershell",
+        'cmd /c start "" https://x/?a=1& cmd /c powershell',
+    ],
+)
+def test_a_glued_operator_opens_a_command_for_the_shell_lookup(windows_terminal, command):
+    # The cmd lexer never splits an operator off the word it is glued to, so
+    # `hi&` keeps its `&` and the main scan stays in argument position for the
+    # rest of the line. The START gate already reads that off the previous
+    # token; the shell lookups did not, so the second shell was refused a
+    # command position and its payload went unread. Both ask one predicate now.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+def test_a_padded_wrapper_chain_behind_start_fails_closed(windows_terminal):
+    # The wrapper chain outran the hop budget, so the command START finally runs
+    # was never reached. Blocking the chain's own first word is what `-exec`
+    # already does; failing open instead just tells an author how long to make
+    # the padding.
+    assert tools._find_blocked_commands('start "" ' + "env " * 40 + "rm -rf x")
+
+
+def test_a_wrapper_chain_within_the_budget_still_names_the_child(windows_terminal):
+    assert "rm" in tools._find_blocked_commands('start "" env env rm -rf x')

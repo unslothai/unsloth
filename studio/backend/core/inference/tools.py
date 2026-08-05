@@ -2099,6 +2099,19 @@ def _find_blocked_commands(command: str) -> set[str]:
     # `%COMSPEC% /c powershell` is a shell invocation spelled the long way.
     _SHELLS_WIN = {"cmd", "cmd.exe", "%comspec%"}
 
+    def _at_command(index: int) -> bool:
+        """Whether the shell runs ``tokens[index]``.
+
+        The main scan decides this, and the cmd lexer leaves one case it cannot:
+        an operator glued to the word in front, since `hi&` keeps its `&` and
+        that scan stays in argument position for the rest of the line. The START
+        gate already reads it off the previous token; the shell lookbacks did
+        not, so `cmd /c echo hi& cmd /c powershell` left the second shell unread.
+        """
+        if index in command_indexes:
+            return True
+        return bool(index) and not lexed_posix and _ends_with_cmd_operator(tokens[index - 1])
+
     def _start_is_run(i: int) -> bool:
         """Whether the START at ``tokens[i]`` is one the shell runs."""
         previous = tokens[i - 1] if i else ""
@@ -2194,7 +2207,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                     continue
                 if is_win_c and prev.startswith("/") and len(prev) <= 3:
                     continue
-                if j not in command_indexes:
+                if not _at_command(j):
                     break
                 prev_base = _token_basename(_unquote(prev).replace("\\", "/"))
                 if (is_unix_c and prev_base in _SHELLS) or (is_win_c and prev_base in _SHELLS_WIN):
@@ -2264,7 +2277,15 @@ def _find_blocked_commands(command: str) -> set[str]:
             # one, exactly as under `-exec`, so the program it forwards to is
             # published too. Without it `start "" env bash -c "rm -rf x"` named
             # only `env` and the nested-shell lookup declined to read the payload.
-            forwarded, _overflowed = _exec_child_index(j)
+            forwarded, prefix_overflowed = _exec_child_index(j)
+            if prefix_overflowed:
+                # The wrapper chain outran the hop budget, so the command START
+                # finally runs was never reached. Blocked by the chain's own
+                # first word rather than let `start "" env ...x40 rm -rf x` ride
+                # in behind the padding: the `-exec` path fails closed on the
+                # same overflow, and a launcher that fails open instead just
+                # tells an author how long to make the chain.
+                blocked.add(_token_basename(tokens[j]))
             if forwarded not in (-1, j):
                 command_indexes.add(forwarded)
                 # Screened the same way START's own target is, not merely looked
@@ -2314,7 +2335,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             # leaves whole off Windows. Either one hid the shell from this
             # lookup, so the payload behind its /c was never scanned.
             prev_base = _token_basename(_unquote(prev).replace("\\", "/"))
-            if j not in command_indexes:
+            if not _at_command(j):
                 # A shell NAMED in passing runs nothing. Unquoting and normalising
                 # the word made `echo "cmd" /c powershell` and a printed
                 # `C:\Windows\System32\cmd.exe /c powershell` resolve to a shell
