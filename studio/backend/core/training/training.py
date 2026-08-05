@@ -326,16 +326,8 @@ def _with_load_subdirs(model_name: str, names: tuple[str, ...]) -> tuple[str, ..
     here keeps the cached path in agreement, otherwise a perfectly good cache resolves
     to None and the start route rejects it as hf_model_not_cached_offline.
     """
-    try:
-        from utils.security import security_load_subdirs
-        subdirs = security_load_subdirs(model_name)
-    except Exception:
-        return names
-    if not subdirs:
-        return names
-    return names + tuple(
-        f"{subdir.strip('/')}/{name}" for subdir in subdirs if subdir for name in names
-    )
+    from hub.utils.hf_cache_state import with_load_subdirs
+    return with_load_subdirs(model_name, names)
 
 
 def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optional[str]:

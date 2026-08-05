@@ -327,7 +327,30 @@ def _has_complete_indexed_weights(path: Path, index_name: str, expected_suffix: 
     return all(len(parts) == family[3] for family, parts in families.items())
 
 
-def _has_trainable_local_weights(path: Path) -> bool:
+def _trainable_local_roots(path: Path, model_name: Optional[str] = None) -> list[Path]:
+    """The snapshot root plus any subdirectory a load reads from.
+
+    Spark-TTS / BiCodec keep config.json and the weights under <snapshot>/LLM, so probing
+    only the root reports a perfectly good cached model as having no trainable weights.
+    """
+    roots = [path]
+    if not model_name:
+        return roots
+    from hub.utils.hf_cache_state import with_load_subdirs
+
+    for name in with_load_subdirs(model_name, ("config.json",)):
+        if "/" in name:
+            candidate = path / name.rsplit("/", 1)[0]
+            if candidate not in roots:
+                roots.append(candidate)
+    return roots
+
+
+def _has_trainable_local_weights(path: Path, model_name: Optional[str] = None) -> bool:
+    if model_name:
+        return any(
+            _has_trainable_local_weights(root) for root in _trainable_local_roots(path, model_name)
+        )
     try:
         if not path.is_dir():
             return False
@@ -723,7 +746,7 @@ def _reject_untrainable_model_request(
                 status_code = 400,
                 detail = ("Adapter models are inference-only and cannot be trained as base models."),
             )
-    has_trainable_weights = _has_trainable_local_weights(path)
+    has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
     if has_trainable_weights:
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     if _has_adapter_metadata(path):

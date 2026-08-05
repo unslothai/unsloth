@@ -298,7 +298,10 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
         )
         return False
     if model_path and not require_model:
-        from hub.utils.hf_cache_state import latest_snapshot_from_cache_path
+        from hub.utils.hf_cache_state import (
+            latest_snapshot_from_cache_path,
+            with_load_subdirs,
+        )
         from utils.utils import canonical_model_repo_id
 
         pinned_repo_id = config.get("actual_model_repo_id") or canonical_model_repo_id(
@@ -308,7 +311,7 @@ def _verify_config_pins(config: dict, event_queue: Any) -> bool:
             model_path,
             "model",
             pinned_repo_id,
-            ("config.json", "adapter_config.json"),
+            with_load_subdirs(config["model_name"], ("config.json", "adapter_config.json")),
         )
         if config["model_snapshot_path"] is None:
             if require_validated_snapshot:
@@ -1026,8 +1029,7 @@ def _install_package_wheel_first(
     if pypi_status_message is None:
         if is_hip:
             pypi_status_message = (
-                f"Compiling {display_name} from source for ROCm "
-                "(this may take several minutes)..."
+                f"Compiling {display_name} from source for ROCm (this may take several minutes)..."
             )
         else:
             pypi_status_message = f"Installing {display_name} from PyPI for faster training..."
@@ -1119,7 +1121,7 @@ def _install_package_wheel_first(
         )
         _send_status(
             event_queue,
-            f"{display_name} installation timed out after " f"{_run_kwargs.get('timeout')}s",
+            f"{display_name} installation timed out after {_run_kwargs.get('timeout')}s",
         )
         return False
 
@@ -2095,8 +2097,7 @@ def _normalize_mlx_studio_scheduler(value):
     if raw not in _MLX_STUDIO_LR_SCHEDULERS:
         supported = ", ".join(sorted(_MLX_STUDIO_LR_SCHEDULERS))
         raise ValueError(
-            f"Unsupported LR scheduler for MLX training: {value!r}. "
-            f"Supported values: {supported}."
+            f"Unsupported LR scheduler for MLX training: {value!r}. Supported values: {supported}."
         )
     return raw
 

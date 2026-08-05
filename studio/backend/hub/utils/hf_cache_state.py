@@ -537,3 +537,26 @@ def resolve_delete_target_root(
     if len(roots) == 1:
         return roots[0]
     return active
+
+
+def with_load_subdirs(model_name: str, names: tuple[str, ...]) -> tuple[str, ...]:
+    """Extend snapshot filenames with the subdirectories a load actually reads.
+
+    Spark-TTS / BiCodec keep the trainable model under ``<snapshot>/LLM``, so such a
+    snapshot carries no root-level ``config.json`` and no root-level weights. Every
+    cache probe that decides "is this snapshot usable" has to agree on that, or the
+    snapshot resolves in one place and is rejected in the next: the start preflight, the
+    worker's revalidation and the provenance attester each get their own answer.
+
+    Detection can raise offline or for a gated repo, so a failure degrades to root-only.
+    """
+    try:
+        from utils.security import security_load_subdirs
+        subdirs = security_load_subdirs(model_name)
+    except Exception:
+        return names
+    if not subdirs:
+        return names
+    return names + tuple(
+        f"{subdir.strip('/')}/{name}" for subdir in subdirs if subdir for name in names
+    )

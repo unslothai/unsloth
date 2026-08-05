@@ -255,13 +255,14 @@ def exact_model_snapshot_path(
     from hub.utils.hf_cache_state import (
         latest_snapshot_from_cache_path,
         same_existing_path,
+        with_load_subdirs,
     )
 
     validated = latest_snapshot_from_cache_path(
         str(requested),
         "model",
         repo_id,
-        ("config.json", "adapter_config.json"),
+        with_load_subdirs(repo_id, ("config.json", "adapter_config.json")),
     )
     if validated is None:
         return None
