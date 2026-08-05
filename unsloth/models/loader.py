@@ -107,6 +107,7 @@ from ._utils import (
     fast_inference_setup,
     _requested_float32,
     _mark_requested_float32,
+    _mark_forced_float32,
     _get_text_only_config,
     resolve_model_class,
     _is_family_text_decoder,
@@ -1803,6 +1804,7 @@ class FastModel(FastBaseModel):
                 or disable_name.lower() in model_types_all
             ) and ((dtype == torch.float16) or not SUPPORTS_BFLOAT16):
                 os.environ["UNSLOTH_FORCE_FLOAT32"] = "1"
+                do_forced_float32 = True
                 dtype = torch.bfloat16  # Change to bfloat16 loading
                 break
         # Apply gradient checkpointing with smart heuristics
@@ -2158,6 +2160,7 @@ class FastModel(FastBaseModel):
 
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
+        model = _mark_forced_float32(model, do_forced_float32)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 

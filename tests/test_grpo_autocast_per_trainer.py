@@ -139,6 +139,7 @@ def _build_trainer(
     bf16 = False,
     user_float32 = None,
     has_mixed_precision = True,
+    mark_forced_float32 = True,
 ):
     """Run rl.py's __init__ block for one trainer against the shared env."""
     args = _Args(fp16 = fp16, bf16 = bf16, has_mixed_precision = has_mixed_precision)
@@ -149,6 +150,9 @@ def _build_trainer(
         ),
     )
     env.setdefault("UNSLOTH_FORCE_FLOAT32", "0")
+    if mark_forced_float32:
+        # What from_pretrained stamps on the model it just loaded.
+        model._unsloth_forced_float32 = env["UNSLOTH_FORCE_FLOAT32"] == "1"
     env.setdefault("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
     env.setdefault("UNSLOTH_MIXED_PRECISION", "float32")
 
@@ -184,7 +188,7 @@ def _build_trainer(
                 sys.modules[k] = v
     assert scope["_bf16_supported"] is device_type.device_is_bf16_supported
     # The trainer, as much of one as the autocast header ever touches.
-    return types.SimpleNamespace(args = args)
+    return types.SimpleNamespace(args = args, model = model)
 
 
 def _generate(trainer, env, has_bf16):
@@ -250,6 +254,49 @@ def test_two_trainers_in_one_process_each_keep_their_own_answer():
 
     assert _generate(first, env, has_bf16 = False) == (False, None)
     assert _generate(second, env, has_bf16 = False) == (True, torch.float16)
+
+
+def test_a_later_load_cannot_take_this_trainers_float16_autocast_away():
+    """UNSLOTH_FORCE_FLOAT32 is the other process wide answer in play here.
+
+    from_pretrained clears it on every load and sets it again only for the
+    families that need it, so a Gemma3 trainer built first and a plain model
+    loaded second leaves '0' behind. Reading it at the first generation would
+    then drop the float16 autocast that rl.py's 'no' was written expecting,
+    and run generation in full float32.
+    """
+    env = {"UNSLOTH_FORCE_FLOAT32": "1"}
+    first = _build_trainer(env, torch.float32, bf16_supported = False)
+    assert env["ACCELERATE_MIXED_PRECISION"] == "no"
+
+    # A second from_pretrained, before the first trainer generates.
+    env["UNSLOTH_FORCE_FLOAT32"] = "0"
+    _build_trainer(env, torch.float16, bf16_supported = False)
+
+    assert _generate(first, env, has_bf16 = False) == (True, torch.float16)
+
+
+def test_the_loaders_stamp_the_forced_float32_answer_on_the_model():
+    """The stamp has to exist for the trainer to read, on both loaders that
+    consult the forced list."""
+    for rel in ("unsloth/models/loader.py", "unsloth/models/vision.py"):
+        src = (REPO_ROOT / rel).read_text(encoding = "utf-8")
+        assert "_mark_forced_float32(" in src, rel
+
+
+def test_only_one_place_reads_the_shared_forced_float32_flag():
+    """One fallback read, for models loaded before the stamp existed."""
+    reads = re.findall(r"environ\.get\(\s*['\"]UNSLOTH_FORCE_FLOAT32", REPL_SRC)
+    assert len(reads) == 1, reads
+
+
+def test_a_model_without_the_stamp_keeps_the_old_environment_answer():
+    env = {"UNSLOTH_FORCE_FLOAT32": "1"}
+    trainer = _build_trainer(
+        env, torch.float32, bf16_supported = False, mark_forced_float32 = False
+    )
+    assert not hasattr(trainer.model, "_unsloth_forced_float32")
+    assert _generate(trainer, env, has_bf16 = False) == (True, torch.float16)
 
 
 # ---- everything that must NOT change -------------------------------------

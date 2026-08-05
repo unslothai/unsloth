@@ -1827,6 +1827,7 @@ class FastBaseModel:
         # Saving restores sentencepiece assets from the repo name alone, which carries no
         # branch. Stamped here, not per processor branch, so a fallback cannot lose it.
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
+        model = _mark_forced_float32(model, do_forced_float32)
         return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod

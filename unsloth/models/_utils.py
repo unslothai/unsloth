@@ -19,6 +19,7 @@ __all__ = [
     "is_bfloat16_supported",
     "_requested_float32",
     "_mark_requested_float32",
+    "_mark_forced_float32",
     "is_vLLM_available",
     "prepare_model_for_kbit_training",
     "xformers",
@@ -2817,6 +2818,19 @@ def _mark_requested_float32(model, requested):
     """
     try:
         model._unsloth_user_float32 = bool(requested)
+    except Exception:
+        pass
+    return model
+
+
+def _mark_forced_float32(model, forced):
+    """Record whether this model's family forced float32, next to the request.
+
+    UNSLOTH_FORCE_FLOAT32 says the same thing, but every load rewrites it, so a
+    second load before this model trains would answer for the wrong model.
+    """
+    try:
+        model._unsloth_forced_float32 = bool(forced)
     except Exception:
         pass
     return model

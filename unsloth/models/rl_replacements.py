@@ -911,7 +911,13 @@ def _unsloth_grpo_autocast(self):
         # both set it, and reading it as bfloat16 raises on a T4 or V100.
         self._autocast_enabled = precision != "no"
         self._autocast_force_float32 = False
-        if os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1":
+        # from_pretrained stamps this on the model it loaded. UNSLOTH_FORCE_FLOAT32
+        # is process wide and every load rewrites it, so a model loaded after this
+        # trainer was built would otherwise answer for it here.
+        forced = getattr(getattr(self, "model", None), "_unsloth_forced_float32", None)
+        if forced is None:
+            forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
+        if forced:
             # Gemma3 / gpt-oss set "no" as well, but still want float16 autocast.
             self._autocast_dtype = torch.float16
             self._autocast_enabled = True
