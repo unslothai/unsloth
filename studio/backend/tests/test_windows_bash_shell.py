@@ -313,10 +313,13 @@ def windows_terminal(request, monkeypatch):
         # token from the shell-name lookup, so nothing recursed into the tail.
         'cmd //c start "" "cmd" /c powershell -Command ls',
         # A quoted first argument is START's window title whatever it holds, so
-        # the program is one token further on than the `""` idiom implies.
-        'cmd //c start "job" powershell -Command ls',
+        # the program is one token further on than the `""` idiom implies. A
+        # title with a space stays provable after posix lexing drops the marks,
+        # because nothing else survives as one token.
         'cmd //c start "my window" pwsh -Command ls',
-        'cmd //c start /b "job" powershell -Command ls',
+        # /s strips the outer pair off the whole payload, leaving the lexer an
+        # empty first token with the program behind it.
+        'cmd /s /c ""powershell" -Command ls"',
     ],
 )
 def test_cmd_shellout_is_screened_through_mangled_switches(windows_terminal, command):
@@ -380,3 +383,33 @@ def test_cmd_runs_only_double_quotes(monkeypatch):
     assert not tools._find_blocked_commands("cmd /c 'powershell -Command ls'")
     assert not tools._find_blocked_commands("cmd //c start '' powershell -Command ls")
     assert tools._find_blocked_commands('cmd /c "powershell -Command ls"')
+
+
+def test_cmd_reads_a_one_word_start_title(monkeypatch):
+    # Only the cmd lexer keeps the marks that prove `"job"` is a title rather
+    # than the program, so this spelling is screened there and not under bash.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert tools._find_blocked_commands('cmd //c start "job" powershell -Command ls')
+    assert tools._find_blocked_commands('cmd //c start /b "job" powershell -Command ls')
+
+
+def test_an_unquoted_start_program_keeps_its_arguments(monkeypatch):
+    # Posix lexing dropped the marks, so `notepad` could have been a title. It
+    # is taken as the program: `start notepad <file>` is the ordinary shape, and
+    # guessing the other way blocks the argument rather than a launched program.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert not tools._find_blocked_commands("cmd //c start notepad powershell -Command ls")
+    # A space could only have come from quoting, so that one is still a title.
+    assert tools._find_blocked_commands('cmd //c start "my window" pwsh -Command ls')

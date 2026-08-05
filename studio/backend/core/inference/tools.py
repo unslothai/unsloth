@@ -1691,6 +1691,14 @@ def _find_blocked_commands(command: str) -> set[str]:
                 blocked |= _find_blocked_commands(_unquote(tokens[i + 1]))
             elif is_win_c and prev_base in _SHELLS_WIN:
                 blocked |= _find_blocked_commands(_unquote(tokens[i + 1]))
+                if not _unquote(tokens[i + 1]) and i + 2 < len(tokens):
+                    # `cmd /s /c ""prog" args"`: /s strips the outer pair off the
+                    # WHOLE payload, so the lexer hands back that pair as an
+                    # empty first token and the program sits behind it, each
+                    # word still carrying a stray mark. Documented under cmd /s.
+                    blocked |= _find_blocked_commands(
+                        " ".join(word.strip('"') for word in tokens[i + 2 :])
+                    )
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
@@ -1716,11 +1724,18 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
         if j < len(tokens):
             blocked |= _find_blocked_commands(_unquote(tokens[j]))
-            if lexed_posix and not titled and j + 1 < len(tokens):
-                # Posix only: shlex dropped the quote marks, so a title cannot be
-                # told from a program and the word behind it is screened too.
-                # Under cmd the marks survive, and a token without them IS the
-                # program, so guessing there would block an ordinary argument.
+            if (
+                lexed_posix
+                and not titled
+                and j + 1 < len(tokens)
+                and any(char.isspace() for char in tokens[j])
+            ):
+                # Posix dropped the quote marks, so a title is only still
+                # provable by the whitespace it holds: nothing else survives
+                # lexing as one token. A bare word is taken as the program,
+                # since `start notepad powershell.txt` is the ordinary shape and
+                # guessing there blocks the argument. Under cmd the marks
+                # survive and no guess is needed.
                 blocked |= _find_blocked_commands(tokens[j + 1])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
