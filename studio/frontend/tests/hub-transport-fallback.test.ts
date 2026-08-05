@@ -758,10 +758,15 @@ test("a missing repo does not retire a proxy the listing is using", async () => 
   await listing(HF_URL, {});
   assert.equal(isHubProxyServing(), true);
 
-  // 404 here means the repo is gone, not that the proxy is.
+  // 404 here means the repo is gone, not that the proxy is: the marker says the
+  // route answered. Without it this exercises the SPA-catch-all branch instead.
   const info = createHubTransport("models", {
     direct: failWith("network-opaque"),
-    backend: async () => new Response("{}", { status: 404 }),
+    backend: async () =>
+      new Response("{}", {
+        status: 404,
+        headers: { "X-Unsloth-HF-Proxy": "1" },
+      }),
   });
   await info(MODEL_INFO_URL, {});
   assert.equal(isHubProxyServing(), true, "the listing path owns demotion");
@@ -885,15 +890,15 @@ test("a Studio-side 5xx does not outrank the browser's own cause", async () => {
   markRemoteNetworkOnline();
 });
 
-test("an answer retires a backoff a concurrent failure had just opened", async () => {
+test("an earlier backoff does not survive a status the origin answered", async () => {
   markRemoteNetworkOnline();
+  // The production path: fetchWithTimeout clears the origin on any resolved
+  // response, so a window opened before the answer is already gone by the time
+  // the status is recorded. Nothing in the transport needs to clear it.
+  markRemoteNetworkOffline(HF_ORIGIN, 30_000, OPAQUE_FAILURE);
   const transport = createHubTransport("models", {
     direct: async () => {
       markRemoteNetworkOnline(HF_ORIGIN);
-      // The picker runs two listings at once, so the other one's failure can be
-      // recorded between this response resolving and the transport recording
-      // its status. markRemoteNetworkOffline will not shorten that window.
-      markRemoteNetworkOffline(HF_ORIGIN, 30_000, OPAQUE_FAILURE);
       return new Response("not found", { status: 404 });
     },
     backend: async () => {
@@ -903,10 +908,31 @@ test("an answer retires a backoff a concurrent failure had just opened", async (
 
   await transport(HF_URL, {});
   assert.equal(getLastHubFailure(HF_ORIGIN)?.status, 404);
+  assert.equal(getHubPhase(HF_ORIGIN), "probing");
+  markRemoteNetworkOnline();
+});
+
+test("a newer concurrent failure keeps the origin backed off", async () => {
+  markRemoteNetworkOnline();
+  const transport = createHubTransport("models", {
+    direct: async () => {
+      markRemoteNetworkOnline(HF_ORIGIN);
+      // A second request fails at the network level after this one answered.
+      // That is newer evidence than our status, and the transport must not
+      // retire it: the direct README and avatar clients rely on that window.
+      markRemoteNetworkOffline(HF_ORIGIN, 30_000, OPAQUE_FAILURE);
+      return new Response("not found", { status: 404 });
+    },
+    backend: async () => {
+      throw new Error("a real status must not trigger the fallback");
+    },
+  });
+
+  await transport(HF_URL, {});
   assert.equal(
     getHubPhase(HF_ORIGIN),
-    "probing",
-    "the origin answered, so it must not stay marked unreachable",
+    "unavailable",
+    "a live network failure outranks an older status",
   );
   markRemoteNetworkOnline();
 });

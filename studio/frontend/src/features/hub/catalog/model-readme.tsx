@@ -389,9 +389,14 @@ export function ModelReadme({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useOnlineStatus();
   const tokenFingerprint = useMemo(() => fingerprintToken(hfToken), [hfToken]);
+  // This cache holds the in-flight promise, so without the route a direct
+  // attempt still running when the browser turns out to be blocked is handed
+  // straight back and the backend route is never reached. Recomputed off
+  // `online`, which is what changes when that becomes true.
+  const via = online && !readmeViaBackend() ? "direct" : "backend";
   const stateKey = useMemo(
-    () => `${kind}::${repoId}::${tokenFingerprint}`,
-    [kind, repoId, tokenFingerprint],
+    () => `${kind}::${repoId}::${tokenFingerprint}::${via}`,
+    [kind, repoId, tokenFingerprint, via],
   );
   const [state, setState] = useState<ReadmeState>(() => {
     const cached = readResolvedReadmeCache(stateKey);

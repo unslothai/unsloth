@@ -59,3 +59,17 @@ test("the cached result is scoped to the route that produced it", async () => {
   assert.ok(body.includes("readmeViaBackend()"));
   assert.match(body, /const key = `\$\{kind\}::\$\{repoId\}::\$\{fingerprintToken\(token\)\}::\$\{via\}`;/);
 });
+
+test("the component's own cache is scoped to the route as well", async () => {
+  const src = await read("../src/features/hub/catalog/model-readme.tsx");
+  // model-readme keeps a second cache holding the in-flight promise. Without
+  // the route here, a direct attempt still running when the browser turns out
+  // to be blocked is handed back and the backend route is never reached, so
+  // scoping only fetchReadme's key fixes nothing in that ordering.
+  const at = src.indexOf("const stateKey = useMemo");
+  assert.notEqual(at, -1);
+  const body = src.slice(at, src.indexOf("  );", at));
+  assert.ok(body.includes("::${via}`"), "the route belongs in the key");
+  assert.ok(body.includes("via]"), "and in the memo's dependencies");
+  assert.match(src, /const via = online && !readmeViaBackend\(\)/);
+});

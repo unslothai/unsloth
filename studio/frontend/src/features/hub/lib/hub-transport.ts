@@ -6,7 +6,6 @@ import {
   type HubFailure,
   type HubService,
   isHubFetchError,
-  clearRemoteBackoff,
   markRemoteNetworkOffline,
   setDirectHubBlocked,
   setHubProxyServing,
@@ -446,11 +445,11 @@ export function createHubTransport(
         // more over a bad query or a stale token. The cause is recorded, the
         // phase stays "probing", and this is not a fallback trigger.
         const origin = hubUrlOf(raw)?.origin ?? DEFAULT_HUB_ENDPOINT;
-        // An answer proves the origin is reachable, so retire any window first.
-        // markRemoteNetworkOffline will not shorten a longer one, and a
-        // concurrent listing's failure can be marked between this response
-        // resolving and this line, which would leave the phase "unavailable".
-        clearRemoteBackoff(origin);
+        // No backoff is opened or retired here. fetchWithTimeout already
+        // cleared the origin on this response, and a window opened after it by
+        // another request is newer evidence than ours: clearing that would
+        // defeat the backoff from the auto path and resume direct README and
+        // avatar fetches against an origin that just failed for them.
         markRemoteNetworkOffline(
           origin,
           0,
