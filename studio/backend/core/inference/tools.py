@@ -1761,34 +1761,6 @@ def _find_blocked_commands(command: str) -> set[str]:
     # a second lex of every word, and almost no command holds one.
     chunk_cache: "list[list[int] | None]" = []
 
-    def _raw_text_from(index: int) -> str:
-        """The command line from ``tokens[index]`` onward, as the caller wrote it.
-
-        Rejoining the tokens instead would drop the quoting the lexer consumed,
-        turning `sed '1e rm -f victim'` into four bare words, and the sed scan
-        reads that script for an `e`. So the text is sliced, not reconstructed:
-        the word boundary is the shortest prefix that lexes to exactly ``index``
-        tokens. Empty when no prefix does, rather than a wrong guess.
-        """
-        words = command.split()
-        for count in range(len(words) + 1):
-            try:
-                if lex_mode == "posix":
-                    lexer = shlex.shlex(
-                        " ".join(words[:count]), posix = True, punctuation_chars = ";&|()`"
-                    )
-                    lexer.whitespace_split = True
-                    produced = len(list(lexer))
-                elif lex_mode == "cmd":
-                    produced = len(shlex.split(" ".join(words[:count]), posix = False))
-                else:
-                    produced = count
-            except ValueError:
-                continue  # a prefix that cuts a quoted span in half proves nothing
-            if produced == index:
-                return " ".join(words[count:])
-        return ""
-
     def _glued_empty_quotes(index: int) -> bool:
         """Whether ``tokens[index]`` is an empty quoted pair the shell would have
         collapsed INTO the word after it.
@@ -2090,6 +2062,98 @@ def _find_blocked_commands(command: str) -> set[str]:
         )
         blocked.update(re.findall(pattern, lowered))
 
+    _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
+    _SHELLS_WIN = {"cmd", "cmd.exe"}
+
+    def _start_is_run(i: int) -> bool:
+        """Whether the START at ``tokens[i]`` is one the shell runs."""
+        previous = tokens[i - 1] if i else ""
+        if (
+            i
+            and i not in command_indexes
+            # The cmd lexer never splits an operator off the word it is glued to,
+            # so `hi&` keeps its `&` and the scan above stays in argument position
+            # for the rest of the line. Read straight off the previous token
+            # instead, which is what that lexer does leave to go on. Kept to that
+            # lexer, and to the operators cmd actually has: the posix one splits
+            # separators into tokens of its own and knows which were quoted, and
+            # second-guessing it there read a printed `';'` or `"then"` as though
+            # a command followed it.
+            and (lexed_posix or not _ends_with_cmd_operator(previous))
+        ):
+            return False
+        if not lexed_posix and previous.endswith(";"):
+            # cmd has no `;` separator, so the scan above opened a command
+            # position that shell never opens: `echo ; start "" powershell` and
+            # `echo hi; start ""...` both print their whole line there.
+            return False
+        return True
+
+    def _start_target(i: int) -> "tuple[int, int]":
+        """The index START launches, and the index of its title, from ``i``."""
+        j = i + 1
+        title_at = -1
+        while j < len(tokens):
+            switch = _win_switch(tokens[j].lower())
+            if _is_start_switch(tokens[j].lower()):
+                # /d C:\dir and friends carry their value in the next token.
+                j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
+            elif title_at == -1 and _is_start_title(tokens[j], lexed_posix):
+                # START takes its window title as a QUOTED first argument, so
+                # the program is the token behind it. Only the `""` idiom was
+                # stepped over, which read `start "job" powershell` as a program
+                # named job and left powershell in argument position.
+                title_at = j
+                j += 1
+            else:
+                break
+        return j, title_at
+
+    # Which command positions each scan opens for the other. A launcher hands a
+    # command to a shell and a shell hands one back to a launcher, so reading
+    # each list once, in a fixed order, stopped at the first handover: the second
+    # `start` of `start "" cmd /c start "" cmd /c rm -rf x` sat in a payload the
+    # shell scan had not published yet, its own target was never published in
+    # turn, and the `rm` behind it went unread. Grown to a fixpoint instead. It
+    # only ever grows, and each pass adds at least one index or is the last, so
+    # it settles in as many passes as there are tokens and, for a real command,
+    # in two.
+    for _pass in range(len(tokens)):
+        discovered = len(command_indexes)
+        for i, token in enumerate(tokens):
+            if _token_basename(token) == "start" and _start_is_run(i):
+                target, _title_at = _start_target(i)
+                if target < len(tokens):
+                    command_indexes.add(target)
+                    forwarded, _overflowed = _exec_child_index(target)
+                    if forwarded not in (-1, target):
+                        command_indexes.add(forwarded)
+                continue
+            # A shell runs the word behind its own -c or /c, which the outer
+            # shell sees only as an argument. Gated on the shell itself being
+            # run, exactly as the payload scan below is, so a shell NAMED in
+            # passing still publishes nothing.
+            tok_lower = token.lower()
+            is_c = tok_lower == "-c" or (
+                tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
+            )
+            is_c = is_c or _win_switch(tok_lower) in ("/c", "/k")
+            if not is_c or i < 1 or i + 1 >= len(tokens):
+                continue
+            for j in range(i - 1, -1, -1):
+                prev = tokens[j]
+                if prev.startswith("-"):
+                    continue
+                if prev.startswith("/") and len(prev) <= 3:
+                    continue
+                if j not in command_indexes:
+                    break
+                if _token_basename(_unquote(prev).replace("\\", "/")) in _SHELLS | _SHELLS_WIN:
+                    command_indexes.add(i + 1)
+                break
+        if len(command_indexes) == discovered:
+            break
+
     # `cmd /c start "" prog` puts prog in a command position the scan above
     # sees only as an argument, so screen what start actually launches.
     for i, token in enumerate(tokens):
@@ -2182,14 +2246,6 @@ def _find_blocked_commands(command: str) -> set[str]:
             # one, exactly as under `-exec`, so the program it forwards to is
             # published too. Without it `start "" env bash -c "rm -rf x"` named
             # only `env` and the nested-shell lookup declined to read the payload.
-            # What START launches is a command line in its own right, and the
-            # scans keyed to their own token lists -- sed's `e`, find and fd's
-            # -exec -- only ever saw `find` or `sed` in ARGUMENT position here.
-            # Sliced from the raw text through the whitespace map so the quoting
-            # survives: `start "" sed '1e rm -f victim' input` really runs it.
-            tail = _raw_text_from(j)
-            if tail:
-                blocked |= _find_blocked_commands(tail)
             forwarded, _overflowed = _exec_child_index(j)
             if forwarded not in (-1, j):
                 command_indexes.add(forwarded)
@@ -2216,8 +2272,6 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Nested shell invocations (bash -c '...', bash -lc '...', cmd /c '...'):
     # on a -c/-/c flag, look back for a shell name (skipping flags) and
     # recursively scan the nested command string.
-    _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
-    _SHELLS_WIN = {"cmd", "cmd.exe"}
     for i, token in enumerate(tokens):
         tok_lower = token.lower()
         # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)

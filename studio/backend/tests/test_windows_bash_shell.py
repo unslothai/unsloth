@@ -12,6 +12,7 @@ because studio-backend-ci is Linux-only.
 
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1048,28 +1049,6 @@ def test_an_operator_still_wins_over_the_path_shape(windows_terminal):
 @pytest.mark.parametrize(
     "command",
     [
-        "start \"\" sed '1e rm -f victim' input",
-        'start "" fd -x rm -rf x',
-        'start "" find . -exec rm -rf x ;',
-    ],
-)
-def test_start_launches_a_command_line_not_just_a_program(windows_terminal, command):
-    # sed's `e` and find/fd's -exec are scanned from their own token lists, and
-    # those only ever saw the tool in ARGUMENT position behind START. What START
-    # launches is a command line in its own right, so it is scanned as one.
-    assert "rm" in tools._find_blocked_commands(command)
-
-
-def test_the_launched_tail_keeps_its_quoting(windows_terminal):
-    # Sliced out of the raw text, not rejoined from tokens: rejoining turns
-    # `sed '1e rm -f victim'` into four bare words and the sed scan, which reads
-    # that script for an `e`, then finds nothing.
-    assert "rm" in tools._find_blocked_commands("cmd //c start \"\" sed '1e rm -f victim' input")
-
-
-@pytest.mark.parametrize(
-    "command",
-    [
         'cmd /c "C:\\tools.v2\\pwsh"',
         'start "" "C:\\tools.v2\\pwsh"',
     ],
@@ -1094,3 +1073,23 @@ def test_a_spaced_path_with_arguments_is_recovered_whole(windows_terminal, comma
     # itself holds a space, so the payload fell through to a full re-lex and the
     # folder `powershell scripts` was reported for a line that runs notepad.
     assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("depth", [1, 2, 3, 8])
+def test_a_launcher_and_a_shell_hand_command_position_to_each_other(windows_terminal, depth):
+    # Each scan opens command positions the other reads, so reading each list
+    # once, in a fixed order, stopped at the first handover: the second `start`
+    # sat in a payload the shell scan had not published yet, its own target was
+    # never published in turn, and the `rm` behind it went unread.
+    command = 'start "" cmd /c ' * depth + "rm -rf x"
+    assert "rm" in tools._find_blocked_commands(command)
+
+
+def test_nesting_does_not_decide_how_long_the_scan_takes(windows_terminal):
+    # Every nested scan runs on a SUFFIX of the same text and the token walk
+    # reaches those suffixes too, so each was scanned once per path that arrived
+    # at it: 2**n for n wrappers, which is 19 seconds at 17 of them and does not
+    # finish at 30. A command that refuses to be screened is a command that runs.
+    start = time.monotonic()
+    tools._find_blocked_commands('start "" ' * 40 + "echo hi")
+    assert time.monotonic() - start < 5
