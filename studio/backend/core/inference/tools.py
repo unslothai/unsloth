@@ -1729,9 +1729,13 @@ def _find_blocked_commands(command: str) -> set[str]:
             # `if (len != 0 && !strpbrk (a, " \t\n\r\""))` emits it bare).
             # `start 'My Window' prog` therefore still reads as a title, and
             # the raw double-quoted spelling is kept as it was.
-            titled = (
-                head == "" or any(char in head for char in ' \t\n\r"') or '"%s"' % head in command
-            )
+            # Purely by CONTENT: bash removes the quoting before exec, so what
+            # the user wrote is gone by then and only what MSYS re-quotes for
+            # CreateProcess can read as a title. `start "explorer" .` reaches
+            # cmd as a bare `start explorer .`, where explorer is the program
+            # and `.` merely its argument, so consulting the raw double-quoted
+            # spelling hard-blocked that launch on the `.` source builtin.
+            titled = head == "" or any(char in head for char in ' \t\n\r"')
         # The head is screened WHATEVER `titled` says. It is a heuristic under
         # the posix lexer, and a false positive there must cost an over-block,
         # never an under-block: `echo "powershell" && cmd //c start powershell
@@ -1743,10 +1747,13 @@ def _find_blocked_commands(command: str) -> set[str]:
         # a find -exec child. `echo start "title" powershell` and
         # `grep -rn start "src/my dir" curl` run neither the title nor the word
         # behind it, and were hard-refused on a program that never starts.
+        # _exec_child_index, not flag + 1: a prefix forwards to its target, so
+        # `find . -exec env start "" powershell \;` really runs start and the
+        # direct-word test read `env` and stopped.
         runnable = (
             i in command_positions
             or i in win_c_payloads
-            or any(i == flag + 1 for flag in exec_flag_indexes)
+            or any(_exec_child_index(flag + 1)[0] == i for flag in exec_flag_indexes)
         )
         if titled and runnable and j + 1 < len(tokens):
             blocked |= _scan_cmd_payload(_cmd_unquote(tokens[j + 1]))

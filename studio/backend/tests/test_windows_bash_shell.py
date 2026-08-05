@@ -345,9 +345,11 @@ def test_detached_windows_stay_launchable(monkeypatch, command, bash):
 @pytest.mark.parametrize(
     "command",
     [
-        # A title is the other spelling that puts the program one token later.
-        'cmd //c start "MyWindow" powershell -Command ls',
-        'cmd //c start /b "Build" pwsh -Command ls',
+        # A SPACED title is the other spelling that puts the program one token
+        # later, and it reads that way under either shell (see below for why a
+        # title without spaces does not).
+        'cmd //c start "My Window" powershell -Command ls',
+        'cmd //c start /b "Build Step" pwsh -Command ls',
         # The cmd lexer keeps quote marks, so quoted names and payloads never
         # matched the nested-shell scan.
         '"cmd" /c powershell -Command ls',
@@ -357,6 +359,47 @@ def test_detached_windows_stay_launchable(monkeypatch, command, bash):
     ],
 )
 def test_quoted_shellouts_are_screened(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command,blocked_under_cmd",
+    [
+        ('cmd //c start "MyWindow" powershell -Command ls', "powershell"),
+        ('cmd //c start "explorer" .', "."),
+        ('cmd //c start "code" .', "."),
+    ],
+)
+def test_a_title_without_spaces_reads_differently_per_shell(
+    monkeypatch, command, blocked_under_cmd
+):
+    # Same text, opposite correct answers. Under cmd the quotes survive on the
+    # token, so the word really is a title and the NEXT one is the program.
+    # Under bash the quotes are gone before exec and the MSYS runtime re-emits
+    # a word with no space bare (cygwin winf.cc, linebuf::fromargv), so cmd
+    # receives `start explorer .`, the word itself is the program, and the token
+    # behind it is only an argument. Screening it there hard-blocked a
+    # legitimate launch on the `.` source builtin.
+    _fake_windows_screening(monkeypatch, bash = None)
+    assert tools._find_blocked_commands(command) == {blocked_under_cmd}
+    _fake_windows_screening(monkeypatch, bash = _WIN_BASH)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        r'find . -exec env start "" powershell \;',
+        r'find . -exec nice start "" powershell \;',
+        r'find . -exec env -u FOO start "" powershell \;',
+    ],
+)
+def test_a_wrapped_find_exec_start_is_still_reachable(monkeypatch, command, bash):
+    # A command prefix forwards to its target, so the child of the -exec is
+    # `start`, not the wrapper. Testing the word directly after the flag read
+    # `env` and stopped, leaving the program start launches unscreened.
     _fake_windows_screening(monkeypatch, bash = bash)
     assert tools._find_blocked_commands(command)
 
