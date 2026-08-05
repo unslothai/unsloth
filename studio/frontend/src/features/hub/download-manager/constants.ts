@@ -58,6 +58,27 @@ export function probeDescribesCurrentRun(
     : Number.isSafeInteger(reported);
 }
 
+export type AdoptedTransports = {
+  transport?: ResolvedTransport;
+  cancelTransport?: ResolvedTransport;
+};
+
+/** What an adopted job records for its transport pair: what the backend just
+ * reported, else what was restored from storage.
+ *
+ * Both fields together, so a probe carrying only one cannot erase the other.
+ * `/download-status` has no cancel marker at all, and it can win the hydration
+ * race against `/active-downloads`, which does. */
+export function adoptedTransports(
+  reported: AdoptedTransports,
+  existing: AdoptedTransports | undefined,
+): AdoptedTransports {
+  return {
+    transport: reported.transport ?? existing?.transport,
+    cancelTransport: reported.cancelTransport ?? existing?.cancelTransport,
+  };
+}
+
 export function isResolvedTransport(
   value: unknown,
 ): value is ResolvedTransport {

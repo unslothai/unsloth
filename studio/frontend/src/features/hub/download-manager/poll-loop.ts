@@ -38,6 +38,7 @@ import {
   type DownloadKind,
   type ResolvedTransport,
   type TransportMode,
+  adoptedTransports,
   isResolvedTransport,
   probeDescribesCurrentRun,
   transportAfterStart,
@@ -659,9 +660,15 @@ export async function startJob(
       ? opts.generation
       : existing?.serverGeneration
     : undefined;
-  const activeTransport = opts.adopt
-    ? (opts.transport ?? existing?.transport)
-    : mode;
+  // An adopted job prefers what the backend just reported and falls back to
+  // the persisted value, for the transport and its cancel marker alike.
+  const adopted = opts.adopt
+    ? adoptedTransports(
+        { transport: opts.transport, cancelTransport: opts.cancelTransport },
+        existing,
+      )
+    : { transport: mode, cancelTransport: undefined };
+  const activeTransport = adopted.transport;
   if (!opts.adopt && hasActiveRepoPeer(req.kind, req.repoId, key, req.variant)) {
     teardownRuntime(key);
     return;
@@ -683,10 +690,10 @@ export async function startJob(
     // An adopted job prefers the backend's live transport, then a persisted
     // value. It never claims the HTTP placeholder used to skip resolution.
     ...(activeTransport ? { transport: activeTransport } : {}),
-    // A fallback run's cancel marker, when the backend reported one. Only an
-    // adopted job can have it: the fallback happens long after a start.
-    ...(opts.adopt && opts.cancelTransport
-      ? { cancelTransport: opts.cancelTransport }
+    // A fallback run's cancel marker. Only an adopted job can have one: the
+    // fallback happens long after a start.
+    ...(adopted.cancelTransport
+      ? { cancelTransport: adopted.cancelTransport }
       : {}),
     ...(Number.isSafeInteger(seedGeneration)
       ? { serverGeneration: seedGeneration }

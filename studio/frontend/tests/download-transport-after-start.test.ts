@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  adoptedTransports,
   probeDescribesCurrentRun,
   transportAfterStart,
 } from "../src/features/hub/download-manager/constants.ts";
@@ -46,4 +47,40 @@ test("a probe with no generation proves nothing", () => {
   assert.equal(probeDescribesCurrentRun(undefined, undefined), false);
   assert.equal(probeDescribesCurrentRun(7, undefined), false);
   assert.equal(probeDescribesCurrentRun(7, 7.5), false);
+});
+
+test("adoption keeps a persisted marker when the probe carries none", () => {
+  // `/download-status` has no cancel marker and can win the hydration race
+  // against `/active-downloads`, which does.
+  assert.deepEqual(
+    adoptedTransports(
+      { transport: "http" },
+      { transport: "http", cancelTransport: "xet" },
+    ),
+    { transport: "http", cancelTransport: "xet" },
+  );
+});
+
+test("a probe that reports both wins over what was stored", () => {
+  assert.deepEqual(
+    adoptedTransports(
+      { transport: "xet", cancelTransport: "http" },
+      { transport: "http", cancelTransport: "xet" },
+    ),
+    { transport: "xet", cancelTransport: "http" },
+  );
+});
+
+test("an adoption with nothing stored and nothing reported holds neither", () => {
+  assert.deepEqual(adoptedTransports({}, undefined), {
+    transport: undefined,
+    cancelTransport: undefined,
+  });
+});
+
+test("the persisted transport survives a probe that omits it too", () => {
+  assert.deepEqual(
+    adoptedTransports({ cancelTransport: "xet" }, { transport: "http" }),
+    { transport: "http", cancelTransport: "xet" },
+  );
 });
