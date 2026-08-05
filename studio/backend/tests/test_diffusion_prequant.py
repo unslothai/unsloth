@@ -780,10 +780,10 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     assert prequant_checkpoint_cached(source) is False
 
 
-def test_the_loader_reuses_the_hit_the_cache_probe_found(monkeypatch, tmp_path):
-    # The probe searches Studio's LIVE cache root, hf_hub_download falls back to huggingface_hub's
-    # import-time constant, and a mid-session cache change moves only the first. Resolving must
-    # reuse the matched file, else "already cached" still costs the multi-GB download.
+def test_a_live_root_hit_still_goes_through_the_hub_so_it_revalidates(monkeypatch, tmp_path):
+    # hf_hub_download(cache_dir = live) reuses that root's blob AND revalidates against the Hub, so
+    # a hit there must NOT be short-circuited: returning it directly would pin a stale checkpoint
+    # forever once the repo republishes a corrected file under the same name.
     live = tmp_path / "live-hub"
     live.mkdir()
     ckpt = live / "Z-Image-Turbo-FP8.pt"
@@ -795,23 +795,52 @@ def test_the_loader_reuses_the_hit_the_cache_probe_found(monkeypatch, tmp_path):
         fallback_filename = "transformer_fp8.pt",
     )
 
-    def _cache(
-        repo_id,
-        filename,
-        cache_dir = None,
-    ):
-        # Only the live root holds it; the import-time default (cache_dir None) is a miss.
+    def _cache(repo_id, filename, cache_dir = None):
         path = live / filename
         return str(path) if cache_dir == str(live) and path.is_file() else None
 
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
-    monkeypatch.setattr(
-        "huggingface_hub.hf_hub_download",
-        lambda *a, **k: pytest.fail("the cached checkpoint must not be downloaded again"),
-    )
+    asked: list = []
 
+    def _download(repo_id, filename, token = None, cache_dir = None):
+        asked.append((filename, cache_dir))
+        return str(ckpt)  # the same blob, revalidated
+
+    monkeypatch.setattr("huggingface_hub.hf_hub_download", _download)
+
+    # Still "cached" for the decline gate: this costs a HEAD, not a multi-GB fetch.
     assert pq.prequant_checkpoint_cached(source, cache_dir = str(live)) is True
     assert pq._resolve_checkpoint_path(source, None, str(live)) == str(ckpt)
+    assert asked == [("Z-Image-Turbo-FP8.pt", str(live))]  # pinned to the root holding the blob
+
+
+def test_a_hit_only_in_the_other_root_is_returned_without_downloading(monkeypatch, tmp_path):
+    # The case the short-circuit exists for: hf_hub_download(cache_dir = live) would not look in
+    # huggingface_hub's import-time root, so it would re-fetch multiple GB of a file already here.
+    default_root = tmp_path / "default-hub"
+    default_root.mkdir()
+    ckpt = default_root / "Z-Image-Turbo-FP8.pt"
+    ckpt.write_bytes(b"weights")
+    source = PrequantSource(
+        kind = "repo",
+        location = "unsloth/Z-Image-Turbo-FP8",
+        filename = "Z-Image-Turbo-FP8.pt",
+        fallback_filename = "transformer_fp8.pt",
+    )
+
+    def _cache(repo_id, filename, cache_dir = None):
+        # Only the import-time default (cache_dir None) holds it; the live root is a miss.
+        path = default_root / filename
+        return str(path) if cache_dir is None and path.is_file() else None
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
+    monkeypatch.setattr(
+        "huggingface_hub.hf_hub_download",
+        lambda *a, **k: pytest.fail("a copy already on disk must not be downloaded again"),
+    )
+
+    assert pq.prequant_checkpoint_cached(source, cache_dir = "/models/live") is True
+    assert pq._resolve_checkpoint_path(source, None, "/models/live") == str(ckpt)
 
 
 def test_an_uncached_checkpoint_downloads_into_the_live_root(monkeypatch):

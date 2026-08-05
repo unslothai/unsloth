@@ -3465,6 +3465,48 @@ def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize(
+    "lora_specs, consults_prequant",
+    [([("adapter", 0.0)], True), ([("adapter", 0.8)], False), (None, True)],
+)
+def test_the_dense_builder_skips_the_prequant_only_for_a_real_bake(
+    lora_specs, consults_prequant, fake_runtime, monkeypatch
+):
+    # The decline let the auto path continue, but the raw list was handed on and this builder's own
+    # gate read it as truthy, skipping the cached prequant and building the dense transformer for
+    # adapters that apply nothing. The rule has to hold here too, not just at the decline.
+    import contextlib
+
+    from core.inference import diffusion as dmod
+
+    consulted: list = []
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(
+        dmod, "resolve_prequant_source", lambda *a, **k: consulted.append(1) or None
+    )
+    backend = DiffusionBackend()
+    target = _force_cuda_target(backend, monkeypatch)
+
+    with contextlib.suppress(Exception):  # the build cannot complete here; the gate is the subject
+        backend._load_dense_quant_pipeline(
+            object(),
+            object(),
+            "Tongyi-MAI/Z-Image-Turbo",
+            "cuda",
+            None,
+            None,
+            target,
+            "fp8",
+            None,
+            fam = detect_family("unsloth/Z-Image-GGUF"),
+            lora_specs = lora_specs,
+        )
+
+    assert bool(consulted) is consults_prequant
+
+
 def test_the_plan_reads_pydantic_lora_specs_as_the_load_reads_tuples(fake_runtime, monkeypatch):
     # /images/load converts to (id, weight) tuples but /images/download-plan passes the LoraSpec
     # models through, and unpacking a pydantic model yields its (field, value) pairs, so a plain

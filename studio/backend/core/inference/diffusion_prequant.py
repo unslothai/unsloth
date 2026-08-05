@@ -175,6 +175,15 @@ def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> O
     Both cache roots are searched: Studio pins the LIVE cache setting while an unpinned
     ``hf_hub_download`` falls back to huggingface_hub's import-time constant, so the file can sit
     under either. Never raises: an answer it cannot give is None."""
+    for root in (cache_dir, None) if cache_dir else (None,):
+        hit = _cached_in_root(source, root)
+        if hit is not None:
+            return hit
+    return None
+
+
+def _cached_in_root(source: Any, root: Optional[str]) -> Optional[str]:
+    """The primary checkpoint's path inside ONE cache root, or None. Never raises."""
     if source is None or getattr(source, "kind", None) != "repo":
         return None
     name = getattr(source, "filename", None)
@@ -186,15 +195,12 @@ def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> O
         from huggingface_hub import try_to_load_from_cache
     except Exception:  # noqa: BLE001 — no cache API to ask: treat as not cached
         return None
-    for root in (cache_dir, None) if cache_dir else (None,):
-        try:
-            hit = try_to_load_from_cache(source.location, name, cache_dir = root)
-        except Exception:  # noqa: BLE001 — a malformed cache entry is not a hit
-            continue
-        # A str is the cached path; a miss is None and a known-absent file is a sentinel object.
-        if isinstance(hit, str) and os.path.isfile(hit):
-            return hit
-    return None
+    try:
+        hit = try_to_load_from_cache(source.location, name, cache_dir = root)
+    except Exception:  # noqa: BLE001 — a malformed cache entry is not a hit
+        return None
+    # A str is the cached path; a miss is None and a known-absent file is a sentinel object.
+    return hit if isinstance(hit, str) and os.path.isfile(hit) else None
 
 
 def prequant_checkpoint_cached(source: Any, *, cache_dir: Optional[str] = None) -> bool:
@@ -345,14 +351,16 @@ def _resolve_checkpoint_path(
             class EntryNotFoundError(Exception):  # type: ignore[no-redef]
                 pass
 
-        # Reuse the hit the caller cleared this load on: it searched the live cache root as well as
-        # huggingface_hub's import-time one, so without this an unpinned download re-fetches the
-        # multi-GB checkpoint into the root Studio is not reading. PRIMARY only, so the fallback is
-        # still reached solely through EntryNotFoundError below and a cached legacy artifact cannot
-        # pre-empt a canonical one the repo has since published.
-        cached = cached_checkpoint_path(source, cache_dir = cache_dir)
-        if cached is not None:
-            return cached
+        # Short-circuit ONLY a hit hf_hub_download would never find. Passing cache_dir means it
+        # already reuses that root's blob and revalidates against the Hub, so returning early on a
+        # hit THERE would pin a stale checkpoint when the repo republishes under the same name.
+        # A copy under the OTHER root is different: hf_hub_download will not look there and would
+        # re-fetch multiple GB, which is the download the caller declined on. PRIMARY only, so the
+        # fallback is still reached solely through EntryNotFoundError below.
+        if cache_dir is not None and _cached_in_root(source, cache_dir) is None:
+            elsewhere = _cached_in_root(source, None)
+            if elsewhere is not None:
+                return elsewhere
         try:
             return hf_hub_download(
                 repo_id = source.location,

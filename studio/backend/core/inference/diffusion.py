@@ -2286,8 +2286,10 @@ class DiffusionBackend:
             # Bail BEFORE the multi-GB dense download: an unsupported scheme (fp8 on Ampere, nvfp4 off Blackwell) would
             # materialise the transformer only to fail at quantize, after eviction. load_pipeline falls back to GGUF.
             raise RuntimeError("transformer quant unsupported for this device/scheme")
-        if fam is not None and not lora_specs:
-            # A LoRA bake needs the DENSE transformer (adapters attach before quantize_), so skip prequant.
+        if fam is not None and not _has_active_lora(lora_specs):
+            # A LoRA bake needs the DENSE transformer (adapters attach before quantize_), so skip
+            # prequant. Active weights only: an all-zero list bakes nothing, so it must not cost the
+            # caller the dense build the decline above already declined to pay for.
             source = resolve_prequant_source(
                 fam, scheme, path_override = prequant_path, base_repo = base
             )
@@ -2349,7 +2351,7 @@ class DiffusionBackend:
             te_quant_mode = text_encoder_quant,
             target = target,
         )
-        if lora_specs:
+        if _has_active_lora(lora_specs):
             # Bake the adapters BEFORE quantize_: peft wraps the dense Linears (post-quant torchao dispatch would TypeError),
             # then quantize_ converts only each wrapper's frozen base_layer while the "lora_" side path stays high precision.
             baked = self._resolve_lora_set(
