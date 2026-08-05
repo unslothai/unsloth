@@ -183,7 +183,9 @@ def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> O
 
 
 def _cached_in_root(
-    source: Any, root: Optional[str], name: Optional[str] = None
+    source: Any,
+    root: Optional[str],
+    name: Optional[str] = None,
 ) -> Optional[str]:
     """One checkpoint name's path inside ONE cache root, or None. Defaults to the primary name;
     the resolver passes ``fallback_filename`` explicitly once the primary turns out to be absent
@@ -378,9 +380,10 @@ def _resolve_checkpoint_path(
             # The primary is genuinely absent, so the legacy name is now the artifact to load and
             # it gets the same other-root treatment: without this a legacy copy sitting in the
             # import-time root is re-fetched, multiple GB, purely because cache_dir points elsewhere.
-            if cache_dir is not None and _cached_in_root(
-                source, cache_dir, source.fallback_filename
-            ) is None:
+            if (
+                cache_dir is not None
+                and _cached_in_root(source, cache_dir, source.fallback_filename) is None
+            ):
                 elsewhere = _cached_in_root(source, None, source.fallback_filename)
                 if elsewhere is not None:
                     return elsewhere

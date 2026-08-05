@@ -983,7 +983,11 @@ def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkey
         fallback_filename = "transformer_fp8.pt",
     )
 
-    def _cache(repo_id, filename, cache_dir = None):
+    def _cache(
+        repo_id,
+        filename,
+        cache_dir = None,
+    ):
         # Only the import-time default holds the legacy file; the live root holds nothing.
         path = default_root / filename
         return str(path) if cache_dir is None and path.is_file() else None
@@ -991,7 +995,12 @@ def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkey
     monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _cache)
     asked: list = []
 
-    def _download(repo_id, filename, token = None, cache_dir = None):
+    def _download(
+        repo_id,
+        filename,
+        token = None,
+        cache_dir = None,
+    ):
         asked.append(filename)
         if filename == "Z-Image-Turbo-FP8.pt":
             raise EntryNotFoundError("404")
