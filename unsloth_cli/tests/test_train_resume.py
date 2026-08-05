@@ -11,7 +11,10 @@ import sys
 from pathlib import Path
 
 import pytest
-import torch
+
+# Bare CI runners lack the optional training deps these fixtures write with.
+torch = pytest.importorskip("torch")
+pytest.importorskip("safetensors")
 import typer
 from typer.testing import CliRunner
 

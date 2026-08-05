@@ -50,6 +50,9 @@ _stub("matplotlib", _mpl)
 _stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
+# training.py also imports get_device; without it this file cannot even
+# collect unless a sibling pre-imported the real module first.
+_hw.get_device = lambda *a, **k: _types.SimpleNamespace(value = "cpu")
 _stub("utils.hardware", _hw)
 _npl = _types.ModuleType("utils.native_path_leases")
 _npl.native_path_secret_removed_for_child_start = lambda: contextlib.nullcontext()

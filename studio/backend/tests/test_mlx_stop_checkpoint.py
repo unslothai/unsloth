@@ -10,6 +10,10 @@ import types
 from pathlib import Path
 
 import numpy as np
+import pytest
+
+# Bare CI runners lack the optional training deps these fixtures write with.
+pytest.importorskip("safetensors")
 from safetensors.numpy import save_file
 
 

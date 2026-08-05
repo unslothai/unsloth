@@ -10,7 +10,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
+
+# Bare CI runners lack the optional training deps these fixtures write with.
+torch = pytest.importorskip("torch")
+pytest.importorskip("safetensors")
 from safetensors.numpy import save_file
 
 
