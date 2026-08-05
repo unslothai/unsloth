@@ -486,17 +486,23 @@ def _assert_base_repo_accessible(
     except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
         return
 
-    # A base already on disk needs no Hub access at all, so asking for one can only refuse a load
-    # that works today: hf_hub_download catches the gated/401 HEAD and returns the cached pointer
-    # ("let's switch to 'local_files_only=True' to check if the files are already cached",
+    # A base already on disk needs no Hub access, so refusing one can only block a load that works
+    # today: hf_hub_download catches the gated/401 HEAD and returns the cached pointer ("let's
+    # switch to 'local_files_only=True' to check if the files are already cached",
     # file_download._get_metadata_or_catch_error), which is how a downloaded gated base still loads
     # once the token is cleared or expires. It excuses an ACCESS verdict only, never a 404: a
     # renamed or removed repo cannot be un-renamed by a stale copy on disk, and the size estimate
     # swallows that 404 into a zero-byte plan.
     def _already_downloaded() -> bool:
-        """True when ``probe_file`` is on disk under either root, so the load needs no Hub access.
-        Both roots, as the pre-quant lookup does: the prefetch downloads under huggingface_hub's
-        import-time constant while Studio pins its live setting. Never raises."""
+        """True when ``probe_file`` is on disk under either root. Both roots, as the pre-quant
+        lookup does: the prefetch downloads under huggingface_hub's import-time constant while
+        Studio pins its live setting. Never raises.
+
+        Exact for the native plan, which probes an asset it stages, and a proxy for the diffusers
+        plan, which probes the manifest: a base whose manifest is cached but whose shards are not
+        now passes the preflight and dies mid-download on the bare token error. That is the
+        pre-preflight behaviour, so the excuse costs a better message in a partial-download case
+        and never blocks a load -- the opposite trade of refusing every cached base outright."""
         try:
             from huggingface_hub import try_to_load_from_cache
 
