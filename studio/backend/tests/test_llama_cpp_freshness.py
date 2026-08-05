@@ -229,10 +229,7 @@ def test_latest_published_release_force_refresh_bypasses_failure_ttl(monkeypatch
 
     monkeypatch.setattr(fr, "_fetch_latest_release_tag", _fetch)
     assert fr.latest_published_release("unslothai/llama.cpp") is None
-    assert (
-        fr.latest_published_release("unslothai/llama.cpp", force_refresh = True)
-        == "b9999"
-    )
+    assert fr.latest_published_release("unslothai/llama.cpp", force_refresh = True) == "b9999"
     assert fr.latest_published_release("unslothai/llama.cpp") == "b9999"
     assert calls == ["unslothai/llama.cpp", "unslothai/llama.cpp"]
 

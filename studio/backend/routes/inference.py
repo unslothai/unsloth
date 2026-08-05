@@ -7731,7 +7731,6 @@ def _probe_llama_cpp_status(llama_backend) -> tuple[bool, dict]:
         supports_mtp = False  # no usable binary: MTP genuinely unavailable
     try:
         from utils.llama_cpp_freshness import check_prebuilt_freshness
-
         freshness = check_prebuilt_freshness(binary)
     except Exception:
         freshness = {}
@@ -7748,9 +7747,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
         llama_backend = get_llama_cpp_backend()
 
         # The cold subprocess and GitHub probes must not block streaming.
-        _supports_mtp, _freshness = await asyncio.to_thread(
-            _probe_llama_cpp_status, llama_backend
-        )
+        _supports_mtp, _freshness = await asyncio.to_thread(_probe_llama_cpp_status, llama_backend)
         _stale = bool(_freshness.get("stale"))
         _installed_tag = _freshness.get("installed_tag")
         _latest_tag = _freshness.get("latest_tag")
