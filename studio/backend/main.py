@@ -822,10 +822,12 @@ _IS_COLAB = os.path.isdir("/content") and (
 
 
 def _hub_endpoint() -> str:
-    """Effective Hub origin, read per call so HF_ENDPOINT stays live.
+    """Effective Hub endpoint, read per call so HF_ENDPOINT stays live.
 
-    Origin only: HF_ENDPOINT may carry userinfo, and the client just needs to
-    know whether this is a mirror, not the server's credentials.
+    Userinfo is dropped: that is the server's credentials, not the client's
+    business. The path is kept, because the proxy routes fetch from the whole of
+    HF_ENDPOINT and the frontend resolves a repo card's relative images and
+    links against this value; a mirror mounted at /hf needs the /hf.
     """
     default = "https://huggingface.co"
     try:
@@ -838,7 +840,9 @@ def _hub_endpoint() -> str:
         if not host:
             return default
         port = f":{parsed.port}" if parsed.port is not None else ""
-        return f"{parsed.scheme.lower()}://{host.lower()}{port}"
+        # Query and fragment are dropped by taking only these parts.
+        path = parsed.path.rstrip("/")
+        return f"{parsed.scheme.lower()}://{host.lower()}{port}{path}"
     except Exception:
         return default
 

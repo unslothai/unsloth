@@ -445,12 +445,17 @@ class TestHealthHubEndpoint:
         "endpoint,expected",
         [
             ("https://HuggingFace.CO", "https://huggingface.co"),
-            ("https://mirror.example/hf", "https://mirror.example"),
+            # The path is reported now: the proxy routes fetch from the whole
+            # endpoint, and the frontend resolves a card's relative assets
+            # against this, so a subpath mirror needs its prefix.
+            ("https://mirror.example/hf", "https://mirror.example/hf"),
+            ("https://mirror.example/hf/", "https://mirror.example/hf"),
+            ("https://mirror.example/hf?token=x", "https://mirror.example/hf"),
             ("", "https://huggingface.co"),
             ("   ", "https://huggingface.co"),
         ],
     )
-    def test_only_a_normalised_origin_is_reported(self, monkeypatch, endpoint, expected):
+    def test_only_a_normalised_endpoint_is_reported(self, monkeypatch, endpoint, expected):
         import main
         monkeypatch.setenv("HF_ENDPOINT", endpoint)
         assert main._hub_endpoint() == expected
@@ -564,6 +569,18 @@ class TestReadmeRoute:
         monkeypatch.setattr(discovery, "_fetch_upstream", _fetch)
         self._call()
         assert seen["url"].startswith("https://hf-mirror.example/Org/Model/raw/main/")
+
+    @pytest.mark.parametrize("status", [301, 302, 303, 307, 308])
+    def test_a_redirect_is_not_served_as_a_blank_card(self, monkeypatch, status):
+        """_fetch_upstream returns redirects with an empty body, and they are
+        under 400, so without an explicit branch they shipped as a 200."""
+        monkeypatch.delenv("HF_ENDPOINT", raising = False)
+        monkeypatch.setattr(
+            discovery, "_fetch_upstream", lambda url, token: (status, b"", "")
+        )
+        response = self._call()
+        assert response.status_code == 502
+        assert response.headers.get(discovery.HUB_PROXY_MARKER_HEADER) == "1"
 
     def test_a_connection_failure_is_stamped_not_a_500(self, monkeypatch):
         """The search and info routes map these; without it this one 500s raw."""

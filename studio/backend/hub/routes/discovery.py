@@ -93,6 +93,9 @@ _BOOLEAN_VALUES = frozenset({"true", "false"})
 # as an expired Studio session and log the user out. 424 blames the dependency.
 _UPSTREAM_AUTH_STATUS = 424
 
+# Refused, not followed: a redirect could walk onto an internal address.
+_REDIRECT_STATUSES = (301, 302, 303, 307, 308)
+
 
 class DiscoveryQueryError(ValueError):
     """A caller-supplied query that failed validation."""
@@ -274,7 +277,7 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
     )
     try:
         link = response.headers.get("Link", "")
-        if response.status_code in (301, 302, 303, 307, 308):
+        if response.status_code in _REDIRECT_STATUSES:
             return response.status_code, b"", ""
         body = bytearray()
         for chunk in response.iter_content(chunk_size = 65536):
@@ -345,7 +348,7 @@ async def _proxy_get(url: str, hf_token: Optional[str]) -> tuple:
     except Exception as e:
         raise _upstream_error(e, hf_token)
 
-    if status in (301, 302, 303, 307, 308):
+    if status in _REDIRECT_STATUSES:
         raise HTTPException(
             status_code = 502,
             detail = "Hugging Face redirected the discovery request; refusing to follow",
@@ -483,6 +486,15 @@ async def discovery_readme(
         # TLS or connection failure here escapes as an unstamped 500 carrying an
         # unscrubbed message, which reads as a Studio crash.
         return _stamped(_upstream_error(e, hf_token))
+    if status in _REDIRECT_STATUSES:
+        # Redirects are disabled, so _fetch_upstream hands the status back with an
+        # empty body. Without this it is under 400 and ships as a blank card.
+        return _stamped(
+            HTTPException(
+                status_code = 502,
+                detail = "Hugging Face redirected the repo card request; refusing to follow",
+            )
+        )
     if status == 404:
         return _stamped(HTTPException(status_code = 404, detail = "No repo card"))
     if status >= 400:
