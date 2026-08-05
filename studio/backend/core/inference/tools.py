@@ -1774,7 +1774,8 @@ def _find_blocked_commands(command: str) -> set[str]:
                     # one of those marks, so drop them all rather than re-pair
                     # them: over-quoting here would cost a missed screen.
                     blocked |= _find_blocked_commands(
-                        " ".join(word.replace('"', "") for word in tokens[i + 1:]))
+                        " ".join(word.replace('"', "") for word in tokens[i + 1 :])
+                    )
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above

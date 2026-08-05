@@ -688,7 +688,7 @@ def test_a_shell_name_in_argument_position_invokes_nothing(monkeypatch, command,
         # start launches a command LINE, so its child can be a shell in turn.
         'cmd //c start "" cmd /c powershell -Command ls',
         'cmd //c start "" cmd //c powershell -Command ls',
-        "start \"\" cmd /c rm -rf x",
+        'start "" cmd /c rm -rf x',
         # `START ["title"] [switches] command`: switches follow the title too,
         # and reading only the word after it stopped on /b or /d.
         'cmd //c start "" /b powershell -Command ls',
