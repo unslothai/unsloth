@@ -276,6 +276,18 @@ def test_a_later_load_cannot_take_this_trainers_float16_autocast_away():
     assert _generate(first, env, has_bf16 = False) == (True, torch.float16)
 
 
+def test_a_forced_float32_model_keeps_the_bfloat16_the_trainer_chose():
+    """A forced float32 family loaded with an explicit dtype = torch.float16 on a
+    bfloat16 card stamps the model (loader.py:1791, loader.py:2148) even though
+    it loads in bfloat16. Full finetuning on that card then lets rl.py:1013 skip
+    force_float32 and pick bf16 on purpose, so the stamp must not pull generation
+    back into the float16 that the forced list exists to avoid."""
+    env = {"UNSLOTH_FORCE_FLOAT32": "1", "UNSLOTH_ENABLE_FULL_FINETUNING": "1"}
+    trainer = _build_trainer(env, torch.bfloat16, bf16_supported = True)
+    assert env["ACCELERATE_MIXED_PRECISION"] == "bf16"
+    assert _generate(trainer, env, has_bf16 = True) == (True, torch.bfloat16)
+
+
 def test_the_loaders_stamp_the_forced_float32_answer_on_the_model():
     """The stamp has to exist for the trainer to read, on both loaders that
     consult the forced list."""

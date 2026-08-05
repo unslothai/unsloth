@@ -917,8 +917,10 @@ def _unsloth_grpo_autocast(self):
         forced = getattr(getattr(self, "model", None), "_unsloth_forced_float32", None)
         if forced is None:
             forced = os.environ.get("UNSLOTH_FORCE_FLOAT32", "0") == "1"
-        if forced:
+        if forced and precision != "bf16":
             # Gemma3 / gpt-oss set "no" as well, but still want float16 autocast.
+            # A trainer that picked bf16 anyway (full finetuning on a bf16 GPU)
+            # keeps it: float16 is the precision the forced list exists to avoid.
             self._autocast_dtype = torch.float16
             self._autocast_enabled = True
             self._autocast_force_float32 = True
