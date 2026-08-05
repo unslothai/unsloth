@@ -575,9 +575,7 @@ class TestReadmeRoute:
         """_fetch_upstream returns redirects with an empty body, and they are
         under 400, so without an explicit branch they shipped as a 200."""
         monkeypatch.delenv("HF_ENDPOINT", raising = False)
-        monkeypatch.setattr(
-            discovery, "_fetch_upstream", lambda url, token: (status, b"", "")
-        )
+        monkeypatch.setattr(discovery, "_fetch_upstream", lambda url, token: (status, b"", ""))
         response = self._call()
         assert response.status_code == 502
         assert response.headers.get(discovery.HUB_PROXY_MARKER_HEADER) == "1"
