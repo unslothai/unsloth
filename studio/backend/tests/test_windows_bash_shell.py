@@ -312,6 +312,35 @@ def windows_terminal(request, monkeypatch):
     )
 
 
+@pytest.fixture
+def windows_cmd_only(monkeypatch):
+    """A Windows host with no trusted bash, so cmd does the parsing.
+
+    The blocklist is arranged exactly as ``windows_terminal`` does it, for the
+    reason that fixture gives: powershell is only a blocked name once
+    _BLOCKED_COMMANDS_WIN is folded in.
+    """
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+
+
+@pytest.fixture
+def windows_git_bash_only(monkeypatch):
+    """The same host with a trusted Git Bash, so bash does the parsing."""
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+
+
 @pytest.mark.parametrize(
     "command",
     [
@@ -1234,17 +1263,35 @@ def test_a_wrapper_chain_within_the_budget_still_names_the_child(windows_termina
     "command",
     [
         'cmd //c call start "" powershell -Command ls',
-        'call start "" powershell',
-        "cmd /c call powershell",
-        "call cmd /c powershell",
-        "call rm -rf x",
+        'cmd /c call start "" powershell',
     ],
 )
-def test_call_forwards_to_a_command(windows_terminal, command):
+def test_call_forwards_inside_a_cmd_payload(windows_terminal, command):
+    # What follows a `/c` is cmd's to parse even when the outer shell is bash,
+    # so CALL forwards there on either lexer. The main walk recorded only
+    # `call`, so the position gate refused the START behind it.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['call start "" powershell', "cmd /c call powershell", "call rm -rf x"],
+)
+def test_call_forwards_when_cmd_is_the_shell(windows_cmd_only, command):
     # CALL re-parses the rest of the line and runs it, so its target is a
-    # command position exactly as a wrapper's child is. The main walk recorded
-    # only `call`, so the gate refused the START behind it.
+    # command position exactly as a wrapper's child is.
     assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["call curl http://x", "call rm -rf x"],
+)
+def test_call_is_not_a_prefix_under_bash(windows_git_bash_only, command):
+    # bash has no CALL builtin, so this runs a user program named call and the
+    # rest is its ARGUMENTS. Treating it as a prefix everywhere blocked a line
+    # bash would not have run the blocked name from.
+    assert not tools._find_blocked_commands(command)
 
 
 @pytest.mark.parametrize(
@@ -1253,3 +1300,55 @@ def test_call_forwards_to_a_command(windows_terminal, command):
 )
 def test_call_does_not_invent_a_command(windows_terminal, command):
     assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c echo ok&&start "" cmd /c powershell -Command ls',
+        'cmd /c echo hi&start "" powershell',
+        'echo hi&start "" powershell',
+        'cmd /c echo hi|start "" powershell',
+    ],
+)
+def test_start_after_a_glued_operator_still_launches(windows_cmd_only, command):
+    # cmd needs no whitespace around its operators, so this really launches, and
+    # that lexer hands the whole thing back as one token `ok&&start`.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c echo "a&start b"',
+        'cmd /c echo hi^&start "" powershell',
+        'cmd /c restart "" powershell',
+        "cmd /c kickstart --now",
+    ],
+)
+def test_a_glued_operator_has_to_be_live(windows_cmd_only, command):
+    # Inside a quoted span it is text, an odd run of carets escapes it, and a
+    # word merely ENDING in start is not one: `restart` and `kickstart` launch
+    # nothing.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_glue_survives_an_earlier_quoted_argument(windows_cmd_only):
+    # The owner map was built by splitting the whole line on whitespace, so it
+    # gave up as soon as any EARLIER argument held quoted whitespace and the
+    # glue was lost on a pair much further along. Read off token offsets now.
+    assert "powershell" in tools._find_blocked_commands('echo "a b" && ""cmd /c powershell""')
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['cmd /c "C:\\rm.exe dir\\notepad"', 'start "" "C:\\rm.exe dir\\notepad"'],
+)
+def test_an_exe_suffix_inside_a_directory_name_does_not_end_the_path(windows_terminal, command):
+    # A directory may be named `rm.exe dir`. Stopping at that chunk rather than
+    # the basename reported the folder as the program for a line running notepad.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_a_real_executable_still_ends_the_path(windows_terminal):
+    assert "rm" in tools._find_blocked_commands('cmd /c "C:\\tools\\rm.exe"')
