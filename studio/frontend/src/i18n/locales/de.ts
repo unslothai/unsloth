@@ -1020,7 +1020,7 @@ export const de = {
         "Laden Sie ein Modell oder laden Sie eines herunter, um ausführbare Beispiele zu sehen. Dieser Server kennt noch kein Modell, das in den Beispielen verwendet werden könnte.",
     },
     about: {
-      title: "Über",
+      title: "Info",
       description: "Dokumentation, Versionshinweise, Feedback und Build-Infos.",
       studioVersion: "Unsloth-Version",
       packageVersion: "Paketversion",
@@ -1424,7 +1424,7 @@ export const de = {
       cancelAction: "Training abbrechen",
       stopTitle: "Training stoppen",
       stopDescription:
-        "Wählen Sie, wie Sie den aktuellen Trainingslauf stoppen möchten.",
+        "Wählen Sie, wie Sie den aktuellen Trainingslauf stoppen möchten. „Stoppen und speichern“ schreibt einen Checkpoint, von dem aus Sie später fortsetzen können; ein einfach gestopptes Training kann nicht fortgesetzt werden.",
       stopAction: "Stoppen",
       stopping: "Wird gestoppt...",
       stopAndSave: "Stoppen und speichern",

@@ -15,7 +15,7 @@ import threading
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Callable
 
 import httpx
 
@@ -147,6 +147,10 @@ _MODEL_WAIT_POLL_SECONDS = 2.0
 # otherwise re-send forever, so cap how many times one call may wait.
 _MAX_MODEL_WAITS = 3
 _NO_MODEL_LOADED_DETAIL = "No model loaded"
+# Transport keepalives prevent HTTP read timeouts without proving that a model which already
+# started answering is still progressing. Prefill remains governed by modelTimeoutSeconds because
+# CPU and offloaded models can legitimately take many minutes to produce their first token.
+_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS = 120.0
 
 
 def _auto_scrape_default() -> int:
@@ -568,7 +572,19 @@ class LeaseLost(Exception):
     pass
 
 
+class ModelOutputIdleTimeout(httpx.ReadTimeout):
+    pass
+
+
+class ModelWallClockTimeout(httpx.ReadTimeout):
+    pass
+
+
 def _safe_error(exc: BaseException) -> str:
+    if isinstance(exc, ModelOutputIdleTimeout):
+        return "Local model stopped producing output before completion"
+    if isinstance(exc, ModelWallClockTimeout):
+        return "Local model request exhausted its total time budget"
     if isinstance(exc, httpx.TimeoutException):
         return "Local model request timed out"
     if isinstance(exc, httpx.HTTPStatusError):
@@ -1607,13 +1623,31 @@ class ResearchSupervisor:
                     "research.api_key_cleanup_failed run_id=%s", run["id"], exc_info = True
                 )
 
-    async def _iter_stream_lines(self, run_id: str, response: httpx.Response) -> AsyncIterator[str]:
+    async def _iter_stream_lines(
+        self,
+        run_id: str,
+        response: httpx.Response,
+        semantic_deadline: Callable[[], float | None] | None = None,
+    ) -> AsyncIterator[str]:
         iterator = response.aiter_lines().__aiter__()
+
+        def wait_timeout() -> float:
+            if semantic_deadline is None:
+                return 0.2
+            deadline = semantic_deadline()
+            if deadline is None:
+                return 0.2
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining > 0:
+                return min(0.2, remaining)
+            raise ModelOutputIdleTimeout("Local model stopped producing output")
+
         while True:
+            timeout = wait_timeout()
             line_task = asyncio.create_task(anext(iterator))
             try:
                 while not line_task.done():
-                    await asyncio.wait({line_task}, timeout = 0.2)
+                    await asyncio.wait({line_task}, timeout = timeout)
                     if self._cancel_event(run_id).is_set():
                         line_task.cancel()
                         try:
@@ -1621,6 +1655,7 @@ class ResearchSupervisor:
                         except asyncio.CancelledError:
                             pass
                         await self._check_active(run_id)
+                    timeout = wait_timeout()
                 try:
                     line = line_task.result()
                 except StopAsyncIteration:
@@ -1686,6 +1721,7 @@ class ResearchSupervisor:
         pending_reasoning_offset = 0
         last_progress_flush = asyncio.get_running_loop().time()
         finish_reason: str | None = None
+        semantic_output_at: float | None = None
 
         async def flush_progress() -> None:
             nonlocal pending_report, pending_reasoning, pending_reasoning_offset
@@ -1747,6 +1783,13 @@ class ResearchSupervisor:
         try:
             model_timeout = float(config["budgets"]["modelTimeoutSeconds"])
             timeout = httpx.Timeout(model_timeout)
+            loop = asyncio.get_running_loop()
+
+            def semantic_deadline() -> float | None:
+                if semantic_output_at is None:
+                    return None
+                return semantic_output_at + _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS
+
             async with (
                 _wall_clock_timeout(model_timeout),
                 httpx.AsyncClient(timeout = timeout, trust_env = False) as client,
@@ -1808,13 +1851,17 @@ class ResearchSupervisor:
                                 await asyncio.sleep(2**attempt)
                                 attempt += 1
                                 await self._check_active(run["id"])
-                    async for line in self._iter_stream_lines(run["id"], response):
+                    async for line in self._iter_stream_lines(
+                        run["id"], response, semantic_deadline
+                    ):
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):
                             continue
                         data = line[5:].strip()
-                        if not data or data == "[DONE]":
+                        if data == "[DONE]":
+                            break
+                        if not data:
                             continue
                         try:
                             chunk = json.loads(data)
@@ -1829,11 +1876,13 @@ class ResearchSupervisor:
                             continue
                         thought = delta.get("reasoning_content")
                         if isinstance(thought, str) and thought:
+                            semantic_output_at = loop.time()
                             if not pending_reasoning:
                                 pending_reasoning_offset = len(reasoning)
                             reasoning += thought
                             pending_reasoning += thought
                         if isinstance(text, str) and text:
+                            semantic_output_at = loop.time()
                             report += text
                             pending_report += text
                         pending_chars = len(pending_reasoning) + len(pending_report)
@@ -1861,11 +1910,22 @@ class ResearchSupervisor:
                         except Exception:
                             pass
                     if response is not None:
-                        await response.aclose()
+                        try:
+                            await response.aclose()
+                        except Exception:
+                            # Closing a broken stream is best-effort and must not replace the
+                            # generation result or the timeout/error that caused teardown.
+                            logger.warning(
+                                "research.stream_cleanup_failed run_id=%s",
+                                run["id"],
+                                exc_info = True,
+                            )
             await flush_progress()
             return report, reasoning, finish_reason
         except (TimeoutError, asyncio.TimeoutError) as exc:
-            raise httpx.ReadTimeout("Local model request exceeded its wall-clock timeout") from exc
+            raise ModelWallClockTimeout(
+                "Local model request exceeded its wall-clock timeout"
+            ) from exc
         finally:
             try:
                 await asyncio.to_thread(auth_storage.revoke_internal_api_key, int(key["id"]))
