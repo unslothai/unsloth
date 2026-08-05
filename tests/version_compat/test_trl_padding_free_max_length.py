@@ -51,7 +51,11 @@ _spoof.apply()
 import torch  # noqa: E402
 
 
-def _eager_compile(model = None, *args, **kwargs):
+def _eager_compile(
+    model = None,
+    *args,
+    **kwargs,
+):
     if callable(model):
         return model
     return lambda fn: fn
@@ -72,6 +76,7 @@ _USER_MAX_LENGTH = 64
 def trl_has_guard():
     global torch  # the `import torch._dynamo` below would otherwise shadow it
     import unsloth  # noqa: F401
+
     torch.compile = _eager_compile
     try:
         import torch._dynamo
@@ -157,9 +162,7 @@ def test_explicit_max_length_is_still_truncated_to(tmp_path, trl_has_guard):
         assert args.max_seq_length == _USER_MAX_LENGTH
     else:
         assert args.max_length == _MODEL_MAX_SEQ_LENGTH
-    assert _longest(trainer) == (
-        _USER_MAX_LENGTH if trl_has_guard else _MODEL_MAX_SEQ_LENGTH
-    )
+    assert _longest(trainer) == (_USER_MAX_LENGTH if trl_has_guard else _MODEL_MAX_SEQ_LENGTH)
 
 
 def test_padding_free_off_keeps_max_length(tmp_path):
@@ -199,5 +202,4 @@ def test_generator_only_emits_the_none_for_a_trl_that_guards():
 )
 def test_padding_free_error_matcher(message, expected):
     from unsloth.trainer import _should_skip_auto_padding_free_error
-
     assert _should_skip_auto_padding_free_error(ValueError(message)) is expected
