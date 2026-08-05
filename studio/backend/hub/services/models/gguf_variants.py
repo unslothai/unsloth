@@ -770,9 +770,12 @@ async def get_gguf_variants_answer(
                     detail = "No cached GGUF variants available while offline.",
                 )
 
-        try:
-            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
-        except Exception:
+        def _cache_fallback_response():
+            """Cached answer scoped to the cache this request names, or None.
+
+            The lister's own cache read is repo-wide, so redoing it here pins the listing and,
+            through ``answered_from``, its context metadata to the named copy.
+            """
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
                 return scoped_response
@@ -790,7 +793,22 @@ async def get_gguf_variants_answer(
             if partial is not None:
                 variants, has_vision = partial
                 return _partial_local_response(repo_id, variants, has_vision)
+            return None
+
+        try:
+            variants, has_vision, siblings = list_gguf_variants(repo_id, hf_token = hf_token)
+        except Exception:
+            fallback = _cache_fallback_response()
+            if fallback is not None:
+                return fallback
             raise
+
+        # siblings is None only when the lister answered from its own repo-wide cache. Falling
+        # through is deliberate: readiness below still counts against this request's own cache.
+        if siblings is None:
+            fallback = _cache_fallback_response()
+            if fallback is not None:
+                return fallback
 
         filenames = [v.filename for v in variants]
         best = pick_best_gguf(filenames)

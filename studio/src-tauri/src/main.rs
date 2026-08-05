@@ -159,6 +159,32 @@ fn confirm_quit_during_install(app: &tauri::AppHandle) -> bool {
         .blocking_show()
 }
 
+/// Ask before quitting mid-update (true to proceed): the update is killed part-way
+/// through installing dependencies, which leaves the venv unusable until it is repaired.
+fn confirm_quit_during_update(app: &tauri::AppHandle) -> bool {
+    use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
+
+    let Some(update_state) = app.try_state::<update::UpdateState>() else {
+        return true;
+    };
+    if !update::is_update_running(&update_state) {
+        return true;
+    }
+    app.dialog()
+        .message(
+            "Unsloth is still updating. Quitting now stops it part-way and \
+             leaves the installation incomplete, so it will need to be repaired before \
+             it can start.",
+        )
+        .kind(MessageDialogKind::Warning)
+        .title("Update in progress")
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            "Quit anyway".to_string(),
+            "Keep updating".to_string(),
+        ))
+        .blocking_show()
+}
+
 fn cleanup_child_processes(app: &tauri::AppHandle) {
     // `call_once_force` rather than `call_once`: a panicking cleanup poisons the `Once`
     // instead of deadlocking the exit paths waiting on it, and the next caller retries
@@ -284,6 +310,9 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
                 let app_handle = app.clone();
                 std::thread::spawn(move || {
                     if !confirm_quit_during_install(&app_handle) {
+                        return;
+                    }
+                    if !confirm_quit_during_update(&app_handle) {
                         return;
                     }
                     if !confirm_quit_during_training(&app_handle) {

@@ -51,3 +51,44 @@ test("a nav row paints the same pill when active and when hovered", async () => 
   assert.match(rule[1], /\.sidebar-nav-btn:hover/);
   assert.match(rule[1], /\.sidebar-nav-btn\[data-active="true"\]/);
 });
+
+test("desktop branding clears the titlebar actions", async () => {
+  const source = await sidebarSource();
+  assert.match(
+    source,
+    /shrink-0 p-0 pt-\[calc\(var\(--studio-desktop-titlebar-height,34px\)\+17px\)\]/,
+  );
+});
+
+test("desktop branding keeps an 11px gap above New chat", async () => {
+  const source = await sidebarSource();
+  assert.match(source, /usesDesktopTitlebar \? "pt-\[11px\]" : "pt-\[9px\]"/);
+});
+
+test("footer profile sits 11px above the sidebar edge", async () => {
+  const source = await sidebarSource();
+  assert.match(
+    source,
+    /relative pb-\[11px\] group-data-\[collapsible=icon\]:px-0/,
+  );
+});
+
+test("Tauri primary navigation sits 1px left", async () => {
+  const source = await sidebarSource();
+  const shiftedInsets = source.match(
+    /usesDesktopTitlebar \? "pl-\[5px\] pr-2" : "pl-1\.5 pr-1\.75"/g,
+  );
+  assert.equal(shiftedInsets?.length, 2);
+});
+
+test("Tauri chat Recents sits 2px right", async () => {
+  const source = await sidebarSource();
+  assert.match(
+    source,
+    /scrolled && "is-scrolled",\s*usesDesktopTitlebar && "translate-x-\[2px\]"/,
+  );
+  assert.match(
+    source,
+    /usesDesktopTitlebar\s*\?\s*"pl-2 pr-\[5px\]"\s*:\s*"pl-1\.5 pr-1\.75"/,
+  );
+});
