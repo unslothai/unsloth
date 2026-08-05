@@ -560,7 +560,13 @@ def test_a_repo_not_found_with_no_response_still_raises(monkeypatch):
     can be proven, so the cache escape is not granted. Fail safe."""
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    _stub_hub(monkeypatch, model_info_error = RepositoryNotFoundError("no response attached"))
+    # response = None explicitly: newer huggingface_hub makes it a REQUIRED keyword-only argument,
+    # so the one-argument form raises TypeError there and the test fails for the wrong reason. It
+    # is still the optional second positional on 0.36.2, so passing it by name works on both.
+    _stub_hub(
+        monkeypatch,
+        model_info_error = RepositoryNotFoundError("no response attached", response = None),
+    )
     monkeypatch.setattr(
         "huggingface_hub.try_to_load_from_cache",
         lambda repo_id, filename, cache_dir = None, **k: "/cache/model_index.json",
