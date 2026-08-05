@@ -85,7 +85,6 @@ def family_bf16_components_gb(
         # to the coarser family table, so normalise rather than rely on every caller passing the
         # upstream id.
         from .diffusion_families import canonical_base
-
         override = _BASE_REPO_BF16_GB.get(canonical_base(base_repo))
         if override is not None:
             return override

@@ -322,9 +322,7 @@ def _map_guidance(
     return cfg, None
 
 
-def _fetch_repo_map(
-    assets: list[tuple[str, str, str]], hf_token: Optional[str]
-) -> dict[str, str]:
+def _fetch_repo_map(assets: list[tuple[str, str, str]], hf_token: Optional[str]) -> dict[str, str]:
     """upstream asset repo -> the repo to actually fetch from (its ungated mirror, or itself).
 
     Decided once per REPO over that repo's whole file list, the same input ``download_plan`` uses,
@@ -333,8 +331,7 @@ def _fetch_repo_map(
     for repo, filename, _kind in assets:
         by_repo.setdefault(repo, []).append(filename)
     return {
-        repo: prefer_ungated_mirror(repo, hf_token, files = names)
-        for repo, names in by_repo.items()
+        repo: prefer_ungated_mirror(repo, hf_token, files = names) for repo, names in by_repo.items()
     }
 
 

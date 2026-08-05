@@ -531,6 +531,7 @@ def _upstream_is_cached(repo_id: str, files: Optional[Sequence[str]] = None) -> 
     """
     try:
         from utils.hf_cache_settings import active_hf_hub_cache
+
         root = Path(active_hf_hub_cache()) / f"models--{repo_id.replace('/', '--')}"
         wanted = tuple(files or ())
         ref = root / "refs" / "main"
@@ -545,9 +546,7 @@ def _upstream_is_cached(repo_id: str, files: Optional[Sequence[str]] = None) -> 
             if wanted:
                 if all((rev / name).exists() for name in wanted):
                     return True
-            elif any(
-                p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")
-            ):
+            elif any(p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")):
                 return True
         return False
     except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
@@ -555,7 +554,10 @@ def _upstream_is_cached(repo_id: str, files: Optional[Sequence[str]] = None) -> 
 
 
 def prefer_ungated_mirror(
-    base: str, hf_token: Optional[str] = None, *, files: Optional[Sequence[str]] = None
+    base: str,
+    hf_token: Optional[str] = None,
+    *,
+    files: Optional[Sequence[str]] = None,
 ) -> str:
     """``base``, or the ungated unsloth mirror of it when that is the better repo to FETCH from.
 

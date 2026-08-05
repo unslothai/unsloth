@@ -258,7 +258,15 @@ def test_family_prequant_repo_accepts_either_id():
         assert upstream == mirrored == "unsloth/FLUX.1-dev-FP8"
 
 
-def _fake_hub_cache(monkeypatch, tmp_path, repo_id, files, *, revision = "abc123", ref = None):
+def _fake_hub_cache(
+    monkeypatch,
+    tmp_path,
+    repo_id,
+    files,
+    *,
+    revision = "abc123",
+    ref = None,
+):
     """Lay out ``files`` as a cached snapshot revision of ``repo_id`` and point the live cache
     setting at it, so the mirror decision reads a tree the test controls. ``ref`` writes
     refs/main, as huggingface_hub does for a branch download."""
@@ -286,9 +294,7 @@ def test_a_superseded_cached_revision_does_not_disable_the_mirror(monkeypatch, t
     wanted = ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]
     # Old revision complete, refs/main moved on to a revision holding only the manifest.
     _fake_hub_cache(monkeypatch, tmp_path, gated, wanted, revision = "old")
-    _fake_hub_cache(
-        monkeypatch, tmp_path, gated, ["model_index.json"], revision = "new", ref = "new"
-    )
+    _fake_hub_cache(monkeypatch, tmp_path, gated, ["model_index.json"], revision = "new", ref = "new")
     assert _upstream_is_cached(gated, wanted) is False
     assert prefer_ungated_mirror(gated, files = wanted) == "unsloth/FLUX.1-dev"
 
@@ -2161,7 +2167,11 @@ def test_pipeline_kind_assembles_krea_and_ideogram_from_the_mirror(fake_runtime,
         seen["krea"] = base
         return _FakePipe()
 
-    def _ideogram(repo_id, dtype, hf_token = None):
+    def _ideogram(
+        repo_id,
+        dtype,
+        hf_token = None,
+    ):
         seen["ideogram"] = repo_id
         return _FakePipe()
 
@@ -2172,9 +2182,7 @@ def test_pipeline_kind_assembles_krea_and_ideogram_from_the_mirror(fake_runtime,
     assert seen["krea"] == "unsloth/Krea-2-Turbo"
     assert krea["repo_id"] == "krea/Krea-2-Turbo"
 
-    ideogram = DiffusionBackend().load_pipeline(
-        "ideogram-ai/ideogram-4-fp8", model_kind = "pipeline"
-    )
+    ideogram = DiffusionBackend().load_pipeline("ideogram-ai/ideogram-4-fp8", model_kind = "pipeline")
     assert seen["ideogram"] == "unsloth/ideogram-4-fp8"
     assert ideogram["repo_id"] == "ideogram-ai/ideogram-4-fp8"
 
