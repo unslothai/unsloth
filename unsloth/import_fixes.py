@@ -3552,19 +3552,32 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 def _chain_to_the_real_sitecustomize():
     """Do not shadow somebody else's sitecustomize."""
     import importlib.util
+    from importlib.machinery import PathFinder
+    here = os.path.normcase(_HERE)
     for entry in sys.path:
+        # Ask the import system rather than probing for a filename, so the
+        # package (`sitecustomize/__init__.py`) and .pyc forms chain too.
         try:
-            if not entry or os.path.abspath(entry) == _HERE:
+            if not entry or os.path.normcase(os.path.abspath(entry)) == here:
                 continue
-            cand = os.path.join(entry, "sitecustomize.py")
-            if not os.path.isfile(cand):
-                continue
-            spec = importlib.util.spec_from_file_location(
-                "_unsloth_chained_sitecustomize", cand)
-            if spec is None or spec.loader is None:
-                continue
+            spec = PathFinder.find_spec("sitecustomize", [entry])
+        except Exception:
+            continue
+        if spec is None or spec.loader is None:
+            continue
+        try:
             mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+            # A package needs its own name in sys.modules for `from . import`
+            # to resolve; put ours back afterwards.
+            previous = sys.modules.get("sitecustomize")
+            sys.modules["sitecustomize"] = mod
+            try:
+                spec.loader.exec_module(mod)
+            finally:
+                if previous is None:
+                    sys.modules.pop("sitecustomize", None)
+                else:
+                    sys.modules["sitecustomize"] = previous
             break
         except Exception:
             # A broken sitecustomize elsewhere must not stop us, and must not
