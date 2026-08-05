@@ -9,7 +9,13 @@ from core.inference import stt_registry
 
 
 class _Sidecar:
-    def __init__(self, name, model = None, loading = False, fail = False):
+    def __init__(
+        self,
+        name,
+        model = None,
+        loading = False,
+        fail = False,
+    ):
         self.name = name
         self.loaded_model = model
         self.device = f"{name}-device" if model else None
@@ -100,7 +106,6 @@ def test_an_unimportable_engine_never_takes_the_status_down(monkeypatch):
 
 def test_the_orchestrator_exposes_the_same_lifecycle(monkeypatch):
     from core.inference.orchestrator import InferenceOrchestrator
-
     for name in ("load_stt_model", "unload_stt_model", "resident_stt_model"):
         assert callable(getattr(InferenceOrchestrator, name, None)), name
 

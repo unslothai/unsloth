@@ -27,11 +27,9 @@ def sidecar_for(engine: str) -> Any:
     """The sidecar serving ``engine``. Transformers is the catch-all."""
     if engine == "mtmd":
         from core.inference.stt_mtmd_sidecar import get_mtmd_stt_sidecar
-
         return get_mtmd_stt_sidecar()
     if engine == "gguf":
         from core.inference.stt_ggml_sidecar import get_ggml_stt_sidecar
-
         return get_ggml_stt_sidecar()
     from core.inference.stt_sidecar import get_stt_sidecar
 

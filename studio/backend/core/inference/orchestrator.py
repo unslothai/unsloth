@@ -1441,19 +1441,16 @@ class InferenceOrchestrator:
     def load_stt_model(self, model: Optional[str], engine: str) -> None:
         """Make a dictation model resident on its sidecar."""
         from core.inference import stt_registry
-
         stt_registry.load(model, engine)
 
     def unload_stt_model(self, engines: Optional[Sequence[str]] = None) -> list:
         """Release dictation models (all engines by default); returns refusals."""
         from core.inference import stt_registry
-
         return stt_registry.unload(engines)
 
     def resident_stt_model(self) -> dict:
         """What dictation holds, alongside active_model_name for chat."""
         from core.inference import stt_registry
-
         return stt_registry.resident()
 
     def unload_model(self, model_name: str) -> bool:

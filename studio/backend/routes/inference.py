@@ -8099,7 +8099,6 @@ def _stt_download_module(engine: str):
 def _stt_sidecar_for(engine: str):
     """The sidecar serving an engine. One resolver, shared with the orchestrator."""
     from core.inference import stt_registry
-
     return stt_registry.sidecar_for(engine)
 
 
