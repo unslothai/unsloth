@@ -29,7 +29,6 @@ TAURI_UPDATE_HOOK = FRONTEND / "hooks/use-tauri-update.ts"
 UPDATE_INSTRUCTIONS = FRONTEND / "features/settings/components/update-studio-instructions.tsx"
 DESKTOP_UPDATE_CONTROL = FRONTEND / "features/settings/components/desktop-update-control.tsx"
 GENERAL_SETTINGS = FRONTEND / "features/settings/tabs/general-tab.tsx"
-EN_MESSAGES = FRONTEND / "i18n/locales/en.ts"
 DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 
 
@@ -116,7 +115,6 @@ def test_settings_update_button_is_inert_while_an_install_runs():
 def test_desktop_update_check_failures_are_retryable():
     hook = TAURI_UPDATE_HOOK.read_text(encoding = "utf-8")
     settings = DESKTOP_UPDATE_CONTROL.read_text(encoding = "utf-8")
-    messages = EN_MESSAGES.read_text(encoding = "utf-8")
     policy = DESKTOP_UPDATE_POLICY.read_text(encoding = "utf-8")
 
     assert "setCheckError(String(e));" in hook
@@ -124,8 +122,8 @@ def test_desktop_update_check_failures_are_retryable():
     assert 't("settings.about.update.retryCheck")' in settings
     # The reason must reach the user without guessing that every failure is
     # caused by their network connection.
-    assert 'desktopCheckFailedDescription: "Details:"' in messages
-    assert "${update.checkError}" in settings
+    assert "description = update.checkError ?? label;" in settings
+    assert 't("settings.about.update.desktopCheckFailedDescription")' not in settings
     assert "server returned HTTP {status}" in policy
     request = policy.split("let response = client", 1)[1].split("let metadata", 1)[0]
     assert ".map_err(" in request

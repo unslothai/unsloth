@@ -57,8 +57,9 @@ export function DesktopUpdateControl(): ReactElement | null {
         : t("settings.about.update.desktopAvailableDescription");
   } else if (checkFailed) {
     label = t("settings.about.update.desktopCheckFailed");
-    // Keep the reason: it separates offline from a bad release manifest.
-    description = `${t("settings.about.update.desktopCheckFailedDescription")} ${update.checkError}`;
+    // Keep the raw reason: failures can come from the network, HTTP response,
+    // release manifest, or updater itself.
+    description = update.checkError ?? label;
   } else if (update.hasChecked) {
     label = t("settings.about.update.desktopCurrent");
     description = t("settings.about.update.desktopCurrentDescription");
