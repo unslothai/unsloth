@@ -147,6 +147,9 @@ export function useDiscoverSearch({
   // Already sanitized in useHubPaginatedSearch, where every consumer reads it.
   const rawSearchError = isDatasetMode ? datasetSearch.error : modelSearch.error;
   const retrySearch = isDatasetMode ? datasetSearch.retry : modelSearch.retry;
+  const needsRestart = isDatasetMode
+    ? datasetSearch.needsRestart
+    : modelSearch.needsRestart;
   // Surfaced regardless of availability: the failure IS the thing worth showing.
   const searchError = isDiscoverTab ? rawSearchError : null;
   const searchFailure = isDiscoverTab ? failure : null;
@@ -163,8 +166,14 @@ export function useDiscoverSearch({
   const fetchMoreManual = useCallback(() => {
     if (!hasMore) return false;
     clearRemoteBackoff();
+    // A page that failed took the iterator with it, so resuming would resolve
+    // done and quietly end pagination. Restarting is the only way to continue.
+    if (needsRestart()) {
+      retrySearch();
+      return true;
+    }
     return rawFetchMore();
-  }, [hasMore, rawFetchMore]);
+  }, [hasMore, needsRestart, rawFetchMore, retrySearch]);
 
   const handleRetrySearch = useCallback(() => {
     // Always re-probe: refusing during the backoff left users unable to test a

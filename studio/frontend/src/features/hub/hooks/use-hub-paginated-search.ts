@@ -85,9 +85,16 @@ export function useHubPaginatedSearch<T>(
   createIter: (signal: AbortSignal) => AsyncGenerator<unknown>,
   mapItem: (raw: unknown) => T | null,
   options?: { enabled?: boolean },
-): HfPaginatedState<T> & { fetchMore: () => boolean; retry: () => void } {
+): HfPaginatedState<T> & {
+  fetchMore: () => boolean;
+  retry: () => void;
+  needsRestart: () => boolean;
+} {
   const enabled = options?.enabled ?? true;
   const [retryNonce, setRetryNonce] = useState(0);
+  // An async generator that throws is closed: the next next() resolves done
+  // without a request, so a failed page cannot be resumed, only restarted.
+  const iterDeadRef = useRef(false);
   const queryKey = useMemo(
     () => ({ createIter, mapItem, retryNonce }),
     [createIter, mapItem, retryNonce],
@@ -211,6 +218,7 @@ export function useHubPaginatedSearch<T>(
 
     const iter = createIter(controller.signal);
     iterRef.current = iter;
+    iterDeadRef.current = false;
 
     pullBatch(iter, mapItem, BATCH)
       .then(({ items, done, scanned }) => {
@@ -260,6 +268,8 @@ export function useHubPaginatedSearch<T>(
   const retry = useCallback(() => {
     setRetryNonce((n) => n + 1);
   }, []);
+
+  const needsRestart = useCallback(() => iterDeadRef.current, []);
 
   const fetchMore = useCallback(function fetchMoreInner(): boolean {
     if (!enabled) {
@@ -342,12 +352,12 @@ export function useHubPaginatedSearch<T>(
       .catch((err) => {
         if (versionRef.current !== v || isAbortError(err)) return;
         shouldScheduleFollowUp = false;
+        // The generator threw, so it is finished. Keep the rows and hasMore so
+        // the footer survives, but record that continuing now needs a restart.
+        iterDeadRef.current = true;
         setState((prev) => ({
           ...prev,
           isLoadingMore: false,
-          // Keep results and hasMore=true: the iterator is still valid, so the
-          // next fetchMore() resumes the failed page without discarding the list
-          // (retry() restarts from page 1).
           error: hubErrorText(err, "Failed to load more"),
         }));
       })
@@ -404,5 +414,6 @@ export function useHubPaginatedSearch<T>(
     error: visibleState.error,
     fetchMore,
     retry,
+    needsRestart,
   };
 }
