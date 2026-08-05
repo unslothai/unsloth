@@ -2135,7 +2135,9 @@ def _find_blocked_commands(command: str) -> set[str]:
             # passing still publishes nothing.
             tok_lower = token.lower()
             is_c = tok_lower == "-c" or (
-                tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
+                tok_lower.startswith("-")
+                and tok_lower.endswith("c")
+                and not tok_lower.startswith("--")
             )
             is_c = is_c or _win_switch(tok_lower) in ("/c", "/k")
             if not is_c or i < 1 or i + 1 >= len(tokens):
