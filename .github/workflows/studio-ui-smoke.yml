@@ -75,6 +75,15 @@ jobs:
           python-version: '3.12'
           cache: 'pip'
 
+      # Static file reads, no browser and no Unsloth install, so it runs first
+      # and fails in seconds. Repo-root pytest discovery is pinned to
+      # tests/security, so without this step nothing invokes it and a
+      # copy-based locator only shows up as a 60 s timeout in the full smoke.
+      - name: Playwright locator contract (static)
+        run: |
+          python -m pip install --quiet 'pytest>=8'
+          python -m pytest tests/studio/test_stt_model_search_locator_contract.py -q
+
       - name: Restore HF_HOME for ${{ env.GGUF_REPO }}
         id: cache-hf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5

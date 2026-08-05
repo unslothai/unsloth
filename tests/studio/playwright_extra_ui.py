@@ -553,9 +553,8 @@ with sync_playwright() as p:
             except Exception as exc:
                 soft_fail(f"Settings tab '{tab_name}' click failed: {exc!r}")
         step("Voice model picker: real mouse-wheel scrolling")
-        voice_tab = page.get_by_role(
-            "button", name = re.compile(r"^\s*Voice(?:\s+New)?\s*$", re.I)
-        ).first
+        # By test id too: the tab label is translated, and it gates everything below.
+        voice_tab = page.get_by_test_id("settings-tab-voice").first
         if voice_tab.count() == 0:
             fail("Voice settings tab not found")
         else:
