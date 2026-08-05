@@ -239,7 +239,8 @@ export function HistoryCardGrid({
   const [deleteArtifacts, setDeleteArtifacts] = useState(false);
   const [resumeTarget, setResumeTarget] = useState<string | null>(null);
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
-  const { resumeTrainingRunFromHistory, startPending } = useTrainingActions();
+  const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
+    useTrainingActions();
   // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel
   // registers shortly after startup, so poll (bounded) until it shows.
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
@@ -585,12 +586,14 @@ export function HistoryCardGrid({
                   size="xs"
                   variant="outline"
                   className="absolute bottom-3 left-4 z-10 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
-                  disabled={startPending || isResuming}
+                  disabled={startBlocked || isResuming}
                   onClick={() => void handleResume(run.id)}
                 >
-                  {isResuming
-                    ? t("studio.history.resuming")
-                    : t("studio.history.resumeTraining")}
+                  {stopRequested
+                    ? t("studio.training.stopping")
+                    : isResuming
+                      ? t("studio.history.resuming")
+                      : t("studio.history.resumeTraining")}
                 </Button>
               )}
               {canCopyPreview && (

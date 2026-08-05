@@ -30,17 +30,20 @@ export function PickerTabToggle<T extends string>({
   onTabChange,
   idBase,
   panelId,
+  ariaLabel,
 }: {
   tab: T;
   options: readonly [{ value: T; label: string }, { value: T; label: string }];
   onTabChange: (tab: T) => void;
   idBase: string;
   panelId: string;
+  ariaLabel: string;
 }) {
   const [first, second] = options;
   return (
     <div
       role="tablist"
+      aria-label={ariaLabel}
       className="hub-menu-trigger hub-tab-toggle relative inline-flex h-9 w-full select-none items-center rounded-full"
       onKeyDown={(event) => {
         const target = nextPickerTab(event.key, tab, first.value, second.value);

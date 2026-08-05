@@ -342,6 +342,7 @@ export function DatasetSelector() {
       onQueryChange={handleQueryChange}
       online={online}
       noun={t("studio.datasetPicker.noun")}
+      tabListAriaLabel={t("studio.dataset.sourceAriaLabel")}
       isHubLoading={isLoadingHf}
       showUseThis={showUseThis}
       useThisLabel={t("studio.datasetPicker.useAsHubDataset")}

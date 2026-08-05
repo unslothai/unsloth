@@ -50,6 +50,7 @@ import {
   createHfBrowseDatasetSelection,
   createUploadBrowseDatasetSelection,
   datasetSelectionStreamingPatch,
+  datasetSourceInvariantPatch,
   emptyManualMapping,
   formatStreamingDisabledOptions,
   hasSeparateStreamingEvalSplit,
@@ -122,11 +123,17 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       ) => {
         set((state) => {
           const patch = typeof update === "function" ? update(state) : update;
-          if (trainingConfigPatchTouchesModelDefaults(patch)) {
+          const invariantPatch = datasetSourceInvariantPatch({
+            datasetSource: patch.datasetSource ?? state.datasetSource,
+            datasetStreaming:
+              patch.datasetStreaming ?? state.datasetStreaming,
+          });
+          const normalizedPatch = { ...patch, ...invariantPatch };
+          if (trainingConfigPatchTouchesModelDefaults(normalizedPatch)) {
             _modelDefaultsEditGeneration += 1;
           }
           return {
-            ...patch,
+            ...normalizedPatch,
             userEditRevision: state.userEditRevision + 1,
           };
         });
@@ -927,7 +934,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setDatasetSource: (datasetSource) => {
           const state = get();
-          if (datasetSource === state.datasetSource) return;
+          if (datasetSource === state.datasetSource) {
+            const invariantPatch = datasetSourceInvariantPatch(state);
+            if (invariantPatch.datasetStreaming !== undefined) {
+              set(invariantPatch);
+            }
+            return;
+          }
           if (datasetSource === "s3") {
             selectS3SourceInternal();
             return;
@@ -1089,6 +1102,12 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         },
         setDatasetStreaming: (datasetStreaming) => {
           const state = get();
+          if (datasetStreaming && state.datasetSource !== "huggingface") {
+            if (state.datasetStreaming) {
+              set({ datasetStreaming: false });
+            }
+            return;
+          }
           const changed = state.datasetStreaming !== datasetStreaming;
           if (!datasetStreaming) {
             if (changed) {
@@ -1322,7 +1341,11 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
       merge: mergeTrainingConfig,
       onRehydrateStorage: () => (state) => {
         if (!state) return;
-        const patch = streamingCompatiblePatch(state);
+        const sourcePatch = datasetSourceInvariantPatch(state);
+        const patch = {
+          ...streamingCompatiblePatch({ ...state, ...sourcePatch }),
+          ...sourcePatch,
+        };
         if (Object.keys(patch).length > 0) {
           // Sync localStorage hydration runs inside create(), before
           // useTrainingConfigStore is assigned (TDZ). Defer to a microtask so the

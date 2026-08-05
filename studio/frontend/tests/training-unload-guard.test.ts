@@ -42,3 +42,32 @@ test("desktop activity mirrors pending starts through active phases", () => {
     useTrainingRuntimeStore.getState().resetRuntime();
   }
 });
+
+test("desktop activity remains active until a stop request is reconciled", () => {
+  useTrainingRuntimeStore.getState().resetRuntime();
+  const published: boolean[] = [];
+  const unsubscribe = subscribeToTrainingActivity((active) => {
+    published.push(active);
+  });
+
+  try {
+    useTrainingRuntimeStore.getState().setStopRequested(true);
+    assert.deepEqual(published, [false, true]);
+
+    useTrainingRuntimeStore.getState().setRuntimeError("Status unavailable");
+    assert.deepEqual(published, [false, true]);
+
+    useTrainingRuntimeStore.getState().applyStatus({
+      job_id: "",
+      phase: "stopped",
+      is_training_running: false,
+      eval_enabled: false,
+      message: "Stopped",
+      error: null,
+    });
+    assert.deepEqual(published, [false, true, false]);
+  } finally {
+    unsubscribe();
+    useTrainingRuntimeStore.getState().resetRuntime();
+  }
+});

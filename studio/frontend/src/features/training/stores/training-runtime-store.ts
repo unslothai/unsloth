@@ -31,10 +31,10 @@ export function isTrainingRunActive(
 export function isTrainingStartPending(
   state: Pick<
     TrainingRuntimeState,
-    "phase" | "isStarting" | "isTrainingRunning"
+    "phase" | "isStarting" | "isTrainingRunning" | "stopRequested"
   >,
 ): boolean {
-  return state.isStarting || isTrainingRunActive(state);
+  return state.stopRequested || state.isStarting || isTrainingRunActive(state);
 }
 
 const initialState: TrainingRuntimeState = {
@@ -236,11 +236,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
     tryBeginStarting: (startRequestId) => {
       let acquired = false;
       set((state) => {
-        if (
-          !startRequestId ||
-          isTrainingStartPending(state) ||
-          state.stopRequested
-        ) {
+        if (!startRequestId || isTrainingStartPending(state)) {
           return state;
         }
         acquired = true;

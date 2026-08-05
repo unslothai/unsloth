@@ -16,46 +16,144 @@ export interface ParsedTrainingProgressEvent {
   id: number | null;
 }
 
-function parseTrainingProgressEvent(
-  rawEvent: string,
-): ParsedTrainingProgressEvent | null {
-  const lines = rawEvent.split(/\r?\n/);
-  let eventName: TrainingProgressEventName = "progress";
-  let id: number | null = null;
-  const dataLines: string[] = [];
+const SSE_LINE_SEPARATOR = /\r?\n/;
+const TRAINING_PROGRESS_EVENT_NAMES: ReadonlySet<string> = new Set([
+  "progress",
+  "heartbeat",
+  "complete",
+  "error",
+]);
+const NULLABLE_NUMERIC_FIELDS = [
+  "loss",
+  "learning_rate",
+  "epoch",
+  "elapsed_seconds",
+  "eta_seconds",
+  "grad_norm",
+  "num_tokens",
+  "eval_loss",
+] as const;
 
-  for (const line of lines) {
-    if (!line) {
-      continue;
-    }
-    if (line.startsWith("event:")) {
-      const value = line.slice(6).trim();
-      if (
-        value === "progress" ||
-        value === "heartbeat" ||
-        value === "complete" ||
-        value === "error"
-      ) {
-        eventName = value;
-      }
-      continue;
-    }
-    if (line.startsWith("id:")) {
-      const value = Number(line.slice(3).trim());
-      id = Number.isFinite(value) ? value : null;
-      continue;
-    }
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice(5).trimStart());
-    }
-  }
+function isFiniteNumber(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value);
+}
 
-  if (dataLines.length === 0) {
+function isTrainingProgressEventName(
+  value: string,
+): value is TrainingProgressEventName {
+  return TRAINING_PROGRESS_EVENT_NAMES.has(value);
+}
+
+function isNullableFiniteNumber(value: unknown): boolean {
+  return value === undefined || value === null || isFiniteNumber(value);
+}
+
+function normalizeNullableFiniteNumber(value: unknown): number | null {
+  return isFiniteNumber(value) ? value : null;
+}
+
+function parseTrainingProgressPayload(
+  value: unknown,
+): TrainingProgressPayload | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return null;
   }
 
-  const payload = JSON.parse(dataLines.join("\n")) as TrainingProgressPayload;
-  return { event: eventName, payload, id };
+  const payload = value as Record<string, unknown>;
+  if (
+    typeof payload.job_id !== "string" ||
+    payload.job_id.trim().length === 0 ||
+    !isFiniteNumber(payload.step) ||
+    !isFiniteNumber(payload.total_steps) ||
+    !isFiniteNumber(payload.progress_percent)
+  ) {
+    return null;
+  }
+
+  if (
+    !NULLABLE_NUMERIC_FIELDS.every((field) =>
+      isNullableFiniteNumber(payload[field]),
+    )
+  ) {
+    return null;
+  }
+
+  return {
+    job_id: payload.job_id,
+    step: payload.step,
+    total_steps: payload.total_steps,
+    loss: normalizeNullableFiniteNumber(payload.loss),
+    learning_rate: normalizeNullableFiniteNumber(payload.learning_rate),
+    progress_percent: payload.progress_percent,
+    epoch: normalizeNullableFiniteNumber(payload.epoch),
+    elapsed_seconds: normalizeNullableFiniteNumber(payload.elapsed_seconds),
+    eta_seconds: normalizeNullableFiniteNumber(payload.eta_seconds),
+    grad_norm: normalizeNullableFiniteNumber(payload.grad_norm),
+    num_tokens: normalizeNullableFiniteNumber(payload.num_tokens),
+    eval_loss: normalizeNullableFiniteNumber(payload.eval_loss),
+  };
+}
+
+function parseTrainingProgressData(
+  dataLines: string[],
+): TrainingProgressPayload | null {
+  try {
+    return parseTrainingProgressPayload(JSON.parse(dataLines.join("\n")));
+  } catch {
+    return null;
+  }
+}
+
+interface TrainingSseFields {
+  eventName: TrainingProgressEventName;
+  id: number | null;
+  dataLines: string[];
+}
+
+function applyTrainingSseLine(fields: TrainingSseFields, line: string): void {
+  if (!line) {
+    return;
+  }
+  if (line.startsWith("event:")) {
+    const value = line.slice(6).trim();
+    if (isTrainingProgressEventName(value)) {
+      fields.eventName = value;
+    }
+    return;
+  }
+  if (line.startsWith("id:")) {
+    const value = Number(line.slice(3).trim());
+    fields.id = Number.isFinite(value) ? value : null;
+    return;
+  }
+  if (line.startsWith("data:")) {
+    fields.dataLines.push(line.slice(5).trimStart());
+  }
+}
+
+function parseTrainingProgressEvent(
+  rawEvent: string,
+): ParsedTrainingProgressEvent | null {
+  const lines = rawEvent.split(SSE_LINE_SEPARATOR);
+  const fields: TrainingSseFields = {
+    eventName: "progress",
+    id: null,
+    dataLines: [],
+  };
+
+  for (const line of lines) {
+    applyTrainingSseLine(fields, line);
+  }
+
+  if (fields.dataLines.length === 0) {
+    return null;
+  }
+
+  const payload = parseTrainingProgressData(fields.dataLines);
+  if (!payload) {
+    return null;
+  }
+  return { event: fields.eventName, payload, id: fields.id };
 }
 
 export async function consumeTrainingProgressStream(options: {

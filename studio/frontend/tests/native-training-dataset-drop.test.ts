@@ -8,11 +8,33 @@ import test from "node:test";
 import {
   TRAINING_DATASET_UPLOAD_ACCEPT,
   TRAINING_DATASET_UPLOAD_EXTENSIONS,
+  TRAINING_DOCUMENT_REDIRECT_EXTENSIONS,
   classifyNativeTrainingDatasetDrop,
   isTrainingDatasetUploadPath,
   nativeDropPositionHitsBounds,
   nativePathFilename,
 } from "../src/features/training/lib/native-dataset-drop.ts";
+
+const BACKEND_DATASET_EXTENSIONS_PATTERN =
+  /LOCAL_UPLOAD_EXTS\s*=\s*\{([^}]+)\}/s;
+const BACKEND_DOCUMENT_EXTENSIONS_PATTERN =
+  /UNSTRUCTURED_ALLOWED_EXTS\s*=\s*\{([^}]+)\}/s;
+const RECIPE_DOCUMENT_EXTENSIONS_PATTERN =
+  /ACCEPTED_EXTENSIONS\s*=\s*\[([^\]]+)\]/s;
+const RUST_DATASET_EXTENSIONS_PATTERN =
+  /TRAINING_DATASET_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const DOTTED_EXTENSION_PATTERN = /"(\.[^"]+)"/g;
+const UNDOTTED_EXTENSION_PATTERN = /"([^"]+)"/g;
+
+function extractLiteralExtensions(source: string, pattern: RegExp): string[] {
+  const literal = pattern.exec(source)?.[1];
+  if (literal === undefined) {
+    throw new Error(`Extension declaration did not match ${pattern.source}`);
+  }
+  return [...literal.matchAll(DOTTED_EXTENSION_PATTERN)]
+    .map((match) => match[1])
+    .sort();
+}
 
 test("classifies supported desktop training drops", () => {
   assert.deepEqual(
@@ -35,6 +57,22 @@ test("classifies supported desktop training drops", () => {
     classifyNativeTrainingDatasetDrop(["/data/a.csv", "/data/b.csv"]).kind,
     "multiple",
   );
+});
+
+test("redirects Markdown documents across native path formats", () => {
+  for (const path of [
+    String.raw`C:\Users\trainer\Documents\NOTES.MD`,
+    "/home/trainer/documents/notes.md",
+    "/Users/trainer/Documents/NOTES.MD",
+  ]) {
+    const dropped = classifyNativeTrainingDatasetDrop([path]);
+    assert.equal(dropped.kind, "document", path);
+    assert.equal(
+      dropped.kind === "document" ? dropped.filename.toLowerCase() : null,
+      "notes.md",
+      path,
+    );
+  }
 });
 
 test("distinguishes uploaded files from recipe output directories", () => {
@@ -110,15 +148,15 @@ test("frontend, backend, and Rust accept the same native dataset extensions", ()
   );
   const backend = [
     ...(backendSource
-      .match(/LOCAL_UPLOAD_EXTS\s*=\s*\{([^}]+)\}/s)?.[1]
-      .matchAll(/"(\.[^"]+)"/g) ?? []),
+      .match(BACKEND_DATASET_EXTENSIONS_PATTERN)?.[1]
+      .matchAll(DOTTED_EXTENSION_PATTERN) ?? []),
   ]
     .map((match) => match[1])
     .sort();
   const rust = [
     ...(rustSource
-      .match(/TRAINING_DATASET_EXTS[^=]*=\s*&\[([^\]]+)\]/s)?.[1]
-      .matchAll(/"([^"]+)"/g) ?? []),
+      .match(RUST_DATASET_EXTENSIONS_PATTERN)?.[1]
+      .matchAll(UNDOTTED_EXTENSION_PATTERN) ?? []),
   ]
     .map((match) => `.${match[1]}`)
     .sort();
@@ -129,4 +167,31 @@ test("frontend, backend, and Rust accept the same native dataset extensions", ()
     TRAINING_DATASET_UPLOAD_ACCEPT,
     TRAINING_DATASET_UPLOAD_EXTENSIONS.join(","),
   );
+});
+
+test("training document redirects match Data Recipes", () => {
+  const backendSource = readFileSync(
+    new URL("../../backend/routes/data_recipe/seed.py", import.meta.url),
+    "utf8",
+  );
+  const recipeSource = readFileSync(
+    new URL(
+      "../src/features/recipe-studio/dialogs/seed/unstructured-drop-zone.tsx",
+      import.meta.url,
+    ),
+    "utf8",
+  );
+  const backend = extractLiteralExtensions(
+    backendSource,
+    BACKEND_DOCUMENT_EXTENSIONS_PATTERN,
+  );
+  const recipe = extractLiteralExtensions(
+    recipeSource,
+    RECIPE_DOCUMENT_EXTENSIONS_PATTERN,
+  );
+  const training = [...TRAINING_DOCUMENT_REDIRECT_EXTENSIONS].sort();
+
+  assert.deepEqual(training, [".docx", ".md", ".pdf", ".txt"]);
+  assert.deepEqual(training, backend);
+  assert.deepEqual(training, recipe);
 });

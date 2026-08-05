@@ -183,3 +183,62 @@ test("does not defer an explicitly persisted completion setting", () => {
   assert.equal(merged.trainOnCompletions, false);
   assert.equal(merged.trainOnCompletionsDefaultPendingFor, null);
 });
+
+test("persistence normalizes streaming for non-Hub dataset sources", () => {
+  for (const datasetSource of ["upload", "s3"] as const) {
+    const browseDatasetSelection = {
+      dataset: "org/remembered",
+      knownCached: true,
+      localPath: "/cache/datasets--org--remembered",
+      source: "huggingface" as const,
+    };
+    const current = {
+      browseDatasetSelection,
+      datasetSource: "huggingface",
+      datasetStreaming: false,
+      evalSteps: 0,
+      selectedModel: null,
+      trainingMethod: "qlora",
+      trainOnCompletions: false,
+      wandbToken: "",
+    };
+    const persisted = partializeTrainingConfig({
+      ...current,
+      datasetSource,
+      datasetStreaming: true,
+      evalSteps: 0.1,
+    } as never);
+    const merged = mergeTrainingConfig(
+      {
+        browseDatasetSelection,
+        datasetSource,
+        datasetStreaming: true,
+        evalSteps: 0.1,
+      },
+      current as never,
+    );
+
+    assert.equal(persisted.datasetStreaming, false);
+    assert.equal(persisted.evalSteps, 0.1);
+    assert.equal(merged.datasetStreaming, false);
+    assert.equal(merged.evalSteps, 0.1);
+    assert.deepEqual(merged.browseDatasetSelection, browseDatasetSelection);
+  }
+});
+
+test("persistence preserves valid Hub streaming", () => {
+  const current = {
+    datasetSource: "huggingface",
+    datasetStreaming: false,
+    selectedModel: null,
+    trainingMethod: "qlora",
+    trainOnCompletions: false,
+    wandbToken: "",
+  };
+  const merged = mergeTrainingConfig(
+    { datasetSource: "huggingface", datasetStreaming: true },
+    current as never,
+  );
+
+  assert.equal(merged.datasetStreaming, true);
+});

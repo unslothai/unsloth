@@ -231,17 +231,21 @@ export function DatasetMappingCard({
 
 export function DatasetMappingFooter({
   mappingOk,
-  startPending,
+  startBlocked,
+  stopRequested,
   startError,
   onCancel,
   onStartTraining,
 }: {
   mappingOk: boolean;
-  startPending: boolean;
+  startBlocked: boolean;
+  stopRequested: boolean;
   startError: string | null;
   onCancel: () => void;
   onStartTraining: () => Promise<void>;
 }) {
+  const t = useT();
+
   return (
     <div className="mt-3 flex flex-col gap-2">
       <div className="flex items-center justify-between gap-3">
@@ -260,10 +264,14 @@ export function DatasetMappingFooter({
           <Button
             size="sm"
             className="cursor-pointer"
-            disabled={!mappingOk || startPending}
+            disabled={!mappingOk || startBlocked}
             onClick={() => void onStartTraining()}
           >
-            {startPending ? "Starting..." : "Continue"}
+            {stopRequested
+              ? t("studio.training.stopping")
+              : startBlocked
+                ? "Starting..."
+                : "Continue"}
           </Button>
         </div>
       </div>

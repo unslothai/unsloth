@@ -14,6 +14,7 @@ import type { DatasetSource } from "@/types/training";
 import { RefreshIcon, Rocket01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useShallow } from "zustand/react/shallow";
+import { resolveStartTrainingButtonLabelKey } from "./start-training-cta-state";
 
 function resolveStartTrainingError(input: {
   t: ReturnType<typeof useT>;
@@ -67,41 +68,6 @@ function resolveStartTrainingError(input: {
   return datasetUnverified ? t("studio.training.datasetUnverified") : null;
 }
 
-function resolveStartTrainingButtonLabel({
-  t,
-  startPending,
-  isLoadingModel,
-  isCheckingDataset,
-  hasModel,
-  hasDataset,
-}: {
-  t: ReturnType<typeof useT>;
-  startPending: boolean;
-  isLoadingModel: boolean;
-  isCheckingDataset: boolean;
-  hasModel: boolean;
-  hasDataset: boolean;
-}): string {
-  if (startPending) {
-    return t("studio.training.starting");
-  }
-  if (isLoadingModel) {
-    return t("studio.training.loadingModel");
-  }
-  if (isCheckingDataset) {
-    return t("studio.training.checkingDataset");
-  }
-  if (!(hasModel || hasDataset)) {
-    return t("studio.training.chooseModelAndDataset");
-  }
-  if (!hasModel) {
-    return t("studio.training.chooseModel");
-  }
-  return hasDataset
-    ? t("studio.training.startTraining")
-    : t("studio.training.chooseDataset");
-}
-
 export function StartTrainingCta() {
   const t = useT();
   const {
@@ -128,17 +94,20 @@ export function StartTrainingCta() {
     hasDataset,
     configValidation,
   } = useTrainingReadiness();
-  const { startError, startPending, startTrainingRun } = useTrainingActions();
+  const { startError, startBlocked, stopRequested, startTrainingRun } =
+    useTrainingActions();
 
-  const disabled = startPending || !isReady;
-  const buttonLabel = resolveStartTrainingButtonLabel({
-    t,
-    startPending,
-    isLoadingModel,
-    isCheckingDataset,
-    hasModel,
-    hasDataset,
-  });
+  const disabled = startBlocked || !isReady;
+  const buttonLabel = t(
+    resolveStartTrainingButtonLabelKey({
+      stopRequested,
+      startBlocked,
+      isLoadingModel,
+      isCheckingDataset,
+      hasModel,
+      hasDataset,
+    }),
+  );
   const errorMessage = resolveStartTrainingError({
     t,
     startError,

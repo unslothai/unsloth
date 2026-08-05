@@ -116,9 +116,9 @@ def test_training_start_prepares_token_once_before_transport():
 
     start_transport = api.split("export async function startTraining", 1)[1]
     start_transport = start_transport.split("export async function stopTraining", 1)[0]
-    assert (
-        "body: JSON.stringify({ ...payload, start_request_id: startRequestId })" in start_transport
-    )
+    request_body = start_transport.split("body: JSON.stringify({", 1)[1].split("}),", 1)[0]
+    assert "...payload" in request_body
+    assert "start_request_id: startRequestId" in request_body
     assert "hf_token: preparedToken.token" not in start_transport
 
     resume_entrypoint = resume_start.split("export async function resumeTrainingRun", 1)[1].split(
@@ -169,16 +169,17 @@ def test_training_start_claims_runtime_before_first_await():
     )[0]
     assert "tryAcquireTrainingStart()" in begin
 
-    claim = runtime_store.split("tryBeginStarting: () =>", 1)[1].split("setStarting:", 1)[0]
-    assert "isTrainingStartPending(state)" in claim
-    assert "state.stopRequested" in claim
-    assert "return { isStarting: true }" in claim
-    assert "runtime.tryBeginStarting()" in start_runtime
+    claim = runtime_store.split("tryBeginStarting: (startRequestId) =>", 1)[1].split(
+        "setStarting:", 1
+    )[0]
+    assert "!startRequestId || isTrainingStartPending(state)" in claim
+    assert "return { isStarting: true, startRequestId }" in claim
+    assert "runtime.tryBeginStarting(startRequestId)" in start_runtime
     acquire = start_runtime.split("export function tryAcquireTrainingStart", 1)[1].split(
         "export function isTrainingStartLeaseActive", 1
     )[0]
     assert acquire.index("createTrainingStartRequestId()") < acquire.index(
-        "runtime.tryBeginStarting()"
+        "runtime.tryBeginStarting(startRequestId)"
     )
 
     resume_entrypoint = resume_start.split("export async function resumeTrainingRun", 1)[1].split(
@@ -231,16 +232,19 @@ def test_accepted_training_start_stays_locked_during_preparation():
     assert "ACTIVE_TRAINING_PHASES.has(state.phase)" in active
     pending = runtime_store.split("export function isTrainingStartPending", 1)[1]
     pending = pending.split("const initialState", 1)[0]
-    assert "state.isStarting || isTrainingRunActive(state)" in pending
+    assert "stopRequested" in pending
+    assert "state.stopRequested || state.isStarting || isTrainingRunActive(state)" in pending
 
     assert "useTrainingRuntimeStore(isTrainingStartPending)" in actions
-    assert "startPending," in actions
-    assert "const { startError, startPending, startTrainingRun }" in cta
-    assert "const disabled = startPending || !isReady" in cta
-    assert "startPending" in cta
-    assert "disabled={startPending || isResuming}" in history_grid
-    assert "disabled={startPending || resuming}" in history_view
-    assert "startPending={startPending}" in dataset_preview
+    assert "startBlocked," in actions
+    assert "stopRequested," in actions
+    assert "startBlocked" in cta
+    assert "stopRequested" in cta
+    assert "const disabled = startBlocked || !isReady" in cta
+    assert "disabled={startBlocked || isResuming}" in history_grid
+    assert "disabled={startBlocked || resuming}" in history_view
+    assert "startBlocked={startBlocked}" in dataset_preview
+    assert "stopRequested={stopRequested}" in dataset_preview
     assert "useTrainingRuntimeStore(isTrainingStartPending)" in sidebar
     assert "useTrainingRuntimeStore(isTrainingStartPending)" in completion_watch
     assert "isTrainingStartPending(useTrainingRuntimeStore.getState())" in unload_guard
@@ -344,10 +348,18 @@ def test_accepted_training_start_survives_runtime_resync_failure():
         "settleAcceptedTrainingStart("
     )
     assert "return attempt.settleAccepted(response.job_id, response.message)" in submit
-    settle = runtime.split("export async function settleAcceptedTrainingStart", 1)[1]
+    adopt = runtime.split("function adoptAcceptedTrainingStart", 1)[1].split(
+        "export async function settleAcceptedTrainingStart", 1
+    )[0]
+    assert ".setStartPending(" in adopt
+    settle = runtime.split("export async function settleAcceptedTrainingStart", 1)[1].split(
+        "export function settleUnconfirmedTrainingStart", 1
+    )[0]
     assert "if (!isTrainingStartLeaseActive(lease))" in settle
     assert "await cancelSupersededTrainingStart(jobId)" in settle
-    assert settle.index(".setStartPending(") < settle.index("await Promise.allSettled([")
+    assert settle.index("adoptAcceptedTrainingStart(jobId, message)") < settle.index(
+        "await Promise.allSettled(["
+    )
     assert "Promise.resolve().then(emitTrainingRunsChanged)" in settle
     assert "syncTrainingRuntimeFromBackend()" in settle
 
@@ -455,7 +467,7 @@ def test_resume_token_identity_is_guarded_through_preflight():
     )
 
 
-def test_accepted_training_stop_survives_runtime_resync_failure():
+def test_training_stop_failure_preserves_the_runtime_latch():
     actions = TRAINING_ACTIONS.read_text(encoding = "utf-8")
     stop = actions.split("const stopTrainingRun = useCallback", 1)[1]
     stop = stop.split("const resumeTrainingRunFromHistory", 1)[0]
@@ -469,14 +481,9 @@ def test_accepted_training_stop_survives_runtime_resync_failure():
     assert "expectedJobId ? { expectedJobId } : undefined" in transport
     assert "currentRuntime.jobId !== expectedJobId" in transport
     assert "currentRuntime.resetGeneration !== expectedResetGeneration" in transport
-    superseded = transport.split("currentRuntime.resetGeneration !== expectedResetGeneration", 1)[
-        1
-    ].split("return false", 1)[0]
-    assert "currentRuntime.resetGeneration === expectedResetGeneration" in superseded
-    assert "currentRuntime.setStopRequested(false)" in superseded
-    assert "currentRuntime.setStopRequested(false)" in failure
+    assert "currentRuntime.setStopRequested(false)" not in stop
     assert "currentRuntime.setRuntimeError(message)" in failure
-    assert "await syncTrainingRuntimeFromBackend().catch(() => undefined)" in stop
+    assert stop.count("await syncTrainingRuntimeFromBackend().catch(() => undefined)") == 3
     assert "currentRuntime.jobId === expectedJobId" in stop
     assert "currentRuntime.resetGeneration === expectedResetGeneration" in stop
 
@@ -514,12 +521,15 @@ def test_cancel_invalidates_fresh_and_resume_preflight_leases():
     assert "isStarting: value ? false : state.isStarting" in stop_setter
     assert "value && !state.stopRequested" in stop_setter
     assert "state.resetGeneration + 1" in stop_setter
-    assert "currentRuntime.setStopRequested(false)" in actions
+    stop = actions.split("const stopTrainingRun = useCallback", 1)[1].split(
+        "const resumeTrainingRunFromHistory", 1
+    )[0]
+    assert "setStopRequested(false)" not in stop
 
     lease_guard = start_runtime.split("export function isTrainingStartLeaseActive", 1)[1].split(
         "export function releaseTrainingStart", 1
     )[0]
-    assert "runtime.resetGeneration === lease.resetGeneration" in lease_guard
+    assert "runtime.startRequestId === lease.startRequestId" in lease_guard
     assert "runtime.isStarting" in lease_guard
     assert "!runtime.stopRequested" in lease_guard
     assert "isTrainingStartLeaseActive(this.lease)" in fresh

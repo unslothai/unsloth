@@ -14,6 +14,7 @@ export const TRAINING_DOCUMENT_REDIRECT_EXTENSIONS = [
   ".pdf",
   ".docx",
   ".txt",
+  ".md",
 ] as const;
 
 const DATASET_EXTENSION_SET = new Set<string>(

@@ -23,6 +23,7 @@ import type {
 import {
   createHfBrowseDatasetSelection,
   createUploadBrowseDatasetSelection,
+  datasetSourceInvariantPatch,
 } from "./training-config-policy";
 
 export const TRAINING_CONFIG_PERSISTENCE_NAME = "unsloth_training_config_v1";
@@ -47,7 +48,7 @@ const NON_PERSISTED_STATE_KEYS: ReadonlySet<keyof TrainingConfigState> =
 export function partializeTrainingConfig(
   state: TrainingConfigStore,
 ): Partial<TrainingConfigStore> {
-  return Object.fromEntries(
+  const partial = Object.fromEntries(
     Object.entries(state).filter(([key, value]) => {
       if (typeof value === "function") {
         return false;
@@ -62,6 +63,10 @@ export function partializeTrainingConfig(
       return !NON_PERSISTED_STATE_KEYS.has(key as keyof TrainingConfigState);
     }),
   ) as Partial<TrainingConfigStore>;
+  return {
+    ...partial,
+    ...datasetSourceInvariantPatch(state),
+  };
 }
 
 type PersistedTrainingConfig = Record<string, unknown>;
@@ -307,7 +312,7 @@ export function mergeTrainingConfig(
     baselineTrainOnCompletions === undefined
       ? modelDefaultsAppliedFor
       : null;
-  return {
+  const merged: TrainingConfigStore = {
     ...current,
     ...persistedState,
     wandbToken: current.wandbToken,
@@ -322,5 +327,9 @@ export function mergeTrainingConfig(
     trainingMethod: isTrainingMethod(persistedState.trainingMethod)
       ? persistedState.trainingMethod
       : current.trainingMethod,
+  };
+  return {
+    ...merged,
+    ...datasetSourceInvariantPatch(merged),
   };
 }

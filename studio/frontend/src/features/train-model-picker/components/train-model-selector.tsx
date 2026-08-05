@@ -750,6 +750,7 @@ export function TrainModelSelector({
       onQueryChange={handleQueryChange}
       online={online}
       noun={t("studio.modelPicker.noun")}
+      tabListAriaLabel={t("picker.modelSourceAriaLabel")}
       isHubLoading={isLoadingHf}
       showUseThis={showUseThis}
       useThisLabel={useThisLabel}

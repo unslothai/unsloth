@@ -465,6 +465,7 @@ def assert_picker_tab_persists(page, tour: str, noun: str, tab_name: str) -> Non
 def test_model_picker(page) -> None:
     info("model picker: open, arrow navigation, ambiguous keyboard match")
     model_trigger, search = open_picker(page, "studio-model-picker", "models")
+    expect(page.get_by_role("tablist", name = "Model source")).to_be_visible()
     assert_selected_picker_tab(page, "On Device")
     search = page.get_by_role("textbox", name = "Search models").first
     model_options = page.locator('[data-picker-option="true"]').filter(
@@ -566,6 +567,7 @@ def test_dataset_picker(page) -> None:
         "studio-dataset-picker",
         "datasets",
     )
+    expect(page.get_by_role("tablist", name = "Dataset source")).to_be_visible()
     assert_selected_picker_tab(page, "On Device")
     search = page.get_by_role("textbox", name = "Search datasets").first
     search.fill("Twin Dataset")

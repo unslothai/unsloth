@@ -15,7 +15,8 @@ import {
 
 export function useTrainingActions() {
   const t = useT();
-  const startPending = useTrainingRuntimeStore(isTrainingStartPending);
+  const startBlocked = useTrainingRuntimeStore(isTrainingStartPending);
+  const stopRequested = useTrainingRuntimeStore((state) => state.stopRequested);
   const startError = useTrainingRuntimeStore((state) => state.startError);
 
   const startTrainingRun = useCallback(
@@ -38,9 +39,6 @@ export function useTrainingActions() {
           currentRuntime.jobId !== expectedJobId ||
           currentRuntime.resetGeneration !== expectedResetGeneration
         ) {
-          if (currentRuntime.resetGeneration === expectedResetGeneration) {
-            currentRuntime.setStopRequested(false);
-          }
           await syncTrainingRuntimeFromBackend().catch(() => undefined);
           return false;
         }
@@ -48,8 +46,8 @@ export function useTrainingActions() {
           error instanceof Error
             ? error.message
             : t("studio.training.stopFailed");
-        currentRuntime.setStopRequested(false);
         currentRuntime.setRuntimeError(message);
+        await syncTrainingRuntimeFromBackend().catch(() => undefined);
         return false;
       }
       await syncTrainingRuntimeFromBackend().catch(() => undefined);
@@ -98,7 +96,8 @@ export function useTrainingActions() {
   }, [t]);
 
   return {
-    startPending,
+    startBlocked,
+    stopRequested,
     startError,
     startTrainingRun,
     resumeTrainingRunFromHistory,

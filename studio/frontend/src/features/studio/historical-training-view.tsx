@@ -114,7 +114,8 @@ export function HistoricalTrainingView({
   const t = useT();
   const [result, setResult] = useState<HistoricalRunResult | null>(null);
   const [resuming, setResuming] = useState(false);
-  const { resumeTrainingRunFromHistory, startPending } = useTrainingActions();
+  const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
+    useTrainingActions();
   const currentResult = result?.runId === runId ? result : null;
   const detail = currentResult?.detail ?? null;
   const error = currentResult?.error ?? null;
@@ -203,7 +204,7 @@ export function HistoricalTrainingView({
             size="sm"
             variant="outline"
             className="gap-1.5"
-            disabled={startPending || resuming}
+            disabled={startBlocked || resuming}
             onClick={() => void handleResume()}
           >
             {resuming ? (
@@ -211,9 +212,11 @@ export function HistoricalTrainingView({
             ) : (
               <HugeiconsIcon icon={PlayIcon} className="size-3.5" />
             )}
-            {resuming
-              ? t("studio.history.resuming")
-              : t("studio.history.resumeTraining")}
+            {stopRequested
+              ? t("studio.training.stopping")
+              : resuming
+                ? t("studio.history.resuming")
+                : t("studio.history.resumeTraining")}
           </Button>
         </div>
       )}

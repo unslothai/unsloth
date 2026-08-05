@@ -184,7 +184,8 @@ export function DatasetPreviewDialog({
       modelType: s.modelType,
     })),
   );
-  const { startError, startPending, startTrainingRun } = useTrainingActions();
+  const { startError, startBlocked, stopRequested, startTrainingRun } =
+    useTrainingActions();
 
   // Treat backend-reported image data as VLM even if the prop hasn't caught up.
   const effectiveIsAudio = !!data?.is_audio;
@@ -713,7 +714,8 @@ export function DatasetPreviewDialog({
                 {showMappingFooter && (
                   <DatasetMappingFooter
                     mappingOk={mappingOk}
-                    startPending={startPending}
+                    startBlocked={startBlocked}
+                    stopRequested={stopRequested}
                     startError={startError}
                     onCancel={() => handleOpenChange(false)}
                     onStartTraining={async () => {

@@ -160,6 +160,7 @@ export function PickerShell({
   scrollRef,
   showUseThis,
   tab,
+  tabListAriaLabel,
   trigger,
   useThisLabel,
 }: {
@@ -183,6 +184,7 @@ export function PickerShell({
   scrollRef: RefObject<HTMLDivElement | null>;
   showUseThis: boolean;
   tab: PickerTab;
+  tabListAriaLabel: string;
   trigger: ReactNode;
   useThisLabel: string;
 }) {
@@ -312,6 +314,7 @@ export function PickerShell({
           onTabChange={handleTabChange}
           idBase={idBase}
           panelId={panelId}
+          ariaLabel={tabListAriaLabel}
         />
         <div
           ref={panelRef}

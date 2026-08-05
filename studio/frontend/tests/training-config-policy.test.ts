@@ -11,6 +11,7 @@ registerBundlerResolver();
 const {
   createHfBrowseDatasetSelection,
   datasetSelectionStreamingPatch,
+  datasetSourceInvariantPatch,
   resolveDeferredTrainOnCompletionsDefault,
 } = await import("../src/features/training/stores/training-config-policy.ts");
 
@@ -36,6 +37,32 @@ test("selecting an on-device Hub dataset disables streaming", () => {
     ),
     {},
   );
+});
+
+test("streaming is constrained to Hugging Face dataset sources", () => {
+  assert.deepEqual(
+    datasetSourceInvariantPatch({
+      datasetSource: "huggingface",
+      datasetStreaming: true,
+    }),
+    {},
+  );
+  for (const datasetSource of ["upload", "s3"] as const) {
+    assert.deepEqual(
+      datasetSourceInvariantPatch({
+        datasetSource,
+        datasetStreaming: true,
+      }),
+      { datasetStreaming: false },
+    );
+    assert.deepEqual(
+      datasetSourceInvariantPatch({
+        datasetSource,
+        datasetStreaming: false,
+      }),
+      {},
+    );
+  }
 });
 
 test("resolves deferred completion defaults without violating training constraints", () => {

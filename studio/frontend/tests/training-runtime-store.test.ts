@@ -26,12 +26,13 @@ test("an unconfirmed start remains pending without inventing a job id", () => {
   assert.equal(isTrainingStartPending(pending), true);
 });
 
-test("start-pending protection spans start synchronization and active phases", () => {
+test("start blocking spans stop requests, start synchronization, and active phases", () => {
   assert.equal(
     isTrainingStartPending({
       phase: "idle",
       isStarting: false,
       isTrainingRunning: false,
+      stopRequested: false,
     }),
     false,
   );
@@ -40,6 +41,7 @@ test("start-pending protection spans start synchronization and active phases", (
       phase: "idle",
       isStarting: true,
       isTrainingRunning: false,
+      stopRequested: false,
     }),
     true,
   );
@@ -48,6 +50,7 @@ test("start-pending protection spans start synchronization and active phases", (
       phase: "configuring",
       isStarting: false,
       isTrainingRunning: false,
+      stopRequested: false,
     }),
     true,
   );
@@ -56,6 +59,7 @@ test("start-pending protection spans start synchronization and active phases", (
       phase: "training",
       isStarting: false,
       isTrainingRunning: false,
+      stopRequested: false,
     }),
     true,
   );
@@ -64,8 +68,18 @@ test("start-pending protection spans start synchronization and active phases", (
       phase: "error",
       isStarting: false,
       isTrainingRunning: false,
+      stopRequested: false,
     }),
     false,
+  );
+  assert.equal(
+    isTrainingStartPending({
+      phase: "idle",
+      isStarting: false,
+      isTrainingRunning: false,
+      stopRequested: true,
+    }),
+    true,
   );
 });
 
@@ -81,8 +95,53 @@ test("requesting a stop invalidates an in-flight start lease", () => {
   assert.equal(stopped.isStarting, false);
   assert.equal(stopped.stopRequested, true);
   assert.equal(stopped.resetGeneration, resetGeneration + 1);
+  assert.equal(isTrainingStartPending(stopped), true);
+  assert.equal(stopped.tryBeginStarting("start-too-early"), false);
 
   stopped.setStopRequested(false);
+});
+
+test("the stop latch survives failures and running status until a terminal status", () => {
+  useTrainingRuntimeStore.getState().resetRuntime();
+  useTrainingRuntimeStore
+    .getState()
+    .setStartPending("job-stopping", "Training");
+  useTrainingRuntimeStore.getState().setStopRequested(true);
+
+  useTrainingRuntimeStore.getState().setRuntimeError("Status unavailable");
+
+  let current = useTrainingRuntimeStore.getState();
+  assert.equal(current.stopRequested, true);
+  assert.equal(isTrainingStartPending(current), true);
+  assert.equal(current.tryBeginStarting("start-after-failure"), false);
+
+  current.applyStatus({
+    job_id: "job-stopping",
+    phase: "training",
+    is_training_running: true,
+    eval_enabled: false,
+    message: "Stopping",
+    error: null,
+  });
+
+  current = useTrainingRuntimeStore.getState();
+  assert.equal(current.stopRequested, true);
+  assert.equal(current.tryBeginStarting("start-while-stopping"), false);
+
+  current.applyStatus({
+    job_id: "job-stopping",
+    phase: "stopped",
+    is_training_running: false,
+    eval_enabled: false,
+    message: "Stopped",
+    error: null,
+  });
+
+  current = useTrainingRuntimeStore.getState();
+  assert.equal(current.stopRequested, false);
+  assert.equal(isTrainingStartPending(current), false);
+  assert.equal(current.tryBeginStarting("start-after-stop"), true);
+  useTrainingRuntimeStore.getState().setStarting(false);
 });
 
 test("a terminal stream error invalidates earlier runtime requests", () => {

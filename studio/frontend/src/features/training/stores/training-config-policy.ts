@@ -40,6 +40,14 @@ export function datasetSelectionStreamingPatch(
     : {};
 }
 
+export function datasetSourceInvariantPatch(
+  state: Pick<TrainingConfigState, "datasetSource" | "datasetStreaming">,
+): Partial<Pick<TrainingConfigState, "datasetStreaming">> {
+  return state.datasetSource !== "huggingface" && state.datasetStreaming
+    ? { datasetStreaming: false }
+    : {};
+}
+
 export function createUploadBrowseDatasetSelection(
   uploadedFile: string | null,
 ): Extract<BrowseDatasetSelection, { source: "upload" }> {
