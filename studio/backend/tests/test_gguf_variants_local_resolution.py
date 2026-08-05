@@ -176,6 +176,53 @@ def test_direct_big_endian_check_uses_the_load_extractor(in_tmp_cwd):
     assert _variants(os.fspath(gguf)).variants == []
 
 
+def test_variantless_pick_prefers_a_complete_candidate(in_tmp_cwd):
+    # detect_gguf_model sorts by size, and a torn split's lone shard can be
+    # the largest file; the load must prefer a candidate it can actually open.
+    from utils.models.model_config import detect_gguf_model
+
+    (in_tmp_cwd / "config.json").write_text("{}")
+    (in_tmp_cwd / "model-Q8_0.gguf").write_bytes(b"GGUF")
+    (in_tmp_cwd / "model-Q4_K_M-00001-of-00002.gguf").write_bytes(b"GGUF" * 100)
+
+    assert detect_gguf_model(os.fspath(in_tmp_cwd)).endswith("model-Q8_0.gguf")
+
+
+def test_dir_resolver_accepts_the_advertised_hub_style_label(in_tmp_cwd):
+    # The listing labels F16-checkpoint-Q4_K_M.gguf as Q4_K_M; echoing that
+    # label back must resolve the same file.
+    from utils.models.model_config import ModelConfig
+
+    marked = in_tmp_cwd / "m"
+    marked.mkdir()
+    (marked / "config.json").write_text("{}")
+    (marked / "F16-checkpoint-Q4_K_M.gguf").write_bytes(b"GGUF")
+
+    quant = _variants(os.fspath(marked)).variants[0].quant
+    config = ModelConfig.from_identifier(os.fspath(marked), gguf_variant = quant)
+    assert config is not None and config.is_gguf
+
+
+def test_remote_listing_filters_what_the_remote_detector_refuses(monkeypatch):
+    # The remote detector extracts F16 and refuses the be marker; the listing
+    # must not advertise a row for the same sibling.
+    from types import SimpleNamespace
+
+    from hub.utils.gguf import list_gguf_variants
+
+    info = SimpleNamespace(
+        siblings = [
+            SimpleNamespace(rfilename = "F16-be-checkpoint-Q4_K_M.gguf", size = 100),
+            SimpleNamespace(rfilename = "model-Q8_0.gguf", size = 10),
+        ]
+    )
+    api = SimpleNamespace(model_info = lambda *a, **k: info)
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda token = None: api)
+
+    variants, _, _ = list_gguf_variants("owner/repo")
+    assert [v.quant for v in variants] == ["Q8_0"]
+
+
 def test_direct_gguf_bpw_label_round_trips_through_the_load_path(in_tmp_cwd):
     # The hub-side extractor drops the bpw modifier, so the advertised quant is
     # the shorter label; echoing it back must still resolve this same file.

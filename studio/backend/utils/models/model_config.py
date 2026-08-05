@@ -1868,6 +1868,15 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
                 continue
             gguf_files.append(f)
         gguf_files.sort(key = lambda f: f.stat().st_size, reverse = True)
+        # A torn split sorts by its lone shard's size and cannot load; prefer
+        # any complete candidate, keeping the old pick when nothing is whole.
+        whole = [
+            f
+            for f in gguf_files
+            if _GGUF_SPLIT_FILE_RE.match(f.name) is None or _colocated_first_split_shard(f)[1]
+        ]
+        if whole:
+            gguf_files = whole
         if gguf_files:
             return str(_local_gguf_load_path(gguf_files[0]))
 
@@ -2384,10 +2393,17 @@ def _find_local_gguf_by_variant(
         quant = _extract_quant_label(rel)
         fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
         # Listings advertise the hub-style bpw-stripped spelling; accept it
-        # here like the direct-file resolver does.
+        # here like the direct-file resolver does. The hub extractor can also
+        # prefer a different token of the same name (F16-checkpoint-Q4_K_M
+        # advertises Q4_K_M), so any whole quant token of the name labels the
+        # same file and resolves it.
         stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
+        stem_tokens = [
+            f"{m.group(1) or ''}{m.group(2)}"
+            for m in _GGUF_KNOWN_QUANT_RE.finditer(fallback_variant)
+        ]
         if not _variant_matches(
-            variant, quant, fallback_variant, stripped
+            variant, quant, fallback_variant, stripped, *stem_tokens
         ) or _is_big_endian_gguf_path(rel, quant):
             continue
         matches.append(f)

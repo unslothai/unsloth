@@ -574,7 +574,13 @@ def list_gguf_variants(
             has_vision = True
             continue
         quant = extract_quant_label(filename)
-        if is_big_endian_gguf_path(filename, quant):
+        # The remote load detector passes its own extractor's quant into this
+        # predicate, and the two disagree on shapes like
+        # F16-be-checkpoint-Q4_K_M; judge with the loader's label so a row is
+        # never advertised for a file detect_gguf_model_remote refuses.
+        from utils.models.model_config import _extract_quant_label as _loader_quant
+
+        if is_big_endian_gguf_path(filename, _loader_quant(filename)):
             continue
         quant_totals[quant] = quant_totals.get(quant, 0) + int(getattr(sibling, "size", 0) or 0)
         quant_first_file.setdefault(quant, filename)
