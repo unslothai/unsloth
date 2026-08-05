@@ -15,6 +15,7 @@ import {
 import { HugeiconsIcon } from "@hugeicons/react";
 import { ArrowLeft, ArrowRight } from "lucide-react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
+import { isFillingWorkArea, toggleWorkAreaFill } from "./window-work-area";
 import {
   type MouseEvent,
   type ReactElement,
@@ -219,7 +220,7 @@ export function WindowTitlebar({
     const refreshSequence = ++maximizeRefreshSequence.current;
     try {
       const appWindow = await getAppWindow();
-      const nextMaximized = await appWindow.isMaximized();
+      const nextMaximized = await isFillingWorkArea(appWindow);
       if (refreshSequence === maximizeRefreshSequence.current) {
         setMaximized(nextMaximized);
       }
@@ -252,7 +253,7 @@ export function WindowTitlebar({
         if (!mounted) {
           return;
         }
-        setMaximized(await appWindow.isMaximized());
+        setMaximized(await isFillingWorkArea(appWindow));
         unlistenResize = await appWindow.onResized(() => {
           scheduleMaximizedRefresh();
         });
@@ -311,7 +312,7 @@ export function WindowTitlebar({
       if (event.button !== 0) {
         return;
       }
-      runWindowAction((appWindow) => appWindow.toggleMaximize());
+      runWindowAction((appWindow) => toggleWorkAreaFill(appWindow));
     },
     [runWindowAction],
   );
@@ -412,7 +413,7 @@ export function WindowTitlebar({
           <WindowControlButton
             label={maximized ? "Restore window" : "Maximize window"}
             onClick={() =>
-              runWindowAction((appWindow) => appWindow.toggleMaximize())
+              runWindowAction((appWindow) => toggleWorkAreaFill(appWindow))
             }
           >
             <HugeiconsIcon
