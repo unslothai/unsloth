@@ -325,6 +325,12 @@ def windows_terminal(request, monkeypatch):
         r'cmd /c "C:\Program Files\PowerShell\7\pwsh.exe" -Command ls',
         # START reaches the same shape behind its title.
         r'cmd //c start "" "C:\Program Files\PowerShell\7\pwsh.exe" -Command ls',
+        # cmd searches PATHEXT, so the suffix is optional...
+        r'cmd /c "C:\Program Files\PowerShell\7\pwsh" -Command ls',
+        r'cmd //c start "" "C:\Program Files\PowerShell\7\pwsh" -Command ls',
+        # ...and it expands %VAR% before reading the path.
+        r'cmd /c "%ProgramFiles%\PowerShell\7\pwsh.exe" -Command ls',
+        r'cmd /c "%ProgramFiles%\PowerShell\7\pwsh" -Command ls',
     ],
 )
 def test_cmd_shellout_is_screened_through_mangled_switches(windows_terminal, command):
@@ -431,6 +437,29 @@ def test_git_bash_hands_cmd_its_own_quotes(monkeypatch):
     )
     assert tools._find_blocked_commands("""cmd //c '"powershell -Command ls"'""")
     assert "rm" in tools._find_blocked_commands("""cmd /c '""rm -rf x""'""")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        r'cmd //c start "" C:\tmp\image.png',
+        r'cmd //c start "job" C:\tmp\readme.txt',
+        r'cmd //c start "" "C:\Users\me\My Documents\report.docx"',
+    ],
+)
+def test_start_still_opens_a_document(windows_terminal, command):
+    # File association is what START is for. Re-scanning the target as a command
+    # line reads the extension dot as the POSIX `.` builtin, which turned every
+    # absolute Windows path into a hard block. A bare word is a program name.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_a_quoted_command_line_after_start_is_still_lexed():
+    # The other half: quoting can hand the whole line over as one token, and an
+    # unbalanced quote drops the scan onto split(), whose tokens keep their
+    # marks. Both have to be lexed again or the program is never read.
+    assert "rm" in tools._find_blocked_commands('start "" "rm -rf x"')
+    assert "curl" in tools._find_blocked_commands('start ""curl http://x"')
 
 
 @pytest.mark.parametrize(

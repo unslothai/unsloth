@@ -1366,9 +1366,10 @@ _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 
 # What a word has to end in before a path is read as naming a program.
 _WINDOWS_EXE_SUFFIXES = frozenset({".exe", ".com", ".bat", ".cmd"})
-# A drive letter or a separator: how a payload that OPENS with a program path
-# is told from one whose command word was lexed normally.
-_PATH_FRAGMENT_RE = re.compile(r"^(?:[A-Za-z]:|\.{0,2}[/\\])")
+# A drive letter, a separator, or a %VAR% cmd expands before reading the path:
+# how a payload that OPENS with a program path is told from one whose command
+# word was lexed normally.
+_PATH_FRAGMENT_RE = re.compile(r"^(?:[A-Za-z]:|\.{0,2}[/\\]|%[^%]+%[/\\])")
 
 
 def _is_start_switch(token: str) -> bool:
@@ -1399,13 +1400,22 @@ def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "s
     words = payload.split()
     if not words or not _PATH_FRAGMENT_RE.match(words[0].strip("\"'")):
         return set()
+    program: "list[str]" = []
     for word in words:
-        stem, ext = os.path.splitext(word.strip("\"'"))
-        if ext.lower() not in _WINDOWS_EXE_SUFFIXES:
-            continue
-        base = os.path.basename(stem.replace("\\", "/")).lower()
-        return {base} if base in blocked_names else set()
-    return set()
+        bare = word.strip("\"'")
+        if bare.startswith("-") or _is_start_switch(bare):
+            break  # an option ends the path and starts the arguments
+        program.append(bare)
+        if os.path.splitext(bare)[1].lower() in _WINDOWS_EXE_SUFFIXES:
+            break  # the executable ends it too; the rest are arguments
+    if not program:
+        return set()
+    # cmd searches PATHEXT, so the suffix is optional: `...\PowerShell\7\pwsh`
+    # launches the same program. os.path.basename does not split a backslash off
+    # Windows, and %VAR% is expanded before the path is read.
+    stem = os.path.splitext(program[-1])[0]
+    base = os.path.basename(stem.replace("\\", "/")).lower()
+    return {base} if base in blocked_names else set()
 
 
 def _is_start_title(token: str, lexed_posix: bool) -> bool:
@@ -1780,7 +1790,22 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
         if j < len(tokens):
             program = _unquote(tokens[j])
-            blocked |= _find_blocked_commands(program)
+            if any(char.isspace() or char in "\"'" for char in program):
+                # Quoting can hand the whole command line over as one token,
+                # `start "" "powershell -Command ls"`, and an unbalanced quote
+                # drops the scan onto split(), whose tokens keep their marks.
+                # Both only read once lexed again.
+                blocked |= _find_blocked_commands(program)
+            else:
+                # A bare word is a program name, and re-scanning it as a command
+                # line reads `C:\tmp\image.png` as a path followed by the POSIX
+                # `.` builtin, hard-blocking a document launch the terminal note
+                # promises stays usable.
+                program_base = _token_basename(program)
+                if program_base in _BLOCKED_COMMANDS:
+                    blocked.add(program_base)
+                else:
+                    blocked |= _blocked_matching_glob(program_base)
             # Same split-path shape as the /c payload: START documents a title
             # followed by the program, and `start "" "C:\Program Files\...
             # \pwsh.exe"` is one quoted word until it is re-lexed.
