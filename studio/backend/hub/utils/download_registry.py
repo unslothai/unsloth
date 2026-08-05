@@ -987,6 +987,13 @@ class DownloadRegistry:
                 metadata = replace(metadata, transport = marker_transport)
             return terminal_state, metadata
 
+    def job_transport(self, key: str) -> Optional[str]:
+        """The transport a live job is running on. None when it has no metadata."""
+        key = normalize_job_key(key)
+        with self._lock:
+            metadata = self._metadata.get(key)
+            return metadata.transport if metadata is not None else None
+
     def update_job_transport(self, key: str, transport: str) -> None:
         key = normalize_job_key(key)
         with self._lock:

@@ -309,6 +309,9 @@ async def download_model_response(
             "state": claim_state,
             "accepted": _registry.adoptable(key),
             "generation": generation,
+            # An adopted job keeps the transport it started on, so report it
+            # rather than let the caller assume the one it asked for.
+            "transport": _registry.job_transport(key),
         }
     download_manifest.clear_cancel_marker(
         "model",

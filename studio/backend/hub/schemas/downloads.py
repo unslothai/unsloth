@@ -78,6 +78,9 @@ class DownloadStartResponse(BaseModel):
     state: str
     accepted: bool
     generation: int
+    # Set only when this start adopted a job another client had already begun:
+    # the transport that job is really on, which need not be the one requested.
+    transport: Optional[str] = None
 
 
 class CancelDownloadResponse(BaseModel):
@@ -189,6 +192,8 @@ class DatasetDownloadStartResponse(BaseModel):
     state: str
     accepted: bool
     generation: int
+    # Set only when this start adopted an already-running job (see above).
+    transport: Optional[str] = None
 
 
 class CancelDatasetDownloadResponse(BaseModel):

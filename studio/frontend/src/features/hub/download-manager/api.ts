@@ -52,6 +52,9 @@ export interface DownloadStartResult {
   state: DownloadStartState;
   accepted: boolean;
   generation?: number;
+  // Present only when the start adopted a job another client had already
+  // begun: the transport it is really running on.
+  transport?: TransportMode | null;
 }
 
 export interface ActiveModelDownload {

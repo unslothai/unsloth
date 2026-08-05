@@ -30,6 +30,19 @@ export function isTransportMode(value: unknown): value is TransportMode {
   );
 }
 
+/** The transport a started job is really running on.
+ *
+ * An accepted start can mean the backend attached this client to a job another
+ * one had already begun, which keeps the transport it started on. Trusting the
+ * locally requested value there offers Pause for a Xet run, or Cancel for a
+ * resumable HTTP one. */
+export function transportAfterStart(
+  requested: ResolvedTransport,
+  reported: unknown,
+): ResolvedTransport {
+  return isResolvedTransport(reported) ? reported : requested;
+}
+
 export function isResolvedTransport(
   value: unknown,
 ): value is ResolvedTransport {

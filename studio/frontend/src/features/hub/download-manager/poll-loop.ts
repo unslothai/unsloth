@@ -39,6 +39,7 @@ import {
   type ResolvedTransport,
   type TransportMode,
   isResolvedTransport,
+  transportAfterStart,
 } from "./constants";
 import {
   apiCancel,
@@ -715,6 +716,8 @@ export async function startJob(
     if (Number.isSafeInteger(result.generation)) {
       patchJob(key, { serverGeneration: result.generation });
     }
+    const started = transportAfterStart(mode, result.transport);
+    if (started !== activeTransport) patchJob(key, { transport: started });
   }
 
   beginPolling(key, rt);
