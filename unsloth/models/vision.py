@@ -312,12 +312,9 @@ def _embeddings_are_tied(input_embeddings, output_embeddings):
 
 
 def _resolve_offload_embedding(model, offload_embedding):
-    """Decide whether `offload_embedding = True` can actually be honoured.
-
-    It is a VRAM optimisation, not a correctness switch, so a model it cannot
-    help turns it off (as `fast_inference` already does) rather than failing
-    the load. WSL and Windows are returned unchanged, since the offload block
-    skips those platforms anyway.
+    """Turn `offload_embedding` off where it cannot help instead of failing the
+    load: it is a VRAM optimisation, not a correctness switch. WSL and Windows
+    pass through, since the offload block skips those platforms anyway.
     """
     if not offload_embedding:
         return False
@@ -334,8 +331,6 @@ def _resolve_offload_embedding(model, offload_embedding):
         # Cannot inspect it, so leave the caller's request alone.
         return offload_embedding
     if _embeddings_are_tied(in_embed, out_embed):
-        # embed_tokens IS lm_head, so offloading strands the output projection
-        # on CPU and frees nothing.
         print(
             "Unsloth: Not offloading embeddings; this model ties embed_tokens "
             "to lm_head, so offloading saves no VRAM."
@@ -1345,9 +1340,8 @@ class FastBaseModel:
                     # attn_implementation   = attn_implementation,
                     **kwargs,
                 )
-                # Before _attach_bnb_multidevice_hooks, which returns early
-                # while offload_embedding is True; resolving later would skip
-                # hook attachment for tied models.
+                # Must precede _attach_bnb_multidevice_hooks, which returns
+                # early while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(
                     model,
                     offload_embedding,

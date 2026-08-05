@@ -1,14 +1,10 @@
 """_backfill_dataclass_defaults must not shadow an inherited default.
 
-The fix gives class-local bare annotations a `None` default so a transformers
-5 config subclass survives the dataclass ordering rule. Deciding "no default
-yet" with `name not in cls.__dict__` was wrong: a subclass re-annotating an
-inherited field without assigning has a default already, through the MRO.
+Deciding "no default yet" with `name not in cls.__dict__` was wrong: a subclass
+re-annotating an inherited field without assigning already has one, via the MRO.
 
-The helper is plain Python, so these reproduce it directly and run on
-transformers 4 too. import_fixes.py is loaded by file spec because
-`import unsloth.import_fixes` would run unsloth/__init__.py first, pulling in
-torch, numpy and unsloth_zoo.
+import_fixes.py is loaded by file spec because `import unsloth.import_fixes`
+would run unsloth/__init__.py first, pulling in torch, numpy and unsloth_zoo.
 """
 
 import importlib.util
@@ -38,8 +34,7 @@ ifx = _MODULE  # for monkeypatching its internals
 
 
 def test_an_inherited_default_is_not_shadowed():
-    """Absent from cls.__dict__ but present through the MRO: writing None over
-    it would change the config's value."""
+    """Absent from cls.__dict__ but present via the MRO: None would overwrite it."""
 
     class Base:
         window: int = 7
@@ -65,8 +60,7 @@ def test_a_genuinely_new_field_is_still_backfilled():
 
 
 def test_an_inherited_method_of_the_same_name_counts_too():
-    """dataclass reads defaults with getattr, so anything the MRO resolves is
-    already a default."""
+    """getattr resolves through the MRO, so a method counts as a default too."""
 
     class Base:
         def helper(self):
@@ -99,8 +93,7 @@ def _fake_dataclass(cls, **kwargs):
 
 def _config_without_readable_source():
     """A hook whose source cannot be read, as on a stripped or frozen install.
-    Compiled under a filename not on disk, so `inspect.getsource` is what
-    fails, not the class object."""
+    Compiled under a filename not on disk, so `inspect.getsource` is what fails."""
     namespace = {}
     exec(
         compile(
@@ -120,8 +113,7 @@ def _pretend_transformers_is(monkeypatch, version):
 
 
 def test_the_source_beats_the_version_fallback(monkeypatch):
-    """The change was backported, so where the source can be read it decides
-    and the version is only a fallback."""
+    """The change was backported, so a readable source decides over the version."""
     _pretend_transformers_is(monkeypatch, "5.4.0")
     assert _transformers_configs_are_kw_only(_KwOnlyConfig) is True
     _pretend_transformers_is(monkeypatch, "5.5.1")
@@ -129,16 +121,13 @@ def test_the_source_beats_the_version_fallback(monkeypatch):
 
 
 def test_unreadable_source_on_5_5_1_stands_down(monkeypatch):
-    """Returning False here would patch a transformers that already passes
-    kw_only=True, giving a None default to required keyword fields."""
+    """False here would give required keyword fields a None default on 5.5.1+."""
     _pretend_transformers_is(monkeypatch, "5.5.1")
     assert _transformers_configs_are_kw_only(_config_without_readable_source())
 
 
 def test_unreadable_source_falls_back_to_probing_the_behaviour(monkeypatch):
-    """With no source to read, ask the installed transformers by trying it.
-    Not a version check: the ordering rule was backported, so a number labels
-    the wrong builds."""
+    """With no source to read, ask the installed transformers by trying it."""
     monkeypatch.setattr(
         ifx,
         "_transformers_needs_bare_annotation_fix",
@@ -154,16 +143,15 @@ def test_unreadable_source_falls_back_to_probing_the_behaviour(monkeypatch):
 
 
 def test_the_probe_answers_from_the_class_not_the_version(monkeypatch):
-    """Faking `transformers.__version__` used to change the answer, which
-    mislabels a backported install."""
+    """Faking `transformers.__version__` must not change the answer."""
     for version in ("5.4.0", "5.5.0", "5.5.0.post1", "4.57.6", "9.9.9"):
         _pretend_transformers_is(monkeypatch, version)
         assert ifx._transformers_needs_bare_annotation_fix() is False, version
 
 
 def test_the_probe_detects_a_config_that_raises(monkeypatch):
-    """An `__init_subclass__` that rejects the bare-annotation shape is what
-    the fix exists for, whatever version it calls itself."""
+    """An `__init_subclass__` rejecting the shape is what the fix exists for."""
+
     class Raising:
         def __init_subclass__(cls, **kwargs):
             raise TypeError("non-default argument follows default argument")
@@ -175,8 +163,8 @@ def test_the_probe_detects_a_config_that_raises(monkeypatch):
 
 
 def test_an_unreadable_version_does_not_raise(monkeypatch):
-    """Dev builds and vendored forks can carry a version packaging will not
-    parse, and a missing transformers must not raise out of a probe either."""
+    """Dev builds can carry a version packaging will not parse; nor may a
+    missing transformers raise out of the probe."""
     for version in ("not-a-version", "", None):
         _pretend_transformers_is(monkeypatch, version)
         assert _transformers_configs_are_kw_only(_config_without_readable_source()), repr(version)

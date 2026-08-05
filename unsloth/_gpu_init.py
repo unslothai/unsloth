@@ -199,8 +199,7 @@ from .import_fixes import (
     patch_accelerate_recursively_apply,
 )
 
-# First: installs the PretrainedConfig guard before anything defines vLLM's
-# config classes, which raise TypeError on transformers 5.4.0 to 5.5.0.
+# Must run first: guards PretrainedConfig before vLLM defines its config classes.
 fix_transformers5_bare_annotation_configs()
 fix_xformers_performance_issue()
 fix_vllm_aimv2_issue()

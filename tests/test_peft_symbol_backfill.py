@@ -4,12 +4,8 @@ peft's ``transformers_weight_conversion`` imports 3 names from
 ``transformers.conversion_mapping`` and 8 from ``transformers.core_model_loading``
 at module top level. Unsloth stubs those submodules when absent, but an
 importable submodule can still lack individual symbols: transformers 5.0.0.dev0
-ships ``conversion_mapping`` WITHOUT ``_MODEL_TO_CONVERSION_PATTERN``, so
-
-    ImportError: cannot import name '_MODEL_TO_CONVERSION_PATTERN'
-                 from 'transformers.conversion_mapping'
-
-took down `import unsloth` in Ministral_3_(3B)_Reinforcement_Learning.
+ships ``conversion_mapping`` WITHOUT ``_MODEL_TO_CONVERSION_PATTERN``, whose
+ImportError took down `import unsloth` in Ministral_3_(3B)_Reinforcement_Learning.
 
 The old guard only asked whether the submodule imported. Backfilling must be
 strictly additive: never replace a real module, never overwrite a real symbol.
@@ -135,11 +131,9 @@ def test_required_symbols_match_peft_import_list():
 
 
 # ---- saying so when the stand-in is not equivalent -----------------------
-#
-# The donors are inert by design (empty pattern, lookups returning None), which
-# is the truth wherever the symbol never existed but NOT for a transformers 5
-# that has conversions and renamed one, where peft would skip work it should
-# have done. A dev-build path, but it must not be a silent one.
+# The inert donors are the truth wherever the symbol never existed, but not for
+# a transformers 5 that has conversions and renamed one, so warn rather than
+# silently skip work peft should have done.
 
 
 def test_a_missing_mapping_function_is_announced():
@@ -159,8 +153,7 @@ def test_a_missing_conversion_class_is_announced():
 
 
 def test_only_the_pattern_is_quiet():
-    """An empty pattern is what peft starts from anyway, so warning about it
-    would be noise on every load."""
+    """An empty pattern is peft's own starting point, so a warning would be noise."""
     import warnings
 
     _fake_real_module(

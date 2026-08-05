@@ -2,12 +2,9 @@
 
 `offload_embedding = True` on a model with tied word embeddings used to raise
 NotImplementedError and abort the load. It is a VRAM optimisation, not a
-correctness switch, so it should turn itself off instead, as the
-fast_inference case a few lines earlier already does.
-
-Two shipped notebooks (NeMo-Gym-Sudoku, NeMo-Gym-Multi-Environment) died at
-model load this way: offload_embedding = True against
-unsloth/Qwen2.5-1.5B-Instruct, which ties its embeddings.
+correctness switch, so it should turn itself off instead, as the fast_inference
+case a few lines earlier already does. Two shipped notebooks (NeMo-Gym-Sudoku,
+NeMo-Gym-Multi-Environment) died this way on unsloth/Qwen2.5-1.5B-Instruct.
 """
 
 import ast, os
@@ -110,8 +107,7 @@ def test_wsl_and_windows_are_untouched():
 
 
 def test_resolved_before_multidevice_hooks():
-    # _attach_bnb_multidevice_hooks returns early while offload_embedding is
-    # still True, so resolving after it would skip hook attachment.
+    # Hook attach returns early while offload_embedding is still True.
     call = _SRC.index("offload_embedding = _resolve_offload_embedding(")
     # Anchor on the indented CALL, not the module-level `def`.
     hooks = _SRC.index("\n                _attach_bnb_multidevice_hooks(")
