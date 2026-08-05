@@ -270,26 +270,22 @@ async def start_training(
                 validation_message = str(e)
                 raise HTTPException(status_code = 400, detail = validation_message)
 
-            # Warm detection off the loop: the sync resolution below must never
-            # cold-probe torch/MLX on the event loop.
+            # Warm detection off the loop: the sync resolution must never cold-probe torch/MLX.
             from utils.hardware.hardware import ensure_hardware_detected
 
             await asyncio.to_thread(ensure_hardware_detected)
             # Validate against the backend this host trains with: an MLX bundle cannot
-            # resume a PyTorch run (or the reverse), and that must fail here rather
-            # than after model and dataset loading.
+            # resume a PyTorch run (or the reverse); must fail here, not after model load.
             resume_backend = current_training_backend()
             if resume_backend is None:
-                # Chat-only host (e.g. Apple Silicon with a broken MLX stack):
-                # rejecting here keeps the source run unclaimed instead of
-                # spawning a continuation the worker is guaranteed to fail.
+                # Chat-only host: rejecting here keeps the source run unclaimed
+                # instead of spawning a continuation the worker is sure to fail.
                 raise HTTPException(
                     status_code = 400,
                     detail = "Training is unavailable on this host, so the run cannot be resumed.",
                 )
-            # Resolve the requested target first: an explicit checkpoint-N wins
-            # over the capped sibling scan, so a valid newer checkpoint can
-            # re-adopt its timeline even when the capped one is gone.
+            # Resolve the requested target first: an explicit checkpoint-N wins over the
+            # capped sibling scan, re-adopting its timeline even when the capped one is gone.
             resume_checkpoint = get_resume_checkpoint_path(
                 request.resume_from_checkpoint, backend = resume_backend
             )
@@ -596,9 +592,8 @@ async def start_training(
             raise HTTPException(status_code = 409, detail = str(exc))
 
         if success and request.resume_from_checkpoint:
-            # Rewinding onto an older checkpoint must outlive this run; recorded
-            # only once the backend accepted the start, so a refused start
-            # cannot cap future resumes.
+            # Rewinding onto an older checkpoint must outlive this run; recorded only after
+            # the backend accepted the start, so a refused start cannot cap future resumes.
             record_resume_rewind(request.resume_from_checkpoint, backend = current_training_backend())
         if not success:
             progress_error = backend.trainer.training_progress.error

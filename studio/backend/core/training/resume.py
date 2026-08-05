@@ -29,9 +29,8 @@ def _is_under_outputs(path: Path) -> bool:
 def current_training_backend() -> "str | None":
     """Backend a new run trains with on this host, or None when it cannot train.
 
-    Mirrors worker.py's gate, including the detection fallback: Apple Silicon
-    with a broken/incomplete MLX stack is chat-only, so no checkpoint is
-    resumable there and the platform alone must not report "mlx"."""
+    Mirrors worker.py's gate: Apple Silicon with a broken MLX stack is chat-only,
+    so nothing is resumable there and the platform alone must not report "mlx"."""
     from core.training.training import (
         is_apple_silicon_training_platform,
         should_use_mlx_training_backend,
@@ -40,15 +39,13 @@ def current_training_backend() -> "str | None":
     from utils.hardware import hardware as _hw
 
     if _hw.DEVICE is None:
-        # ensure_hardware_detected respects the background warm's lock, so a
-        # cold call never races it into a second probe.
+        # Respects the background warm's lock, so a cold call never races it into a second probe.
         try:
             _hw.ensure_hardware_detected()
         except Exception:
             return None
     if _hw.CHAT_ONLY:
-        # No usable training backend at all (CPU-only host, or Apple Silicon
-        # with a broken MLX stack): nothing is resumable here.
+        # No usable training backend at all: nothing is resumable here.
         return None
     if not is_apple_silicon_training_platform():
         return "pt"
@@ -230,10 +227,9 @@ def resume_step_cap(run_dir: Path, backend: Optional[str] = None) -> Optional[in
         return None
     if isinstance(step, bool) or not isinstance(step, int) or step < 0:
         return None
-    # A checkpoint written after the rewind belongs to the new timeline and raises the
-    # cap to itself; the abandoned siblings it did not reach stay out of selection.
-    # Only a checkpoint that validates counts: an interrupted post-rewind save must
-    # not raise the cap and let the scan fall back to an abandoned sibling below it.
+    # A valid checkpoint written after the rewind belongs to the new timeline and raises
+    # the cap to itself; abandoned siblings it did not reach stay out of selection. An
+    # interrupted post-rewind save that raised the cap would re-admit a sibling below it.
     for checkpoint in run_dir.glob("checkpoint-*"):
         checkpoint_step = _checkpoint_step(checkpoint)
         if (
@@ -281,8 +277,7 @@ def get_resume_checkpoint_path(
     path = resolve_output_dir(path_value)
     if not _is_under_outputs(path) or not path.is_dir():
         return None
-    # An explicitly targeted checkpoint is the user's choice; only the sibling scan
-    # below is capped by a recorded rewind.
+    # An explicit target wins; only the sibling scan below is capped by a recorded rewind.
     if is_resume_checkpoint_valid(path, expected_step, backend):
         return str(path)
 
@@ -344,9 +339,8 @@ def _uses_s3_dataset(run: dict) -> bool:
 
 
 def run_state_allows_resume(run: dict) -> bool:
-    """Run-record half of resumability; callers with their own validated
-    checkpoint use this alone so the capped sibling scan cannot veto an
-    explicitly targeted checkpoint."""
+    """Run-record half of resumability: callers with their own validated checkpoint
+    use this alone, so the capped sibling scan cannot veto an explicit target."""
     if run.get("resumed_later"):
         return False
     # Set when a stop-and-save failed to write a current-step checkpoint.

@@ -148,9 +148,8 @@ def train(
         except ValueError as e:
             root_error = e
 
-        # The shared discriminator consults hardware detection, so a host that
-        # cannot train (broken MLX stack, CPU-only) rejects here instead of
-        # accepting a bundle the trainer will fail on.
+        # The shared discriminator consults hardware detection, so a host that cannot
+        # train rejects here instead of accepting a bundle the trainer will fail on.
         cli_backend = current_training_backend()
         if cli_backend is None:
             typer.echo(
@@ -163,10 +162,9 @@ def train(
         )
         if not resume_checkpoint:
             # The MLX CLI adapter writes to a cwd-absolutized output_dir
-            # (allow_external_output_dir), which the outputs-root helpers cannot
-            # see; accept such a dir directly when it holds a valid checkpoint.
-            # Only the MLX adapter writes outside the outputs root; the HF
-            # trainer would reject an external output_dir at training time.
+            # (allow_external_output_dir) the outputs-root helpers cannot see; accept
+            # such a dir when it holds a valid checkpoint. MLX only: the HF trainer
+            # rejects an external output_dir at training time.
             if cli_backend == "mlx":
                 external = Path(resume_target).expanduser()
                 if not external.is_absolute():
@@ -225,9 +223,8 @@ def train(
         raise typer.Exit(code = 2)
 
     if resume_checkpoint:
-        # Rewinding onto an older checkpoint must outlive this run: without the
-        # record, a later resume would jump to the timeline it abandoned. Recorded
-        # only here, after every validation that could still reject the run.
+        # Rewinding onto an older checkpoint must outlive this run, or a later resume
+        # jumps to the timeline it abandoned. Recorded here, after every validation.
         record_resume_rewind(resume_checkpoint, backend = cli_backend)
 
     trainer = _create_cli_trainer(cfg.model, hf_token)

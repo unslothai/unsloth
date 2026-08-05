@@ -2371,9 +2371,8 @@ def _recorded_local_base(model_name) -> "tuple[str | None, bool]":
 
 
 def _install_worker_sigint_guard() -> None:
-    """Terminal Ctrl+C hits the whole process group. The first one is the
-    parent's stop-and-save window, so the worker must survive it; a second
-    matches the terminal's force-quit and exits immediately."""
+    """Terminal Ctrl+C hits the whole process group. The first one is the parent's
+    stop-and-save window, so the worker must survive it; a second force-quits."""
     import signal
 
     seen = [False]
