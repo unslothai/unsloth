@@ -291,6 +291,7 @@ const MAC_NATIVE_CHROME_STYLE = {
   "--studio-hidden-route-top-inset": "34px",
   "--studio-chat-header-height": "44px",
   "--studio-chat-header-padding-top": "7px",
+  "--studio-media-header-left-inset": "0.5rem",
   "--studio-chat-control-height": "33px",
   "--studio-chat-header-right-inset": "0px",
 } as CSSProperties;
@@ -307,6 +308,7 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-hidden-route-top-inset": "34px",
   "--studio-chat-header-height": "48px",
   "--studio-chat-header-padding-top": "9px",
+  "--studio-media-header-left-inset": "0.5rem",
   "--studio-chat-control-height": "33px",
   "--studio-chat-header-right-inset": "0px",
   "--studio-window-control-inset": "112px",
@@ -321,6 +323,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     isExternalServer,
     currentStepIndex,
     progressDetail,
+    startupMessage,
     elevationPackages,
     startInstall,
     retry,
@@ -464,6 +467,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
       error={error}
       currentStepIndex={currentStepIndex}
       progressDetail={startupProgressDetail}
+      startupMessage={startupMessage}
       elevationPackages={elevationPackages}
       onInstall={startInstall}
       onRetry={retry}

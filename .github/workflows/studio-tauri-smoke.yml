@@ -127,12 +127,23 @@ jobs:
           du -h "$BIN"
 
       - name: Upload Tauri debug build
-        # Always upload so a green run leaves the binary inspectable too.
-        if: always()
+        # Failures only, and only the binary -- never the whole target/debug
+        # tree. That directory is ~1.3GB per run: the 405MB unstripped binary
+        # plus deps/, build/ and incremental/ intermediates that are useless
+        # without the exact toolchain that produced them. Uploading it on every
+        # run accumulated ~350GB of live artifacts, which is two orders of
+        # magnitude past the org allowance. Actions storage is the one resource
+        # that is NOT free on public repos, and exceeding it silently stops
+        # GitHub scheduling jobs across the whole account -- no error, nothing
+        # runs. A green run does not need its binary kept; a red one does.
+        if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: tauri-debug-build
           path: |
-            studio/src-tauri/target/debug
+            studio/src-tauri/target/debug/unsloth-studio
             studio/frontend/dist
-          retention-days: 3
+          # The build can fail before the binary exists; still upload the
+          # frontend dist rather than failing the upload itself.
+          if-no-files-found: warn
+          retention-days: 1

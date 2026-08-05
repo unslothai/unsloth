@@ -32,10 +32,10 @@ from hub.utils.gguf import (
     is_big_endian_gguf_path,
     list_empty_gguf_variant_dirs,
     list_gguf_variants,
-    list_gguf_variants_from_hf_cache,
     list_local_gguf_variants,
     list_partial_gguf_variants_from_state,
     pick_best_gguf,
+    select_gguf_cache_snapshot,
 )
 from hub.utils.paths import (
     is_local_path,
@@ -734,13 +734,12 @@ async def get_gguf_variants_answer(
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
                 return scoped_response
-            cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
+            cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision, complete = cached
-                # This listing is scoped to one cache, so name it: a repo-wide walk starts at
-                # the active cache and could read a different copy's context length.
-                if repo_cache_dir is not None and repo_cache_dir.is_dir():
-                    answered_from[0] = str(repo_cache_dir)
+                variants, has_vision, complete, snapshot = cached
+                # Name the answering snapshot: a repo-wide walk could read a different cache's
+                # context length, and a repo-dir walk a sibling revision's.
+                answered_from[0] = str(snapshot)
                 # The lister leaves torn quants in: they stay listed for management, but not ready.
                 return _with_state_partials(
                     _local_response(repo_id, variants, has_vision, complete)
@@ -779,11 +778,10 @@ async def get_gguf_variants_answer(
             scoped_response = _scoped_local_response()
             if scoped_response is not None:
                 return scoped_response
-            cached = list_gguf_variants_from_hf_cache(repo_id, root = hub_cache)
+            cached = select_gguf_cache_snapshot(repo_id, root = hub_cache)
             if cached is not None:
-                variants, has_vision, complete = cached
-                if repo_cache_dir is not None and repo_cache_dir.is_dir():
-                    answered_from[0] = str(repo_cache_dir)
+                variants, has_vision, complete, snapshot = cached
+                answered_from[0] = str(snapshot)
                 # Same reason as the local_only branch above, state partials included:
                 # an unreachable Hub is exactly when a resume has nowhere else to surface.
                 return _with_state_partials(
