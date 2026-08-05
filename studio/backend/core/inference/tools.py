@@ -1173,8 +1173,21 @@ def _unquoted_glob_indexes(text: str, tokens: "list[str]", punctuation: str) -> 
     )
 
 
-def _token_was_quoted(command: str, tokens: "list[str]", index: int, lexed_posix: bool) -> bool:
-    """Whether ``tokens[index]`` was written with quotes around it.
+def _skip_start_switches(tokens: "list[str]", index: int) -> int:
+    """The first index at or after ``index`` that is not one of `start`'s switches."""
+    while index < len(tokens):
+        switch = _win_switch(tokens[index].lower())
+        if not switch.startswith("/"):
+            break
+        # /d C:\dir and friends carry their value in the next token.
+        index += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
+    return index
+
+
+def _quoted_token_indexes(
+    command: str, tokens: "list[str]", lexed_posix: bool
+) -> "frozenset[int]":
+    """Indexes of ``tokens`` that were written with quotes around them.
 
     cmd reads `start`'s first argument as a window title only when it is quoted,
     which is what separates `start "" prog` and `start "t" prog` -- a title with
@@ -1184,20 +1197,31 @@ def _token_was_quoted(command: str, tokens: "list[str]", index: int, lexed_posix
     the start of the token, so `start notepad rm.txt` reported `rm` even though
     the same word in the same place on a full line does not match.
 
-    The non-POSIX lexer keeps the quotes, so the token answers for itself. The
-    POSIX one strips them, so the text is lexed a second time without stripping
-    and the two are lined up one-to-one, reporting nothing when they do not
-    align -- the same technique as _quoted_separator_indexes.
+    The non-POSIX lexer keeps the quotes, so the tokens answer for themselves.
+    The POSIX one strips them, so the text is lexed a second time without
+    stripping and the two are lined up one-to-one, reporting nothing when they
+    do not align -- the same technique as _quoted_separator_indexes. That second
+    lex has to be built like the first one: ``shlex.split`` passes no
+    punctuation_chars and clears the comment character, so `;`, `&&`, `|`, `(`
+    and `#` glued onto their neighbours, the two never lined up, and every
+    command holding a separator lost its title detection -- which is worse than
+    not having it, since the title was then screened in the program's place.
     """
     if not lexed_posix:
-        return tokens[index].startswith(('"', "'"))
+        return frozenset(
+            index for index, token in enumerate(tokens) if token.startswith(('"', "'"))
+        )
     try:
-        raw = shlex.split(command, posix = False)
+        lexer = shlex.shlex(command, posix = False, punctuation_chars = ";&|()`")
+        lexer.whitespace_split = True
+        raw = list(lexer)
     except ValueError:
-        return False
-    if len(raw) != len(tokens) or index >= len(raw):
-        return False
-    return raw[index].startswith(('"', "'"))
+        return frozenset()
+    if len(raw) != len(tokens):
+        return frozenset()
+    return frozenset(
+        index for index, token in enumerate(raw) if token.startswith(('"', "'"))
+    )
 
 
 def _xargs_replacement(tokens: "list[str]", start: int, end: int) -> str:
@@ -1684,28 +1708,30 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
     # sees only as an argument, so screen what start actually launches.
+    quoted_tokens: "frozenset[int] | None" = None
     for i, token in enumerate(tokens):
         if os.path.basename(token).lower() not in ("start", "start.exe"):
             continue
-        j = i + 1
-        while j < len(tokens):
-            switch = _win_switch(tokens[j].lower())
-            if not switch.startswith("/"):
-                break
-            # /d C:\dir and friends carry their value in the next token.
-            j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
+        # Built at most once per call, and only when a start is actually here:
+        # it lexes the whole line, so doing it per start token made the scan
+        # quadratic (800 tokens took 1.1s against main's 34ms).
+        if quoted_tokens is None:
+            quoted_tokens = _quoted_token_indexes(command, tokens, lexed_posix)
+        j = _skip_start_switches(tokens, i + 1)
         # `start "title" prog` is the documented form: cmd reads a quoted first
         # argument as the window title, but only when something follows it, so
         # the program is the token behind it. Matching `== ""` instead saw
         # neither `start "" prog` on a Windows host without Git Bash -- where the
         # non-POSIX lexer keeps the quotes and the token arrives as a literal
         # `""` -- nor any non-empty title on either lexer, and left the program
-        # in both unscreened.
+        # in both unscreened. A title is data, so it is not screened itself.
+        if j + 1 < len(tokens) and j in quoted_tokens:
+            # Microsoft documents the switches AFTER the title, so skip them on
+            # both sides of it: `start "" /min powershell` left the program at
+            # j + 2 and screened the switch instead.
+            j = _skip_start_switches(tokens, j + 1)
         if j < len(tokens):
-            if j + 1 < len(tokens) and _token_was_quoted(command, tokens, j, lexed_posix):
-                blocked |= _find_blocked_commands(tokens[j + 1])
-            else:
-                blocked |= _find_blocked_commands(tokens[j])
+            blocked |= _find_blocked_commands(tokens[j])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

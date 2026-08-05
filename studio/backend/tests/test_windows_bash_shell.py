@@ -351,7 +351,48 @@ def test_start_arguments_are_not_screened_as_commands(monkeypatch, bash, command
         "start notepad",
     ],
 )
-def test_detached_windows_stay_launchable(command):
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+def test_detached_windows_stay_launchable(monkeypatch, bash, command):
     # `start` is the only route to a window on the user's desktop, which the
     # terminal description promises, so screening must not blanket-block cmd.
+    #
+    # Pinned like the rest: unpinned this ran the POSIX lexer with the non-Windows
+    # block set, so it never saw the posture it exists to protect.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A separator before the start is the whole point: the second lex has to
+        # be built like the first, or the two stop lining up and the title is
+        # screened in the program's place.
+        'cd /c/proj; cmd //c start "" pwsh -Command ls',
+        'echo done; cmd //c start "" powershell -Command ls',
+        'cmd //c start "" pwsh -Command ls; echo ok',
+        '(cmd //c start "" pwsh -Command ls)',
+        'ls; cmd //c start "Build" powershell -Command "Remove-Item x"',
+        'start "t" powershell -c ls # note',
+        # Microsoft documents the switches after the title, not before it.
+        'start "" /min powershell -c ls',
+        'start "t" /wait /b pwsh -c ls',
+        'cmd /c start "" /min powershell -c ls',
+    ],
+)
+def test_start_screening_survives_separators_and_switch_order(monkeypatch, bash, command):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"])
+def test_windows_only_names_are_not_hard_blocked_off_windows(monkeypatch, command):
+    # The Windows set is a hard refusal; off Windows these stay a prompt instead
+    # (tests/test_permission_mode.py). Nothing asserted that, so dropping the
+    # platform gate entirely -- blocking them on Linux and macOS too -- passed
+    # the whole suite.
+    monkeypatch.setattr(sys, "platform", "linux")
     assert not tools._find_blocked_commands(command)
