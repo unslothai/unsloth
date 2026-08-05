@@ -934,9 +934,7 @@ def _token_fingerprint(token: Optional[str]) -> Optional[str]:
 
 # Revision-less entries retain their historical three-part key; pinned entries append
 # revision so capability results from one commit cannot leak into another.
-_CapabilityCacheKey = Union[
-    Tuple[str, Optional[str], bool], Tuple[str, Optional[str], bool, str]
-]
+_CapabilityCacheKey = Union[Tuple[str, Optional[str], bool], Tuple[str, Optional[str], bool, str]]
 _vision_detection_cache: Dict[_CapabilityCacheKey, bool] = {}
 _vision_cache_lock = threading.Lock()
 
