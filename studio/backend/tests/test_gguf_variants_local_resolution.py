@@ -320,7 +320,7 @@ def test_local_answers_report_what_a_load_would_serve(in_tmp_cwd):
         return _variants(os.fspath(d))
 
     ready = _mk("ready", ("m-Q4_K_M.gguf", b"GGUF"))
-    assert ready.loadable is True and ready.loadable_variants == ["Q4_K_M"]
+    assert ready.loadable is True and "Q4_K_M" in ready.loadable_variants
 
     empty = _mk("empty", ("m-Q4_K_M.gguf", b""))
     assert empty.loadable is False and empty.loadable_variants == []
@@ -333,12 +333,17 @@ def test_local_answers_report_what_a_load_would_serve(in_tmp_cwd):
         ("m-Q8_0-00001-of-00002.gguf", b"GGUF"),
         ("m-Q8_0-00002-of-00002.gguf", b"GGUF"),
     )
-    assert whole.loadable is True and whole.loadable_variants == ["Q8_0"]
+    assert whole.loadable is True and "Q8_0" in whole.loadable_variants
 
     # Weights only under a quant subdirectory: the variantless pick finds
     # nothing, but naming the quant resolves them.
     nested = _mk("nested", ("BF16/model.gguf", b"GGUF"))
-    assert nested.loadable is False and nested.loadable_variants == ["BF16"]
+    assert nested.loadable is False and "BF16" in nested.loadable_variants
+
+    # Every spelling the resolver accepts is listed, so a client echoing the
+    # advertised default is never rejected by a label the answer omitted.
+    aliased = _mk("aliased", ("F16-checkpoint-Q4_K_M.gguf", b"GGUF"))
+    assert aliased.default_variant in aliased.loadable_variants
 
 
 def test_short_shard_like_name_in_a_directory_reads_ready(in_tmp_cwd):
@@ -379,6 +384,27 @@ def test_parent_quant_short_shard_reads_ready(in_tmp_cwd):
     (empty / "model-Q8_0-001-of-002.gguf").write_bytes(b"")
     empty_row = _variants(os.fspath(empty)).variants[0]
     assert empty_row.downloaded is False and empty_row.partial is True
+
+
+def test_split_named_symlink_to_a_plain_target_is_ready(in_tmp_cwd):
+    # The load follows the link and launches the ordinary target, so the
+    # alias's split-shaped name completes nothing.
+    real = in_tmp_cwd / "real-Q4_K_M.gguf"
+    real.write_bytes(b"GGUF")
+    alias = in_tmp_cwd / "alias-Q4_K_M-00001-of-00002.gguf"
+    alias.symlink_to(real)
+
+    row = _variants(os.fspath(alias)).variants[0]
+    assert row.downloaded is True and row.partial is False
+
+
+def test_high_count_split_is_still_checked(in_tmp_cwd):
+    # A declared shard count above the old cap is a real split, not a pass.
+    lone = in_tmp_cwd / "m-Q4_K_M-00001-of-01001.gguf"
+    lone.write_bytes(b"GGUF")
+
+    row = _variants(os.fspath(lone)).variants[0]
+    assert row.downloaded is False and row.partial is True
 
 
 def test_aliased_split_symlink_uses_the_target_name(in_tmp_cwd):

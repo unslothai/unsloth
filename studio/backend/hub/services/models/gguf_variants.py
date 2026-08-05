@@ -576,7 +576,7 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
     if match is None:
         return True
     total = int(match.group("total"))
-    if not 1 < total <= 1000:
+    if total < 2:
         return True
     sibling = re.compile(
         re.escape(match.group("stem"))
@@ -616,7 +616,11 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
             # _local_gguf_load_path names the target's siblings from the
             # TARGET, so an alias whose stem differs still loads its real set.
             target = path.resolve()
-            target_pattern = _pattern_for(target.name) or sibling
+            target_pattern = _pattern_for(target.name)
+            if target_pattern is None:
+                # The link names a split but points at an ordinary file, which
+                # _local_gguf_load_path launches as-is; nothing to complete.
+                return True
             found |= _indexes_beside(target, target_pattern)
     except OSError:
         return True
@@ -629,6 +633,21 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
 # The cache scan's split grammar (hub.utils.inventory_scan._GGUF_SPLIT_RE),
 # looser than the load path's five digits; kept here to tell the two apart.
 _CACHE_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
+
+# Only to enumerate candidate spellings for the resolver to adjudicate; it is
+# never the thing that decides, so drift here costs a candidate, not a verdict.
+_KNOWN_QUANT_RE = re.compile(
+    r"(UD-)?"
+    r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
+    r"|IQ[0-9]+_[A-Z]+(?:_[A-Z0-9]+)?"
+    r"|TQ[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K_[A-Z]+"
+    r"|Q[0-9]+_[0-9]+"
+    r"|Q[0-9]+_K"
+    r"|BF16|F16|F32)"
+    r"(-[0-9]+(?:\.[0-9]+)?bpw)?",
+    re.IGNORECASE,
+)
 
 
 def _will_serve(resolved: Optional[str]) -> bool:
@@ -660,14 +679,37 @@ def _loadable_variants(identifier: str, variants) -> list:
     """
     from utils.models.model_config import _find_local_gguf_by_variant
 
-    resolved = []
+    # Over-generate the spellings a client might send -- the row label, the
+    # file's own stem, its quant tokens, both bpw spellings -- and let the
+    # resolver adjudicate each. Enumerating candidates is not predicting the
+    # outcome: every one of them is accepted only because the resolver said so.
+    candidates: list = []
     for variant in variants:
-        quant = getattr(variant, "quant", None)
-        if not quant:
+        for label in (getattr(variant, "quant", None), getattr(variant, "display_label", None)):
+            if isinstance(label, str) and label:
+                candidates.append(label)
+        filename = getattr(variant, "filename", None)
+        if isinstance(filename, str) and filename:
+            stem = re.sub(r"-\d{5}-of-\d{5}$", "", filename.rsplit(".", 1)[0])
+            candidates.append(stem)
+            basename = stem.rsplit("/", 1)[-1]
+            candidates.append(basename)
+            for match in _KNOWN_QUANT_RE.finditer(basename):
+                prefix, core, bpw = match.group(1) or "", match.group(2), match.group(3) or ""
+                candidates.append(f"{prefix}{core}")
+                if bpw:
+                    candidates.append(f"{prefix}{core}{bpw}")
+
+    resolved: list = []
+    seen = set()
+    for candidate in candidates:
+        key = candidate.strip().lower()
+        if not key or key in seen:
             continue
+        seen.add(key)
         try:
-            if _will_serve(_find_local_gguf_by_variant(identifier, quant)):
-                resolved.append(quant)
+            if _will_serve(_find_local_gguf_by_variant(identifier, candidate)):
+                resolved.append(candidate)
         except Exception:
             continue
     return resolved

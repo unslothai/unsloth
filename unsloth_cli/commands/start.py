@@ -2061,22 +2061,14 @@ def _attach_gguf_check_for_codex(
         refused = _direct_gguf_is_companion(repo) or _direct_gguf_is_big_endian(repo)
         if refused and not variant:
             _fail_codex_needs_gguf(repo)
-        # The file names the one quant it is, so its own labels settle a
-        # matching explicit variant without a probe. A different quant is not
-        # necessarily wrong: a marked parent serves sibling quants through
-        # _find_local_gguf_by_variant, and the server's listing is that
-        # parent's answer on old and new servers alike -- so fall through to
-        # the probe instead of failing on the file's name alone. The probe's
-        # strict matching also judges the sibling's own row (torn rows do not
-        # vouch), so the named file's bytes only matter when the load would
-        # use this very file.
-        # A refused name never settles anything by itself: even its own label
-        # would resolve to the sibling the parent serves, so the probe answers.
-        wanted = str(variant).strip().lower() if variant else ""
-        if not refused and (
-            not wanted
-            or any(wanted == label.lower() for label in _direct_gguf_variant_labels(repo))
-        ):
+        # A variant settles nothing here, however well it matches this name:
+        # with one, the resolver scans the file's marked parent and can choose
+        # a different sibling (an earlier torn shard sorts first), so only the
+        # resolver-backed probe knows which file the load will bind. A refused
+        # name gets the same treatment, since its parent may serve the sibling
+        # that was asked for. Without a variant the load takes this file, so
+        # its own bytes are the answer.
+        if not refused and not variant:
             # On a loopback attach this process sees the server's filesystem,
             # so an incomplete file is failed here: the server classifies the
             # extension as a GGUF load and llama-server only finds the missing

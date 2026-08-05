@@ -6414,47 +6414,39 @@ def test_codex_attach_check_skips_direct_gguf_files(monkeypatch):
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/dflash/Qwen-DFlash-Q4_K_M.gguf")
 
 
-def test_codex_attach_check_direct_variant_matches_without_probe(monkeypatch):
-    # A variant the file itself names settles locally, in any case spelling,
-    # shards included, the quant read from the parent when the basename has
-    # none, and the extractor's last-segment fallback for quant-less names.
-    monkeypatch.setattr(
-        start,
-        "_http_json",
-        lambda *a, **k: pytest.fail("the file's own label needs no variants probe"),
-    )
+def test_codex_attach_check_direct_variant_always_asks_the_server(monkeypatch):
+    # A variant settles nothing on the name alone: the resolver scans the
+    # file's marked parent and may bind a different sibling, so every explicit
+    # variant goes to the resolver-backed probe.
+    probes = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        probes.append(url)
+        return {
+            "variants": [{"quant": "Q4_K_M"}],
+            "resolved_locally": True,
+            "loadable_variants": ["Q4_K_M", "q4_k_m"],
+            "loadable": True,
+        }
+
+    monkeypatch.setattr(start, "_http_json", http_json)
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf", "q4_k_m")
-    start._attach_gguf_check_for_codex(
-        BASE, "sk-test", "C:\\models\\bar-Q4_K_M-00001-of-00002.gguf", "Q4_K_M"
-    )
-    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q4_K_M/model.gguf", "Q4_K_M")
-    start._attach_gguf_check_for_codex(
-        BASE, "sk-test", "C:\\models\\UD-Q4_K_XL\\m.gguf", "ud-q4_k_xl"
-    )
-    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-bar.gguf", "bar")
-    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q8_0/foo-Q4_K_M.gguf", "Q4_K_M")
-    # The hub-style bpw-stripped spelling resolves server-side, so it passes.
-    start._attach_gguf_check_for_codex(
-        BASE, "sk-test", "/models/model-IQ4_XS-3.53bpw.gguf", "IQ4_XS"
-    )
+    assert probes, "an explicit variant must reach the server"
 
-
-def test_codex_attach_check_refuses_big_endian_direct_files(monkeypatch, capsys):
-    # detect_gguf_model refuses these names, so the load would fall through to
-    # the transformers path and evict; a quant-named parent keeps its exemption.
+    # Without a variant the load takes this very file, so no probe is needed.
     monkeypatch.setattr(
         start,
         "_http_json",
-        lambda *a, **k: pytest.fail("a direct .gguf file needs no variants probe"),
+        lambda *a, **k: pytest.fail("a variantless direct file needs no probe"),
     )
-    with pytest.raises(typer.Exit):
-        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/model-Q4_K_M-be.gguf")
-    assert "Codex needs a GGUF model" in capsys.readouterr().err
-    with pytest.raises(typer.Exit):
-        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/stories260K-be.gguf")
-    # The shapes the server loads stay untouched.
-    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/Q4_K_M/model-be.gguf")
-    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/model-BF16.gguf")
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf")
 
 
 def test_codex_attach_check_asks_server_for_foreign_direct_variant(monkeypatch, capsys):
