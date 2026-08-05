@@ -1596,11 +1596,10 @@ def studio_default(
             if sys.platform == "win32":
                 import subprocess as _sp
 
-                # Hand our std handles to the child explicitly. Without them
-                # CREATE_NO_WINDOW gives the backend its own hidden console, so its
-                # output lands there instead of our pipe and `unsloth studio > log`
-                # captures nothing -- the same trap documented at the setup.ps1 call
-                # below. stdin is left alone so the child never steals our input.
+                # Hand our std handles to the child: without them CREATE_NO_WINDOW
+                # gives the backend its own hidden console and `unsloth studio > log`
+                # captures nothing -- the same trap noted at the setup.ps1 call below.
+                # stdin is deliberately not passed, so the child cannot steal input.
                 proc = _sp.Popen(
                     args,
                     stdout = _stream_for_subprocess(sys.stdout),

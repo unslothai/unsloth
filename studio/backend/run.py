@@ -16,18 +16,15 @@ from typing import NoReturn, Optional, Sequence, Tuple
 def _normalize_standard_streams():
     """Point missing std streams at the null device.
 
-    Python documents sys.stdout/stderr/stdin as None for a process with no valid
-    std handles, typically a Windows GUI/pythonw or detached launch. Every
-    .write() / .isatty() / .readline() on them then raises AttributeError and the
-    server dies before it can report why. A null-device stream answers all of
-    those like a real one (encoding, buffer, fileno, isatty, reconfigure), so
+    sys.stdout/stderr/stdin are None in a process with no valid std handles (a
+    Windows pythonw or detached launch), so every .write() / .isatty() on them
+    raises AttributeError. A null-device stream answers like a real one, so
     nothing downstream needs its own None check.
 
     MUST run before the `from loggers import ...` below: structlog binds
     `from sys import stdout` at ITS import time and PrintLogger does
-    `self._file = file or stdout`, so a None stdout is captured permanently and
-    the first log call in run_server() dies. Normalizing inside run_server() is
-    too late to undo that capture.
+    `self._file = file or stdout`, so a None stdout is captured permanently.
+    Normalizing inside run_server() is too late to undo that capture.
     """
     for name, mode in (("stdin", "r"), ("stdout", "w"), ("stderr", "w")):
         if getattr(sys, name, None) is not None:
@@ -1487,9 +1484,8 @@ def _setup_server_disk_logging():
     _harden_console_close(sys.stdout)
     _harden_console_close(sys.stderr)
 
-    # _normalize_standard_streams() has already replaced any missing console with
-    # a null-device stream, so these are never None. The tee's own None guards are
-    # defence-in-depth for a direct _TeeStream(None, ...) construction.
+    # _normalize_standard_streams() ran at import, so these are never None; the
+    # tee's own None guards are defence-in-depth for _TeeStream(None, ...).
     sys.stdout = _TeeStream(sys.stdout, log_fh)
     sys.stderr = _TeeStream(sys.stderr, log_fh)
 

@@ -3,14 +3,14 @@
 
 """AST test that run.py survives being launched with no console.
 
-A Windows process with no valid std handles (a GUI/pythonw or detached launch)
+A process with no valid std handles (a Windows pythonw or detached launch)
 starts with sys.stdout / sys.stderr / sys.stdin as None.
 `_normalize_standard_streams` replaces the missing ones at import time, and the
-_TeeStream guards keep a direct `_TeeStream(None, ...)` from crashing with
-`AttributeError: 'NoneType' object has no attribute 'write'`.
+_TeeStream guards keep a direct `_TeeStream(None, ...)` from crashing.
 
 Source contract only. The behaviour is pinned at runtime in
-studio/backend/tests/test_server_disk_logging.py, which runs on Python 3.10-3.13.
+studio/backend/tests/test_server_disk_logging.py, which CI runs on Python
+3.10-3.13 rather than 3.12 alone.
 """
 
 from __future__ import annotations
@@ -42,9 +42,8 @@ def _top_level_fn(name: str) -> ast.FunctionDef:
 def _guards_target(fn: ast.FunctionDef, target: str) -> bool:
     """True if *fn* early-exits on `<target> is None` before dereferencing it.
 
-    Deliberately strict: the guard must name the stream (not some other object),
-    must compare it against None, and must return/raise, so an unrelated check
-    like `if data is None:` cannot satisfy it.
+    Deliberately strict -- the guard must name the target, compare it against
+    None, and return/raise -- so an unrelated `if data is None:` cannot pass.
     """
     for node in fn.body:
         if not isinstance(node, ast.If) or not isinstance(node.test, ast.Compare):
@@ -68,8 +67,7 @@ def test_streams_are_normalized_before_the_logger_import():
 
     structlog binds `from sys import stdout` at ITS import time and PrintLogger
     does `self._file = file or stdout`, so a None stdout is captured permanently
-    the moment `from loggers import get_logger` runs. Normalizing later (inside
-    run_server, say) leaves the first log call crashing exactly as before.
+    the moment `from loggers import get_logger` runs.
     """
     src = _RUN_PY.read_text(encoding = "utf-8")
     assert "\n_normalize_standard_streams()" in src, (

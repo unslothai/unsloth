@@ -54,14 +54,13 @@ class TestTeeStream:
         assert tee.isatty() == console.isatty()
 
     def test_missing_console_is_a_null_sink(self):
-        # Defence-in-depth: _normalize_standard_streams() means production never
-        # builds this, but a direct _TeeStream(None, ...) must not crash either.
+        # Production never builds this, but _TeeStream(None, ...) must not crash.
         log = io.StringIO()
         tee = run_mod._TeeStream(None, log)
         assert tee.write("hello") == len("hello")  # text-stream write contract
         tee.flush()
         tee.close()
-        assert log.getvalue() == "hello"  # the file copy still works
+        assert log.getvalue() == "hello"
         assert not log.closed  # the tee does not own the log handle
         run_mod._harden_console_close(None)  # must not raise
 
@@ -97,14 +96,14 @@ class TestNormalizeStandardStreams:
         monkeypatch.setattr(sys, "stdout", console)
         monkeypatch.setattr(sys, "stderr", console)
         run_mod._normalize_standard_streams()
-        # Identity, not just truthiness: replacing a live console would break Colab
+        # Identity, not truthiness: replacing a live console would break Colab
         # (ipykernel OutStream), Tauri's stdout protocol and pytest capture.
         assert sys.stdout is console
         assert sys.stderr is console
 
     def test_runs_before_the_logger_import(self):
         # structlog binds `from sys import stdout` at import time, so normalizing
-        # after `from loggers import ...` leaves None captured forever.
+        # after the loggers import leaves None captured forever.
         src = (Path(_BACKEND_DIR) / "run.py").read_text(encoding = "utf-8")
         call = "\n_normalize_standard_streams()"
         assert call in src, "run.py never calls _normalize_standard_streams()"
