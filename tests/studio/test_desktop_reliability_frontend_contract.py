@@ -384,9 +384,9 @@ def test_first_app_layout_survives_a_stale_setup_window_size():
     assert "requestedSize: LogicalWindowSize = bounds.minimum" in bounds_helper
     assert "constrainWindowSize(currentSize, requestedSize, bounds)" in bounds_helper
     assert "const cssSafeLogicalWidth = measured.monitor" in app_layout
-    first_size_call = app_layout.split(
-        "requestedSize = calculateFirstAppWindowSize(", 1
-    )[1].split(");", 1)[0]
+    first_size_call = app_layout.split("requestedSize = calculateFirstAppWindowSize(", 1)[1].split(
+        ");", 1
+    )[0]
     assert "measured.bounds," in first_size_call
     assert "cssSafeLogicalWidth," in first_size_call
     assert "finalizeAppWindowLayout({" in app_layout
