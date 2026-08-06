@@ -2036,26 +2036,33 @@ class DiffusionBackend:
                             force_dense = _has_active_lora(loras),
                             logger = logger,
                         )
+
+                        # Defined OUTSIDE the candidate check: the retry below rebinds ``candidate``
+                        # and calls this, and that retry is reached precisely when the first
+                        # resolve returned None (a free-disk gate skipping the dense download while
+                        # a lower cached prequant still passes). Nested, the name would be unbound
+                        # there and the retry would raise UnboundLocalError under the load lock
+                        # instead of loading the cached rung. Reads ``candidate`` at CALL time, so
+                        # every call still sizes whichever candidate is current.
+                        def _replan_candidate():
+                            return self._plan_memory(
+                                target,
+                                single_file_path,
+                                base,
+                                fam,
+                                memory_mode,
+                                cpu_offload,
+                                kind = kind,
+                                repo_id = repo_id,
+                                fetch_base = fetch_base,
+                                transformer_resident_override_mib = (
+                                    candidate.transient_transformer_mib
+                                ),
+                                # Pass the companion estimate so prefetched base shards aren't double-counted.
+                                companion_override_mib = candidate.companions_mib,
+                            )
+
                         if candidate is not None:
-
-                            def _replan_candidate():
-                                return self._plan_memory(
-                                    target,
-                                    single_file_path,
-                                    base,
-                                    fam,
-                                    memory_mode,
-                                    cpu_offload,
-                                    kind = kind,
-                                    repo_id = repo_id,
-                                    fetch_base = fetch_base,
-                                    transformer_resident_override_mib = (
-                                        candidate.transient_transformer_mib
-                                    ),
-                                    # Pass the companion estimate so prefetched base shards aren't double-counted.
-                                    companion_override_mib = candidate.companions_mib,
-                                )
-
                             replanned = _replan_candidate()
                             if (
                                 replanned.offload_policy != OFFLOAD_NONE
