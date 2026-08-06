@@ -1629,13 +1629,11 @@ class ResearchSupervisor:
         )
         config = run["config"]
         inference = config.get("inferenceRequest") or {}
-        resolved_max_tokens = _resolve_max_tokens(None, inference, messages)
         payload: dict[str, Any] = {
             "model": inference.get("model") or config.get("model") or "",
             "messages": messages,
             "stream": False,
             "temperature": inference.get("temperature", 0.2),
-            "max_tokens": resolved_max_tokens,
         }
         if inference.get("topP") is not None:
             payload["top_p"] = inference["topP"]
@@ -1652,6 +1650,7 @@ class ResearchSupervisor:
                 model_waits = 0
                 while True:
                     await self._check_active(run["id"])
+                    payload["max_tokens"] = _resolve_max_tokens(None, inference, messages)
                     try:
                         post_task = asyncio.create_task(
                             client.post(
@@ -1684,11 +1683,6 @@ class ResearchSupervisor:
                             if model_waits <= _MAX_MODEL_WAITS and await self._wait_for_local_model(
                                 run
                             ):
-                                payload["max_tokens"] = _resolve_max_tokens(
-                                    None,
-                                    inference,
-                                    messages,
-                                )
                                 continue
                             raise
                         retryable = (
@@ -1841,14 +1835,12 @@ class ResearchSupervisor:
         )
         config = run["config"]
         inference = config.get("inferenceRequest") or {}
-        resolved_max_tokens = _resolve_max_tokens(max_tokens, inference, messages)
         payload: dict[str, Any] = {
             "model": inference.get("model") or config.get("model") or "",
             "messages": messages,
             "stream": True,
             "stream_options": {"include_usage": True},
             "temperature": inference.get("temperature", 0.2),
-            "max_tokens": resolved_max_tokens,
         }
         if inference.get("topP") is not None:
             payload["top_p"] = inference["topP"]
@@ -1965,6 +1957,11 @@ class ResearchSupervisor:
                 attempt = 0
                 try:
                     while True:
+                        payload["max_tokens"] = _resolve_max_tokens(
+                            max_tokens,
+                            inference,
+                            messages,
+                        )
                         request = client.build_request(
                             "POST",
                             self._endpoint(),
@@ -2011,11 +2008,6 @@ class ResearchSupervisor:
                                 # without spending a transport attempt.
                                 if not await self._wait_for_local_model(run):
                                     raise
-                                payload["max_tokens"] = _resolve_max_tokens(
-                                    max_tokens,
-                                    inference,
-                                    messages,
-                                )
                             else:
                                 # _completion's policy, so both paths agree; re-check the lease
                                 # and cancellation before re-sending.

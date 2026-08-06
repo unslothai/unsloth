@@ -18,7 +18,6 @@ from core.research_runs import (
     ResearchSupervisor,
     RunCancelled,
     _citation_title,
-    _clamp_max_tokens_for_context,
     _completion_hit_context_wall,
     _escape_link_destination,
     _estimate_prompt_tokens,
