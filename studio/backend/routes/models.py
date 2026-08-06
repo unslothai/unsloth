@@ -2270,6 +2270,8 @@ async def scan_loras(
     (exports_dir) in one list, distinguished by the source field.
     """
     try:
+        from utils.models.checkpoints import parse_adapter_features
+
         resolved_outputs_dir = str(resolve_output_dir(outputs_dir))
         resolved_exports_dir = str(resolve_export_dir(exports_dir))
         lora_list = []
@@ -2284,6 +2286,7 @@ async def scan_loras(
                     base_model = base_model,
                     source = "training",
                     export_type = model_type,
+                    adapter_features = parse_adapter_features(model_path),
                 )
             )
 
@@ -2297,6 +2300,7 @@ async def scan_loras(
                     base_model = base_model,
                     source = "exported",
                     export_type = export_type,
+                    adapter_features = parse_adapter_features(model_path),
                 )
             )
 
@@ -4292,6 +4296,7 @@ async def list_checkpoints(
                 peft_type = metadata.get("peft_type"),
                 lora_rank = metadata.get("lora_rank"),
                 is_quantized = metadata.get("is_quantized", False),
+                adapter_features = metadata.get("adapter_features"),
             )
             for model_name, checkpoints, metadata in raw_models
         ]

@@ -52,6 +52,127 @@ if not _IS_MLX:
 
 logger = get_logger(__name__)
 
+# Weight-file names per adapter format (PEFT includes its legacy .bin
+# spelling); a directory or Hub repo must never carry both formats.
+_ADAPTER_WEIGHT_FILES = {"mlx": "adapters.safetensors", "peft": "adapter_model.safetensors"}
+_ADAPTER_WEIGHT_NAMES = {
+    "mlx": frozenset({"adapters.safetensors"}),
+    "peft": frozenset({"adapter_model.safetensors", "adapter_model.bin"}),
+}
+_ZOO_UPGRADE_MESSAGE = (
+    "PEFT adapter conversion requires an updated unsloth-zoo. Upgrade "
+    "unsloth-zoo, then retry adapter_format='peft' (or GGUF adapter export)."
+)
+# Serializes this process's adapter pushes; cross-process safety comes from
+# the Hub-side parent_commit compare-and-swap in _push_adapter_dir_cas.
+import threading
+
+_ADAPTER_PUSH_LOCK = threading.Lock()
+
+
+def _resolve_adapter_format(adapter_format: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """Resolve the requested adapter format against the platform.
+
+    Returns (resolved_format, error_message). Omission resolves to each
+    platform's native format, so old clients keep byte-identical behavior.
+    """
+    if adapter_format is None:
+        return ("mlx" if _IS_MLX else "peft"), None
+    if adapter_format not in _ADAPTER_WEIGHT_FILES:
+        return None, (f"Invalid adapter_format '{adapter_format}'. Choose 'mlx' or 'peft'.")
+    if adapter_format == "mlx" and not _IS_MLX:
+        return None, (
+            "adapter_format='mlx' is only available on Apple-silicon MLX "
+            "servers; this server exports the native PEFT format."
+        )
+    return adapter_format, None
+
+
+def _push_adapter_dir_cas(
+    hf_api: "HfApi", folder_path: str, repo_id: str, private: bool, resolved_format: str
+) -> None:
+    """Push an adapter folder as ONE atomic Hub commit, refusing format-mixed repos.
+
+    A pre-check at a pinned revision refuses when the repo carries the OTHER
+    format's weight file that this upload would not replace; the commit then
+    uses parent_commit=<that revision> so the Hub itself rejects a concurrent
+    writer, which is surfaced as a conflict rather than retried on top.
+    """
+    from huggingface_hub import CommitOperationAdd
+
+    other_names = _ADAPTER_WEIGHT_NAMES["peft" if resolved_format == "mlx" else "mlx"]
+    files = sorted(
+        os.path.relpath(os.path.join(root, name), folder_path).replace(os.sep, "/")
+        for root, _dirs, names in os.walk(folder_path)
+        for name in names
+    )
+    _staged_mixed = sorted(f for f in files if f.rsplit("/", 1)[-1] in other_names)
+    if _staged_mixed:
+        raise RuntimeError(
+            f"The staged export folder itself contains {_staged_mixed}; "
+            "refusing to publish a mixed-format adapter folder."
+        )
+    uploading = set(files)
+
+    def _precheck() -> Tuple[str, set]:
+        head = hf_api.repo_info(repo_id, repo_type = "model").sha
+        existing = set(hf_api.list_repo_files(repo_id, revision = head, repo_type = "model"))
+        mixed = sorted(
+            f for f in existing if f.rsplit("/", 1)[-1] in other_names and f not in uploading
+        )
+        if mixed:
+            raise RuntimeError(
+                f"Hub repo '{repo_id}' already holds {mixed}; refusing to "
+                "mix MLX- and PEFT-format adapter files in one repo. Push "
+                "to a different repo_id or delete the old adapter."
+            )
+        return head, existing
+
+    def _commit(head: str, existing: set) -> None:
+        # create_commit mutates operations and they are single-use, so rebuild
+        # per attempt. A repo-authored README survives adapter pushes.
+        upload = [f for f in files if not (f == "README.md" and "README.md" in existing)]
+        hf_api.create_commit(
+            repo_id = repo_id,
+            repo_type = "model",
+            operations = [
+                CommitOperationAdd(
+                    path_in_repo = f,
+                    path_or_fileobj = os.path.join(folder_path, f.replace("/", os.sep)),
+                )
+                for f in upload
+            ],
+            commit_message = f"Upload {resolved_format} LoRA adapter with Unsloth Studio",
+            parent_commit = head,
+        )
+
+    with _ADAPTER_PUSH_LOCK:
+        hf_api.create_repo(repo_id, private = private, exist_ok = True)
+        head, existing = _precheck()
+        try:
+            _commit(head, existing)
+        except RuntimeError:
+            raise
+        except Exception as exc:
+            # parent_commit pins the commit to the head that was checked, so
+            # a moved head lands here -- but so do transport and server
+            # failures, and a commit the Hub applied whose response was lost
+            # is indistinguishable from one it rejected. (RuntimeError is
+            # re-raised above, so hub versions that wrap LFS upload failures
+            # in one keep their own message.) Claim only what holds for every
+            # exception reaching here: the commit was not confirmed and was
+            # NOT re-applied over a newer head, so nothing published
+            # meanwhile was overwritten.
+            raise RuntimeError(
+                f"Adapter upload to '{repo_id}' was not confirmed ({exc}). It "
+                "was not re-committed over a newer head, so nothing published "
+                "meanwhile was overwritten. Check the repo and retry if the "
+                "adapter is missing."
+            ) from exc
+        # An all-unchanged upload short-circuits client-side without the
+        # parent_commit check, so verify the invariant on the final head.
+        _final_head, _ = _precheck()
+
 
 def _export_runtime_available() -> bool:
     """True if export can run: MLX active, or Unsloth imported (only succeeds on a GPU host)."""
@@ -537,6 +658,9 @@ class ExportBackend:
             else:
                 self.is_peft = isinstance(model, (PeftModel, PeftModelForCausalLM))
 
+            # Kept for tooling that must honor the approved load decision
+            # (the GGUF converter's --trust-remote-code).
+            self.trust_remote_code = bool(trust_remote_code)
             self.current_model = model
             self.current_tokenizer = tokenizer
             self.current_checkpoint = checkpoint_path
@@ -1218,6 +1342,151 @@ class ExportBackend:
             logger.error(traceback.format_exc())
             return False, f"GGUF export failed: {str(e)}", None
 
+    def _save_mlx_adapter(self, destination: str, resolved_format: str) -> None:
+        """Save the loaded MLX model's adapter in the resolved format.
+
+        An older unsloth-zoo without adapter_format support raises TypeError
+        from the bound saver; surface the actionable upgrade message instead.
+        """
+        if resolved_format == "peft":
+            saver = self.current_model.save_lora_adapters
+            if not _supports_kwarg(saver, "adapter_format"):
+                raise RuntimeError(_ZOO_UPGRADE_MESSAGE)
+            saver(destination, adapter_format = "peft")
+            try:
+                self.current_tokenizer.save_pretrained(destination)
+            except BaseException:
+                # The zoo published a fresh directory this call; remove it
+                # so a retry is not refused as an existing destination.
+                shutil.rmtree(destination, ignore_errors = True)
+                raise
+        else:
+            self.current_model.save_lora_adapters(destination)
+            self.current_tokenizer.save_pretrained(destination)
+
+    def _export_mlx_lora_gguf(
+        self, save_directory: str, outtype: str, hf_token: Optional[str]
+    ) -> None:
+        """Materialize a PEFT adapter and convert it with llama.cpp's
+        convert_lora_to_gguf.py (same pipeline the CUDA path uses).
+
+        Refuses adapters GGUF LoRA cannot represent before converting:
+        per-module alpha patterns (the format has one global alpha; rsLoRA
+        sources surface here too because export bakes their scales into
+        alphas), DoRA, full-module state (modules_to_save or replaced
+        embeddings), and expert-parameter adapters.
+        """
+        self._save_mlx_adapter(save_directory, "peft")
+        try:
+            self._convert_peft_dir_to_gguf(save_directory, outtype, hf_token)
+        except BaseException:
+            # This call published the directory; remove it so a retry gets
+            # the fresh destination the zoo requires.
+            shutil.rmtree(save_directory, ignore_errors = True)
+            raise
+
+    def _convert_peft_dir_to_gguf(
+        self, save_directory: str, outtype: str, hf_token: Optional[str]
+    ) -> None:
+        import importlib.util
+        import subprocess
+        import sys as _sys
+
+        cfg_path = os.path.join(save_directory, "adapter_config.json")
+        with open(cfg_path, "r", encoding = "utf-8") as f:
+            peft_cfg = json.load(f)
+        rejects = []
+        if peft_cfg.get("alpha_pattern"):
+            rejects.append("per-module alpha values (GGUF LoRA stores one global alpha)")
+        if peft_cfg.get("use_rslora") and peft_cfg.get("rank_pattern"):
+            rejects.append("rsLoRA with per-module ranks (bakes to per-module alphas)")
+        if peft_cfg.get("use_dora"):
+            rejects.append("DoRA magnitudes (no GGUF LoRA representation)")
+        if peft_cfg.get("modules_to_save") or getattr(
+            self.current_model, "_unsloth_full_state_modules", None
+        ):
+            rejects.append("full-module state (modules_to_save or replaced embeddings)")
+        if peft_cfg.get("target_parameters"):
+            rejects.append("expert-parameter adapters (llama.cpp has no expert handling)")
+        if rejects:
+            raise RuntimeError(
+                "This adapter cannot be exported as a GGUF LoRA: "
+                + "; ".join(rejects)
+                + ". Export the PEFT safetensors adapter instead."
+            )
+
+        if importlib.util.find_spec("torch") is None:
+            raise RuntimeError(
+                "GGUF adapter export needs the 'torch' Python package for "
+                "llama.cpp's converter; install it and retry."
+            )
+
+        from unsloth_zoo.llama_cpp import LLAMA_CPP_DEFAULT_DIR, install_llama_cpp
+
+        install_llama_cpp(just_clone_repo = True)
+        converter = os.path.join(LLAMA_CPP_DEFAULT_DIR, "convert_lora_to_gguf.py")
+        if not os.path.exists(converter):
+            # A prebuilt install carries binaries but not the converter; a
+            # dedicated source checkout ships it.
+            source_dir = os.path.join(
+                os.path.dirname(os.path.normpath(LLAMA_CPP_DEFAULT_DIR)),
+                "llama.cpp-source",
+            )
+            install_llama_cpp(llama_cpp_folder = source_dir, just_clone_repo = True)
+            converter = os.path.join(source_dir, "convert_lora_to_gguf.py")
+        if not os.path.exists(converter):
+            raise RuntimeError(
+                "convert_lora_to_gguf.py not found after installing a "
+                "llama.cpp source checkout; GGUF adapter export needs a full "
+                "llama.cpp source tree."
+            )
+        # The converter vendors gguf-py beside itself; a top-level install
+        # works too. Neither present is the actionable error.
+        if importlib.util.find_spec("gguf") is None and not os.path.isdir(
+            os.path.join(os.path.dirname(converter), "gguf-py")
+        ):
+            raise RuntimeError(
+                "GGUF adapter export needs the 'gguf' Python package (or a "
+                "full llama.cpp checkout with gguf-py); install it and retry."
+            )
+
+        base_model_id = peft_cfg.get("base_model_name_or_path") or getattr(
+            self.current_model, "_hf_repo", None
+        )
+        if not base_model_id:
+            raise RuntimeError(
+                "Could not determine the adapter's base model for GGUF "
+                "conversion (no base_model_name_or_path)."
+            )
+        model_name = str(base_model_id).replace("\\", "/").rstrip("/").split("/")[-1] or "model"
+        out_gguf = os.path.join(save_directory, f"{model_name}-lora-{outtype}.gguf")
+        cmd = [
+            _sys.executable,
+            converter,
+            save_directory,
+            "--outfile",
+            out_gguf,
+            "--outtype",
+            outtype,
+        ]
+        if os.path.isdir(str(base_model_id)):
+            cmd += ["--base", str(base_model_id)]
+        else:
+            cmd += ["--base-model-id", str(base_model_id)]
+        if getattr(self, "trust_remote_code", False):
+            cmd.append("--trust-remote-code")
+        env = os.environ.copy()
+        if hf_token:
+            env["HF_TOKEN"] = hf_token
+            env["HUGGING_FACE_HUB_TOKEN"] = hf_token
+        logger.info(f"Converting adapter at '{save_directory}' to GGUF -> '{out_gguf}'")
+        result = subprocess.run(cmd, env = env, capture_output = True, text = True)
+        if result.returncode != 0:
+            raise RuntimeError(
+                f"LoRA -> GGUF conversion failed (exit {result.returncode}): "
+                + (result.stderr or result.stdout or "").strip()[-2000:]
+            )
+
     def export_lora_adapter(
         self,
         save_directory: str,
@@ -1227,6 +1496,7 @@ class ExportBackend:
         private: bool = False,
         gguf: bool = False,
         gguf_outtype: str = "q8_0",
+        adapter_format: Optional[str] = None,
     ) -> Tuple[bool, str, Optional[str]]:
         """
         Export LoRA adapter only (not merged).
@@ -1235,6 +1505,8 @@ class ExportBackend:
             gguf: If True, also convert the adapter to a GGUF LoRA file (llama.cpp
                 convert_lora_to_gguf.py), loadable with `llama-cli --lora ...`.
             gguf_outtype: GGUF LoRA output float type; one of q8_0/f16/bf16/f32.
+            adapter_format: 'mlx' or 'peft'; omitted resolves to the platform's
+                native format (MLX servers -> 'mlx', others -> 'peft').
 
         Returns:
             Tuple of (success: bool, message: str, output_path: Optional[str])
@@ -1247,20 +1519,26 @@ class ExportBackend:
         if not self.is_peft:
             return False, "This is not a PEFT model. No adapter to export.", None
 
+        resolved_format, format_error = _resolve_adapter_format(adapter_format)
+        if format_error:
+            return False, format_error, None
+
         _GGUF_LORA_OUTTYPES = ("q8_0", "f16", "bf16", "f32")
         if gguf:
-            if _IS_MLX:
+            if adapter_format == "mlx":
                 return (
                     False,
-                    "GGUF LoRA adapter export is not supported on macOS/MLX. "
-                    "Use the safetensors adapter instead.",
+                    "GGUF LoRA files are built from a PEFT-format adapter; "
+                    "omit adapter_format or use 'peft' with gguf=True.",
                     None,
                 )
             # llama.cpp's convert_lora_to_gguf.py has no concept of DoRA's
             # lora_magnitude_vector tensors: it only reads the standard
             # lora_A/lora_B delta, so exporting a DoRA adapter would silently
             # drop the magnitude rescaling and produce a GGUF LoRA file that
-            # loads fine but no longer matches the trained model.
+            # loads fine but no longer matches the trained model. MLX models
+            # carry no peft_config; their DoRA refusal happens in the staging
+            # checks on the materialized PEFT adapter.
             _peft_config = getattr(self.current_model, "peft_config", {}).get("default")
             if getattr(_peft_config, "use_dora", False):
                 return (
@@ -1271,6 +1549,8 @@ class ExportBackend:
                     "safetensors adapter instead, or merge to a full GGUF model.",
                     None,
                 )
+            # GGUF LoRA files are built FROM a PEFT-format adapter.
+            resolved_format = "peft"
             outtype = str(gguf_outtype).lower()
             if outtype not in _GGUF_LORA_OUTTYPES:
                 return (
@@ -1279,25 +1559,61 @@ class ExportBackend:
                     f"Choose one of {', '.join(_GGUF_LORA_OUTTYPES)}.",
                     None,
                 )
-            # getattr so an older build without save_pretrained_gguf returns a clean message
-            # instead of an AttributeError (a generic 500).
-            _save_gguf_fn = getattr(self.current_model, "save_pretrained_gguf", None)
-            if _save_gguf_fn is None or not _supports_kwarg(_save_gguf_fn, "save_method"):
-                return (
-                    False,
-                    "This Unsloth build does not support GGUF LoRA adapter export. "
-                    "Upgrade unsloth and unsloth_zoo, or export the safetensors adapter.",
-                    None,
-                )
+            if not _IS_MLX:
+                # getattr so an older build without save_pretrained_gguf
+                # returns a clean message, not an AttributeError (a 500).
+                _save_gguf_fn = getattr(self.current_model, "save_pretrained_gguf", None)
+                if _save_gguf_fn is None or not _supports_kwarg(_save_gguf_fn, "save_method"):
+                    return (
+                        False,
+                        "This Unsloth build does not support GGUF LoRA adapter export. "
+                        "Upgrade unsloth and unsloth_zoo, or export the safetensors adapter.",
+                        None,
+                    )
+            elif not hasattr(self.current_model, "save_lora_adapters"):
+                return False, _ZOO_UPGRADE_MESSAGE, None
 
         output_path: Optional[str] = None
         try:
             if save_directory:
                 save_directory = str(resolve_export_write_dir(save_directory))
                 logger.info(f"Saving LoRA adapter locally to: {save_directory}")
-                ensure_dir(Path(save_directory))
+                # One directory holds ONE adapter format; a leftover file of
+                # the other would make loaders disagree.
+                _other_names = _ADAPTER_WEIGHT_NAMES["peft" if resolved_format == "mlx" else "mlx"]
+                # Recursive: peft stores named adapters in subdirectories.
+                _mixed = os.path.isdir(save_directory) and any(
+                    name in _other_names
+                    for _root, _dirs, names in os.walk(save_directory)
+                    for name in names
+                )
+                if _mixed:
+                    return (
+                        False,
+                        f"'{save_directory}' already holds the other "
+                        "format's adapter weights; refusing to mix MLX- and "
+                        "PEFT-format files in one directory. Use a "
+                        "different directory or remove the old adapter "
+                        "first.",
+                        None,
+                    )
+                if _IS_MLX and (gguf or resolved_format == "peft"):
+                    # The zoo's converter refuses an existing destination and
+                    # publishes it atomically itself; create only the parent.
+                    ensure_dir(Path(save_directory).parent)
+                else:
+                    ensure_dir(Path(save_directory))
 
-                if gguf:
+                if gguf and _IS_MLX:
+                    # Materialize PEFT + convert with llama.cpp's script.
+                    self._export_mlx_lora_gguf(save_directory, outtype, hf_token)
+                    final_ggufs = sorted(glob.glob(os.path.join(save_directory, "*.gguf")))
+                    logger.info(
+                        "LoRA GGUF export complete. Files in %s:\n  %s",
+                        save_directory,
+                        "\n  ".join(os.path.basename(f) for f in final_ggufs) or "(none)",
+                    )
+                elif gguf:
                     # Writes the adapter files plus "<base>-lora-<outtype>.gguf".
                     _apply_wsl_sudo_patch()
                     self.current_model.save_pretrained_gguf(
@@ -1320,9 +1636,8 @@ class ExportBackend:
                         "\n  ".join(os.path.basename(f) for f in final_ggufs) or "(none)",
                     )
                 elif _IS_MLX:
-                    # MLX: save adapters.safetensors + tokenizer files
-                    self.current_model.save_lora_adapters(save_directory)
-                    self.current_tokenizer.save_pretrained(save_directory)
+                    # Native MLX or converted PEFT, per the resolved format.
+                    self._save_mlx_adapter(save_directory, resolved_format)
                 else:
                     self.current_model.save_pretrained(save_directory)
                     self.current_tokenizer.save_pretrained(save_directory)
@@ -1349,27 +1664,36 @@ class ExportBackend:
                             "retry.",
                             None,
                         )
-                    hf_api = HfApi(token = hf_token)
-                    hf_api.create_repo(repo_id, private = private, exist_ok = True)
-                    hf_api.upload_folder(
-                        folder_path = output_path,
-                        repo_id = repo_id,
-                        repo_type = "model",
+                    _push_adapter_dir_cas(
+                        HfApi(token = hf_token),
+                        output_path,
+                        repo_id,
+                        private,
+                        resolved_format,
                     )
                 elif _IS_MLX:
                     with tempfile.TemporaryDirectory() as tmp_dir:
-                        self.current_model.save_lora_adapters(tmp_dir)
-                        self.current_tokenizer.save_pretrained(tmp_dir)
-                        hf_api = HfApi(token = hf_token)
-                        hf_api.create_repo(repo_id, private = private, exist_ok = True)
-                        hf_api.upload_folder(
-                            folder_path = tmp_dir,
-                            repo_id = repo_id,
-                            repo_type = "model",
+                        # A fresh subpath: the zoo refuses existing dirs.
+                        staged = os.path.join(tmp_dir, "adapter")
+                        self._save_mlx_adapter(staged, resolved_format)
+                        _push_adapter_dir_cas(
+                            HfApi(token = hf_token),
+                            staged,
+                            repo_id,
+                            private,
+                            resolved_format,
                         )
                 else:
-                    self.current_model.push_to_hub(repo_id, token = hf_token, private = private)
-                    self.current_tokenizer.push_to_hub(repo_id, token = hf_token, private = private)
+                    with tempfile.TemporaryDirectory() as tmp_dir:
+                        self.current_model.save_pretrained(tmp_dir)
+                        self.current_tokenizer.save_pretrained(tmp_dir)
+                        _push_adapter_dir_cas(
+                            HfApi(token = hf_token),
+                            tmp_dir,
+                            repo_id,
+                            private,
+                            resolved_format,
+                        )
                 logger.info(f"Adapter pushed successfully to {repo_id}")
 
             return True, "LoRA adapter exported successfully", output_path

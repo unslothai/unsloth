@@ -41,6 +41,13 @@ class ModelCheckpoints(BaseModel):
         False,
         description = "Whether the model uses BNB quantization (e.g. bnb-4bit)",
     )
+    adapter_features: Optional[Dict[str, Optional[bool]]] = Field(
+        None,
+        description = "Compact adapter capabilities parsed from the adapter "
+        "config (dora / full_state / moe_target_parameters / non_uniform); "
+        "None for non-adapter runs. A None VALUE means unverified (e.g. "
+        "full_state without a weight-header probe).",
+    )
 
 
 class CheckpointListResponse(BaseModel):
@@ -113,6 +120,13 @@ class LoRAInfo(BaseModel):
     source: Optional[str] = Field(None, description = "'training' or 'exported'")
     export_type: Optional[str] = Field(
         None, description = "'lora', 'merged', or 'gguf' (for exports)"
+    )
+    adapter_features: Optional[Dict[str, Optional[bool]]] = Field(
+        None,
+        description = "Compact adapter capabilities parsed from the adapter "
+        "config (dora / full_state / moe_target_parameters / non_uniform); "
+        "None when no adapter config was found. A None VALUE means "
+        "unverified.",
     )
 
 
