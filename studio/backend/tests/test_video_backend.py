@@ -2273,3 +2273,44 @@ def test_a_raising_teardown_still_drains_the_fence(fake_runtime, tmp_path, monke
     monkeypatch.setattr(video_mod, "clear_gpu_cache", lambda: None)
     _load_gguf(backend, tmp_path)
     assert backend.generate(prompt = "after", steps = 2)["mp4_bytes"] == b"MP4"
+
+
+def _trim_spy(monkeypatch):
+    """Record every install_hunyuan_attention_trim call and report it as engaged."""
+    from core.inference import video as video_mod
+
+    calls: list = []
+
+    def _fake(pipe, family, *, logger = None):
+        calls.append(getattr(family, "name", None))
+        return True
+
+    monkeypatch.setattr(video_mod, "install_hunyuan_attention_trim", _fake)
+    return calls
+
+
+def test_attention_trim_installed_and_reported(fake_runtime, monkeypatch):
+    # The padded-text trim is installed once per pipe (the installer fans out over the DiTs itself)
+    # and, when it engages, is reported as a speed optim.
+    calls = _trim_spy(monkeypatch)
+    backend = VideoBackend()
+    status = backend.load_pipeline(
+        "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = "default"
+    )
+    assert status["loaded"] is True
+    assert len(calls) == 1
+    assert "hunyuan_attn_trim" in status["speed_optims"]
+
+
+def test_attention_trim_skipped_for_static_shape_and_off_tiers(fake_runtime, monkeypatch):
+    # speed=off must stay bit-identical, and speed=max compiles the blocks with dynamic=False,
+    # where the prompt-dependent trimmed text length would make every prompt a fresh graph.
+    for mode in ("off", "max"):
+        calls = _trim_spy(monkeypatch)
+        backend = VideoBackend()
+        status = backend.load_pipeline(
+            "Wan-AI/Wan2.2-TI2V-5B-Diffusers", model_kind = "pipeline", speed_mode = mode
+        )
+        assert status["loaded"] is True, mode
+        assert calls == [], mode
+        assert "hunyuan_attn_trim" not in status["speed_optims"], mode
