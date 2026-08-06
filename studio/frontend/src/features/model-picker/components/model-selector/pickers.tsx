@@ -2122,10 +2122,11 @@ export function HubModelPicker({
     localDirModels,
     customFolderModels,
   ]);
+  const warmAtMountRef = useRef(cachedReady);
   useEffect(() => {
-    if (!cachedReady) return;
+    if (!warmAtMountRef.current) return;
     void refreshInventory();
-  }, [cachedReady, refreshInventory]);
+  }, [refreshInventory]);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
     null,
   );
