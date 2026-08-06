@@ -12,7 +12,46 @@ function isScsFinal(code: number): boolean {
   return (code >= 0x30 && code <= 0x3f) || isCsiFinal(code);
 }
 
-/** Strip SGR / CSI / SCS / OSC sequences in one linear pass. */
+function isStringControlIntroducer(code: number): boolean {
+  // DCS (P), PM (^), APC (_)
+  return code === 0x50 || code === 0x5e || code === 0x5f;
+}
+
+/** Advance past a DCS / PM / APC payload, stopping at ST (ESC \\) or the next ESC. */
+function consumeStringControl(text: string, afterIntro: number): number {
+  let j = afterIntro;
+  while (j < text.length) {
+    if (text.charCodeAt(j) === ESC) {
+      if (j + 1 < text.length && text.charCodeAt(j + 1) === 0x5c) {
+        return j + 2;
+      }
+      break;
+    }
+    j += 1;
+  }
+  return j;
+}
+
+/** Advance past an OSC payload, stopping at BEL, ST (ESC \\), or the next ESC. */
+function consumeOsc(text: string, afterIntro: number): number {
+  let j = afterIntro;
+  while (j < text.length) {
+    const osc = text.charCodeAt(j);
+    if (osc === BEL) {
+      return j + 1;
+    }
+    if (osc === ESC) {
+      if (j + 1 < text.length && text.charCodeAt(j + 1) === 0x5c) {
+        return j + 2;
+      }
+      break;
+    }
+    j += 1;
+  }
+  return j;
+}
+
+/** Strip SGR / CSI / SCS / OSC / string-control sequences in one linear pass. */
 export function stripAnsi(text: string): string {
   let out = "";
   let index = 0;
@@ -38,29 +77,11 @@ export function stripAnsi(text: string): string {
       continue;
     }
     if (next === 0x5d) {
-      let j = index + 2;
-      let terminated = false;
-      while (j < text.length) {
-        const osc = text.charCodeAt(j);
-        if (osc === BEL) {
-          j += 1;
-          terminated = true;
-          break;
-        }
-        if (osc === ESC) {
-          if (j + 1 < text.length && text.charCodeAt(j + 1) === 0x5c) {
-            j += 2;
-            terminated = true;
-          }
-          break;
-        }
-        j += 1;
-      }
-      index = terminated ? j : index + 2;
+      index = consumeOsc(text, index + 2);
       continue;
     }
-    if (next >= 0x40 && next <= 0x5f) {
-      index += 2;
+    if (isStringControlIntroducer(next)) {
+      index = consumeStringControl(text, index + 2);
       continue;
     }
     if (next >= 0x20 && next <= 0x2f) {
@@ -71,6 +92,10 @@ export function stripAnsi(text: string): string {
       if (index < text.length) {
         index += 1;
       }
+      continue;
+    }
+    if (next >= 0x30 && next <= 0x7e && next !== 0x5b && next !== 0x5d) {
+      index += 2;
       continue;
     }
     index += 1;

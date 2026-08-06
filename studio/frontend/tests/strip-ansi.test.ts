@@ -56,9 +56,23 @@ test("strips SCS charset resets emitted by terminfo sgr0", () => {
 });
 
 test("strips many unterminated OSC introducers without quadratic work", () => {
-  const garbage = `${ESC}]`.repeat(500) + "ok";
-  const cleaned = stripAnsi(garbage);
-  assert.equal(cleaned, "ok");
+  const garbage = `${ESC}]`.repeat(500);
+  assert.equal(stripAnsi(garbage), "");
+});
+
+test("hides partial OSC payloads while a hyperlink is still streaming", () => {
+  const partial = `${ESC}]8;;file:///tmp/demo`;
+  assert.equal(stripAnsi(partial), "");
+});
+
+test("strips DCS payloads terminated by ST", () => {
+  const dcs = `${ESC}Pfake-sixel${ESC}\\ok`;
+  assert.equal(stripAnsi(dcs), "ok");
+});
+
+test("strips DEC save, restore, and full reset controls", () => {
+  assert.equal(stripAnsi(`${ESC}7text${ESC}8`), "text");
+  assert.equal(stripAnsi(`${ESC}chello`), "hello");
 });
 
 test("stripAnsiDeep cleans nested tool object fields before JSON display", () => {
