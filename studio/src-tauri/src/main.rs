@@ -75,16 +75,53 @@ fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, Str
         .map_err(|error| error.to_string())
 }
 
-/// XDG launchers skip an autostart entry whose TryExec binary is missing, so a
-/// removed install stops autostarting without postrm touching user homes
-/// (auto-launch writes no TryExec of its own).
-fn tryexec_guarded_entry(entry: &str) -> Option<String> {
+/// Exec is parsed as whitespace-delimited words, so a binary path is quoted
+/// when it contains reserved characters (AppImage under "~/My Apps/" breaks
+/// otherwise). `"`, `` ` ``, `$` and `\` are the characters the spec requires
+/// escaping inside quotes.
+fn exec_quoted(binary: &str) -> String {
+    const RESERVED: &str = " \t\n\"'\\><~|&;$*?#()`";
+    if !binary.chars().any(|c| RESERVED.contains(c)) {
+        return binary.to_string();
+    }
+    let mut quoted = String::with_capacity(binary.len() + 2);
+    quoted.push('"');
+    for c in binary.chars() {
+        if matches!(c, '"' | '`' | '$' | '\\') {
+            quoted.push('\\');
+        }
+        quoted.push(c);
+    }
+    quoted.push('"');
+    quoted
+}
+
+/// auto-launch writes the Exec binary unquoted and no TryExec, so quote the
+/// binary (paths with spaces would word-split) and add TryExec: XDG launchers
+/// skip an entry whose TryExec binary is missing, which leaves a removed
+/// install inert without postrm touching user homes. TryExec is a plain
+/// string field and stays unquoted.
+fn hardened_autostart_entry(entry: &str) -> Option<String> {
     if entry.lines().any(|line| line.starts_with("TryExec=")) {
         return None;
     }
     let exec = entry.lines().find_map(|line| line.strip_prefix("Exec="))?;
-    let binary = exec.strip_suffix(" --hidden").unwrap_or(exec);
-    Some(format!("{entry}\nTryExec={binary}"))
+    let (binary, args) = match exec.strip_suffix(" --hidden") {
+        Some(binary) => (binary, " --hidden"),
+        None => (exec, ""),
+    };
+    let hardened = entry
+        .lines()
+        .map(|line| {
+            if line.starts_with("Exec=") {
+                format!("Exec={}{}", exec_quoted(binary), args)
+            } else {
+                line.to_string()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Some(format!("{hardened}\nTryExec={binary}"))
 }
 
 fn guard_linux_autostart_entry(app: &tauri::AppHandle) {
@@ -97,8 +134,8 @@ fn guard_linux_autostart_entry(app: &tauri::AppHandle) {
     let Ok(entry) = fs::read_to_string(&path) else {
         return;
     };
-    if let Some(guarded) = tryexec_guarded_entry(&entry) {
-        let _ = fs::write(&path, guarded);
+    if let Some(hardened) = hardened_autostart_entry(&entry) {
+        let _ = fs::write(&path, hardened);
     }
 }
 
@@ -709,22 +746,46 @@ mod tests {
     }
 
     #[test]
-    fn tryexec_guard_appends_the_exec_binary_without_args() {
+    fn autostart_hardening_appends_the_exec_binary_without_args() {
         let entry = "[Desktop Entry]\nType=Application\nExec=/usr/bin/unsloth-studio --hidden\nTerminal=false";
-        let guarded = tryexec_guarded_entry(entry).expect("guard must be added");
-        assert!(guarded.starts_with(entry));
-        assert!(guarded.ends_with("\nTryExec=/usr/bin/unsloth-studio"));
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        assert!(hardened.starts_with(entry));
+        assert!(hardened.ends_with("\nTryExec=/usr/bin/unsloth-studio"));
     }
 
     #[test]
-    fn tryexec_guard_is_idempotent() {
+    fn autostart_hardening_quotes_a_binary_path_with_spaces() {
+        let entry = "[Desktop Entry]\nExec=/home/n/My Apps/Unsloth.AppImage --hidden\nTerminal=false";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        assert!(hardened.contains("Exec=\"/home/n/My Apps/Unsloth.AppImage\" --hidden\n"));
+        // TryExec is a plain string field, so the path stays unquoted there.
+        assert!(hardened.ends_with("\nTryExec=/home/n/My Apps/Unsloth.AppImage"));
+    }
+
+    #[test]
+    fn autostart_hardening_escapes_exec_reserved_characters() {
+        let entry = "[Desktop Entry]\nExec=/opt/a\"b$c/app --hidden";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        assert!(hardened.contains("Exec=\"/opt/a\\\"b\\$c/app\" --hidden\n"));
+    }
+
+    #[test]
+    fn autostart_hardening_is_idempotent() {
         let entry = "[Desktop Entry]\nExec=/a --hidden\nTryExec=/a";
-        assert!(tryexec_guarded_entry(entry).is_none());
+        assert!(hardened_autostart_entry(entry).is_none());
     }
 
     #[test]
-    fn tryexec_guard_needs_an_exec_line() {
-        assert!(tryexec_guarded_entry("[Desktop Entry]\nType=Application").is_none());
+    fn autostart_hardening_needs_an_exec_line() {
+        assert!(hardened_autostart_entry("[Desktop Entry]\nType=Application").is_none());
+    }
+
+    #[test]
+    fn autostart_hardening_keeps_foreign_args_untouched() {
+        let entry = "[Desktop Entry]\nExec=/plain/app";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        assert!(hardened.contains("Exec=/plain/app\n"));
+        assert!(hardened.ends_with("\nTryExec=/plain/app"));
     }
 
     fn renderer_activity(state: &RendererActivityState) -> (bool, bool) {
