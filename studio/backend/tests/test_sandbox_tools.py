@@ -496,10 +496,19 @@ class TestSandboxEnvIsolation:
         """When the known-folder API is unavailable, no roots are trusted: env
         vars (even %SystemDrive%) are caller-overrideable, so we never derive a
         trusted root from them."""
+        import ctypes
+
         import core.inference.tools as tools_mod
 
-        # ctypes fails on this Linux host, so the API path raises and we fail
-        # closed. Any attacker override of these env vars must be irrelevant.
+        # Make the API unavailable explicitly. Relying on ctypes.windll being
+        # absent only held off Windows, so on a real Windows runner the call
+        # succeeded and returned the true roots: this asserted nothing where it
+        # matters most. Any attacker override of these env vars stays irrelevant.
+        class _NoKnownFolderApi:
+            def __getattr__(self, name):
+                raise OSError("known-folder API unavailable")
+
+        monkeypatch.setattr(ctypes, "windll", _NoKnownFolderApi(), raising = False)
         monkeypatch.setenv("ProgramFiles", r"D:\attacker-writable")
         monkeypatch.setenv("ProgramW6432", r"D:\attacker-writable")
         monkeypatch.setenv("SystemDrive", "D:")
