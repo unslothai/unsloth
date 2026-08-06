@@ -664,7 +664,6 @@ def test_a_posix_builtin_wrapper_is_read_only_under_bash(windows_git_bash_only, 
     assert tools._find_blocked_commands(command)
 
 
-
 def test_a_newline_inside_quotes_does_not_start_a_command(windows_terminal):
     # Only a newline the quoting left bare ends a command. One inside a quoted
     # word is data the command receives, and treating it as a separator would
@@ -1932,7 +1931,6 @@ def test_if_skips_its_case_insensitive_switch(windows_terminal):
     assert "powershell" in tools._find_blocked_commands("cmd /c if /i a==a powershell -Command ls")
 
 
-
 def test_the_posix_timeout_still_wraps(windows_git_bash_only):
     # The other half, on the lane where `timeout 5 cmd` really does run cmd.
     assert "powershell" in tools._find_blocked_commands("timeout 5 powershell -Command ls")
@@ -2240,8 +2238,6 @@ def test_a_path_qualified_wrapper_still_wraps(windows_cmd_only, command):
     # why the bare names are not wrappers there. A path picks a DIFFERENT
     # executable, and the one it picks takes DURATION COMMAND and launches it.
     assert "powershell" in tools._find_blocked_commands(command)
-
-
 
 
 @pytest.mark.parametrize(
