@@ -1580,9 +1580,16 @@ def _resolve_model(
                 or load.tensor_parallel
                 or load.gpu_memory_mode is not None
             )
+            # /v1/models advertises a path-loaded GGUF under its basename, so
+            # the same direct path has to be matched through that spelling too
+            # or a second session for the resident model reruns the gate.
+            wanted_ids = {requested, _public_model_id(requested)} - {None}
             resident_serves_request = not other_overrides and any(
-                _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
-                and m.get("loaded") is not False
+                m.get("loaded") is not False
+                and any(
+                    _model_id_matches(m.get("id"), want, allow_casefold = allow_casefold)
+                    for want in wanted_ids
+                )
                 for m in models
             )
             if resident_serves_request and load.gguf_variant:
@@ -1772,6 +1779,19 @@ def _direct_gguf_is_companion(path: str) -> bool:
     if "mmproj" in name:
         return True
     return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
+
+
+def _path_syntax_is_native(path: str) -> bool:
+    """Whether *path* is spelled the way this OS spells paths.
+
+    A Windows path read from WSL, or a POSIX one read from Windows, parses into
+    something this process cannot judge -- ``C:\\models\\m.gguf`` has parent
+    ``.`` here -- so its absence locally says nothing about the server's disk.
+    """
+    windows_drive = len(path) >= 2 and path[1] == ":" and path[0].isalpha()
+    if os.name == "nt":
+        return True
+    return not windows_drive and "\\" not in path
 
 
 def _direct_gguf_companion_is_uncertain(path: str) -> bool:
@@ -2110,8 +2130,11 @@ def _attach_gguf_check_for_codex(
         # variant the resolver scans the file's marked parent and serves the
         # named sibling, so the refused name is not what gets loaded. Those
         # requests go to the probe below, which judges the sibling's own row.
+        # A refused name is refused whatever quant came with it: the loader
+        # consults gguf_variant only for a DIRECTORY, so a direct file is
+        # always evaluated as itself and never swapped for a sibling.
         refused = _direct_gguf_is_companion(repo) or _direct_gguf_is_big_endian(repo)
-        if refused and not variant:
+        if refused:
             _fail_codex_needs_gguf(repo)
         # A drafter folder further up is the server's call, not ours: ask it
         # rather than trusting or refusing the path here.
@@ -2145,7 +2168,14 @@ def _attach_gguf_check_for_codex(
                     try:
                         probe = Path(os.path.expanduser(repo))
                         missing = (
-                            not probe.is_symlink() and probe.parent.is_dir() and not probe.exists()
+                            # Only a path this OS actually spells: a Windows
+                            # path seen from WSL parses to something meaningless
+                            # here (C:\... has parent '.'), and the server may
+                            # hold the real file, so those defer to the probe.
+                            _path_syntax_is_native(repo)
+                            and not probe.is_symlink()
+                            and probe.parent.is_dir()
+                            and not probe.exists()
                         )
                     except OSError:
                         missing = False

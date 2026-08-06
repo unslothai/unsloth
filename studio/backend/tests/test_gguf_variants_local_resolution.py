@@ -348,6 +348,25 @@ def test_local_answers_report_what_a_load_would_serve(in_tmp_cwd):
     assert aliased.default_variant in aliased.loadable_variants
 
 
+def test_symlink_outside_the_tree_keeps_its_relative_alias(in_tmp_cwd):
+    # The resolver reads the snapshot-relative spelling, so a link pointing out
+    # of the tree still answers BF16/model; resolving it first loses that.
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    pool = in_tmp_cwd / "pool"
+    pool.mkdir()
+    (pool / "real.gguf").write_bytes(b"GGUF")
+    model = in_tmp_cwd / "m"
+    (model / "BF16").mkdir(parents = True)
+    (model / "config.json").write_text("{}")
+    (model / "BF16" / "model.gguf").symlink_to(pool / "real.gguf")
+
+    offered = _variants(os.fspath(model)).loadable_variants
+    assert "BF16/model" in offered
+    for spelling in offered:
+        assert _find_local_gguf_by_variant(os.fspath(model), spelling)
+
+
 def test_a_missing_direct_path_is_not_loadable(in_tmp_cwd):
     # The resolver answers for paths that do not exist (the extension is
     # authoritative), so absence has to be caught before the gate trusts it.

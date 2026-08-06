@@ -6569,35 +6569,20 @@ def test_codex_attach_check_probes_direct_paths_on_remote_servers(monkeypatch, c
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/foo-Q4_K_M.gguf")
 
 
-def test_codex_attach_check_defers_companion_paths_with_a_variant(monkeypatch, capsys):
-    # With an explicit variant the resolver scans the companion's marked parent
-    # and serves the named sibling, so the refused name is not what loads.
-    _fake_variants(
-        monkeypatch,
-        {
-            "variants": [{"quant": "Q4_K_M", "filename": "model-Q4_K_M.gguf"}],
-            "resolved_locally": True,
-        },
-    )
-    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/m/mmproj-F16.gguf", "Q4_K_M")
-    # The parent's answer still decides: a quant it does not serve fails, and
-    # the companion's own label cannot vouch for itself either.
-    _fake_variants(
-        monkeypatch,
-        {
-            "variants": [{"quant": "Q4_K_M", "filename": "model-Q4_K_M.gguf"}],
-            "resolved_locally": True,
-        },
+def test_codex_attach_check_refuses_companion_paths_with_a_variant(monkeypatch, capsys):
+    # The loader consults gguf_variant only for a directory, so a direct file is
+    # always evaluated as itself: a refused name cannot be rescued by naming a
+    # sibling quant, and letting it through would evict before failing.
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: pytest.fail("a refused direct file needs no variants probe"),
     )
     with pytest.raises(typer.Exit):
-        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/m/mmproj-F16.gguf", "F16")
-    # Without a variant the companion is still refused outright.
-    monkeypatch.setattr(
-        start, "_http_json", lambda *a, **k: pytest.fail("no variant means no probe")
-    )
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/m/mmproj-F16.gguf", "Q4_K_M")
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
     with pytest.raises(typer.Exit):
         start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/m/mmproj-F16.gguf")
-    assert "Codex needs a GGUF model" in capsys.readouterr().err
 
 
 def test_codex_attach_check_ignores_cleanable_only_answers(monkeypatch, capsys):
@@ -6972,6 +6957,20 @@ def test_codex_attach_check_asks_about_nested_drafter_folders(monkeypatch, capsy
     )
     with pytest.raises(typer.Exit):
         start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/mtp-foo-Q8_0.gguf")
+
+
+def test_codex_attach_check_defers_foreign_path_syntax(monkeypatch, tmp_path):
+    # A Windows path read from POSIX parses to something meaningless here
+    # (parent '.'), so its absence locally says nothing about the server's
+    # disk and must not be failed as missing.
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(start, "_http_json", lambda *a, **k: {"variants": [{"quant": "Q4_K_M"}]})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "C:\\models\\foo-Q4_K_M.gguf")
+    # A native path that really is absent is still failed.
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(
+            BASE, "sk-test", os.fspath(tmp_path / "gone-Q4_K_M.gguf")
+        )
 
 
 def test_codex_attach_check_rejects_missing_direct_paths(tmp_path, monkeypatch, capsys):

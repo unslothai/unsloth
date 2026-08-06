@@ -729,12 +729,20 @@ def _loadable_variants(identifier: str, variants):
         # is claimed that the load would not honour.
         # The resolver hands back an absolute path, so a relative identifier
         # has to be resolved the same way or the relative alias is lost.
-        try:
-            base = Path(identifier).expanduser().resolve()
-            base = base.parent if base.is_file() else base
-            relative = Path(bound).resolve().relative_to(base).as_posix()
-        except (OSError, ValueError):
-            relative = Path(bound).name
+        # The unresolved path first: the resolver reads the snapshot-relative
+        # spelling, so a symlink pointing outside the tree still answers
+        # BF16/model there while resolving it would leave the tree entirely.
+        relative = Path(bound).name
+        for base_raw, bound_path in (
+            (Path(identifier).expanduser(), Path(bound)),
+            (Path(identifier).expanduser().resolve(), Path(bound).resolve()),
+        ):
+            try:
+                base = base_raw.parent if base_raw.is_file() else base_raw
+                relative = bound_path.relative_to(base).as_posix()
+                break
+            except (OSError, ValueError):
+                continue
         basename = Path(bound).name
         derived = {
             re.sub(r"-\d{3,}-of-\d{3,}$", "", relative.rsplit(".", 1)[0]),
