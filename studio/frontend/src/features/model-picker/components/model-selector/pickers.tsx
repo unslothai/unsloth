@@ -1604,19 +1604,25 @@ export const IMAGE_GEN_TASKS = [
 // image-to-video is included because HF gives the LTX-2 family that pipeline_tag, so a text-to-video-only filter dropped it out of Video Hub search.
 export const VIDEO_GEN_TASKS = ["text-to-video", "image-to-video"] as const;
 
+// Speech pipeline tasks: owned by the Audio page. TTS picks load there rather than into chat; ASR picks map to the dictation sidecar.
+export const AUDIO_GEN_TASKS = ["text-to-speech", "automatic-speech-recognition"] as const;
+
 // Diffusion GGUF archs the Images backend cannot assemble yet (SD/SDXL/PixArt/Wan/...). The backend tags them with this task so the chat picker hides them and the Images picker leaves them out (they would 400 on load).
 const UNSUPPORTED_DIFFUSION_TASK = "image-diffusion-unsupported";
 
-// Generation tasks the Images / Video pages own. Not chat-loadable, so an on-device pick routes to its page instead.
-const DIFFUSION_PAGE_TASKS: readonly string[] = [
+// Generation tasks the Images / Video / Audio pages own. Not chat-loadable, so an on-device pick routes to its page instead.
+const MEDIA_PAGE_TASKS: readonly string[] = [
   ...IMAGE_GEN_TASKS,
   ...VIDEO_GEN_TASKS,
+  ...AUDIO_GEN_TASKS,
 ];
 
 /** The page that runs this task, or null when chat should handle the pick. */
-function diffusionPageForTask(task: string | null | undefined): "images" | "video" | null {
-  if (!task || !DIFFUSION_PAGE_TASKS.includes(task)) return null;
-  return (VIDEO_GEN_TASKS as readonly string[]).includes(task) ? "video" : "images";
+function mediaPageForTask(task: string | null | undefined): "images" | "video" | "audio" | null {
+  if (!task || !MEDIA_PAGE_TASKS.includes(task)) return null;
+  if ((VIDEO_GEN_TASKS as readonly string[]).includes(task)) return "video";
+  if ((AUDIO_GEN_TASKS as readonly string[]).includes(task)) return "audio";
+  return "images";
 }
 
 // Editing/inpaint checkpoints are tagged image-to-image but need an input image the text-to-image backend rejects (mirrors
@@ -2642,7 +2648,7 @@ export function HubModelPicker({
   const onSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
       if (!task) {
-        const page = diffusionPageForTask(diffusionTaskById.get(id.toLowerCase()));
+        const page = mediaPageForTask(diffusionTaskById.get(id.toLowerCase()));
         if (page) {
           void navigateToPage({
             to: `/${page}`,

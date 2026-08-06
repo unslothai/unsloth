@@ -12,7 +12,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-/** The link between the two media pages (Images and Video). Kept out of either page's mode
+/** The link between the media pages (Images, Video and Audio). Kept out of any page's mode
  *  strip, which switches modes within a page, and parked at the far right past a divider so
  *  it reads as leaving rather than as another mode. */
 export function MediaPageLink({
@@ -20,7 +20,7 @@ export function MediaPageLink({
   label,
   icon,
 }: {
-  to: "/images" | "/video";
+  to: "/images" | "/video" | "/audio";
   label: string;
   icon: IconSvgElement;
 }) {

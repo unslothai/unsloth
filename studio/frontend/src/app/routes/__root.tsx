@@ -72,6 +72,11 @@ const VideoPage = lazy(() =>
   import("@/features/video").then((m) => ({ default: m.VideoPage })),
 );
 
+// AudioPage gets the same persistent mount so an in-flight generation or training run keeps its UI state; still lazy on first /audio visit.
+const AudioPage = lazy(() =>
+  import("@/features/audio").then((m) => ({ default: m.AudioPage })),
+);
+
 function PersonalizationSyncMount() {
   usePersonalizationSync(hasAuthToken());
   return null;
@@ -99,6 +104,8 @@ function isChatOnlyAllowed(pathname: string): boolean {
     return true;
   // Images runs on CPU/MPS via the native sd.cpp engine, the very no-GPU setup it was added for. The chat-only flag is about training/export, so it must not redirect /images.
   if (pathname === "/images" || pathname.startsWith("/images/")) return true;
+  // Audio inference is CPU-capable too: GGUF TTS through llama.cpp and STT through the whisper.cpp / mtmd sidecars.
+  if (pathname === "/audio" || pathname.startsWith("/audio/")) return true;
   return false;
 }
 
@@ -184,9 +191,17 @@ function RootLayout() {
     setVideoMounted(true);
   }
   const shouldMountVideo = isVideoRoute || videoMounted;
-  // Chat, Images and Video each render their own full-height shell, so all three want the chat-style layout: no outer pt-14 inset, no outer
+
+  // Same persistent mount for /audio so generation and training UI state survive leaving the tab.
+  const isAudioRoute = pathname === "/audio";
+  const [audioMounted, setAudioMounted] = useState(isAudioRoute);
+  if (isAudioRoute && !audioMounted) {
+    setAudioMounted(true);
+  }
+  const shouldMountAudio = isAudioRoute || audioMounted;
+  // Chat, Images, Video and Audio each render their own full-height shell, so all four want the chat-style layout: no outer pt-14 inset, no outer
   // scroll. Keying off isChatRoute alone pushed the picker down and clipped the gallery. Container padding/overflow only; keep-alive stays per route.
-  const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;
+  const isChatLike = isChatRoute || isImagesRoute || isVideoRoute || isAudioRoute;
 
   useTrainingUnloadGuard();
   // Global export driver: streams worker logs and tracks status from any route
@@ -345,12 +360,27 @@ function RootLayout() {
                   </Suspense>
                 </div>
               )}
+              {/* Same keep-alive treatment for Audio so generation and training UI state survive off-tab; `active` force-closes its body-portaled overlays so none bleed over another tab while hidden. */}
+              {shouldMountAudio && (
+                <div
+                  className={
+                    isAudioRoute
+                      ? "flex min-h-0 min-w-0 flex-1 basis-0 flex-col overflow-hidden"
+                      : "hidden"
+                  }
+                  inert={!isAudioRoute || undefined}
+                >
+                  <Suspense fallback={<RouteFallback />}>
+                    <AudioPage active={isAudioRoute} />
+                  </Suspense>
+                </div>
+              )}
               {/* Use mode="popLayout" instead of "wait" to prevent UI freezes when
                   switching from heavy pages (like Export with many checkpoints).
                   "popLayout" allows the new route to mount immediately while the
                   old one animates out, avoiding blocking on expensive exit renders.
                   See issue #5850. */}
-              {!isChatRoute && !isImagesRoute && !isVideoRoute && (
+              {!isChatRoute && !isImagesRoute && !isVideoRoute && !isAudioRoute && (
                 <AnimatePresence initial={false} mode="popLayout">
                   <motion.div
                     key={pathname}

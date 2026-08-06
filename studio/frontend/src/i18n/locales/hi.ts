@@ -55,6 +55,7 @@ export const hi = {
       recipes: "रेसिपी",
       images: "इमेज",
       video: "वीडियो",
+      audio: "ऑडियो",
       more: "अधिक",
       customizeSidebar: "साइडबार कस्टमाइज़ करें",
       newBadge: "नया",

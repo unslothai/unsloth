@@ -55,6 +55,7 @@ export const ko = {
       recipes: "레시피",
       images: "이미지",
       video: "동영상",
+      audio: "오디오",
       more: "더 보기",
       customizeSidebar: "사이드바 사용자 지정",
       newBadge: "신규",

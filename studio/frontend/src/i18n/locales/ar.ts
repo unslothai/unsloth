@@ -55,6 +55,7 @@ export const ar = {
       recipes: "الوصفات",
       images: "الصور",
       video: "الفيديو",
+      audio: "الصوت",
       more: "المزيد",
       customizeSidebar: "تخصيص الشريط الجانبي",
       newBadge: "جديد",

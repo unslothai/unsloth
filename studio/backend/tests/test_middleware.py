@@ -137,6 +137,7 @@ class TestMaxBodyMiddleware:
         from utils.upload_limits import (
             STT_AUDIO_JSON_MAX_BYTES,
             STT_AUDIO_RAW_MAX_BYTES,
+            upload_request_limit_bytes,
         )
         assert (
             main_module._get_request_body_max_bytes("/api/inference/audio/transcribe/raw")
@@ -146,6 +147,11 @@ class TestMaxBodyMiddleware:
             main_module._get_request_body_max_bytes("/api/inference/audio/transcribe")
             == STT_AUDIO_JSON_MAX_BYTES
         )
+        # The OpenAI transcriptions route is multipart, so it gets headroom over the raw cap, on both mounts.
+        for path in ("/v1/audio/transcriptions", "/api/inference/audio/transcriptions"):
+            assert main_module._get_request_body_max_bytes(path) == upload_request_limit_bytes(
+                STT_AUDIO_RAW_MAX_BYTES
+            ), path
 
     def test_settings_put_body_over_cap_rejected(self, main_module):
         app = _make_protected_app(1024, main_module)
@@ -301,6 +307,8 @@ class TestMaxBodyMiddleware:
         for path in (
             "/v1/images/generations",
             "/v1/audio/generate",
+            "/v1/audio/speech",
+            "/v1/audio/transcriptions",
             "/v1/embeddings",
             "/v1/responses",
             "/v1/messages",

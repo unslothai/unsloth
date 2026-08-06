@@ -55,6 +55,7 @@ export const ptBR = {
       recipes: "Receitas",
       images: "Imagens",
       video: "Vídeo",
+      audio: "Áudio",
       more: "Mais",
       customizeSidebar: "Personalizar barra lateral",
       newBadge: "Novo",
