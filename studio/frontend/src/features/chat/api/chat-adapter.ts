@@ -1985,7 +1985,7 @@ type QueuedResolvedModelRuntime = {
     typeof reasoningCapsFromLoad
   >["reasoningEffortLevels"];
   supportsPreserveThinking: boolean;
-  ggufContextLength: number | null;
+  loadedContextLength: number | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
 };
@@ -1999,9 +1999,9 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "activeLoadId",
   "activeGgufVariant",
   "activeModelIsLocal",
-  "ggufContextLength",
-  "ggufMaxContextLength",
-  "ggufNativeContextLength",
+  "loadedContextLength",
+  "maxContextLength",
+  "nativeContextLength",
   "modelRequiresTrustRemoteCode",
   "supportsReasoning",
   "reasoningAlwaysOn",
@@ -2116,7 +2116,7 @@ function queuedResolvedModelFromStore(
     supportsReasoningOff: state.supportsReasoningOff,
     reasoningEffortLevels: state.reasoningEffortLevels,
     supportsPreserveThinking: state.supportsPreserveThinking,
-    ggufContextLength: state.ggufContextLength,
+    loadedContextLength: state.loadedContextLength,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
       ? {
@@ -2788,7 +2788,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
       customContextLength: config.customContextLength,
-      ggufContextLength: null,
+      loadedContextLength: null,
       currentCheckpoint: currentStore.params.checkpoint,
       activeGgufVariant: currentStore.activeGgufVariant,
       maxSeqLength: config.maxSeqLength ?? candidate.maxSeqLength,
@@ -3072,7 +3072,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         // Keep an explicit Manual+Auto context pin the load just applied (so a
         // later Apply doesn't silently revert it to auto-fit sizing), mirroring
         // the interactive path's keepCustomCtx; other cases baseline on
-        // ggufContextLength.
+        // loadedContextLength.
         const keepCustomCtx = resolveManualAutoCtxPin(
           effectiveGpuMemoryMode,
           effectiveGpuLayers,
@@ -3091,10 +3091,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           ? null
           : (config.nUbatch ?? null);
         useChatRuntimeStore.setState({
-          ggufContextLength: loadResp.context_length ?? 131072,
-          ggufMaxContextLength:
+          loadedContextLength: loadResp.context_length ?? 131072,
+          maxContextLength:
             loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-          ggufNativeContextLength: loadResp.native_context_length ?? null,
+          nativeContextLength: loadResp.native_context_length ?? null,
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
           reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -3460,8 +3460,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           store.setModels([...store.models, defaultModel]);
         }
         useChatRuntimeStore.setState({
-        ggufContextLength: loadResp.context_length ?? 131072,
-        ggufMaxContextLength:
+        loadedContextLength: loadResp.context_length ?? 131072,
+        maxContextLength:
           loadResp.max_context_length ?? loadResp.context_length ?? 131072,
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
@@ -3567,7 +3567,7 @@ async function resolveQueuedEmptyLocalModel(
             ...reasoningCapsFromLoad(status),
             supportsPreserveThinking:
               status.supports_preserve_thinking ?? false,
-            ggufContextLength: status.is_gguf
+            loadedContextLength: status.is_gguf
               ? (status.context_length ?? null)
               : null,
             loadedIsMultimodal: isMultimodalResponse(status),
@@ -3801,10 +3801,10 @@ export function createOpenAIStreamAdapter(
                 supportsPreserveThinking:
                   queuedEmptyModelRuntime?.supportsPreserveThinking ??
                   liveRuntime.supportsPreserveThinking,
-                ggufContextLength:
+                loadedContextLength:
                   queuedEmptyModelRuntime !== null
-                    ? queuedEmptyModelRuntime.ggufContextLength
-                    : liveRuntime.ggufContextLength,
+                    ? queuedEmptyModelRuntime.loadedContextLength
+                    : liveRuntime.loadedContextLength,
                 models: mergeQueuedModelCapabilities(
                   liveRuntime.models,
                   queuedEmptyModelRuntime?.checkpoint ?? "",
@@ -4145,10 +4145,10 @@ export function createOpenAIStreamAdapter(
               supportsPreserveThinking:
                 queuedEmptyModelRuntime?.supportsPreserveThinking ??
                 liveRuntime.supportsPreserveThinking,
-              ggufContextLength:
+              loadedContextLength:
                 queuedEmptyModelRuntime !== null
-                  ? queuedEmptyModelRuntime.ggufContextLength
-                  : liveRuntime.ggufContextLength,
+                  ? queuedEmptyModelRuntime.loadedContextLength
+                  : liveRuntime.loadedContextLength,
               loadedIsMultimodal:
                 queuedEmptyModelRuntime?.loadedIsMultimodal ??
                 liveRuntime.loadedIsMultimodal,
@@ -5380,7 +5380,7 @@ export function createOpenAIStreamAdapter(
                               ? { whole_doc: false }
                               : {}),
                             context_length:
-                              runtime.ggufContextLength ??
+                              runtime.loadedContextLength ??
                               params.maxSeqLength ??
                               undefined,
                           },
@@ -5576,7 +5576,7 @@ export function createOpenAIStreamAdapter(
                             ? { whole_doc: false }
                             : {}),
                           context_length:
-                            runtime.ggufContextLength ?? params.maxSeqLength ?? undefined,
+                            runtime.loadedContextLength ?? params.maxSeqLength ?? undefined,
                         },
                       }
                     : {}),

@@ -15,7 +15,7 @@ import { hasKnownContextWindow } from "../src/features/chat/lib/context-window-k
 const RESIDENT = "unsloth/Qwen3.6-35B-A3B-MTP-GGUF";
 
 const base = {
-  ggufContextLength: 32768,
+  loadedContextLength: 32768,
   modelLoading: false,
   isExternalModel: false,
   residentCheckpoint: RESIDENT as string | null | undefined,
@@ -30,14 +30,14 @@ test("a load in flight has no window to name", () => {
   assert.equal(hasKnownContextWindow({ ...base, modelLoading: true }), false);
 });
 
-// selecting an API model nulls ggufContextLength, so a stale length must be refused on its own
+// selecting an API model nulls loadedContextLength, so a stale length must be refused on its own
 test("an API model shows no window even with a stale length in the store", () => {
   assert.equal(hasKnownContextWindow({ ...base, isExternalModel: true }), false);
 });
 
 test("a non-GGUF local model has no window either", () => {
   assert.equal(
-    hasKnownContextWindow({ ...base, ggufContextLength: null }),
+    hasKnownContextWindow({ ...base, loadedContextLength: null }),
     false,
   );
 });

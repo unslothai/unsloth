@@ -397,8 +397,8 @@ export function ModelsPage() {
       ? checkpoint
       : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const activeGgufContextLength = useChatRuntimeStore(
-    (s) => s.ggufContextLength,
+  const activeLoadedContextLength = useChatRuntimeStore(
+    (s) => s.loadedContextLength,
   );
   // Live settings of the loaded model, so its page shows what it is running with.
   const { config: activeModelConfig } = useActiveModelConfig();
@@ -2024,7 +2024,7 @@ export function ModelsPage() {
               target={settingsTarget}
               loadedConfig={settingsTargetIsResident ? activeModelConfig : null}
               loadedContextLength={
-                settingsTargetIsResident ? activeGgufContextLength : null
+                settingsTargetIsResident ? activeLoadedContextLength : null
               }
               onBack={() => setSettingsTarget(null)}
               onRun={runSettingsTarget}

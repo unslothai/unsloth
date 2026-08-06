@@ -195,7 +195,7 @@ export async function refreshContextUsage(
     !checkpoint ||
     isExternalModelId(checkpoint) ||
     (!options?.afterModelLoad && store.modelLoading) ||
-    store.ggufContextLength == null
+    store.loadedContextLength == null
   ) {
     return;
   }

@@ -177,11 +177,11 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
   const store = useChatRuntimeStore.getState();
   const isGguf =
     store.activeGgufVariant != null ||
-    store.ggufContextLength != null ||
+    store.loadedContextLength != null ||
     (store.params.checkpoint?.toLowerCase().endsWith(".gguf") ?? false);
   const effectiveContextLength =
     snapshot.customContextLength ??
-    (isGguf ? store.ggufContextLength : null);
+    (isGguf ? store.loadedContextLength : null);
   const captured: PresetLoadConfig = {
     customContextLength: effectiveContextLength ?? null,
     maxSeqLength: normalizeMaxSeqLength(snapshot.maxSeqLength),
