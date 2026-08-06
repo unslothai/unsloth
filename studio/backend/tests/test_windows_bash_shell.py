@@ -1043,3 +1043,49 @@ def test_an_env_chdir_asks_in_every_spelling(monkeypatch, command):
     # prompt. The attached spelling reached the generic option skip unjudged.
     monkeypatch.setattr(sys, "platform", "linux")
     assert tools._terminal_is_high_risk(command)
+
+_WIN_PS = "C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe"
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # `timeout DURATION COMMAND` in the payload walk, not just behind start.
+        "cmd /c timeout 1 rm -rf victim",
+        # cmd resumes at ELSE, so the else-branch is a command position.
+        'cmd /c if 1==2 echo no else start "" ' + _WIN_PS + " -Command ls",
+        # CALL re-executes what follows.
+        'cmd /c call start "" ' + _WIN_PS + " -Command ls",
+        "cmd /c call powershell -Command ls",
+        # A payload may lead with its redirection.
+        'cmd /c >out.txt start "" ' + _WIN_PS,
+        "cmd /c 2> err.txt rm -rf x",
+    ],
+)
+def test_cmd_payload_grammar_reaches_the_real_command(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A QUOTED `(` is data. The posix lexer drops the marks, so this was
+        # byte-identical to a group opener and got read as a launcher.
+        'echo "(start" "" powershell',
+        'echo "(start" powershell',
+        "cmd /c echo no else ok",
+        "cmd /c echo call powershell",
+    ],
+)
+def test_quoted_cmd_grammar_words_launch_nothing(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+def test_a_real_group_opener_is_still_a_command_position(monkeypatch, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands('if 1==1 (start "" powershell) else echo no')

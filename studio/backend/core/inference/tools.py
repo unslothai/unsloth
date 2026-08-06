@@ -1371,6 +1371,12 @@ _START_SWITCHES = _START_SWITCHES_WITH_VALUE | {
 }
 # cmd keywords whose command word does not follow immediately, or at all.
 _CMD_CONTROL_FLOW = frozenset({"if", "else", "do", "for"})
+# cmd builtins that re-execute what follows, so their child is a command.
+_CMD_FORWARDING_COMMANDS = frozenset({"call", "start", "start.exe"})
+# A payload may lead with its redirection. Bare operators take the next token
+# as the target; the attached spellings and `2>&1` carry their own.
+_CMD_REDIRECT_BARE_RE = re.compile(r"\d?(?:>>|>|<)$")
+_CMD_REDIRECT_ATTACHED_RE = re.compile(r"\d?(?:>>|>|<)")
 # cmd IF conditions, by how many tokens they occupy before the body command.
 _CMD_IF_UNARY = frozenset({"exist", "defined", "errorlevel", "cmdextversion"})
 _CMD_IF_COMPARISONS = frozenset({"equ", "neq", "lss", "leq", "gtr", "geq"})
@@ -1473,6 +1479,18 @@ def _find_blocked_commands(command: str) -> set[str]:
     quoted_redirects = (
         _quoted_redirection_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
     )
+    # Tokens whose leading `(` came from QUOTING. The posix lexer drops the
+    # marks, so `echo "(start" powershell` is byte-identical to a real group
+    # opener by then; the cmd lexer keeps them and needs no help.
+    quoted_group_openers: "frozenset[int]" = frozenset()
+    if lexed_posix:
+        _marked = _masked_tokens(command, tokens, ";&|()`", frozenset("("), _QUOTED_SEPARATOR_MARK)
+        if _marked is not None:
+            quoted_group_openers = frozenset(
+                index
+                for index, marked_token in enumerate(_marked)
+                if marked_token.startswith(_QUOTED_SEPARATOR_MARK)
+            )
     exec_flag_indexes, invocation_stops, redirect_indexes = _exec_scan_layout(
         tokens, quoted_separators, quoted_redirects
     )
@@ -1773,11 +1791,31 @@ def _find_blocked_commands(command: str) -> set[str]:
             if token in _SHELL_SEPARATORS:
                 k, expect = k + 1, True
                 continue
+            bare = _cmd_unquote(token)
+            # A payload may lead with its redirection (`cmd /c >out.txt start`),
+            # and recording the redirection as the command stopped the walk
+            # before what cmd actually runs.
+            if _CMD_REDIRECT_BARE_RE.fullmatch(bare):
+                k += 2  # `> out.txt`, `2> err.txt`: the operand follows
+                continue
+            if _CMD_REDIRECT_ATTACHED_RE.match(bare):
+                k += 1  # `>out.txt`, `2>&1`: self-contained
+                continue
+            # cmd resumes at ELSE, so the else-branch is a command position:
+            # `if 1==2 echo no else start "" prog` really launches prog.
+            if _token_basename(bare) == "else":
+                k, expect = k + 1, True
+                continue
             if not expect:
                 k += 1
                 continue
             indexes.append(k)
-            base = _token_basename(_cmd_unquote(token))
+            base = _token_basename(bare)
+            if base in _CMD_FORWARDING_COMMANDS:
+                # `call` re-executes what follows, so its child is a command
+                # position rather than an argument.
+                k, expect = k + 1, True
+                continue
             if base in _COMMAND_PREFIXES:
                 # `env`/`nice` and friends exec their operand, and this branch
                 # now puts the Git userland on PATH, so they resolve inside a
@@ -1794,8 +1832,12 @@ def _find_blocked_commands(command: str) -> set[str]:
                     if word in _WRAPPER_VALUE_FLAGS_BY_CMD.get(base, frozenset()):
                         k += 2  # `env -u FOO prog`: the flag eats its value
                         continue
-                    if word.startswith("-") or "=" in word:
-                        k += 1  # the wrapper's own flags, and VAR=VALUE
+                    if (
+                        word.startswith("-")
+                        or "=" in word
+                        or _WRAPPER_DURATION_RE.fullmatch(word)
+                    ):
+                        k += 1  # its own flags, VAR=VALUE, `timeout 5 prog`
                         continue
                     break
                 continue
@@ -1850,7 +1892,15 @@ def _find_blocked_commands(command: str) -> set[str]:
             # `if 1==1 (start "" cmd /c powershell)` lexes the group opener onto
             # the command word, so it never reached command_positions even
             # though both grammars run whatever follows a `(`.
-            or (0 <= idx < len(tokens) and tokens[idx].startswith("("))
+            or (
+                0 <= idx < len(tokens)
+                and tokens[idx].startswith("(")
+                # A QUOTED `(` is data the command receives. The posix lexer
+                # drops the marks, so `echo "(start" powershell` looked exactly
+                # like a group opener; quoted_separators is what tells them
+                # apart, and the separator test above already relies on it.
+                and idx not in quoted_group_openers
+            )
         )
 
     # Nested shell invocations (bash -c '...', bash -lc '...', cmd /c '...'):
