@@ -631,7 +631,11 @@ def _image_placeholder(tokenizer, processor):
     return None
 
 
-def _image_marker_survives(tokenizer, processor, placeholder = None):
+def _image_marker_survives(
+    tokenizer,
+    processor,
+    placeholder = None,
+):
     """Whether the installed template still marks where an image goes.
 
     Rendered through the target generation uses, so this sees what a real image
@@ -648,9 +652,7 @@ def _image_marker_survives(tokenizer, processor, placeholder = None):
     target = targets[0]
     try:
         marked = apply_chat_template_for_generation(target, _IMAGE_PROBE_MESSAGES)
-        if not marked or marked == apply_chat_template_for_generation(
-            target, _TEXT_PROBE_MESSAGES
-        ):
+        if not marked or marked == apply_chat_template_for_generation(target, _TEXT_PROBE_MESSAGES):
             return False
         if _vlm_prompt_issue(marked, _IMAGE_PROBE_MESSAGES):
             return False
@@ -684,7 +686,12 @@ def _revoke_override_that_drops_audio(status, processor, model):
     )
 
 
-def _revoke_override_that_drops_image(status, tokenizer, processor, placeholder = None):
+def _revoke_override_that_drops_image(
+    status,
+    tokenizer,
+    processor,
+    placeholder = None,
+):
     return _revoke_override_dropping(
         status,
         lambda: _image_marker_survives(tokenizer, processor, placeholder),
