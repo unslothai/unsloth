@@ -6,11 +6,7 @@ import importlib
 
 
 def _missing_dependency(message):
-    """Skip under pytest, exit as a standalone script.
-
-    Callers run at import time, so a SystemExit during collection would become an
-    INTERNALERROR and abort the whole session instead of skipping one module.
-    """
+    """Skip under pytest, since exiting at import time aborts the whole session."""
     if "pytest" in sys.modules:
         import pytest
         pytest.skip(message, allow_module_level = True)
