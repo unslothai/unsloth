@@ -133,6 +133,18 @@ export interface FolderSyncJobEvent extends Partial<FolderSyncJob> {
   type: "progress" | "complete" | "error";
 }
 
+export function retainActiveFolderJobs(
+  folders: LinkedFolder[],
+  jobs: Record<string, FolderSyncJob>,
+): Record<string, FolderSyncJob> {
+  const retained: Record<string, FolderSyncJob> = {};
+  for (const folder of folders) {
+    const job = jobs[folder.id];
+    if (job && folder.activeJobId === job.id) retained[folder.id] = job;
+  }
+  return retained;
+}
+
 /** Coords 0..1, top-left origin. */
 export interface PdfRegion {
   pageIndex: number;

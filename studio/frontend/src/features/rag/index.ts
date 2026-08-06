@@ -11,4 +11,5 @@ export {
   getDocumentFileUrl,
   listAllDocuments,
 } from "./api/rag-api";
+export { isLinkedFolderManaged } from "./types/rag";
 export type { KnowledgeBase, RagDocument, UploadedDocument } from "./types/rag";

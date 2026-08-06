@@ -330,9 +330,10 @@ def start_ingestion(
                 )
                 _emit(job_id, None)
                 return existing, job_id
-        for failed in store.failed_documents_by_hash(conn, scope, sha):
-            store.delete_document(conn, failed["id"])
-            _remove_upload(failed.get("stored_path"), keep_path = stored_path)
+        if dedupe:
+            for failed in store.failed_documents_by_hash(conn, scope, sha):
+                store.delete_document(conn, failed["id"])
+                _remove_upload(failed.get("stored_path"), keep_path = stored_path)
 
         document_id = store.create_document(
             conn,

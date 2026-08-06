@@ -152,7 +152,7 @@ def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(rag_home,
         conn.close()
 
     old_document_id = mapping["document_id"]
-    (source / "notes.txt").rename(source / "renamed.md")
+    (source / "notes.txt").rename(source / "renamed.txt")
     renamed = _run(folder["id"])
     assert renamed["renamed"] == 1
     conn = rag_db.get_connection()
@@ -160,12 +160,12 @@ def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(rag_home,
         row = conn.execute(
             "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
         ).fetchone()
-        assert row["relative_path"] == "renamed.md"
+        assert row["relative_path"] == "renamed.txt"
         assert row["document_id"] == old_document_id
     finally:
         conn.close()
 
-    (source / "renamed.md").unlink()
+    (source / "renamed.txt").unlink()
     deleted = _run(folder["id"])
     assert deleted["deleted"] == 1
     conn = rag_db.get_connection()
@@ -177,6 +177,45 @@ def test_reconcile_add_rename_delete_and_skip_unsupported_and_symlinks(rag_home,
             ).fetchone()
             is None
         )
+    finally:
+        conn.close()
+
+
+@requires_sqlite_vec
+def test_extension_changing_rename_reingests_with_the_new_parser(rag_home, stub_embeddings):
+    source, folder = _folder(rag_home)
+    original = source / "notes.html"
+    original.write_text(
+        "<p>visible alpha</p><script>hiddenscripttoken</script>",
+        encoding = "utf-8",
+    )
+    assert _run(folder["id"])["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        before = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
+        assert not store.search_lexical(conn, folder["scope"], "hiddenscripttoken", 5)
+    finally:
+        conn.close()
+
+    original.rename(source / "notes.txt")
+    result = _run(folder["id"])
+    assert result["status"] == "completed"
+    assert result["changed"] == 1
+    conn = rag_db.get_connection()
+    try:
+        after = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
+        assert after["relative_path"] == "notes.txt"
+        assert after["document_id"] != before["document_id"]
+        assert store.get_document(conn, before["document_id"]) is None
+        assert store.search_lexical(conn, folder["scope"], "hiddenscripttoken", 5)
     finally:
         conn.close()
 

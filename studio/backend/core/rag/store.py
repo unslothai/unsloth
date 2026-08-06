@@ -181,6 +181,7 @@ def get_document(conn: sqlite3.Connection, document_id: str) -> dict | None:
 def document_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> str | None:
     row = conn.execute(
         "SELECT id FROM documents WHERE scope=? AND sha256=? AND status!='failed' "
+        "AND linked_folder_id IS NULL "
         "ORDER BY created_at DESC LIMIT 1",
         (scope, sha256),
     ).fetchone()
@@ -189,7 +190,8 @@ def document_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> str |
 
 def failed_documents_by_hash(conn: sqlite3.Connection, scope: str, sha256: str) -> list[dict]:
     rows = conn.execute(
-        "SELECT id, stored_path FROM documents WHERE scope=? AND sha256=? AND status='failed'",
+        "SELECT id, stored_path FROM documents WHERE scope=? AND sha256=? AND status='failed' "
+        "AND linked_folder_id IS NULL",
         (scope, sha256),
     ).fetchall()
     return [dict(r) for r in rows]

@@ -20,10 +20,11 @@ import {
   listChatAttachments,
 } from "@/features/chat";
 import {
+  type UploadedDocument,
   deleteDocument,
   getDocumentFileUrl,
+  isLinkedFolderManaged,
   listAllDocuments,
-  type UploadedDocument,
 } from "@/features/rag";
 import { isTauri } from "@/lib/api-base";
 import { downloadFile, isDownloadCancelled } from "@/lib/native-files";
@@ -178,8 +179,8 @@ interface UploadedFileRow {
   /** Compare-chat rows navigate by pair id instead of opening one pane alone. */
   pairId?: string | null;
   open: () => Promise<void>;
-  remove: () => Promise<void>;
-  deleteDescription: string;
+  remove?: () => Promise<void>;
+  deleteDescription?: string;
 }
 
 function toSortTime(value: string | number | null | undefined): number {
@@ -231,11 +232,14 @@ function ragRow(doc: UploadedDocument): UploadedFileRow {
     // RAG uploads are documents (pdf, txt, md, docx, html), not images.
     thumb: <FileIconThumb />,
     open: () => openResolvedUrl(() => getDocumentFileUrl(doc.id)),
-    remove: async () => {
-      await deleteDocument(doc.id, doc.projectId);
-    },
-    deleteDescription:
-      "The file and its indexed content are removed. This cannot be undone.",
+    remove: isLinkedFolderManaged(doc)
+      ? undefined
+      : async () => {
+          await deleteDocument(doc.id, doc.projectId);
+        },
+    deleteDescription: isLinkedFolderManaged(doc)
+      ? undefined
+      : "The file and its indexed content are removed. This cannot be undone.",
   };
 }
 
@@ -483,7 +487,7 @@ export function UploadedFilesView() {
   async function handleDelete(row: UploadedFileRow) {
     // Offset pages and destructive mutations must not race: a deletion shifts
     // the boundary used by an in-flight page request.
-    if (loadingMore) return;
+    if (loadingMore || !row.remove) return;
     try {
       await row.remove();
       if (row.source === "rag") {
@@ -637,20 +641,22 @@ export function UploadedFilesView() {
                     className="size-4"
                   />
                 </button>
-                <button
-                  type="button"
-                  disabled={loadingMore}
-                  onClick={() => setConfirmingDelete(row)}
-                  aria-label={`Delete ${row.name}`}
-                  title="Delete"
-                  className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-wait disabled:opacity-50"
-                >
-                  <HugeiconsIcon
-                    icon={Delete02Icon}
-                    strokeWidth={1.75}
-                    className="size-4"
-                  />
-                </button>
+                {row.remove ? (
+                  <button
+                    type="button"
+                    disabled={loadingMore}
+                    onClick={() => setConfirmingDelete(row)}
+                    aria-label={`Delete ${row.name}`}
+                    title="Delete"
+                    className="inline-flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive disabled:cursor-wait disabled:opacity-50"
+                  >
+                    <HugeiconsIcon
+                      icon={Delete02Icon}
+                      strokeWidth={1.75}
+                      className="size-4"
+                    />
+                  </button>
+                ) : null}
               </span>
             </div>
           ))}

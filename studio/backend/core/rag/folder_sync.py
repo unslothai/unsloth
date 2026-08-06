@@ -492,17 +492,23 @@ def _discard_document(document_id: str) -> None:
 
 
 def _install_mapping(
-    folder: dict, rel: str, metadata: dict, document_id: str, content_hash: str
+    folder: dict,
+    rel: str,
+    metadata: dict,
+    document_id: str,
+    content_hash: str,
+    *,
+    renamed_from: str | None = None,
 ) -> None:
     conn = rag_db.get_connection()
-    old_path = None
+    old_paths: list[str] = []
     try:
-        old = conn.execute(
+        old_rows = conn.execute(
             "SELECT ff.document_id, d.stored_path FROM linked_folder_files ff "
             "LEFT JOIN documents d ON d.id=ff.document_id "
-            "WHERE ff.folder_id=? AND ff.relative_path=?",
-            (folder["id"], rel),
-        ).fetchone()
+            "WHERE ff.folder_id=? AND ff.relative_path IN (?, ?)",
+            (folder["id"], rel, renamed_from or rel),
+        ).fetchall()
         conn.execute("BEGIN IMMEDIATE")
         conn.execute(
             "INSERT INTO linked_folder_files(folder_id, relative_path, size_bytes, mtime_ns, "
@@ -523,16 +529,24 @@ def _install_mapping(
                 content_hash,
             ),
         )
-        if old is not None and old["document_id"] != document_id:
-            store.delete_document(conn, old["document_id"], commit = False)
-            old_path = old["stored_path"]
+        if renamed_from and renamed_from != rel:
+            conn.execute(
+                "DELETE FROM linked_folder_files WHERE folder_id=? AND relative_path=?",
+                (folder["id"], renamed_from),
+            )
+        for old in old_rows:
+            if old["document_id"] != document_id:
+                store.delete_document(conn, old["document_id"], commit = False)
+                if old["stored_path"]:
+                    old_paths.append(old["stored_path"])
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     finally:
         conn.close()
-    _remove_snapshot(old_path)
+    for old_path in old_paths:
+        _remove_snapshot(old_path)
 
 
 def _update_mapping_metadata(folder_id: str, rel: str, metadata: dict, content_hash: str) -> None:
@@ -669,6 +683,7 @@ def _reconcile_folder(job_id: str) -> None:
     missing = set(known) - set(current)
     new = set(current) - set(known)
     renamed = 0
+    extension_renames: dict[str, str] = {}
     by_identity: dict[tuple, list[str]] = {}
     for rel in missing:
         old = known[rel]
@@ -680,16 +695,20 @@ def _reconcile_folder(job_id: str) -> None:
         candidates = by_identity.get(key, [])
         if len(candidates) == 1:
             old_rel = candidates.pop()
-            _rename_mapping(folder["id"], old_rel, rel)
             missing.discard(old_rel)
             new.discard(rel)
             known[rel] = {**known.pop(old_rel), "relative_path": rel}
-            renamed += 1
+            if os.path.splitext(old_rel)[1].lower() == os.path.splitext(rel)[1].lower():
+                _rename_mapping(folder["id"], old_rel, rel)
+                renamed += 1
+            else:
+                extension_renames[rel] = old_rel
 
     changed = {
         rel
         for rel in set(current) & set(known)
         if rebuild
+        or rel in extension_renames
         or current[rel]["size_bytes"] != known[rel]["size_bytes"]
         or current[rel]["mtime_ns"] != known[rel]["mtime_ns"]
         or current[rel]["device"] != known[rel]["device"]
@@ -706,7 +725,12 @@ def _reconcile_folder(job_id: str) -> None:
             metadata = current[rel]
             snapshot = _snapshot(folder["path"], metadata)
             content_hash = _hash_file(snapshot)
-            if not rebuild and rel in changed and content_hash == known[rel].get("content_hash"):
+            if (
+                not rebuild
+                and rel not in extension_renames
+                and rel in changed
+                and content_hash == known[rel].get("content_hash")
+            ):
                 _update_mapping_metadata(folder["id"], rel, metadata, content_hash)
                 _remove_snapshot(snapshot)
                 snapshot = None
@@ -726,7 +750,14 @@ def _reconcile_folder(job_id: str) -> None:
             result = _wait_ingestion(ingestion_job)
             if result["status"] != "completed":
                 raise RuntimeError(result.get("error") or "Ingestion failed")
-            _install_mapping(folder, rel, metadata, document_id, content_hash)
+            _install_mapping(
+                folder,
+                rel,
+                metadata,
+                document_id,
+                content_hash,
+                renamed_from = extension_renames.get(rel),
+            )
             if rel in new:
                 added += 1
             else:

@@ -12,6 +12,7 @@ import {
 import {
   isLinkedFolderManaged,
   linkedFolderSourcesChanged,
+  retainActiveFolderJobs,
 } from "../src/features/rag/types/rag.ts";
 
 const ragApi = readFileSync(
@@ -25,6 +26,13 @@ const nativeApi = readFileSync(
 const statusChip = readFileSync(
   new URL(
     "../src/features/rag/components/document-status-chip.tsx",
+    import.meta.url,
+  ),
+  "utf8",
+);
+const uploadedFiles = readFileSync(
+  new URL(
+    "../src/features/settings/components/uploaded-files-dialog.tsx",
     import.meta.url,
   ),
   "utf8",
@@ -83,6 +91,36 @@ test("documents managed by linked folders cannot be treated as individual upload
     true,
   );
   assert.equal(isLinkedFolderManaged({ ...document, managed: true }), true);
+  assert.match(uploadedFiles, /remove: isLinkedFolderManaged\(doc\)/);
+  assert.match(uploadedFiles, /\{row\.remove \? \(/);
+});
+
+test("only the folder's currently active job remains visible after polling", () => {
+  const folder = {
+    id: "folder",
+    displayName: "Docs",
+    scopeType: "project",
+    scopeId: "project",
+    status: "idle",
+    activeJobId: "job-2",
+  } as const;
+  const jobs = {
+    folder: {
+      id: "job-1",
+      linkedFolderId: "folder",
+      mode: "sync",
+      status: "completed",
+    },
+  } as const;
+  assert.deepEqual(retainActiveFolderJobs([folder], jobs), {});
+  assert.deepEqual(
+    retainActiveFolderJobs([{ ...folder, activeJobId: "job-1" }], jobs),
+    jobs,
+  );
+  assert.deepEqual(
+    retainActiveFolderJobs([{ ...folder, activeJobId: null }], jobs),
+    {},
+  );
 });
 
 test("a deferred list response cannot repopulate a different scope", async () => {

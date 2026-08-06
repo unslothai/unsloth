@@ -19,7 +19,10 @@ import type {
   LinkedFolder,
   LinkedFolderScope,
 } from "../types/rag";
-import { linkedFolderSourcesChanged } from "../types/rag";
+import {
+  linkedFolderSourcesChanged,
+  retainActiveFolderJobs,
+} from "../types/rag";
 import {
   createScopedRefreshGate,
   runScopedRefresh,
@@ -148,6 +151,7 @@ export function useLinkedFolders(
             folderSnapshot.current = rows;
             setStateScopeKey(scopeKey);
             setFolders(rows);
+            setJobs((current) => retainActiveFolderJobs(rows, current));
             if (sourcesChanged) onSourcesChanged?.();
             for (const folder of rows) {
               if (
