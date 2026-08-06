@@ -1347,9 +1347,7 @@ def test_a_for_f_set_running_a_shell_is_followed(monkeypatch):
     # name behind them was never matched by the nested lookup.
     _fake_windows_screening(monkeypatch, bash = None)
     assert tools._find_blocked_commands("for /f %i in ('cmd /c powershell') do echo %i")
-    assert tools._find_blocked_commands(
-        'cmd /c "for /f %i in (\'cmd /c powershell\') do echo %i"'
-    )
+    assert tools._find_blocked_commands("cmd /c \"for /f %i in ('cmd /c powershell') do echo %i\"")
 
 
 @pytest.mark.parametrize(
