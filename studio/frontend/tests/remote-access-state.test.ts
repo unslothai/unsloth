@@ -12,6 +12,7 @@ import {
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
   remoteAccessPollDelay,
+  remoteAccessSelfStopPoll,
   remoteAccessStopDisconnectsOrigin,
   remoteApiOrigin,
 } from "../src/features/settings/api/remote-access-state.ts";
@@ -255,4 +256,83 @@ test("an unknown or absent reason yields no message", () => {
   assert.equal(remoteAccessBlockMessage(null, false), null);
   assert.equal(remoteAccessBlockMessage("something_new", false), null);
   assert.equal(remoteAccessBlockMessage("", true), null);
+});
+
+// ── remoteAccessSelfStopPoll ──
+
+// The frames a Settings page loaded from the tunnel actually sees after Stop:
+// the route fabricates a terminal off, the stop worker then answers "stopping"
+// for the ~50ms teardown drain, and finally the origin goes away.
+const TERMINAL_OFF = normalizeRemoteAccessStatus(
+  apiStatus({
+    state: "off",
+    // biome-ignore lint/style/useNamingConvention: API schema
+    can_start: false,
+  }),
+);
+const DRAINING = normalizeRemoteAccessStatus(
+  apiStatus({
+    state: "stopping",
+    // biome-ignore lint/style/useNamingConvention: API schema
+    managed_by: "settings",
+    // biome-ignore lint/style/useNamingConvention: API schema
+    can_start: false,
+  }),
+);
+
+test("a teardown frame never overwrites the terminal off of a self-origin stop", () => {
+  const settled = remoteAccessSelfStopPoll(DRAINING, true);
+  assert.equal(settled.apply, false);
+  assert.equal(settled.expectingDisconnect, true);
+});
+
+test("a stop that left the connector running takes the card back over", () => {
+  const alive = normalizeRemoteAccessStatus(
+    apiStatus({
+      state: "online",
+      url: TUNNEL,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      managed_by: "settings",
+      // biome-ignore lint/style/useNamingConvention: API schema
+      can_start: false,
+      // biome-ignore lint/style/useNamingConvention: API schema
+      can_stop: true,
+    }),
+  );
+  const settled = remoteAccessSelfStopPoll(alive, true);
+  assert.equal(settled.apply, true);
+  assert.equal(settled.expectingDisconnect, false);
+});
+
+test("a stop that failed still surfaces its error", () => {
+  const failed = normalizeRemoteAccessStatus(
+    apiStatus({ state: "error", error: "cloudflared could not be stopped" }),
+  );
+  const settled = remoteAccessSelfStopPoll(failed, true);
+  assert.equal(settled.apply, true);
+});
+
+test("polls lead as usual when no self-origin stop is pending", () => {
+  for (const frame of [TERMINAL_OFF, DRAINING]) {
+    const settled = remoteAccessSelfStopPoll(frame, false);
+    assert.equal(settled.apply, true);
+    assert.equal(settled.expectingDisconnect, false);
+  }
+});
+
+test("a self-origin stop settles on off, not a permanent stopping", () => {
+  let shown = TERMINAL_OFF;
+  let expecting = true;
+  // Polling restarts in perform()'s finally, so the first poll can still land
+  // inside the drain window before cloudflared exits.
+  for (const frame of [DRAINING, DRAINING]) {
+    const settled = remoteAccessSelfStopPoll(frame, expecting);
+    expecting = settled.expectingDisconnect;
+    if (settled.apply) {
+      shown = frame;
+    }
+  }
+  assert.equal(shown.state, "off");
+  // The origin then dies; the section latches polling off on this flag.
+  assert.equal(expecting, true);
 });

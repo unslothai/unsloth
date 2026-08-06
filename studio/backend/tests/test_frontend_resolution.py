@@ -13,6 +13,8 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 _RUN_PY = Path(__file__).resolve().parent.parent / "run.py"
 _REPO_STUDIO_DIR = _RUN_PY.parent.parent  # studio/
 
@@ -28,6 +30,7 @@ def _load_helpers_only():
         "_iter_frontend_fallback_candidates",
         "_resolve_frontend_path",
         "_frontend_serving_mode",
+        "_missing_frontend_is_fatal",
     }
     for node in tree.body:
         if isinstance(node, (ast.Import, ast.ImportFrom)):
@@ -245,3 +248,64 @@ def test_systemexit_message_contains_actionable_fixes(tmp_path, monkeypatch):
     assert "reinstall" in message
     assert "installer's binary directly" in message
     assert str(installer_bin) in message
+
+
+def _run_frontend_mount(*, tunnel_only, resolves):
+    """Drive run_server's frontend-mount decision without importing uvicorn.
+
+    Slices out the `if frontend_path and _serve_frontend:` statement, so the
+    branch that decides abort-vs-degrade is exercised where it actually lives."""
+    import logging
+
+    tree = ast.parse(_RUN_PY.read_text(encoding = "utf-8"))
+    run_server = next(
+        n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "run_server"
+    )
+    block = next(
+        n
+        for n in run_server.body
+        if isinstance(n, ast.If)
+        and isinstance(n.test, ast.BoolOp)
+        and any(isinstance(v, ast.Name) and v.id == "_serve_frontend" for v in n.test.values)
+    )
+    code = compile(ast.Module(body = [block], type_ignores = []), str(_RUN_PY), "exec")
+    mounted = []
+    ns = {
+        "frontend_path": Path("/nonexistent/studio/frontend/dist"),
+        "_serve_frontend": True,
+        "_tunnel_only_frontend": tunnel_only,
+        "_resolve_frontend_path": lambda p: (Path("/dist"), [p]) if resolves else (None, [p]),
+        "setup_frontend": lambda app, chosen, *, tunnel_only: (
+            mounted.append((chosen, tunnel_only)) or True
+        ),
+        "_missing_frontend_is_fatal": _load_helpers_only()["_missing_frontend_is_fatal"],
+        "app": object(),
+        "silent": True,
+        "logger": logging.getLogger("test_frontend_resolution"),
+        "Path": Path,
+        "os": os,
+        "sys": sys,
+    }
+    exec(code, ns)
+    return mounted
+
+
+def test_missing_frontend_is_fatal_everywhere_but_the_desktop_tunnel_path():
+    fatal = _load_helpers_only()["_missing_frontend_is_fatal"]
+    assert fatal(tunnel_only = False) is True
+    assert fatal(tunnel_only = True) is False
+
+
+def test_desktop_api_only_backend_starts_without_a_packaged_dist():
+    """The desktop spawns `studio --api-only` with no --frontend, and its
+    installer skips the frontend build, so a missing dist must not abort."""
+    assert _run_frontend_mount(tunnel_only = True, resolves = False) == []
+
+
+def test_a_missing_dist_still_aborts_a_web_ui_launch():
+    with pytest.raises(SystemExit, match = "frontend build not found"):
+        _run_frontend_mount(tunnel_only = False, resolves = False)
+
+
+def test_a_desktop_dist_is_still_mounted_behind_the_tunnel_gate():
+    assert _run_frontend_mount(tunnel_only = True, resolves = True) == [(Path("/dist"), True)]

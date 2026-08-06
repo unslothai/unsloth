@@ -1330,6 +1330,17 @@ def _frontend_serving_mode(*, api_only: bool, desktop_owned: bool) -> tuple[bool
     return not api_only or tunnel_only, tunnel_only
 
 
+def _missing_frontend_is_fatal(*, tunnel_only: bool) -> bool:
+    """Whether an unresolvable SPA build must abort startup.
+
+    It must when the web UI is this launch's own surface: a 404 on / is worse
+    than a loud error. It must not for the desktop, which passes --api-only with
+    no --frontend and whose installer skips the frontend build outright; there
+    the SPA only backs the optional remote web UI, so aborting would kill the
+    local API before TAURI_PORT is ever emitted. Degrade to API-only instead."""
+    return not tunnel_only
+
+
 class _TeeStream:
     """Mirror writes to the original stream and a session log file.
 
@@ -1968,6 +1979,13 @@ def run_server(
                 except OSError:
                     display = chosen
                 print(f"[OK] Frontend loaded from {display}")
+        elif not _missing_frontend_is_fatal(tunnel_only = _tunnel_only_frontend):
+            # Remote access serves nothing; the local API the desktop asked for
+            # still comes up. The tunnel gate already 404s every other request.
+            logger.warning(
+                "No frontend build found, so Remote access will not serve the web UI. Tried: %s",
+                ", ".join(str(p) for p in attempted) or "(none)",
+            )
         else:
             home_str = (
                 os.environ.get("UNSLOTH_STUDIO_HOME")

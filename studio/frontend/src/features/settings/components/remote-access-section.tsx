@@ -23,6 +23,7 @@ import {
   remoteAccessAutoStartReadOnly,
   remoteAccessBlockMessage,
   remoteAccessPollDelay,
+  remoteAccessSelfStopPoll,
   remoteAccessStopDisconnectsOrigin,
 } from "@/features/settings/api/remote-access-state";
 import { isTauri } from "@/lib/api-base";
@@ -261,10 +262,14 @@ export function RemoteAccessSection() {
             !pollSuppressed.current &&
             mutationEpoch.current === epoch
           ) {
-            if (selfStopDisconnectExpected.current && next.canStop) {
-              selfStopDisconnectExpected.current = false;
+            const settled = remoteAccessSelfStopPoll(
+              next,
+              selfStopDisconnectExpected.current,
+            );
+            selfStopDisconnectExpected.current = settled.expectingDisconnect;
+            if (settled.apply) {
+              applyStatus(next);
             }
-            applyStatus(next);
           }
           schedule(next);
         })
