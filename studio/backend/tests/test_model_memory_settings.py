@@ -862,3 +862,88 @@ class TestFullOffloadDetection:
             if isinstance(target, ast.Name)
         }
         assert "fully_gpu_offloaded" not in assigned
+
+
+class TestNegativeDirectIoIsARamReservation:
+    """-ndio / --no-direct-io are not "plain mmap". Upstream maps both to load
+    mode `none`, the same enum value as --no-mmap, so they read the weights into
+    a full host buffer. Modelling them as non-reserving let no-reserve leave one
+    in the argv and then report the process as compliant."""
+
+    @pytest.mark.parametrize("flag", ["--no-direct-io", "-ndio", "--no_direct_io"])
+    def test_the_negative_spellings_reserve_ram(self, flag):
+        assert resolve_effective_memory_state([flag], {}) == (False, True)
+
+    @pytest.mark.parametrize("flag", ["--direct-io", "-dio"])
+    def test_the_affirmative_spellings_do_not(self, flag):
+        assert resolve_effective_memory_state([flag], {}) == (False, False)
+
+    def test_it_matches_no_mmap_in_both_orderings(self):
+        for negative in ("--no-direct-io", "-ndio"):
+            assert resolve_effective_memory_state(["--mlock", negative], {}) == (False, True)
+            assert resolve_effective_memory_state([negative, "--mlock"], {}) == (True, True)
+
+    @pytest.mark.parametrize("flag", ["--no-direct-io", "-ndio"])
+    def test_no_ram_reserve_strips_them(self, policy, flag):
+        managed, out = policy(False, True, [flag, "--temp", "0.7"])
+        assert managed == []
+        assert out == ["--temp", "0.7"]
+
+    @pytest.mark.parametrize("flag", ["--direct-io", "-dio"])
+    def test_no_ram_reserve_leaves_the_affirmative_ones(self, policy, flag):
+        # DirectIO streams, so it is not a reservation and nothing has to go.
+        _, out = policy(False, True, [flag, "--temp", "0.7"])
+        assert out == [flag, "--temp", "0.7"]
+
+    def test_the_comparator_now_sees_the_reservation(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+        state = resolve_effective_memory_state(["--no-direct-io"], {})
+        assert memory_state_satisfies_settings(state, True) is False
+
+
+class TestEnvVarsAssignTheWholeMode:
+    """Every LLAMA_ARG_* memory var runs the same handler as its flag, so each
+    assigns the whole load mode and a later one overwrites an earlier one.
+    Treating LLAMA_ARG_MMAP as a reserves_ram bit left mlock standing, so the
+    resolver claimed a lock the child did not have and residency was reported
+    satisfied against an unlocked process."""
+
+    @pytest.mark.parametrize(
+        ("env", "expected"),
+        [
+            # Measured against the shipped binary: VmLck is 0 for both of these.
+            ({"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_MMAP": "on"}, (False, False)),
+            ({"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_DIO": "0"}, (False, True)),
+            ({"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_DIO": "1"}, (False, False)),
+            ({"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_MMAP": "off"}, (False, True)),
+            # Registration order: load-mode is read last and wins outright.
+            (
+                {"LLAMA_ARG_MMAP": "off", "LLAMA_ARG_LOAD_MODE": "mmap+mlock"},
+                (True, False),
+            ),
+            # Each still works alone.
+            ({"LLAMA_ARG_MLOCK": "1"}, (True, False)),
+            ({"LLAMA_ARG_DIO": "1"}, (False, False)),
+            ({"LLAMA_ARG_DIO": "0"}, (False, True)),
+            # An unset or unparseable value assigns nothing.
+            ({"LLAMA_ARG_DIO": ""}, (False, False)),
+            ({"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_MMAP": "banana"}, (True, False)),
+        ],
+    )
+    def test_env_precedence(self, env, expected):
+        assert resolve_effective_memory_state([], env) == expected
+
+    def test_argv_still_beats_every_env_var(self):
+        env = {"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_DIO": "0"}
+        assert resolve_effective_memory_state(["--load-mode", "mmap+mlock"], env) == (True, False)
+
+    def test_residency_is_not_reported_satisfied_against_an_unlocked_child(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        state = resolve_effective_memory_state([], {"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_MMAP": "on"})
+        assert memory_state_satisfies_settings(state, False) is False

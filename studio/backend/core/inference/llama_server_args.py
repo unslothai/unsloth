@@ -222,11 +222,18 @@ _LOAD_MODE_FLAGS: frozenset[str] = frozenset({"--load-mode", "-lm"})
 _NO_MMAP_FLAGS: frozenset[str] = frozenset({"--no-mmap", "-no-mmap"})
 # Deprecated selectors for the same load-mode enum. Measured: ANY of them
 # trailing the managed flag resets the WHOLE mode and drops the mlock, in both
-# polarities ("--mmap" and "--no-direct-io" do it too). Harmless on their own, so
-# stripped only when a managed flag is emitted, never by no-reserve.
-_DIO_FLAGS: frozenset[str] = frozenset({"--direct-io", "-dio", "--no-direct-io", "-ndio"})
+# polarities ("--mmap" and "--no-direct-io" do it too).
+# The affirmative spellings select DirectIO, which streams and holds no full
+# copy, so no-reserve leaves them alone. The negative spellings do NOT mean
+# "plain mmap": upstream maps -ndio / --no-direct-io to load mode `none`, the
+# same enum value as --no-mmap, which is a full-model host buffer. So they are
+# reservations and no-reserve has to be able to veto them.
+_DIO_ON_FLAGS: frozenset[str] = frozenset({"--direct-io", "-dio"})
+_DIO_OFF_FLAGS: frozenset[str] = frozenset({"--no-direct-io", "-ndio"})
+_DIO_FLAGS: frozenset[str] = _DIO_ON_FLAGS | _DIO_OFF_FLAGS
 _LOAD_MODE_ALIAS_FLAGS: frozenset[str] = _NO_MMAP_FLAGS | frozenset({"--mmap"}) | _DIO_FLAGS
-_MEMORY_PLACEMENT_FLAGS: frozenset[str] = _MLOCK_FLAGS | _NO_MMAP_FLAGS
+# Every spelling that asks for a full-model host buffer.
+_RAM_RESERVING_FLAGS: frozenset[str] = _NO_MMAP_FLAGS | _DIO_OFF_FLAGS
 # llama.cpp reads these before argv, so an inherited value survives stripping the
 # equivalent tokens. Scrubbed whenever a toggle is on, like the spec/placement
 # env groups, so the setting owns memory placement outright.
@@ -537,7 +544,9 @@ def strip_shadowing_flags(
 
     ``strip_mlock`` / ``strip_no_mmap`` are enabled by the Model Memory settings
     so a RAM-reservation flag cannot survive a load the user asked to keep
-    RAM-free. Both are boolean, so only the token itself is dropped.
+    RAM-free. ``strip_no_mmap`` covers every spelling that selects load mode
+    `none`, so the negative DirectIO forms go with it. All are boolean, so only
+    the token itself is dropped.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -559,7 +568,7 @@ def strip_shadowing_flags(
     if strip_mlock:
         shadowing |= _MLOCK_FLAGS
     if strip_no_mmap:
-        shadowing |= _NO_MMAP_FLAGS
+        shadowing |= _RAM_RESERVING_FLAGS
     if strip_load_mode_aliases:
         shadowing |= _LOAD_MODE_ALIAS_FLAGS
     if strip_load_mode:
@@ -708,10 +717,31 @@ def resolve_effective_memory_state(
     reflects the launched state rather than only what Unsloth emitted.
     """
     env = env or {}
-    mlock = str(env.get("LLAMA_ARG_MLOCK", "")).strip().lower() in _ENV_TRUE_VALUES
-    # LLAMA_ARG_MMAP is whether to mmap, so "off" means mmap disabled.
+    mlock = False
+    reserves_ram = False
+    # Each env var runs the SAME handler as its flag, so each one assigns the
+    # whole mode rather than setting one bit, and a later one overwrites an
+    # earlier one. Applied in llama.cpp's option-registration order (mlock,
+    # mmap, dio, load-mode), which is the order it reads them in. Measured
+    # against the shipped binary: LLAMA_ARG_MLOCK=1 with LLAMA_ARG_MMAP=on or
+    # LLAMA_ARG_DIO=0 leaves the child unlocked.
+    # Only the mlock bit here, matching the argv --mlock handling above it: the
+    # enum has both "mlock" and "mmap+mlock" and which one this means is not
+    # observable, and it changes no decision either way.
+    if str(env.get("LLAMA_ARG_MLOCK", "")).strip().lower() in _ENV_TRUE_VALUES:
+        mlock = True
+    # LLAMA_ARG_MMAP is whether to mmap, so "off" means mmap disabled ("none").
     _mmap_env = str(env.get("LLAMA_ARG_MMAP", "")).strip().lower()
-    reserves_ram = _mmap_env in _ENV_FALSE_VALUES and _mmap_env != ""
+    if _mmap_env in _ENV_TRUE_VALUES:
+        mlock, reserves_ram = False, False
+    elif _mmap_env in _ENV_FALSE_VALUES:
+        mlock, reserves_ram = False, True
+    # LLAMA_ARG_DIO likewise: on selects DirectIO, off selects "none".
+    _dio_env = str(env.get("LLAMA_ARG_DIO", "")).strip().lower()
+    if _dio_env in _ENV_TRUE_VALUES:
+        mlock, reserves_ram = False, False
+    elif _dio_env in _ENV_FALSE_VALUES:
+        mlock, reserves_ram = False, True
     _mode_env = str(env.get("LLAMA_ARG_LOAD_MODE", "")).strip().lower()
     if _mode_env:
         mlock = _mode_env in _LOAD_MODE_MLOCK_VALUES
@@ -738,11 +768,18 @@ def resolve_effective_memory_state(
             mlock = False
             reserves_ram = True
             i += 1
-        elif flag in _DIO_FLAGS:
+        elif flag in _DIO_ON_FLAGS:
             # Deprecated load-mode selector: resets the mode, so the mlock goes.
             # DirectIO streams the weights, so it holds no full host copy.
             mlock = False
             reserves_ram = False
+            i += 1
+        elif flag in _DIO_OFF_FLAGS:
+            # NOT "plain mmap": upstream maps the negative DirectIO spellings to
+            # load mode `none`, the same enum value as --no-mmap, which reads
+            # the weights into a full host buffer.
+            mlock = False
+            reserves_ram = True
             i += 1
         elif flag == "--mmap":
             mlock = False
@@ -800,6 +837,8 @@ def memory_state_satisfies_settings(
         return True
     mlock, reserves_ram = state
     if get_no_ram_reserve():
+        # The gate only excuses a MISSING lock. A live reservation still has to
+        # go, wherever the weights are.
         return not (mlock or reserves_ram)
     if get_keep_resident():
         return mlock or not mlock_applicable
