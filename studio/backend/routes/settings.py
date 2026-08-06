@@ -7,7 +7,7 @@ import threading
 from typing import Any, Literal, Optional
 from urllib.parse import unquote, urlsplit
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from auth.authentication import get_current_subject
@@ -56,6 +56,11 @@ from utils.openai_auto_switch_settings import (
     get_stored_openai_auto_download_enabled,
     set_model_override,
     set_openai_auto_switch,
+)
+from preview_share_link import (
+    PreviewLinkUnavailable,
+    PreviewSharingDisabled,
+    share_link,
 )
 from utils.preview_sharing_settings import (
     DEFAULT_PREVIEW_SHARING_ENABLED,
@@ -929,7 +934,7 @@ def get_preview_sharing(
 
 
 @router.put("/preview-sharing", response_model = PreviewSharingResponse)
-def update_preview_sharing(
+async def update_preview_sharing(
     payload: PreviewSharingPayload, current_subject: str = Depends(get_current_subject)
 ) -> PreviewSharingResponse:
     """Enable/disable the public `/p` preview surface. When off, links 404 even with a token."""
@@ -943,8 +948,60 @@ def update_preview_sharing(
             event = "settings.update_preview_sharing_failed",
             log = logger,
         ) from exc
+    if not enabled:
+        # Links already 404 on the kill switch; drop the preview tunnel too.
+        await share_link.stop()
     logger.info("settings.preview_sharing_updated subject=%s enabled=%s", current_subject, enabled)
     return PreviewSharingResponse(enabled = enabled)
+
+
+class PreviewLinkResponse(BaseModel):
+    # Public base for /p share links; None when no tunnel is active.
+    url: Optional[str] = None
+
+
+@router.get("/preview-link", response_model = PreviewLinkResponse)
+def get_preview_link(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> PreviewLinkResponse:
+    return PreviewLinkResponse(url = share_link.current(request.app))
+
+
+@router.post("/preview-link", response_model = PreviewLinkResponse)
+async def create_preview_link(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> PreviewLinkResponse:
+    # Slow on first use: downloads cloudflared, waits for the edge probe.
+    try:
+        url = await share_link.ensure(request.app)
+    except PreviewSharingDisabled as exc:
+        raise log_and_http_error(
+            exc, 409, str(exc), event = "settings.preview_link_disabled", log = logger
+        ) from exc
+    except PreviewLinkUnavailable as exc:
+        raise log_and_http_error(
+            exc, 503, str(exc), event = "settings.preview_link_unavailable", log = logger
+        ) from exc
+    except Exception as exc:
+        raise log_and_http_error(
+            exc,
+            500,
+            safe_error_detail(exc, fallback = "Failed to open a public preview link."),
+            event = "settings.preview_link_failed",
+            log = logger,
+        ) from exc
+    logger.info("settings.preview_link_created subject=%s", current_subject)
+    return PreviewLinkResponse(url = url)
+
+
+@router.delete("/preview-link", response_model = PreviewLinkResponse)
+async def delete_preview_link(
+    request: Request, current_subject: str = Depends(get_current_subject)
+) -> PreviewLinkResponse:
+    # Still reports a URL on a --cloudflare launch; that tunnel stays up.
+    await share_link.stop()
+    logger.info("settings.preview_link_stopped subject=%s", current_subject)
+    return PreviewLinkResponse(url = share_link.current(request.app))
 
 
 def _is_bundled_avatar_url(value: str) -> bool:

@@ -1169,3 +1169,27 @@ def test_cloudflare_line_failed_does_not_claim_local_only_when_publicly_reachabl
     assert "requested but failed to start" in out
     assert "reachable from the public internet" in out
     assert "local network only" not in out
+
+
+def test_tunnel_dials_ipv4_loopback_origin():
+    # The studio server and the preview listener bind 127.0.0.1; on hosts where
+    # localhost resolves only to ::1, a localhost origin makes cloudflared dial
+    # an address nothing listens on and every tunnel probe fails.
+    t = ct.CloudflareTunnel(binary = "cloudflared", port = 4321)
+    captured = {}
+
+    class _P:
+        def __init__(self, cmd, **kw):
+            captured["cmd"] = cmd
+            raise RuntimeError("stop before spawning")
+
+    real = ct.subprocess.Popen
+    ct.subprocess.Popen = _P
+    try:
+        t.start()
+    except Exception:
+        pass
+    finally:
+        ct.subprocess.Popen = real
+    assert "http://127.0.0.1:4321" in captured.get("cmd", []), captured
+    assert not any("localhost" in str(c) for c in captured.get("cmd", []))

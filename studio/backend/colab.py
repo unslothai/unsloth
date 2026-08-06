@@ -385,15 +385,31 @@ def start_cloudflare_tunnel(port: int) -> "str | None":
     except Exception as e:
         logger.info(f"Cloudflare tunnel unavailable ({e}); using Colab proxy only.")
         return None
+    # Arm the pending flag so a concurrent preview-link request waits for this
+    # tunnel instead of racing it for the shared slot; run_server suppresses its
+    # own tunnel on Colab, so it never arms the flag for this path.
+    state = None
     try:
-        url = start_studio_tunnel(port)
-    except Exception as e:
-        logger.info(f"Cloudflare tunnel failed to start ({e}); using Colab proxy only.")
-        return None
-    # Success is logged by _show_and_embed; note only misses here.
-    if not url:
-        logger.info("Cloudflare tunnel did not produce a URL; using Colab proxy only.")
-    return url
+        from main import app as _studio_app
+        state = _studio_app.state
+        state.cloudflare_tunnel_pending = True
+    except Exception:
+        state = None
+    try:
+        try:
+            url = start_studio_tunnel(port)
+        except Exception as e:
+            logger.info(f"Cloudflare tunnel failed to start ({e}); using Colab proxy only.")
+            return None
+        # Success is logged by _show_and_embed; note only misses here.
+        if not url:
+            logger.info("Cloudflare tunnel did not produce a URL; using Colab proxy only.")
+        # Publish before settling the flag so a waiter never observes the gap.
+        _publish_cloudflare_url(url)
+        return url
+    finally:
+        if state is not None:
+            state.cloudflare_tunnel_pending = False
 
 
 def _publish_cloudflare_url(cloudflare_url: "str | None") -> None:

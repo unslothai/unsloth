@@ -48,6 +48,43 @@ export async function updatePreviewSharing(
   return fromApi(await res.json());
 }
 
+// Public base for /p share links; null until one is opened.
+export type PreviewLink = {
+  url: string | null;
+};
+
+export async function loadPreviewLink(): Promise<PreviewLink> {
+  const res = await authFetch("/api/settings/preview-link");
+  if (!res.ok) {
+    throw new Error(await readFastApiError(res, "Failed to load preview link"));
+  }
+  return (await res.json()) as PreviewLink;
+}
+
+// Slow on first use: downloads cloudflared, then waits for the public probe.
+export async function createPreviewLink(): Promise<PreviewLink> {
+  const res = await authFetch("/api/settings/preview-link", { method: "POST" });
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to open a public preview link"),
+    );
+  }
+  return (await res.json()) as PreviewLink;
+}
+
+// Still reports a URL on a --cloudflare launch; that tunnel stays up.
+export async function stopPreviewLink(): Promise<PreviewLink> {
+  const res = await authFetch("/api/settings/preview-link", {
+    method: "DELETE",
+  });
+  if (!res.ok) {
+    throw new Error(
+      await readFastApiError(res, "Failed to stop the public preview link"),
+    );
+  }
+  return (await res.json()) as PreviewLink;
+}
+
 // Rotate the server-side signing secret, invalidating every previously shared
 // /p preview link in one step. Newly copied links keep working.
 export async function rotatePreviewLinks(): Promise<void> {

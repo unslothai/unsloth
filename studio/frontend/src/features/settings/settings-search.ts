@@ -22,6 +22,7 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.notifications.showLlamaUpdates",
     "settings.general.previewSharing.sectionTitle",
     "settings.general.previewSharing.enableLabel",
+    "settings.general.previewSharing.publicLinkLabel",
     "settings.general.previewSharing.revokeLabel",
     "settings.general.rag.sectionTitle",
     "settings.general.rag.embeddingModel",

@@ -27,6 +27,12 @@ import {
 } from "@/features/training";
 import { formatDuration } from "@/features/studio/sections/progress-section-lib";
 import { fetchDeviceType, usePlatformStore } from "@/config/env";
+import {
+  createPreviewLink,
+  refreshPreviewLink,
+  setPreviewLink,
+  usePreviewLinkStore,
+} from "@/features/settings";
 import { cn } from "@/lib/utils";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { toast } from "@/lib/toast";
@@ -218,6 +224,58 @@ export function HistoryCardGrid({
   // registers shortly after startup, so poll (bounded) until it shows.
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
+  // Public base opened from Settings; without one a copied link is loopback-only.
+  const previewLinkBase = usePreviewLinkStore((s) => s.url);
+  useEffect(() => {
+    if (cloudflareUrl) return;
+    void refreshPreviewLink();
+  }, [cloudflareUrl]);
+
+  const buildPreviewUrl = useCallback((run: TrainingRunSummary, base: string) => {
+    // Encode each segment but keep "/" so the /p route matches; ?k= is the
+    // bearer capability.
+    const ref = (run.preview_ref ?? "").split("/").map(encodeURIComponent).join("/");
+    const host = base.replace(/\/+$/, "");
+    return `${host}/p/${ref}?k=${encodeURIComponent(run.preview_sig ?? "")}`;
+  }, []);
+
+  // Ends in its own Copy toast action: that click is a fresh user gesture,
+  // which is what lets the clipboard write land.
+  const makeShareable = useCallback(
+    async (run: TrainingRunSummary) => {
+      const pending = toast.loading(t("studio.history.previewLinkOpening"));
+      try {
+        const link = await createPreviewLink();
+        setPreviewLink(link);
+        toast.dismiss(pending);
+        if (!link.url) return;
+        const url = buildPreviewUrl(run, link.url);
+        toast.success(t("studio.history.previewLinkReady"), {
+          duration: 30000,
+          action: {
+            label: t("studio.history.previewLinkCopyAction"),
+            onClick: () => {
+              void copyToClipboard(url).then((ok) => {
+                toast[ok ? "success" : "error"](
+                  t(
+                    ok
+                      ? "studio.history.previewLinkCopied"
+                      : "studio.history.previewLinkCopyFailed",
+                  ),
+                );
+              });
+            },
+          },
+        });
+      } catch (error) {
+        toast.dismiss(pending);
+        toast.error(t("studio.history.previewLinkOpenFailed"), {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      }
+    },
+    [t, buildPreviewUrl],
+  );
   useEffect(() => {
     if (cloudflareUrl) return;
     let cancelled = false;
@@ -468,29 +526,32 @@ export function HistoryCardGrid({
                   size="xs"
                   variant="outline"
                   className="absolute bottom-3 right-4 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
-                  onClick={async (e) => {
+                  onClick={(e) => {
                     e.stopPropagation();
-                    // Encode each segment but keep "/" so the /p route matches.
-                    const ref = (run.preview_ref ?? "")
-                      .split("/")
-                      .map(encodeURIComponent)
-                      .join("/");
-                    const base = (
-                      cloudflareUrl ??
-                      serverUrl ??
-                      window.location.origin
-                    ).replace(/\/+$/, "");
-                    // The signature is a bearer capability carried as ?k=; the
-                    // recipient's page forwards it on its chat requests.
-                    const url = `${base}/p/${ref}?k=${encodeURIComponent(run.preview_sig ?? "")}`;
-                    const ok = await copyToClipboard(url);
-                    toast[ok ? "success" : "error"](
-                      t(
-                        ok
-                          ? "studio.history.previewLinkCopied"
-                          : "studio.history.previewLinkCopyFailed",
-                      ),
+                    // No await before the copy: the clipboard only accepts a
+                    // write while the click's user activation is live.
+                    const publicBase = cloudflareUrl ?? previewLinkBase;
+                    const url = buildPreviewUrl(
+                      run,
+                      publicBase ?? serverUrl ?? window.location.origin,
                     );
+                    void copyToClipboard(url).then((ok) => {
+                      if (!ok) {
+                        toast.error(t("studio.history.previewLinkCopyFailed"));
+                        return;
+                      }
+                      if (publicBase) {
+                        toast.success(t("studio.history.previewLinkCopied"));
+                        return;
+                      }
+                      toast.warning(t("studio.history.previewLinkCopiedLocal"), {
+                        duration: 30000,
+                        action: {
+                          label: t("studio.history.makeShareable"),
+                          onClick: () => void makeShareable(run),
+                        },
+                      });
+                    });
                   }}
                 >
                   {t("studio.history.copyPreviewLink")}

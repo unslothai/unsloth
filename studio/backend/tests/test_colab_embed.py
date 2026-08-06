@@ -596,3 +596,48 @@ def test_show_and_embed_still_embeds_when_show_link_fails(monkeypatch):
     colab._show_and_embed(8888)
 
     assert calls == ["kernel_iframe"]
+
+
+def test_start_cloudflare_tunnel_arms_the_pending_flag(monkeypatch):
+    # The preview share link waits on cloudflare_tunnel_pending; without it a
+    # concurrent preview-link request steals the shared tunnel slot and stops
+    # the in-flight Colab tunnel.
+    state = SimpleNamespace(cloudflare_tunnel_pending = False, cloudflare_url = None)
+    main_stub = types.ModuleType("main")
+    main_stub.app = SimpleNamespace(state = state)
+    monkeypatch.setitem(sys.modules, "main", main_stub)
+
+    seen = {}
+
+    def _fake_start(port):
+        seen["pending_during_start"] = state.cloudflare_tunnel_pending
+        return "https://tunnel.example"
+
+    tunnel_stub = types.ModuleType("cloudflare_tunnel")
+    tunnel_stub.start_studio_tunnel = _fake_start
+    monkeypatch.setitem(sys.modules, "cloudflare_tunnel", tunnel_stub)
+    monkeypatch.setattr(colab, "_bootstrap_password_pending", lambda: False)
+
+    assert colab.start_cloudflare_tunnel(8888) == "https://tunnel.example"
+    assert seen["pending_during_start"] is True
+    assert state.cloudflare_tunnel_pending is False
+    # Published before the flag settled, so a waiter that wakes sees the URL.
+    assert state.cloudflare_url == "https://tunnel.example"
+
+
+def test_start_cloudflare_tunnel_settles_the_flag_on_failure(monkeypatch):
+    state = SimpleNamespace(cloudflare_tunnel_pending = False, cloudflare_url = None)
+    main_stub = types.ModuleType("main")
+    main_stub.app = SimpleNamespace(state = state)
+    monkeypatch.setitem(sys.modules, "main", main_stub)
+
+    def _fake_start(port):
+        raise RuntimeError("cloudflared missing")
+
+    tunnel_stub = types.ModuleType("cloudflare_tunnel")
+    tunnel_stub.start_studio_tunnel = _fake_start
+    monkeypatch.setitem(sys.modules, "cloudflare_tunnel", tunnel_stub)
+    monkeypatch.setattr(colab, "_bootstrap_password_pending", lambda: False)
+
+    assert colab.start_cloudflare_tunnel(8888) is None
+    assert state.cloudflare_tunnel_pending is False

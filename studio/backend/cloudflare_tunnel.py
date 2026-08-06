@@ -45,6 +45,10 @@ _DOWNLOAD_TIMEOUT = 60  # urlopen timeout for the one-time binary download
 # URL is fetched once before it is advertised.
 _PUBLIC_PROBE_PATH = "/api/health"
 _PUBLIC_PROBE_MARKER = "Unsloth UI Backend"
+# The preview-only listener 404s /api/health; probe the gate's own marker,
+# served outside /p so it can never collide with a run name.
+_PREVIEW_PROBE_PATH = "/_preview_health"
+_PREVIEW_PROBE_MARKER = "Unsloth Preview"
 # One deadline for DNS propagation + the health probe, bounding the startup stall.
 _PUBLIC_PROBE_TIMEOUT = 45.0
 _PUBLIC_PROBE_ATTEMPT_TIMEOUT = 5.0
@@ -235,7 +239,12 @@ def _wait_for_dns(host: str, deadline: float) -> None:
         time.sleep(min(_DNS_POLL_DELAY, remaining))
 
 
-def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
+def verify_public_url(
+    url: str,
+    timeout: float = _PUBLIC_PROBE_TIMEOUT,
+    probe_path: str = _PUBLIC_PROBE_PATH,
+    probe_marker: str = _PUBLIC_PROBE_MARKER,
+) -> bool:
     import json
     import urllib.request
     from urllib.parse import urlsplit
@@ -245,13 +254,13 @@ def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
     if host:
         _wait_for_dns(host, deadline)
 
-    probe_url = f"{url.rstrip('/')}{_PUBLIC_PROBE_PATH}"
+    probe_url = f"{url.rstrip('/')}{probe_path}"
     while True:
         try:
             req = urllib.request.Request(probe_url, headers = {"User-Agent": "unsloth-studio"})
             with urllib.request.urlopen(req, timeout = _PUBLIC_PROBE_ATTEMPT_TIMEOUT) as response:
                 body = response.read(4096)
-            if json.loads(body).get("service") == _PUBLIC_PROBE_MARKER:
+            if json.loads(body).get("service") == probe_marker:
                 return True
         except Exception:
             pass
@@ -293,7 +302,10 @@ class CloudflareTunnel:
             self.binary,
             "tunnel",
             "--url",
-            f"http://localhost:{self.port}",
+            # 127.0.0.1, not localhost: the origin server binds IPv4 loopback,
+            # and on hosts where localhost resolves only to ::1 cloudflared
+            # would dial an address nothing (or another process) listens on.
+            f"http://127.0.0.1:{self.port}",
             "--no-autoupdate",
         ]
         if self.protocol:
@@ -389,7 +401,12 @@ _active_lock = threading.Lock()
 _shutdown_requested = False
 
 
-def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[str]:
+def start_studio_tunnel(
+    port: int,
+    timeout: float = _READY_TIMEOUT,
+    probe_path: str = _PUBLIC_PROBE_PATH,
+    probe_marker: str = _PUBLIC_PROBE_MARKER,
+) -> Optional[str]:
     """Start a quick tunnel and return its public URL once it is actually
     serving, or None (best-effort).
 
@@ -426,7 +443,7 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
             tunnel.start()
             url = tunnel.wait_for_ready(timeout)
             registered = url is not None
-            if url and not verify_public_url(url):
+            if url and not verify_public_url(url, probe_path = probe_path, probe_marker = probe_marker):
                 url = None
         except Exception:
             url = None
@@ -453,6 +470,17 @@ def start_studio_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[
     return None
 
 
+# Shares the single tunnel slot with start_studio_tunnel; a launch that already
+# tunnels the whole studio serves /p directly, so callers prefer that URL.
+def start_preview_tunnel(port: int, timeout: float = _READY_TIMEOUT) -> Optional[str]:
+    return start_studio_tunnel(
+        port,
+        timeout,
+        probe_path = _PREVIEW_PROBE_PATH,
+        probe_marker = _PREVIEW_PROBE_MARKER,
+    )
+
+
 def stop_studio_tunnel() -> None:
     """Terminate the active tunnel, if any. Idempotent."""
     global _active_tunnel, _shutdown_requested
@@ -463,3 +491,17 @@ def stop_studio_tunnel() -> None:
         tunnel, _active_tunnel = _active_tunnel, None
     if tunnel is not None:
         tunnel.stop()
+
+
+# Stops the active tunnel only if it still serves `url`. No-op when the shared
+# slot has since been replaced (e.g. by a studio-wide tunnel), and no shutdown
+# latch so an unrelated in-flight start is not aborted.
+def stop_tunnel_if_url(url: str) -> bool:
+    global _active_tunnel
+    with _active_lock:
+        tunnel = _active_tunnel
+        if tunnel is None or tunnel.url != url:
+            return False
+        _active_tunnel = None
+    tunnel.stop()
+    return True

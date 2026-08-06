@@ -16,11 +16,11 @@ import { usePlatformStore } from "@/config/env";
 import { resetOnboardingDone } from "@/features/auth";
 import { PermissionModeDropdown, useChatRuntimeStore } from "@/features/chat";
 import { emitTrainingRunsChanged } from "@/features/training";
+import { useHfTokenValidation } from "@/hooks";
 import {
   setShowLlamaUpdateBanner,
   useShowLlamaUpdateBanner,
 } from "@/hooks/use-llama-update-pref";
-import { useHfTokenValidation } from "@/hooks";
 import { LOCALE_STORAGE_KEY, useT } from "@/i18n";
 import { isTauri } from "@/lib/api-base";
 import { toast } from "@/lib/toast";
@@ -43,8 +43,10 @@ import {
 } from "../api/helper-precache";
 import {
   type PreviewSharingSettings,
+  createPreviewLink,
   loadPreviewSharing,
   rotatePreviewLinks,
+  stopPreviewLink,
   updatePreviewSharing,
 } from "../api/preview-sharing";
 import {
@@ -63,6 +65,11 @@ import { LanguageSelect } from "../components/language-select";
 import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
+import {
+  refreshPreviewLink,
+  setPreviewLink,
+  usePreviewLinkStore,
+} from "../stores/preview-link-store";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
 // Keys cleared by "Reset all local preferences".
@@ -187,6 +194,10 @@ export function GeneralTab() {
   const [isSavingPreviewSharing, setIsSavingPreviewSharing] = useState(false);
   const [revokePreviewOpen, setRevokePreviewOpen] = useState(false);
   const [isRevokingPreview, setIsRevokingPreview] = useState(false);
+  const previewLink = usePreviewLinkStore();
+  // A --cloudflare launch has no separate preview tunnel to turn on or off.
+  const studioCloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
+  const [isOpeningPreviewLink, setIsOpeningPreviewLink] = useState(false);
   const [embeddingModel, setEmbeddingModel] =
     useState<EmbeddingModelSettings | null>(null);
   const [draftEmbeddingModel, setDraftEmbeddingModel] = useState("");
@@ -300,6 +311,10 @@ export function GeneralTab() {
   }, [t]);
 
   useEffect(() => {
+    void refreshPreviewLink();
+  }, []);
+
+  useEffect(() => {
     let cancelled = false;
     void loadEmbeddingModelSettings()
       .then((settings) => {
@@ -346,6 +361,8 @@ export function GeneralTab() {
       // Toggling sharing changes whether /api/train/runs returns preview_sig, so
       // refresh the history grid (hide/show the Copy preview link buttons).
       emitTrainingRunsChanged();
+      // Disabling tears the public link down server-side; resync the store.
+      void refreshPreviewLink();
     } catch (error) {
       setPreviewSharingError(
         error instanceof Error
@@ -354,6 +371,34 @@ export function GeneralTab() {
       );
     } finally {
       setIsSavingPreviewSharing(false);
+    }
+  };
+
+  const openPreviewLink = async () => {
+    setIsOpeningPreviewLink(true);
+    try {
+      setPreviewLink(await createPreviewLink());
+      toast.success(t("settings.general.previewSharing.publicLinkOpened"));
+    } catch (error) {
+      toast.error(t("settings.general.previewSharing.publicLinkFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setIsOpeningPreviewLink(false);
+    }
+  };
+
+  const closePreviewLink = async () => {
+    setIsOpeningPreviewLink(true);
+    try {
+      setPreviewLink(await stopPreviewLink());
+      toast.success(t("settings.general.previewSharing.publicLinkStopped"));
+    } catch (error) {
+      toast.error(t("settings.general.previewSharing.publicLinkFailed"), {
+        description: error instanceof Error ? error.message : undefined,
+      });
+    } finally {
+      setIsOpeningPreviewLink(false);
     }
   };
 
@@ -613,6 +658,42 @@ export function GeneralTab() {
             {previewSharingError ? (
               <span className="max-w-[260px] text-right text-xs text-destructive">
                 {previewSharingError}
+              </span>
+            ) : null}
+          </div>
+        </SettingsRow>
+        <SettingsRow
+          label={t("settings.general.previewSharing.publicLinkLabel")}
+          description={t(
+            "settings.general.previewSharing.publicLinkDescription",
+          )}
+        >
+          <div className="flex flex-col items-end gap-1">
+            {studioCloudflareUrl ? null : (
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={isOpeningPreviewLink || !previewSharing?.enabled}
+                onClick={() =>
+                  void (previewLink?.url
+                    ? closePreviewLink()
+                    : openPreviewLink())
+                }
+              >
+                {isOpeningPreviewLink
+                  ? t(
+                      previewLink?.url
+                        ? "settings.general.previewSharing.publicLinkStopping"
+                        : "settings.general.previewSharing.publicLinkOpening",
+                    )
+                  : previewLink?.url
+                    ? t("settings.general.previewSharing.publicLinkStop")
+                    : t("settings.general.previewSharing.publicLinkCreate")}
+              </Button>
+            )}
+            {previewLink?.url ? (
+              <span className="max-w-[260px] truncate text-right text-xs text-muted-foreground">
+                {previewLink.url}
               </span>
             ) : null}
           </div>
