@@ -663,8 +663,14 @@ def _download_host_json_once(url: str) -> Any:
 
     A refused or blackholed host is a retryable URLError, so the default policy
     would spend four attempts with backoff per tag before returning the answer
-    the caller already has a fallback for."""
-    data = download_bytes(url, timeout = 30, attempts = 1, headers = {"User-Agent": USER_AGENT})
+    the caller already has a fallback for.
+
+    Only the ATTEMPT count is overridden. ``download_bytes`` falls back to
+    ``auth_headers(url)`` when headers are absent, so passing a bare User-Agent
+    silently dropped auth: a private published repo 404s and the caller drops to
+    the "-mix-" suffix compare this exists to replace, and an anonymous
+    huggingface.co fetch shares the per-IP limit that 429s CI fleets."""
+    data = download_bytes(url, timeout = 30, attempts = 1, headers = auth_headers(url))
     return json.loads(data.decode("utf-8"))
 
 

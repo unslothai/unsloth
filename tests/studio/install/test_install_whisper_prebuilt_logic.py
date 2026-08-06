@@ -854,6 +854,11 @@ def _offline_published_tree_lookup(monkeypatch):
     M._PUBLISHED_GGML_TREE_CACHE.clear()
 
 
+# The autouse fixture above replaces _download_host_json_once with an offline guard, so a test
+# exercising the real wrapper has to hold a reference taken at import, before any fixture runs.
+_REAL_DOWNLOAD_HOST_JSON_ONCE = M._download_host_json_once
+
+
 # Real releases: same -mix-2c8b9c1 suffix, but genuinely different ggml trees.
 SUFFIX_SHARED_A = "b10173-mix-2c8b9c1"
 SUFFIX_SHARED_B = "b10181-mix-2c8b9c1"
@@ -923,6 +928,30 @@ def test_published_ggml_tree_is_fetched_once_per_tag(monkeypatch):
         f"https://github.com/unslothai/llama.cpp/releases/download/"
         f"{SUFFIX_SHARED_A}/llama-prebuilt-manifest.json"
     ]
+
+
+def test_the_manifest_probe_still_authenticates(monkeypatch):
+    """download_bytes falls back to auth_headers(url) only when headers are ABSENT, so a bare
+    User-Agent silently dropped auth. A private published repo then 404s and the caller falls
+    back to the -mix- suffix compare this probe exists to replace; an anonymous huggingface.co
+    fetch shares the per-IP limit that 429s CI fleets."""
+    seen = {}
+
+    def fake_download_bytes(url, timeout = None, attempts = None, headers = None, **kwargs):
+        seen["headers"] = headers
+        seen["attempts"] = attempts
+        return b'{"ggml_tree": "abc"}'
+
+    monkeypatch.setenv("GH_TOKEN", "gh-secret")
+    monkeypatch.delenv("GITHUB_TOKEN", raising = False)
+    monkeypatch.setattr(M, "download_bytes", fake_download_bytes)
+
+    assert _REAL_DOWNLOAD_HOST_JSON_ONCE(
+        "https://github.com/o/r/releases/download/t/m.json"
+    ) == {"ggml_tree": "abc"}
+    assert seen["headers"].get("Authorization") == "Bearer gh-secret"
+    # The single-attempt policy is the ONLY thing this wrapper overrides.
+    assert seen["attempts"] == 1
 
 
 @pytest.mark.parametrize(
