@@ -1654,9 +1654,7 @@ class ResearchSupervisor:
         except (asyncio.CancelledError, StopAsyncIteration):
             pass
         except Exception:
-            logger.warning(
-                "research.%s_cleanup_failed run_id=%s", what, run_id, exc_info = True
-            )
+            logger.warning("research.%s_cleanup_failed run_id=%s", what, run_id, exc_info = True)
 
     async def _iter_stream_lines(
         self,
