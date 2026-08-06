@@ -112,9 +112,10 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         controlnet_pipeline_class = "FluxControlNetPipeline",
         controlnet_model_class = "FluxControlNetModel",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
+        # unsloth/flux-text-encoders mirrors the two files comfyanonymous/flux_text_encoders publishes for this (CLIP-L + T5-XXL fp16), byte for byte.
         sd_cpp_text_encoders = (
-            ("comfyanonymous/flux_text_encoders", "clip_l.safetensors", "clip_l"),
-            ("comfyanonymous/flux_text_encoders", "t5xxl_fp16.safetensors", "t5xxl"),
+            ("unsloth/flux-text-encoders", "clip_l.safetensors", "clip_l"),
+            ("unsloth/flux-text-encoders", "t5xxl_fp16.safetensors", "t5xxl"),
         ),
     ),
     # FLUX.2-klein is Flux2KleinPipeline (Qwen3 encoder), not the Mistral Flux2Pipeline, so it must precede a generic flux match.
@@ -136,14 +137,18 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
         # FLUX.2 scales >1MP inputs to ~1MP, so outpaint can't grow.
         inpaint_preserves_size = False,
-        # FLUX.2's 32-channel AE needs the latent-format override; the single-file VAE ships in Comfy-Org/flux2-dev. Shares Qwen3-4B with z-image.
-        sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
+        # FLUX.2's 32-channel AE needs the latent-format override; the single-file VAE ships in unsloth/FLUX.2-dev-ComfyUI (mirroring Comfy-Org/flux2-dev). Shares Qwen3-4B with z-image.
+        sd_cpp_vae = ("unsloth/FLUX.2-dev-ComfyUI", "split_files/vae/flux2-vae.safetensors"),
         sd_cpp_vae_format = "flux2",
         sd_cpp_text_encoders = (
-            ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
+            (
+                "unsloth/Z-Image-Turbo-ComfyUI",
+                "split_files/text_encoders/qwen_3_4b.safetensors",
+                "llm",
+            ),
         ),
     ),
-    # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base, text-to-image only; VAE + Mistral encoder come from Comfy-Org/flux2-dev for sd-cli.
+    # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base, text-to-image only; VAE + Mistral encoder come from unsloth/FLUX.2-dev-ComfyUI for sd-cli.
     DiffusionFamily(
         name = "flux.2-dev",
         pipeline_class = "Flux2Pipeline",
@@ -159,11 +164,11 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # LoRA training via the DiT trainer (QLoRA nf4); the gated base needs an HF token with the FLUX.2-dev license accepted.
         trainable = True,
         train_base_repos = ("black-forest-labs/FLUX.2-dev",),
-        sd_cpp_vae = ("Comfy-Org/flux2-dev", "split_files/vae/flux2-vae.safetensors"),
+        sd_cpp_vae = ("unsloth/FLUX.2-dev-ComfyUI", "split_files/vae/flux2-vae.safetensors"),
         sd_cpp_vae_format = "flux2",
         sd_cpp_text_encoders = (
             (
-                "Comfy-Org/flux2-dev",
+                "unsloth/FLUX.2-dev-ComfyUI",
                 "split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors",
                 "llm",
             ),
@@ -212,7 +217,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "QwenImageInpaintPipeline",
         controlnet_pipeline_class = "QwenImageControlNetPipeline",
         controlnet_model_class = "QwenImageControlNetModel",
-        sd_cpp_vae = ("Comfy-Org/Qwen-Image_ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
+        # Mirrors the one file Comfy-Org/Qwen-Image_ComfyUI publishes for this, byte for byte.
+        sd_cpp_vae = ("unsloth/Qwen-Image-ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
         # Qwen2.5-VL as a Q4_K_M GGUF keeps the CPU RAM win (bf16 encoder is ~15 GB). sd-cli --qwen2vl aliases --llm.
         sd_cpp_text_encoders = (
             (
@@ -244,9 +250,14 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "ZImageInpaintPipeline",
         # Z-Image's MLP down-projections peak near 9e5, which overflows float16.
         fp16_incompatible = True,
-        sd_cpp_vae = ("Comfy-Org/z_image_turbo", "split_files/vae/ae.safetensors"),
+        # Mirrors the two files Comfy-Org/z_image_turbo publishes for this (AE + Qwen3-4B), byte for byte.
+        sd_cpp_vae = ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"),
         sd_cpp_text_encoders = (
-            ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors", "llm"),
+            (
+                "unsloth/Z-Image-Turbo-ComfyUI",
+                "split_files/text_encoders/qwen_3_4b.safetensors",
+                "llm",
+            ),
         ),
     ),
     # Krea 2 (diffusers >= 0.39): a ~12B single-stream DiT with a Qwen3-VL-4B encoder and the Qwen-Image VAE. Loaded per-component because the repo ships transformers-5.x configs.
@@ -612,13 +623,40 @@ def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
 
 
 # FLUX.2-klein 9B pairs with Qwen3-8B, the 4B with the family-default Qwen3-4B (a mismatched encoder fails deep in sd-cli), so pick per variant.
+# unsloth/FLUX.2-klein-9B-ComfyUI mirrors the one file Comfy-Org/vae-text-encorder-for-flux-klein-9b publishes for this, byte for byte.
 _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (
     (
-        "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
+        "unsloth/FLUX.2-klein-9B-ComfyUI",
         "split_files/text_encoders/qwen_3_8b.safetensors",
         "llm",
     ),
 )
+
+
+def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
+    """Lowercased ids of repos that exist ONLY to hand sd.cpp a single-file VAE / text encoder.
+
+    They carry no denoiser, so nothing can be loaded from one. That never mattered while they were
+    third-party repacks, because the cached-model listing only tags a repo as a pickable image
+    model when it is TRUSTED, and a community org never is. Mirroring them into ``unsloth/*`` makes
+    them trusted, which would have turned four companion downloads into four un-loadable rows in
+    everyone's On Device list. Derived from the tables rather than hand-listed, and a repo that is
+    also a real base is excluded: FLUX.1-schnell ships the FLUX.1 VAE and IS loadable."""
+    companions: set[str] = set()
+    loadable: set[str] = set()
+    for fam in _FAMILIES:
+        if fam.sd_cpp_vae:
+            companions.add(fam.sd_cpp_vae[0])
+        companions.update(repo for repo, _f, _k in fam.sd_cpp_text_encoders)
+        loadable.add(fam.base_repo)
+        loadable.update(fam.train_base_repos)
+        if fam.deploy_base_repo:
+            loadable.add(fam.deploy_base_repo)
+        loadable.update(repo for _scheme, repo in fam.prequant_repos)
+        loadable.update(repo for _base, _scheme, repo in fam.prequant_variant_repos)
+        loadable.update(repo for _scheme, _component, repo in fam.te_prequant_repos)
+    companions.update(repo for repo, _f, _k in _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+    return frozenset(r.strip().lower() for r in companions - loadable if r)
 
 
 def sd_cpp_text_encoders_for(

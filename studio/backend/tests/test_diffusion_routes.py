@@ -1073,7 +1073,7 @@ def test_download_plan_uses_the_engine_the_load_will_pick(client, monkeypatch):
     native_plan = {
         "entries": [
             {
-                "repo_id": "Comfy-Org/z_image_turbo",
+                "repo_id": "unsloth/Z-Image-Turbo-ComfyUI",
                 "files": ["ae.safetensors"],
                 "bytes": 7,
                 "gguf_filename": None,

@@ -1646,7 +1646,7 @@ def test_wan_a14b_refuses_single_file_loads(fake_runtime):
         )
     # The single-DiT 5B family still accepts GGUF.
     fam = backend.validate_load_request(
-        "QuantStack/Wan2.2-TI2V-5B-GGUF",
+        "unsloth/Wan2.2-TI2V-5B-GGUF",
         gguf_filename = "Wan2.2-TI2V-5B-Q4_K_M.gguf",
     )
     assert fam.name == "wan2.2-ti2v-5b"

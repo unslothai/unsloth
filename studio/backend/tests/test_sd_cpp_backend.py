@@ -12,7 +12,10 @@ import pytest
 from PIL import Image
 
 from core.inference import sd_cpp_backend as bk
-from core.inference.diffusion_families import detect_family
+from core.inference.diffusion_families import (
+    _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS,
+    detect_family,
+)
 from core.inference.sd_cpp_args import SdCppGenParams, SdCppModelFiles
 from core.inference.sd_cpp_backend import (
     SdCppDiffusionBackend,
@@ -92,7 +95,7 @@ def test_loaded_repo_ids_includes_native_companions():
     assert fam.base_repo in ids
     assert fam.sd_cpp_vae[0] in ids  # black-forest-labs/FLUX.1-schnell (VAE)
     for terepo, _f, _k in fam.sd_cpp_text_encoders:
-        assert terepo in ids  # comfyanonymous/flux_text_encoders
+        assert terepo in ids  # unsloth/flux-text-encoders
     b._state = None
     assert b.loaded_repo_ids() == ()
 
@@ -114,8 +117,9 @@ def test_loaded_repo_ids_tracks_variant_encoder_by_gguf_filename():
         gguf_filename = "FLUX.2-klein-9B-Q4_K_M.gguf",
     )
     ids = set(b.loaded_repo_ids())
-    assert "Comfy-Org/vae-text-encorder-for-flux-klein-9b" in ids  # the 8B encoder this load pulled
-    assert "Comfy-Org/z_image_turbo" not in ids  # the 4B default must not be protected instead
+    assert "unsloth/FLUX.2-klein-9B-ComfyUI" in ids  # the 8B encoder this load pulled
+    # The 4B default must not be protected instead.
+    assert "unsloth/Z-Image-Turbo-ComfyUI" not in ids
 
 
 class _FakeServer:
@@ -215,8 +219,8 @@ def test_download_plan_stages_exactly_what_sd_cli_opens(monkeypatch):
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     sizes = {
         ("unsloth/Z-Image-Turbo-GGUF", "z-image-turbo-Q4_K_M.gguf"): 4_000,
-        ("Comfy-Org/z_image_turbo", "split_files/vae/ae.safetensors"): 300,
-        ("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors"): 8_000,
+        ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"): 300,
+        ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/text_encoders/qwen_3_4b.safetensors"): 8_000,
     }
     monkeypatch.setattr(
         SdCppDiffusionBackend,
@@ -246,7 +250,7 @@ def test_download_plan_stages_exactly_what_sd_cli_opens(monkeypatch):
     # The transformer entry is the only one carrying the GGUF filename; the VAE + encoder share one repo entry.
     tr = [e for e in plan["entries"] if e["gguf_filename"]]
     assert len(tr) == 1 and tr[0]["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"
-    assert len([e for e in plan["entries"] if e["repo_id"] == "Comfy-Org/z_image_turbo"]) == 1
+    assert len([e for e in plan["entries"] if e["repo_id"] == "unsloth/Z-Image-Turbo-ComfyUI"]) == 1
 
 
 def test_download_plan_skips_a_local_transformer_but_still_stages_the_assets(monkeypatch, tmp_path):
@@ -262,7 +266,7 @@ def test_download_plan_skips_a_local_transformer_but_still_stages_the_assets(mon
     )
 
     assert str(tmp_path) not in {e["repo_id"] for e in plan["entries"]}
-    assert {e["repo_id"] for e in plan["entries"]} == {"Comfy-Org/z_image_turbo"}
+    assert {e["repo_id"] for e in plan["entries"]} == {"unsloth/Z-Image-Turbo-ComfyUI"}
     # An unreadable size understates the total; it must never fail the plan.
     assert plan["total_bytes"] == 0
 
@@ -284,16 +288,82 @@ def test_asset_specs_flux2_klein_selects_encoder_by_variant():
 
     specs_4b = b._asset_specs("unsloth/FLUX.2-klein-4B-GGUF", "FLUX.2-klein-4B-Q4_K_M.gguf", fam)
     te_4b = [(r, f) for r, f, k in specs_4b if k == "llm"]
-    assert te_4b == [("Comfy-Org/z_image_turbo", "split_files/text_encoders/qwen_3_4b.safetensors")]
+    assert te_4b == [
+        ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/text_encoders/qwen_3_4b.safetensors")
+    ]
 
     specs_9b = b._asset_specs("unsloth/FLUX.2-klein-9B-GGUF", "FLUX.2-klein-9B-Q4_K_M.gguf", fam)
     te_9b = [(r, f) for r, f, k in specs_9b if k == "llm"]
     assert te_9b == [
         (
-            "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
+            "unsloth/FLUX.2-klein-9B-ComfyUI",
             "split_files/text_encoders/qwen_3_8b.safetensors",
         )
     ]
+
+
+# Community repacks: useful, but nobody controls whether they stay up, stay public or keep their
+# paths, and a rename there breaks every no-GPU load that needs the file. Each one Studio depended
+# on now has a byte-identical unsloth mirror.
+_REPACKER_ORGS = frozenset(
+    {"comfy-org", "comfyanonymous", "quantstack", "city96", "calcuis", "orabazes"}
+)
+
+
+def test_no_sd_cpp_asset_comes_from_a_community_repack():
+    # Vendor repos are fine to fetch from directly (they are the source of truth). What must not
+    # come back is a third-party repack, so this asserts on the org, not on a list of known ids.
+    from core.inference.diffusion_families import _FAMILIES
+
+    offenders = []
+    for fam in _FAMILIES:
+        specs = list(fam.sd_cpp_text_encoders)
+        if fam.sd_cpp_vae:
+            specs.append((*fam.sd_cpp_vae, "vae"))
+        specs.extend(_FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS)
+        for repo, _f, _k in specs:
+            if repo.split("/", 1)[0].lower() in _REPACKER_ORGS:
+                offenders.append((fam.name, repo))
+    assert offenders == []
+
+
+def test_the_moved_sd_cpp_assets_keep_their_upstream_relative_paths():
+    # The mirrors were published under the exact paths the old repos used, so the swap is an id
+    # change only. A mirror that reorganised the files would break sd-cli with a 404 at load time.
+    want = {
+        "flux.1": [
+            ("unsloth/flux-text-encoders", "clip_l.safetensors"),
+            ("unsloth/flux-text-encoders", "t5xxl_fp16.safetensors"),
+        ],
+        "flux.2-klein": [
+            ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/text_encoders/qwen_3_4b.safetensors"),
+        ],
+        "flux.2-dev": [
+            (
+                "unsloth/FLUX.2-dev-ComfyUI",
+                "split_files/text_encoders/mistral_3_small_flux2_bf16.safetensors",
+            ),
+        ],
+        "z-image": [
+            ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/text_encoders/qwen_3_4b.safetensors"),
+        ],
+    }
+    for name, encoders in want.items():
+        fam = detect_family(name)
+        assert [(r, f) for r, f, _k in fam.sd_cpp_text_encoders] == encoders, name
+    assert detect_family("qwen-image").sd_cpp_vae == (
+        "unsloth/Qwen-Image-ComfyUI",
+        "split_files/vae/qwen_image_vae.safetensors",
+    )
+    assert detect_family("z-image").sd_cpp_vae == (
+        "unsloth/Z-Image-Turbo-ComfyUI",
+        "split_files/vae/ae.safetensors",
+    )
+    for name in ("flux.2-klein", "flux.2-dev"):
+        assert detect_family(name).sd_cpp_vae == (
+            "unsloth/FLUX.2-dev-ComfyUI",
+            "split_files/vae/flux2-vae.safetensors",
+        ), name
 
 
 # ── guidance mapping ──────────────────────────────────────────────────────────

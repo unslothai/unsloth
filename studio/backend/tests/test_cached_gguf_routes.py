@@ -2516,7 +2516,7 @@ def test_arch_to_task_hides_unsupported_diffusion_from_chat():
     assert models_route._arch_to_task("wan") not in ("text-generation", "text-to-image")
     # With a repo/file name hint the loadable TI2V-5B resolves to Video while the A14B MoE stays unsupported, matching the loader.
     assert (
-        models_route._arch_to_task("wan", ("QuantStack/Wan2.2-TI2V-5B-GGUF",))
+        models_route._arch_to_task("wan", ("unsloth/Wan2.2-TI2V-5B-GGUF",))
         == models_route._VIDEO_GEN_TASK
     )
     assert (
@@ -2685,7 +2685,7 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
             loaded_repo_ids = lambda: (
                 "unsloth/FLUX.1-dev-GGUF",
                 "black-forest-labs/FLUX.1-dev",
-                "comfyanonymous/flux_text_encoders",
+                "unsloth/flux-text-encoders",
             ),
             loading_repo_ids = lambda: (),
         ),
@@ -2693,7 +2693,7 @@ def test_delete_cached_refuses_loaded_native_companion_repo(monkeypatch):
     monkeypatch.setattr(video_mod, "get_video_backend", _idle_video_backend)
 
     try:
-        asyncio.run(deletion.delete_cached_model_response("comfyanonymous/flux_text_encoders"))
+        asyncio.run(deletion.delete_cached_model_response("unsloth/flux-text-encoders"))
         assert False, "expected HTTPException refusing the in-use companion delete"
     except HTTPException as e:
         assert e.status_code == 400
@@ -3001,6 +3001,34 @@ def test_cached_repo_task_gates_an_image_pipeline_on_the_load_path_trust_rule(tm
     )
     assert (
         models_route._cached_repo_task(_pipeline_repo("someone/their-sdxl-mix", tmp_path)) is None
+    )
+
+
+def test_cached_repo_task_never_offers_an_sd_cpp_companion_repo_as_a_model(tmp_path):
+    """The single-file VAE / text-encoder repos hold no denoiser, so none of them is a pick.
+
+    They used to be third-party repacks, and the trust gate below rejects a community org outright,
+    so this never came up. Their unsloth mirrors clear that gate, and their ids resolve to a family
+    ("unsloth/Z-Image-Turbo-ComfyUI" reads as z-image), so without the companion check each cached
+    companion would have shown up in the Images picker as a row whose load cannot succeed.
+    """
+    from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
+    for repo_id in (
+        "unsloth/Z-Image-Turbo-ComfyUI",
+        "unsloth/Qwen-Image-ComfyUI",
+        "unsloth/FLUX.2-dev-ComfyUI",
+        "unsloth/FLUX.2-klein-9B-ComfyUI",
+        "unsloth/flux-text-encoders",
+    ):
+        assert repo_id.lower() in sd_cpp_companion_only_repo_ids(), repo_id
+        assert models_route._cached_repo_task(_pipeline_repo(repo_id, tmp_path)) is None, repo_id
+
+    # FLUX.1-schnell also serves a companion VAE, but it is a real base and must stay loadable.
+    assert "black-forest-labs/flux.1-schnell" not in sd_cpp_companion_only_repo_ids()
+    assert (
+        models_route._cached_repo_task(_pipeline_repo("black-forest-labs/FLUX.1-schnell", tmp_path))
+        == "text-to-image"
     )
 
 

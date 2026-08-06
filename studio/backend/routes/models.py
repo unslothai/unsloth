@@ -3959,8 +3959,17 @@ def _cached_repo_task(repo_info) -> Optional[str]:
     # pipeline, so an unsupported class cleared the trust gate then failed validate_load_request. Third gate: the newer families need diffusers 0.39.
     try:
         from core.inference.diffusion import _is_trusted_diffusion_repo
-        from core.inference.diffusion_families import detect_family, family_pipeline_available
+        from core.inference.diffusion_families import (
+            detect_family,
+            family_pipeline_available,
+            sd_cpp_companion_only_repo_ids,
+        )
 
+        # A repo that only holds an sd.cpp VAE / text encoder has no denoiser to load, so it is
+        # never a pick however trusted it is. The mirrors of the community repacks live under
+        # unsloth/* and so clear the trust gate below, which the third-party ids never did.
+        if repo_id.strip().lower() in sd_cpp_companion_only_repo_ids():
+            return None
         fam = detect_family(repo_id)
         if not _is_trusted_diffusion_repo(repo_id) or fam is None:
             return None
