@@ -78,6 +78,6 @@ def test_has_resume_state_is_bound_on_the_module():
 
     assert hasattr(training_routes, "has_resume_state")
     source = inspect.getsource(training_routes)
-    assert source.count("has_resume_state,") >= 2, (
-        "has_resume_state should appear in both the primary and the fallback import list"
-    )
+    assert (
+        source.count("has_resume_state,") >= 2
+    ), "has_resume_state should appear in both the primary and the fallback import list"
