@@ -284,19 +284,19 @@ def test_unprepared_datasets_keep_their_length_cap(
     trainer = _build(tmp_path, dataset = dataset, **config_kwargs)
     args = trainer.args
 
-    assert args.max_length == _MODEL_MAX_SEQ_LENGTH, (
-        f"{name}: the length cap must not be cleared for an unprepared dataset"
-    )
+    assert (
+        args.max_length == _MODEL_MAX_SEQ_LENGTH
+    ), f"{name}: the length cap must not be cleared for an unprepared dataset"
     if trl_has_guard:
-        assert args.padding_free is False, (
-            f"{name}: padding-free must be dropped, since it disables truncation"
-        )
+        assert (
+            args.padding_free is False
+        ), f"{name}: padding-free must be dropped, since it disables truncation"
     # The rows themselves stay long: enforcement lives in the collator.
     assert _longest(trainer) > _MODEL_MAX_SEQ_LENGTH
     if getattr(trainer.data_collator, "max_length", None) is not None:
-        assert _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH, (
-            f"{name}: overlength rows reached the model"
-        )
+        assert (
+            _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH
+        ), f"{name}: overlength rows reached the model"
 
 
 def _transformed_dataset(tok):
@@ -333,9 +333,9 @@ def test_transformed_datasets_keep_their_length_cap(tmp_path, trl_has_guard):
         assert args.padding_free is False, "padding-free must be dropped, it disables truncation"
     assert max(len(r["input_ids"]) for r in rows) > _MODEL_MAX_SEQ_LENGTH
     if getattr(trainer.data_collator, "max_length", None) is not None:
-        assert _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH, (
-            "overlength rows reached the model"
-        )
+        assert (
+            _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH
+        ), "overlength rows reached the model"
 
 
 def _pristine_sft_config_cls():
@@ -364,9 +364,9 @@ def test_pristine_trl_config_without_max_seq_length_still_truncates(tmp_path, tr
     from datasets import Dataset
 
     config_cls = _pristine_sft_config_cls()
-    assert not hasattr(config_cls(output_dir = str(tmp_path)), "max_seq_length"), (
-        "this TRL declares max_seq_length, so the regression cannot be reproduced here"
-    )
+    assert not hasattr(
+        config_cls(output_dir = str(tmp_path)), "max_seq_length"
+    ), "this TRL declares max_seq_length, so the regression cannot be reproduced here"
 
     model, tok = _load_plain()
     text = "The quick brown fox. " * 200
