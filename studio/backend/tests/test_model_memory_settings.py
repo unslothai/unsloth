@@ -35,7 +35,12 @@ def policy(monkeypatch):
     """
     import utils.model_memory_settings as mm
 
-    def run(keep_resident: bool, no_ram_reserve: bool, extras, supports_load_mode = False):
+    def run(
+        keep_resident: bool,
+        no_ram_reserve: bool,
+        extras,
+        supports_load_mode = False,
+    ):
         monkeypatch.setattr(mm, "get_keep_resident", lambda: keep_resident)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_ram_reserve)
         monkeypatch.setattr(mm, "should_mlock", lambda: keep_resident and not no_ram_reserve)
@@ -66,8 +71,9 @@ class TestFlagPolicy:
     def test_load_mode_is_stripped_from_extras(self, policy):
         # A user --load-mode would last-wins-override the managed one, and
         # "--load-mode mlock" is a RAM reservation no-reserve must veto.
-        _, out = policy(True, False, ["--load-mode", "none", "--temp", "0.7"],
-                        supports_load_mode = True)
+        _, out = policy(
+            True, False, ["--load-mode", "none", "--temp", "0.7"], supports_load_mode = True
+        )
         assert out == ["--temp", "0.7"]
         _, out = policy(False, True, ["-lm", "mlock", "--temp", "0.7"])
         assert out == ["--temp", "0.7"]

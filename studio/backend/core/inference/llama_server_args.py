@@ -581,9 +581,7 @@ def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
 
 
 def apply_model_memory_policy(
-    extra_args: Optional[Iterable[str]],
-    *,
-    supports_load_mode: bool = False,
+    extra_args: Optional[Iterable[str]], *, supports_load_mode: bool = False
 ) -> tuple[list[str], list[str]]:
     """Resolve the Model Memory settings into llama-server flags.
 
@@ -620,9 +618,7 @@ def apply_model_memory_policy(
     if should_mlock():
         # Before the extras, like the rest of the managed block. mmap+mlock, not
         # bare mlock: it matches what --mlock meant alongside the default mmap.
-        managed.extend(
-            ["--load-mode", "mmap+mlock"] if supports_load_mode else ["--mlock"]
-        )
+        managed.extend(["--load-mode", "mmap+mlock"] if supports_load_mode else ["--mlock"])
         tokens = strip_shadowing_flags(
             tokens,
             strip_context = False,
