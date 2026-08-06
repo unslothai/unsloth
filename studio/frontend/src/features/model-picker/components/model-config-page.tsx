@@ -952,7 +952,10 @@ export function ModelConfigPage({
   const stagedMetadataPending =
     contextFetchKey != null &&
     stagedDims == null &&
-    (config.gpuMemoryMode === "manual" || config.selectedGpuIds != null);
+    (config.gpuMemoryMode === "manual" ||
+      config.selectedGpuIds != null ||
+      config.nBatch != null ||
+      config.nUbatch != null);
   // Tri-state on purpose: an inconclusive probe stays undefined so onRun hands
   // "unknown" to the selection. Collapsing it to false would tell a compare pane
   // this is an ordinary GGUF, letting it inherit another model's split (#7574).

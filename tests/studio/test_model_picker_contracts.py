@@ -958,6 +958,9 @@ def test_diffusion_picker_hides_and_clears_unsupported_memory_modes():
     assert "resolvedIsDiffusion" in page
     assert "stagedMetadataPending ||" in page
     assert "config.selectedGpuIds != null" in page
+    pending_gate = page.split("const stagedMetadataPending =", 1)[1].split(";", 1)[0]
+    assert "config.nBatch != null" in pending_gate
+    assert "config.nUbatch != null" in pending_gate
     for field in (
         'gpuMemoryMode: "auto"',
         "gpuLayers: undefined",
