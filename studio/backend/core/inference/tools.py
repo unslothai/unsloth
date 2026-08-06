@@ -1342,6 +1342,11 @@ def _win_switch(token: str) -> str:
 # position. These switches precede it; the value-taking ones eat a token.
 _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 
+# A cmd switch is a slash, one letter, and an optional `:value` (/s, /v:on,
+# /t:0a). Anchored on both ends so a program spelled as a path (/bin/bash) is
+# never mistaken for a switch and skipped.
+_CMD_SWITCH_RE = re.compile(r"/[a-zA-Z](?::[\w.]+)?")
+
 
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
@@ -1632,18 +1637,27 @@ def _find_blocked_commands(command: str) -> set[str]:
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
             continue
         # Look back past flags for the shell binary. Windows flags and absolute
-        # paths both start with /, so only skip short /X flags (not /bin/bash).
+        # paths both start with /, so only skip things shaped like a switch
+        # (/s, /q, /v:on) and never a program spelled as a path (/bin/bash).
         for j in range(i - 1, -1, -1):
             prev = tokens[j]
             if prev.startswith("-"):
                 continue  # skip Unix flags like --login, -l
-            if is_win_c and prev.startswith("/") and len(prev) <= 3:
-                continue  # skip Windows flags like /s, /q (not /bin/bash)
-            prev_base = os.path.basename(prev).lower()
+            if is_win_c and _CMD_SWITCH_RE.fullmatch(prev):
+                continue  # skip Windows switches like /s, /q, /v:on
+            # The cmd lexer keeps the quote marks, so `"cmd"` must still read
+            # as cmd here (the posix lexer has already stripped them).
+            prev_base = os.path.basename(prev.strip('"')).lower()
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             elif is_win_c and prev_base in _SHELLS_WIN:
-                blocked |= _find_blocked_commands(tokens[i + 1])
+                # Same lexer asymmetry: `cmd /c "powershell -Command ls"`
+                # arrives with the marks attached, so the recursion below would
+                # otherwise scan a first word of `"powershell` and match nothing.
+                payload = tokens[i + 1]
+                if len(payload) > 1 and payload[0] == '"' and payload[-1] == '"':
+                    payload = payload[1:-1]
+                blocked |= _find_blocked_commands(payload)
             break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
@@ -1658,11 +1672,22 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
             # /d C:\dir and friends carry their value in the next token.
             j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
-        # `start ""` is the idiom for "no title"; anything else is the program.
-        if j < len(tokens) and tokens[j] == "":
-            j += 1
+        # cmd reads a quoted first argument as the window title, but only when
+        # something follows it -- `start "prog.exe"` launches the program. Which
+        # token that is cannot be decided from the text here: the posix lexer has
+        # already stripped the marks that say so, and guessing wrong leaves the
+        # program unscreened. So when a title is possible both candidates are
+        # screened, which is the fail-closed direction. The cost is that a benign
+        # second positional is screened too (`start "" notepad rm` reads `rm`).
         if j < len(tokens):
             blocked |= _find_blocked_commands(tokens[j])
+        if j + 1 < len(tokens):
+            k = j + 1
+            # `start "my window" /min prog` puts switches after the title too.
+            while k < len(tokens) and _win_switch(tokens[k].lower()).startswith("/"):
+                k += 2 if _win_switch(tokens[k].lower()) in _START_SWITCHES_WITH_VALUE else 1
+            if k < len(tokens):
+                blocked |= _find_blocked_commands(tokens[k])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

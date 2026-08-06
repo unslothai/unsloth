@@ -317,3 +317,68 @@ def test_detached_windows_stay_launchable(command, _windows_blocklist):
     # The blocklist is faked here too, or the Linux runner asserts this against
     # a set with no powershell in it and cannot see a blanket block at all.
     assert not tools._find_blocked_commands(command)
+
+
+# Whether Git Bash resolves decides which lexer screens the command, and that is
+# what decided most of the cases below: the cmd lexer keeps the quote marks the
+# posix one strips. The tests above pin only the shell the Linux runner picks, so
+# these run each command through both.
+_WINDOWS_SHELLS = [r"C:\Program Files\Git\bin\bash.exe", None]
+
+
+def _screen_on_windows(monkeypatch, bash, command):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    return tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A quoted payload: the cmd lexer hands the recursion `"powershell`.
+        'cmd /c "powershell -Command ls"',
+        # A named window title, which is the documented `start` form. Only the
+        # empty spelling was stepped over, so `job` was read as the program.
+        'cmd //c start "job" powershell -Command ls',
+        'start "My Title" powershell -Command ls',
+        'cmd /c start "t" pwsh -c ls',
+        # Switches may follow the title as well as precede it.
+        'cmd //c start "my window" /min powershell',
+        # A value-style switch, which the old width heuristic did not recognise.
+        "cmd /v:on /c powershell -Command ls",
+        # A quoted shell name in the look-back.
+        'cmd //c start "" "cmd" /c powershell',
+        'start "" powershell -Command ls',
+        'cmd //c env start "" powershell',
+    ],
+)
+def test_windows_shellouts_are_screened_on_either_shell(monkeypatch, bash, command, _windows_blocklist):
+    assert _screen_on_windows(monkeypatch, bash, command)
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    "command",
+    [
+        'start "" notepad readme.txt',
+        'start "Build" npm run build',
+        'cmd /c "echo hello"',
+        r'echo "C:\Windows\System32\cmd.exe"',
+        # A document opened through its file association, which is what the
+        # quoted `start ""` idiom is for.
+        r'cmd //c start "" "C:\Users\me\My Documents\report.docx"',
+        "npm start",
+        "./start.sh",
+    ],
+)
+def test_ordinary_windows_commands_stay_runnable(monkeypatch, bash, command, _windows_blocklist):
+    assert not _screen_on_windows(monkeypatch, bash, command)
+
+
+def test_a_program_path_is_not_read_as_a_cmd_switch(monkeypatch, _windows_blocklist):
+    # The switch pattern is anchored on both ends. Matched loosely it would find
+    # the `/b` of /bin/bash, skip the token as a flag, and never reach the shell
+    # name behind it, leaving the payload unscreened.
+    assert not tools._CMD_SWITCH_RE.fullmatch("/bin/bash")
+    assert _screen_on_windows(monkeypatch, _WINDOWS_SHELLS[0], '/bin/bash -c "rm -rf x"') == {"rm"}
