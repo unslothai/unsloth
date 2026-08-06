@@ -34,6 +34,33 @@ rename the heading at release time.
 
 ## Unreleased
 
+## 2026.8.6
+
+### What's Changed
+
+- DeepSeek-V4 0731 DSpark 2x faster inference support.
+- Many bug fixes.
+- Training page full rework.
+
+## 2026.8.5
+
+### What's Changed
+
+- Many bug fixes.
+- Windows installation fixes.
+
+## 2026.8.4
+
+### What's Changed
+
+- Training bug fixes.
+
+## 2026.8.3
+
+### What's Changed
+
+- Many bug fixes.
+
 ## 2026.8.2
 
 ### What's Changed

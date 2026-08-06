@@ -1505,7 +1505,7 @@ export function ChatSettingsPanel({
               onChange={(event) => setSystemPromptDraft(event.target.value)}
               placeholder="You are a helpful assistant..."
               fieldSizing="fixed"
-              className="min-h-[20rem] max-h-[48vh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
+              className="min-h-[20rem] max-h-[48dvh] overflow-y-auto border-0 text-sm leading-6 corner-squircle focus-visible:ring-0"
               rows={14}
             />
           </div>

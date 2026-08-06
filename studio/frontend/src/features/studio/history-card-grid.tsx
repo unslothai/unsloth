@@ -638,7 +638,7 @@ export function HistoryCardGrid({
               {!isRunning && (
                 <button
                   type="button"
-                  className="absolute right-3 top-3 z-10 rounded-md p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+                  className="absolute right-3 top-3 z-10 rounded-md p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
                   aria-label={t("studio.history.deleteRun")}
                   onClick={() => setDeleteTarget(run.id)}
                 >
