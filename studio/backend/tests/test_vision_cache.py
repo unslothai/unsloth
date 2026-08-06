@@ -40,8 +40,6 @@ from utils.models.model_config import (
 )
 
 
-
-
 @pytest.fixture(autouse = True)
 def _clear_vision_cache(tmp_path, monkeypatch):
     """Ensure every test starts with a fresh cache, from an empty working dir.
