@@ -2922,11 +2922,15 @@ def _ensure_rocm_torch() -> None:
                 None,
             )
         if tag is None:
-            _safe_print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall")
+            _safe_print(
+                f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall"
+            )
         else:
             if _override_idx is None:
                 index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
-            _safe_print(f"   ROCm torch -- installing from {_strip_index_url_credentials(index_url)}")
+            _safe_print(
+                f"   ROCm torch -- installing from {_strip_index_url_credentials(index_url)}"
+            )
             # Only the _grouped_mm-bug gfx arches need the 2.11 spec; other gfx indexes ship
             # <2.11 and stay on the default range (matches install.ps1 / setup.ps1).
             if tag in _ROCM_GFX_TORCH211_LEAVES:

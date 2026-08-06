@@ -296,12 +296,14 @@ class TestProgressLineNotes:
 
     def _render(self, emit) -> str:
         buf = io.StringIO()
-        with mock.patch.dict(os.environ, {"COLUMNS": "100"}), \
-                mock.patch.object(ips, "VERBOSE", False), \
-                mock.patch.object(ips, "_TOTAL", 14), \
-                mock.patch.object(ips, "_STEP", 4), \
-                mock.patch.object(ips, "_PROGRESS_LINE_ACTIVE", False), \
-                contextlib.redirect_stdout(buf):
+        with (
+            mock.patch.dict(os.environ, {"COLUMNS": "100"}),
+            mock.patch.object(ips, "VERBOSE", False),
+            mock.patch.object(ips, "_TOTAL", 14),
+            mock.patch.object(ips, "_STEP", 4),
+            mock.patch.object(ips, "_PROGRESS_LINE_ACTIVE", False),
+            contextlib.redirect_stdout(buf),
+        ):
             emit()
         return buf.getvalue()
 
@@ -334,11 +336,13 @@ class TestProgressLineNotes:
     def test_progress_line_state_is_cleared(self):
         """A stale _PROGRESS_LINE_ACTIVE would insert a blank line before the
         next note instead of closing a bar that is no longer open."""
+
         def emit():
             ips._progress("dependency overrides")
             ips._note("first")
             assert ips._PROGRESS_LINE_ACTIVE is False
             ips._note("second")
+
         out = self._render(emit)
         assert "\n\n" not in out, out
 
@@ -348,9 +352,11 @@ class TestProgressLineNotes:
         that survived the first pass of this fix, when only the call sites that
         already used the '   message' convention were converted."""
         fake = mock.Mock(returncode = 1, stdout = "uv output")
-        with mock.patch.object(ips, "USE_UV", True), \
-                mock.patch.object(ips, "subprocess") as sp, \
-                mock.patch.object(ips, "run") as fallback:
+        with (
+            mock.patch.object(ips, "USE_UV", True),
+            mock.patch.object(ips, "subprocess") as sp,
+            mock.patch.object(ips, "run") as fallback,
+        ):
             sp.run.return_value = fake
             sp.PIPE, sp.STDOUT = -1, -2
             out = self._render(
