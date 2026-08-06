@@ -348,6 +348,7 @@ def _cache_inventory_fields(
     gguf_snapshot: Optional[Path] = None,
     repo_info = None,
     hidden_infra: bool = False,
+    companion: bool = False,
 ) -> dict:
     """Load identity plus the capability block for one cache row.
 
@@ -377,6 +378,12 @@ def _cache_inventory_fields(
     ):
         capabilities["supports_vision"] = True
     if hidden_infra:
+        capabilities["can_chat"] = False
+    # A VAE / text-encoder mirror holds no language model, so it cannot chat whatever its weight
+    # format says. Set HERE rather than left to the row's companion flag alone: startup auto-load
+    # filters on capabilities.can_chat (isChattableCachedRepo), not on that flag, so a row that
+    # only carried the flag was still auto-loadable as a chat model.
+    if companion:
         capabilities["can_chat"] = False
     return {
         "inventory_id": _local_inventory_id("cache", model_format, repo_id),
@@ -925,6 +932,7 @@ def _scan_cached_models() -> list[dict]:
                         payload.model_format,
                         identity = identity,
                         partial = bool(row["partial"]),
+                        companion = bool(row["companion"]),
                     )
                 )
                 if _prefer_cache_row(row, existing):

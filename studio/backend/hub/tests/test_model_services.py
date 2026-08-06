@@ -1069,6 +1069,9 @@ def test_a_companion_mirror_carries_the_flag_on_the_hub_row(monkeypatch, tmp_pat
     )
 
     assert row["companion"] is True
+    # Startup auto-load filters on capabilities.can_chat (isChattableCachedRepo), never on the
+    # flag, so a row carrying only the flag was still auto-loadable as a chat model.
+    assert row["capabilities"]["can_chat"] is False
 
 
 def test_an_ordinary_repo_is_not_flagged_as_a_companion(monkeypatch, tmp_path):
@@ -1082,6 +1085,8 @@ def test_an_ordinary_repo_is_not_flagged_as_a_companion(monkeypatch, tmp_path):
     )
 
     assert row["companion"] is False
+    # ...and an ordinary chat repo keeps its chat capability.
+    assert row["capabilities"]["can_chat"] is True
 
 
 def test_the_real_companion_shape_never_reaches_a_row_at_all(monkeypatch, tmp_path):
