@@ -300,6 +300,8 @@ class TestSandboxEnvIsolation:
             "SystemRoot",
             "PATHEXT",  # Windows only; minimal list so cwd scripts cannot hijack
             "NoDefaultCurrentDirectoryInExePath",  # Windows only; no cwd-first lookup
+            "TEMP",  # Windows only; native programs honour these, not TMPDIR
+            "TMP",  # Windows only; kept pointing inside the sandbox workdir
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"

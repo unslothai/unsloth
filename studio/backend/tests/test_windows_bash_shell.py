@@ -919,3 +919,67 @@ def test_inspecting_a_file_named_after_a_blocked_command_is_allowed(monkeypatch,
         'cmd /c "C:/Program Files/PowerShell/7/pwsh.exe" -c ls'
     )
     assert "rm" in tools._find_blocked_commands('cmd /c "C:/tools/rm C:/logs/x.exe"')
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A wrapper forwards to whatever it execs, and the Git userland this
+        # branch adds to PATH makes these resolvable behind a start.
+        'cmd //c start "" env rm -rf victim',
+        'cmd //c start "" nice powershell -Command ls',
+        'start "" env -u FOO rm -rf victim',
+        'start "" env nice rm -rf victim',  # a wrapper wrapping a wrapper
+    ],
+)
+def test_a_wrapper_between_start_and_its_program_is_followed(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A start nothing runs launches nothing, quoted head or not.
+        "echo start powershell",
+        'echo start "powershell"',
+        "grep -rn start src/",
+        'start "" env FOO=1 ls -la',
+        'start "" nice notepad x.txt',
+    ],
+)
+def test_a_start_nothing_runs_is_not_screened(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # ...but a start the shell DOES run is, which is what gating the head
+        # on the runnable check had to preserve.
+        'echo "powershell" && cmd //c start powershell -Command ls',
+        "cmd //c start powershell -Command ls",
+        "start powershell -Command ls",
+        "echo hi & start powershell",
+        "echo hi && start powershell",
+        r'find . -exec env start "" powershell \;',
+    ],
+)
+def test_a_start_the_shell_runs_is_still_screened(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command.replace('\\"', '"'))
+
+
+def test_exec_children_do_not_make_screening_quadratic(monkeypatch):
+    # _runnable_index re-ran _exec_child_index over every -exec flag on every
+    # lookup, so many exec clauses plus many start words went quadratic.
+    import time
+
+    _fake_windows_screening(monkeypatch, bash = None)
+    command = " ".join([r"find . -exec ls {} \;"] * 800 + ["start"] * 800)
+    began = time.perf_counter()
+    tools._find_blocked_commands(command)
+    assert time.perf_counter() - began < 1.0

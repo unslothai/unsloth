@@ -1784,6 +1784,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             # `else` / `do`: the command is simply the next word.
         return indexes
 
+    # Resolved once: testing every -exec flag on every lookup made the whole
+    # scan quadratic (800 exec clauses and 800 start words, 21 kB, spent 1.4s
+    # against 0.05s before). The children do not depend on what the sweep
+    # discovers, so there is nothing to recompute.
+    exec_children = {_exec_child_index(flag + 1)[0] for flag in exec_flag_indexes}
+
     def _runnable_index(idx: int) -> bool:
         """True where the shell would execute the word at ``idx``: command
         position, inside a `cmd /c` payload (cmd runs control flow of its own),
@@ -1792,7 +1798,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             idx in command_positions
             or idx in win_c_payloads
             or idx in start_children
-            or any(_exec_child_index(flag + 1)[0] == idx for flag in exec_flag_indexes)
+            or idx in exec_children
         )
 
     # Nested shell invocations (bash -c '...', bash -lc '...', cmd /c '...'):
@@ -1902,18 +1908,16 @@ def _find_blocked_commands(command: str) -> set[str]:
             # bare, explorer being the program and `.` only its argument, while
             # `start 'My Window' prog` still reads as a title.
             titled = head == "" or any(char in head for char in ' \t\n\r"')
-        # The head is screened WHATEVER `titled` says: it is a heuristic, and a
-        # false positive must cost an over-block, never an under-block.
-        # `echo "powershell" && cmd //c start powershell -Command ls` reads as
-        # titled from the echo, so skipping the head would let it through.
-        blocked |= _scan_cmd_payload(_cmd_unquote(head))
-        # Stepping PAST the head only makes sense where the shell really runs
-        # this start: `echo start "title" powershell` launches nothing and was
-        # hard-refused. _runnable_index follows an -exec through its prefix, so
+        # Both the head and what follows it only matter where the shell really
+        # runs this start: `echo start "powershell"` launches nothing and was
+        # hard-refused. The bypass this once guarded against is still covered,
+        # because `echo "powershell" && cmd //c start powershell` puts its start
+        # after a separator and inside a cmd payload, both runnable positions.
+        # _runnable_index follows an -exec through its prefix too, so
         # `find . -exec env start "" powershell \;` still resolves to start
         # where testing the word right after the flag read `env` and stopped.
-        runnable = _runnable_index(i)
-        if runnable:
+        if _runnable_index(i):
+            blocked |= _scan_cmd_payload(_cmd_unquote(head))
             k = j + 1 if titled else j
             # Switches may also FOLLOW the title: the documented shape is
             # `START ["title"] [switches] command`, so `start "" /b powershell`
@@ -1934,6 +1938,27 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # _bash_exec runs this synchronously before the timeout.
                 # It runs untitled too: only the FIRST operand is a title.
                 start_children.add(k)
+                # A wrapper forwards to whatever it execs, and the Git userland
+                # this branch adds to PATH makes env/nice resolvable here, so
+                # `start "" env rm -rf victim` really deletes. Walk the chain:
+                # a wrapper can wrap a wrapper.
+                while k < len(tokens):
+                    child = _token_basename(_cmd_unquote(tokens[k]))
+                    if child not in _COMMAND_PREFIXES:
+                        break
+                    k += 1
+                    while k < len(tokens):
+                        word = _cmd_unquote(tokens[k])
+                        if word in _WRAPPER_VALUE_FLAGS_BY_CMD.get(child, frozenset()):
+                            k += 2  # the flag takes a separate value
+                            continue
+                        if word.startswith("-") or "=" in word:
+                            k += 1  # its own flags, and VAR=VALUE
+                            continue
+                        break
+                    if k < len(tokens):
+                        blocked |= _scan_cmd_payload(_cmd_unquote(tokens[k]))
+                        start_children.add(k)
 
 
     # start can launch a shell and a shell can run a start, so the two feed each
