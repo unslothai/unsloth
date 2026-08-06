@@ -3082,16 +3082,31 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1036"
 
     def test_cuda_visible_devices_indexes_the_enumeration(self, monkeypatch):
-        # The pin check and the index resolver must read the same three masks.
-        # When they disagree, CUDA_VISIBLE_DEVICES=1 suppresses the shadowing skip
-        # (it counts as a pin) while the index still lands on GPU 0, so the user
-        # gets the iGPU's wheels for the very device they masked away.
+        # hipinfo is a HIP application, so a mask filters and renumbers its output
+        # before we ever see it: CUDA_VISIBLE_DEVICES=1 leaves the dGPU alone at
+        # logical 0. Re-indexing that with the physical value applies the mask
+        # twice, which is what selected the iGPU on the #7776 host.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
         mock_result = MagicMock()
         mock_result.returncode = 0
-        mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1200\n"
+        mock_result.stdout = b"gcnArchName : gfx1200\n"
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1200"
+
+    def test_a_reordering_mask_is_not_applied_twice(self, monkeypatch):
+        # CUDA_VISIBLE_DEVICES=1,0 makes HIP expose [physical 1, physical 0], so
+        # hipinfo prints the dGPU first. Indexing that again read token 1 and
+        # installed the shadowing iGPU's wheel family.
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"gcnArchName : gfx1200\ngcnArchName : gfx1036\n"
         with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
             with patch("subprocess.run", return_value = mock_result):
                 result = stack_mod._detect_windows_gfx_arch()
@@ -3172,11 +3187,12 @@ class TestDetectWindowsGfxArch:
     def test_pinning_a_wheelless_gpu_says_why_torch_will_be_cpu(self, monkeypatch, capsys):
         # The pin is honoured, but silently installing CPU torch when another
         # enumerated GPU does have wheels leaves the user with no idea the mask
-        # caused it.
+        # caused it. A reordering mask puts the wheel-less card at logical 0 while
+        # hipinfo still reports both visible devices.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
-        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
-        assert self._hipinfo_pick(["gfx1036", "gfx1010"]) == "gfx1010"
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
+        assert self._hipinfo_pick(["gfx1010", "gfx1036"]) == "gfx1010"
         out = capsys.readouterr().out
         assert "no AMD Windows wheels" in out
         assert "gfx1036" in out
@@ -3193,6 +3209,16 @@ class TestDetectWindowsGfxArch:
         # The Windows arch-selection caller still warns.
         assert stack_mod._pick_visible_index(1) == 0
         assert "out of range" in capsys.readouterr().out
+
+    def test_advisory_names_the_selected_gpus_real_index(self, monkeypatch, capsys):
+        # The chosen card is not always device 1: here it is device 2, and naming
+        # 1 would expose the gfx1010 the installed wheels do not target.
+        for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(_m, raising = False)
+        assert self._hipinfo_pick(["gfx1036", "gfx1010", "gfx1200"]) == "gfx1200"
+        out = capsys.readouterr().out
+        assert "HIP_VISIBLE_DEVICES 2" in out
+        assert "HIP_VISIBLE_DEVICES 1" not in out
 
     def test_shadowing_set_holds_only_apu_arches(self):
         # gfx1037 is not an AMDGPU target in LLVM, so no Windows tool emits it.
@@ -3457,6 +3483,24 @@ class TestSetupPs1ShadowingParity:
         assert "$_hipVisIdx = if (" not in source
         assert "$visGpu = if (" not in source
 
+    def test_hipinfo_is_not_reindexed(self):
+        # hipinfo already applied the mask; amd-smi and WMI did not. Only the
+        # latter two may call the index resolver, or the mask lands twice.
+        source = self._setup_ps1()
+        hipinfo = source[source.index("$_hipAllArches.Count -gt 0") :]
+        hipinfo = hipinfo[: hipinfo.index("Resolve-ShadowingGfxPick")]
+        assert "Resolve-VisibleGpuIndex" not in hipinfo
+        assert "$_hipAllArches[0]" in hipinfo
+
+    def test_unknown_selected_wmi_adapter_is_not_substituted(self):
+        # Borrowing another adapter's arch is right when nothing was selected (the
+        # #7776 iGPU is unnameable), but under a mask it installs for a GPU the
+        # user masked away.
+        source = self._setup_ps1()
+        block = source[source.index("$pickedName = Get-GfxArchFromGpuName") :]
+        block = block[: block.index("if ($pickedName) {")]
+        assert "Test-VisibleDevicesPinned" in block
+
     def test_name_inference_runs_the_shadowing_pick(self):
         # Every AMD adapter name gets an arch, then the same preference chooses.
         source = self._setup_ps1()
@@ -3478,7 +3522,7 @@ $errors = $null; $tokens = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($env:SETUP_PS1, [ref]$tokens, [ref]$errors)
 if ($errors -and $errors.Count -gt 0) { throw "setup.ps1 has $($errors.Count) parse errors" }
 function substep { param([string]$Message, [string]$Color = "DarkGray") }
-foreach ($n in @("Resolve-VisibleGpuIndex", "Resolve-ShadowingGfxPick")) {
+foreach ($n in @("Test-VisibleDevicesPinned", "Resolve-VisibleGpuIndex", "Resolve-ShadowingGfxPick")) {
     $f = $ast.Find({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true)
     if (-not $f) { throw "$n not found" }
     Invoke-Expression $f.Extent.Text
@@ -3563,6 +3607,24 @@ foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
         # still yields to the discrete card, exactly as _dedup_pick() does.
         body = 'Resolve-ShadowingGfxPick -Picked "gfx90c" -AllArches @("gfx90c","gfx1010")'
         assert self._run(body) == "gfx1010"
+
+    def test_advisory_names_the_selected_gpus_real_index(self):
+        body = ('$null = Resolve-ShadowingGfxPick -Picked "gfx1036" '
+                '-AllArches @("gfx1036","gfx1010","gfx1200"); '
+                '($script:Msgs -join " ")')
+        harness = self._HARNESS.replace(
+            'function substep { param([string]$Message, [string]$Color = "DarkGray") }',
+            'function substep { param([string]$Message, [string]$Color = "DarkGray") '
+            '$script:Msgs += $Message }\n$script:Msgs = @()',
+        )
+        merged = {k: v for k, v in os.environ.items() if not k.endswith("_VISIBLE_DEVICES")}
+        merged["SETUP_PS1"] = str(PACKAGE_ROOT / "studio" / "setup.ps1")
+        out = subprocess.run(
+            ["pwsh", "-NoProfile", "-NonInteractive", "-Command", harness + body],
+            check = True, capture_output = True, text = True, env = merged,
+        ).stdout
+        assert "HIP_VISIBLE_DEVICES 2" in out
+        assert "HIP_VISIBLE_DEVICES 1" not in out
 
     def test_degenerate_inputs_do_not_throw(self):
         for _all in ("$null", "@()", '@("gfx1036")'):

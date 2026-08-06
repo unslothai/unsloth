@@ -733,12 +733,19 @@ def _detect_windows_gfx_arch() -> str | None:
     if _override and _override.strip():
         return _override.strip().lower()
 
-    def _dedup_pick(tokens: list[str]) -> "str | None":
+    def _dedup_pick(tokens: list[str], mask_resolved: bool = False) -> "str | None":
         if not tokens:
             return None
         # Index into the full ordered list so HIP_VISIBLE_DEVICES addresses
-        # GPU N on mixed-arch hosts, then return that arch.
-        _pick = tokens[_pick_visible_index(len(tokens))]
+        # GPU N on mixed-arch hosts, then return that arch. mask_resolved probes
+        # already did that for us: hipinfo is itself a HIP application, so under
+        # a mask it enumerates only the VISIBLE devices, renumbered from 0 (see
+        # _hip_visible_device_mask_set in install_llama_prebuilt.py). Indexing
+        # that output with the physical value applies the mask twice, so
+        # CUDA_VISIBLE_DEVICES=1,0 read token 1 -- the iGPU -- on a host whose
+        # mask put the dGPU first. amd-smi and WMI list every GPU regardless of
+        # the masks, so those keep the explicit index.
+        _pick = tokens[0 if mask_resolved else _pick_visible_index(len(tokens))]
         _distinct = list(dict.fromkeys(tokens))
         if len(_distinct) < 2 or _visible_devices_pinned():
             # A pin is honoured verbatim, but say so when it selected a card AMD
@@ -773,13 +780,18 @@ def _detect_windows_gfx_arch() -> str | None:
             )
             if _candidates:
                 _other = _candidates[0]
+                # The chosen card is not always device 1: on gfx1036,gfx1010,gfx1200
+                # it is device 2, and telling the user to mask 1 would expose the
+                # gfx1010 the wheels do not target.
+                _other_idx = tokens.index(_other)
                 print(
                     f"   multiple AMD GPUs detected ({', '.join(_distinct)}); "
                     f"installing for {_other} instead of the integrated {_pick}."
                 )
                 print(
-                    f"   Run 'setx HIP_VISIBLE_DEVICES 1' and reopen your terminal "
-                    f"so Unsloth uses {_other} at runtime too, not just at install time."
+                    f"   Run 'setx HIP_VISIBLE_DEVICES {_other_idx}' and reopen your "
+                    f"terminal so Unsloth uses {_other} at runtime too, not just at "
+                    f"install time."
                 )
                 return _other
         print(
@@ -828,7 +840,8 @@ def _detect_windows_gfx_arch() -> str | None:
                 t.split(":")[0].strip().lower()
                 for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
             ]
-            _pick = _dedup_pick(_tokens)
+            # hipinfo already applied the mask, so do not apply it again.
+            _pick = _dedup_pick(_tokens, mask_resolved = True)
             if _pick:
                 return _pick
         except Exception:
