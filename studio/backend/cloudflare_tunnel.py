@@ -55,14 +55,11 @@ _PUBLIC_PROBE_RETRY_DELAY = 1.0
 _DNS_POLL_DELAY = 2.0
 # Retry transient DoH failures, but give up fast when DoH is blocked outright.
 _DNS_MAX_DOH_ERRORS = 3
-# two resolvers: a too-early query negative-caches the nxdomain at one resolver
-_DOH_URLS = (
-    "https://cloudflare-dns.com/dns-query?name={host}&type=A",
-    "https://dns.google/resolve?name={host}&type=A",
-)
-# skip the first seconds so the first query does not seed those negative caches
+_DOH_URL = "https://cloudflare-dns.com/dns-query?name={host}&type=A"
+# The resolver negative-caches a miss of its own, so a query sent before the
+# record can exist blinds the poll for that cache's lifetime. Hold off first.
 _DNS_INITIAL_GRACE = 3.0
-# cap the dns wait so a stale negative cache cannot starve the health probe
+# A blinded poll cannot recover, so bound its share of the shared deadline.
 _DNS_WAIT_MAX = 20.0
 
 
@@ -220,33 +217,27 @@ def _wait_for_dns(host: str, deadline: float) -> None:
     import json
     import urllib.request
 
-    deadline = min(deadline, time.monotonic() + _DNS_WAIT_MAX)
-    grace = deadline - time.monotonic()
-    if grace > 0:
-        time.sleep(min(_DNS_INITIAL_GRACE, grace))
+    now = time.monotonic()
+    deadline = min(deadline, now + _DNS_WAIT_MAX)
+    if deadline > now:
+        time.sleep(min(_DNS_INITIAL_GRACE, deadline - now))
     errors = 0
     while True:
         answered = False
-        round_errored = True
-        for doh_url in _DOH_URLS:
-            try:
-                req = urllib.request.Request(
-                    doh_url.format(host = host),
-                    headers = {"Accept": "application/dns-json", "User-Agent": "unsloth-studio"},
-                )
-                with urllib.request.urlopen(req, timeout = 5) as response:
-                    answered = bool(json.loads(response.read(65536)).get("Answer"))
-                round_errored = False
-            except Exception:
-                continue
-            if answered:
-                return
-        if round_errored:
+        try:
+            req = urllib.request.Request(
+                _DOH_URL.format(host = host),
+                headers = {"Accept": "application/dns-json", "User-Agent": "unsloth-studio"},
+            )
+            with urllib.request.urlopen(req, timeout = 5) as response:
+                answered = bool(json.loads(response.read(65536)).get("Answer"))
+            errors = 0
+        except Exception:
             errors += 1
             if errors >= _DNS_MAX_DOH_ERRORS:
                 return
-        else:
-            errors = 0
+        if answered:
+            return
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return

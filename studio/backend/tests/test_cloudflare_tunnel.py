@@ -508,6 +508,8 @@ def test_wait_for_dns_polls_until_answer(monkeypatch):
     ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
     assert len(calls) == 3
     assert "name=words.trycloudflare.com" in calls[0]
+    # The tunnel provider already knows the hostname it just issued; no one else does.
+    assert all("cloudflare-dns.com" in call for call in calls)
 
 
 def test_wait_for_dns_gives_up_at_deadline(monkeypatch):
@@ -541,23 +543,7 @@ def test_wait_for_dns_bails_on_persistent_doh_errors(monkeypatch):
     _patch_urlopen(monkeypatch, handler)
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
     ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
-    assert len(calls) == ct._DNS_MAX_DOH_ERRORS * len(ct._DOH_URLS)
-
-
-def test_wait_for_dns_second_resolver_rescues_negative_cached_first(monkeypatch):
-    calls = []
-
-    def handler(req):
-        calls.append(req.full_url)
-        if "cloudflare-dns.com" in req.full_url:
-            return _FakeResponse(b'{"Status":3}')
-        return _FakeResponse(b'{"Status":0,"Answer":[{"data":"104.16.0.1"}]}')
-
-    _patch_urlopen(monkeypatch, handler)
-    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
-    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
-    assert len(calls) == 2
-    assert "dns.google" in calls[1]
+    assert len(calls) == ct._DNS_MAX_DOH_ERRORS
 
 
 def test_wait_for_dns_delays_first_query(monkeypatch):
@@ -570,6 +556,8 @@ def test_wait_for_dns_delays_first_query(monkeypatch):
     _patch_urlopen(monkeypatch, handler)
     monkeypatch.setattr(ct.time, "sleep", lambda s: order.append(("sleep", s)))
     ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 30)
+    # a token hold-off would not outlast the propagation that makes the first query miss
+    assert ct._DNS_INITIAL_GRACE >= 1.0
     assert order[0] == ("sleep", ct._DNS_INITIAL_GRACE)
     assert order[1] == "query"
 
@@ -588,6 +576,8 @@ def test_wait_for_dns_is_capped_below_the_probe_deadline(monkeypatch):
     ct._wait_for_dns("words.trycloudflare.com", 300.0)
     assert calls
     assert clock[0] <= ct._DNS_WAIT_MAX + ct._DNS_POLL_DELAY
+    # The probe shares one deadline with the wait and needs most of it.
+    assert clock[0] < ct._PUBLIC_PROBE_TIMEOUT / 2
 
 
 def test_verify_public_url_accepts_studio_marker(monkeypatch):
