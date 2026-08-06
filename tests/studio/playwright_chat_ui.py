@@ -1076,117 +1076,111 @@ with sync_playwright() as p:
     # release the request before a Python-side second submit could happen, which
     # puts the hold entirely before the follow-up instead of across it. Page
     # timers keep running while this thread is parked in the handler.
+    # Everything here runs in the page. Playwright's sync route handler runs on
+    # this thread, so holding a request there blocks the test itself and the
+    # follow-up cannot be sent while the hold is in effect; and the page cannot
+    # observe a Playwright interception, so no in-page timer can be aligned with
+    # one. Wrapping fetch solves both: the page sees the exact moment the first
+    # turn's request goes out, sends the follow-up then, and delays the response
+    # itself, so the turn is provably still running with no timing assumption.
     page.evaluate(
-        """(secondPrompt) => {
+        """(args) => {
+            const [secondPrompt, holdMs] = args;
             window.__unslothRapid = {
-                submitted: false, queueSeen: false, error: null,
+                intercepted: false, submitted: false, queueSeen: false,
+                error: null, seen: [],
             };
-            // Re-query inside the timer, never capture beforehand. This is the
-            // first message of the chat, so sending it flips thread.isEmpty and
-            // the welcome composer is unmounted in favour of the dock composer.
-            // A node captured before the submit is detached by now: its input
-            // event never reaches React's delegated handler and requestSubmit
-            // fires on a form that is no longer in the document.
-            // Wait for the first turn to have actually started rather than
-            // guessing a delay. A fixed timeout raced the request being issued
-            // at all: the follow-up went out before there was anything to queue
-            // behind, and the hold had nothing to hold. The user bubble appears
-            // when the first submit registers, and the response is held, so the
-            // turn is still running from then until we release it.
-            const userBubbles = () =>
-                document.querySelectorAll('[data-role="user"]').length;
-            const startedWith = userBubbles();
-            const deadline = Date.now() + 20000;
-            const trySubmit = () => {
+            const state = window.__unslothRapid;
+            const realFetch = window.fetch;
+            const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+            const sendFollowUp = () => {
+                // Re-query: this is the chat's first message, so sending it
+                // swaps the welcome composer for the dock composer and any
+                // node captured earlier is detached by now.
                 const composer = document.querySelector(
                     'textarea[aria-label="Message input"]'
                 );
-                if (userBubbles() <= startedWith
-                    || !composer || !composer.isConnected || !composer.form) {
-                    if (Date.now() > deadline) {
-                        window.__unslothRapid.error =
-                            "first turn never registered, or no connected "
-                            + "composer to send the follow-up into";
-                        return;
-                    }
-                    setTimeout(trySubmit, 25);
+                if (!composer || !composer.isConnected || !composer.form) {
+                    state.error = "no connected composer for the follow-up";
                     return;
                 }
                 // React tracks the value on the node, so a plain assignment is
-                // reverted on the next render. Go through the native setter and
-                // announce it the way a keystroke would.
+                // reverted on the next render.
                 const setValue = Object.getOwnPropertyDescriptor(
                     window.HTMLTextAreaElement.prototype, "value"
                 ).set;
                 setValue.call(composer, secondPrompt);
                 composer.dispatchEvent(new Event("input", { bubbles: true }));
                 composer.form.requestSubmit();
-                window.__unslothRapid.submitted = true;
+                state.submitted = true;
             };
-            setTimeout(trySubmit, 25);
+
+            window.fetch = async (...a) => {
+                const url = String(
+                    (a[0] && a[0].url) ? a[0].url : a[0]
+                );
+                const isTurn = url.includes("chat/completions");
+                if (isTurn && !state.intercepted) {
+                    state.intercepted = true;
+                    state.seen.push(url);
+                    const response = realFetch(...a);
+                    // The request is out and the turn is running. Send the
+                    // follow-up now, then keep the response pending so it
+                    // cannot complete first.
+                    setTimeout(sendFollowUp, 0);
+                    await sleep(holdMs);
+                    return response;
+                }
+                return realFetch(...a);
+            };
+
+            // Always restore. A wrapper left in place for the rest of the
+            // run is a monkeypatch with no teardown, and every later turn would
+            // pay for it.
+            window.__unslothRapidRestore = () => {
+                window.fetch = realFetch;
+                clearInterval(poll);
+            };
+
             const poll = setInterval(() => {
                 if (document.querySelector(
                     'button[aria-label="Remove queued prompt 1"]'
                 )) {
-                    window.__unslothRapid.queueSeen = true;
+                    state.queueSeen = true;
                     clearInterval(poll);
                 }
-            }, 50);
-            setTimeout(() => clearInterval(poll), 15000);
+            }, 25);
+            setTimeout(() => clearInterval(poll), 30000);
         }""",
-        "Reply with exactly: rapid-second",
+        ["Reply with exactly: rapid-second", int(RAPID_FIRST_TURN_HOLD_S * 1000)],
     )
 
-    held_first_turn = {"done": False, "seen": []}
+    composer.fill("Reply with exactly: rapid-first")
+    composer_form.evaluate("form => form.requestSubmit()")
 
-    def _hold_first_turn(route):
-        # Match on the URL here rather than in the glob. A pattern that stops
-        # matching is silent, and this step then tests nothing; the CI run that
-        # found this failed with "never intercepted" precisely because the glob
-        # missed. Intercepting everything and filtering costs one predicate per
-        # request for one step, and it cannot miss.
-        url = route.request.url
-        if "chat/completions" in url or "/inference/chat" in url:
-            held_first_turn["seen"].append(url)
-            if not held_first_turn["done"]:
-                held_first_turn["done"] = True
-                time.sleep(RAPID_FIRST_TURN_HOLD_S)
-        route.continue_()
-
-    page.route("**/*", _hold_first_turn)
-    try:
-        composer.fill("Reply with exactly: rapid-first")
-        composer_form.evaluate("form => form.requestSubmit()")
-        # Returns once the handler has slept and released the request, by which
-        # point the page timer above has submitted the follow-up and recorded
-        # whether it queued.
-        page.wait_for_function(
-            """() => window.__unslothRapid
-                && (window.__unslothRapid.submitted
-                    || window.__unslothRapid.error)""",
-            timeout = 30_000,
-        )
-    finally:
-        page.unroute("**/*", _hold_first_turn)
-
-    if not held_first_turn["done"]:
-        # Name what did go past, so the next person does not have to guess which
-        # endpoint the composer actually calls.
-        fail(
-            "the first turn's request was never intercepted, so it was not held; "
-            f"saw {len(held_first_turn['seen'])} candidate URLs: "
-            f"{held_first_turn['seen'][:5]}"
-        )
-    submit_error = page.evaluate("() => window.__unslothRapid.error")
-    if submit_error:
+    page.wait_for_function(
+        """() => window.__unslothRapid
+            && (window.__unslothRapid.queueSeen
+                || window.__unslothRapid.error)""",
+        timeout = 60_000,
+    )
+    state = page.evaluate("() => window.__unslothRapid")
+    page.evaluate("() => { if (window.__unslothRapidRestore) "
+                  "window.__unslothRapidRestore(); }")
+    if not state["intercepted"]:
+        fail("the first turn's request was never seen, so it was never held; "
+             f"saw {state['seen']}")
+    if state["error"]:
         shoot("04-rapid-submit-no-composer")
-        fail(f"could not send the follow-up: {submit_error}")
-    # The follow-up must materialize as queued work instead of a second direct
-    # append. It was submitted while the response was still held, so the first
-    # turn was necessarily running and a missing control is a real regression.
-    if not page.evaluate("() => window.__unslothRapid.queueSeen"):
+        fail(f"could not send the follow-up: {state['error']}")
+    # The follow-up went out after the first turn's request was issued and while
+    # its response was still held, so that turn was necessarily running. A
+    # missing queue control is therefore a real regression, not timing.
+    if not state["queueSeen"]:
         shoot("04-rapid-submit-no-queue")
         fail("follow-up sent during a held first turn did not appear as queued work")
+
     page.wait_for_function(
         """(want) => {
             const replies = Array.from(
