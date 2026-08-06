@@ -56,6 +56,21 @@ _DNS_POLL_DELAY = 2.0
 # Retry transient DoH failures, but give up fast when DoH is blocked outright.
 _DNS_MAX_DOH_ERRORS = 3
 _DOH_URL = "https://cloudflare-dns.com/dns-query?name={host}&type=A"
+# The resolver negative-caches a miss of its own, so a query sent before the
+# record can exist blinds the poll for that cache's lifetime. Hold off first.
+_DNS_INITIAL_GRACE = 3.0
+# A blinded poll cannot recover, so bound its share of the shared deadline.
+_DNS_WAIT_MAX = 20.0
+
+# Cloudflare's edge routes by TLS SNI, so it serves the tunnel as soon as the
+# connection registers -- before the hostname resolves anywhere. Probing there
+# keeps DNS off the startup path entirely.
+_EDGE_HOST = "trycloudflare.com"
+_EDGE_PROBE_RETRY_DELAY = 0.5
+# Leave the hostname fallback most of the deadline when the edge never answers.
+_EDGE_WAIT_MAX = 15.0
+# A network that blocks the edge blocks it every attempt, so stop proving it.
+_EDGE_MAX_UNREACHABLE = 2
 
 
 def _windows_hidden_kwargs() -> dict:
@@ -212,6 +227,10 @@ def _wait_for_dns(host: str, deadline: float) -> None:
     import json
     import urllib.request
 
+    now = time.monotonic()
+    deadline = min(deadline, now + _DNS_WAIT_MAX)
+    if deadline > now:
+        time.sleep(min(_DNS_INITIAL_GRACE, deadline - now))
     errors = 0
     while True:
         answered = False
@@ -235,6 +254,71 @@ def _wait_for_dns(host: str, deadline: float) -> None:
         time.sleep(min(_DNS_POLL_DELAY, remaining))
 
 
+def _edge_addresses() -> list:
+    """Cloudflare's HTTP frontends, from a name that resolves before any tunnel exists."""
+    import socket
+
+    addresses = []
+    for family in (socket.AF_INET, socket.AF_INET6):
+        try:
+            resolved = sorted({info[4][0] for info in socket.getaddrinfo(_EDGE_HOST, 443, family)})
+        except Exception:
+            continue
+        addresses += resolved[:1]
+    return addresses
+
+
+def _probe_edge(address: str, host: str) -> Optional[bool]:
+    """Ask the edge for the marker as ``host``. None when the edge is unreachable."""
+    import http.client
+    import json
+    import socket
+    import ssl
+
+    request = (
+        f"GET {_PUBLIC_PROBE_PATH} HTTP/1.1\r\nHost: {host}\r\n"
+        "User-Agent: unsloth-studio\r\nConnection: close\r\n\r\n"
+    ).encode()
+    try:
+        with socket.create_connection((address, 443), timeout = _PUBLIC_PROBE_ATTEMPT_TIMEOUT) as raw:
+            with ssl.create_default_context().wrap_socket(raw, server_hostname = host) as tls:
+                tls.sendall(request)
+                response = http.client.HTTPResponse(tls, method = "GET")
+                response.begin()
+                body = response.read(4096)
+    except Exception:
+        return None
+    try:
+        return json.loads(body).get("service") == _PUBLIC_PROBE_MARKER
+    except Exception:
+        return False
+
+
+def _verify_through_edge(host: str, deadline: float) -> bool:
+    """Verify at the edge, which selects the tunnel by SNI rather than by address.
+
+    Cloudflare error 1033 and a hostname that has not propagated look the same
+    from here, so only the marker ends the wait.
+    """
+    addresses = _edge_addresses()
+    if not addresses:
+        return False
+    deadline = min(deadline, time.monotonic() + _EDGE_WAIT_MAX)
+    unreachable = 0
+    while True:
+        for address in addresses:
+            answer = _probe_edge(address, host)
+            if answer:
+                return True
+            unreachable = unreachable + 1 if answer is None else 0
+        if unreachable >= _EDGE_MAX_UNREACHABLE:
+            return False
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(_EDGE_PROBE_RETRY_DELAY, remaining))
+
+
 def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
     import json
     import urllib.request
@@ -243,6 +327,10 @@ def verify_public_url(url: str, timeout: float = _PUBLIC_PROBE_TIMEOUT) -> bool:
     deadline = time.monotonic() + timeout
     host = urlsplit(url).hostname
     if host:
+        if _verify_through_edge(host, deadline):
+            return True
+        # Nothing answered at the edge, so fall back to the hostname and pay the
+        # DoH wait that keeps an early OS lookup from caching the miss.
         _wait_for_dns(host, deadline)
 
     probe_url = f"{url.rstrip('/')}{_PUBLIC_PROBE_PATH}"

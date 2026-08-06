@@ -109,6 +109,52 @@ def test_failed_stop_remains_retryable(monkeypatch):
     assert 'if get_studio_tunnel_status().get("stop_pending"):' in source
 
 
+def test_only_a_finished_stop_worker_stops_reporting_stopping(monkeypatch):
+    hold = threading.Event()
+    stale_stop = threading.Thread(target = hold.wait, daemon = True)
+    stale_stop.start()
+    monkeypatch.setattr(remote_access, "_stop_worker", stale_stop)
+    monkeypatch.setattr(remote_access, "_stop_worker_admission", (1, 5))
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    tunnel_status = {
+        "state": "off",
+        "url": None,
+        "error": None,
+        "managed_by": None,
+        "stop_pending": False,
+    }
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_status", lambda: dict(tunnel_status))
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 6))
+
+    # the teardown advanced the generation past (1, 5), so this stop is done
+    status = remote_access.remote_access_status(_state())
+    assert status["state"] == "off"
+    assert status["can_start"] is True
+
+    new_start = threading.Thread(target = hold.wait, daemon = True)
+    new_start.start()
+    monkeypatch.setattr(remote_access, "_start_worker", new_start)
+    monkeypatch.setattr(remote_access, "_start_worker_admission", (1, 6))
+    assert remote_access.remote_access_status(_state())["state"] == "starting"
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+
+    # a stop admitted at the current generation still owes its teardown
+    monkeypatch.setattr(remote_access, "_stop_worker_admission", (1, 6))
+    assert remote_access.remote_access_status(_state())["state"] == "stopping"
+    monkeypatch.setattr(remote_access, "_stop_worker_admission", (1, 5))
+
+    # so does a torn-down stop whose termination is unconfirmed
+    tunnel_status["stop_pending"] = True
+    assert remote_access.remote_access_status(_state())["state"] == "stopping"
+
+    # and the report stays scoped to a tunnel that is actually off
+    tunnel_status.update(stop_pending = False, state = "online", managed_by = "settings")
+    assert remote_access.remote_access_status(_state())["state"] == "stopping"
+    hold.set()
+
+
 def test_workers_and_stops_are_scoped_to_backend_lifecycle(monkeypatch):
     remote_access._start_worker = remote_access._stop_worker = None
     remote_access._start_worker_admission = remote_access._stop_worker_admission = None

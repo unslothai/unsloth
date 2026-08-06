@@ -489,9 +489,10 @@ def _patch_urlopen(monkeypatch, handler):
 
 
 @pytest.fixture(autouse = True)
-def _stub_dns_wait(monkeypatch, request):
+def _stub_remote_lookups(monkeypatch, request):
     if request.node.name.startswith("test_verify_public_url"):
         monkeypatch.setattr(ct, "_wait_for_dns", lambda *a, **kw: None)
+        monkeypatch.setattr(ct, "_edge_addresses", list)
 
 
 def test_wait_for_dns_polls_until_answer(monkeypatch):
@@ -508,6 +509,8 @@ def test_wait_for_dns_polls_until_answer(monkeypatch):
     ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
     assert len(calls) == 3
     assert "name=words.trycloudflare.com" in calls[0]
+    # The tunnel provider already knows the hostname it just issued; no one else does.
+    assert all("cloudflare-dns.com" in call for call in calls)
 
 
 def test_wait_for_dns_gives_up_at_deadline(monkeypatch):
@@ -544,6 +547,40 @@ def test_wait_for_dns_bails_on_persistent_doh_errors(monkeypatch):
     assert len(calls) == ct._DNS_MAX_DOH_ERRORS
 
 
+def test_wait_for_dns_delays_first_query(monkeypatch):
+    order = []
+
+    def handler(req):
+        order.append("query")
+        return _FakeResponse(b'{"Status":0,"Answer":[{"data":"104.16.0.1"}]}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: order.append(("sleep", s)))
+    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 30)
+    # a token hold-off would not outlast the propagation that makes the first query miss
+    assert ct._DNS_INITIAL_GRACE >= 1.0
+    assert order[0] == ("sleep", ct._DNS_INITIAL_GRACE)
+    assert order[1] == "query"
+
+
+def test_wait_for_dns_is_capped_below_the_probe_deadline(monkeypatch):
+    clock = [0.0]
+    calls = []
+
+    def handler(req):
+        calls.append(req.full_url)
+        return _FakeResponse(b'{"Status":3}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    ct._wait_for_dns("words.trycloudflare.com", 300.0)
+    assert calls
+    assert clock[0] <= ct._DNS_WAIT_MAX + ct._DNS_POLL_DELAY
+    # The probe shares one deadline with the wait and needs most of it.
+    assert clock[0] < ct._PUBLIC_PROBE_TIMEOUT / 2
+
+
 def test_verify_public_url_accepts_studio_marker(monkeypatch):
     seen = {}
 
@@ -556,7 +593,7 @@ def test_verify_public_url_accepts_studio_marker(monkeypatch):
     assert seen["url"] == "https://words.trycloudflare.com/api/health"
 
 
-def test_verify_public_url_waits_for_dns_first(monkeypatch):
+def test_verify_public_url_waits_for_dns_before_probing_the_hostname(monkeypatch):
     order = []
     monkeypatch.setattr(ct, "_wait_for_dns", lambda host, deadline: order.append(("dns", host)))
 
@@ -613,6 +650,133 @@ def test_verify_public_url_rejects_foreign_responder(monkeypatch):
     _patch_urlopen(monkeypatch, lambda req: _FakeResponse(b"<html>error 1033</html>"))
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
     assert ct.verify_public_url("https://words.trycloudflare.com", timeout = 0.05) is False
+
+
+def _fake_edge(
+    monkeypatch,
+    payload: bytes,
+    connect_error: str | None = None,
+) -> dict:
+    """Stand in for the TLS hop so the probe's own parsing is under test."""
+    import socket as socket_module
+    import ssl as ssl_module
+
+    seen: dict = {}
+
+    class _Closeable:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    class _Tls(_Closeable):
+        def sendall(self, data):
+            seen["request"] = data
+
+        def makefile(self, *_a, **_kw):
+            return io.BytesIO(payload)
+
+    class _Context:
+        def wrap_socket(
+            self,
+            _raw,
+            server_hostname = None,
+        ):
+            seen["sni"] = server_hostname
+            return _Tls()
+
+    def connect(address, timeout = None):
+        if connect_error is not None:
+            raise OSError(connect_error)
+        seen["address"] = address
+        return _Closeable()
+
+    monkeypatch.setattr(socket_module, "create_connection", connect)
+    monkeypatch.setattr(ssl_module, "create_default_context", _Context)
+    return seen
+
+
+def _edge_response(status: bytes, body: bytes) -> bytes:
+    return b"HTTP/1.1 %s\r\nContent-Length: %d\r\n\r\n%s" % (status, len(body), body)
+
+
+def test_edge_probe_selects_the_tunnel_by_sni(monkeypatch):
+    seen = _fake_edge(monkeypatch, _edge_response(b"200 OK", b'{"service":"Unsloth UI Backend"}'))
+    assert ct._probe_edge("104.16.0.1", "words.trycloudflare.com") is True
+    assert seen["address"] == ("104.16.0.1", 443)
+    # Cloudflare picks the tunnel from SNI and the Host header, not the address.
+    assert seen["sni"] == "words.trycloudflare.com"
+    assert b"Host: words.trycloudflare.com\r\n" in seen["request"]
+
+
+def test_edge_probe_rejects_the_cloudflare_error_page(monkeypatch):
+    _fake_edge(monkeypatch, _edge_response(b"530 ", b"<html>error 1033</html>"))
+    assert ct._probe_edge("104.16.0.1", "words.trycloudflare.com") is False
+
+
+def test_edge_probe_reports_an_unreachable_edge_apart_from_a_wrong_answer(monkeypatch):
+    _fake_edge(monkeypatch, b"", connect_error = "blocked")
+    assert ct._probe_edge("104.16.0.1", "words.trycloudflare.com") is None
+
+
+def test_edge_verification_skips_the_hostname_entirely(monkeypatch):
+    seen = {}
+
+    def probe(address, host):
+        seen["probe"] = (address, host)
+        return True
+
+    def resolve(*_a, **_kw):
+        seen["dns"] = True
+
+    monkeypatch.setattr(ct, "_edge_addresses", lambda: ["104.16.0.1"])
+    monkeypatch.setattr(ct, "_probe_edge", probe)
+    monkeypatch.setattr(ct, "_wait_for_dns", resolve)
+    _patch_urlopen(monkeypatch, lambda req: pytest.fail("probed the hostname"))
+    assert ct.verify_public_url("https://words.trycloudflare.com") is True
+    assert seen["probe"] == ("104.16.0.1", "words.trycloudflare.com")
+    assert "dns" not in seen
+
+
+def test_edge_verification_polls_until_the_tunnel_answers(monkeypatch):
+    # Error 1033 answers, so a reply without the marker is not an unreachable edge.
+    answers = [False, False, True]
+    monkeypatch.setattr(ct, "_edge_addresses", lambda: ["104.16.0.1"])
+    monkeypatch.setattr(ct, "_probe_edge", lambda _a, _h: answers.pop(0))
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct._verify_through_edge("words.trycloudflare.com", ct.time.monotonic() + 5) is True
+    assert not answers
+
+
+def test_edge_verification_leaves_the_fallback_room_in_the_deadline(monkeypatch):
+    clock = [0.0]
+    monkeypatch.setattr(ct, "_edge_addresses", lambda: ["104.16.0.1"])
+    monkeypatch.setattr(ct, "_probe_edge", lambda _a, _h: False)
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    assert ct._verify_through_edge("words.trycloudflare.com", 300.0) is False
+    assert clock[0] < ct._PUBLIC_PROBE_TIMEOUT / 2
+
+
+def test_blocked_edge_falls_back_to_the_hostname(monkeypatch):
+    order = []
+
+    def probe(_address, _host):
+        order.append("edge")
+        return None
+
+    def handler(_req):
+        order.append("hostname")
+        return _FakeResponse(b'{"service":"Unsloth UI Backend"}')
+
+    monkeypatch.setattr(ct, "_edge_addresses", lambda: ["104.16.0.1"])
+    monkeypatch.setattr(ct, "_probe_edge", probe)
+    monkeypatch.setattr(ct, "_wait_for_dns", lambda *_a: order.append("dns"))
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    assert ct.verify_public_url("https://words.trycloudflare.com") is True
+    assert order == ["edge"] * ct._EDGE_MAX_UNREACHABLE + ["dns", "hostname"]
 
 
 @pytest.fixture(autouse = True)

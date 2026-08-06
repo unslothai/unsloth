@@ -6,7 +6,6 @@ import type { ReactNode } from "react";
 
 export function SettingsRow({
   label,
-  labelAccessory,
   description,
   icon,
   children,
@@ -15,7 +14,6 @@ export function SettingsRow({
   alignTop,
 }: {
   label: string;
-  labelAccessory?: ReactNode;
   description?: ReactNode;
   icon?: ReactNode;
   children?: ReactNode;
@@ -46,10 +44,7 @@ export function SettingsRow({
           </span>
         ) : null}
         <div className="flex min-w-0 flex-col gap-0.5">
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium text-foreground">{label}</span>
-            {labelAccessory}
-          </div>
+          <span className="text-sm font-medium text-foreground">{label}</span>
           {description ? (
             <span className="text-xs text-muted-foreground leading-snug">
               {description}
