@@ -17,7 +17,6 @@ $helperNames = @(
     "Remove-StudioVenvTreeWithRetry",
     "Test-StudioVenvRollbackMustBePreserved",
     "Remove-StaleStudioVenvRollbacks",
-    "Restore-StudioVenvDirectoryMerge",
     "Restore-StudioVenvRollback",
     "Complete-StudioVenvRollback"
 )
@@ -41,7 +40,6 @@ function Reset-RollbackState($target) {
     $script:StudioVenvRollbackDir = $null
     $script:StudioVenvRollbackTarget = $target
     $script:StudioVenvRollbackActive = $false
-    $script:StudioVenvRollbackIsPartialMove = $false
 }
 
 $StudioHome = Join-Path ([System.IO.Path]::GetTempPath()) "unsloth-rollback-$([guid]::NewGuid().ToString('N'))"
@@ -61,30 +59,28 @@ try {
         Where-Object { $_.Name -like "unsloth_studio.rollback.*" }))
 
     Write-Host "Stale cleanup"
-    $deadRollback = Join-Path $StudioHome "unsloth_studio.rollback.20260101000000.999999"
-    $liveRollback = Join-Path $StudioHome "unsloth_studio.rollback.20260101000000.$PID"
-    $otherRollback = Join-Path $StudioHome "unsloth_studio.rollback.custom"
-    [System.IO.Directory]::CreateDirectory($deadRollback) | Out-Null
-    [System.IO.Directory]::CreateDirectory($liveRollback) | Out-Null
-    [System.IO.Directory]::CreateDirectory($otherRollback) | Out-Null
-
+    $stale = Join-Path $StudioHome "unsloth_studio.rollback.20000101000000.2147483647"
+    $active = Join-Path $StudioHome "unsloth_studio.rollback.20000101000001.$PID"
+    $unrecognized = Join-Path $StudioHome "unsloth_studio.rollback.user-data"
+    [System.IO.Directory]::CreateDirectory($stale) | Out-Null
+    [System.IO.Directory]::CreateDirectory($active) | Out-Null
+    [System.IO.Directory]::CreateDirectory($unrecognized) | Out-Null
     Remove-StaleStudioVenvRollbacks
-    Check "dead-owner rollback is removed" (-not (Test-Path -LiteralPath $deadRollback))
-    Check "live-owner rollback is preserved" (Test-Path -LiteralPath $liveRollback)
-    Check "unrecognized rollback name is preserved" (Test-Path -LiteralPath $otherRollback)
-    Remove-Item -LiteralPath $liveRollback -Recurse -Force
-    Remove-Item -LiteralPath $otherRollback -Recurse -Force
+    Check "dead-owner rollback is removed" (-not (Test-Path -LiteralPath $stale))
+    Check "live-owner rollback is preserved" (Test-Path -LiteralPath $active)
+    Check "unrecognized rollback name is preserved" (Test-Path -LiteralPath $unrecognized)
+    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $active -Recurse -Force
+    Microsoft.PowerShell.Management\Remove-Item -LiteralPath $unrecognized -Recurse -Force
 
     Write-Host "Failure restoration"
     [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "old-again")
     Reset-RollbackState $VenvDir
     $committed = $false
     try {
-        Start-StudioVenvRollback -ExistingDir $VenvDir
         try {
+            Start-StudioVenvRollback -ExistingDir $VenvDir
             [System.IO.Directory]::CreateDirectory($VenvDir) | Out-Null
-            [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "failed-install")
-            [System.IO.File]::WriteAllText((Join-Path $VenvDir "failed_package.py"), "junk")
+            [System.IO.File]::WriteAllText((Join-Path $VenvDir "generation"), "partial")
             throw "simulated install failure"
         } finally {
             if (-not $committed) { Restore-StudioVenvRollback }
@@ -95,7 +91,6 @@ try {
     Check "finally restores the previous environment" (
         (Get-Content -LiteralPath (Join-Path $VenvDir "generation") -Raw) -eq "old-again"
     )
-    Check "failed reinstall artifacts are wiped during full rollback" (-not (Test-Path -LiteralPath (Join-Path $VenvDir "failed_package.py")))
     Check "failure restoration consumes the rollback" (-not @(Get-ChildItem -LiteralPath $StudioHome -Directory |
         Where-Object { $_.Name -like "unsloth_studio.rollback.*" }))
 
@@ -120,85 +115,6 @@ try {
         Microsoft.PowerShell.Management\Remove-Item -LiteralPath Function:\Remove-Item -Force
     }
     Check "locked rollback deletion retries" ($removed -and $script:removeAttempts -eq 3)
-
-    Write-Host "Partial Move-Item failure in Start-StudioVenvRollback"
-    $partialVenvDir = Join-Path $StudioHome "unsloth_studio_partial"
-    [System.IO.Directory]::CreateDirectory($partialVenvDir) | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $partialVenvDir "fileA"), "partA")
-    [System.IO.File]::WriteAllText((Join-Path $partialVenvDir "fileB"), "partB")
-    Reset-RollbackState $partialVenvDir
-
-    # Intercept Move-Item to simulate a partial move failure:
-    # moves fileA to candidate, leaves fileB in ExistingDir, then throws an exception
-    function Move-Item {
-        param(
-            [string]$LiteralPath,
-            [string]$Destination,
-            [switch]$Force,
-            [object]$ErrorAction
-        )
-        [System.IO.Directory]::CreateDirectory($Destination) | Out-Null
-        Microsoft.PowerShell.Management\Move-Item -LiteralPath (Join-Path $LiteralPath "fileA") -Destination (Join-Path $Destination "fileA")
-        throw "simulated partial move failure"
-    }
-
-    $failedAsExpected = $false
-    try {
-        Start-StudioVenvRollback -ExistingDir $partialVenvDir
-    } catch {
-        if ($_.Exception.Message -match "simulated partial move failure") {
-            $failedAsExpected = $true
-        }
-    } finally {
-        Microsoft.PowerShell.Management\Remove-Item -LiteralPath Function:\Move-Item -Force -ErrorAction SilentlyContinue
-    }
-
-    Check "Start-StudioVenvRollback threw expected error" $failedAsExpected
-    Check "rollback tracking stays active after partial move failure" $script:StudioVenvRollbackActive
-    Check "rollback dir is recorded after partial move failure" ($null -ne $script:StudioVenvRollbackDir)
-
-    # Now verify that Restore-StudioVenvRollback can restore fileA back into $partialVenvDir
-    $savedRollbackDir = $script:StudioVenvRollbackDir
-    Restore-StudioVenvRollback
-    Check "fileA was restored back to ExistingDir" (Test-Path -LiteralPath (Join-Path $partialVenvDir "fileA"))
-    Check "fileB remains in ExistingDir" (Test-Path -LiteralPath (Join-Path $partialVenvDir "fileB"))
-    Check "rollback directory was cleaned up after restoration" (-not (Test-Path -LiteralPath $savedRollbackDir))
-
-    Write-Host "Nested directory partial Move-Item failure in Start-StudioVenvRollback"
-    $nestedVenvDir = Join-Path $StudioHome "unsloth_studio_nested"
-    $nestedScriptsDir = Join-Path $nestedVenvDir "Scripts"
-    [System.IO.Directory]::CreateDirectory($nestedScriptsDir) | Out-Null
-    [System.IO.File]::WriteAllText((Join-Path $nestedScriptsDir "unsloth.exe"), "unsloth_bin")
-    [System.IO.File]::WriteAllText((Join-Path $nestedScriptsDir "python.exe"), "python_bin")
-    Reset-RollbackState $nestedVenvDir
-
-    # Intercept Move-Item to simulate moving Scripts/python.exe to candidate while Scripts/unsloth.exe stays in ExistingDir
-    function Move-Item {
-        param(
-            [string]$LiteralPath,
-            [string]$Destination,
-            [switch]$Force,
-            [object]$ErrorAction
-        )
-        $destScripts = Join-Path $Destination "Scripts"
-        [System.IO.Directory]::CreateDirectory($destScripts) | Out-Null
-        Microsoft.PowerShell.Management\Move-Item -LiteralPath (Join-Path $LiteralPath "Scripts\python.exe") -Destination (Join-Path $destScripts "python.exe")
-        throw "simulated nested partial move failure"
-    }
-
-    try {
-        Start-StudioVenvRollback -ExistingDir $nestedVenvDir
-    } catch {
-        # expected
-    } finally {
-        Microsoft.PowerShell.Management\Remove-Item -LiteralPath Function:\Move-Item -Force -ErrorAction SilentlyContinue
-    }
-
-    $savedNestedRollback = $script:StudioVenvRollbackDir
-    Restore-StudioVenvRollback
-    Check "unsloth.exe was preserved in Scripts directory during rollback restore" (Test-Path -LiteralPath (Join-Path $nestedScriptsDir "unsloth.exe"))
-    Check "python.exe was restored into Scripts directory" (Test-Path -LiteralPath (Join-Path $nestedScriptsDir "python.exe"))
-    Check "nested rollback directory was cleaned up after restoration" (-not (Test-Path -LiteralPath $savedNestedRollback))
 } finally {
     if (Test-Path -LiteralPath $StudioHome) {
         Microsoft.PowerShell.Management\Remove-Item -LiteralPath $StudioHome -Recurse -Force

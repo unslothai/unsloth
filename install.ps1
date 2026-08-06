@@ -1832,24 +1832,16 @@ exit 0
         $script:StudioVenvRollbackDir = $candidate
         $script:StudioVenvRollbackTarget = $ExistingDir
         $script:StudioVenvRollbackActive = $true
-        $script:StudioVenvRollbackIsPartialMove = $false
         # Publish the rollback state before the atomic rename so interruption
         # cannot land after Move-Item but before cleanup knows where the old venv went.
         try {
             Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
         } catch {
             # A collision or ordinary rename failure leaves the original in place.
-            # Keep state active if the candidate directory was created (partial move on Windows).
-            if (Test-Path -LiteralPath $candidate) {
-                if (Test-Path -LiteralPath $ExistingDir) {
-                    $script:StudioVenvRollbackIsPartialMove = $true
-                }
-            } else {
-                if (Test-Path -LiteralPath $ExistingDir) {
-                    $script:StudioVenvRollbackActive = $false
-                    $script:StudioVenvRollbackDir = $null
-                    $script:StudioVenvRollbackIsPartialMove = $false
-                }
+            # Keep state active only when the rename happened before interruption.
+            if (Test-Path -LiteralPath $ExistingDir) {
+                $script:StudioVenvRollbackActive = $false
+                $script:StudioVenvRollbackDir = $null
             }
             throw
         }
@@ -1913,59 +1905,25 @@ exit 0
         }
     }
 
-    function Restore-StudioVenvDirectoryMerge {
-        param(
-            [string]$Source,
-            [string]$Destination
-        )
-        if (-not (Test-Path -LiteralPath $Destination)) {
-            [System.IO.Directory]::CreateDirectory($Destination) | Out-Null
-        }
-        $sourceItems = @(Get-ChildItem -LiteralPath $Source -Force -ErrorAction Stop)
-        foreach ($item in $sourceItems) {
-            $destPath = Join-Path $Destination $item.Name
-            $isReparsePoint = ($item.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
-            if ($item.PSIsContainer -and -not $isReparsePoint) {
-                Restore-StudioVenvDirectoryMerge -Source $item.FullName -Destination $destPath
-            } else {
-                if (Test-Path -LiteralPath $destPath) {
-                    Remove-StudioVenvTreeWithRetry -Path $destPath -Label "partially created file" | Out-Null
-                }
-                Move-Item -LiteralPath $item.FullName -Destination $Destination -Force -ErrorAction Stop
-            }
-        }
-    }
-
     function Restore-StudioVenvRollback {
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
         if (-not $backup -or -not (Test-Path -LiteralPath $backup)) {
             $script:StudioVenvRollbackActive = $false
-            $script:StudioVenvRollbackIsPartialMove = $false
             return
         }
         substep "restoring previous environment after failed install..." "Yellow"
         try {
             if (Test-Path -LiteralPath $target) {
-                if ($script:StudioVenvRollbackIsPartialMove) {
-                    # Partial move on Windows: merge backup into target recursively without deleting target contents.
-                    Restore-StudioVenvDirectoryMerge -Source $backup -Destination $target
-                    Remove-StudioVenvTreeWithRetry -Path $backup -Label "empty rollback backup" | Out-Null
-                } else {
-                    # Failed fresh reinstall: remove incomplete target first, then move backup back intact.
-                    if (-not (Remove-StudioVenvTreeWithRetry -Path $target -Label "incomplete environment")) {
-                        throw "Could not remove incomplete environment at $target"
-                    }
-                    Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop
+                if (-not (Remove-StudioVenvTreeWithRetry -Path $target -Label "incomplete environment")) {
+                    throw "Could not remove incomplete environment at $target"
                 }
-            } else {
-                Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop
             }
+            Move-Item -LiteralPath $backup -Destination $target -Force -ErrorAction Stop
             substep "restored previous environment"
             $script:StudioVenvRollbackActive = $false
             $script:StudioVenvRollbackDir = $null
-            $script:StudioVenvRollbackIsPartialMove = $false
         } catch {
             Write-Host "[WARN] Could not restore previous environment from $backup to $target" -ForegroundColor Yellow
             Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
