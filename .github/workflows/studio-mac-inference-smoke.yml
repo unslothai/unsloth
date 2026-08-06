@@ -63,8 +63,10 @@ jobs:
   # slots to re-derive the same install twice.
   #
   # The phases now share one install. Each keeps its own model cache, server
-  # port, server log and uploaded artifact, so a failure still points at one
-  # phase and the logs of the earlier phases survive it.
+  # port, server log, uploaded artifact and step timeouts, and each is gated on
+  # the shared preamble rather than on the phase before it, so a failure still
+  # points at one phase, the logs of the earlier phases survive it, and the
+  # later phases still run -- the same independence the three jobs had.
   inference-smoke:
     name: GGUF inference smoke (API, tools, vision)
     runs-on: macos-14
@@ -72,6 +74,13 @@ jobs:
     # runners. Sequentially they share one install, so the sum is less than 80,
     # but a cold model cache on the vision phase is the slow case. 90 covers it
     # without letting a hang sit for hours on one of the 5 macOS slots.
+    #
+    # 90 is the outer guard only. Every step that can block also carries its own
+    # `timeout-minutes`, because the job cap alone is not a substitute for the
+    # 25/25/30 caps the three jobs used to have: hf-download-with-retry.sh
+    # retries forever by design and named the job timeout as its bound, so
+    # without step caps one stalled download would hold a macOS slot for the
+    # full 90 minutes and starve the phases behind it.
     timeout-minutes: 90
     env:
       # Only what every phase shares. Model, GGUF file and port are set per
@@ -112,6 +121,7 @@ jobs:
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        timeout-minutes: 15
         env:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
@@ -131,6 +141,8 @@ jobs:
           key: ${{ runner.os }}-hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v2
 
       - name: Install Unsloth (--local, --no-torch)
+        id: install
+        timeout-minutes: 20
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -140,13 +152,20 @@ jobs:
           set -o pipefail
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
+      # Last step of the shared preamble. Phases 2 and 3 gate on its outcome:
+      # once checkout, install and this check have passed, a failure inside one
+      # phase says nothing about the others, so the others should still run.
       - name: Assert llama.cpp loads on this macOS
+        id: assert-llama
+        timeout-minutes: 5
         run: bash .github/scripts/assert-llama-loads.sh
 
       - name: Install OpenAI + Anthropic Python SDKs
+        timeout-minutes: 5
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
 
       - name: Reset auth + boot Unsloth (API-only)
+        timeout-minutes: 2
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
           rm -rf ~/.unsloth/studio/auth
@@ -156,6 +175,7 @@ jobs:
           echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for /api/health
+        timeout-minutes: 5
         run: |
           for i in $(seq 1 180); do
             if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
@@ -169,6 +189,7 @@ jobs:
           exit 1
 
       - name: Password rotation (old must fail, new must work)
+        timeout-minutes: 3
         run: |
           OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
           NEW="CIRotated-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
@@ -201,6 +222,8 @@ jobs:
           echo "password rotation OK (old=401, new=200)"
 
       - name: Load the GGUF (HF repo + variant, served from HF_HOME cache)
+        # curl already caps itself at --max-time 600; +2 for process overhead.
+        timeout-minutes: 12
         run: |
           curl -fs -X POST "http://127.0.0.1:${STUDIO_PORT}/api/inference/load" \
             -H "Authorization: Bearer $TOKEN" -H 'content-type: application/json' \
@@ -209,6 +232,7 @@ jobs:
             | jq '{status, display_name, is_gguf, context_length}'
 
       - name: Multi-turn determinism via OpenAI + Anthropic SDKs
+        timeout-minutes: 15
         env:
           BASE_URL: http://127.0.0.1:18888
         run: |
@@ -326,17 +350,25 @@ jobs:
             logs/install.log
           retention-days: 7
 
-  # ─────────────────────────────────────────────────────────────────────
-  # Job 2: Tool calling Tests
-  # ─────────────────────────────────────────────────────────────────────
-
       # ==============================================================
       # Phase 2: tool calling + server-side tools.
       # Reuses the install and llama.cpp check done once above rather than
       # repeating them on a second runner. Ids, cache dir and server log are
       # suffixed -tools so the phases cannot collide inside one job.
+      #
+      # Every step below carries the same `if:`. A step with no `if:` gets an
+      # implicit `success()`, which is job-wide rather than per-step, so a
+      # single failed phase-1 step would otherwise skip phases 2 and 3
+      # outright -- exactly the coverage the three independent jobs used to
+      # give us when one of them went red. `!cancelled()` runs the phase after
+      # a phase-1 failure while still honouring a cancel, and the
+      # assert-llama gate keeps it from running when the SHARED preamble
+      # broke (a failed checkout or install skips assert-llama, so its outcome
+      # is not 'success' and phases 2 and 3 correctly stay out). The job still
+      # ends red, because the failed phase-1 step already set the job status.
       # ==============================================================
       - name: Phase 2 environment
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
         run: |
           echo "GGUF_REPO=unsloth/Qwen3.5-2B-GGUF" >> "$GITHUB_ENV"
           echo "GGUF_FILE=Qwen3.5-2B-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
@@ -353,15 +385,19 @@ jobs:
       # logged "Cache not found for input keys" and both failed to save.
       - name: Restore GGUF model file
         id: cache-gguf-tools
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
+        timeout-minutes: 15
         with:
           path: gguf-cache-tools
           key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v2
 
       - name: Download GGUF if cache miss
         id: download-gguf-tools
-        if: steps.cache-gguf-tools.outputs.cache-hit != 'true' || steps.cache-gguf-tools.outcome != 'success'
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' && (steps.cache-gguf-tools.outputs.cache-hit != 'true' || steps.cache-gguf-tools.outcome != 'success') }}
+        # hf-download-with-retry.sh retries forever; this is its real bound.
+        timeout-minutes: 20
         env:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
@@ -374,11 +410,14 @@ jobs:
       - name: Save GGUF model file
         if: always() && steps.download-gguf-tools.outcome != 'skipped' && hashFiles('gguf-cache-tools/**/*.gguf') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        timeout-minutes: 15
         with:
           path: gguf-cache-tools
           key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v2
 
       - name: Reset auth + boot Unsloth (API-only, default tool policy)
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        timeout-minutes: 2
         # We deliberately use the API-only mode rather than
         # `unsloth studio run` because the latter calls
         # `set_tool_policy(...)` with a resolved bool: on loopback the
@@ -395,6 +434,9 @@ jobs:
           echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for /api/health, log in, change password, load model
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        # 180s health wait + curl's own --max-time 600, with headroom.
+        timeout-minutes: 15
         run: |
           for i in $(seq 1 180); do
             if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
@@ -426,6 +468,8 @@ jobs:
             | jq '{status, display_name}'
 
       - name: Tool calling, server-side tools, thinking on/off
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        timeout-minutes: 20
         env:
           BASE_URL: http://127.0.0.1:18898
         run: |
@@ -607,8 +651,8 @@ jobs:
           # macos-14 free runner is ~10 tok/s on Qwen3.5-2B Q4_K_XL;
           # cap max_tokens tightly so each SSE round stays under ~30s
           # even when the model stalls in a degenerate output state.
-          # retries=0 on the best-effort probes: this job's 25-minute cap
-          # allows a 10-minute model load, so a no-data stall must be a
+          # retries=0 on the best-effort probes: this step's 20-minute cap
+          # also has to cover the thinking checks, so a no-data stall must be a
           # single 180s attempt (not 180+15+180s) to leave room for the
           # thinking checks. A soft/best-effort probe only WARNs anyway.
           content = post_sse("/v1/chat/completions", {
@@ -672,7 +716,7 @@ jobs:
                   "enable_thinking": enable,
                   "temperature":     TEMP,
                   "seed":            SEED,
-                  # 80 tokens lands within the 25-minute job timeout
+                  # 80 tokens lands within this step's 20-minute cap
                   # on the macos-14 free runner. 17 is small; this is
                   # plenty of room for either "Yes" + brief reasoning
                   # or a degenerate empty completion.
@@ -726,17 +770,16 @@ jobs:
             logs/install.log
           retention-days: 1
 
-  # ─────────────────────────────────────────────────────────────────────
-  # Job 3: JSON, images
-  # ─────────────────────────────────────────────────────────────────────
-
       # ==============================================================
       # Phase 3: JSON schema decoding + image input.
       # Reuses the install and llama.cpp check done once above rather than
       # repeating them on a second runner. Ids, cache dir and server log are
       # suffixed -vision so the phases cannot collide inside one job.
+      # Same `if:` as phase 2, for the same reason: a phase-1 or phase-2
+      # failure must not silently skip this phase's coverage.
       # ==============================================================
       - name: Phase 3 environment
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
         run: |
           echo "GGUF_REPO=unsloth/gemma-4-E2B-it-GGUF" >> "$GITHUB_ENV"
           echo "GGUF_VARIANT=UD-Q4_K_XL" >> "$GITHUB_ENV"
@@ -746,15 +789,17 @@ jobs:
 
       - name: Restore GGUF + mmproj files
         id: cache-gguf-vision
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
+        timeout-minutes: 20
         with:
           path: gguf-cache-vision
           key: ${{ runner.os }}-gguf-unsloth/gemma-4-E2B-it-GGUF-gemma-4-E2B-it-UD-Q4_K_XL.gguf-mmproj-F16.gguf-v3
 
       - name: Verify cache contains BOTH gguf + mmproj
         id: verify-cache
-        if: steps.cache-gguf-vision.outputs.cache-hit == 'true'
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' && steps.cache-gguf-vision.outputs.cache-hit == 'true' }}
         run: |
           if [[ -f "gguf-cache-vision/$GGUF_FILE" && -f "gguf-cache-vision/$MMPROJ_FILE" ]]; then
             echo "ok=true" >> "$GITHUB_OUTPUT"
@@ -765,9 +810,12 @@ jobs:
 
       - name: Download GGUF + mmproj if cache miss or partial
         id: download-gguf-vision
-        if: steps.cache-gguf-vision.outputs.cache-hit != 'true' || steps.verify-cache.outputs.ok != 'true'
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' && (steps.cache-gguf-vision.outputs.cache-hit != 'true' || steps.verify-cache.outputs.ok != 'true') }}
         # Authenticated + parallel: shared macos-14 NAT egress stalls
-        # multi-GB anonymous downloads.
+        # multi-GB anonymous downloads. hf-download-with-retry.sh retries
+        # forever, so this cap is what actually bounds a permanent stall --
+        # 30 matches the old json-images job timeout, the slowest of the three.
+        timeout-minutes: 30
         env:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
@@ -791,15 +839,20 @@ jobs:
       - name: Save GGUF + mmproj files
         if: always() && steps.download-gguf-vision.outcome != 'skipped' && hashFiles('gguf-cache-vision/**/*.gguf') != '' && hashFiles(format('gguf-cache-vision/{0}', 'mmproj-F16.gguf')) != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        timeout-minutes: 20
         with:
           path: gguf-cache-vision
           key: ${{ runner.os }}-gguf-unsloth/gemma-4-E2B-it-GGUF-gemma-4-E2B-it-UD-Q4_K_XL.gguf-mmproj-F16.gguf-v3
 
       - name: Install OpenAI + Anthropic Python SDKs
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        timeout-minutes: 5
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
 
       - name: Reset auth + boot Unsloth (API-only)
-        # See Job 2's comment: API-only mode keeps tool_policy=None so
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        timeout-minutes: 2
+        # See phase 2's comment: API-only mode keeps tool_policy=None so
         # response_format requests aren't routed through the agentic
         # tool loop.
         run: |
@@ -810,6 +863,9 @@ jobs:
           echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for /api/health, log in, change password, load model
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        # 180s health wait + curl's own --max-time 900, with headroom.
+        timeout-minutes: 20
         run: |
           for i in $(seq 1 180); do
             if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
@@ -846,6 +902,8 @@ jobs:
             | jq '{status, display_name, is_vision}'
 
       - name: JSON schema decoding + image input
+        if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' }}
+        timeout-minutes: 20
         env:
           BASE_URL: http://127.0.0.1:18899
         run: |
