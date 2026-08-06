@@ -299,6 +299,43 @@ def test_unprepared_datasets_keep_their_length_cap(
         ), f"{name}: overlength rows reached the model"
 
 
+def _transformed_dataset(tok):
+    """A dataset that tokenizes on access through `with_transform`.
+
+    `column_names` keeps describing the backing table (`["text"]`) while every
+    row yields `input_ids`, so a check that trusts `column_names` concludes the
+    tokenize pass will run and truncate. It will not: `sft_prepare_dataset`
+    reads the yielded row, sees `input_ids` and skips tokenization.
+    """
+    from datasets import Dataset
+
+    ids = tok("The quick brown fox. " * 200)["input_ids"]
+    assert len(ids) > _MODEL_MAX_SEQ_LENGTH, "row must be overlength to be interesting"
+    base = Dataset.from_list([{"text": "The quick brown fox. " * 200}] * 4)
+    return base.with_transform(
+        lambda batch: {
+            "input_ids": [list(ids)] * len(batch["text"]),
+            "attention_mask": [[1] * len(ids)] * len(batch["text"]),
+        }
+    )
+
+
+def test_transformed_datasets_keep_their_length_cap(tmp_path, trl_has_guard):
+    """An on-access tokenizing transform is an unprepared dataset too."""
+    trainer = _build(tmp_path, dataset = _transformed_dataset)
+    args = trainer.args
+    rows = [trainer.train_dataset[i] for i in range(2)]
+
+    assert trainer.train_dataset.column_names == ["text"], "transform should hide the schema"
+    assert "input_ids" in rows[0], "rows should already be tokenized"
+    assert args.max_length == _MODEL_MAX_SEQ_LENGTH, "the length cap must not be cleared"
+    if trl_has_guard:
+        assert args.padding_free is False, "padding-free must be dropped, it disables truncation"
+    assert max(len(r["input_ids"]) for r in rows) > _MODEL_MAX_SEQ_LENGTH
+    if getattr(trainer.data_collator, "max_length", None) is not None:
+        assert _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH, "overlength rows reached the model"
+
+
 def test_padding_free_off_keeps_max_length(tmp_path):
     """Nothing is cleared when padding-free is not in play."""
     trainer = _build(tmp_path, padding_free = False)

@@ -1246,6 +1246,10 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             #     collator is handed max_length=None under padding-free. Turn
             #     padding-free off instead and keep `max_length`, so TRL's own
             #     collator truncates.
+            # The schema is read off the first yielded row, exactly like the Zoo's
+            # sft_prepare_dataset does, and only falls back to `column_names`: a
+            # `with_transform` / `set_transform` dataset still reports its backing
+            # columns there while it yields `input_ids`.
             # Only emitted for a TRL that carries the guard, so older versions
             # receive exactly what they did before.
             if "`max_length` is not enforced" in old_RLTrainer_source:
@@ -1260,12 +1264,14 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "    except Exception:\n"
                     "        pass\n"
                     "    try:\n"
-                    "        _unsloth_columns = getattr(train_dataset, 'column_names', None)\n"
-                    "        if isinstance(_unsloth_columns, dict):\n"
-                    "            _unsloth_columns = [_c for _v in _unsloth_columns.values() for _c in (_v or [])]\n"
-                    "        if _unsloth_columns is None and train_dataset is not None:\n"
+                    "        _unsloth_columns = None\n"
+                    "        if train_dataset is not None:\n"
                     "            _unsloth_first_row = next(iter(train_dataset), None)\n"
                     "            if isinstance(_unsloth_first_row, dict): _unsloth_columns = list(_unsloth_first_row.keys())\n"
+                    "        if _unsloth_columns is None:\n"
+                    "            _unsloth_columns = getattr(train_dataset, 'column_names', None)\n"
+                    "            if isinstance(_unsloth_columns, dict):\n"
+                    "                _unsloth_columns = [_c for _v in _unsloth_columns.values() for _c in (_v or [])]\n"
                     "        if _unsloth_columns is not None and ('input_ids' in _unsloth_columns or 'labels' in _unsloth_columns):\n"
                     "            _unsloth_prep_truncates = False\n"
                     "    except Exception:\n"
