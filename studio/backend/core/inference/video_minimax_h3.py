@@ -17,6 +17,27 @@ H3_AUDIO_VAE = "vae/minimax_h3_audio_vae_fp32.safetensors"
 H3_QWEN_Q2 = "qwen3vl_32b_minimax_h3-Q2_K_M.gguf"
 H3_QWEN_Q4 = "qwen3vl_32b_minimax_h3-Q4_K_M.gguf"
 
+# Measured with the merged Diffusers T2VA workflow and component-level CPU
+# offload. The base is the largest component plus runtime overhead; activation
+# memory scales with spatiotemporal volume across the tested 960x544 and
+# 1344x768, 124-345 frame matrix. The guard covers allocator variation around
+# the measured success and OOM boundaries.
+H3_DIFFUSERS_VRAM_BASE_GB = 68.5
+H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME = 0.08
+
+
+def estimate_h3_diffusers_vram_gb(width: int, height: int, num_frames: int) -> float:
+    """Measured available-VRAM floor for an H3 Diffusers generation."""
+    volume_mpixel_frames = width * height * num_frames / 1_000_000
+    return H3_DIFFUSERS_VRAM_BASE_GB + (
+        H3_DIFFUSERS_VRAM_GB_PER_MPIXEL_FRAME * volume_mpixel_frames
+    )
+
+
+def estimate_h3_diffusers_host_ram_gb(available_vram_gb: float) -> float:
+    """Host-RAM floor for the offload tier selected at the available VRAM."""
+    return 85.0 if available_vram_gb >= 132.0 else 150.0
+
 
 def is_h3_native(family: Any, kind: str) -> bool:
     return getattr(family, "name", None) == "minimax-h3" and kind == "gguf"

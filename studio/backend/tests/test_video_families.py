@@ -16,6 +16,18 @@ from core.inference.video_families import (
     snap_video_size,
     supported_video_family_names,
 )
+from core.inference.video_minimax_h3 import (
+    estimate_h3_diffusers_host_ram_gb,
+    estimate_h3_diffusers_vram_gb,
+)
+
+
+def test_h3_measured_diffusers_memory_estimates():
+    assert estimate_h3_diffusers_vram_gb(960, 544, 124) == pytest.approx(73.68, abs = 0.02)
+    assert estimate_h3_diffusers_vram_gb(1344, 768, 124) == pytest.approx(78.74, abs = 0.02)
+    assert estimate_h3_diffusers_vram_gb(1344, 768, 345) == pytest.approx(96.98, abs = 0.02)
+    assert estimate_h3_diffusers_host_ram_gb(126) == 150
+    assert estimate_h3_diffusers_host_ram_gb(132) == 85
 
 
 @pytest.mark.parametrize(

@@ -1873,7 +1873,11 @@ class VideoBackend:
         offload_policy = "none"
         if device != "cpu":
             manager.enable_auto_cpu_offload(
-                device = device, memory_reserve_margin = "12GB"
+                # Measured H3 activations need substantially more than the
+                # official 12 GB example at 10-15 seconds. Forty GB also keeps
+                # very large GPUs from retaining both 66 GB components and OOMing
+                # while smaller caps succeed by offloading one of them.
+                device = device, memory_reserve_margin = "40GB"
             )
             offload_policy = "model"
 
@@ -2153,6 +2157,49 @@ class VideoBackend:
                 )
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
+
+                if state.engine == "diffusers" and fam.modular_workflow and state.device != "cpu":
+                    from .video_minimax_h3 import (
+                        estimate_h3_diffusers_host_ram_gb,
+                        estimate_h3_diffusers_vram_gb,
+                    )
+
+                    device_obj = torch.device(state.device)
+                    device_module = getattr(torch, device_obj.type, None)
+                    if device_module is not None and hasattr(device_module, "mem_get_info"):
+                        free_bytes, _ = device_module.mem_get_info(device_obj)
+                        reserved_bytes = (
+                            device_module.memory_reserved(device_obj)
+                            if hasattr(device_module, "memory_reserved")
+                            else 0
+                        )
+                        available_vram_gb = (free_bytes + reserved_bytes) / 1_000_000_000
+                        required_vram_gb = estimate_h3_diffusers_vram_gb(
+                            width, height, frames
+                        )
+                        if available_vram_gb + 0.25 < required_vram_gb:
+                            raise RuntimeError(
+                                f"MiniMax-H3 needs about {required_vram_gb:.1f} GB available "
+                                f"VRAM for {width}x{height} at {frames} frames; "
+                                f"{available_vram_gb:.1f} GB is available. Lower the resolution "
+                                "or duration, or load the GGUF artifact."
+                            )
+
+                        import psutil
+
+                        process_rss = psutil.Process().memory_info().rss
+                        host_capacity_gb = (
+                            psutil.virtual_memory().available + process_rss
+                        ) / 1_000_000_000
+                        required_host_gb = estimate_h3_diffusers_host_ram_gb(
+                            available_vram_gb
+                        )
+                        if host_capacity_gb + 0.5 < required_host_gb:
+                            raise RuntimeError(
+                                f"MiniMax-H3 needs about {required_host_gb:.0f} GB available "
+                                f"system RAM at this VRAM tier; {host_capacity_gb:.1f} GB is "
+                                "available. Load the GGUF artifact instead."
+                            )
 
                 if state.engine == "sd_cpp":
                     return self._generate_h3_native(
