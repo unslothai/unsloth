@@ -11,7 +11,7 @@ import {
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { useOnlineStatus } from "@/features/hub";
+import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { useHubInfiniteScroll } from "@/features/hub";
 import {
   type ModelPickTarget,
@@ -368,6 +368,10 @@ export function ModelsPage() {
   const navigate = useNavigate();
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
+  // Browser reachability, which is what every client here asks about: the
+  // selected model's metadata and the cached feed each issue their own request.
+  // On the discovery phase they would stay blocked at "probing" until a
+  // *listing* succeeded, and the Downloaded tab has no Retry to make that happen.
   const online = useOnlineStatus();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const hubSearch = useSearch({ from: "/hub" });
@@ -732,6 +736,7 @@ export function ModelsPage() {
     hasMore,
     fetchMore,
     searchError,
+    searchFailure,
     handleRetrySearch,
   } = useDiscoverSearch({
     debouncedQuery,
@@ -742,7 +747,6 @@ export function ModelsPage() {
     direction: effectiveDirection,
     channel: listChannel,
     ownerScope,
-    online,
   });
 
   const cachedListEntry = useHubFeedStore((state) =>
@@ -1076,6 +1080,8 @@ export function ModelsPage() {
     scannedCount,
     {
       enabled: online && isDiscoverTab && hasMore,
+      // No phase gate: the footer renders on hasMore and so outlives the failed
+      // page, and fetchMoreDiscoverManual clears the backoff itself.
       isFetching: isLoading || isLoadingMore,
       resultCount: filteredDiscoverRows.length,
       maxAutoFillFetches: 5,
@@ -1624,6 +1630,7 @@ export function ModelsPage() {
         activeCheckpoint,
         activeGgufVariant,
         searchError,
+        searchFailure,
         online,
         isDataset: isDatasetMode,
         inventoryTokens,
@@ -1650,6 +1657,7 @@ export function ModelsPage() {
       activeCheckpoint,
       activeGgufVariant,
       searchError,
+      searchFailure,
       online,
       inventoryTokens,
       scannedCount,

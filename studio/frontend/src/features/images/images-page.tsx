@@ -2543,15 +2543,20 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       /* Settings column + preview canvas: both on the page background, split by a rule. Each pane pads its own content.
          Full width, so the canvas grows with the window; the settings column stays fixed.
          pl-8 puts its content 40px in, level with the model selector label above and
-         with pr-8 on the other side of the column. */
-      <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
-        <div className="relative flex w-[408px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
+         with pr-8 on the other side of the column.
+         overflow-x-hidden because an unset overflow-x computes to auto beside overflow-y-auto,
+         which would let a wide row pan the page sideways on a phone. */
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
+        <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[408px] md:overflow-hidden md:border-r md:border-b-0">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pb-20 pl-0.5 pr-8",
+              // pb-20 at every width: the floating Generate button below is absolutely
+              // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
+              // phone padding puts it on top of the last control.
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-20 pl-0.5 pr-8 md:overflow-y-auto",
               settingsFadeClass,
             )}
           >
@@ -3105,7 +3110,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
           </div>
         </div>
 
-        <div className="relative flex min-w-0 flex-1 flex-col overflow-hidden pl-2">
+        <div className="relative flex min-h-[60dvh] min-w-0 flex-1 flex-col overflow-hidden pl-2 md:min-h-0">
           {/* With the pane's pl-2, the 40px gutter the settings column has off the page edge. */}
           <div className="hover-scrollbar relative flex flex-1 items-center justify-center overflow-auto p-6 pl-8">
             {selected && selectedSrc ? (

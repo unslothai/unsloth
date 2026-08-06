@@ -253,28 +253,8 @@ export function HistoryCardGrid({
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
     useTrainingActions();
-  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel registers shortly
-  // after startup, so poll (bounded) until it shows.
-  const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
-  const serverUrl = usePlatformStore((s) => s.serverUrl);
-  useEffect(() => {
-    if (cloudflareUrl) return;
-    let cancelled = false;
-    void (async () => {
-      for (let attempt = 0; attempt < 12 && !cancelled; attempt++) {
-        try {
-          await fetchDeviceType({ force: true });
-        } catch {
-          // Ignore startup blips; copy-link falls back to serverUrl/origin.
-        }
-        if (cancelled || usePlatformStore.getState().cloudflareUrl) return;
-        await new Promise((r) => setTimeout(r, 2500));
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [cloudflareUrl]);
+  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel can now
+  // start and stop at any time, so refresh on click instead of polling at mount.
 
   const userControllerRef = useRef<AbortController | null>(null);
   const pollControllerRef = useRef<AbortController | null>(null);
@@ -622,11 +602,20 @@ export function HistoryCardGrid({
                   size="xs"
                   variant="outline"
                   className="absolute bottom-3 right-4 z-10 h-6 rounded-full px-2.5 text-ui-11 leading-none shadow-sm"
-                  onClick={async () => {
+                  onClick={async (e) => {
+                    e.stopPropagation();
+                    try {
+                      await fetchDeviceType({ force: true });
+                    } catch {
+                      // Fall back to the last known server URL or this origin.
+                    }
+                    // Encode each segment but keep "/" so the /p route matches.
                     const ref = (run.preview_ref ?? "")
                       .split("/")
                       .map(encodeURIComponent)
                       .join("/");
+                    const { cloudflareUrl, serverUrl } =
+                      usePlatformStore.getState();
                     const base = (
                       cloudflareUrl ??
                       serverUrl ??
@@ -649,7 +638,7 @@ export function HistoryCardGrid({
               {!isRunning && (
                 <button
                   type="button"
-                  className="absolute right-3 top-3 z-10 rounded-md p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100"
+                  className="absolute right-3 top-3 z-10 rounded-md p-1 text-muted-foreground/50 opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive group-hover:opacity-100 focus-visible:opacity-100 pointer-coarse:opacity-100"
                   aria-label={t("studio.history.deleteRun")}
                   onClick={() => setDeleteTarget(run.id)}
                 >

@@ -262,6 +262,11 @@ export async function validateModel(
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
+      // The estimate charges a drafter whose size differs by kind (a DSpark
+      // sidecar is ~11 GB), so omitting the mode makes this preflight disagree
+      // with /load in both directions.
+      speculative_type: payload.speculative_type ?? null,
+      spec_draft_n_max: payload.spec_draft_n_max ?? null,
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
