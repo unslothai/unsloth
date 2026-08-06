@@ -24,6 +24,8 @@ SHARED_COMPOSER = FRONTEND / "features/chat/shared-composer.tsx"
 TITLEBAR = FRONTEND / "components/tauri/window-titlebar.tsx"
 SHEET = FRONTEND / "components/ui/sheet.tsx"
 RESEARCH_ACTIVITY_PANEL = FRONTEND / "features/chat/components/research-activity-panel.tsx"
+RESPONSE_DETAILS_SHEET = FRONTEND / "components/assistant-ui/message-response-details-sheet.tsx"
+DOCUMENT_PREVIEW_SHEET = FRONTEND / "features/rag/components/document-preview-sheet.tsx"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
 NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
 TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
@@ -492,7 +494,6 @@ def test_tauri_collapse_removes_the_icon_rail_but_web_keeps_it():
 def test_fixed_sheets_start_below_the_custom_titlebar():
     provider = APP_PROVIDER.read_text(encoding = "utf-8")
     sheet = SHEET.read_text(encoding = "utf-8")
-    research_activity_panel = RESEARCH_ACTIVITY_PANEL.read_text(encoding = "utf-8")
 
     assert "<SheetViewportInsetProvider" in provider
     assert 'position === "fixed" && side !== "bottom"' in sheet
@@ -500,7 +501,16 @@ def test_fixed_sheets_start_below_the_custom_titlebar():
         assert f"data-[side={side}]:top-0" in sheet
         assert f"data-[side={side}]:bottom-0" in sheet
         assert f"data-[side={side}]:h-full" not in sheet
-    assert "studio-custom-titlebar-height" not in research_activity_panel
+
+    # The context is the only titlebar offset for sheets: one that also
+    # compensated locally would be pushed down twice. Dialogs still read
+    # --studio-window-chrome-top, which DesktopChromeVarsEffect mirrors.
+    for portalled in (
+        RESEARCH_ACTIVITY_PANEL,
+        RESPONSE_DETAILS_SHEET,
+        DOCUMENT_PREVIEW_SHEET,
+    ):
+        assert "studio-custom-titlebar-height" not in portalled.read_text(encoding = "utf-8")
 
 
 def test_visible_mac_sidebar_header_is_a_drag_region():
