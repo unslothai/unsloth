@@ -1252,9 +1252,6 @@ jobs:
               f'{base_name}-MacOS.dmg',
               f'{base_name}-ARM64.app.tar.gz',
               f'{base_name}-ARM64.app.tar.gz.sig',
-              f'{base_name}-Linux.AppImage',
-              f'{base_name}-Linux.AppImage.sig',
-              f'{base_name}-Ubuntu.deb',
               f'{base_name}-Windows.exe',
               f'{base_name}-Windows.exe.sig',
           }
@@ -1374,7 +1371,6 @@ jobs:
               }
 
           darwin = entry('.app.tar.gz.sig')
-          linux = entry('.AppImage.sig')
           windows = entry('.exe.sig')
           notes = pathlib.Path(os.environ['RUNNER_TEMP'], 'desktop-release-notes.md').read_text()
           metadata = {
@@ -1386,8 +1382,6 @@ jobs:
               'platforms': {
                   'darwin-aarch64': darwin,
                   'darwin-aarch64-app': darwin,
-                  'linux-x86_64': linux,
-                  'linux-x86_64-appimage': linux,
                   'windows-x86_64': windows,
                   'windows-x86_64-nsis': windows,
               },
@@ -1454,7 +1448,6 @@ jobs:
 
           required_families = {
               'darwin-aarch64': False,
-              'linux-x86_64': False,
               'windows-x86_64': False,
           }
           expected_prefix = f'https://github.com/wasimysaid/unsloth/releases/download/{release_tag}/'
