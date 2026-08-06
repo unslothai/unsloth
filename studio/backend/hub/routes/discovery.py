@@ -341,9 +341,7 @@ async def _fetch_bounded(url: str, hf_token: Optional[str]) -> tuple:
         # clock bound goes straight back. Leave it running instead, bounded by
         # the socket timeout, and swallow its outcome so nothing reports it as
         # an unretrieved exception.
-        task.add_done_callback(
-            lambda t: None if t.cancelled() else t.exception()
-        )
+        task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
         raise asyncio.TimeoutError()
     return task.result()
 
