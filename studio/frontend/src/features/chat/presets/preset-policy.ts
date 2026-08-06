@@ -283,8 +283,10 @@ export function mergeBackendRecommendedInference({
     return next;
   }
 
+  // A window the response did not report leaves Max Tokens on the ceiling the settings
+  // sheet gives it, rather than on whatever the previous model left behind.
   const defaultMaxTokens = response.is_gguf
-    ? (response.context_length ?? current.maxTokens)
+    ? (response.context_length ?? current.maxSeqLength)
     : 4096;
   return {
     ...next,

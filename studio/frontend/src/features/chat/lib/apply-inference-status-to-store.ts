@@ -3,7 +3,10 @@
 
 // Barrel import (lint rule); the model-picker cycle is fine because the call
 // happens at runtime, not module eval.
-import { resolveResidentInitialConfig } from "@/features/model-picker";
+import {
+  loadedContextFields,
+  resolveResidentInitialConfig,
+} from "@/features/model-picker";
 // eslint-disable-next-line no-restricted-imports -- Avoid the hub barrel's React and download-manager exports.
 import { modelDisplayName } from "@/features/hub/lib/model-identity";
 import { getInferenceStatus } from "../api/chat-api";
@@ -177,15 +180,6 @@ export function applyActiveModelStatusToStore(
   const supportsPreserveThinking = status.supports_preserve_thinking ?? false;
   const supportsTools = status.supports_tools ?? false;
   const storedReasoningEnabled = loadOptionalBool(CHAT_REASONING_ENABLED_KEY);
-  const currentLoadedContextLength = status.is_gguf
-    ? (status.context_length ?? null)
-    : null;
-  const maxContextLength = status.is_gguf
-    ? (status.max_context_length ?? null)
-    : null;
-  const nativeContextLength = status.is_gguf
-    ? (status.native_context_length ?? null)
-    : null;
   const currentSpecType = normalizeSpeculativeType(status.speculative_type);
   const prevState = useChatRuntimeStore.getState();
   const clampedReasoningEffort =
@@ -340,10 +334,7 @@ export function applyActiveModelStatusToStore(
         ? true
         : useChatRuntimeStore.getState().reasoningEnabled
       : true,
-    loadedContextLength: currentLoadedContextLength,
-    maxContextLength,
-    nativeContextLength,
-    loadedIsGguf: status.is_gguf ?? false,
+    ...loadedContextFields(status),
     ...(status.is_gguf
       ? {}
       : { activeNativePathToken: null, activeNativePathExpiresAtMs: null }),

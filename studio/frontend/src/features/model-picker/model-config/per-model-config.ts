@@ -129,6 +129,53 @@ export function isServedByLlamaCpp(x: {
   );
 }
 
+/** The store's record of the context window a load left behind.
+ *
+ *  A non-GGUF response contributes one only when it carries a native length, which is how
+ *  MLX reports having measured the model; the transformers path never does, and its
+ *  `context_length` is the requested max_seq_length rather than a window anyone sized.
+ *
+ *  One constructor because the four move together: a window without the backend that
+ *  produced it is what made a context length read as proof of a GGUF.
+ */
+export function loadedContextFields(resp: {
+  is_gguf?: boolean;
+  context_length?: number | null;
+  native_context_length?: number | null;
+  max_context_length?: number | null;
+} | null): {
+  loadedContextLength: number | null;
+  maxContextLength: number | null;
+  nativeContextLength: number | null;
+  loadedIsGguf: boolean | null;
+} {
+  if (!resp) {
+    return {
+      loadedContextLength: null,
+      maxContextLength: null,
+      nativeContextLength: null,
+      loadedIsGguf: null,
+    };
+  }
+  const isGguf = resp.is_gguf ?? false;
+  // Unknown, not a default: a response omits it when reading the model's window failed.
+  const loaded = resp.context_length ?? null;
+  if (!isGguf && resp.native_context_length == null) {
+    return {
+      loadedContextLength: null,
+      maxContextLength: null,
+      nativeContextLength: null,
+      loadedIsGguf: false,
+    };
+  }
+  return {
+    loadedContextLength: loaded,
+    maxContextLength: resp.max_context_length ?? loaded,
+    nativeContextLength: resp.native_context_length ?? null,
+    loadedIsGguf: isGguf,
+  };
+}
+
 // Matches studio/backend/core/inference/llama_cpp.py _valid_cache_types (f16 is the UI default).
 export const KV_CACHE_DTYPES = [
   "bf16",

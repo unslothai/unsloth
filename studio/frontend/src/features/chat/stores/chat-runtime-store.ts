@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
+import { loadedContextFields } from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedPinnableGpuIndexKind,
   reconcileCachedGpuSelection,
@@ -2044,10 +2045,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       activeLoadId: null,
       activeNativePathToken: null,
       activeNativePathExpiresAtMs: null,
-      loadedContextLength: null,
-      maxContextLength: null,
-      nativeContextLength: null,
-      loadedIsGguf: null,
+      ...loadedContextFields(null),
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       contextUsageByThreadId: {},

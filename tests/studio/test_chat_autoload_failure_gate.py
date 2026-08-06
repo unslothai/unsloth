@@ -102,6 +102,12 @@ function resolveInferenceCheckpointId(status: any) {
 function snapshotQueuedChatRunSettings(state: any) {
   return { ...state, params: { ...state.params } };
 }
+// Imported by the sliced region from ../model-config/per-model-config. These scenarios
+// assert on which models load, and the harness store below discards every update, so no
+// scenario observes the fields -- a faithful copy would only be a copy that rots.
+function loadedContextFields(_resp: any) {
+  return {};
+}
 
 function makeStore(): any {
   const state: any = {

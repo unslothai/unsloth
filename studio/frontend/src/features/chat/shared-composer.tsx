@@ -88,6 +88,7 @@ import {
   normalizeMaxSeqLength,
   resolveInitialConfig,
   type PerModelConfig,
+  loadedContextFields,
 } from "@/features/model-picker";
 import {
   confirmTransformersUpgradeIfNeeded,
@@ -1524,14 +1525,7 @@ export function SharedComposer({
           customContextLength: targetIsGguf
             ? (ownConfig.customContextLength ?? keepCustomCtx)
             : null,
-          loadedContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
-          nativeContextLength: resp.is_gguf
-            ? (resp.native_context_length ?? null)
-            : null,
-          maxContextLength: resp.is_gguf
-            ? (resp.max_context_length ?? null)
-            : null,
-          loadedIsGguf: resp.is_gguf ?? false,
+          ...loadedContextFields(resp),
           // Compare selections load by repo/variant, never from the file picker,
           // so they carry no native lease. Clear any prior picked file's
           // token/expiry so the reload path never sends a stale lease.
