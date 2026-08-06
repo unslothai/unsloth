@@ -55,8 +55,7 @@ def test_schema_is_idempotent_and_persists_folder_tables(rag_home):
             )
         }
         job_columns = {
-            row["name"]
-            for row in second.execute("PRAGMA table_info(linked_folder_sync_jobs)")
+            row["name"] for row in second.execute("PRAGMA table_info(linked_folder_sync_jobs)")
         }
     finally:
         second.close()
@@ -388,18 +387,12 @@ def test_linked_folders_cannot_overlap_within_a_scope(rag_home):
     parent = rag_home / "parent"
     child = parent / "child"
     child.mkdir(parents = True)
-    folder_sync.create_folder(
-        scope_type = "project", scope_id = "one", path = str(parent)
-    )
+    folder_sync.create_folder(scope_type = "project", scope_id = "one", path = str(parent))
 
     with pytest.raises(ValueError, match = "cannot overlap"):
-        folder_sync.create_folder(
-            scope_type = "project", scope_id = "one", path = str(child)
-        )
+        folder_sync.create_folder(scope_type = "project", scope_id = "one", path = str(child))
 
-    other_scope = folder_sync.create_folder(
-        scope_type = "project", scope_id = "two", path = str(child)
-    )
+    other_scope = folder_sync.create_folder(scope_type = "project", scope_id = "two", path = str(child))
     assert other_scope["path"] == str(child)
 
 
@@ -562,9 +555,7 @@ def test_rebuild_requested_during_running_sync_queues_a_successor(rag_home):
     sync_job = folder_sync.request_sync(folder["id"])
     conn = rag_db.get_connection()
     try:
-        conn.execute(
-            "UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (sync_job,)
-        )
+        conn.execute("UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (sync_job,))
         conn.commit()
     finally:
         conn.close()
@@ -614,9 +605,12 @@ def test_requested_rebuild_promotes_an_intervening_pending_sync(rag_home):
             "SELECT kind, rebuild_requested FROM linked_folder_sync_jobs WHERE id=?", (pending,)
         ).fetchone()
         assert tuple(successor) == ("rebuild", 0)
-        assert conn.execute(
-            "SELECT rebuild_requested FROM linked_folder_sync_jobs WHERE id=?", (completed,)
-        ).fetchone()["rebuild_requested"] == 0
+        assert (
+            conn.execute(
+                "SELECT rebuild_requested FROM linked_folder_sync_jobs WHERE id=?", (completed,)
+            ).fetchone()["rebuild_requested"]
+            == 0
+        )
     finally:
         conn.close()
 
@@ -627,9 +621,7 @@ def test_pending_rebuild_promotion_clears_a_recovered_successor_flag(rag_home):
     job_id = folder_sync.request_sync(folder["id"])
     conn = rag_db.get_connection()
     try:
-        conn.execute(
-            "UPDATE linked_folder_sync_jobs SET rebuild_requested=1 WHERE id=?", (job_id,)
-        )
+        conn.execute("UPDATE linked_folder_sync_jobs SET rebuild_requested=1 WHERE id=?", (job_id,))
         conn.commit()
     finally:
         conn.close()
@@ -752,9 +744,12 @@ def test_shutdown_requeues_a_scan_before_it_mutates_mappings(rag_home, monkeypat
     assert result["stage"] == "queued"
     conn = rag_db.get_connection()
     try:
-        assert conn.execute(
-            "SELECT 1 FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
-        ).fetchone() is None
+        assert (
+            conn.execute(
+                "SELECT 1 FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+            is None
+        )
     finally:
         conn.close()
 

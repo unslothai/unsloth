@@ -160,9 +160,7 @@ def create_folder(
     try:
         conn.execute("BEGIN IMMEDIATE")
         normalized_key = _path_key(normalized)
-        existing = conn.execute(
-            "SELECT * FROM linked_folders WHERE scope=?", (scope,)
-        ).fetchall()
+        existing = conn.execute("SELECT * FROM linked_folders WHERE scope=?", (scope,)).fetchall()
         for row in existing:
             existing_key = _path_key(row["path"])
             if existing_key == normalized_key or _same_file(row["path"], normalized):
@@ -690,9 +688,7 @@ def _reconcile_folder(job_id: str) -> None:
     conn = rag_db.get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
-        row = conn.execute(
-            "SELECT * FROM linked_folder_sync_jobs WHERE id=?", (job_id,)
-        ).fetchone()
+        row = conn.execute("SELECT * FROM linked_folder_sync_jobs WHERE id=?", (job_id,)).fetchone()
         if row is None or row["status"] not in ("pending", "running"):
             conn.rollback()
             return
@@ -784,7 +780,9 @@ def _reconcile_folder(job_id: str) -> None:
             missing.discard(old_rel)
             new.discard(rel)
             known[rel] = {**known.pop(old_rel), "relative_path": rel}
-            same_extension = os.path.splitext(old_rel)[1].lower() == os.path.splitext(rel)[1].lower()
+            same_extension = (
+                os.path.splitext(old_rel)[1].lower() == os.path.splitext(rel)[1].lower()
+            )
             same_content = False
             if same_extension and known[rel].get("content_hash"):
                 snapshot = _snapshot(folder["path"], meta)

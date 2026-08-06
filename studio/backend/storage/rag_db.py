@@ -189,9 +189,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "SELECT d.sha256 FROM documents d WHERE d.id=linked_folder_files.document_id) "
         "WHERE content_hash IS NULL"
     )
-    job_cols = {
-        r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()
-    }
+    job_cols = {r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()}
     if "rebuild_requested" not in job_cols:
         conn.execute(
             "ALTER TABLE linked_folder_sync_jobs "
