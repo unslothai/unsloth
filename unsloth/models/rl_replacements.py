@@ -931,10 +931,13 @@ def _unsloth_grpo_autocast(self):
 def _unsloth_grpo_autocast_kwargs(self, device_type = "cuda"):
     """torch.amp.autocast keyword arguments for GRPO generation."""
     enabled, dtype = _unsloth_grpo_autocast(self)
-    if not getattr(self, "_autocast_force_float32", False):
-        # Already inside an autocast, so do not name a dtype of our own.
-        if torch.is_autocast_enabled(device_type):
-            dtype = nullcontext()
+    if (not getattr(self, "_autocast_force_float32", False)
+            and torch.is_autocast_enabled(device_type)):
+        # Already inside an autocast: inherit its dtype by not naming one.
+        # `dtype` has to be absent rather than a sentinel, since autocast hands
+        # whatever it is straight to set_autocast_dtype, which takes a
+        # torch.dtype and nothing else.
+        return {"enabled": enabled}
     return {"enabled": enabled, "dtype": dtype}
 
 

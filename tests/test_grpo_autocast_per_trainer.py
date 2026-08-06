@@ -513,3 +513,46 @@ def test_only_one_place_reads_the_shared_environment():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_an_outer_autocast_is_inherited_rather_than_overridden():
+    """Being inside an autocast must not crash, and must keep the outer dtype.
+
+    The helper used to signal "do not name a dtype of my own" by setting
+    `dtype = nullcontext()`. autocast passes whatever it is handed straight to
+    `set_autocast_dtype`, which accepts a torch.dtype and nothing else, so that
+    branch raised `TypeError: ... must be torch.dtype, not nullcontext` instead
+    of doing nothing. The key has to be absent, not a sentinel.
+    """
+    import torch
+    from unsloth.models.rl_replacements import _unsloth_grpo_autocast_kwargs
+
+    if not torch.cuda.is_available():
+        import pytest
+        pytest.skip("needs CUDA: torch.is_autocast_enabled('cuda') is the branch")
+
+    class _Trainer:
+        pass
+
+    trainer = _Trainer()
+    trainer._autocast_enabled = True
+    trainer._autocast_dtype = torch.float16
+    trainer._autocast_force_float32 = False
+
+    # Outside: the helper names its own dtype.
+    outside = _unsloth_grpo_autocast_kwargs(trainer)
+    assert outside == {"enabled": True, "dtype": torch.float16}, outside
+
+    # Inside: no dtype at all, and it must actually build an autocast.
+    with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16):
+        inside = _unsloth_grpo_autocast_kwargs(trainer)
+        assert "dtype" not in inside, inside
+        with torch.amp.autocast(device_type = "cuda", **inside):
+            x = torch.randn(4, 4, device = "cuda")
+            assert (x @ x).dtype is torch.bfloat16
+
+    # Forcing float32 keeps naming float16 even inside an outer autocast.
+    trainer._autocast_force_float32 = True
+    with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16):
+        forced = _unsloth_grpo_autocast_kwargs(trainer)
+    assert forced == {"enabled": True, "dtype": torch.float16}, forced
