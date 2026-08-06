@@ -1,7 +1,16 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
+import { AnimatedShinyText } from "@/components/ui/animated-shiny-text";
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { usePlatformStore } from "@/config/env";
 import {
@@ -21,12 +30,16 @@ import { isTauri } from "@/lib/api-base";
 import { copyToClipboard } from "@/lib/copy-to-clipboard";
 import { Tick02Icon } from "@/lib/tick-icon";
 import { cn } from "@/lib/utils";
-import { Copy01Icon } from "@hugeicons/core-free-icons";
+import {
+  Copy01Icon,
+  Globe02Icon,
+  QrCodeIcon,
+} from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { useCallback, useEffect, useRef, useState } from "react";
+import QRCode from "react-qr-code";
 import { ChangePasswordDialog } from "./change-password-dialog";
 import { SettingsRow } from "./settings-row";
-import { SettingsSection } from "./settings-section";
 
 type RemoteAccessOperation = "start" | "stop" | "auto";
 
@@ -59,6 +72,11 @@ function stateDotClass(state?: RemoteAccessStatus["state"]): string {
 
 function AccessStatus({ status }: { status: RemoteAccessStatus | null }) {
   const owner = status?.managedBy ? OWNER_LABEL[status.managedBy] : null;
+  const transitioning =
+    status?.state === "starting" || status?.state === "stopping";
+  const text = `${status ? STATE_LABEL[status.state] : "Unavailable"}${
+    owner ? ` · ${owner}` : ""
+  }`;
   return (
     <output
       className="flex items-center gap-1.5 text-xs text-muted-foreground"
@@ -67,8 +85,13 @@ function AccessStatus({ status }: { status: RemoteAccessStatus | null }) {
       <span
         className={cn("size-2 rounded-full", stateDotClass(status?.state))}
       />
-      {status ? STATE_LABEL[status.state] : "Unavailable"}
-      {owner ? ` · ${owner}` : ""}
+      {transitioning ? (
+        <AnimatedShinyText className="mx-0 max-w-none" shimmerWidth={60}>
+          {text}
+        </AnimatedShinyText>
+      ) : (
+        text
+      )}
     </output>
   );
 }
@@ -106,6 +129,33 @@ function CopyRemoteUrlButton({ url }: { url: string }) {
       />
       {copied ? "Copied" : "Copy URL"}
     </Button>
+  );
+}
+
+function RemoteUrlQrButton({ url }: { url: string }) {
+  return (
+    <Dialog>
+      <DialogTrigger asChild={true}>
+        <Button type="button" size="sm" variant="outline" className="gap-1.5">
+          <HugeiconsIcon icon={QrCodeIcon} className="size-3.5" />
+          QR
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-xs">
+        <DialogHeader>
+          <DialogTitle>Open on your phone</DialogTitle>
+          <DialogDescription>
+            Scan to open the remote URL in your phone’s browser.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="mx-auto mt-2 rounded-md bg-white p-3">
+          <QRCode value={url} size={192} />
+        </div>
+        <code className="block break-all text-center font-mono text-xs text-muted-foreground">
+          {url}
+        </code>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -258,52 +308,91 @@ export function RemoteAccessSection() {
           : "Start";
 
   return (
-    <SettingsSection
-      title="Remote access"
-      description="Make Unsloth and its APIs available through a temporary Remote Secure Cloudflare URL."
+    <section
+      data-settings-label="Remote access"
+      className="overflow-hidden rounded-lg border border-border"
     >
-      <SettingsRow
-        label="Status"
-        labelAccessory={<AccessStatus status={status} />}
-        description={statusDescription}
-      >
+      <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
+        <div className="flex min-w-0 items-start gap-3">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-background">
+            <HugeiconsIcon
+              icon={Globe02Icon}
+              className="size-4.5 text-foreground"
+            />
+          </div>
+          <div className="flex min-w-0 flex-col gap-0.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-semibold font-heading text-foreground">
+                Remote access
+              </h2>
+              <AccessStatus status={status} />
+            </div>
+            <p className="text-xs text-muted-foreground leading-relaxed">
+              Use Unsloth and its APIs from other devices through a secure,
+              temporary Cloudflare URL.
+            </p>
+          </div>
+        </div>
         <Button
           type="button"
           size="sm"
           variant={stopAction ? "outline" : "default"}
+          className="min-w-20 shrink-0"
           onClick={stopAction ? stop : start}
           disabled={actionDisabled}
         >
           {actionLabel}
         </Button>
-      </SettingsRow>
+      </div>
 
-      <RemotePasswordRow status={status} onDone={refreshStatus} />
-
-      {status?.url ? (
-        <SettingsRow
-          label="Remote Secure Cloudflare URL"
-          description={
-            <code className="block break-all whitespace-normal font-mono">
-              {status.url}
-            </code>
-          }
+      {statusDescription ? (
+        <p
+          className={cn(
+            "border-t border-border/60 px-4 py-2.5 text-xs leading-snug",
+            status?.state === "error"
+              ? "text-destructive"
+              : "text-muted-foreground",
+          )}
         >
-          <CopyRemoteUrlButton url={status.url} />
-        </SettingsRow>
+          {statusDescription}
+        </p>
       ) : null}
 
-      <SettingsRow
-        label="Start remote access when Unsloth starts"
-        description="Unsloth will create a new remote URL each time it starts. Stopping remote access now won’t turn this setting off."
-      >
-        <Switch
-          checked={status?.autoStart ?? false}
-          disabled={busy !== null || remoteAccessAutoStartReadOnly(status)}
-          onCheckedChange={setAutoStart}
-          aria-label="Start remote access when Unsloth starts"
-        />
-      </SettingsRow>
-    </SettingsSection>
+      {status?.url ? (
+        <div className="flex flex-col gap-1.5 border-t border-border/60 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <span className="text-sm font-medium text-foreground">
+              Remote URL
+            </span>
+            <div className="flex items-center gap-2">
+              <RemoteUrlQrButton url={status.url} />
+              <CopyRemoteUrlButton url={status.url} />
+            </div>
+          </div>
+          <code className="block w-full break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+            {status.url}
+          </code>
+          <span className="text-xs text-muted-foreground leading-snug">
+            Anyone with this URL and the remote password can sign in.
+          </span>
+        </div>
+      ) : null}
+
+      <div className="border-t border-border/60 px-4 py-1">
+        <RemotePasswordRow status={status} onDone={refreshStatus} />
+
+        <SettingsRow
+          label="Start automatically"
+          description="Create a new remote URL each time Unsloth starts. Stopping remote access now won’t turn this off."
+        >
+          <Switch
+            checked={status?.autoStart ?? false}
+            disabled={busy !== null || remoteAccessAutoStartReadOnly(status)}
+            onCheckedChange={setAutoStart}
+            aria-label="Start remote access when Unsloth starts"
+          />
+        </SettingsRow>
+      </div>
+    </section>
   );
 }
