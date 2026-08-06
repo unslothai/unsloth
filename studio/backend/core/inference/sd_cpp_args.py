@@ -360,9 +360,13 @@ def build_sd_cpp_video_command(
     if params.seed is not None:
         cmd += ["--seed", str(int(params.seed))]
     cmd += ["--output", output_path]
+    offload = list(offload or [])
+    if offload:
+        cmd += offload
+    cmd += [f for f in metal_text_encoder_flags() if f not in offload]
     if verbose:
         cmd.append("-v")
-    for flag in list(offload or []) + list(extra_args or []):
+    for flag in list(extra_args or []):
         if flag not in cmd:
             cmd.append(flag)
     return cmd

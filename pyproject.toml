@@ -129,15 +129,18 @@ huggingfacenotorch = [
     "datasets>=3.4.1,!=4.0.*,!=4.1.0,<4.4.0",
     "accelerate>=0.34.1",
     "peft>=0.18.0,!=0.11.0",
-    "huggingface_hub>=1.23.0,<2.0 ; python_version >= '3.10'",
-    "huggingface_hub==0.36.2 ; python_version < '3.10'",
+    "huggingface_hub>=0.34.0",
     "hf_transfer",
-    # MiniMax-H3 landed after 0.39.0 and has no packaged release yet, so pin the
-    # merged upstream commit that introduced its Modular Diffusers workflow.
+    # 0.39 is the floor the diffusion stack already assumes: Krea2Pipeline (the Krea 2
+    # workflow raises without it), the cache_context child-registry behavior, and the
+    # Flux2 / Z-Image pipelines. An unversioned entry let an upgrade keep an older
+    # diffusers, so advertised models failed to load until the user upgraded by hand.
+    # Studio's installer requirements carry the temporary MiniMax-H3 commit pin. A
+    # VCS direct reference cannot enter wheel metadata because PyPI rejects it.
     # diffusers dropped 3.9 in 0.38, and we still support it (requires-python >= 3.9),
     # so the floor is conditional: pinning it outright leaves pip no candidate at all
     # on 3.9 and the whole extra becomes unresolvable.
-    "diffusers @ git+https://github.com/huggingface/diffusers.git@f53d552036a0d1bd5570782a39cd40cfabf112bc ; python_version >= '3.10'",
+    "diffusers>=0.39.0 ; python_version >= '3.10'",
     "diffusers ; python_version < '3.10'",
     "transformers>=4.51.3,!=4.52.0,!=4.52.1,!=4.52.2,!=4.52.3,!=4.53.0,!=4.54.0,!=4.55.0,!=4.55.1,!=4.57.0,!=4.57.4,!=4.57.5,!=5.0.0,!=5.1.0,<=5.5.0",
     "trl>=0.18.2,!=0.19.0,<=0.24.0",

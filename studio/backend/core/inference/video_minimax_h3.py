@@ -74,40 +74,55 @@ class MiniMaxH3NativeRuntime:
 
 
 def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
-    """Convert an sd.cpp WebM into gallery-compatible H.264/AAC MP4 bytes."""
+    """Convert an sd.cpp WebM into a gallery-compatible H.264/AAC MP4.
+
+    The native backend is available in Studio's no-torch runtime, so keep this
+    export entirely in PyAV rather than routing decoded frames through Diffusers.
+    """
     import av
-    import numpy as np
-    import torch
-    from diffusers.utils.export_utils import encode_video
 
     tmp = tempfile.NamedTemporaryFile(suffix = ".mp4", delete = False)
     tmp.close()
     target = Path(tmp.name)
     try:
-        with av.open(str(source)) as src:
-            video_frames = [frame.to_ndarray(format = "rgb24") for frame in src.decode(video = 0)]
+        with av.open(str(source)) as src, av.open(str(target), mode = "w", format = "mp4") as dst:
+            source_video = src.streams.video[0]
+            output_video = dst.add_stream("libx264", rate = fps)
+            output_video.width = int(source_video.codec_context.width)
+            output_video.height = int(source_video.codec_context.height)
+            output_video.pix_fmt = "yuv420p"
 
-        audio_waveform = None
-        sample_rate = None
-        with av.open(str(source)) as src:
-            if src.streams.audio:
-                source_audio = src.streams.audio[0]
+            source_audio = src.streams.audio[0] if src.streams.audio else None
+            output_audio = None
+            audio_resampler = None
+            if source_audio is not None:
                 sample_rate = int(source_audio.codec_context.sample_rate or 32000)
-                resampler = av.AudioResampler(format = "fltp", layout = "stereo", rate = sample_rate)
-                chunks = []
-                for frame in src.decode(audio = 0):
-                    chunks.extend(resampled.to_ndarray() for resampled in resampler.resample(frame))
-                chunks.extend(resampled.to_ndarray() for resampled in resampler.resample(None))
-                if chunks:
-                    audio_waveform = torch.from_numpy(np.concatenate(chunks, axis = 1))
+                output_audio = dst.add_stream("aac", rate = sample_rate)
+                output_audio.layout = "stereo"
+                audio_resampler = av.AudioResampler(
+                    format = "fltp", layout = "stereo", rate = sample_rate
+                )
 
-        encode_video(
-            torch.from_numpy(np.stack(video_frames)),
-            fps,
-            str(target),
-            audio = audio_waveform,
-            audio_sample_rate = sample_rate,
-        )
+            selected = (source_video,) if source_audio is None else (source_video, source_audio)
+            for packet in src.demux(*selected):
+                for frame in packet.decode():
+                    if packet.stream.type == "video":
+                        for encoded in output_video.encode(frame):
+                            dst.mux(encoded)
+                    elif output_audio is not None and audio_resampler is not None:
+                        for resampled in audio_resampler.resample(frame):
+                            for encoded in output_audio.encode(resampled):
+                                dst.mux(encoded)
+
+            if output_audio is not None and audio_resampler is not None:
+                for resampled in audio_resampler.resample(None):
+                    for encoded in output_audio.encode(resampled):
+                        dst.mux(encoded)
+            for encoded in output_video.encode():
+                dst.mux(encoded)
+            if output_audio is not None:
+                for encoded in output_audio.encode():
+                    dst.mux(encoded)
         return target.read_bytes()
     finally:
         target.unlink(missing_ok = True)

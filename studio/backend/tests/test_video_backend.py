@@ -6,11 +6,13 @@ Mirrors test_diffusion_backend's fake_runtime pattern: explicit fake signatures 
 the signature-gated kwargs actually exercise, sys.modules stubs so no real ML
 stack loads."""
 
+import builtins
 import contextlib
 import sys
 import threading
 import time
 import types
+from pathlib import Path
 
 import pytest
 
@@ -1939,6 +1941,161 @@ def test_direct_h3_native_load_uses_sd_cpp_path(monkeypatch):
     assert len(calls) == 1
     assert calls[0]["fam"].name == "minimax-h3"
     assert calls[0]["gguf_filename"] == "minimax_h3_fl2va-Q4_K_M.gguf"
+
+
+def test_h3_native_load_honors_install_switch_and_maps_xpu_to_vulkan(monkeypatch, tmp_path):
+    from core.inference import video as video_mod
+    from core.inference import sd_cpp_backend, sd_cpp_engine
+
+    class _Api:
+        def __init__(self, **_kwargs):
+            pass
+
+        def model_info(self, *_args, **_kwargs):
+            return _PlanInfo([])
+
+    monkeypatch.setattr("huggingface_hub.HfApi", _Api)
+    monkeypatch.setattr(
+        video_mod,
+        "resolve_diffusion_device_target",
+        lambda: types.SimpleNamespace(backend = "xpu", device = "xpu", dtype = None),
+    )
+    monkeypatch.setattr(sd_cpp_backend, "_install_allowed", lambda: False)
+
+    install_calls = []
+
+    def _ensure(*, allow_install, accelerator):
+        install_calls.append((allow_install, accelerator))
+        return "/existing/sd-cli" if accelerator == "cpu" else None
+
+    monkeypatch.setattr(sd_cpp_backend, "ensure_sd_cpp_binary", _ensure)
+
+    class _Engine:
+        def __init__(self, binary):
+            self.binary = binary
+
+        def version(self):
+            return "master-812-ea7f0c8"
+
+    monkeypatch.setattr(sd_cpp_engine, "SdCppEngine", _Engine)
+
+    def _download(_repo, wanted, *_args, **_kwargs):
+        path = tmp_path / Path(wanted).name
+        path.write_bytes(b"x")
+        return str(path)
+
+    monkeypatch.setattr("utils.hf_xet_fallback.hf_hub_download_with_xet_fallback", _download)
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._run_load_h3_native(
+        fam = fam,
+        token = None,
+        cancel_event = threading.Event(),
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+
+    assert install_calls == [(False, "vulkan"), (False, "cpu")]
+    assert backend._state is not None
+    assert backend._state.device == "cpu"
+
+
+def test_h3_native_generation_dispatch_does_not_import_torch(monkeypatch):
+    from core.inference.video import _VideoLoadState
+
+    backend = VideoBackend()
+    fam = _detect_load_family("leejet/MiniMax-H3-GGUF", None, "minimax-h3")
+    assert fam is not None
+    backend._state = _VideoLoadState(
+        pipe = object(),
+        family = fam,
+        repo_id = "leejet/MiniMax-H3-GGUF",
+        base_repo = fam.base_repo,
+        device = "cpu",
+        dtype = "Q4_K_M",
+        kind = "gguf",
+        engine = "sd_cpp",
+        gguf_filename = "minimax_h3_fl2va-Q4_K_M.gguf",
+    )
+    expected = {"mp4_bytes": b"native"}
+    monkeypatch.setattr(backend, "_generate_h3_native", lambda **_kwargs: expected)
+
+    original_import = builtins.__import__
+
+    def _no_torch_import(name, *args, **kwargs):
+        if name == "torch" or name.startswith("torch."):
+            raise AssertionError("native generation imported torch")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_torch_import)
+    assert backend.generate(prompt = "a fox") is expected
+
+
+def test_h3_native_transcode_is_torch_free_and_keeps_audio(monkeypatch, tmp_path):
+    import io
+    import math
+    from fractions import Fraction
+
+    av = pytest.importorskip("av")
+    np = pytest.importorskip("numpy")
+    from core.inference.video_minimax_h3 import transcode_video_to_mp4
+
+    source = tmp_path / "native.webm"
+    fps, sample_rate = 8, 48_000
+    with av.open(str(source), mode = "w", format = "webm") as output:
+        video = output.add_stream("libvpx-vp9", rate = fps)
+        video.width = video.height = 32
+        video.pix_fmt = "yuv420p"
+        audio = output.add_stream("libopus", rate = sample_rate)
+        audio.layout = "stereo"
+        for value in (0, 128):
+            frame = av.VideoFrame.from_ndarray(
+                np.full((32, 32, 3), value, dtype = np.uint8), format = "rgb24"
+            )
+            for packet in video.encode(frame):
+                output.mux(packet)
+        written = 0
+        while written < sample_rate // 4:
+            count = min(960, sample_rate // 4 - written)
+            tone = np.array(
+                [
+                    int(12_000 * math.sin(2 * math.pi * 440 * (written + i) / sample_rate))
+                    for i in range(count)
+                ],
+                dtype = np.int16,
+            )
+            frame = av.AudioFrame.from_ndarray(
+                np.repeat(tone, 2).reshape(1, count * 2),
+                format = "s16",
+                layout = "stereo",
+            )
+            frame.sample_rate = sample_rate
+            frame.pts = written
+            frame.time_base = Fraction(1, sample_rate)
+            for packet in audio.encode(frame):
+                output.mux(packet)
+            written += count
+        for packet in video.encode():
+            output.mux(packet)
+        for packet in audio.encode():
+            output.mux(packet)
+
+    original_import = builtins.__import__
+
+    def _no_ml_stack_import(name, *args, **kwargs):
+        if name == "torch" or name.startswith(("torch.", "diffusers")):
+            raise AssertionError(f"native transcode imported {name}")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _no_ml_stack_import)
+    mp4 = transcode_video_to_mp4(source, fps = fps)
+
+    with av.open(io.BytesIO(mp4)) as container:
+        assert container.streams.video[0].codec_context.name == "h264"
+        assert container.streams.audio[0].codec_context.name == "aac"
+        assert sum(frame.samples for frame in container.decode(audio = 0)) > 0
 
 
 def test_download_plan_narrows_an_ltx23_pick_and_stages_its_extras(monkeypatch):

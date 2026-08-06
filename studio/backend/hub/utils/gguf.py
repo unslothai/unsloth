@@ -139,7 +139,8 @@ def is_gguf_filename(filename: str) -> bool:
 def _is_selectable_repo_gguf(repo_id: str, filename: str) -> bool:
     """Hide auxiliary GGUFs from repos that bundle several model roles."""
     if repo_id.strip().lower() == "leejet/minimax-h3-gguf":
-        return Path(filename).name.lower() == "minimax_h3_fl2va-q4_k_m.gguf"
+        name = Path(filename).name.lower()
+        return name.startswith("minimax_h3_fl2va") and name.endswith(".gguf")
     return True
 
 

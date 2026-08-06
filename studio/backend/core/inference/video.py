@@ -693,7 +693,8 @@ class VideoBackend:
         from huggingface_hub import HfApi
 
         from .sd_cpp_args import SdCppModelFiles, offload_flags
-        from .sd_cpp_backend import ensure_sd_cpp_binary
+        from .diffusion_engine_router import _install_accelerator_for
+        from .sd_cpp_backend import _install_allowed, ensure_sd_cpp_binary
         from .sd_cpp_engine import SdCppEngine
         from .video_minimax_h3 import (
             H3_AUDIO_VAE,
@@ -748,13 +749,17 @@ class VideoBackend:
             resolved.append(local)
 
         target = resolve_diffusion_device_target()
-        binary = ensure_sd_cpp_binary(allow_install = True, accelerator = target.backend)
+        allow_install = _install_allowed()
+        binary = ensure_sd_cpp_binary(
+            allow_install = allow_install,
+            accelerator = _install_accelerator_for(target.backend),
+        )
         native_device = target.device
         if not binary and target.backend not in ("cpu", "mps"):
             # Upstream currently publishes no Linux CUDA archive. Keep the picker
             # functional with the CPU prebuilt when the user has not supplied a
             # locally compiled CUDA binary through the normal sd.cpp discovery path.
-            binary = ensure_sd_cpp_binary(allow_install = True, accelerator = "cpu")
+            binary = ensure_sd_cpp_binary(allow_install = allow_install, accelerator = "cpu")
             native_device = "cpu"
         engine = SdCppEngine(binary)
         if not binary or engine.version() is None:
@@ -2123,8 +2128,6 @@ class VideoBackend:
         seed: Optional[int] = None,
         cancel_event: Optional[threading.Event] = None,
     ) -> dict[str, Any]:
-        import torch
-
         # begin_generate passes its already-registered event; a direct call makes its own.
         cancel = cancel_event if cancel_event is not None else threading.Event()
         with self._generate_lock:
@@ -2155,6 +2158,22 @@ class VideoBackend:
                 )
                 steps = int(steps or default_steps)
                 guidance = float(default_guidance if guidance is None else guidance)
+
+                if state.engine == "sd_cpp":
+                    return self._generate_h3_native(
+                        state = state,
+                        prompt = prompt,
+                        width = width,
+                        height = height,
+                        frames = frames,
+                        fps = out_fps,
+                        steps = steps,
+                        guidance = guidance,
+                        seed = seed,
+                        cancel = cancel,
+                    )
+
+                import torch
 
                 if state.engine == "diffusers" and fam.modular_workflow and state.device != "cpu":
                     from .video_minimax_h3 import (
@@ -2194,20 +2213,6 @@ class VideoBackend:
                                 f"system RAM at this VRAM tier; {host_capacity_gb:.1f} GB is "
                                 "available. Load the GGUF artifact instead."
                             )
-
-                if state.engine == "sd_cpp":
-                    return self._generate_h3_native(
-                        state = state,
-                        prompt = prompt,
-                        width = width,
-                        height = height,
-                        frames = frames,
-                        fps = out_fps,
-                        steps = steps,
-                        guidance = guidance,
-                        seed = seed,
-                        cancel = cancel,
-                    )
 
                 generator = torch.Generator(device = "cpu" if fam.modular_workflow else state.device)
                 if seed is None:

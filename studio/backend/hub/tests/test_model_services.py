@@ -111,6 +111,16 @@ class TestExtractQuantToken:
         assert labels == {"Q4_K_M", "Q8_0"}
 
 
+def test_minimax_h3_variant_filter_keeps_only_fl2va_transformers():
+    selectable = gguf._is_selectable_repo_gguf
+    repo = "leejet/MiniMax-H3-GGUF"
+    assert selectable(repo, "minimax_h3_fl2va-Q4_K_M.gguf")
+    assert selectable(repo, "minimax_h3_fl2va_pruned-Q4_K_M.gguf")
+    assert selectable(repo, "minimax_h3_fl2va-Q2_K_M.gguf")
+    assert not selectable(repo, "minimax_h3_ref2va-Q4_K_M.gguf")
+    assert not selectable(repo, "qwen3vl_32b_minimax_h3-Q4_K_M.gguf")
+
+
 def test_big_endian_detection_ignores_model_name_be_token():
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M-be.gguf", "Q4_K_M")
     assert gguf.is_big_endian_gguf_path("model-Q4_K_M_be_infill.gguf", "Q4_K_M")

@@ -83,8 +83,19 @@ def test_metal_text_encoder_flag_reaches_both_command_builders(monkeypatch):
         params = SdCppGenParams(prompt = "x"),
         output_path = "/o/x.png",
     )
+    video = build_sd_cpp_video_command(
+        binary = "sd-cli",
+        files = SdCppModelFiles(
+            diffusion_model = "/m/h3.gguf",
+            vae = "/m/video.safetensors",
+            llm = "/m/qwen.gguf",
+        ),
+        params = SdCppVideoGenParams(prompt = "x", width = 960, height = 544, num_frames = 124),
+        output_path = "/o/x.webm",
+    )
     assert server.count("--clip-on-cpu") == 1
     assert cli.count("--clip-on-cpu") == 1
+    assert video.count("--clip-on-cpu") == 1
     # An offload policy that already pins the encoder must not emit it twice.
     dual = build_sd_cpp_server_command(
         binary = "sd-server",
