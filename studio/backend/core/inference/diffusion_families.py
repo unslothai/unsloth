@@ -480,13 +480,11 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
 
 
 # Byte-identical unsloth mirrors of the vendor bases: a GGUF/FP8 pick ships only the denoiser, so
-# the companions come from the base. For the gated vendors that is a 401 the mirror removes; for
-# the ungated ones it is simply the last third-party fetch on the load path. Swapped at the fetch
-# sites only, never in ``resolve_base_repo``, whose result keys the UPSTREAM-id tables below (see
-# ``canonical_base``).
-#
-# A mirror stands in for the WHOLE base, including a plain bf16 pipeline load, so it must be a
-# complete copy. A companions-only repo here would break every pick that needs the transformer.
+# the companions come from the base. That is a 401 for the gated vendors and a third-party fetch
+# for the ungated ones. Swapped at the fetch sites only, never in ``resolve_base_repo``, whose
+# result keys the UPSTREAM-id tables below (see ``canonical_base``).
+# A mirror stands in for the WHOLE base, plain bf16 pipeline loads included, so it must be a
+# complete copy: a companions-only repo here breaks every pick that needs the transformer.
 _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"),
     ("black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell"),
@@ -500,9 +498,8 @@ _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("ideogram-ai/ideogram-4-fp8", "unsloth/ideogram-4-fp8"),
     ("ideogram-ai/ideogram-4-nf4", "unsloth/ideogram-4-nf4"),
     ("ideogram-ai/ideogram-4-nf4-diffusers", "unsloth/ideogram-4-nf4-diffusers"),
-    # Not gated. Mirrored because it is where the Qwen-Image-2512 GGUF/FP8/bnb-4bit picks get their
-    # VAE, text encoder, tokenizer and scheduler: the repo is named by the base_model card tag on
-    # unsloth/Qwen-Image-2512-GGUF, not by the family table, so nothing else redirects it.
+    # Not gated. Every Qwen-Image-2512 pick takes its companions from here, named by the artifact
+    # repo's base_model card tag rather than the family table, so nothing else redirects it.
     ("Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"),
 )
 _GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _GATED_MIRROR_PAIRS}

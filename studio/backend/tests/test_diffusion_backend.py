@@ -190,10 +190,9 @@ def test_gated_mirror_table_round_trips():
 def test_no_mirror_is_a_companion_only_repo():
     """A mirror substitutes for the WHOLE base, so it must never be a components-only repo.
 
-    ``prefer_ungated_mirror`` also fires on a plain bf16 pipeline pick, where the transformer is
-    read from the base. Pointing one of these at a repo that ships only a VAE or text encoder would
-    turn a working load into a missing-weights error, and the companion-only set is exactly the
-    list of repos with no denoiser.
+    ``prefer_ungated_mirror`` also fires on a plain bf16 pick, where the transformer is read from
+    the base, so a mirror pointing at a repo with no denoiser turns a working load into a
+    missing-weights error. The companion-only set is exactly that list of repos.
     """
     companions = sd_cpp_companion_only_repo_ids()
     for _upstream, mirror in _GATED_MIRROR_PAIRS:
@@ -203,15 +202,15 @@ def test_no_mirror_is_a_companion_only_repo():
 def test_the_qwen_2512_mirror_covers_the_card_tag_route(monkeypatch):
     """#8001: the 2512 companions come from a repo the family table never names.
 
-    ``unsloth/Qwen-Image-2512-GGUF`` carries ``base_model: Qwen/Qwen-Image-2512``, and
-    ``_resolve_base_repo`` trusts that tag, so the fetch lands on the vendor repo no matter what
-    the family default says. The mirror is the only thing that redirects it.
+    ``unsloth/Qwen-Image-2512-GGUF`` carries ``base_model: Qwen/Qwen-Image-2512`` and
+    ``_resolve_base_repo`` trusts that tag, so the fetch lands on the vendor repo whatever the
+    family default says. The mirror is the only thing that redirects it.
     """
     _no_cache(monkeypatch)
     assert mirror_repo("Qwen/Qwen-Image-2512") == "unsloth/Qwen-Image-2512"
     assert prefer_ungated_mirror("Qwen/Qwen-Image-2512") == "unsloth/Qwen-Image-2512"
-    # The family default is a DIFFERENT repo and keeps its own (absent) mirror status, so the
-    # redirect cannot be mistaken for the family fallback doing the work.
+    # The family default is a DIFFERENT repo with no mirror, so the redirect cannot be mistaken
+    # for the fallback doing the work.
     assert mirror_repo("Qwen/Qwen-Image") is None
     # status(), saved configs and a trained adapter's base_model must still read the vendor id.
     assert canonical_base("unsloth/Qwen-Image-2512") == "Qwen/Qwen-Image-2512"
