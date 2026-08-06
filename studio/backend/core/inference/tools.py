@@ -6582,6 +6582,10 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
 
     if sys.platform == "win32":
         sysroot = os.environ.get("SystemRoot", r"C:\Windows")
+        # Ahead of System32 and its DOS twins (bare `find` would hit FIND.EXE,
+        # not GNU find), behind the interpreter dirs so a Git-shipped
+        # python.exe cannot shadow the environment this server runs in.
+        path_entries.extend(_windows_bash_userland_dirs())
         path_entries.extend([os.path.join(sysroot, "System32"), sysroot])
     else:
         path_entries.extend(["/usr/local/bin", "/usr/bin", "/bin"])
@@ -6621,6 +6625,10 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Windows needs SystemRoot for Python/subprocess to work.
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
+        # Windows tempfile / native SDKs honour TEMP/TMP, not TMPDIR; without
+        # these a child falls back to GetTempPath and writes outside the workdir.
+        env["TEMP"] = workdir
+        env["TMP"] = workdir
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
         pathext = ".EXE;.COM"
         if git_ext and git_ext not in (".EXE", ".COM"):
@@ -6977,6 +6985,34 @@ def _windows_bash() -> "str | None":
         if os.path.isfile(candidate) and _is_trusted_windows_bash(candidate):
             return candidate
     return None
+
+
+def _windows_bash_userland_dirs() -> list[str]:
+    """Trusted dirs holding the resolved bash and the POSIX tools beside it.
+
+    ``bash -c`` is non-login, so /etc/profile never runs and Git for Windows'
+    ``usr\\bin`` stays off PATH, leaving ls / cat / grep "command not found".
+    bash.exe ships under ``Git\\bin`` or ``Git\\usr\\bin``, so both parents are
+    probed. Candidates clear the same Program Files trust boundary as the git
+    entry (#7317) and are canonicalised against junctions. Fails closed: no
+    trusted bash, no entries, PATH unchanged.
+    """
+    bash = _windows_bash()
+    if not bash:
+        return []
+    bin_dir = os.path.dirname(bash)
+    candidates = [bin_dir]
+    for root in (os.path.dirname(bin_dir), os.path.dirname(os.path.dirname(bin_dir))):
+        if root:
+            candidates.append(os.path.join(root, "usr", "bin"))
+    dirs: list[str] = []
+    for candidate in candidates:
+        if not os.path.isdir(candidate) or not _is_trusted_windows_program_dir(candidate):
+            continue
+        real = os.path.realpath(candidate)
+        if real not in dirs:
+            dirs.append(real)
+    return dirs
 
 
 def _shell_is_posix() -> bool:
