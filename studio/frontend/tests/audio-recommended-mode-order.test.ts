@@ -64,3 +64,24 @@ test("the curated STT rows cover every dictation sidecar model", () => {
     );
   }
 });
+
+test("a TTS group's GGUF sibling is what resolves for a safetensors pick", () => {
+  // On a Mac the safetensors build loads through MLX, which has no TTS decoder,
+  // so the page swaps in the GGUF build rather than letting generation 501.
+  const ggufSibling = (repoId: string) => {
+    const group = groupForRepoId(repoId, AUDIO_CATALOG);
+    if (!group || group.task !== "tts") return null;
+    const gguf = group.artifacts.find((a) => a.format === "gguf");
+    return gguf && gguf.repoId !== repoId ? gguf.repoId : null;
+  };
+  assert.equal(
+    ggufSibling("unsloth/orpheus-3b-0.1-ft"),
+    "unsloth/orpheus-3b-0.1-ft-GGUF",
+  );
+  // Already GGUF: nothing to swap.
+  assert.equal(ggufSibling("unsloth/orpheus-3b-0.1-ft-GGUF"), null);
+  // No GGUF published, so the pick stands and the 501 explains why.
+  assert.equal(ggufSibling("unsloth/csm-1b"), null);
+  // STT never swaps: it runs on the sidecar, not the main slot.
+  assert.equal(ggufSibling("unsloth/whisper-small"), null);
+});

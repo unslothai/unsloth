@@ -50,6 +50,7 @@ import {
 } from "@/features/chat/adapters/studio-model-dictation-adapter";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
+import { usePlatformStore } from "@/config/env";
 import { cn } from "@/lib/utils";
 import { BlobUrlCache } from "@/lib/blob-url-cache";
 import { toast } from "@/lib/toast";
@@ -67,9 +68,9 @@ import {
   audioCapabilityLine,
   audioModelsForTask,
   audioTaskFor,
+  ggufSiblingFor,
   sttSidecarKeyFor,
 } from "./catalog";
-import { AudioTrainPanel } from "./train/audio-train-panel";
 
 const MODELS_BY_MODE: Record<CreateMode, ModelOption[]> = {
   speak: audioModelsForTask("tts"),
@@ -126,7 +127,6 @@ function formatClipDuration(seconds: number): string {
 }
 
 export function AudioPage({ active = true }: { active?: boolean }) {
-  const [pageMode, setPageMode] = useState<"create" | "train">("create");
   const [mode, setMode] = useState<CreateMode>("speak");
   const [selectorOpen, setSelectorOpen] = useState(false);
   const [busy, setBusy] = useState<Busy>(null);
@@ -338,6 +338,9 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
   }, [refreshSttStatus]);
 
+  // Safetensors audio runs on MLX here, and MLX has no TTS branch.
+  const isMac = usePlatformStore((s) => s.deviceType) === "mac";
+
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
       const task = audioTaskFor(id);
@@ -350,9 +353,21 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       }
       // TTS (or an uncurated repo the user pasted, which /load will validate).
       setMode("speak");
+      // On a Mac a safetensors TTS pick loads through MLX, which has no TTS branch:
+      // it loads, then every generation 501s. Take the group's GGUF build instead,
+      // and say so, rather than letting the pick dead-end.
+      const gguf = isMac && !meta.ggufFilename ? ggufSiblingFor(id) : null;
+      if (gguf) {
+        toast.info(
+          `Loading the GGUF build of ${id}. MLX has no text-to-speech decoder, so the safetensors build cannot generate on this Mac.`,
+          { duration: 7000 },
+        );
+        void loadTtsModel(gguf, null);
+        return;
+      }
       void loadTtsModel(id, meta.ggufFilename ?? null);
     },
-    [ensureSttLoaded, loadTtsModel],
+    [ensureSttLoaded, loadTtsModel, isMac],
   );
 
   // A pick handed over from the chat model selector arrives as ?model= (+ ?quant=).
@@ -606,8 +621,16 @@ export function AudioPage({ active = true }: { active?: boolean }) {
         <div className="pointer-events-none absolute inset-x-0 top-[var(--studio-chat-header-padding-top,11px)] flex justify-center">
           <PillTabs
             ariaLabel="Page mode"
-            value={pageMode}
-            onValueChange={(v) => setPageMode(v as "create" | "train")}
+            // Always "create": Train navigates away, so the pill never latches.
+            value="create"
+            onValueChange={(v) => {
+              if (v !== "train") return;
+              toast.info(
+                "Audio fine-tuning lives on the Train page. Unsloth trains TTS and STT there; pick an audio base and a dataset with audio plus transcript columns.",
+                { duration: 8000 },
+              );
+              void navigateSelf({ to: "/studio" });
+            }}
             fit={true}
             className="pointer-events-auto h-[34px] [&>button]:h-[34px] [&>button]:px-11"
             tabs={[
@@ -634,17 +657,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
           <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
         </div>
       </div>
-      {pageMode === "train" ? (
-        <AudioTrainPanel
-          active={active && pageMode === "train"}
-          onDeploy={(outputDir) => {
-            setPageMode("create");
-            setMode("speak");
-            void loadTtsModel(outputDir);
-          }}
-        />
-      ) : (
-        <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
+      <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
           <div className="relative flex w-[408px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
             <div
               ref={attachSettingsScroll}
@@ -899,7 +912,6 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             )}
           </div>
         </div>
-      )}
     </div>
   );
 }

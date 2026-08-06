@@ -18,6 +18,18 @@ export function audioTaskFor(repoId: string): AudioTask | null {
   return groupForRepoId(repoId, AUDIO_CATALOG)?.task ?? null;
 }
 
+/** The GGUF artifact in this repo's catalog group, if it publishes one.
+ *
+ *  llama.cpp is the only backend carrying the snac/bicodec/dac decoders, so on a
+ *  Mac (where safetensors loads through MLX, which has no TTS at all) the GGUF
+ *  build is the only artifact of a TTS group that can actually generate. */
+export function ggufSiblingFor(repoId: string): string | null {
+  const group = groupForRepoId(repoId, AUDIO_CATALOG);
+  if (!group || group.task !== "tts") return null;
+  const gguf = group.artifacts.find((a) => a.format === "gguf");
+  return gguf && gguf.repoId !== repoId ? gguf.repoId : null;
+}
+
 /** Every curated audio artifact, in catalog order (TTS groups, then STT). */
 export const AUDIO_MODEL_OPTIONS: ModelOption[] =
   catalogToModelOptions(AUDIO_CATALOG);
