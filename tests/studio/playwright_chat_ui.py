@@ -1094,16 +1094,22 @@ with sync_playwright() as p:
             const realFetch = window.fetch;
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-            const sendFollowUp = () => {
+            const sendFollowUp = (deadline) => {
                 if (state.submitted || state.error) return;
-                // Re-query: this is the chat's first message, so sending it
-                // swaps the welcome composer for the dock composer and any
-                // node captured earlier is detached by now.
+                // Re-query, and retry: this is the chat's first message, so
+                // sending it swaps the welcome composer for the dock composer.
+                // A node captured earlier is detached, and for a short window
+                // there is no connected composer at all.
                 const composer = document.querySelector(
                     'textarea[aria-label="Message input"]'
                 );
                 if (!composer || !composer.isConnected || !composer.form) {
-                    state.error = "no connected composer for the follow-up";
+                    if (deadline === undefined) deadline = Date.now() + 5000;
+                    if (Date.now() > deadline) {
+                        state.error = "no connected composer for the follow-up";
+                        return;
+                    }
+                    setTimeout(() => sendFollowUp(deadline), 25);
                     return;
                 }
                 // React tracks the value on the node, so a plain assignment is
@@ -1129,7 +1135,7 @@ with sync_playwright() as p:
                     // The request is out and the turn is running. Send the
                     // follow-up now, then keep the response pending so it
                     // cannot complete first.
-                    setTimeout(sendFollowUp, 0);
+                    setTimeout(() => sendFollowUp(), 0);
                     await sleep(holdMs);
                     return response;
                 }
@@ -1139,7 +1145,7 @@ with sync_playwright() as p:
             // Always restore. A wrapper left in place for the rest of the
             // run is a monkeypatch with no teardown, and every later turn would
             // pay for it.
-            window.__unslothRapidArm = () => setTimeout(sendFollowUp, 100);
+            window.__unslothRapidArm = () => setTimeout(() => sendFollowUp(), 100);
 
             window.__unslothRapidRestore = () => {
                 window.fetch = realFetch;
@@ -1187,12 +1193,16 @@ with sync_playwright() as p:
     state = page.evaluate("() => window.__unslothRapid")
     page.evaluate("() => { if (window.__unslothRapidRestore) "
                   "window.__unslothRapidRestore(); }")
-    if not state["intercepted"]:
-        fail("the first turn's request was never seen, so it was never held; "
-             f"saw {state['seen']}")
     if state["error"]:
         shoot("04-rapid-submit-no-composer")
         fail(f"could not send the follow-up: {state['error']}")
+    # queueSeen is the property under test; the hold is only the means of
+    # guaranteeing the first turn was still running. If the queue formed, it
+    # formed, whether or not the hold was needed. Only demand the interception
+    # when it did not, so an unheld run cannot report a silent pass.
+    if not state["queueSeen"] and not state["intercepted"]:
+        fail("the first turn's request was never seen, so it was never held, "
+             f"and no queue formed; saw {state['seen']}")
     # The follow-up went out after the first turn's request was issued and while
     # its response was still held, so that turn was necessarily running. A
     # missing queue control is therefore a real regression, not timing.
