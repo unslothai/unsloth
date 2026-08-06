@@ -735,13 +735,12 @@ def _has_active_lora(loras: Any) -> bool:
 
 
 def _hub_file_cached(repo_id: str, filename: str) -> bool:
-    """Whether ``filename`` of ``repo_id`` is already in the HF cache under ANY root Studio reads.
+    """Whether ``filename`` of ``repo_id`` is cached under ANY root Studio reads.
 
-    Both roots, because the loader resolves a file cached only under huggingface_hub's import-time
-    constant (``reuse_other_cache_root``): after a cache-folder change the bytes are not in the live
-    root at all, and checking that root alone would re-announce a download for a file already on
-    disk. Never raises; an unreadable cache reports "not cached", which only re-adds an entry whose
-    download then fetches nothing."""
+    Both roots: the loader also resolves files left in huggingface_hub's import-time constant by
+    ``reuse_other_cache_root``, so after a cache-folder change the live root alone says "missing"
+    for bytes that are on disk. Never raises; an unreadable cache reports not-cached, which only
+    re-adds an entry whose download then fetches nothing."""
     try:
         from huggingface_hub import try_to_load_from_cache
         for root in (hub_cache_dir(), None):
@@ -1555,11 +1554,9 @@ class DiffusionBackend:
             )
             total += int(sum(size for _name, size in files))
         gguf_entry_wanted = gguf_filename and not Path(repo_id).expanduser().exists()
-        # An entry for a file already on disk announces bytes that will never move: the picker shows
-        # a denoiser the user already downloaded as part of the staged total, so a pick whose only
-        # real cost is its companions reads as re-downloading the whole model. Reported in #8001 as
-        # "select it to load will repeatedly download the origin model": a cached 13 GB Q4_K_M plus
-        # 16.8 GB of real companions was announced as one ~30 GB download.
+        # #8001: an entry for a file already on disk announces bytes that never move, so a pick
+        # whose only real cost is its companions reads as re-downloading the model (a cached 13 GB
+        # Q4_K_M plus 16.8 GB of companions was shown as one ~30 GB download).
         if gguf_entry_wanted and _hub_file_cached(repo_id, gguf_filename):
             # Drop its bytes from the headline total too, else the entries and the number disagree.
             total -= int(sizes.get(repo_id, 0))

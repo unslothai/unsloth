@@ -5424,10 +5424,9 @@ def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path
 
 
 def test_download_plan_omits_a_gguf_that_is_already_cached(monkeypatch):
-    # #8001: the entry was emitted whenever a gguf_filename was set and the repo was not a local
-    # path, with no cache check, so an already-downloaded denoiser was announced as part of the
-    # staged total. The reporter saw a cached 13 GB Q4_K_M plus 16.8 GB of real companions
-    # presented as one ~30 GB "Downloading model...", which reads as re-downloading the model.
+    # #8001: emitted with no cache check, so an already-downloaded denoiser joined the staged
+    # total. The reporter saw a cached 13 GB Q4_K_M plus 16.8 GB of companions as one ~30 GB
+    # "Downloading model...", which reads as re-downloading the model.
     _fake_hf_api(
         monkeypatch,
         {
@@ -5452,15 +5451,14 @@ def test_download_plan_omits_a_gguf_that_is_already_cached(monkeypatch):
     # Only the companions remain: the denoiser is on disk and costs nothing to "stage".
     assert [e["repo_id"] for e in plan["entries"]] == ["unsloth/FLUX.1-dev"]
     base = plan["entries"][0]
-    # The headline number must agree with the entries, or the panel shows bytes nothing accounts for.
+    # The headline must agree with the entries, or the panel shows bytes nothing accounts for.
     assert plan["total_bytes"] == base["bytes"]
     assert plan["total_bytes"] < 7 * GB
 
 
 def test_the_cached_gguf_check_reads_both_hub_cache_roots(monkeypatch):
-    # The loader resolves a file cached only under huggingface_hub's import-time root
-    # (reuse_other_cache_root), so after a cache-folder change the bytes are not in the live root at
-    # all. Probing the live root alone would re-announce a download for a file already on disk.
+    # reuse_other_cache_root leaves files under the import-time root, so after a cache-folder
+    # change probing the live root alone re-announces a download for bytes already on disk.
     from core.inference import diffusion as diff
 
     seen = []
@@ -5478,8 +5476,8 @@ def test_the_cached_gguf_check_reads_both_hub_cache_roots(monkeypatch):
     assert diff._hub_file_cached("unsloth/X-GGUF", "x-Q4_K_M.gguf") is True
     assert None in seen and len(seen) == 2
 
-    # An unreadable cache is not evidence of a hit: report not-cached, which only re-adds an entry
-    # whose download then fetches nothing. Failing the other way would hide a real download.
+    # Not-cached on error only re-adds an entry that fetches nothing; the other way hides a
+    # real download.
     monkeypatch.setattr(
         "huggingface_hub.try_to_load_from_cache",
         lambda *a, **k: (_ for _ in ()).throw(OSError("cache unreadable")),
