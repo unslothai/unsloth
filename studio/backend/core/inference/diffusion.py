@@ -734,6 +734,24 @@ def _has_active_lora(loras: Any) -> bool:
     return False
 
 
+def _hub_file_cached(repo_id: str, filename: str) -> bool:
+    """Whether ``filename`` of ``repo_id`` is already in the HF cache under ANY root Studio reads.
+
+    Both roots, because the loader resolves a file cached only under huggingface_hub's import-time
+    constant (``reuse_other_cache_root``): after a cache-folder change the bytes are not in the live
+    root at all, and checking that root alone would re-announce a download for a file already on
+    disk. Never raises; an unreadable cache reports "not cached", which only re-adds an entry whose
+    download then fetches nothing."""
+    try:
+        from huggingface_hub import try_to_load_from_cache
+        for root in (hub_cache_dir(), None):
+            if isinstance(try_to_load_from_cache(repo_id, filename, cache_dir = root), str):
+                return True
+    except Exception:  # noqa: BLE001 -- a cache we cannot read is not evidence of a hit
+        return False
+    return False
+
+
 def _uncached_prequant_repo(
     fam: Optional[DiffusionFamily],
     target: Any,
@@ -1536,7 +1554,17 @@ class DiffusionBackend:
                 }
             )
             total += int(sum(size for _name, size in files))
-        if gguf_filename and not Path(repo_id).expanduser().exists():
+        gguf_entry_wanted = gguf_filename and not Path(repo_id).expanduser().exists()
+        # An entry for a file already on disk announces bytes that will never move: the picker shows
+        # a denoiser the user already downloaded as part of the staged total, so a pick whose only
+        # real cost is its companions reads as re-downloading the whole model. Reported in #8001 as
+        # "select it to load will repeatedly download the origin model": a cached 13 GB Q4_K_M plus
+        # 16.8 GB of real companions was announced as one ~30 GB download.
+        if gguf_entry_wanted and _hub_file_cached(repo_id, gguf_filename):
+            # Drop its bytes from the headline total too, else the entries and the number disagree.
+            total -= int(sizes.get(repo_id, 0))
+            gguf_entry_wanted = False
+        if gguf_entry_wanted:
             entries.append(
                 {
                     "repo_id": repo_id,

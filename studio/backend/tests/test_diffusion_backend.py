@@ -5421,3 +5421,67 @@ def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path
 
     assert seen == [1]
     assert backend._teardown_waiters == 0
+
+
+def test_download_plan_omits_a_gguf_that_is_already_cached(monkeypatch):
+    # #8001: the entry was emitted whenever a gguf_filename was set and the repo was not a local
+    # path, with no cache check, so an already-downloaded denoiser was announced as part of the
+    # staged total. The reporter saw a cached 13 GB Q4_K_M plus 16.8 GB of real companions
+    # presented as one ~30 GB "Downloading model...", which reads as re-downloading the model.
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+    )
+    _no_cache(monkeypatch)
+    monkeypatch.setattr("core.inference.diffusion._hub_file_cached", lambda repo_id, filename: True)
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    # Only the companions remain: the denoiser is on disk and costs nothing to "stage".
+    assert [e["repo_id"] for e in plan["entries"]] == ["unsloth/FLUX.1-dev"]
+    base = plan["entries"][0]
+    # The headline number must agree with the entries, or the panel shows bytes nothing accounts for.
+    assert plan["total_bytes"] == base["bytes"]
+    assert plan["total_bytes"] < 7 * GB
+
+
+def test_the_cached_gguf_check_reads_both_hub_cache_roots(monkeypatch):
+    # The loader resolves a file cached only under huggingface_hub's import-time root
+    # (reuse_other_cache_root), so after a cache-folder change the bytes are not in the live root at
+    # all. Probing the live root alone would re-announce a download for a file already on disk.
+    from core.inference import diffusion as diff
+
+    seen = []
+
+    def _probe(
+        repo_id,
+        filename,
+        cache_dir = None,
+    ):
+        seen.append(cache_dir)
+        # Only the import-time root (cache_dir None) holds it.
+        return "/blobs/abc" if cache_dir is None else None
+
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _probe)
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x-Q4_K_M.gguf") is True
+    assert None in seen and len(seen) == 2
+
+    # An unreadable cache is not evidence of a hit: report not-cached, which only re-adds an entry
+    # whose download then fetches nothing. Failing the other way would hide a real download.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("cache unreadable")),
+    )
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x-Q4_K_M.gguf") is False
