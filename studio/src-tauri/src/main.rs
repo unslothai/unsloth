@@ -67,12 +67,59 @@ fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, Str
         autolaunch.disable()
     };
     result.map_err(|error| error.to_string())?;
-    if enabled && cfg!(target_os = "linux") {
-        guard_linux_autostart_entry(&app);
+    if enabled {
+        harden_autostart_entry(&app);
     }
     autolaunch
         .is_enabled()
         .map_err(|error| error.to_string())
+}
+
+fn harden_autostart_entry(app: &tauri::AppHandle) {
+    if cfg!(target_os = "linux") {
+        guard_linux_autostart_entry(app);
+    }
+    #[cfg(windows)]
+    quote_windows_run_value(app);
+    #[cfg(not(windows))]
+    let _ = app;
+}
+
+/// auto-launch writes the Run value as `{path} {args}` unquoted; Windows
+/// parses it as a command line, so a profile path with a space ("C:\Users\
+/// Jane Doe\...") can resolve to the wrong executable. None when already
+/// quoted.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn quoted_windows_run_command(value: &str) -> Option<String> {
+    if value.starts_with('"') {
+        return None;
+    }
+    let (path, args) = match value.strip_suffix(" --hidden") {
+        Some(path) => (path, " --hidden"),
+        None => (value, ""),
+    };
+    Some(format!("\"{path}\"{args}"))
+}
+
+#[cfg(windows)]
+fn quote_windows_run_value(app: &tauri::AppHandle) {
+    use winreg::enums::{HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE};
+    use winreg::RegKey;
+
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let Ok(run) = hkcu.open_subkey_with_flags(
+        r"Software\Microsoft\Windows\CurrentVersion\Run",
+        KEY_QUERY_VALUE | KEY_SET_VALUE,
+    ) else {
+        return;
+    };
+    let name = &app.package_info().name;
+    let Ok(value) = run.get_value::<String, _>(name) else {
+        return;
+    };
+    if let Some(quoted) = quoted_windows_run_command(&value) {
+        let _ = run.set_value(name, &quoted);
+    }
 }
 
 /// Exec is parsed as whitespace-delimited words, so a binary path is quoted
@@ -156,8 +203,8 @@ fn reconcile_autostart_entry(app: &tauri::AppHandle) {
     if !autolaunch.is_enabled().unwrap_or(false) {
         return;
     }
-    if autolaunch.enable().is_ok() && cfg!(target_os = "linux") {
-        guard_linux_autostart_entry(app);
+    if autolaunch.enable().is_ok() {
+        harden_autostart_entry(app);
     }
 }
 
@@ -801,6 +848,29 @@ mod tests {
     #[test]
     fn autostart_hardening_needs_an_exec_line() {
         assert!(hardened_autostart_entry("[Desktop Entry]\nType=Application").is_none());
+    }
+
+    #[test]
+    fn windows_run_command_quotes_a_spaced_path() {
+        let quoted =
+            quoted_windows_run_command(r"C:\Users\Jane Doe\AppData\Local\Unsloth\Unsloth.exe --hidden");
+        assert_eq!(
+            quoted.as_deref(),
+            Some(r#""C:\Users\Jane Doe\AppData\Local\Unsloth\Unsloth.exe" --hidden"#),
+        );
+    }
+
+    #[test]
+    fn windows_run_command_leaves_quoted_values_alone() {
+        assert!(quoted_windows_run_command(r#""C:\Unsloth\Unsloth.exe" --hidden"#).is_none());
+    }
+
+    #[test]
+    fn windows_run_command_quotes_a_bare_path() {
+        assert_eq!(
+            quoted_windows_run_command(r"C:\Unsloth\Unsloth.exe").as_deref(),
+            Some(r#""C:\Unsloth\Unsloth.exe""#),
+        );
     }
 
     #[test]
