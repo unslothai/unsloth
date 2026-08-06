@@ -93,17 +93,11 @@ def transcode_video_to_mp4(source: Path, *, fps: int) -> bytes:
             if src.streams.audio:
                 source_audio = src.streams.audio[0]
                 sample_rate = int(source_audio.codec_context.sample_rate or 32000)
-                resampler = av.AudioResampler(
-                    format = "fltp", layout = "stereo", rate = sample_rate
-                )
+                resampler = av.AudioResampler(format = "fltp", layout = "stereo", rate = sample_rate)
                 chunks = []
                 for frame in src.decode(audio = 0):
-                    chunks.extend(
-                        resampled.to_ndarray() for resampled in resampler.resample(frame)
-                    )
-                chunks.extend(
-                    resampled.to_ndarray() for resampled in resampler.resample(None)
-                )
+                    chunks.extend(resampled.to_ndarray() for resampled in resampler.resample(frame))
+                chunks.extend(resampled.to_ndarray() for resampled in resampler.resample(None))
                 if chunks:
                     audio_waveform = torch.from_numpy(np.concatenate(chunks, axis = 1))
 

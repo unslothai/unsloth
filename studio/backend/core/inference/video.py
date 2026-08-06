@@ -395,11 +395,9 @@ class VideoBackend:
         else:
             # Refuse a too-old diffusers here rather than deep in the load.
             from .diffusion_families import assert_pipeline_class_available
-
             assert_pipeline_class_available(fam.pipeline_class, fam.name)
             if fam.modular_workflow:
                 import diffusers
-
                 if not hasattr(diffusers, fam.transformer_class):
                     raise ValueError(
                         "MiniMax-H3 needs the Diffusers revision bundled with this Studio "
@@ -472,8 +470,14 @@ class VideoBackend:
         if kind == "pipeline":
             root = Path(repo_id).expanduser()
             # Gate on .exists() (not .is_dir()) so a local FILE picked as a pipeline is rejected too.
-            indexes = ("model_index.json", "modular_model_index.json") if fam.modular_workflow else ("model_index.json",)
-            if root.exists() and not (root.is_dir() and any((root / name).is_file() for name in indexes)):
+            indexes = (
+                ("model_index.json", "modular_model_index.json")
+                if fam.modular_workflow
+                else ("model_index.json",)
+            )
+            if root.exists() and not (
+                root.is_dir() and any((root / name).is_file() for name in indexes)
+            ):
                 raise ValueError(
                     f"Local pipeline path is not a diffusers directory "
                     f"(no {' or '.join(indexes)}): {repo_id}"
@@ -734,7 +738,6 @@ class VideoBackend:
                 local = root
             elif root.is_dir():
                 from .diffusion_families import resolve_local_gguf_child
-
                 local = resolve_local_gguf_child(root, wanted)
             else:
                 local = Path(
@@ -765,9 +768,7 @@ class VideoBackend:
             "balanced": "group",
             "low_vram": "model",
         }[requested_mode]
-        native_offload = tuple(
-            offload_flags(policy, vae_tiling = False, diffusion_fa = True)
-        )
+        native_offload = tuple(offload_flags(policy, vae_tiling = False, diffusion_fa = True))
         from .video_minimax_h3 import MiniMaxH3NativeRuntime
 
         runtime = MiniMaxH3NativeRuntime(
@@ -810,7 +811,11 @@ class VideoBackend:
                         resolved = build_resolved_record(
                             {
                                 "memory_mode": (memory_mode, policy, "native model offload"),
-                                "attention_backend": (None, "flash", "sd.cpp diffusion flash attention"),
+                                "attention_backend": (
+                                    None,
+                                    "flash",
+                                    "sd.cpp diffusion flash attention",
+                                ),
                             }
                         ),
                     )
@@ -1009,9 +1014,7 @@ class VideoBackend:
         from .video_minimax_h3 import is_h3_native
 
         if is_h3_native(fam, kind):
-            return self._h3_native_download_plan(
-                repo_id, gguf_filename or "", hf_token = hf_token
-            )
+            return self._h3_native_download_plan(repo_id, gguf_filename or "", hf_token = hf_token)
         base = repo_id if kind == "pipeline" else resolve_video_base_repo(fam, base_repo)
         # Only the header tells an LTX-2.3 checkpoint from 2.0 and it is not on disk yet, so narrow the base pull by NAME: a wrong guess costs an inline pull, the wide base list costs gigabytes.
         ltx23 = self._pick_looks_like_ltx23(fam, repo_id, gguf_filename, kind)
@@ -1121,9 +1124,7 @@ class VideoBackend:
                 if Path(repo).expanduser().exists():
                     continue
                 info = api.model_info(repo, files_metadata = True)
-                match = next(
-                    (s for s in (info.siblings or []) if s.rfilename == filename), None
-                )
+                match = next((s for s in (info.siblings or []) if s.rfilename == filename), None)
                 if match is None:
                     raise ValueError(f"Required MiniMax-H3 component is missing: {repo}/{filename}")
                 size = int(match.size or 0)
@@ -1866,9 +1867,7 @@ class VideoBackend:
         }
         if hf_token:
             load_kwargs["token"] = hf_token
-        pipe = diffusers.ModularPipeline.from_pretrained(
-            _base_local_dir or repo_id, **load_kwargs
-        )
+        pipe = diffusers.ModularPipeline.from_pretrained(_base_local_dir or repo_id, **load_kwargs)
         pipe.load_components(dtype = dtype)
         offload_policy = "none"
         if device != "cpu":
@@ -1877,7 +1876,8 @@ class VideoBackend:
                 # official 12 GB example at 10-15 seconds. Forty GB also keeps
                 # very large GPUs from retaining both 66 GB components and OOMing
                 # while smaller caps succeed by offloading one of them.
-                device = device, memory_reserve_margin = "40GB"
+                device = device,
+                memory_reserve_margin = "40GB",
             )
             offload_policy = "model"
 
@@ -2145,9 +2145,7 @@ class VideoBackend:
                 )
                 frames = snap_num_frames(fam, num_frames or fam.default_num_frames)
                 out_fps = (
-                    fam.default_fps
-                    if fam.name == "minimax-h3"
-                    else int(fps or fam.default_fps)
+                    fam.default_fps if fam.name == "minimax-h3" else int(fps or fam.default_fps)
                 )
                 default_steps, default_guidance = default_video_generation_params(
                     state.gguf_filename,
@@ -2174,9 +2172,7 @@ class VideoBackend:
                             else 0
                         )
                         available_vram_gb = (free_bytes + reserved_bytes) / 1_000_000_000
-                        required_vram_gb = estimate_h3_diffusers_vram_gb(
-                            width, height, frames
-                        )
+                        required_vram_gb = estimate_h3_diffusers_vram_gb(width, height, frames)
                         if available_vram_gb + 0.25 < required_vram_gb:
                             raise RuntimeError(
                                 f"MiniMax-H3 needs about {required_vram_gb:.1f} GB available "
@@ -2191,9 +2187,7 @@ class VideoBackend:
                         host_capacity_gb = (
                             psutil.virtual_memory().available + process_rss
                         ) / 1_000_000_000
-                        required_host_gb = estimate_h3_diffusers_host_ram_gb(
-                            available_vram_gb
-                        )
+                        required_host_gb = estimate_h3_diffusers_host_ram_gb(available_vram_gb)
                         if host_capacity_gb + 0.5 < required_host_gb:
                             raise RuntimeError(
                                 f"MiniMax-H3 needs about {required_host_gb:.0f} GB available "
@@ -2215,9 +2209,7 @@ class VideoBackend:
                         cancel = cancel,
                     )
 
-                generator = torch.Generator(
-                    device = "cpu" if fam.modular_workflow else state.device
-                )
+                generator = torch.Generator(device = "cpu" if fam.modular_workflow else state.device)
                 if seed is None:
                     seed = int(generator.seed()) % (2**53)
                 generator = generator.manual_seed(int(seed))

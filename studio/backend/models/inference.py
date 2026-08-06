@@ -3153,9 +3153,7 @@ class VideoGenerationDefaults(BaseModel):
     guidance: float = Field(..., description = "Default guidance scale")
     num_frames: int = Field(..., description = "Default frame count")
     fps: int = Field(..., description = "Default playback frame rate")
-    frame_step: int = Field(
-        ..., description = "Temporal lattice stride"
-    )
+    frame_step: int = Field(..., description = "Temporal lattice stride")
     frame_offset: int = Field(
         1, description = "Temporal lattice offset: valid counts are k * frame_step + frame_offset"
     )
