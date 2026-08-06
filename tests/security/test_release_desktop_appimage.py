@@ -245,7 +245,7 @@ def test_thin_appimage_reports_a_missing_dynamic_tray_library(tmp_path):
     ldd = fake_bin / "ldd"
     ldd.write_text(
         "#!/bin/sh\n"
-        "case \"$1\" in\n"
+        'case "$1" in\n'
         "  */usr/bin/unsloth-studio) exit 0 ;;\n"
         "  *) exit 1 ;;\n"
         "esac\n",
