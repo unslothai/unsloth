@@ -252,6 +252,10 @@ interface TrainingJobScope {
   expectedJobId?: string;
 }
 
+interface RequiredTrainingJobScope {
+  expectedJobId: string;
+}
+
 function scopedTrainingBody(
   payload: Record<string, unknown>,
   scope?: TrainingJobScope,
@@ -265,8 +269,8 @@ function scopedTrainingBody(
 }
 
 export async function stopTraining(
-  save = true,
-  scope?: TrainingJobScope,
+  save: boolean,
+  scope: RequiredTrainingJobScope,
 ): Promise<TrainingStopResponse> {
   const response = await authFetch("/api/train/stop", {
     method: "POST",

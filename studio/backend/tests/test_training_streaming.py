@@ -521,7 +521,7 @@ def test_training_status_exposes_the_current_start_request_id():
     assert status.warnings == ["Evaluation was disabled."]
 
 
-# streaming rejects HF slice syntax in train_split / eval_split
+# streaming requires bare HF split names
 
 
 @pytest.mark.parametrize(
@@ -529,11 +529,12 @@ def test_training_status_exposes_the_current_start_request_id():
     [
         ("train_split", "train[:50%]"),
         ("train_split", "train[:20]"),
+        ("train_split", "train + test"),
         ("eval_split", "validation[:1000]"),
+        ("eval_split", "validation + test"),
     ],
 )
-def test_streaming_rejects_bracketed_split_syntax(field, value):
-    # _validate_streaming_splits raises when dataset_streaming=True and a split contains "[".
+def test_streaming_rejects_split_instructions(field, value):
     kwargs = {
         "model_name": "unsloth/test",
         "training_type": "LoRA/QLoRA",
@@ -546,7 +547,7 @@ def test_streaming_rejects_bracketed_split_syntax(field, value):
     with pytest.raises(ValidationError) as exc_info:
         TrainingStartRequest(**kwargs)
     detail = str(exc_info.value)
-    assert "slice" in detail.lower() or "bracket" in detail.lower() or "[" in detail
+    assert "plain split name" in detail
 
 
 # streaming rejects mixed sources (local_datasets)

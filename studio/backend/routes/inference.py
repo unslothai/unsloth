@@ -6993,9 +6993,8 @@ def _requires_trust_remote_code_for_model(
 ) -> bool:
     """Whether loading this model would execute custom repo code, so the consent
     dialog must run first. True if the Unsloth YAML default enables
-    ``trust_remote_code`` OR the raw config declares an ``auto_map`` (Hub/local,
-    config.json or tokenizer_config.json). Reads raw JSON only; never imports
-    model code."""
+    ``trust_remote_code`` OR a raw config at any model load root declares an
+    ``auto_map``. Reads raw JSON only; never imports model code."""
     from utils.inference import load_inference_config
 
     try:
@@ -7005,7 +7004,18 @@ def _requires_trust_remote_code_for_model(
         pass
     try:
         from utils.security.consent import _config_has_auto_map
-        return _config_has_auto_map(model_identifier, hf_token) is True
+        from utils.security import load_scan_target, security_load_subdirs
+
+        load_subdirs = security_load_subdirs(model_identifier, hf_token)
+        target, load_subdirs = load_scan_target(model_identifier, load_subdirs)
+        return (
+            _config_has_auto_map(
+                target,
+                hf_token,
+                load_subdirs = load_subdirs,
+            )
+            is True
+        )
     except Exception:
         return False
 

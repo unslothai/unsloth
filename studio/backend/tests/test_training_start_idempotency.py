@@ -9,7 +9,10 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
-from core.training.training import TrainingBackend
+from core.training.training import (
+    TrainingBackend,
+    TrainingStartCancellationCapacityError,
+)
 from models.training import TrainingStartRequest
 
 
@@ -97,6 +100,79 @@ def test_cancel_before_registration_creates_a_start_tombstone():
     )
     assert reservation == "existing"
     assert duplicate == cancelled
+
+
+def test_early_cancel_tombstone_survives_later_cancellation_records():
+    backend = TrainingBackend()
+    backend.cancel_start_request("request-before-start")
+
+    for index in range(64):
+        backend.cancel_start_request(f"later-cancellation-{index}")
+
+    reservation, record = backend.reserve_start_request(
+        "request-before-start",
+        "job-must-not-start",
+    )
+
+    assert reservation == "existing"
+    assert record.error_code == "training_start_cancelled"
+
+
+def test_early_cancel_tombstone_capacity_fails_without_eviction(monkeypatch):
+    import core.training.training as training_module
+
+    monkeypatch.setattr(training_module, "_MAX_EARLY_CANCEL_TOMBSTONES", 2)
+    backend = TrainingBackend()
+    backend.cancel_start_request("request-1")
+    backend.cancel_start_request("request-2")
+
+    with pytest.raises(TrainingStartCancellationCapacityError):
+        backend.cancel_start_request("request-3")
+
+    assert len(backend._early_cancel_tombstones) == 2
+    assert backend.reserve_start_request("request-1", "job-1")[0] == "existing"
+    assert backend.reserve_start_request("request-2", "job-2")[0] == "existing"
+
+
+def test_expired_early_cancel_tombstone_releases_request_id():
+    backend = TrainingBackend()
+    _, record = backend.cancel_start_request("request-expired")
+    backend._early_cancel_tombstones["request-expired"] = (0.0, record)
+
+    reservation, pending = backend.reserve_start_request("request-expired", "job-new")
+
+    assert reservation == "reserved"
+    assert pending.job_id == "job-new"
+
+
+def test_early_cancel_tombstone_ttl_refreshes_on_duplicate_cancel(monkeypatch):
+    import core.training.training as training_module
+
+    now = [0.0]
+    monkeypatch.setattr(training_module.time, "monotonic", lambda: now[0])
+    backend = TrainingBackend()
+    backend.cancel_start_request("request-delayed")
+
+    now[0] = 299.0
+    backend.cancel_start_request("request-delayed")
+    now[0] = 301.0
+
+    assert backend.reserve_start_request("request-delayed", "job-must-not-start")[0] == "existing"
+
+
+def test_early_cancel_tombstone_ttl_refreshes_when_start_arrives(monkeypatch):
+    import core.training.training as training_module
+
+    now = [0.0]
+    monkeypatch.setattr(training_module.time, "monotonic", lambda: now[0])
+    backend = TrainingBackend()
+    backend.cancel_start_request("request-delayed")
+
+    now[0] = 299.0
+    assert backend.reserve_start_request("request-delayed", "job-first-retry")[0] == "existing"
+    now[0] = 301.0
+
+    assert backend.reserve_start_request("request-delayed", "job-second-retry")[0] == "existing"
 
 
 def test_cancel_pending_start_prevents_worker_spawn():
@@ -588,6 +664,30 @@ def test_cancel_start_route_returns_the_scoped_rejection():
     assert response.error_code == "training_start_cancelled"
 
 
+def test_cancel_start_route_reports_tombstone_capacity():
+    route = _load_training_route("training_route_cancel_capacity_test")
+
+    def reject_cancel(_start_request_id):
+        raise TrainingStartCancellationCapacityError(
+            "Too many training start cancellations are pending"
+        )
+
+    backend = SimpleNamespace(cancel_start_request = reject_cancel)
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route.asyncio, "to_thread", new = _inline_to_thread),
+        pytest.raises(route.HTTPException) as exc_info,
+    ):
+        asyncio.run(
+            route.cancel_training_start_request(
+                "request-cancel",
+                current_subject = "test-user",
+            )
+        )
+
+    assert exc_info.value.status_code == 429
+
+
 def test_cancelled_route_during_spawn_keeps_the_worker_result_authoritative():
     route = _load_training_route("training_route_cancelled_start_test")
     backend = TrainingBackend()
@@ -673,6 +773,7 @@ def test_cancelled_route_during_spawn_keeps_the_worker_result_authoritative():
 
     with (
         patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route, "_hub_unreachable", return_value = False),
         patch.object(route, "_remote_untrainable_model_format", return_value = None),
         patch.object(route, "_preflight_hf_dataset_request", new = lambda request: None),
         patch.object(route, "load_model_defaults", return_value = {}),

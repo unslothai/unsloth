@@ -46,6 +46,7 @@ if sys.platform.startswith("linux") and "HSA_ENABLE_DXG_DETECTION" not in os.env
 logger = get_logger(__name__)
 from utils.child_stdio import utf8_child_env
 from utils.hardware import apply_gpu_ids
+from utils.hf_dataset_options import hf_dataset_split_instruction_names
 from utils.training_runs import build_default_output_dir_name
 from utils.wheel_utils import (
     direct_wheel_url,
@@ -525,9 +526,9 @@ def _load_hf_train_and_eval_datasets(
                     split_kwargs["token"] = token
                 available_splits = get_dataset_split_names(**split_kwargs)
 
-            excluded_split = train_split.partition("[")[0].strip()
+            excluded_splits = set(hf_dataset_split_instruction_names(train_split))
             for candidate in EVAL_SPLIT_CANDIDATES:
-                if candidate not in available_splits or candidate == excluded_split:
+                if candidate not in available_splits or candidate in excluded_splits:
                     continue
                 try:
                     if loaded_from_cache:
@@ -701,14 +702,15 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
     from utils.security import (
         evaluate_file_security,
         evaluate_remote_code_consent_for_targets,
+        load_scan_target,
         security_load_subdirs,
     )
 
-    targets = [load_target]
+    requested_targets = [load_target]
     try:
         base_model = get_base_model_from_lora_identifier(load_target, hf_token)
         if base_model:
-            targets.append(base_model)
+            requested_targets.append(base_model)
     except Exception as error:
         logger.debug("Could not resolve LoRA base for security scan: %s", error)
 
@@ -716,12 +718,22 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
 
     primary_name = config["model_name"]
     local_only_load = hf_env_offline()
-    for target in dict.fromkeys(targets):
-        load_subdirs = security_load_subdirs(target, hf_token)
-        if target == load_target and target != primary_name:
+    consent_load_subdirs: dict[str, tuple] = {}
+    targets: list[str] = []
+    for requested_target in dict.fromkeys(requested_targets):
+        load_subdirs = security_load_subdirs(requested_target, hf_token)
+        if requested_target == load_target and requested_target != primary_name:
             load_subdirs = tuple(
                 dict.fromkeys((*load_subdirs, *security_load_subdirs(primary_name, hf_token)))
             )
+        target, load_subdirs = load_scan_target(requested_target, load_subdirs)
+        if target not in consent_load_subdirs:
+            targets.append(target)
+            consent_load_subdirs[target] = ()
+        load_subdirs = tuple(
+            dict.fromkeys((*consent_load_subdirs[target], *load_subdirs))
+        )
+        consent_load_subdirs[target] = load_subdirs
         decision = evaluate_file_security(
             target,
             hf_token = hf_token,
@@ -744,6 +756,7 @@ def _model_load_security_error(config: dict, load_target: str, hf_token: str | N
         trust_remote_code = True,
         approved_fingerprint = config.get("approved_remote_code_fingerprint"),
         subject = config.get("subject"),
+        load_subdirs_by_target = consent_load_subdirs,
     )
     if not decision.blocked:
         return None

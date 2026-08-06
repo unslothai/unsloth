@@ -63,6 +63,8 @@ _COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S
 _DB_FINALIZE_RETRIES = 3
 _DB_FINALIZE_RETRY_S = 0.5
 _MAX_TRACKED_START_REQUESTS = 64
+_MAX_EARLY_CANCEL_TOMBSTONES = 1024
+_EARLY_CANCEL_TOMBSTONE_TTL_S = 300.0
 _START_CANCELLED_ERROR_CODE = "training_start_cancelled"
 
 _pyplot = None
@@ -77,6 +79,10 @@ class TrainingStartRequestRecord:
     message: str
     error: Optional[str] = None
     error_code: Optional[str] = None
+
+
+class TrainingStartCancellationCapacityError(RuntimeError):
+    pass
 
 
 @dataclass(frozen = True)
@@ -1112,6 +1118,9 @@ class TrainingBackend:
         self.current_job_id: Optional[str] = None
         self.current_start_request_id: Optional[str] = None
         self._start_requests: dict[str, TrainingStartRequestRecord] = {}
+        self._early_cancel_tombstones: dict[
+            str, tuple[float, TrainingStartRequestRecord]
+        ] = {}
         self._pending_start_request_id: Optional[str] = None
         self._status_start_request_id: Optional[str] = None
         self._output_dir: Optional[str] = None
@@ -1140,9 +1149,18 @@ class TrainingBackend:
         self, start_request_id: str, job_id: str
     ) -> tuple[str, TrainingStartRequestRecord]:
         with self._lock:
+            self._prune_early_cancel_tombstones_locked()
             existing = self._start_requests.get(start_request_id)
             if existing is not None:
                 return "existing", existing
+            early_cancel = self._early_cancel_tombstones.get(start_request_id)
+            if early_cancel is not None:
+                record = early_cancel[1]
+                self._early_cancel_tombstones[start_request_id] = (
+                    time.monotonic() + _EARLY_CANCEL_TOMBSTONE_TTL_S,
+                    record,
+                )
+                return "existing", record
             if self._pending_start_request_id is not None:
                 record = TrainingStartRequestRecord(
                     start_request_id = start_request_id,
@@ -1205,8 +1223,21 @@ class TrainingBackend:
         from .lifecycle import training_lifecycle_guard
 
         with self._lock:
+            self._prune_early_cancel_tombstones_locked()
             existing = self._start_requests.get(start_request_id)
             if existing is None:
+                early_cancel = self._early_cancel_tombstones.get(start_request_id)
+                if early_cancel is not None:
+                    record = early_cancel[1]
+                    self._early_cancel_tombstones[start_request_id] = (
+                        time.monotonic() + _EARLY_CANCEL_TOMBSTONE_TTL_S,
+                        record,
+                    )
+                    return "cancelled", record
+                if len(self._early_cancel_tombstones) >= _MAX_EARLY_CANCEL_TOMBSTONES:
+                    raise TrainingStartCancellationCapacityError(
+                        "Too many training start cancellations are pending"
+                    )
                 cancelled = TrainingStartRequestRecord(
                     start_request_id = start_request_id,
                     job_id = "",
@@ -1215,8 +1246,10 @@ class TrainingBackend:
                     error = "Training start was cancelled",
                     error_code = _START_CANCELLED_ERROR_CODE,
                 )
-                self._start_requests[start_request_id] = cancelled
-                self._prune_start_requests_locked()
+                self._early_cancel_tombstones[start_request_id] = (
+                    time.monotonic() + _EARLY_CANCEL_TOMBSTONE_TTL_S,
+                    cancelled,
+                )
                 return "cancelled", cancelled
 
             owns_current = (
@@ -1300,7 +1333,12 @@ class TrainingBackend:
 
     def get_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
         with self._lock:
-            return self._start_requests.get(start_request_id)
+            self._prune_early_cancel_tombstones_locked()
+            record = self._start_requests.get(start_request_id)
+            if record is not None:
+                return record
+            early_cancel = self._early_cancel_tombstones.get(start_request_id)
+            return early_cancel[1] if early_cancel is not None else None
 
     def status_start_request(self) -> Optional[TrainingStartRequestRecord]:
         with self._lock:
@@ -1347,12 +1385,21 @@ class TrainingBackend:
 
     def acknowledge_start_request(self, start_request_id: str) -> bool:
         with self._lock:
+            self._prune_early_cancel_tombstones_locked()
             record = self._start_requests.get(start_request_id)
+            if record is None and start_request_id in self._early_cancel_tombstones:
+                return True
             if record is None or record.state == "pending":
                 return False
             if self._status_start_request_id == start_request_id:
                 self._status_start_request_id = None
             return True
+
+    def _prune_early_cancel_tombstones_locked(self) -> None:
+        now = time.monotonic()
+        for request_id, (expires_at, _) in tuple(self._early_cancel_tombstones.items()):
+            if expires_at <= now:
+                del self._early_cancel_tombstones[request_id]
 
     def _prune_start_requests_locked(self) -> None:
         overflow = len(self._start_requests) - _MAX_TRACKED_START_REQUESTS
@@ -1692,7 +1739,8 @@ class TrainingBackend:
     def stop_training(
         self,
         save: bool = True,
-        expected_job_id: Optional[str] = None,
+        *,
+        expected_job_id: str,
     ) -> bool:
         """Send stop signal to the training subprocess."""
         from .lifecycle import training_lifecycle_guard
@@ -1703,11 +1751,11 @@ class TrainingBackend:
             )
 
     def _stop_training_with_lifecycle_reserved(
-        self, save: bool, expected_job_id: Optional[str]
+        self, save: bool, expected_job_id: str
     ) -> bool:
         with self._run_intent_lock:
             with self._lock:
-                if expected_job_id is not None and self.current_job_id != expected_job_id:
+                if not expected_job_id or self.current_job_id != expected_job_id:
                     return False
                 run_id = self.current_job_id
             if not save and run_id:
