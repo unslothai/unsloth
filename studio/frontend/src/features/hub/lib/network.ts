@@ -171,6 +171,19 @@ export function isRemoteNetworkOffline(
  * the listing can be dead while everything else answers, and their own success
  * is what clears this.
  */
+/**
+ * Whether to ask our own backend for cache-only results. It is the server that
+ * fetches there, so a proxy currently serving discovery is proof the Hub is
+ * reachable from it: telling it to work offline then returns 404 for every
+ * uncached repo, and the quant list a user is trying to download disappears.
+ */
+export function shouldPreferLocalCache(): boolean {
+  if (hubProxyServing) {
+    return false;
+  }
+  return isHuggingFaceOffline();
+}
+
 export function isDirectHubOffline(
   origin: string = HUGGING_FACE_ORIGIN,
 ): boolean {

@@ -15,6 +15,7 @@ import {
   isHuggingFaceOffline,
   setDirectHubBlocked,
   setHubProxyServing,
+  shouldPreferLocalCache,
   DATASETS_SERVER_ORIGIN,
   isHubFetchError,
   isRemoteNetworkOffline,
@@ -529,6 +530,27 @@ test("the cause on screen describes the window that is in force", async () => {
     getLastHubFailure(HF, "discovery")?.kind,
     "network-opaque",
     "the older answer must not explain a newer failure's backoff",
+  );
+  markRemoteNetworkOnline();
+});
+
+test("a serving proxy is proof the server can reach the Hub", async () => {
+  markRemoteNetworkOnline();
+  const failure = {
+    kind: "network-opaque" as const,
+    message: "boom",
+    origin: HF,
+    retryable: true,
+  };
+  markRemoteNetworkOffline(HF, 30_000, failure, "other");
+  assert.equal(isHuggingFaceOffline(), true);
+  assert.equal(shouldPreferLocalCache(), true, "nothing is serving us yet");
+
+  setHubProxyServing(true);
+  assert.equal(
+    shouldPreferLocalCache(),
+    false,
+    "asking the backend for cache-only here empties the quant list it could fetch",
   );
   markRemoteNetworkOnline();
 });

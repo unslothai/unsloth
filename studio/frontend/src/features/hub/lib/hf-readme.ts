@@ -6,6 +6,7 @@ import {
   fetchWithTimeout,
   isDirectHubBlocked,
   isHubProxyServing,
+  setDirectHubBlocked,
 } from "@/features/hub/lib/network";
 import {
   hubEndpointBase,
@@ -134,7 +135,13 @@ async function fetchReadmeOnce(
     // the listing and model-info paths fall back to, rather than leaving the
     // card permanently unavailable.
     try {
-      return await fetchReadmeViaBackend(repoId, kind, token);
+      const served = await fetchReadmeViaBackend(repoId, kind, token);
+      // fetchWithTimeout already opened an "other" backoff on the direct
+      // attempt, and without recording this the gate closes on the next card
+      // and none load until that window lapses. Same evidence the model-info
+      // fallback records: this browser could not, the backend could.
+      setDirectHubBlocked(true);
+      return served;
     } catch {
       throw new Error(`Failed to fetch README for ${repoId}`);
     }

@@ -111,7 +111,10 @@ export function useDiscoverSearch({
   online?: boolean;
 }): DiscoverSearch {
   const { phase, failure, proxyServing } = useHubAvailability();
-  const online = phase === "available";
+  // An http failure means the origin answered, so it is not an outage: reading
+  // it as one raised "Can't reach Hugging Face" for a 401 or 429 and then
+  // announced "Back online" once a later request worked.
+  const online = phase === "available" || failure?.kind === "http";
 
   // Not gated on availability: gating disabled the paginated hook, which
   // discarded the error, so every cause rendered as the same generic panel.

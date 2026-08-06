@@ -100,3 +100,17 @@ test("a direct card failure falls back to the backend on its own", async () => {
     "the transient path must try the same route the listing falls back to",
   );
 });
+
+test("a served card records that the backend is the working route", async () => {
+  const src = await read("../src/features/hub/lib/hf-readme.ts");
+  // lastIndexOf: fetchReadmeViaBackend has its own transient check earlier.
+  const at = src.lastIndexOf("if (transient) {");
+  assert.notEqual(at, -1);
+  const branch = src.slice(at, src.indexOf("\n  return null;", at));
+  // The direct attempt already opened an "other" backoff, so without recording
+  // this the gate shuts on the next card and none load until it lapses.
+  assert.ok(
+    branch.includes("setDirectHubBlocked(true)"),
+    "a successful fallback has to promote, or it only helps the first card",
+  );
+});

@@ -98,16 +98,27 @@ test("the datasets-server constant is the host that client actually calls", asyn
   );
 });
 
-test("clients that only read, and never fetch the Hub, stay origin-wide", async () => {
-  // These call our own backend, so they populate neither window. Pointing them
-  // at "other" let it lapse while genuinely offline, and the quant picker lost
-  // its local-only fast path and stalled on a 5s upstream timeout instead.
+test("clients that only read ask whether the SERVER should go cache-only", async () => {
+  // These call our own backend, so what matters is the server's reach, not this
+  // browser's. A proxy currently serving discovery is positive proof the server
+  // can reach the Hub, so telling it to work offline there returned 404 for
+  // every uncached repo and emptied the quant list the user came to download.
   for (const path of [
     "../src/features/chat/api/chat-api.ts",
     "../src/features/hub/inventory/api.ts",
   ]) {
     const src = await read(path);
-    assert.ok(src.includes("isHuggingFaceOffline"), path);
-    assert.ok(!src.includes("isDirectHubOffline"), path);
+    assert.ok(src.includes("shouldPreferLocalCache"), path);
+    assert.ok(!/\bisDirectHubOffline\b/.test(src), path);
+    assert.ok(!/\bisHuggingFaceOffline\b/.test(src), path);
   }
+
+  const network = await read("../src/features/hub/lib/network.ts");
+  const at = network.indexOf("export function shouldPreferLocalCache");
+  assert.notEqual(at, -1);
+  const body = network.slice(at, network.indexOf("\n}", at));
+  assert.ok(
+    body.includes("hubProxyServing"),
+    "a serving proxy has to veto the cache-only request",
+  );
 });

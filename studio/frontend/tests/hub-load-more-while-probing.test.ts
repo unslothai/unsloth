@@ -74,3 +74,13 @@ test("the Discover feed wires the click path through, ungated by phase", async (
     "auto-fill stays on `online`",
   );
 });
+
+test("an answered status is not treated as a connectivity loss", async () => {
+  const search = await read("../src/features/hub/hooks/use-discover-search.ts");
+  // A 401 or 429 proves the origin answered. Folding it into the offline branch
+  // raised "Can't reach Hugging Face" and then announced "Back online" after.
+  assert.match(
+    search,
+    /const online =\s*\n?\s*phase === "available" \|\| failure\?\.kind === "http";/,
+  );
+});

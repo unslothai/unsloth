@@ -325,12 +325,40 @@ def _scrub_detail(message: str, hf_token: Optional[str]) -> str:
     return _HOST_IN_MESSAGE_RE.sub("host='<host>'", cleaned)
 
 
+async def _fetch_bounded(url: str, hf_token: Optional[str]) -> tuple:
+    """_fetch_upstream under a wall-clock deadline.
+
+    requests' timeout is per socket operation, so a stalled DNS lookup or OS
+    proxy discovery is not covered by it, and that is the environment this route
+    exists for. Without an outer bound the request hangs well past the advertised
+    window and holds an executor thread while retries pile onto the pool.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(_fetch_upstream, url, hf_token))
+    done, _pending = await asyncio.wait({task}, timeout = _REQUEST_TIMEOUT_SECONDS)
+    if not done:
+        # Not wait_for: that cancels the inner future and then waits for the
+        # cancellation to finish, and a thread cannot be cancelled, so the wall
+        # clock bound goes straight back. Leave it running instead, bounded by
+        # the socket timeout, and swallow its outcome so nothing reports it as
+        # an unretrieved exception.
+        task.add_done_callback(
+            lambda t: None if t.cancelled() else t.exception()
+        )
+        raise asyncio.TimeoutError()
+    return task.result()
+
+
 def _upstream_error(e: Exception, hf_token: Optional[str]) -> HTTPException:
     """DNS, TLS, proxy and connection failures -> a scrubbed status we can stamp."""
     scrubbed = _scrub_detail(str(e), hf_token)
     mapped = hf_error_status(e)
     if mapped in (401, 403):
         return HTTPException(status_code = _UPSTREAM_AUTH_STATUS, detail = scrubbed)
+    if isinstance(e, (asyncio.TimeoutError, TimeoutError)):
+        return HTTPException(
+            status_code = 504,
+            detail = "Hugging Face did not answer in time",
+        )
     if mapped is not None:
         return HTTPException(status_code = mapped, detail = scrubbed)
     return HTTPException(
@@ -342,7 +370,7 @@ def _upstream_error(e: Exception, hf_token: Optional[str]) -> HTTPException:
 async def _proxy_get(url: str, hf_token: Optional[str]) -> tuple:
     """Fetch upstream and map every failure mode -> (payload, link_header)."""
     try:
-        status, body, link = await asyncio.to_thread(_fetch_upstream, url, hf_token)
+        status, body, link = await _fetch_bounded(url, hf_token)
     except HTTPException:
         raise
     except Exception as e:
@@ -478,7 +506,7 @@ async def discovery_readme(
     path = "/".join(quote(part, safe = "") for part in repo.split("/"))
     url = f"{base}/{prefix}{path}/raw/{branch}/README.md"
     try:
-        status, body, _ = await asyncio.to_thread(_fetch_upstream, url, hf_token)
+        status, body, _ = await _fetch_bounded(url, hf_token)
     except HTTPException as e:
         return _stamped(e)
     except Exception as e:

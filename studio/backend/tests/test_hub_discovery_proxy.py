@@ -516,6 +516,53 @@ class TestHealthHubEndpoint:
         assert seen["allow_redirects"] is False
 
 
+class TestTheDeadlineIsWallClock:
+    """requests bounds each socket operation, not the whole call.
+
+    A stalled DNS lookup or OS proxy discovery is not covered by that, and it is
+    the environment this route exists for, so the deadline is applied around the
+    threaded call instead.
+    """
+
+    def test_a_stalled_lookup_does_not_outlive_the_window(self, monkeypatch):
+        import time as _time
+
+        def _hang(url, token):
+            _time.sleep(5)
+            return 200, b"[]", ""
+
+        monkeypatch.setattr(discovery, "_fetch_upstream", _hang)
+        monkeypatch.setattr(discovery, "_REQUEST_TIMEOUT_SECONDS", 0.25)
+
+        async def _timed():
+            started = _time.monotonic()
+            response = await discovery.discovery_search(
+                "models",
+                _Request([("search", "gemma")]),
+                hf_token = None,
+                current_subject = "tester",
+            )
+            return _time.monotonic() - started, response
+
+        # Not asyncio.run: its shutdown drains the executor, so it would measure
+        # the orphaned thread finishing rather than what the route made the
+        # caller wait for. A real server's loop outlives the request.
+        loop = asyncio.new_event_loop()
+        try:
+            elapsed, response = loop.run_until_complete(_timed())
+        finally:
+            loop.run_until_complete(loop.shutdown_default_executor())
+            loop.close()
+
+        assert elapsed < 3, f"the route waited {elapsed:.1f}s past its deadline"
+        assert response.status_code == 504
+        assert response.headers.get(discovery.HUB_PROXY_MARKER_HEADER) == "1"
+
+    def test_the_timeout_is_named_rather_than_reported_as_unknown(self):
+        err = discovery._upstream_error(asyncio.TimeoutError(), None)
+        assert err.status_code == 504
+
+
 class TestErrorDetailScrubbing:
     def test_the_search_query_is_not_echoed_in_a_transport_error(self, monkeypatch):
         # requests names the failing URL in its message, and for this proxy that
