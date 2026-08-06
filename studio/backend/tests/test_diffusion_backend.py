@@ -4631,7 +4631,8 @@ def test_the_dense_builder_reads_transformer_from_the_hub_id_not_the_staged_snap
     # Sizing reads the staged snapshot; the LOAD deliberately does not. diffusers treats a local
     # directory as terminal (_get_model_file raises instead of falling back to the hub) and a
     # sharded load raises per missing shard, so a partial snapshot -- what a cancelled prefetch
-    # leaves -- would turn a working load into a hard failure. The hub id re-downloads instead.
+    # leaves -- would turn a working load into a hard failure. The hub id costs a re-download
+    # instead, or 401s into the GGUF fallback, which is what main does today.
     import contextlib
 
     from core.inference import diffusion as dmod
