@@ -25,6 +25,7 @@ import {
 } from "../types/api";
 import type { ChatModelSummary } from "../types/runtime";
 import { sameGpuSelection } from "@/hooks/gpu-selection";
+import { resolveBatchSizeSeed } from "./resolve-batch-size-seed";
 import { resolveChatTemplateSeed } from "./resolve-chat-template-seed";
 
 type LocalReasoningEffort = Extract<ReasoningEffort, "low" | "medium" | "high">;
@@ -251,6 +252,18 @@ export function applyActiveModelStatusToStore(
   const rememberedNUbatch = remembered?.remembered
     ? (remembered.config.nUbatch ?? null)
     : null;
+  const nBatchSeed = resolveBatchSizeSeed({
+    incoming: status.requested_n_batch,
+    isGguf: status.is_gguf ?? true,
+    previous: { value: prevState.nBatch, loaded: prevState.loadedNBatch },
+    seedLoadParams,
+  });
+  const nUbatchSeed = resolveBatchSizeSeed({
+    incoming: status.requested_n_ubatch,
+    isGguf: status.is_gguf ?? true,
+    previous: { value: prevState.nUbatch, loaded: prevState.loadedNUbatch },
+    seedLoadParams,
+  });
   // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
   // and status only exposes the RESOLVED context; re-seed the pin from the
   // requested value (parity with the load paths' keepCustomCtx). Baselines
@@ -416,39 +429,15 @@ export function applyActiveModelStatusToStore(
       rememberedNParallel === status.requested_parallel_slots && {
         nParallel: rememberedNParallel,
       }),
-    // batch-size pair: slot rules, plus the baseline advances whenever the echo differs (same-model reload elsewhere) while a pending edit keeps the control
-    ...(seedLoadParams &&
-      status.requested_n_batch != null &&
-      prevState.loadedNBatch !== status.requested_n_batch && {
-        loadedNBatch: status.requested_n_batch,
-        // a clean control (sitting on a known baseline) follows the move, or the tab reads dirty and a later Apply restores the stale size
-        ...(prevState.loadedNBatch !== null &&
-          prevState.nBatch === prevState.loadedNBatch && {
-            nBatch: status.requested_n_batch,
-          }),
-      }),
-    ...(seedLoadParams &&
-      status.requested_n_ubatch != null &&
-      prevState.loadedNUbatch !== status.requested_n_ubatch && {
-        loadedNUbatch: status.requested_n_ubatch,
-        ...(prevState.loadedNUbatch !== null &&
-          prevState.nUbatch === prevState.loadedNUbatch && {
-            nUbatch: status.requested_n_ubatch,
-          }),
-      }),
-    ...(seedLoadParams &&
-      (status.is_gguf === false || status.requested_n_batch === null) && {
-        loadedNBatch: null,
-        // a null echo is a move too: a clean control follows it back to default, or the tab reads dirty and a later Apply restores the stale override
-        ...(prevState.loadedNBatch !== null &&
-          prevState.nBatch === prevState.loadedNBatch && { nBatch: null }),
-      }),
-    ...(seedLoadParams &&
-      (status.is_gguf === false || status.requested_n_ubatch === null) && {
-        loadedNUbatch: null,
-        ...(prevState.loadedNUbatch !== null &&
-          prevState.nUbatch === prevState.loadedNUbatch && { nUbatch: null }),
-      }),
+    // batch-size pair: baseline always follows the echo, a clean control follows
+    // the move (including back to null), a pending edit keeps the control. One
+    // rule per pair, shared with the tests via resolveBatchSizeSeed.
+    ...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),
+    ...("value" in nBatchSeed && { nBatch: nBatchSeed.value ?? null }),
+    ...("loaded" in nUbatchSeed && {
+      loadedNUbatch: nUbatchSeed.loaded ?? null,
+    }),
+    ...("value" in nUbatchSeed && { nUbatch: nUbatchSeed.value ?? null }),
     ...(seedLoadParams && slotsModelChanged && { nBatch: null, nUbatch: null }),
     ...(seedLoadParams &&
       (batchesUnseeded || slotsModelChanged) &&

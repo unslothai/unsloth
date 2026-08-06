@@ -1593,18 +1593,17 @@ def test_batch_sizes_setting_wired_end_to_end():
     assert "loadedNBatch: committedNBatch," in adapter
     assert "loadedNUbatch: committedNUbatch," in adapter
     status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
-    # Baseline from the requested echo; a clean control follows a same-model
-    # move, but the echo never pins a control holding a pending edit.
-    assert "loadedNBatch: status.requested_n_batch," in status
-    assert "loadedNUbatch: status.requested_n_ubatch," in status
+    # Both pairs hydrate through the one shared rule (resolveBatchSizeSeed):
+    # baseline always follows the echo, a clean control follows the move, a
+    # pending edit keeps the control.
+    assert "incoming: status.requested_n_batch," in status
+    assert "incoming: status.requested_n_ubatch," in status
+    assert '...("loaded" in nBatchSeed && { loadedNBatch: nBatchSeed.loaded ?? null }),' in status
+    assert '...("value" in nBatchSeed && { nBatch: nBatchSeed.value ?? null }),' in status
     assert (
-        "...(prevState.loadedNBatch !== null && prevState.nBatch === prevState.loadedNBatch && { "
-        "nBatch: status.requested_n_batch, })," in status
+        '...("loaded" in nUbatchSeed && { loadedNUbatch: nUbatchSeed.loaded ?? null, }),' in status
     )
-    assert (
-        "...(prevState.loadedNUbatch !== null && prevState.nUbatch === prevState.loadedNUbatch "
-        "&& { nUbatch: status.requested_n_ubatch, })," in status
-    )
+    assert '...("value" in nUbatchSeed && { nUbatch: nUbatchSeed.value ?? null }),' in status
     signature = _read("features/model-picker/model-config/config-signature.ts")
     assert 'config.nBatch ?? "",' in signature
     assert 'config.nUbatch ?? "",' in signature
@@ -1638,26 +1637,24 @@ def test_batch_sizes_reach_an_api_load_through_the_server_mirror():
 
 def test_hydration_clears_the_batch_baselines_for_a_batchless_model():
     """Like the slot baseline: a model whose load never sent the batch sizes must not
-    inherit the previous GGUF's values into the rollback baseline."""
+    inherit the previous GGUF's values into the rollback baseline. The null-echo,
+    clean-control-follow and pending-edit rules live in resolveBatchSizeSeed and are
+    behavior-tested in resolve-batch-size-seed.test.ts; here only the wiring is pinned."""
+    seed = " ".join(_read("features/chat/lib/resolve-batch-size-seed.ts").split())
+    # a non-gguf status (or an explicit null echo) clears; an absent field on a
+    # gguf is an older backend and says nothing
+    assert "const effective = isGguf ? incoming : null;" in seed
+    assert "if (effective === undefined) { return {}; }" in seed
+    assert (
+        "const controlIsClean = previous.loaded !== null && previous.value === previous.loaded;"
+        in seed
+    )
+    assert "...(controlIsClean ? { value: effective } : {})," in seed
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
-    assert "(status.is_gguf === false || status.requested_n_batch === null) && {" in src
-    clear = src.index("status.is_gguf === false || status.requested_n_batch === null")
-    assert "loadedNBatch: null," in src[clear : clear + 200]
-    assert "(status.is_gguf === false || status.requested_n_ubatch === null) && {" in src
-    clear = src.index("status.is_gguf === false || status.requested_n_ubatch === null")
-    assert "loadedNUbatch: null," in src[clear : clear + 200]
-    # A swap under this tab resets the controls too.
     status = " ".join(src.split())
+    assert 'isGguf: status.is_gguf ?? true,' in status
+    # A swap under this tab resets the controls too.
     assert "...(seedLoadParams && slotsModelChanged && { nBatch: null, nUbatch: null })," in status
-    # A null echo is a move too: a clean control follows it back to default.
-    assert (
-        "...(prevState.loadedNBatch !== null && prevState.nBatch === prevState.loadedNBatch "
-        "&& { nBatch: null })," in status
-    )
-    assert (
-        "...(prevState.loadedNUbatch !== null && prevState.nUbatch === prevState.loadedNUbatch "
-        "&& { nUbatch: null })," in status
-    )
     # The remembered override is re-adopted only when the echo proves it.
     assert (
         "rememberedNBatch != null && rememberedNBatch === "
