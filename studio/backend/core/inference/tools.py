@@ -1183,7 +1183,10 @@ def _live_operator_segments(token: str, lexed_posix: bool) -> "list[str]":
     carets = 0
     start = 0
     for position, char in enumerate(token):
-        if char == "^":
+        # Only OUTSIDE a quoted span is the caret an escape. Within one it is
+        # the character it looks like, so `"a^"` closes its quote and the
+        # operator behind it is live. `_cmd_quote_states` reads it the same way.
+        if char == "^" and quotes % 2 == 0:
             carets += 1
             continue
         if char == '"' and carets % 2 == 0:
@@ -1215,7 +1218,8 @@ def _live_operator_tail(token: str, lexed_posix: bool) -> str:
     carets = 0
     last = -1
     for position, char in enumerate(token):
-        if char == "^":
+        # Only outside a quoted span, as in `_live_operator_segments`.
+        if char == "^" and quotes % 2 == 0:
             carets += 1
             continue
         # A caret escapes the quote mark itself, so `^"` is text cmd prints and
@@ -2227,6 +2231,28 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             skip_operand = skip_two
             skip_two = False
             continue
+        attached_payload = ""
+        if not expect_command and win_shell_pending:
+            switch = _win_switch(token.lower())
+            for spelling in ("/c", "/k"):
+                if not switch.startswith(spelling) or len(switch) == len(spelling):
+                    continue
+                # cmd takes its command string straight after the switch, with
+                # no space: `cmd /c"powershell -Command ls"` runs it. Read from
+                # the RAW line rather than the token, because a quote opening
+                # mid-token does not hold that lexer's word together.
+                width = len(spelling) + (1 if token.startswith("//") else 0)
+                offsets = _token_offsets()
+                if offsets and token_index < len(offsets):
+                    attached_payload = command[offsets[token_index] + width :]
+                else:
+                    attached_payload = _win_switch(token)[len(spelling) :]
+                break
+        if attached_payload:
+            blocked |= _screen_cmd_payload(_unwrap_quotes(attached_payload.strip()))
+            win_shell_pending = False
+            expect_command = False
+            continue
         if not expect_command and win_shell_pending and _win_switch(token.lower()) in ("/c", "/k"):
             # cmd runs the word after its own switch, a real command position the
             # outer shell sees only as an argument. Tied to a cmd this loop
@@ -2345,7 +2371,10 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             # `call call powershell` of `echo&call call powershell`.
             prefix_pending = tail_base in (command_prefixes | _CMD_ONLY_PREFIXES)
             prefix_command = tail_base if prefix_pending else ""
-            expect_command = prefix_pending
+            # A keyword handed over by the operator opens what it always opens,
+            # IF's condition included: cmd runs `echo&if 1==1 powershell`.
+            if_pending = tail_base == "if"
+            expect_command = prefix_pending or tail_base in _SHELL_KEYWORDS_AS_SEP
             continue
         if not expect_command:
             continue
@@ -2545,6 +2574,12 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         if _token_basename(tokens[i]) != "start":
             # Reached only through the glued-operator spelling, where the live
             # operator in front of the word is itself the command boundary.
+            return True
+        if _live_operator_tail(tokens[i], lexed_posix):
+            # The token opens with, or carries, a live operator, and what
+            # follows one is a command by definition. That lexer splits
+            # `echo "a"&start ""` into `"a"` and `&start`, so the boundary is at
+            # the FRONT of this token rather than the end of the one before it.
             return True
         previous = tokens[i - 1] if i else ""
         if (

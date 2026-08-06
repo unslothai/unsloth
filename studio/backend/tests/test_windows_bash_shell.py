@@ -2006,3 +2006,49 @@ def test_a_cmd_path_ending_in_a_dot_names_no_builtin(windows_cmd_only, command):
 def test_a_bare_source_builtin_is_still_read(windows_git_bash_only):
     # The other half: spelled on its own it is the builtin, and bash has it.
     assert "." in tools._find_blocked_commands(". ./script.sh")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c echo&if 1==1 powershell -Command ls",
+        "cmd /c echo & if 1==1 powershell -Command ls",
+        "cmd /c echo&if /i a==a powershell",
+    ],
+)
+def test_an_if_handed_over_by_an_operator_opens_its_condition(windows_cmd_only, command):
+    # A keyword behind a glued separator opens what it always opens. Setting
+    # command position only for wrappers let the comparison consume it and the
+    # body behind it went unread.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c echo "a^"&start "" powershell',
+        'cmd /c echo "a"&start "" powershell',
+        'cmd /c echo ^"&start "" powershell',
+    ],
+)
+def test_a_caret_inside_a_quoted_span_is_literal(windows_cmd_only, command):
+    # Only outside a span is the caret an escape, so `"a^"` closes its quote and
+    # the operator behind it is live. That lexer also splits the span off into
+    # its own token, which puts the boundary at the FRONT of the next one.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c"powershell -Command ls"',
+        'cmd //c"powershell -Command ls"',
+        "cmd /cpowershell",
+        'cmd /k"powershell -Command ls"',
+    ],
+)
+def test_a_payload_glued_to_the_switch_is_still_a_payload(windows_terminal, command):
+    # cmd takes its command string straight after the switch with no space. The
+    # remainder is read from the raw line, because a quote opening mid-token
+    # does not hold that lexer's word together.
+    assert "powershell" in tools._find_blocked_commands(command)
