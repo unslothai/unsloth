@@ -66,10 +66,19 @@ const lastFailureByKey = new Map<string, HubFailure>();
 /**
  * Which feed a request belongs to. A block can be per-path, so the catalog panel
  * reads discovery's own history: an avatar result, good or bad, cannot move it.
+ *
+ * "info" is the repo-path lookup the listing runs alongside itself. Its failure
+ * is swallowed by its caller, so nothing gates on it; on either of the other
+ * keys it would instead retire the catalog's diagnosis or, worse, suppress
+ * every asset client for 30s over a lookup that nobody was waiting on.
  */
-export type HubService = "discovery" | "other";
+export type HubService = "discovery" | "other" | "info";
 
-const HUB_SERVICES: readonly HubService[] = ["discovery", "other"];
+const HUB_SERVICES: readonly HubService[] = ["discovery", "other", "info"];
+// What the origin-wide reachability question reads. "info" is swept by Retry,
+// which clears everything on the origin, but must not answer "can this browser
+// reach the Hub" for the clients that do wait on an answer.
+const GATING_SERVICES: readonly HubService[] = ["discovery", "other"];
 
 function failureKey(origin: string, service: HubService): string {
   return `${service}|${origin}`;
@@ -115,7 +124,7 @@ function getRemoteOfflineUntil(
   scope: RemoteNetworkScope,
   service?: HubService,
 ): number {
-  const services = service ? [service] : HUB_SERVICES;
+  const services = service ? [service] : GATING_SERVICES;
   let until = 0;
   for (const origin of normalizeScope(scope)) {
     for (const s of services) {

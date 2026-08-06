@@ -141,17 +141,18 @@ function withGgufExpand(input: Parameters<typeof fetch>[0]): string {
   return url.toString();
 }
 
-// Only cachedModelInfo uses this, and a repo lookup is not the listing: it runs
-// in parallel with it, so on the feed's own key its answer (a 404 included)
-// would retire the listing's failure and report the catalog available while the
-// listing was still blocked. The listing keeps "discovery", via makeSortFetch.
+// Only cachedModelInfo uses this, and a repo lookup is neither the listing nor
+// an asset client. It runs in parallel with the listing, so on the feed's key
+// its answer (a 404 included) would retire the listing's diagnosis; on the asset
+// clients' key its failure would suppress cards and avatars for 30s. Nobody
+// waits on it either way: mergedModelIterator catches its rejection.
 function makeHfFetch(signal?: AbortSignal): typeof fetch {
   return (input, init) =>
     fetchWithTimeout(
       withGgufExpand(input),
       signal ? { ...init, signal } : init,
       HF_SEARCH_TIMEOUT_MS,
-      { service: "other" },
+      { service: "info" },
     );
 }
 
