@@ -673,7 +673,7 @@ def _visible_devices_pinned() -> bool:
     return False
 
 
-def _pick_visible_index(num_tokens: int) -> int:
+def _pick_visible_index(num_tokens: int, warn: bool = True) -> int:
     """Resolve HIP_VISIBLE_DEVICES / ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES
     to an index into a list of length num_tokens. Returns 0 (first GPU) for
     unset, empty, '-1', UUID-style, or out-of-range values.
@@ -699,17 +699,21 @@ def _pick_visible_index(num_tokens: int) -> int:
                 return _idx
             # Say so rather than silently installing for GPU 0, which on a mixed
             # host is the iGPU the user was trying to mask off. Matches the
-            # warning setup.ps1's Resolve-VisibleGpuIndex prints.
-            print(
-                f"   [WARN] {_env}={_first} is out of range ({num_tokens} GPU(s) "
-                f"detected); defaulting to GPU 0 for arch selection."
-            )
+            # warning setup.ps1's Resolve-VisibleGpuIndex prints. Callers whose
+            # list is deduplicated pass warn=False: there the index space is
+            # arches, not devices, so "out of range" is normal and not an error.
+            if warn:
+                print(
+                    f"   [WARN] {_env}={_first} is out of range ({num_tokens} GPU(s) "
+                    f"detected); defaulting to GPU 0 for arch selection."
+                )
         except ValueError:
-            print(
-                f"   [WARN] {_env}={_val} is not a device index; defaulting to "
-                f"GPU 0 for arch selection. Use UNSLOTH_ROCM_GFX_ARCH to choose "
-                f"the arch directly."
-            )
+            if warn:
+                print(
+                    f"   [WARN] {_env}={_val} is not a device index; defaulting to "
+                    f"GPU 0 for arch selection. Use UNSLOTH_ROCM_GFX_ARCH to choose "
+                    f"the arch directly."
+                )
         return 0
     return 0
 
@@ -741,6 +745,21 @@ def _detect_windows_gfx_arch() -> str | None:
         _pick = tokens[_pick_visible_index(len(tokens))]
         _distinct = list(dict.fromkeys(tokens))
         if len(_distinct) < 2 or _visible_devices_pinned():
+            # A pin is honoured verbatim, but say so when it selected a card AMD
+            # ships no Windows wheels for while another enumerated GPU has them:
+            # the install silently drops to CPU torch and the mask is the reason.
+            if (
+                len(_distinct) >= 2
+                and _windows_rocm_index_url(_pick) is None
+                and any(_windows_rocm_index_url(t) for t in _distinct)
+            ):
+                _usable = [t for t in _distinct if _windows_rocm_index_url(t)]
+                print(
+                    f"   [WARN] the pinned GPU is {_pick}, which has no AMD Windows "
+                    f"wheels, so torch will be CPU-only. {', '.join(_usable)} on this "
+                    f"host does have wheels -- clear the visible-device mask or point "
+                    f"it at that GPU to use it."
+                )
             return _pick
         # Unpinned mixed-arch host. Skip a leading shadowing iGPU so the
         # discrete card decides the wheel family (issue #7776), and say so --
@@ -2107,7 +2126,14 @@ def _ensure_rocm_torch() -> None:
         if _detected_strix:
             # Runtime-visible GPU (HIP_VISIBLE_DEVICES index into gfx_codes, else first);
             # skip the override unless it's Strix.
-            _runtime_gfx = gfx_codes[_pick_visible_index(len(gfx_codes))] if gfx_codes else None
+            # warn=False: _detect_amd_gfx_codes() deduplicates, so on a dual
+            # same-arch box (two gfx1151) the list is shorter than the device
+            # count and a valid index legitimately reads as out of range.
+            _runtime_gfx = (
+                gfx_codes[_pick_visible_index(len(gfx_codes), warn = False)]
+                if gfx_codes
+                else None
+            )
             if _runtime_gfx in _strix_gfx:
                 _selected_gfx = _runtime_gfx
                 _amd_mirror = (

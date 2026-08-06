@@ -3163,6 +3163,31 @@ class TestDetectWindowsGfxArch:
         # Same when the iGPU itself has no wheels: still prefer the supported card.
         assert self._hipinfo_pick(["gfx1013", "gfx1010", "gfx1200"]) == "gfx1200"
 
+    def test_pinning_a_wheelless_gpu_says_why_torch_will_be_cpu(self, monkeypatch, capsys):
+        # The pin is honoured, but silently installing CPU torch when another
+        # enumerated GPU does have wheels leaves the user with no idea the mask
+        # caused it.
+        monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+        assert self._hipinfo_pick(["gfx1036", "gfx1010"]) == "gfx1010"
+        out = capsys.readouterr().out
+        assert "no AMD Windows wheels" in out
+        assert "gfx1036" in out
+
+    def test_deduplicated_callers_do_not_get_a_bogus_range_warning(self, monkeypatch, capsys):
+        # _detect_amd_gfx_codes() dedupes, so on a dual same-arch Linux box the
+        # list is shorter than the device count and a valid index reads as out
+        # of range. That caller passes warn=False.
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
+        assert stack_mod._pick_visible_index(1, warn = False) == 0
+        assert capsys.readouterr().out == ""
+        # The Windows arch-selection caller still warns.
+        assert stack_mod._pick_visible_index(1) == 0
+        assert "out of range" in capsys.readouterr().out
+
     def test_shadowing_set_holds_only_apu_arches(self):
         # gfx1037 is not an AMDGPU target in LLVM, so no Windows tool emits it.
         assert "gfx1037" not in stack_mod._SHADOWING_INTEGRATED_GFX
