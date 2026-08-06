@@ -2092,8 +2092,7 @@ export function HubModelPicker({
   }, []);
 
   const pickerInventory = useChatPickerInventory({ enabled: true });
-  const { cachedGguf, cachedModels, cachedReady, refreshInventory } =
-    pickerInventory;
+  const { cachedGguf, cachedModels, cachedReady } = pickerInventory;
   const lmStudioModels = useMemo(
     () =>
       sortLmStudio(
@@ -2279,10 +2278,6 @@ export function HubModelPicker({
       .then(setRecommendedFolders)
       .catch(() => {});
   }, [refreshScanFolders]);
-
-  useEffect(() => {
-    void refreshInventory();
-  }, [refreshInventory]);
 
   // Hide downloaded models from the recommended list. Case-insensitive
   // since the HF cache lowercases repo IDs.

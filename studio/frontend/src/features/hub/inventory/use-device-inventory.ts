@@ -13,6 +13,9 @@ import {
   listLocalDatasets,
   listLocalModels,
 } from "./api";
+import {
+  shouldCoalesceInFlightInventoryFetch,
+} from "./inventory-fetch-policy.ts";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { ensureHiddenModelMatchers } from "../lib/hidden-models";
 import { fingerprintToken } from "../lib/token-fingerprint";
@@ -194,7 +197,13 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
     | Promise<DeviceInventoryRows[K]>
     | undefined;
   if (pending) {
-    if (!options.force) {
+    if (
+      shouldCoalesceInFlightInventoryFetch({
+        force: options.force,
+        ready: current.ready,
+        inFlight: true,
+      })
+    ) {
       return pending;
     }
     const queued = forceQueue.get(key) as
@@ -351,14 +360,26 @@ export function useDeviceInventorySources<
 
   const refresh = useCallback(async () => {
     const results = await Promise.allSettled(
-      sourceList.map((source) =>
-        fetchInventorySource(source, {
+      sourceList.map(async (source) => {
+        const key = sourceRequestKey(
+          source,
+          inventoryVersion,
+          tokenFingerprint,
+        );
+        const current = useDeviceInventoryStore.getState()[
+          source
+        ] as DeviceInventorySourceState<DeviceInventoryRows[typeof source]>;
+        const pending = inFlight.get(key);
+        if (pending && !current.ready) {
+          await pending.catch(() => undefined);
+        }
+        return fetchInventorySource(source, {
           hfToken,
           tokenFingerprint,
           inventoryVersion,
           force: true,
-        }),
-      ),
+        });
+      }),
     );
     for (const [index, result] of results.entries()) {
       const source = sourceList[index];
