@@ -1161,6 +1161,61 @@ def test_a_handoff_belongs_to_the_statement_at_its_depth(monkeypatch, command, b
 @pytest.mark.parametrize(
     ("command", "blocked"),
     [
+        # A separator ends a redirection target even glued to it, so the word
+        # behind it is a command; swallowing the token whole left the launch
+        # unscreened. `2>&1` carries a handle rather than a target, so nothing
+        # follows it to skip and the words behind it stay echo's.
+        ('cmd /c > out&start "" powershell', True),
+        ('cmd /c >out&start "" powershell', True),
+        ('cmd /c > out start "" powershell', True),
+        ("cmd /c echo hi 2>&1 powershell", False),
+        # The target is what the separator ends, and the command behind it is
+        # read as one -- including a `for`, whose set is a command of its own.
+        ("""cmd /c > out&for /f %i in ('start "" powershell') do echo %i""", True),
+        # `>&2` is the whole operator, handle and all, so the word behind it is
+        # the command rather than the target of a redirection still waiting.
+        ('cmd /c >&2 start "" powershell', True),
+        # An empty piece is syntax and not a command word: reading the one the
+        # trailing `&` leaves behind took back the position it had just opened.
+        ('cmd /c echo a& start "" powershell', True),
+        ('cmd /c (echo a)& start "" powershell', True),
+        ('cmd /c if exist x ( start "" powershell )', True),
+        ('cmd /c echo a& echo start "" powershell', False),
+        # An `if` is over at the `)` even when the separator is glued to it, so
+        # the printed `else` behind it is ECHO's message and not a handoff.
+        ('cmd /c if exist x (echo a)& echo else start "" powershell', False),
+        ('cmd /c if exist x (echo a )& echo else start "" powershell', False),
+        ('cmd /c if exist x (echo a & echo b) else start "" powershell', True),
+    ],
+)
+def test_cmd_syntax_glued_to_a_word_still_ends_it(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # Win32 ignores a trailing dot or space, so these open powershell.exe
+        # while splitext read the lone dot as the extension and matched nothing.
+        ('cmd //c start "" C:/Windows/System32/WindowsPowerShell/v1.0/powershell.exe.', True),
+        ('cmd //c start "" powershell.exe.', True),
+        ("cmd //c powershell.", True),
+        ('cmd //c start "" "report.txt."', False),
+        ('cmd //c start "" notepad.', False),
+    ],
+)
+def test_a_trailing_dot_is_not_part_of_a_windows_name(monkeypatch, bash, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
         # cmd strips the quotes and applies the escapes before it resolves the
         # command, so these run powershell while no scan of the raw spelling
         # matches. The grammar walk normalises the word; screening only the two

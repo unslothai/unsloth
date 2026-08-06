@@ -1379,6 +1379,18 @@ def _cmd_split(token: str, chars: str) -> "list[str]":
     return pieces
 
 
+def _win32_name(base: str) -> str:
+    """``base`` as Win32 resolves it: a trailing dot or space is ignored.
+
+    Microsoft's file-naming rules put "do not end a file or directory name with
+    a space or a period" among the reserved conventions -- the API trims them
+    outside the `\\\\?\\` namespace -- so `powershell.exe.` opens
+    powershell.exe, while splitext read the lone dot as the extension and the
+    name behind it matched nothing.
+    """
+    return base.rstrip(". ") or base
+
+
 def _blocked_start_program(token: str) -> "set[str]":
     """The blocked names the program `start` launches resolves to.
 
@@ -1435,7 +1447,7 @@ def _blocked_start_program(token: str) -> "set[str]":
         names.add(_CMD_DELAYED_RE.sub("", target))
     blocked: "set[str]" = set()
     for name in names:
-        base = os.path.basename(name.replace("\\", "/")).lower()
+        base = _win32_name(os.path.basename(name.replace("\\", "/")).lower())
         stem, ext = os.path.splitext(base)
         if ext in {".exe", ".com", ".bat", ".cmd"}:
             base = stem
@@ -1844,15 +1856,21 @@ def _find_blocked_commands(command: str) -> set[str]:
             if _looks_like_separator(token):
                 if lexed_posix and index not in quoted_separators:
                     break
-                if len(_cmd_split(token, _CMD_SEPARATORS)) > 1:
+                separated = len(_cmd_split(token, _CMD_SEPARATORS)) > 1
+                depth += _cmd_group_delta(token)
+                if separated:
                     expect = True
                     # A separator inside a group is between the branch's own
                     # commands, so the `if` it belongs to is still open:
                     # `if exist x (echo a & echo b) else start "" pwsh` runs the
                     # start, and clearing here lost the else that reopens it.
+                    # The depth that decides is the one the separator LEAVES:
+                    # `if exist x (echo a)& echo else start "" pwsh` closes the
+                    # branch on the same token, and reading the depth in front
+                    # of it kept an `if` that was over and made the printed
+                    # `else` a handoff.
                     if not depth:
                         control.clear()
-                depth += _cmd_group_delta(token)
                 continue
             # A separator with no space around it stays inside the token, under
             # either lexer: the cmd one takes no punctuation_chars, and bash
@@ -1862,28 +1880,46 @@ def _find_blocked_commands(command: str) -> set[str]:
             # `cmd //c >nul start "" powershell` really does launch.
             if skip_operand:
                 skip_operand = False
-                continue
-            if _REDIR_PREFIX_RE.match(token):
+                if len(_cmd_split(token, _CMD_SEPARATORS)) == 1:
+                    continue  # the whole word was the target
+                # ...but a separator ends the target even glued to it, so the
+                # word behind it is a command: `cmd /c > out&start ""
+                # powershell` really launches, and swallowing the token whole
+                # left it unscreened.
+            elif _REDIR_PREFIX_RE.match(token):
                 # `> nul` is two words, and the target took the command position
-                # the operator had just been allowed to keep.
-                skip_operand = not _REDIR_PREFIX_RE.sub("", token)
-                continue
+                # the operator had just been allowed to keep. `2>&1` carries its
+                # handle instead of a target, so nothing follows it to skip.
+                head = _CMD_REDIR_HEAD_RE.match(token)
+                rest = token[head.end() :] if head else ""
+                if not rest:
+                    skip_operand = "&" not in (head.group(0) if head else "")
+                    continue
+                if len(_cmd_split(rest, _CMD_SEPARATORS)) == 1:
+                    continue  # operator and target in one word, `>nul`
             # MSYS re-quotes an argument holding whitespace when it builds
             # cmd's command line, and quoting is what makes cmd's separators
             # ordinary data, so `cmd //c echo "x &start" "" pwsh` only prints.
             requoted = lexed_posix and any(char.isspace() for char in token)
             pieces = [token] if requoted else _cmd_split(token, _CMD_SEPARATORS)
-            if len(pieces) > 1:
-                expect = True
-                if not depth:
-                    control.clear()
             # The word's own depth is the one its token opens it at: brackets
             # before it are cmd's grouping around it, brackets behind it close
             # a group it sits inside. So `(echo` is a word one level in, and
             # `else)` is a word at the level the `)` then leaves.
             word_depth = depth + _cmd_word_depth_delta(pieces[-1])
             depth += _cmd_group_delta(token)
+            if len(pieces) > 1:
+                expect = True
+                if not depth:
+                    control.clear()
             word = _cmd_word_base(pieces[-1])
+            if not word:
+                # Syntax and nothing else: the trailing `&` of `echo a& start ""
+                # powershell` leaves an empty piece behind it, and reading that
+                # as a command word took back the position the separator had
+                # just opened, so the launch was never screened. A bare `(` is
+                # the same shape from the other side.
+                continue
             if skip > 0:
                 skip -= 1
                 continue
@@ -2179,7 +2215,9 @@ def _find_blocked_commands(command: str) -> set[str]:
             # power^shell` run powershell, which no scan of the raw spelling
             # matches. Every command position is screened, not only the two
             # words this grammar reads on.
-            name = _token_basename(cmd_word)
+            # Trailing dots and spaces are Win32's to ignore, so `cmd /c
+            # powershell.exe.` runs powershell whatever the lexer was.
+            name = _token_basename(_win32_name(cmd_word))
             if name in _blocked_commands():
                 blocked.add(name)
             else:
@@ -3455,6 +3493,9 @@ _SENSITIVE_GLOB_BASENAMES = frozenset(
 # A leading shell redirection (<, >, 2>, >>) hides the path from a plain glob
 # scan (cat </e??/passwd); strip it before matching.
 _REDIR_PREFIX_RE = re.compile(r"^\d*[<>]+")
+# ...and the whole of cmd's operator, which may carry a handle (`2>&1`, `>&2`)
+# where an ordinary one is followed by a file to write.
+_CMD_REDIR_HEAD_RE = re.compile(r"^\d*[<>]+&?\d*")
 # Bash brace expansion (cat /etc/pass{w,}d -> /etc/passwd /etc/passd, and the
 # sequence form cat /etc/pass{w..w}d -> /etc/passwd) runs after this classifier;
 # expand comma groups and .. sequences to scan each result.
