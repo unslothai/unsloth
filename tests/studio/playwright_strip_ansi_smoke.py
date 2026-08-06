@@ -25,14 +25,14 @@ ESC = "\u001b"
 
 
 def info(msg: str) -> None:
-    print(f"[ansi-smoke] {msg}", flush=True)
+    print(f"[ansi-smoke] {msg}", flush = True)
 
 
 def wait_for_vite(url: str, timeout_s: float = 120.0) -> None:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
         try:
-            with urllib.request.urlopen(f"{url}/smoke-ansi.html", timeout=2) as resp:
+            with urllib.request.urlopen(f"{url}/smoke-ansi.html", timeout = 2) as resp:
                 if resp.status == 200:
                     return
         except (urllib.error.URLError, TimeoutError):
@@ -42,7 +42,7 @@ def wait_for_vite(url: str, timeout_s: float = 120.0) -> None:
 
 
 def main() -> None:
-    ART.mkdir(parents=True, exist_ok=True)
+    ART.mkdir(parents = True, exist_ok = True)
     info(f"starting vite dev server in {FRONTEND}")
     vite = subprocess.Popen(
         ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "8000", "--strictPort"],
