@@ -1169,6 +1169,8 @@ export const it = {
     },
   },
   studio: {
+    imageTraining: "Addestramento immagini",
+    goToImageTraining: "Vai all'addestramento immagini",
     routeTitle: "Addestra",
     wizard: {
       modelTitle: "Modello",

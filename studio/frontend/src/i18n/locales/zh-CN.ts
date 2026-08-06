@@ -1092,6 +1092,8 @@ export const zhCN = {
     },
   },
   studio: {
+    imageTraining: "图像训练",
+    goToImageTraining: "前往图像训练",
     routeTitle: "训练",
     wizard: {
       modelTitle: "模型",

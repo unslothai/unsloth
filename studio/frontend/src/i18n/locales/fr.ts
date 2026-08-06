@@ -1170,6 +1170,8 @@ export const fr = {
     },
   },
   studio: {
+    imageTraining: "Entraînement d'images",
+    goToImageTraining: "Aller à l'entraînement d'images",
     routeTitle: "Entraîner",
     wizard: {
       modelTitle: "Modèle",

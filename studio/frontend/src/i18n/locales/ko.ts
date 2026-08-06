@@ -1128,6 +1128,8 @@ export const ko = {
     },
   },
   studio: {
+    imageTraining: "이미지 학습",
+    goToImageTraining: "이미지 학습으로 이동",
     routeTitle: "학습",
     wizard: {
       modelTitle: "모델",

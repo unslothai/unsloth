@@ -13,7 +13,9 @@ import {
   useTrainingRuntimeStore,
 } from "@/features/training";
 import { useT } from "@/i18n";
-import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
+import { MediaPageLink } from "@/components/media-page-link";
+import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
+import { ArrowLeft01Icon, Image03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import {
   type ReactElement,
@@ -156,7 +158,7 @@ export function StudioPage(): ReactElement {
               </p>
             </div>
             {!showTrainingHydrating && (
-              <div className="flex min-w-0 items-center gap-3 border-b border-border/60">
+              <div className="flex min-w-0 flex-wrap items-center gap-3 border-b border-border/60">
                 {showHistoryBack && (
                   <Button
                     variant="ghost"
@@ -173,6 +175,19 @@ export function StudioPage(): ReactElement {
                   trainingRunActive={trainingRunActive}
                   showTrainingView={showTrainingView}
                 />
+                {/* Image training is a mode of the Images page, not a route, so it sits
+                    beside the sub-nav rather than in it. */}
+                <div className="ml-auto flex items-center gap-2 pb-2">
+                  <MediaPageLink
+                    to="/images"
+                    label={t("studio.imageTraining")}
+                    tooltip={t("studio.goToImageTraining")}
+                    icon={Image03Icon}
+                    onNavigate={() =>
+                      useImageWorkflowStore.getState().setPageMode("train")
+                    }
+                  />
+                </div>
               </div>
             )}
           </header>
