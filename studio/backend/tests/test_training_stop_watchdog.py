@@ -1,13 +1,18 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-"""Stop-watchdog escalation for a stuck training stop.
+"""Watchdog escalation for a training worker that will not exit.
 
 A save-stop signals the worker and waits for it to save and exit. On some platforms the
 worker saves but then wedges in post-save GPU/driver teardown and never exits, leaving the
 run stuck in "Stopping..." forever. These tests pin the bounded recovery: the watchdog
 escalates to force_terminate() a short grace after "complete" (save done) or after an
 absolute timeout (hang during save), and never force-kills a worker that exits cleanly.
+
+Section (d) covers the same wedge on a run that ends by itself: the model is on disk but the
+process lingers, so the liveness-based bar sits at 100% forever (#7897). The pump arms the
+same watchdog on a terminal event, and escalation must not relabel a completed run.
+
 Fakes only; no GPU, network, or subprocess.
 """
 
@@ -48,6 +53,7 @@ _stub("matplotlib", _mpl)
 _stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
+_hw.get_device = lambda *a, **k: None
 _stub("utils.hardware", _hw)
 _npl = _types.ModuleType("utils.native_path_leases")
 _npl.native_path_secret_removed_for_child_start = lambda: contextlib.nullcontext()
@@ -61,7 +67,10 @@ _stub("utils.paths", _pth)
 # evict it below if we were the one to create the (stub-bound) module instance.
 _TRAINING_PRE_IMPORTED = "core.training.training" in sys.modules
 
-from core.training.training import TrainingBackend
+from core.training.training import TrainingBackend, TrainingProgress as _TP
+
+# Captured before the eviction below, so it survives the sys.modules cleanup.
+_TRAINING_MODULE_FILE = sys.modules["core.training.training"].__file__
 
 # Restore every stubbed module so this file never pollutes the shared session.
 for _name in (
@@ -266,6 +275,8 @@ def test_new_run_gets_its_own_watchdog(monkeypatch):
         target_proc,
         cancel,
         watched_job_id = None,
+        grace_s = None,
+        terminal_seen = False,
     ):
         started.append(target_proc)
         # No timeout: the finally always releases this, so a superseded watchdog stays
@@ -905,3 +916,406 @@ def test_finish_stopped_run_error_leaves_new_run_untouched(monkeypatch):
     b._finish_stopped_run("job_old", None, [{"step": 1}], 1, None, None, [])
 
     assert b._run_finalized is True, "must not unclaim the new run's finalize"
+
+
+# ----------------------------------------------------------------------------
+# (d) A run that ends on its own and whose worker then wedges in teardown.
+# ----------------------------------------------------------------------------
+
+
+def _complete_event(output_dir = "/tmp/out"):
+    return {
+        "type": "complete",
+        "output_dir": output_dir,
+        "status_message": f"Training completed! Model saved to {output_dir}",
+    }
+
+
+def test_terminal_event_arms_watchdog_and_reaps_wedged_worker(monkeypatch):
+    # Saved, reported "complete", never exited: nothing reaped it, so the UI sat at 100%.
+    monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # ensure the grace fires, not the cap
+    b = TrainingBackend()
+    calls = _record_force_terminate(monkeypatch, b)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: None)
+
+    proc = _FakeProc(alive = True)
+    b._proc = proc
+    b.current_job_id = "job_1"
+
+    b._handle_event(_complete_event())
+
+    assert b._complete_seen.is_set()
+    assert b._stop_watchdog is not None, "a terminal event must arm the exit watchdog"
+    assert _wait_until(
+        lambda: calls == ["force", "final"]
+    ), "a worker still alive after the completion grace must be force-terminated"
+    b._stop_watchdog.join(timeout = 5)
+
+
+def test_terminal_error_event_also_arms_watchdog(monkeypatch):
+    # A terminal error signals _complete_seen too, so the grace starts either way.
+    monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
+    b = TrainingBackend()
+    calls = _record_force_terminate(monkeypatch, b)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: None)
+
+    b._proc = _FakeProc(alive = True)
+    b.current_job_id = "job_1"
+
+    b._handle_event({"type": "error", "error": "boom", "stack": ""})
+
+    assert b._complete_seen.is_set(), "a terminal error leaves nothing to save"
+    assert _wait_until(lambda: calls == ["force", "final"])
+    b._stop_watchdog.join(timeout = 5)
+
+
+def test_normal_completion_never_force_terminates(monkeypatch):
+    # The common path: the worker exits shortly after "complete", so arming stays invisible.
+    monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 5.0)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 10.0)
+    b = TrainingBackend()
+    calls = _record_force_terminate(monkeypatch, b)
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: None)
+
+    proc = _FakeProc(alive = True)
+    b._proc = proc
+    b.current_job_id = "job_1"
+
+    b._handle_event(_complete_event())
+    time.sleep(0.1)
+    proc._alive = False  # worker exits on its own, well inside the grace
+
+    b._stop_watchdog.join(timeout = 5)
+    assert calls == [], "a worker that exits on its own must never be force-terminated"
+
+
+def test_completion_watchdog_does_not_preempt_a_stop_watchdog(monkeypatch):
+    # A user stop armed the tighter grace; the terminal event must not replace it.
+    b = TrainingBackend()
+    monkeypatch.setattr(b, "_finalize_run_in_db", lambda **kw: None)
+    monkeypatch.setattr(b, "_stop_watchdog_loop", lambda *a, **k: None)
+
+    b._proc = _FakeProc(alive = True)
+    b.current_job_id = "job_1"
+    b._start_stop_watchdog(cancel = False)
+    first = b._stop_watchdog
+    first.join(timeout = 5)
+
+    # Still the watcher of record for this proc while it is alive.
+    b._stop_watchdog = first
+    b._handle_event(_complete_event())
+    assert b._stop_watchdog is first or not first.is_alive()
+
+
+def test_escalation_finalize_keeps_completed_status_message(monkeypatch):
+    # Reaping a wedged worker after a successful save must not relabel the run.
+    b = TrainingBackend()
+    b.current_job_id = "job_1"
+    b._output_dir = "/tmp/out"
+    b._progress.is_completed = True
+    b._progress.status_message = "Training completed! Model saved to /tmp/out"
+    b._terminal_finalize_payload = {
+        "status": "completed",
+        "output_dir": "/tmp/out",
+        "clear_output_dir": False,
+        "expected_job_id": "job_1",
+    }
+    b._run_finalized = True  # the pump already recorded the terminal DB state
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+
+    proc = _FakeProc(alive = False)
+    b._proc = proc
+    b._finalize_stopped_after_escalation(target_proc = proc, watched_job_id = "job_1")
+
+    assert b._progress.status_message == "Training completed! Model saved to /tmp/out"
+    assert b._progress.error is None
+    assert b._progress.is_completed is True
+    assert b._progress.is_training is False
+    assert b._proc is None, "the handle must be dropped so is_training_active() goes false"
+
+
+def test_escalation_finalize_still_reports_a_stop_as_stopped(monkeypatch):
+    # The pre-existing stop path keeps its message.
+    b = TrainingBackend()
+    b.current_job_id = "job_1"
+    b._should_stop = True
+    b._output_dir = "/tmp/out"
+    b._terminal_finalize_payload = {
+        "status": "stopped",
+        "output_dir": "/tmp/out",
+        "clear_output_dir": False,
+        "expected_job_id": "job_1",
+    }
+    b._run_finalized = True
+    monkeypatch.setattr(b, "_ensure_db_run_created", lambda: None)
+
+    proc = _FakeProc(alive = False)
+    b._proc = proc
+    b._finalize_stopped_after_escalation(target_proc = proc, watched_job_id = "job_1")
+
+    assert b._progress.status_message == "Training stopped."
+
+
+def test_pump_loop_exits_when_the_watchdog_drops_the_handle(monkeypatch):
+    # The watchdog drops _proc last; a drop between the pump's two reads killed the pump.
+    b = TrainingBackend()
+    proc = _FakeProc(alive = True)
+    b._proc = proc
+    b._event_queue = queue.Queue()
+
+    def _read_queue(_q, timeout_sec = None):
+        b._proc = None  # watchdog finalizes concurrently
+        return None
+
+    monkeypatch.setattr(b, "_read_queue", _read_queue)
+
+    done = threading.Event()
+
+    def _run():
+        b._pump_loop()
+        done.set()
+
+    t = threading.Thread(target = _run, daemon = True)
+    t.start()
+    assert done.wait(timeout = 5), "pump must return cleanly, not die on a dropped handle"
+    assert b._pump_running is False
+
+
+# ----------------------------------------------------------------------------
+# (e) A finished run reports terminal at once, without waiting on the worker.
+# ----------------------------------------------------------------------------
+
+
+def _running_backend(job_id = "job_1"):
+    b = TrainingBackend()
+    b.current_job_id = job_id
+    b._proc = _FakeProc(alive = True)
+    b._progress = _TP(is_training = True, status_message = "Training in progress...")
+    b._finalize_run_in_db = lambda **kw: None
+    b._ensure_db_run_created = lambda: None
+    b._start_stop_watchdog = lambda **kw: None
+    return b
+
+
+def test_is_run_finished_false_while_training():
+    b = _running_backend()
+    assert b.is_run_finished() is False
+    assert b.is_training_active() is True
+
+
+def test_is_run_finished_true_once_terminal_even_though_worker_lives():
+    # The whole point: the UI must not wait on a worker wedged in teardown.
+    b = _running_backend()
+    b._handle_event(_complete_event())
+    assert b.is_run_finished() is True
+    assert b.is_training_active() is True, "admission guards still see the live worker"
+
+
+def test_is_run_finished_true_on_error():
+    b = _running_backend()
+    b._handle_event({"type": "error", "error": "boom", "stack": ""})
+    assert b.is_run_finished() is True
+
+
+def test_is_run_finished_untrue_for_a_fresh_backend():
+    assert TrainingBackend().is_run_finished() is False
+
+
+def test_is_run_finished_does_not_leak_into_the_next_run():
+    b = _running_backend()
+    b._handle_event(_complete_event())
+    assert b.is_run_finished() is True
+    # start_training's reset block.
+    b._complete_seen.clear()
+    b._progress = _TP(is_training = True, status_message = "Initializing training...")
+    b.current_job_id = "job_2"
+    b._proc = _FakeProc(alive = True)
+    assert b.is_run_finished() is False
+
+
+def test_is_run_finished_false_during_spawn_and_start_windows():
+    # _progress holds the previous run until start_training resets it.
+    b = _running_backend()
+    b._handle_event(_complete_event())
+    b._spawn_in_progress = True
+    assert b.is_run_finished() is False
+    b._spawn_in_progress = False
+    b._start_in_progress = True
+    assert b.is_run_finished() is False
+
+
+def test_is_training_active_still_liveness_only():
+    # A lingering worker still holds its VRAM, so the admission guards must see it active.
+    b = _running_backend()
+    b._handle_event(_complete_event())
+    assert b.is_training_active() is True
+    b._proc._alive = False
+    assert b.is_training_active() is False
+
+
+def test_is_run_finished_false_across_an_xet_respawn():
+    # A stall respawns the worker over HTTP; the run is still going, so no terminal phase.
+    b = _running_backend()
+    b._in_model_load = True
+    b._handle_event({"type": "stall", "message": "no progress"})
+    assert b._needs_xet_respawn is True
+    assert b._progress.error is None
+    assert b.is_run_finished() is False
+
+
+def test_is_run_finished_true_when_a_stall_is_unrecoverable():
+    # Already fell back to HTTP: the stall is terminal, so the UI should say so.
+    b = _running_backend()
+    b._in_model_load = True
+    b._xet_fallback_used = True
+    b._handle_event({"type": "stall", "message": "no progress"})
+    assert b._needs_xet_respawn is False
+    assert b.is_run_finished() is True
+
+
+# ----------------------------------------------------------------------------
+# (f) The terminal event must be the worker's last act.
+# ----------------------------------------------------------------------------
+
+
+def test_mlx_worker_never_withholds_a_terminal_send_behind_tracking_teardown():
+    """MLX teardown closes the TensorBoard writer and calls wandb_run.finish(), either of
+    which can block for minutes. Ahead of `complete` that would withhold the event the UI
+    waits on, so the teardown stays in the finally and runs only after the send.
+    """
+    import ast
+    from pathlib import Path as _P
+
+    # Beside the training module we imported, so the test travels with the package.
+    src = (_P(_TRAINING_MODULE_FILE).resolve().parent / "worker.py").read_text()
+    tree = ast.parse(src)
+    fn = next(
+        n
+        for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_run_mlx_training"
+    )
+
+    def _is_complete_send(node):
+        return (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", "") == "_send"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "complete"
+        )
+
+    def _teardown_lines(nodes):
+        return {
+            c.lineno
+            for n in nodes
+            for c in ast.walk(n)
+            if isinstance(c, ast.Call) and getattr(c.func, "id", "") == "_finish_tracking"
+        }
+
+    saves = [
+        n
+        for n in ast.walk(fn)
+        if isinstance(n, ast.Try)
+        and any(_is_complete_send(c) for stmt in n.body for c in ast.walk(stmt))
+    ]
+    assert len(saves) == 1, "expected one save/finalize try block with the terminal sends"
+    everywhere = _teardown_lines([fn])
+    assert everywhere, "expected the tracking teardown to still run"
+    assert everywhere == _teardown_lines(saves[0].finalbody), (
+        f"_finish_tracking() is called at worker.py:{sorted(everywhere)} but only "
+        f"{sorted(_teardown_lines(saves[0].finalbody))} is in the finally; a blocking "
+        "wandb_run.finish() ahead of _send('complete') strands the UI at 100%"
+    )
+
+
+def test_terminal_stall_arms_the_exit_watchdog(monkeypatch):
+    # An unrecoverable stall is terminal, but terminate() is only a request: without a
+    # backstop a worker that ignores it holds the GPU and blocks every later start.
+    monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
+    b = _running_backend()
+    b._start_stop_watchdog = TrainingBackend._start_stop_watchdog.__get__(b)
+    calls = _record_force_terminate(monkeypatch, b)
+    b._in_model_load = True
+    b._xet_fallback_used = True  # already on HTTP, so the stall is unrecoverable
+
+    proc = b._proc
+    proc.terminate = lambda: None  # worker ignores the terminate request
+    b._handle_event({"type": "stall", "message": "no progress"})
+
+    assert b.is_run_finished() is True
+    assert _wait_until(
+        lambda: calls == ["force", "final"]
+    ), "a wedged worker on the terminal stall path must still be reaped"
+    if b._stop_watchdog:
+        b._stop_watchdog.join(timeout = 5)
+
+
+def test_recoverable_stall_does_not_arm_the_watchdog(monkeypatch):
+    # The Xet fallback respawns the worker, so the run is not terminal and nothing may reap it.
+    monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
+    b = _running_backend()
+    b._start_stop_watchdog = TrainingBackend._start_stop_watchdog.__get__(b)
+    calls = _record_force_terminate(monkeypatch, b)
+    b._in_model_load = True
+
+    b._handle_event({"type": "stall", "message": "no progress"})
+
+    assert b._needs_xet_respawn is True
+    assert b.is_run_finished() is False
+    time.sleep(0.3)
+    assert calls == [], "a respawning run must not be force-terminated"
+
+
+def test_terminal_error_releases_an_in_flight_stop_watchdog(monkeypatch):
+    # Stop and Save, then the worker fails its checkpoint and reports error. The stop
+    # watchdog already watches this proc so arming no-ops; without a terminal signal it
+    # would sit out the full 600s save backstop with the GPU still blocked.
+    monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
+    b = _running_backend()
+    b._start_stop_watchdog = TrainingBackend._start_stop_watchdog.__get__(b)
+    calls = _record_force_terminate(monkeypatch, b)
+
+    b._should_stop = True
+    b._start_stop_watchdog(cancel = False)  # the stop's own watchdog, now in flight
+    first = b._stop_watchdog
+    assert first is not None and first.is_alive()
+
+    b._handle_event({"type": "error", "error": "checkpoint failed", "stack": ""})
+
+    assert b._complete_seen.is_set(), "a terminal error must signal the in-flight watchdog"
+    assert b._stop_watchdog is first, "the existing watcher stays; arming again is a no-op"
+    assert _wait_until(
+        lambda: calls == ["force", "final"]
+    ), "the in-flight watchdog must escalate on the grace, not the save backstop"
+    first.join(timeout = 5)
+
+
+def test_terminal_stall_releases_an_in_flight_stop_watchdog(monkeypatch):
+    # Same shape as the error path, via an unrecoverable stall: arming again no-ops, so only
+    # the terminal signal keeps the in-flight watchdog off the 600s save backstop.
+    monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
+    b = _running_backend()
+    b._start_stop_watchdog = TrainingBackend._start_stop_watchdog.__get__(b)
+    calls = _record_force_terminate(monkeypatch, b)
+    b._in_model_load = True
+    b._xet_fallback_used = True  # already on HTTP, so the stall is unrecoverable
+    b._proc.terminate = lambda: None  # worker ignores the terminate request
+
+    b._should_stop = True
+    b._start_stop_watchdog(cancel = False)  # the stop's own watchdog, now in flight
+    first = b._stop_watchdog
+    assert first is not None and first.is_alive()
+
+    b._handle_event({"type": "stall", "message": "no progress"})
+
+    assert b._complete_seen.is_set(), "a terminal stall must signal the in-flight watchdog"
+    assert b._stop_watchdog is first, "the existing watcher stays; arming again is a no-op"
+    assert _wait_until(
+        lambda: calls == ["force", "final"]
+    ), "the in-flight watchdog must escalate on the grace, not the save backstop"
+    first.join(timeout = 5)
