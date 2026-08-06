@@ -352,4 +352,7 @@ jobs:
             logs/playwright-permissions-*
             logs/playwright_extra
             logs/studio-permissions-*.log
-          retention-days: 7
+          # 1 day, matching the repository-wide cap. A larger value here is
+          # silently clamped to that cap today, so stating 7 only invites the
+          # artifacts to re-inflate if the cap is ever raised.
+          retention-days: 1

@@ -2863,6 +2863,40 @@ def push_to_ollama(tokenizer, gguf_location, username: str, model_name: str, tag
     print("Successfully pushed to ollama")
 
 
+def _model_basename(name_or_path, default = "model") -> str:
+    """Leaf name of a model id or path, for use as a GGUF filename stem.
+
+    Strips `\\` as well as `/` on every host: `os.path.basename` returns the whole
+    `D:\\...` string on POSIX. A directory or drive left in the stem makes
+    `os.path.join(gguf_directory, stem)` discard gguf_directory under ntpath, so the
+    GGUF lands next to the base model (#7897); an empty stem gives a hidden
+    `.Q4_K_M.gguf` that `glob.glob` cannot see.
+    """
+    if name_or_path is None:
+        return default
+    try:
+        text = os.fspath(name_or_path)
+    except TypeError:
+        text = str(name_or_path)
+    if not isinstance(text, str) or not text.strip():
+        return default
+
+    # A real directory wins: a POSIX directory name may legally contain a backslash.
+    try:
+        if os.path.isdir(text):
+            base = os.path.basename(os.path.normpath(text))
+            if base and base not in (".", ".."):
+                return base
+    except (OSError, ValueError):
+        pass
+
+    base = text.replace("\\", "/").rstrip("/").rsplit("/", 1)[-1]
+    # A bare drive ("D:") or "." would give a drive-relative or hidden output file.
+    if not base or base in (".", "..") or (len(base) == 2 and base[1] == ":"):
+        return default
+    return base
+
+
 @_normalize_tied_weights_keys_for_save
 def unsloth_save_pretrained_gguf(
     self,
@@ -2951,12 +2985,14 @@ def unsloth_save_pretrained_gguf(
             _outtype = "f16"
         return _unsloth_save_lora_gguf(self, tokenizer, save_directory, outtype = _outtype)
 
+    # base_model_name keeps the full id for create_ollama_modelfile's mapper lookup;
+    # only the filename stem is trimmed.
+    base_model_name = getattr(getattr(self, "config", None), "_name_or_path", None)
     try:
-        base_model_name = get_model_name(self.config._name_or_path, load_in_4bit = False)
-        model_name = base_model_name.split("/")[-1]
-    except:
-        base_model_name = self.config._name_or_path
-        model_name = base_model_name.split("/")[-1]
+        base_model_name = get_model_name(base_model_name, load_in_4bit = False)
+    except Exception:
+        pass
+    model_name = _model_basename(base_model_name)
 
     # Check if push_to_hub is requested
     if push_to_hub:
@@ -3711,13 +3747,7 @@ def _unsloth_save_lora_gguf(
         base_model_id = get_model_name(base_model_id, load_in_4bit = False)
     except Exception:
         pass
-    # Windows-safe basename (handles both C:\... and / separators).
-    if os.path.isdir(base_model_id):
-        model_name = os.path.basename(os.path.normpath(base_model_id))
-    else:
-        model_name = base_model_id.replace("\\", "/").rstrip("/").split("/")[-1]
-    if not model_name:
-        model_name = "model"
+    model_name = _model_basename(base_model_id)
 
     # Save the adapter; for a hub push use an isolated temp dir, else save_directory itself.
     if push_to_hub:

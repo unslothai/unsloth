@@ -1478,6 +1478,7 @@ export const zhCN = {
         loadingDataset: "正在加载数据集",
         configuring: "配置中",
         training: "训练中",
+        finalizing: "正在保存模型",
         completed: "已完成",
         error: "错误",
         stopped: "已停止",

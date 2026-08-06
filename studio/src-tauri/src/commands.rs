@@ -566,10 +566,12 @@ pub async fn start_managed_repair(
             // the app exits underneath it.
             if msg == update::UPDATE_STOPPED {
                 info!("Managed repair update stopped; skipping installer fallback");
+                // Only a user stop reaches this branch, and the support report prints
+                // final_status verbatim. Matches record_pending_elevation_canceled.
                 diagnostics::finish_repair_group(
                     &diagnostics_state,
                     &repair_group_id,
-                    "failed",
+                    "canceled",
                     Some(msg.clone()),
                 );
                 return Err(msg);
@@ -680,7 +682,7 @@ mod tests {
             String::new()
         };
         format!(
-            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{ROOT_ID}"{owner}}}"#
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{ROOT_ID}"{owner}}}"#
         )
     }
 

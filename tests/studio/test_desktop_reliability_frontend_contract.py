@@ -24,6 +24,7 @@ TITLEBAR = FRONTEND / "components/tauri/window-titlebar.tsx"
 NATIVE_DIALOGS = REPO / "studio/src-tauri/src/native_file_dialogs.rs"
 NATIVE_CLIPBOARD = REPO / "studio/src-tauri/src/native_clipboard.rs"
 TAURI_MAIN = REPO / "studio/src-tauri/src/main.rs"
+TAURI_COMMANDS = REPO / "studio/src-tauri/src/commands.rs"
 TAURI_UPDATE_CONTEXT = FRONTEND / "hooks/tauri-update-context.ts"
 TAURI_UPDATE_HOOK = FRONTEND / "hooks/use-tauri-update.ts"
 UPDATE_INSTRUCTIONS = FRONTEND / "features/settings/components/update-studio-instructions.tsx"
@@ -33,6 +34,9 @@ DESKTOP_UPDATE_POLICY = REPO / "studio/src-tauri/src/desktop_update_policy.rs"
 
 
 APP_PROVIDER = FRONTEND / "app/provider.tsx"
+ROOT_ROUTE = FRONTEND / "app/routes/__root.tsx"
+IMAGES_PAGE = FRONTEND / "features/images/images-page.tsx"
+VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
 
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
@@ -397,7 +401,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert navigation.count('aria-label="Go back"') == 1
     assert navigation.count('aria-label="Go forward"') == 1
 
-    assert "inline-flex size-[33px] shrink-0" in navigation
+    assert "inline-flex size-[30px] shrink-0" in navigation
 
     assert navigation.count("onDoubleClick={stopTitlebarDrag}") == 3
     assert "maximized" not in navigation
@@ -413,7 +417,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert '"--studio-collapsed-chat-controls-inset": "188px"' in APP_PROVIDER.read_text(
         encoding = "utf-8"
     )
-    assert 'className="!size-[33px] rounded-[10px] text-muted-foreground"' in chat_page
+    assert 'className="!size-[30px] rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
     assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
@@ -510,3 +514,26 @@ def test_chat_sidebar_row_actions_visible_on_coarse_pointers():
     # Must not reveal every sidebar-row-action (project/run/nav rows lack padding).
     assert ".sidebar-row-action {\n\t\t\t@apply opacity-100" not in coarse_block
     assert ".sidebar-row-action.sidebar-touch-reveal" in coarse_block
+
+
+def test_media_pages_clear_the_custom_titlebar():
+    """The chat-style layout gives the media pages no outer inset, so each applies its own."""
+    root = ROOT_ROUTE.read_text(encoding = "utf-8")
+
+    assert "const isChatLike = isChatRoute || isImagesRoute || isVideoRoute;" in root
+    for page in (IMAGES_PAGE, VIDEO_PAGE):
+        shell = page.read_text(encoding = "utf-8").split('"diffusion-surface', 1)[1].split(">", 1)[0]
+        assert "pt-[var(--studio-content-top-inset,0px)]" in shell, page.name
+
+
+def test_a_stopped_repair_update_is_recorded_as_canceled_not_failed():
+    """unslothai/unsloth#7793: the support report prints final_status verbatim, so a
+    user quitting mid-update must not read as a failed repair."""
+    source = TAURI_COMMANDS.read_text(encoding = "utf-8")
+    stopped_arm = source.split("if msg == update::UPDATE_STOPPED", 1)[1].split(
+        "return Err(msg);", 1
+    )[0]
+    # The status argument of the call, so the surrounding comment cannot satisfy this.
+    call = stopped_arm.split("finish_repair_group(", 1)[1].split(");", 1)[0]
+    assert '"canceled"' in call
+    assert '"failed"' not in call

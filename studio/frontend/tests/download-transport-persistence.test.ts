@@ -59,7 +59,7 @@ store.set(
   }),
 );
 
-const { getState, jobKeyOf, putJob } = await import(
+const { getState, hasActiveDownloadJob, jobKeyOf, putJob } = await import(
   "../src/features/hub/download-manager/download-manager-state.ts"
 );
 
@@ -144,4 +144,55 @@ test("the cancel marker is written with the persisted job", () => {
   const persisted = JSON.parse(store.get(PERSIST_KEY) ?? "null");
   assert.equal(persisted.state.jobs[key].transport, "http");
   assert.equal(persisted.state.jobs[key].cancelTransport, "xet");
+});
+
+test("a running job is the activity the desktop quit path asks about", () => {
+  // What set_renderer_activity mirrors into Rust, so the close button warns first.
+  assert.equal(hasActiveDownloadJob(getState().jobs), true);
+});
+
+test("an external job counts too, since a quit kills its transfer as well", () => {
+  assert.equal(hasActiveDownloadJob({}), false);
+  assert.equal(
+    hasActiveDownloadJob({
+      external: {
+        key: "model:org/external",
+        kind: "model",
+        repoId: "org/external",
+        variant: null,
+        state: "running",
+        downloadedBytes: 0,
+        completedBytes: 0,
+        completeOnDisk: false,
+        expectedBytes: 0,
+        fraction: 0,
+        bytesPerSec: 0,
+        error: null,
+        startedAt: 4,
+        external: true,
+      },
+    }),
+    true,
+  );
+  // A settled job is not activity, whoever owns it.
+  assert.equal(
+    hasActiveDownloadJob({
+      done: {
+        key: "model:org/done",
+        kind: "model",
+        repoId: "org/done",
+        variant: null,
+        state: "complete",
+        downloadedBytes: 0,
+        completedBytes: 0,
+        completeOnDisk: true,
+        expectedBytes: 0,
+        fraction: 1,
+        bytesPerSec: 0,
+        error: null,
+        startedAt: 4,
+      },
+    }),
+    false,
+  );
 });

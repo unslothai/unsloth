@@ -220,9 +220,8 @@ function SttModelPicker({
           <Input
             value={query}
             onChange={(event) => setQuery(event.target.value)}
-            // Paired with stt-model-results below: the UI test drives this
-            // input, and its placeholder is translated copy that has already
-            // been reworded once out from under the test.
+            // Paired with stt-model-results below: the UI test drives this input by
+            // test id, since the placeholder is translated copy.
             data-testid="stt-model-search"
             placeholder={t(
               "settings.voice.dictation.sttModelSearchPlaceholder",
