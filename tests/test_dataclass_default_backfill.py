@@ -1,10 +1,9 @@
 """_backfill_dataclass_defaults must not shadow an inherited default.
 
 Deciding "no default yet" with `name not in cls.__dict__` was wrong: a subclass
-re-annotating an inherited field without assigning already has one, via the MRO.
-
-import_fixes.py is loaded by file spec because `import unsloth.import_fixes`
-would run unsloth/__init__.py first, pulling in torch, numpy and unsloth_zoo.
+re-annotating an inherited field already has one, via the MRO. import_fixes.py
+is loaded by file spec because `import unsloth.import_fixes` would run
+unsloth/__init__.py first, pulling in torch, numpy and unsloth_zoo.
 """
 
 import importlib.util
@@ -92,8 +91,8 @@ def _fake_dataclass(cls, **kwargs):
 
 
 def _config_without_readable_source():
-    """A hook whose source cannot be read, as on a stripped or frozen install.
-    Compiled under a filename not on disk, so `inspect.getsource` is what fails."""
+    """A hook whose source cannot be read, as on a stripped or frozen install:
+    compiled under a filename not on disk, so `inspect.getsource` fails."""
     namespace = {}
     exec(
         compile(
@@ -163,8 +162,7 @@ def test_the_probe_detects_a_config_that_raises(monkeypatch):
 
 
 def test_an_unreadable_version_does_not_raise(monkeypatch):
-    """Dev builds can carry a version packaging will not parse; nor may a
-    missing transformers raise out of the probe."""
+    """A version packaging cannot parse, or no transformers at all, must not raise."""
     for version in ("not-a-version", "", None):
         _pretend_transformers_is(monkeypatch, version)
         assert _transformers_configs_are_kw_only(_config_without_readable_source()), repr(version)

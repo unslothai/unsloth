@@ -324,10 +324,9 @@ def _resolve_offload_embedding(model, offload_embedding):
     """Report `offload_embedding` as True only when the offload will really run.
 
     It is a VRAM optimisation, not a correctness switch, so turn it off where it
-    cannot help instead of failing the load. The result also gates
+    cannot help instead of failing the load. It also gates
     `_attach_bnb_multidevice_hooks`, which must still run whenever no offload
-    happens, so every "no offload" case has to answer False, including the
-    platforms that skip the offload block outright.
+    happens, so every "no offload" case has to answer False.
     """
     if not offload_embedding:
         return False
@@ -1353,8 +1352,8 @@ class FastBaseModel:
                     # attn_implementation   = attn_implementation,
                     **kwargs,
                 )
-                # Must precede _attach_bnb_multidevice_hooks, which returns
-                # early while offload_embedding is True.
+                # Must precede _attach_bnb_multidevice_hooks: it returns early
+                # while offload_embedding is True.
                 offload_embedding = _resolve_offload_embedding(
                     model,
                     offload_embedding,

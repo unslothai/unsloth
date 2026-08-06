@@ -1,16 +1,14 @@
 """Tests _backport_vision_dataset_gate in rl.py against REAL TRL sources.
 
-TRL 0.22.x decides "skip dataset preparation" and "use the vision collator"
-from `_is_vlm` (the model) alone, so a VLM fine-tuned on a text-only dataset
-reaches the trainer with a raw `text` column and no tokenized ones, and
-transformers strips every column ("No columns in the dataset match the model's
-forward method signature"). Magistral_(24B)-Reasoning-Conversational hits this;
-it pins trl==0.22.2. TRL 0.24.0+ keys the same decisions off
-`_is_vision_dataset`, back-ported here.
+TRL 0.22.x keys "skip dataset preparation" and "use the vision collator" off
+`_is_vlm` (the model) alone, so a VLM fine-tuned on text-only data reaches
+transformers with no tokenized columns ("No columns in the dataset match the
+model's forward method signature"). Magistral_(24B)-Reasoning-Conversational
+hits this; it pins trl==0.22.2. TRL 0.24.0+ keys off `_is_vision_dataset`,
+back-ported here.
 
-The patch is textual, so the tests run it over the installed TRL's
-sft_trainer.py plus a checked-in 0.22.2 excerpt and require the result to still
-parse. No GPU, no network.
+The patch is textual, so the tests run it over the installed sft_trainer.py plus
+a checked-in 0.22.2 excerpt and require the result to still parse. No GPU.
 """
 
 import ast

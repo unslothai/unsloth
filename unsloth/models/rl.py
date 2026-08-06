@@ -752,16 +752,15 @@ def _wrap_grpo_hidden_states_fallback(trainer_cls):
 def _backport_vision_dataset_gate(RLTrainer_source):
     """Make TRL 0.22.x decide by DATASET, not by model, for SFT vision paths.
 
-    TRL 0.22.x skips dataset preparation and picks the vision collator from
-    `_is_vlm` alone, so a VLM fine-tuned on text-only data arrives with a raw
-    `text` column and no tokenized ones, and transformers strips them all:
-    "No columns in the dataset match the model's forward method signature".
-    Merging the signature columns above is not enough, since with preparation
-    skipped the tokenized columns never exist. Hit by
+    0.22.x keys "skip preparation" and "vision collator" off `_is_vlm` alone, so
+    a VLM fine-tuned on text-only data reaches transformers with no tokenized
+    columns: "No columns in the dataset match the model's forward method
+    signature". Merging the signature columns above is not enough, since skipped
+    preparation never creates those columns. Hit by
     Magistral_(24B)-Reasoning-Conversational, which pins trl==0.22.2.
 
-    Back-ports TRL 0.24.0's `_is_vision_dataset` keying; no-op once TRL
-    defines the flag itself. Returns the source, patched or unchanged."""
+    Back-ports TRL 0.24.0's `_is_vision_dataset` keying; no-op once TRL defines
+    the flag itself. Returns the source, patched or unchanged."""
     if 'self._is_vision_dataset = "image" in dataset_sample' in RLTrainer_source:
         return RLTrainer_source
     anchor = "        dataset_sample = next(iter(train_dataset))\n"
@@ -1829,9 +1828,9 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
         if _vlm_check_original in RLTrainer_source:
             RLTrainer_source = RLTrainer_source.replace(_vlm_check_original, _vlm_check_patched)
 
-        # TRL 0.22.x keys off _is_vlm, not _is_vision_dataset (0.24.0+), so on a
-        # text-only dataset the vision-only signature columns never overlap the
-        # tokenized ones. Merge both sets; _remove_unused_columns ignores extras.
+        # TRL 0.22.x keys off _is_vlm, not _is_vision_dataset (0.24.0+), so the
+        # vision-only signature columns never overlap the tokenized ones. Merge
+        # both sets; _remove_unused_columns ignores extras.
         _sig_vlm_old = 'self._signature_columns = ["messages", "prompt", "completion", "images"]'
         _sig_vlm_new = (
             'self._signature_columns = ["messages", "prompt", "completion", "images",'

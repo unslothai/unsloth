@@ -3,12 +3,9 @@
 transformers 5.x turns `PretrainedConfig` subclasses into dataclasses. vLLM's
 `configs/deepseek_vl2.py` declares `vision_config: VisionEncoderConfig` with no
 default, and a dataclass will not accept a non-default field after an inherited
-default one:
-
-    TypeError: non-default argument 'vision_config' follows default argument
-
-That fires while importing `vllm.transformers_utils.configs`, taking down
-`import vllm` and with it `import unsloth`.
+default one ("TypeError: non-default argument 'vision_config' follows default
+argument"). That fires while importing `vllm.transformers_utils.configs`, taking
+down `import vllm` and with it `import unsloth`.
 
 The other tests for this fix assert on source text; this one reproduces the
 failing shape and checks the outcome, so it catches the fix silently ceasing to
@@ -84,8 +81,7 @@ def test_the_failure_is_real_without_the_fix(unpatched):
 
 def test_the_fix_stands_down_when_transformers_handles_it():
     """kw_only=True fixed this upstream, so patching anyway would be an untested
-    monkey patch for no benefit. >= 5.5.1 covers both branches: the change landed
-    at 5.5.1 on the 5.5 branch and at 5.6.0 on main."""
+    monkey patch. >= 5.5.1 covers both branches (5.5.1 on 5.5, 5.6.0 on main)."""
     from unsloth.import_fixes import (
         _transformers_configs_are_kw_only,
         fix_transformers5_bare_annotation_configs,

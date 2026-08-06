@@ -6,9 +6,8 @@ correctness switch, so it should turn itself off instead, as the fast_inference
 case a few lines earlier already does. Two shipped notebooks (NeMo-Gym-Sudoku,
 NeMo-Gym-Multi-Environment) died this way on unsloth/Qwen2.5-1.5B-Instruct.
 
-Every platform-dependent branch is driven explicitly, so the same assertions
-hold on Linux, macOS, Windows and WSL: the host's own os.name never decides the
-expected value.
+Every platform branch is driven explicitly, so the assertions hold on Linux,
+macOS, Windows and WSL alike: the host's own os.name never decides.
 """
 
 import ast, os
@@ -125,8 +124,8 @@ def test_opaque_model_leaves_request_alone():
 
 
 def test_wsl_and_windows_disable_offload():
-    # Neither platform can offload, and the flag also gates the multi-device
-    # hook attach, so it has to read False rather than pass through.
+    # Neither can offload, and the flag also gates the multi-device hook attach,
+    # so it has to read False rather than pass through.
     for var in _WSL_VARS:
         with _as_platform("posix"):
             os.environ[var] = "1"
@@ -146,8 +145,8 @@ def test_wsl_and_windows_disable_offload():
 
 
 def test_platform_gate_lives_in_one_place():
-    # The offload block used to re-test os.name itself; the two copies drifted
-    # apart and only Windows noticed. _resolve_offload_embedding owns it now.
+    # The offload block used to re-test os.name itself; the copies drifted apart
+    # and only Windows noticed. _resolve_offload_embedding owns it now.
     helper = _SRC[_SRC.index("def _offload_embedding_unsupported_platform(") :]
     helper = helper[: helper.index("\n\n\ndef ")]
     for probe in ('os.name == "nt"', "WSL_DISTRO_NAME", "WSL_INTEROP"):
