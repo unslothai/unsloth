@@ -172,6 +172,9 @@ def client(monkeypatch, tmp_path):
         "get_active_diffusion_engine",
         lambda: diffusion_module.get_diffusion_backend(),
     )
+    # The load route predicts the engine before selection (to preflight it before any unload); left
+    # real it reaches the host's binaries and, on a GPU-less runner, the live sd.cpp backend.
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: "diffusers")
     monkeypatch.setattr(engine_router, "_active_engine_name", "diffusers")
     monkeypatch.setattr(engine_router, "_fallback_reason", None)
     # Isolate from the real GPU arbiter: reset ownership and stub the evictors so acquire_for() never touches live singletons.
@@ -696,6 +699,86 @@ def test_cpu_load_skips_the_gated_preflight(client, monkeypatch):
 
     assert resp.status_code == 200
     assert calls == []
+
+
+@pytest.mark.parametrize(
+    "device, env",
+    [("cuda", {}), ("cpu", {"UNSLOTH_DIFFUSION_SD_CPP": "0"})],
+)
+def test_gated_pick_on_an_engine_switch_keeps_the_previous_model(monkeypatch, device, env):
+    """The refusal must precede the engine switch, not follow it.
+
+    Activating the other engine unloads the deactivated one, so a preflight that ran after the
+    selection destroyed the resident image model and only then reported the gated repo -- exactly
+    the eviction this check exists to prevent. The CPU case has no GPU handoff at all, so there the
+    switch is the only thing at stake.
+    """
+    from types import SimpleNamespace
+
+    import core.inference.diffusion_device as devmod
+    import core.inference.diffusion_engine_router as engine_router
+    import core.inference.sd_cpp_backend as sd_backend
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    for e in (
+        "UNSLOTH_DIFFUSION_ENGINE",
+        "UNSLOTH_DIFFUSION_SD_CPP",
+        "UNSLOTH_DIFFUSION_SD_CPP_MPS",
+        "UNSLOTH_DIFFUSION_SD_CPP_INSTALL",
+    ):
+        monkeypatch.delenv(e, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    # A native model is resident; this pick routes to diffusers, so the REAL router switches engines.
+    resident = _FakeBackend()
+    resident.loaded = True
+    monkeypatch.setattr(sd_backend, "get_sd_cpp_backend", lambda: resident)
+    monkeypatch.setattr(engine_router, "_active_engine_name", ENGINE_SD_CPP)
+    monkeypatch.setattr(engine_router, "_fallback_reason", None)
+
+    detail = (
+        "'black-forest-labs/FLUX.1-dev' is gated on Hugging Face and this model cannot be "
+        "downloaded without it."
+    )
+
+    def _refuse(model_path, fam, **kwargs):
+        raise ValueError(detail)
+
+    diffusers = _FakeBackend()
+    diffusers.preflight_base_access = _refuse
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: diffusers)
+    monkeypatch.setattr(
+        engine_router,
+        "resolve_diffusion_device_target",
+        lambda: SimpleNamespace(backend = device, device = device),
+    )
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: SimpleNamespace(device = device)
+    )
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    evicted: list = []
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append(True))
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
+
+    app = FastAPI()
+    app.include_router(studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    local = TestClient(app)
+
+    resp = local.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "q.gguf"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == detail
+    # Refused before the switch: the native engine still holds its model and is still the active one.
+    assert resident.loaded is True
+    assert engine_router.active_engine_name() == ENGINE_SD_CPP
+    assert diffusers.loaded is False  # and the refused load never started
+    assert evicted == []
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
 def test_load_refused_during_training_does_not_evict_chat(client, monkeypatch):
