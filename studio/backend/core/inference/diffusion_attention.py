@@ -177,6 +177,24 @@ def _pip_requirement(backend: str, package: str) -> str:
     return package
 
 
+def _kernels_hub_compatible() -> bool:
+    """Whether installing the ``kernels`` package is SAFE next to the resident huggingface_hub.
+
+    Current ``kernels`` releases declare ``huggingface_hub >= 1.0`` and build their dependency
+    tables against that API, and with an older hub the breakage is NOT contained to the requested
+    backend: ``import kernels`` raises at module scope, and diffusers imports ``kernels`` whenever
+    it is installed, so EVERY later pipeline import in every process fails until the package is
+    uninstalled. A stack pinned to hub < 1.0 therefore must not auto-install it; the requested hub
+    backend falls back to native instead. An undeterminable hub version allows the install, which
+    keeps the previous behaviour."""
+    try:
+        from importlib.metadata import version
+
+        return int(version("huggingface_hub").split(".", 1)[0]) >= 1
+    except Exception:  # noqa: BLE001 — unknown hub -> keep the previous permissive behaviour
+        return True
+
+
 def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> None:
     """Best-effort wheel-only install of the package ``backend`` needs, when allowed.
 
@@ -192,6 +210,19 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
     package = _pip_requirement(backend, package)
     gate = os.environ.get(_ATTENTION_INSTALL_ENV, "auto").strip().lower()
     if gate in ("0", "false", "no", "off"):
+        return
+    # Refusing is a POLICY decision, not a failed attempt, so it is checked before the
+    # _INSTALL_ATTEMPTED memo below and records nothing: a later request on a fixed environment
+    # must still be able to install. Scoped to kernels; the sage / flash-attn / xformers wheels
+    # do not import huggingface_hub at module scope.
+    if package == "kernels" and not _kernels_hub_compatible():
+        if logger is not None:
+            logger.warning(
+                "diffusion.attention: not installing 'kernels' for backend=%s — the resident "
+                "huggingface_hub is < 1.0 and a kernels install would break every later "
+                "diffusers pipeline import; using the default backend",
+                backend,
+            )
         return
     try:
         if importlib.util.find_spec(module) is not None:
