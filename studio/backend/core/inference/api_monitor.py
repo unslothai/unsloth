@@ -282,14 +282,22 @@ class ApiMonitor:
             if entry is not None:
                 self._entries.remove(entry)
 
-    def append_reply(self, entry_id: Optional[str], text: str) -> None:
+    def append_reply(
+        self,
+        entry_id: Optional[str],
+        text: str,
+        *,
+        stamp_first_token: bool = True,
+    ) -> None:
         if not entry_id or not text:
             return
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
-            if entry.first_token_monotonic is None:
+            # Only a streaming delta may stamp TTFT: a full-response append would
+            # report end-to-end latency as time to first token.
+            if stamp_first_token and entry.first_token_monotonic is None:
                 entry.first_token_monotonic = time.monotonic()
             # Preview is capped: once the "..." marker is present the head is
             # frozen, so skip the per-chunk re-concat (avoids O(n^2) on long
@@ -310,8 +318,6 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
-            if text and entry.first_token_monotonic is None:
-                entry.first_token_monotonic = time.monotonic()
             entry.reply = _trim(text, _MAX_REPLY_CHARS)
             entry.updated_at = time.time()
 

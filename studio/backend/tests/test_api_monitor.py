@@ -739,3 +739,20 @@ def test_set_perf_rejects_non_finite_values():
     [entry] = monitor.snapshot()
     assert entry["tok_per_sec"] is None
     assert entry["ttft_ms"] is None
+
+
+def test_full_response_reply_does_not_stamp_ttft():
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.set_reply(entry_id, "full response")
+    monitor.append_reply(entry_id, " tail", stamp_first_token = False)
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["ttft_ms"] is None
+    assert entry["tok_per_sec"] is None

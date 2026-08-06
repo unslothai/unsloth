@@ -3143,11 +3143,12 @@ def _monitor_openai_chunk(
     if not reply_parts:
         return
     if len(choices) == 1:
-        api_monitor.append_reply(monitor_id, reply_parts[0][1])
+        api_monitor.append_reply(monitor_id, reply_parts[0][1], stamp_first_token = False)
         return
     api_monitor.append_reply(
         monitor_id,
         "\n\n".join(f"Choice {idx + 1}:\n{text}" for idx, text in reply_parts),
+        stamp_first_token = False,
     )
 
 
@@ -3347,6 +3348,8 @@ def _monitor_anthropic_json_response(
     text = _monitor_anthropic_content_blocks(data.get("content"))
     if text:
         api_monitor.set_reply(monitor_id, text)
+    if data.get("stop_reason"):
+        api_monitor.set_perf(monitor_id, stop_reason = str(data["stop_reason"]))
     _monitor_anthropic_usage(monitor_id, data.get("usage"), context_length)
     api_monitor.finish(monitor_id)
 
@@ -3463,6 +3466,10 @@ def _close_load_event(
 
 def _monitor_queue_state() -> Optional[dict]:
     """Live slot/queue occupancy of the loaded llama-server, for the API monitor."""
+    # Disabled admission tracks nothing: its queues stay at the default capacity
+    # of 1 and never take leases, so a snapshot would misreport a multi-slot server.
+    if not llama_admission_config_from_env().enabled:
+        return None
     llama_backend = get_llama_cpp_backend()
     if not getattr(llama_backend, "is_loaded", False) or getattr(
         llama_backend, "is_diffusion", False
