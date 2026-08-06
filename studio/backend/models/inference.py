@@ -540,6 +540,15 @@ class _InferenceRuntimeFields(BaseModel):
             "when the reason matters."
         ),
     )
+    chat_template_override_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why a requested chat template override was not applied: the "
+            "runtime supplies the template as code, the model ships a named "
+            "set rather than one template, it renders without a template, or "
+            "the override could not render a conversation."
+        ),
+    )
     mlx_kv_quant_eligibility: Optional[str] = Field(
         None,
         description = (
@@ -709,7 +718,7 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     )
     chat_template_override: Optional[str] = Field(
         None,
-        description = "Active chat template override applied at load time, or None if model is using its default",
+        description = "Chat template override this model was loaded with. llama.cpp reports what it applied; MLX reports what was requested, since a refusal applies nothing and the reason accompanies it",
     )
     requested_context_length: Optional[int] = Field(
         None,

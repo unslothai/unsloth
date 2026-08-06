@@ -67,6 +67,8 @@ _MLX_RUNTIME_MIRROR_FIELDS = (
     "mlx_kv_quant_eligibility",
     "mlx_kv_quant_reason",
     "mlx_kv_quant_note",
+    "chat_template_override_requested",
+    "chat_template_override_reason",
 )
 
 
@@ -1199,6 +1201,7 @@ class InferenceOrchestrator:
         tensor_parallel: bool = False,
         mlx_distributed: bool = False,
         mlx_kv_bits: Optional[int] = None,
+        chat_template_override: Optional[str] = None,
     ) -> bool:
         """Load a model for inference.
 
@@ -1233,6 +1236,7 @@ class InferenceOrchestrator:
                 if mlx_distributed
                 else None,
                 "mlx_kv_bits": mlx_kv_bits,
+                "chat_template_override": chat_template_override,
             }
             resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
                 gpu_ids,

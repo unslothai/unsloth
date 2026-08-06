@@ -405,6 +405,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                 load_kwargs["parallel_mode"] = config.get("mlx_parallel_mode")
                 load_kwargs["distributed_group"] = config.get("_mlx_distributed_group")
                 load_kwargs["kv_bits"] = config.get("mlx_kv_bits")
+                load_kwargs["chat_template_override"] = config.get("chat_template_override")
             success = backend.load_model(**load_kwargs)
         finally:
             heartbeat_stop.set()
@@ -447,6 +448,8 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
                         "mlx_kv_quant_eligibility",
                         "mlx_kv_quant_reason",
                         "mlx_kv_quant_note",
+                        "chat_template_override_requested",
+                        "chat_template_override_reason",
                     )
                     if k in _entry
                 }

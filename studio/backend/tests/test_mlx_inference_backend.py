@@ -1876,17 +1876,39 @@ def test_reload_comparison_and_response_carry_the_resolved_setting():
     never stored, and the response fields sat on a request model.
     """
     from routes.inference import _mlx_runtime_settings_match
-    from models.inference import LoadResponse
+    from models.inference import LoadRequest, LoadResponse
+
+    # The real request model, not a stand-in: only it stays in step with what a
+    # load actually sends.
+    def req(**knobs):
+        return LoadRequest(model = "m", model_path = "m", **knobs)
 
     be = SimpleNamespace(active_model_name = "m", models = {"m": {"mlx_kv_bits_requested": 8}})
-    assert _mlx_runtime_settings_match(be, SimpleNamespace(mlx_kv_bits = 8))
-    assert not _mlx_runtime_settings_match(be, SimpleNamespace(mlx_kv_bits = 4))
+    assert _mlx_runtime_settings_match(be, req(mlx_kv_bits = 8))
+    assert not _mlx_runtime_settings_match(be, req(mlx_kv_bits = 4))
     be.models["m"] = {"mlx_kv_bits_requested": None}
-    assert _mlx_runtime_settings_match(be, SimpleNamespace(mlx_kv_bits = 7))  # both normalize away
+    assert _mlx_runtime_settings_match(be, req(mlx_kv_bits = 7))  # both normalize away
     assert _mlx_runtime_settings_match(
         SimpleNamespace(active_model_name = "m", models = {"m": {}}),
-        SimpleNamespace(mlx_kv_bits = 8),
+        req(mlx_kv_bits = 8),
     )
+
+    # Compared against the REQUESTED value: a refused template must still match
+    # itself, or it reloads on every request.
+    be.models["m"] = {
+        "mlx_kv_bits_requested": None,
+        "chat_template_override_requested": "{{ custom }}",
+    }
+    assert _mlx_runtime_settings_match(be, req(chat_template_override = "{{ custom }}"))
+    assert not _mlx_runtime_settings_match(be, req(chat_template_override = "{{ other }}"))
+    assert not _mlx_runtime_settings_match(be, req())
+    # A refusal records the request, so the same request still matches.
+    be.models["m"] = {
+        "mlx_kv_bits_requested": None,
+        "chat_template_override_requested": "{{ refused }}",
+        "chat_template_override_reason": "it could not render a conversation",
+    }
+    assert _mlx_runtime_settings_match(be, req(chat_template_override = "{{ refused }}"))
 
     resp = LoadResponse(
         status = "loaded",
@@ -1932,3 +1954,275 @@ def test_parent_mirror_omits_runtime_fields_a_backend_never_reported():
     assert _mlx_runtime_mirror_fields(
         {"mlx_kv_bits": 8, "mlx_kv_bits_requested": 8, "other": 1}
     ) == {"mlx_kv_bits": 8, "mlx_kv_bits_requested": 8}
+
+
+def test_chat_template_override_installs_only_where_one_already_exists():
+    """Replace a template; never create one.
+
+    Both render selectors choose their target by whether a template is
+    present, so creating one where there was none moves the render to a
+    different object -- on the vision side, to one that never selects the
+    tool_use variant.
+    """
+    from core.inference import mlx_inference
+
+    tokenizer = SimpleNamespace(chat_template = "native")
+    # A processor with no template of its own must be left alone, or
+    # chat_render_target would start selecting it.
+    processor = SimpleNamespace(chat_template = None, tokenizer = tokenizer)
+    status = mlx_inference._install_template_override(
+        "custom", tokenizer, processor, lambda: "rendered"
+    )
+    assert status["applied"] == "custom"
+    assert tokenizer.chat_template == "custom"
+    assert processor.chat_template is None
+
+    # A processor that already renders from its own template receives it too.
+    own = SimpleNamespace(chat_template = "native")
+    owner = SimpleNamespace(chat_template = "native", tokenizer = own)
+    mlx_inference._install_template_override("custom", own, owner, lambda: "ok")
+    assert own.chat_template == "custom" and owner.chat_template == "custom"
+
+    # Unset must not touch anything.
+    untouched = SimpleNamespace(chat_template = "native")
+    assert (
+        mlx_inference._install_template_override(None, untouched, None, lambda: "")["applied"]
+        is None
+    )
+    assert untouched.chat_template == "native"
+
+
+def test_chat_template_override_reports_each_way_it_cannot_apply():
+    from core.inference import mlx_inference
+
+    def reason(
+        tok,
+        proc = None,
+        probe = lambda: "ok",
+    ):
+        return mlx_inference._install_template_override("custom", tok, proc, probe)["reason"]
+
+    # mlx-lm holds the template as code and prefers it over the attribute.
+    callable_tpl = SimpleNamespace(chat_template = "native", _chat_template = lambda: "x")
+    assert reason(callable_tpl) == mlx_inference.MLX_TEMPLATE_CALLABLE
+
+    # A named set would lose its tool_use variant if flattened to one string.
+    assert reason(SimpleNamespace(chat_template = {"default": "a", "tool_use": "b"})) == (
+        mlx_inference.MLX_TEMPLATE_NAMED_SET
+    )
+
+    # ...but only on the object that RENDERS. Real models (aya-vision among
+    # them) keep a named set on a nested tokenizer nothing reads.
+    nested_set = SimpleNamespace(chat_template = {"default": "a"})
+    renders_string = SimpleNamespace(chat_template = "native", tokenizer = nested_set)
+    targets, status = mlx_inference._template_override_status("custom", nested_set, renders_string)
+    assert status["reason"] is None
+    assert renders_string in targets and nested_set not in targets
+
+    # The same for a callable held by an object that does not render.
+    nested_callable = SimpleNamespace(chat_template = "t", _chat_template = lambda: "x")
+    renders_own = SimpleNamespace(chat_template = "native", tokenizer = nested_callable)
+    assert (
+        mlx_inference._template_override_status("custom", nested_callable, renders_own)[1]["reason"]
+        is None
+    )
+
+    # Nothing to replace, processor present: creating a template would take the
+    # render from mlx-vlm's fallback, which is what places the markers.
+    bare = SimpleNamespace(chat_template = None)
+    assert reason(bare, SimpleNamespace(chat_template = None, tokenizer = bare)) == (
+        mlx_inference.MLX_TEMPLATE_NO_TARGET
+    )
+
+    # A text model has one object and no selector to move, and cannot chat at
+    # all without a template -- supplying one is the point, not a refusal.
+    for empty in (None, "", "   "):
+        blank = SimpleNamespace(chat_template = empty)
+        targets, status = mlx_inference._template_override_status("custom", blank, None)
+        assert status["reason"] is None, empty
+        assert targets == [blank]
+
+    # Invalid Jinja installs cleanly and then throws on every generation; the
+    # probe turns that into one load-time reason, and restores the original.
+    broken = SimpleNamespace(chat_template = "native")
+    got = reason(broken, probe = lambda: (_ for _ in ()).throw(ValueError("bad tag")))
+    assert "could not render" in got and "bad tag" in got
+    assert broken.chat_template == "native"
+
+
+def test_chat_template_override_crosses_both_ipc_hops():
+    """The backend runs in a subprocess; the parent rebuilds its entry from an
+    enumerated key set at each hop, and /status and the reload check read the
+    parent's copy."""
+    import inspect
+
+    from core.inference import orchestrator, worker
+    from models.inference import LoadRequest
+
+    assert (
+        "chat_template_override"
+        in inspect.signature(orchestrator.InferenceOrchestrator.load_model).parameters
+    )
+    orch = inspect.getsource(orchestrator.InferenceOrchestrator.load_model)
+    assert '"chat_template_override": chat_template_override' in orch
+
+    # The applied value is deliberately not carried: nothing reads it, and
+    # /status and the reload decision both key on the requested one.
+    reported = (
+        "chat_template_override_requested",
+        "chat_template_override_reason",
+    )
+    worker_source = inspect.getsource(worker)
+    # Whole statements, not name presence: every one of these names is a
+    # prefix of another in the same module.
+    assert (
+        'load_kwargs["chat_template_override"] = config.get(\n'
+        '                    "chat_template_override"\n'
+        "                )"
+        in worker_source
+        or 'load_kwargs["chat_template_override"] = config.get("chat_template_override")'
+        in worker_source
+    )
+    for name in reported:
+        assert f'"{name}",' in worker_source
+    assert [n for n in reported if n not in orchestrator._MLX_RUNTIME_MIRROR_FIELDS] == []
+    assert "chat_template_override" in LoadRequest.model_fields
+
+
+def test_template_probe_renders_through_the_path_generation_uses(monkeypatch):
+    """The probe must exercise the real renderer, and reject an empty prompt.
+
+    Rendering through the VLM recovery renderer instead would pass for a model
+    outside mlx-vlm's family list, because that helper returns None rather than
+    raising -- so an unrenderable template would be recorded as applied and
+    then throw on every generation.
+    """
+    from core.inference import mlx_inference
+
+    seen = {}
+
+    def fake_render(target, messages, **kwargs):
+        seen["target"] = target
+        tpl = getattr(target, "chat_template", None)
+        if tpl == "empty":
+            return ""
+        # Whitespace only: the vision path treats this as an empty prompt too,
+        # so the probe has to agree with it.
+        return "  \n " if tpl == "blank" else "rendered"
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        fake_render,
+    )
+    backend = mlx_inference.MLXInferenceBackend.__new__(mlx_inference.MLXInferenceBackend)
+
+    # Text: the tokenizer is the render target.
+    backend._tokenizer = SimpleNamespace(chat_template = "t")
+    backend._processor = None
+    assert backend._render_template_probe(False) == "rendered"
+    assert seen["target"] is backend._tokenizer
+
+    # Vision: whatever chat_render_target selects, not the recovery renderer.
+    nested = SimpleNamespace(chat_template = "t")
+    processor = SimpleNamespace(
+        chat_template = "own", tokenizer = nested, apply_chat_template = lambda *a, **k: ""
+    )
+    backend._tokenizer = nested
+    backend._processor = processor
+    backend._render_template_probe(True)
+    assert seen["target"] is processor
+
+    # A template that renders nothing is a failure, not a pass.
+    for empty in ("empty", "blank"):
+        backend._tokenizer = SimpleNamespace(chat_template = empty)
+        backend._processor = None
+        with pytest.raises(ValueError):
+            backend._render_template_probe(False)
+
+
+def test_the_audio_refusal_puts_the_native_template_back(monkeypatch):
+    """The refusal itself, not just the marker check.
+
+    Capability was classified against the native template, so an override that
+    stops marking audio has to be undone -- otherwise the model keeps
+    advertising an input it can no longer place.
+    """
+    from core.inference import mlx_inference
+
+    marks = {"audio": False}
+    monkeypatch.setattr(
+        mlx_inference,
+        "_render_registered_vlm_prompt",
+        lambda p, m, msgs, imgs, num_audios = 0: (
+            "<audio> hi" if num_audios and marks["audio"] else "hi"
+        ),
+    )
+    tok = SimpleNamespace(chat_template = "custom")
+    status = {
+        "requested": "custom",
+        "applied": "custom",
+        "reason": None,
+        "restore": [(tok, "native")],
+    }
+    mlx_inference._revoke_override_that_drops_audio(status, object(), object())
+    assert status["applied"] is None
+    assert status["reason"] == mlx_inference.MLX_TEMPLATE_DROPS_AUDIO
+    assert tok.chat_template == "native", "the model must be left as if unset"
+    assert status["restore"] == []
+
+    # An override that keeps the marker is left alone.
+    marks["audio"] = True
+    kept = SimpleNamespace(chat_template = "custom")
+    keep = {
+        "requested": "custom",
+        "applied": "custom",
+        "reason": None,
+        "restore": [(kept, "native")],
+    }
+    mlx_inference._revoke_override_that_drops_audio(keep, object(), object())
+    assert keep["applied"] == "custom" and kept.chat_template == "custom"
+
+    # Nothing installed: no reason invented even when the marker is absent,
+    # which is the only state that reaches the guard rather than the check.
+    marks["audio"] = False
+    unset = {"requested": None, "applied": None, "reason": None, "restore": []}
+    mlx_inference._revoke_override_that_drops_audio(unset, object(), object())
+    assert unset["reason"] is None
+
+
+def test_a_created_template_is_not_reported_as_the_model_default():
+    """A model that shipped no template must keep reporting none.
+
+    The override is installed on the tokenizer for text models, so reading the
+    live object back would report the user's own template as the model's
+    default -- which makes the editor treat it as the default and clear it on
+    the next save, leaving the model unchattable again.
+    """
+    from core.inference import mlx_inference
+
+    backend = mlx_inference.MLXInferenceBackend.__new__(mlx_inference.MLXInferenceBackend)
+    tokenizer = SimpleNamespace(chat_template = None)
+    backend.models = {"m": {"tokenizer": tokenizer, "processor": None}}
+
+    # What load_model does: capture first, install, then record.
+    native = getattr(tokenizer, "chat_template", None)
+    tokenizer.chat_template = "{{ user_supplied }}"
+    backend._populate_chat_template_info("m", native)
+
+    info = backend.models["m"]["chat_template_info"]
+    assert info["template"] is None, "the override is not the model's template"
+    assert info["has_template"] is False
+
+    # A model that did ship one still reports its own, not the override.
+    shipped = SimpleNamespace(chat_template = "{{ native }}")
+    backend.models["n"] = {"tokenizer": shipped, "processor": None}
+    native = getattr(shipped, "chat_template", None)
+    shipped.chat_template = "{{ user_supplied }}"
+    backend._populate_chat_template_info("n", native)
+    assert backend.models["n"]["chat_template_info"]["template"] == "{{ native }}"
+
+    # Called without a capture at all, it still reads the live object.
+    plain = SimpleNamespace(chat_template = "{{ live }}")
+    backend.models["o"] = {"tokenizer": plain, "processor": None}
+    backend._populate_chat_template_info("o")
+    assert backend.models["o"]["chat_template_info"]["template"] == "{{ live }}"

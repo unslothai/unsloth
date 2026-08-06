@@ -834,6 +834,7 @@ class TestLoadHubDownloadExclusion:
             "mlx_kv_quant_eligibility",
             "mlx_kv_quant_reason",
             "mlx_kv_quant_note",
+            "chat_template_override_reason",
         }
         unresolved = sorted(
             name
