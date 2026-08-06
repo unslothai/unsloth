@@ -266,9 +266,21 @@ def _scheme_supported(scheme: str, device: str) -> bool:
 
 
 def _smoke_probe(scheme: str, device: str) -> bool:
-    """True iff a tiny Linear quantised with ``scheme`` runs one M=32 forward. Cached per
-    (scheme, device). Makes ``auto`` robust to a build lacking a prototype kernel: it fails
-    here and the ladder moves on, rather than crashing at the first real denoise step."""
+    """True iff a tiny Linear quantised with ``scheme`` runs one M=32 forward and returns
+    finite values. Cached per (scheme, device). Makes ``auto`` robust to a build lacking a
+    prototype kernel: it fails here and the ladder moves on, rather than crashing at the first
+    real denoise step.
+
+    Half the probe input is all-zero rows, and the result is checked for finiteness, because a
+    kernel that runs is not the same as a kernel that is usable. Per-row dynamic activation
+    scaling divides by each row's amax, so an all-zero row yields scale 0 and NaN qdata unless
+    the config floors it (fp8's ``activation_value_lb``). That floor is applied only when the
+    installed torchao exposes the kwarg, and a build without it degrades SILENTLY: random probe
+    input has no zero row, so the probe passed and fp8 engaged. Padded text streams then hit it
+    for real -- Wan pads every prompt to 512 tokens, so the trailing rows entering
+    ``condition_embedder`` are exactly zero and every frame renders black. Measured on B200,
+    4096-wide Linear, 412 of 512 rows non-finite with the floor removed and 0 of 512 with it.
+    Failing here instead costs one ladder step down to int8."""
     key = (scheme, device)
     if key in _SMOKE_CACHE:
         return _SMOKE_CACHE[key]
@@ -279,11 +291,13 @@ def _smoke_probe(scheme: str, device: str) -> bool:
 
         lin = torch.nn.Linear(512, 512, bias = False).to(device = device, dtype = torch.bfloat16)
         quantize_(lin, _make_quant_config(scheme), filter_fn = make_filter_fn(0))
+        # M stays 32 (scaled_mm wants 16-aligned dims); the zero rows go inside it, not after it.
         x = torch.randn(32, 512, device = device, dtype = torch.bfloat16)
+        x[16:] = 0
         with torch.no_grad():
-            lin(x)
+            out = lin(x)
         torch.cuda.synchronize()
-        ok = True
+        ok = bool(torch.isfinite(out).all().item())
     except Exception:
         ok = False
     _SMOKE_CACHE[key] = ok
