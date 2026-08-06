@@ -734,17 +734,30 @@ def _has_active_lora(loras: Any) -> bool:
     return False
 
 
-def _hub_file_cached(repo_id: str, filename: str) -> bool:
-    """Whether ``filename`` of ``repo_id`` is cached under ANY root Studio reads.
+def _hub_file_cached(
+    repo_id: str,
+    filename: str,
+    revision: Optional[str] = None,
+) -> bool:
+    """Whether ``filename`` of ``repo_id`` is cached at ``revision`` under ANY root Studio reads.
 
     Both roots: the loader also resolves files left in huggingface_hub's import-time constant by
     ``reuse_other_cache_root``, so after a cache-folder change the live root alone says "missing"
-    for bytes that are on disk. Never raises; an unreadable cache reports not-cached, which only
-    re-adds an entry whose download then fetches nothing."""
+    for bytes that are on disk.
+
+    ``revision`` must be the sha the caller means to load. Without it the probe follows the local
+    refs/main, which is whatever was current when the repo was last pulled, so a republished file
+    reads as cached. A caller with no sha to pin gets False: this probe only ever licenses skipping
+    work, so the unknown case must be the one that does the work.
+
+    Never raises; an unreadable cache reports not-cached for the same reason."""
+    if not revision:
+        return False
     try:
         from huggingface_hub import try_to_load_from_cache
         for root in (hub_cache_dir(), None):
-            if isinstance(try_to_load_from_cache(repo_id, filename, cache_dir = root), str):
+            hit = try_to_load_from_cache(repo_id, filename, cache_dir = root, revision = revision)
+            if isinstance(hit, str):
                 return True
     except Exception:  # noqa: BLE001 -- a cache we cannot read is not evidence of a hit
         return False
@@ -1403,13 +1416,20 @@ class DiffusionBackend:
         single_file_is_pipeline: bool = False,
         include_transformer: bool = False,
         sizes_out: Optional[dict[str, int]] = None,
+        revisions_out: Optional[dict[str, str]] = None,
         skip_te_components: tuple[str, ...] = (),
     ) -> tuple[int, list[str]]:
         """Total download size for the progress bar, plus the base-repo files to
         fetch (the prefetch reuses this list, so the base is listed only once).
 
-        ``sizes_out``, when given, is filled with per-repo byte totals so the download
-        plan can size one job per repo off this same single pair of Hub lookups.
+        ``sizes_out``, when given, is filled with byte totals keyed by ROLE ("checkpoint",
+        "base") so the download plan can size one job per repo off this same single pair of Hub
+        lookups. Keyed by role, not by repo id, because the two roles can name the SAME repo (an
+        explicit base_repo equal to repo_id, or a repo bundling a checkpoint with its companions)
+        and a repo-keyed entry would then hold whichever was written last.
+
+        ``revisions_out`` carries the checkpoint repo's live commit sha, so a caller probing the
+        cache can tell a current copy from a stale one without a second Hub lookup.
 
         For a ``pipeline`` load the whole repo IS the pipeline (``base_repo`` is the
         repo itself), so the transformer/ subfolder is INCLUDED -- unlike the GGUF /
@@ -1459,7 +1479,7 @@ class DiffusionBackend:
                     base_files.append(s.rfilename)
                     total += s.size or 0
                 if sizes_out is not None:
-                    sizes_out[repo_id] = total
+                    sizes_out["base"] = total
                 return total, base_files
             # Skip the Hub size lookup for a LOCAL gguf path: model_info raises on a filesystem path.
             if gguf_filename and not Path(repo_id).expanduser().exists():
@@ -1467,7 +1487,12 @@ class DiffusionBackend:
                 gguf_bytes = sum(s.size or 0 for s in info.siblings if s.rfilename == gguf_filename)
                 total += gguf_bytes
                 if sizes_out is not None:
-                    sizes_out[repo_id] = gguf_bytes
+                    sizes_out["checkpoint"] = gguf_bytes
+                # getattr, not info.sha: this whole block is best-effort and one AttributeError
+                # here would drop the size estimate AND the base file list with it.
+                sha = getattr(info, "sha", None)
+                if revisions_out is not None and sha:
+                    revisions_out["checkpoint"] = str(sha)
             # A whole-pipeline single file (SDXL) needs only the base's config/tokenizer, not its weights.
             if kind == "single_file" and single_file_is_pipeline:
                 base_filter = _base_config_file_downloaded
@@ -1484,7 +1509,7 @@ class DiffusionBackend:
                     base_bytes += s.size or 0
             total += base_bytes
             if sizes_out is not None:
-                sizes_out[base_repo] = base_bytes
+                sizes_out["base"] = base_bytes
         except Exception as exc:  # noqa: BLE001 — estimate is best-effort
             logger.warning("diffusion.size_estimate_failed: %s", exc)
         return total, base_files
@@ -1523,6 +1548,7 @@ class DiffusionBackend:
         # Only a checkpoint that really resolves on the Hub earns the right to drop dense shards.
         te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
         sizes: dict[str, int] = {}
+        revisions: dict[str, str] = {}
         total, base_files = self._estimate_download_bytes(
             repo_id,
             gguf_filename,
@@ -1534,6 +1560,7 @@ class DiffusionBackend:
             include_transformer = kind == "gguf"
             and self._dense_quant_prefetch_needed(fam, {**load_kwargs, "base_repo": base}),
             sizes_out = sizes,
+            revisions_out = revisions,
             skip_te_components = tuple(te_files),
         )
         # Decided once, from the staged file list, and both probed and reported: a gated base
@@ -1557,16 +1584,25 @@ class DiffusionBackend:
         # #8001: an entry for a file already on disk announces bytes that never move, so a pick
         # whose only real cost is its companions reads as re-downloading the model (a cached 13 GB
         # Q4_K_M plus 16.8 GB of companions was shown as one ~30 GB download).
-        if gguf_entry_wanted and _hub_file_cached(repo_id, gguf_filename):
+        #
+        # Pinned to the revision model_info just reported. try_to_load_from_cache reads the LOCAL
+        # refs/main and never touches the network, so an unpinned hit also matches a snapshot taken
+        # before the repo republished the file. The load's own hf_hub_download revalidates and would
+        # then pull the new multi-GB checkpoint inline, outside the manager's progress, cancellation
+        # and disk preflight. No sha means the lookup failed, so keep the job: announcing a download
+        # that turns out to be free is the harmless direction.
+        if gguf_entry_wanted and _hub_file_cached(
+            repo_id, gguf_filename, revision = revisions.get("checkpoint")
+        ):
             # Drop its bytes from the headline total too, else the entries and the number disagree.
-            total -= int(sizes.get(repo_id, 0))
+            total -= int(sizes.get("checkpoint", 0))
             gguf_entry_wanted = False
         if gguf_entry_wanted:
             entries.append(
                 {
                     "repo_id": repo_id,
                     "files": [gguf_filename],
-                    "bytes": int(sizes.get(repo_id, 0)),
+                    "bytes": int(sizes.get("checkpoint", 0)),
                     "gguf_filename": gguf_filename,
                 }
             )
@@ -1578,7 +1614,7 @@ class DiffusionBackend:
                 {
                     "repo_id": fetch_base,
                     "files": base_files,
-                    "bytes": int(sizes.get(base, 0)),
+                    "bytes": int(sizes.get("base", 0)),
                     "gguf_filename": None,
                 }
             )
