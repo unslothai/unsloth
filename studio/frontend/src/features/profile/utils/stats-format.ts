@@ -50,6 +50,14 @@ function compactInteger(locale: Locale, value: number): number {
   return 0;
 }
 
+/** Whether the compact form actually applied a unit (K / 万 / लाख), probed in latn for the
+ * same reason as compactInteger. */
+function hasCompactUnit(locale: Locale, value: number): boolean {
+  return compactFormatter(locale, 1, "latn")
+    .formatToParts(value)
+    .some((part) => part.type === "compact");
+}
+
 /**
  * Compact form used on every stat tile: 12.3K, 4.5M, 19.8B in English, and
  * each locale's own units elsewhere (1.2万 in ja, 1,9 Mrd. in de, 1.2 लाख in
@@ -59,6 +67,12 @@ function compactInteger(locale: Locale, value: number): number {
  */
 export function formatCompactNumber(value: number, locale: Locale): string {
   if (!Number.isFinite(value)) return "0";
+  // Below the locale's first compact unit there is no unit to be a fraction OF, and these
+  // are whole things: averageTokensPerChat is the one fractional caller, and "12.5 tokens"
+  // reads as false precision where the pre-localization code said 13. Asked of Intl (is there
+  // a `compact` part?) rather than a hardcoded 1000, because the first unit is per-locale:
+  // en and hi compact at 1K, ja and de not until 万 and Mio.
+  if (!hasCompactUnit(locale, value)) return compactFormatter(locale, 0).format(value);
   return compactInteger(locale, value) < 100
     ? compactFormatter(locale, 1).format(value)
     : compactFormatter(locale, 0).format(value);

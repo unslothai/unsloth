@@ -29,6 +29,25 @@ test("compact numbers match the tile format", () => {
   assert.equal(formatCompactNumber(Number.NaN, "en"), "0");
 });
 
+test("sub-unit counts stay whole, in every locale", () => {
+  // averageTokensPerChat is the one fractional caller and these are whole tokens:
+  // 25 across 2 chats is 13, not 12.5. The pre-localization code rounded anything
+  // under 1000; the unit boundary replaces that hardcoded 1000 because it is
+  // per-locale (ja and de do not compact until \u4e07 / Mio.).
+  assert.equal(formatCompactNumber(12.5, "en"), "13");
+  assert.equal(formatCompactNumber(12.4, "en"), "12");
+  assert.equal(formatCompactNumber(0.5, "en"), "1");
+  // Intl rounds half away from zero, Math.round rounds half UP, so an exact negative
+  // half differs from the pre-localization code (-13 vs -12). Every caller here is a
+  // count, so this is unreachable in practice; pinned so the difference is deliberate.
+  assert.equal(formatCompactNumber(-12.5, "en"), "-13");
+  // ja does not compact below \u4e07, so a four-digit value is still whole there.
+  assert.equal(formatCompactNumber(5000.4, "ja"), "5000");
+  // ...and past the unit the decimal comes back.
+  assert.equal(formatCompactNumber(12_340, "en"), "12.3K");
+  assert.equal(formatCompactNumber(12_340, "ja"), "1.2\u4e07");
+});
+
 test("a non-Latin numbering system keeps its decimal", () => {
   // The threshold used to be read off the DISPLAY string, so a locale whose
   // digits are not ASCII gave Number("\u0661") -> NaN, NaN < 100 -> false, and every
