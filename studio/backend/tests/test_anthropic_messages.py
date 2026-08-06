@@ -2065,25 +2065,41 @@ class TestAnthropicMessagesToolRouting:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
 
-    def test_the_process_tool_default_alone_does_not_trip_the_permission_gate(self, monkeypatch):
-        """`unsloth studio run` resolves the policy to on unless --disable-tools, so reading it
+    def test_the_process_tool_default_alone_is_not_a_server_tool_selection(self, monkeypatch):
+        """`unsloth studio run` resolves the policy to on unless --disable-tools. Reading that
         as "this request selected server tools" rejected every plain Messages request on a
-        default server: the catalog holds terminal, and permission_mode is omitted."""
+        default server, and routing on it ran the local tool loop with terminal/python and no
+        way to confirm them. A default is not a selection, in either direction."""
         import routes.inference as inf_mod
         from fastapi.responses import JSONResponse
 
         backend = _mock_backend(monkeypatch)
-        passthrough_calls = []
 
         async def _passthrough(*args, **kwargs):
-            passthrough_calls.append(args)
             return JSONResponse({"type": "message", "content": []})
 
         monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _passthrough)
         set_tool_policy(True)
 
         _drive(anthropic_messages(_basic_payload(), request = None, current_subject = "t"))
-        assert passthrough_calls or backend.calls, "a plain chat request must still be served"
+        assert backend.calls, "a plain chat request must still be served"
+        path, kwargs = backend.calls[0]
+        assert path == "plain", (
+            "a tool-free request took the server-tool loop on the process default alone, so "
+            "the model can call terminal/python with no confirmation channel"
+        )
+        assert not kwargs.get("tools")
+
+        # An explicit ask still routes to the loop, with the mode that permits it.
+        backend = _mock_backend(monkeypatch)
+        _drive(
+            anthropic_messages(
+                _basic_payload(enable_tools = True, permission_mode = "off"),
+                request = None,
+                current_subject = "t",
+            )
+        )
+        assert backend.calls[0][0] == "tools"
 
         # The same default must not stop gating a request that does ask for server tools.
         for fields in (
