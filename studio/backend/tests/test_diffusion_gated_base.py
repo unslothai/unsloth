@@ -156,8 +156,8 @@ def test_unreadable_metadata_is_named_too(monkeypatch):
 
 def test_an_already_downloaded_base_is_never_refused(monkeypatch, tmp_path):
     """A base whose bytes are on disk loads today with no token: hf_hub_download catches the gated
-    401 HEAD and returns the cached pointer. Probing live access there could only refuse a load
-    that already works. The never-downloaded pick this preflight exists for still probes."""
+    401 HEAD and returns the cached pointer, so probing live access could only refuse a load that
+    already works. The never-downloaded pick this preflight exists for still probes."""
     root = tmp_path / "hub"
     folder = root / f"models--{GATED_REPO.replace('/', '--')}"
     commit = "c" * 40
@@ -208,9 +208,9 @@ def test_local_and_non_repo_bases_are_skipped(monkeypatch, tmp_path):
 
 
 def test_a_base_whose_home_cannot_be_resolved_fails_open(monkeypatch):
-    # '~other/models' and '~/models' under an account with no home both carry exactly one slash,
-    # so they reach the local-path probe, where pathlib raises RuntimeError -- NOT an OSError.
-    # This probe fails open, so that must fall through rather than 500 a load that has not started.
+    # '~other/models' and '~/models' under an account with no home both carry one slash, so they
+    # reach the local-path probe, where pathlib raises RuntimeError -- NOT an OSError. It must fall
+    # through rather than 500 a load not yet started.
     probed = _stub_hub(monkeypatch, info = _FakeInfo(False))
 
     class _NoHomePath:
@@ -239,9 +239,7 @@ def test_an_unknown_user_home_base_fails_open_for_real(monkeypatch):
 
 def test_download_plan_refuses_a_gated_base_before_listing_files(monkeypatch):
     # End to end: the ValueError the route maps to a 400 replaces a confident 18-file plan.
-    # Mirror swap off, so what this pins is the preflight itself. #7952 sends a gated base to
-    # its ungated unsloth mirror, which the preflight now probes in its place; that rescue is
-    # exercised on its own below rather than folded into every refusal case.
+    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     _stub_hub(
         monkeypatch,
@@ -259,11 +257,9 @@ def test_download_plan_refuses_a_gated_base_before_listing_files(monkeypatch):
 
 
 def test_the_pre_eviction_preflight_refuses_the_same_gated_base(monkeypatch):
-    # The route calls this BEFORE acquire_for. _run_load makes the same check, but only after the
-    # GPU was taken from chat, and the images page falls back to /images/load on any plan failure.
-    # Mirror swap off, so what this pins is the preflight itself. #7952 sends a gated base to
-    # its ungated unsloth mirror, which the preflight now probes in its place; that rescue is
-    # exercised on its own below rather than folded into every refusal case.
+    # The route calls this BEFORE acquire_for: _run_load's own check runs only after the GPU was
+    # taken from chat, and the images page falls back to /images/load on any plan failure.
+    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     _stub_hub(
         monkeypatch,
@@ -300,9 +296,7 @@ def test_the_pre_eviction_preflight_clears_an_open_base(monkeypatch):
 
 def test_the_native_pre_eviction_preflight_refuses_a_gated_companion(monkeypatch):
     # A forced-native load on a GPU box takes the arbiter too, so sd.cpp needs the same entry point.
-    # Mirror swap off, so what this pins is the preflight itself: #7952 sends a gated companion
-    # to its ungated unsloth mirror, which the preflight now probes in its place. That rescue
-    # is exercised on its own below rather than folded into every refusal case.
+    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
@@ -329,9 +323,7 @@ def test_the_native_pre_eviction_preflight_refuses_a_gated_companion(monkeypatch
 
 def test_run_load_stamps_the_gated_error_on_the_load(monkeypatch):
     # The load path takes the same preflight, so the failure reaches the UI as a load error.
-    # Mirror swap off, so what this pins is the preflight itself. #7952 sends a gated base to
-    # its ungated unsloth mirror, which the preflight now probes in its place; that rescue is
-    # exercised on its own below rather than folded into every refusal case.
+    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     backend = DiffusionBackend()
     monkeypatch.setattr(
@@ -367,10 +359,9 @@ def test_run_load_stamps_the_gated_error_on_the_load(monkeypatch):
 
 
 def _hub_http_error(cls, message, status):
-    """Build an HfHubHTTPError subclass portably.
-
-    huggingface_hub 1.x made ``response`` a REQUIRED keyword-only argument, and CI resolves 1.x
-    (transformers pins huggingface-hub>=1.5 over studio.txt's 0.36.2). Passing it works on both."""
+    """Build an HfHubHTTPError subclass portably: huggingface_hub 1.x made ``response`` a REQUIRED
+    keyword-only argument, and CI resolves 1.x (transformers pins huggingface-hub>=1.5 over
+    studio.txt's 0.36.2). Passing it works on both."""
     import requests
 
     response = requests.Response()
@@ -379,10 +370,9 @@ def _hub_http_error(cls, message, status):
 
 
 def _auth_error(status):
-    """The bare HfHubHTTPError hf_raise_for_status leaves for an unclassified 401/403.
-
-    Its RepoNotFound branch excludes 401 "Invalid credentials in Authorization header" by name, and
-    a permission-scoped 403 has no branch at all, so neither becomes GatedRepoError."""
+    """The bare HfHubHTTPError hf_raise_for_status leaves for an unclassified 401/403: its
+    RepoNotFound branch excludes 401 "Invalid credentials in Authorization header" by name, and a
+    permission-scoped 403 has no branch at all, so neither becomes GatedRepoError."""
     from huggingface_hub.errors import HfHubHTTPError
     return _hub_http_error(HfHubHTTPError, f"{status} Client Error.", status)
 
@@ -437,11 +427,8 @@ def test_a_blank_token_is_not_sent_as_a_credential(token, monkeypatch):
 def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
     """A GPU-less host routes /images/download-plan to the sd.cpp planner, whose asset list carries
     its own companion repos: flux.1's VAE is the gated black-forest-labs/FLUX.1-schnell. The size
-    probe swallows the 401, so without the preflight that entry plans at 0 bytes and the fetch dies
-    on the bare token error."""
-    # Mirror swap off, so what this pins is the preflight itself: #7952 sends a gated companion
-    # to its ungated unsloth mirror, which the preflight now probes in its place. That rescue
-    # is exercised on its own below rather than folded into every refusal case.
+    probe swallows the 401, so without the preflight that entry plans at 0 bytes."""
+    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
@@ -491,9 +478,7 @@ def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
 def test_the_native_plan_probes_the_asset_it_stages(monkeypatch):
     """flux.1's native VAE repo is read for ae.safetensors only, so probing the pipeline manifest
     there would neither verify access to that file nor see it in the cache."""
-    # Mirror swap off, so what this pins is the preflight itself: #7952 sends a gated companion
-    # to its ungated unsloth mirror, which the preflight now probes in its place. That rescue
-    # is exercised on its own below rather than folded into every refusal case.
+    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
@@ -601,9 +586,8 @@ def test_the_gguf_is_resolved_against_the_live_cache_root(monkeypatch, tmp_path)
 
 def test_a_private_but_already_downloaded_base_is_not_refused(monkeypatch):
     """huggingface_hub folds 401 into RepositoryNotFoundError ("401 is misleading", utils/_http.py),
-    so a PRIVATE companion base already on disk arrives indistinguishable from a deleted one.
-    Refusing it would block a load that works today: hf_hub_download serves the cached pointer once
-    the token is cleared or expires, exactly as it does for a gated base."""
+    so a PRIVATE base already on disk is indistinguishable from a deleted one. Refusing it would
+    block a load that works: hf_hub_download serves the cached pointer once the token expires."""
     from huggingface_hub.errors import RepositoryNotFoundError
 
     private = "unsloth/private-base"
@@ -645,12 +629,10 @@ def test_a_repo_not_found_with_no_response_still_raises(monkeypatch):
     can be proven, so the cache escape is not granted. Fail safe."""
     from huggingface_hub.errors import RepositoryNotFoundError
 
-    # Built through __new__, because no constructor call can produce this on both hub majors: on
-    # 1.x ``response`` is a REQUIRED keyword-only argument AND its __init__ dereferences it
-    # unguarded, so omitting it raises TypeError and passing None raises AttributeError on
-    # response.headers. Bypassing __init__ is the only version-independent way to model the thing
-    # under test, an error carrying no response. Only args/response/server_message are read back
-    # (there is no __str__ override on either major), so setting those is enough.
+    # Built through __new__: on hub 1.x ``response`` is a REQUIRED keyword-only argument AND
+    # __init__ dereferences it unguarded, so omitting it raises TypeError and passing None raises
+    # AttributeError. Bypassing __init__ is the only portable way to model an error with no
+    # response; only args/response/server_message are read back, so setting those is enough.
     err = RepositoryNotFoundError.__new__(RepositoryNotFoundError)
     Exception.__init__(err, "no response attached")
     err.response = None
@@ -699,9 +681,7 @@ def test_the_native_load_preflights_its_companion_repos_too(monkeypatch):
     """The plan alone is not enough: images-page.tsx wraps getDiffusionDownloadPlan in a try/catch
     and calls /images/load regardless, so the plan's 400 is swallowed and the load would run with
     no preflight. The diffusers backend checks in both places; the native one must too."""
-    # Mirror swap off, so what this pins is the preflight itself: #7952 sends a gated companion
-    # to its ungated unsloth mirror, which the preflight now probes in its place. That rescue
-    # is exercised on its own below rather than folded into every refusal case.
+    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.diffusion_families import detect_family_for_pick
     from core.inference.sd_cpp_backend import _SdLoading
@@ -744,9 +724,7 @@ def test_the_native_load_preflights_its_companion_repos_too(monkeypatch):
 def test_the_native_load_probes_the_asset_it_stages_and_honours_the_cache(monkeypatch):
     """Same two properties as the plan half, so the load half cannot drift: the probe is the file
     THIS pick stages (a VAE-only repo has no manifest), and a cached companion is never refused."""
-    # Mirror swap off, so what this pins is the preflight itself: #7952 sends a gated companion
-    # to its ungated unsloth mirror, which the preflight now probes in its place. That rescue
-    # is exercised on its own below rather than folded into every refusal case.
+    # Mirror swap off so this pins the preflight itself; the #7952 mirror rescue is covered below.
     monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.diffusion_families import detect_family_for_pick
     from core.inference.sd_cpp_backend import _SdLoading
@@ -843,8 +821,7 @@ def _stub_shared_download(
 def test_the_prefetch_reuses_a_base_asset_cached_under_the_other_root(monkeypatch, tmp_path):
     """The preflight clears a base found under EITHER cache root, but the companion downloads are
     pinned to the live one, so after a cache-folder change the load re-fetches every cached asset
-    and, with no valid token for a gated base, 401s outright. The download has to resolve through
-    the root that actually holds the file, as the GGUF and pre-quant resolvers do."""
+    and, with no valid token for a gated base, 401s outright."""
     seen = _stub_shared_download(monkeypatch, tmp_path, cached_elsewhere = {"ae.safetensors"})
     DiffusionBackend()._prefetch_files(
         "unsloth/FLUX.1-dev-GGUF",
@@ -879,10 +856,9 @@ def _stub_split_download(monkeypatch, per_file):
 
 def test_a_prefetch_split_across_roots_hands_back_no_snapshot(monkeypatch):
     """Per-file root reuse can serve the manifest from the old root while the companions download
-    into the live one. The manifest's snapshot dir then does not contain them, so returning it
-    would point from_pretrained at a tree missing the VAE and fail a load that the plain hub id
-    completes. Falling back to the hub id costs nothing: it resolves each file through its own
-    root, which is how the files got here."""
+    into the live one, so returning the manifest's snapshot would point from_pretrained at a tree
+    missing the VAE. Falling back to the hub id costs nothing: it resolves each file through its
+    own root, which is how the files got here."""
     old = "/old-hub/models--bfl--base/snapshots/" + "a" * 40
     live = "/live-hub/models--bfl--base/snapshots/" + "a" * 40
     _stub_split_download(
@@ -954,11 +930,10 @@ def test_an_unreadable_gguf_cache_probe_still_downloads(tmp_path, monkeypatch):
 
 
 def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypatch, tmp_path):
-    """The prefetch reuse above only covers a base the size estimate could list, and the estimate
-    comes from the very ``model_info`` call whose 401 earned the cache escape: a private base, or a
-    stale token on any base, leaves ``base_files`` empty, so nothing is staged and
-    ``from_pretrained``, pinned to the live root, re-raises the bare Hub auth error over a base
-    completely on disk. The preflight carries the snapshot it accepted so the load reads it."""
+    """The prefetch reuse above only covers a base the size estimate could list, and that estimate
+    comes from the very ``model_info`` call whose 401 earned the cache escape: ``base_files`` is
+    left empty, so nothing is staged and ``from_pretrained``, pinned to the live root, re-raises the
+    bare auth error over a base wholly on disk. The preflight carries the snapshot it accepted."""
     from huggingface_hub.errors import RepositoryNotFoundError
 
     private = "unsloth/private-base"
@@ -1059,12 +1034,10 @@ def test_the_native_fetch_reuses_a_base_asset_cached_under_the_other_root(monkey
 
 
 def test_a_gated_base_with_a_live_mirror_is_not_refused(monkeypatch):
-    """The other side of every refusal above, and the reason the probe moved onto the fetch repo.
-
-    #7952 sends a gated base to its ungated unsloth mirror, so the bytes never touch the vendor
-    id. A preflight that kept probing the upstream would refuse exactly the picks that swap
-    rescues, turning a working load into a 400 -- worse than the bare token error this whole
-    preflight replaced."""
+    """The other side of every refusal above, and the reason the probe moved onto the fetch repo:
+    #7952 sends a gated base to its ungated unsloth mirror, so the bytes never touch the vendor id,
+    and a preflight still probing the upstream would turn those working loads into a 400 -- worse
+    than the bare token error this whole preflight replaced."""
     mirror = "unsloth/FLUX.1-dev"
     probed: list = []
 
