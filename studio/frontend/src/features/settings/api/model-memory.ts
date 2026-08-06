@@ -36,7 +36,6 @@ type ApiModelMemorySettings = {
   memlock_limit_bytes: number | null;
 };
 
-let cachedModelMemory: ModelMemorySettings | null = null;
 let inFlightModelMemory: Promise<ModelMemorySettings> | null = null;
 
 export function subscribeModelMemorySettings(
@@ -61,8 +60,10 @@ function fromApi(settings: ApiModelMemorySettings): ModelMemorySettings {
   };
 }
 
-function cacheModelMemory(settings: ModelMemorySettings) {
-  cachedModelMemory = settings;
+// No read-through cache on purpose: the response carries runtime state
+// (reloadRequired, memlockLimitBytes) that goes stale as soon as a model is
+// loaded or swapped. This only fans the latest value out to subscribers.
+function publishModelMemory(settings: ModelMemorySettings) {
   window.dispatchEvent(
     new CustomEvent(MODEL_MEMORY_EVENT, { detail: settings }),
   );
@@ -79,12 +80,14 @@ async function fetchModelMemorySettings(): Promise<ModelMemorySettings> {
   return fromApi(await res.json());
 }
 
+/**
+ * Always refetches: `reloadRequired` and `memlockLimitBytes` describe the
+ * currently loaded process, so a cached copy goes stale as soon as a model is
+ * loaded or swapped. Concurrent calls still share one request.
+ */
 export async function loadModelMemorySettings() {
-  if (cachedModelMemory) {
-    return cachedModelMemory;
-  }
   inFlightModelMemory ??= fetchModelMemorySettings()
-    .then(cacheModelMemory)
+    .then(publishModelMemory)
     .finally(() => {
       inFlightModelMemory = null;
     });
@@ -112,5 +115,5 @@ export async function updateModelMemorySettings(
       await readFastApiError(res, "Failed to update model memory settings"),
     );
   }
-  return cacheModelMemory(fromApi(await res.json()));
+  return publishModelMemory(fromApi(await res.json()));
 }

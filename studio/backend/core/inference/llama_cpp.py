@@ -51,6 +51,8 @@ from core.inference.llama_server_args import (
     _tensor_parallel_matches_loaded,
     apply_model_memory_policy,
     extra_args_disable_mmproj,
+    resolve_effective_memory_state,
+    scrub_memory_env,
     parse_cache_override,
     parse_cache_override_per_axis,
     parse_ctx_override,
@@ -3078,8 +3080,9 @@ class LlamaCppBackend:
         self._prompt_cache_disabled: bool = False
         self._swa_full: bool = False
         self._kv_cache_unified: bool = False
-        # Whether the running process was launched with --mlock, so a settings
-        # read can tell if it is stale.
+        # (mlock, mmap_disabled) the running process was launched with, so a
+        # settings read can tell whether it matches the saved policy.
+        self._memory_state: tuple[bool, bool] = (False, False)
         self._mlock_enabled: bool = False
         self._n_ubatch: int = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled: bool = True
@@ -6794,6 +6797,7 @@ class LlamaCppBackend:
         self._swa_full = False
         self._kv_cache_unified = False
         self._mlock_enabled = False
+        self._memory_state = (False, False)
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
@@ -10416,7 +10420,6 @@ class LlamaCppBackend:
                     extra_args,
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                 )
-                self._mlock_enabled = bool(_mem_managed)
                 if _mem_managed:
                     cmd.extend(_mem_managed)
                     logger.info(
@@ -10463,6 +10466,22 @@ class LlamaCppBackend:
                 env = self._llama_server_env_for_binary(binary)
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(env)
+                # llama.cpp reads LLAMA_ARG_MLOCK / _MMAP / _LOAD_MODE before argv,
+                # so stripping the tokens alone would leave an inherited value in
+                # force. Only when a toggle is on, so existing setups are untouched.
+                _mem_scrubbed = scrub_memory_env(env)
+                if _mem_scrubbed:
+                    logger.info(
+                        "Model Memory owns placement; dropped inherited %s",
+                        ", ".join(_mem_scrubbed),
+                    )
+                # Record what the child will ACTUALLY run with (env defaults plus
+                # last-wins argv), not just what Unsloth emitted, so the reload
+                # hint also catches a user-supplied --mlock / --no-mmap.
+                self._memory_state = resolve_effective_memory_state(
+                    list(_mem_managed) + list(_mem_extras), env
+                )
+                self._mlock_enabled = self._memory_state[0]
                 # Omitting --threads relies on llama.cpp's physical-core default, so
                 # drop an inherited LLAMA_ARG_THREADS that would otherwise feed the
                 # arg handler and silently force hardware_concurrency(). #5692
@@ -11685,6 +11704,7 @@ class LlamaCppBackend:
             self._swa_full = False
             self._kv_cache_unified = False
             self._mlock_enabled = False
+            self._memory_state = (False, False)
             self._n_ubatch = self._DEFAULT_N_UBATCH
             self._flash_attn_enabled = True
             self._effective_cache_types = ("f16", "f16")

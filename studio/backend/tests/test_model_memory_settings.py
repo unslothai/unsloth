@@ -24,6 +24,8 @@ _spec = importlib.util.spec_from_file_location(
 _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
 apply_model_memory_policy = _lsa.apply_model_memory_policy
+resolve_effective_memory_state = _lsa.resolve_effective_memory_state
+scrub_memory_env = _lsa.scrub_memory_env
 strip_shadowing_flags = _lsa.strip_shadowing_flags
 
 
@@ -237,3 +239,105 @@ class TestMemlockLimit:
 
         monkeypatch.setattr(resource, "getrlimit", boom)
         assert mm.memlock_limit_bytes() is None
+
+
+class TestMemoryEnv:
+    """llama.cpp reads LLAMA_ARG_MLOCK / _MMAP / _LOAD_MODE before argv, so
+    stripping the tokens alone leaves an inherited value in force."""
+
+    @pytest.fixture
+    def toggles(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        def set(keep, no_res):
+            monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
+            monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
+
+        return set
+
+    @pytest.mark.parametrize(
+        "var", ["LLAMA_ARG_MLOCK", "LLAMA_ARG_MMAP", "LLAMA_ARG_LOAD_MODE", "LLAMA_ARG_DIO"]
+    )
+    def test_a_toggle_scrubs_inherited_memory_env(self, toggles, var):
+        toggles(False, True)
+        env = {var: "1", "PATH": "/usr/bin"}
+        assert var in scrub_memory_env(env)
+        assert var not in env
+        assert env["PATH"] == "/usr/bin"
+
+    def test_both_off_leaves_the_env_untouched(self, toggles):
+        toggles(False, False)
+        env = {"LLAMA_ARG_MLOCK": "1"}
+        assert scrub_memory_env(env) == []
+        assert env == {"LLAMA_ARG_MLOCK": "1"}
+
+
+class TestEffectiveMemoryState:
+    """What the child really runs with: env defaults, argv last-wins on top."""
+
+    @pytest.mark.parametrize(
+        ("argv", "env", "expected"),
+        [
+            ([], {}, (False, False)),
+            (["--mlock"], {}, (True, False)),
+            (["--no-mmap"], {}, (False, True)),
+            (["--load-mode", "mmap+mlock"], {}, (True, False)),
+            (["--load-mode=mmap+mlock"], {}, (True, False)),
+            (["-lm", "mlock"], {}, (True, True)),
+            (["--load-mode", "none"], {}, (False, True)),
+            ([], {"LLAMA_ARG_MLOCK": "1"}, (True, False)),
+            ([], {"LLAMA_ARG_MMAP": "off"}, (False, True)),
+            ([], {"LLAMA_ARG_LOAD_MODE": "mmap+mlock"}, (True, False)),
+            # argv beats env, matching llama.cpp.
+            (["--load-mode", "mmap"], {"LLAMA_ARG_MLOCK": "1"}, (False, False)),
+            (["--mlock", "--load-mode", "mmap"], {}, (False, False)),
+        ],
+    )
+    def test_precedence(self, argv, env, expected):
+        assert resolve_effective_memory_state(argv, env) == expected
+
+    def test_degenerate_inputs(self):
+        assert resolve_effective_memory_state(None, None) == (False, False)
+        assert resolve_effective_memory_state(["--load-mode"], {}) == (False, False)
+        # A following flag is not swallowed as the value.
+        assert resolve_effective_memory_state(["--load-mode", "--mlock"], {}) == (True, False)
+
+
+class TestReloadRequired:
+    """The reload hint must reflect the launched state, not only what Unsloth
+    emitted, so a user-supplied --mlock / --no-mmap counts too."""
+
+    @staticmethod
+    def _required(keep, no_res, state, monkeypatch):
+        import routes.inference
+        import routes.settings as rs
+
+        backend = type("_B", (), {"is_loaded": True, "_memory_state": state})()
+        monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
+        return rs._model_memory_reload_required(keep, no_res)
+
+    @pytest.mark.parametrize(
+        ("keep", "no_res", "state", "expected"),
+        [
+            # no_ram_reserve: neither reservation may survive, whoever asked.
+            (False, True, (True, False), True),   # user --mlock still live
+            (False, True, (False, True), True),   # user --no-mmap still live
+            (False, True, (False, False), False),
+            # keep_resident: satisfied by any mlock, including a user one.
+            (True, False, (True, False), False),
+            (True, False, (False, False), True),
+            # Both off: Unsloth does not manage placement.
+            (False, False, (True, True), False),
+            (False, False, (False, False), False),
+        ],
+    )
+    def test_matrix(self, monkeypatch, keep, no_res, state, expected):
+        assert self._required(keep, no_res, state, monkeypatch) is expected
+
+    def test_no_model_loaded_never_asks_for_a_reload(self, monkeypatch):
+        import routes.inference
+        import routes.settings as rs
+
+        backend = type("_B", (), {"is_loaded": False, "_memory_state": (False, True)})()
+        monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
+        assert rs._model_memory_reload_required(True, True) is False

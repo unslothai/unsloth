@@ -272,18 +272,30 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     )
 
 
-def _model_memory_reload_required(want_mlock: bool) -> bool:
-    """True when the loaded process was launched with a different --mlock state.
+def _model_memory_reload_required(keep_resident: bool, no_ram_reserve: bool) -> bool:
+    """True when the loaded process's memory placement contradicts the settings.
 
-    The idle-unload veto applies immediately (the loop re-reads each poll), so
-    only the launch flag can be stale.
+    Compares the state the child ACTUALLY launched with -- env defaults plus
+    last-wins argv, so a user-supplied --mlock / --no-mmap counts -- against
+    what the current settings would produce. The idle-unload veto applies
+    immediately (the loop re-reads each poll), so only placement can be stale.
     """
     try:
         from routes.inference import get_llama_cpp_backend
         backend = get_llama_cpp_backend()
-        return bool(backend.is_loaded) and bool(backend._mlock_enabled) != want_mlock
+        if not backend.is_loaded:
+            return False
+        mlock, mmap_disabled = getattr(backend, "_memory_state", (False, False))
     except Exception:
         return False
+
+    if no_ram_reserve:
+        # Neither reservation may survive, whoever asked for it.
+        return bool(mlock or mmap_disabled)
+    if keep_resident:
+        return not mlock
+    # Both off: Unsloth does not manage placement, so nothing can be stale.
+    return False
 
 
 def _model_memory_response() -> ModelMemoryResponse:
@@ -293,7 +305,7 @@ def _model_memory_response() -> ModelMemoryResponse:
         keep_resident = keep_resident,
         no_ram_reserve = no_ram_reserve,
         mlock_active = want_mlock,
-        reload_required = _model_memory_reload_required(want_mlock),
+        reload_required = _model_memory_reload_required(keep_resident, no_ram_reserve),
         memlock_limit_bytes = memlock_limit_bytes() if want_mlock else None,
     )
 

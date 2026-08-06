@@ -221,6 +221,15 @@ _MLOCK_FLAGS: frozenset[str] = frozenset({"--mlock", "-mlock"})
 _LOAD_MODE_FLAGS: frozenset[str] = frozenset({"--load-mode", "-lm"})
 _NO_MMAP_FLAGS: frozenset[str] = frozenset({"--no-mmap", "-no-mmap"})
 _MEMORY_PLACEMENT_FLAGS: frozenset[str] = _MLOCK_FLAGS | _NO_MMAP_FLAGS
+# llama.cpp reads these before argv, so an inherited value survives stripping the
+# equivalent tokens. Scrubbed whenever a toggle is on, like the spec/placement
+# env groups, so the setting owns memory placement outright.
+MEMORY_ENV_VARS: tuple[str, ...] = (
+    "LLAMA_ARG_MLOCK",
+    "LLAMA_ARG_MMAP",
+    "LLAMA_ARG_LOAD_MODE",
+    "LLAMA_ARG_DIO",
+)
 
 _SHADOWING_FLAGS: frozenset[str] = (
     _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
@@ -630,3 +639,82 @@ def apply_model_memory_policy(
             strip_load_mode = True,
         )
     return managed, tokens
+
+
+def model_memory_owns_placement() -> bool:
+    """True when either toggle is on, so the child env must be scrubbed."""
+    try:
+        from utils.model_memory_settings import get_keep_resident, get_no_ram_reserve
+    except Exception:
+        return False
+    return get_keep_resident() or get_no_ram_reserve()
+
+
+def scrub_memory_env(env: dict) -> list[str]:
+    """Drop inherited memory env vars when the settings own placement.
+
+    Returns the names removed, for logging. A no-op with both toggles off, so
+    an existing LLAMA_ARG_MLOCK deployment keeps working untouched.
+    """
+    if not model_memory_owns_placement():
+        return []
+    return [name for name in MEMORY_ENV_VARS if env.pop(name, None) is not None]
+
+
+# Mirrors llama_cpp's _LLAMA_ARG_TRUE/FALSE_VALUES; duplicated so this module
+# stays dependency-free (llama_cpp imports from here, not the other way).
+_ENV_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
+_ENV_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
+
+_LOAD_MODE_MLOCK_VALUES = frozenset({"mlock", "mmap+mlock"})
+_LOAD_MODE_MMAP_VALUES = frozenset({"mmap", "mmap+mlock"})
+
+
+def resolve_effective_memory_state(
+    argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> tuple[bool, bool]:
+    """``(mlock, mmap_disabled)`` the child will actually run with.
+
+    Mirrors llama.cpp: env supplies defaults, argv overrides last-wins. Used to
+    compare a running process against the current settings, so the reload hint
+    reflects the launched state rather than only what Unsloth emitted.
+    """
+    env = env or {}
+    mlock = str(env.get("LLAMA_ARG_MLOCK", "")).strip().lower() in _ENV_TRUE_VALUES
+    # LLAMA_ARG_MMAP is whether to mmap, so "off" means mmap disabled.
+    _mmap_env = str(env.get("LLAMA_ARG_MMAP", "")).strip().lower()
+    mmap_disabled = _mmap_env in _ENV_FALSE_VALUES and _mmap_env != ""
+    _mode_env = str(env.get("LLAMA_ARG_LOAD_MODE", "")).strip().lower()
+    if _mode_env:
+        mlock = _mode_env in _LOAD_MODE_MLOCK_VALUES
+        mmap_disabled = _mode_env not in _LOAD_MODE_MMAP_VALUES
+
+    tokens = [str(a) for a in (argv or [])]
+    i, n = 0, len(tokens)
+    while i < n:
+        tok = tokens[i]
+        flag = _flag_name(tok)
+        if flag is None:
+            i += 1
+            continue
+        if flag in _MLOCK_FLAGS:
+            mlock = True
+            i += 1
+        elif flag in _NO_MMAP_FLAGS:
+            mmap_disabled = True
+            i += 1
+        elif flag in _LOAD_MODE_FLAGS:
+            if "=" in tok:
+                value, step = tok.split("=", 1)[1], 1
+            elif i + 1 < n and _flag_name(tokens[i + 1]) is None:
+                value, step = tokens[i + 1], 2
+            else:
+                value, step = "", 1
+            value = value.strip().lower()
+            if value:
+                mlock = value in _LOAD_MODE_MLOCK_VALUES
+                mmap_disabled = value not in _LOAD_MODE_MMAP_VALUES
+            i += step
+        else:
+            i += 1
+    return mlock, mmap_disabled
