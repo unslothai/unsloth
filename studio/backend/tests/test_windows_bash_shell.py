@@ -686,13 +686,21 @@ def test_a_newline_inside_quotes_does_not_start_a_command(windows_terminal):
     assert not tools._find_blocked_commands("echo \"hi\nstart '' powershell\"")
 
 
-def test_a_continued_line_is_one_command(windows_terminal):
+def test_a_continued_line_is_one_command(windows_git_bash_only):
     # A backslash before the newline joins the two lines, so what follows is one
     # more argument rather than a new command. Verified against bash: the second
     # line is printed, not launched. Only a newline the quoting left bare counts,
     # and an escaped one is quoted like any other character.
     assert not tools._find_blocked_commands('echo hi \\\nstart "" powershell')
     assert not tools._find_blocked_commands('echo one two \\\nthree start "" powershell')
+
+
+def test_cmd_continues_a_line_with_a_caret_not_a_backslash(windows_cmd_only):
+    # cmd's continuation is the caret. A backslash is an ordinary character
+    # there, so the newline behind it still ends the command and the START on
+    # the next line really launches.
+    assert "powershell" in tools._find_blocked_commands('echo hi \\\nstart "" powershell')
+    assert not tools._find_blocked_commands('echo hi ^\nstart "" powershell')
 
 
 @pytest.mark.parametrize(
@@ -1930,3 +1938,63 @@ def test_a_path_qualified_shell_still_has_its_arguments_read(windows_terminal, c
 def test_a_path_qualified_program_is_still_just_a_program(windows_terminal):
     # And one that is neither still reports only itself.
     assert tools._find_blocked_commands('cmd //c "C:\\tools\\pwsh.exe -Command ls"') == {"pwsh"}
+
+
+def test_if_skips_its_case_insensitive_switch(windows_terminal):
+    # `/i` stands between IF and its comparison, so the condition is still open
+    # behind it and the body behind that still runs.
+    assert "powershell" in tools._find_blocked_commands(
+        "cmd /c if /i a==a powershell -Command ls"
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["cmd /c timeout 5 powershell -Command ls", "cmd /c timeout /t 5 powershell"],
+)
+def test_windows_timeout_runs_nothing_behind_it(windows_terminal, command):
+    # Windows TIMEOUT pauses the command processor; it takes `/t` and `/nobreak`
+    # and does not forward to the word behind it, unlike the POSIX wrapper of
+    # the same name.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_the_posix_timeout_still_wraps(windows_git_bash_only):
+    # The other half, on the lane where `timeout 5 cmd` really does run cmd.
+    assert "powershell" in tools._find_blocked_commands("timeout 5 powershell -Command ls")
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['cmd /c "tools\\pwsh.exe -Command ls"', 'cmd /c "tools\\sub\\pwsh.exe -Command ls"'],
+)
+def test_a_plain_relative_path_names_a_program(windows_terminal, command):
+    # cmd resolves `tools\pwsh.exe` as surely as `.\tools\pwsh.exe`, and only
+    # the leading `.\` told the two apart.
+    assert "pwsh" in tools._find_blocked_commands(command)
+
+
+def test_a_call_child_path_is_normalised(windows_cmd_only):
+    # os.path.basename leaves a backslash path whole off Windows, so the
+    # forward-slash spelling was caught and this one was not.
+    assert "rm" in tools._find_blocked_commands("cmd /c call C:\\tmp\\rm.cmd -rf x")
+    assert "rm" in tools._find_blocked_commands("cmd /c call C:/tmp/rm.cmd -rf x")
+
+
+def test_a_single_quote_hides_no_cmd_boundary(windows_cmd_only):
+    # cmd has one string delimiter and it is not the single quote, so a lone `'`
+    # is an ordinary character and the newline behind it still ends the command.
+    assert "powershell" in tools._find_blocked_commands(
+        "cmd /c echo 'hi\nstart \"\" powershell"
+    )
+    # A double quote really does open a span, and the newline inside it is data.
+    assert not tools._find_blocked_commands('cmd /c echo "hi\nstart "" powershell')
+
+
+def test_a_caret_escaped_quote_opens_no_span(windows_cmd_only):
+    # `^"` is a quote mark cmd prints rather than a delimiter, so the operator
+    # behind it is live and the START it opens really launches.
+    assert "powershell" in tools._find_blocked_commands(
+        'cmd /c echo ^"&start "" powershell'
+    )
+    assert not tools._find_blocked_commands('cmd /c echo "&start "" powershell')

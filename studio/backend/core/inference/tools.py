@@ -191,7 +191,7 @@ _CMD_ONLY_PREFIXES = frozenset({"call"})
 # The other direction: shell builtins cmd either lacks or means differently.
 # Windows `time` is `time [/t]`, which sets the clock rather than running the
 # word behind it, and `command`, `builtin` and `exec` are bash's own.
-_POSIX_ONLY_PREFIXES = frozenset({"time", "command", "builtin", "exec"})
+_POSIX_ONLY_PREFIXES = frozenset({"time", "timeout", "command", "builtin", "exec"})
 # Wrapper options whose VALUE is a separate token (env -u NAME, nice -n 5).
 # Unconsumed, the value is mistaken for the wrapped command: `env -u FOO rm -rf x`
 # reads as command `FOO`. Shared by the auto gate and the blocklist walk.
@@ -1182,7 +1182,7 @@ def _live_operator_segments(token: str, lexed_posix: bool) -> "list[str]":
         if char == "^":
             carets += 1
             continue
-        if char == '"':
+        if char == '"' and carets % 2 == 0:
             quotes += 1
         elif char in "&|(" and quotes % 2 == 0 and carets % 2 == 0:
             if char != "(" or position == 0 or token[position - 1] in "&|()^":
@@ -1214,7 +1214,9 @@ def _live_operator_tail(token: str, lexed_posix: bool) -> str:
         if char == "^":
             carets += 1
             continue
-        if char == '"':
+        # A caret escapes the quote mark itself, so `^"` is text cmd prints and
+        # leaves no span open: `echo ^"&start "" powershell` really launches.
+        if char == '"' and carets % 2 == 0:
             quotes += 1
         elif char in "&|(" and quotes % 2 == 0 and carets % 2 == 0:
             # Same distinction `_ends_with_cmd_operator` draws: a `(` glued
@@ -1271,7 +1273,9 @@ def _ends_with_cmd_operator(token: str) -> bool:
     return carets % 2 == 0
 
 
-def _newline_command_indexes(text: str, tokens: "list[str]", mode: str) -> "frozenset[int]":
+def _newline_command_indexes(
+    text: str, tokens: "list[str]", mode: str, cmd_quoting: bool = False
+) -> "frozenset[int]":
     """Indexes of ``tokens`` that open a new physical line the shell will run.
 
     A newline ends a command as surely as `;` does, but shlex counts it as
@@ -1290,7 +1294,10 @@ def _newline_command_indexes(text: str, tokens: "list[str]", mode: str) -> "froz
     mark = _newline_mark(text)
     if not mark:
         return frozenset()
-    states = _shell_quote_states(text)
+    # cmd's quoting is its own: one delimiter and a caret escape.
+    # Reading a cmd line with bash's rules let a lone `'` hide every
+    # boundary behind it.
+    states = _cmd_quote_states(text) if cmd_quoting else _shell_quote_states(text)
 
     def _separates(index: int) -> bool:
         if states[index]:
@@ -1671,6 +1678,23 @@ _URL_SCHEME_RE = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*://")
 _PATH_FRAGMENT_RE = re.compile(r"^(?:[A-Za-z]:|\.{0,2}[/\\]|%[^%]+%[/\\])")
 
 
+def _opens_a_path(word: str) -> bool:
+    """Whether ``word`` begins a program path cmd would resolve.
+
+    The drive-rooted, `./` and `%VAR%\\` spellings, plus the plain relative one:
+    `tools\\pwsh.exe` names a program as surely as `.\\tools\\pwsh.exe` does, and
+    only the leading `.\\` told them apart. Kept to a word whose last segment
+    carries an executable suffix, so an ordinary argument holding a separator is
+    not mistaken for a program.
+    """
+    bare = word.strip('"')
+    if _PATH_FRAGMENT_RE.match(bare):
+        return True
+    if "\\" not in bare and "/" not in bare:
+        return False
+    return _path_suffix(bare) in _WINDOWS_EXE_SUFFIXES
+
+
 def _is_start_switch(token: str) -> bool:
     """Whether ``token`` is a START option rather than the program it launches.
 
@@ -1739,7 +1763,7 @@ def _quoted_program_word(payload: str) -> str:
     spaces, and `C:\\powershell scripts\\notepad.exe -x` is one program.
     """
     words = payload.split()
-    if not words or not _PATH_FRAGMENT_RE.match(words[0].strip('"')):
+    if not words or not _opens_a_path(words[0]):
         return ""
     program: "list[str]" = []
     for word in words:
@@ -1784,7 +1808,7 @@ def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "s
     # Only `"`, matching _unwrap_quotes: cmd has no single-quote syntax, so
     # `cmd /c 'C:\\...\\pwsh.exe'` looks for a literally single-quoted path and
     # recovering a program from it would block a line cmd cannot run.
-    if not words or not _PATH_FRAGMENT_RE.match(words[0].strip('"')):
+    if not words or not _opens_a_path(words[0]):
         return set()
     carries = _path_continuations(words)
     program: "list[str]" = []
@@ -1985,7 +2009,11 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
     # behind to look back at; recovered with the lexer that produced `tokens`.
     # The helper returns at once unless the text really holds one, so the second
     # lex is paid only by a multi-line command.
-    newline_starts = _newline_command_indexes(command, tokens, lex_mode)
+    # Which quoting reads the line is the SHELL's, not the lexer's: an
+    # unbalanced quote drops both lexers onto split() and the text is still cmd's.
+    newline_starts = _newline_command_indexes(
+        command, tokens, lex_mode, cmd_quoting = not lexed_posix
+    )
     exec_flag_indexes, invocation_stops, redirect_indexes = _exec_scan_layout(
         tokens, quoted_separators, quoted_redirects
     )
@@ -2195,6 +2223,10 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             skip_operand = token.lower() != "not"
             if_pending = token.lower() == "not" and if_pending
             continue
+        if expect_command and if_pending and _win_switch(token.lower()) == "/i":
+            # IF's documented case-insensitive switch stands between the keyword
+            # and the comparison, so the condition is still open behind it.
+            continue
         if expect_command and if_pending and _is_win_comparison(tokens, token_index):
             # `if 1==1 cmd /c powershell` runs that shell when the condition
             # holds. Reading the comparison as the command word left the body in
@@ -2326,6 +2358,11 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         # them before resolving the program, so `call "powershell" -Command ls`
         # and `"rm" -rf x` run the same thing their bare spellings do.
         base = _token_basename(_unquote(token))
+        if not lexed_posix:
+            # A backslash is cmd's path separator, not an escape, and
+            # os.path.basename leaves such a path whole off Windows. Only on
+            # this lexer: under bash those backslashes really are escapes.
+            base = _token_basename(_unquote(token).replace("\\", "/"))
         screened_indexes.add(token_index)
         # Every word this loop reaches is one the shell would RUN, wrappers and
         # assignment prefixes already stepped over. The walks below decide the
@@ -2561,7 +2598,9 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 while child < len(tokens):
                     command_indexes.add(child)
                     call_child_indexes.add(child)
-                    if _token_basename(_unwrap_quotes(tokens[child])) not in _CMD_ONLY_PREFIXES:
+                    if _token_basename(
+                        _unwrap_quotes(tokens[child]).replace("\\", "/")
+                    ) not in _CMD_ONLY_PREFIXES:
                         break
                     child += 1
             elif (
@@ -2583,7 +2622,9 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 while child < len(tokens):
                     command_indexes.add(child)
                     call_child_indexes.add(child)
-                    if _token_basename(_unwrap_quotes(tokens[child])) not in _CMD_ONLY_PREFIXES:
+                    if _token_basename(
+                        _unwrap_quotes(tokens[child]).replace("\\", "/")
+                    ) not in _CMD_ONLY_PREFIXES:
                         break
                     child += 1
             if _is_start_word(token) and _start_is_run(i):
@@ -2670,7 +2711,10 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
     for index in sorted(call_child_indexes):
         if index >= len(tokens) or index in screened_indexes:
             continue
-        published = _token_basename(_unquote(tokens[index]))
+        # Normalised like every other program lookup: os.path.basename leaves a
+        # backslash path whole off Windows, so `call C:\tmp\rm.cmd` reported
+        # nothing while the forward-slash spelling of the same path was caught.
+        published = _token_basename(_unquote(tokens[index]).replace("\\", "/"))
         if published in _BLOCKED_COMMANDS:
             blocked.add(published)
         else:
@@ -6039,6 +6083,29 @@ def _short_flag_arg(token: str, letters: str) -> "str | None":
         if ch in letters:
             return body[i + 1 :]
     return None
+
+
+def _cmd_quote_states(command: str) -> "list[str]":
+    """The quote context of every character AS CMD READS IT.
+
+    cmd has one string delimiter, the double quote, and one escape, the caret.
+    A single quote is an ordinary character there, so borrowing bash's states
+    let `echo 'hi` swallow the rest of the script and hide every command
+    boundary behind it. A caret-escaped quote opens no span either.
+    """
+    states: "list[str]" = []
+    quote = ""
+    carets = 0
+    for char in command:
+        if char == "^" and not quote:
+            states.append(quote)
+            carets += 1
+            continue
+        states.append(quote)
+        if char == '"' and carets % 2 == 0:
+            quote = "" if quote else '"'
+        carets = 0
+    return states
 
 
 def _shell_quote_states(command: str) -> "list[str]":
