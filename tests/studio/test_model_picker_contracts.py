@@ -1597,9 +1597,7 @@ def test_batch_sizes_reach_an_api_load_through_the_server_mirror():
     assert "n_batch?: number;" in api
     assert "n_ubatch?: number;" in api
     assert "if (config.nBatch && config.nBatch > 0) { payload.n_batch = config.nBatch; }" in api
-    assert (
-        "if (config.nUbatch && config.nUbatch > 0) { payload.n_ubatch = config.nUbatch; }" in api
-    )
+    assert "if (config.nUbatch && config.nUbatch > 0) { payload.n_ubatch = config.nUbatch; }" in api
     monitor = " ".join(_read("features/api-monitor/components/saved-model-settings.tsx").split())
     assert "if (override.n_batch) {" in monitor
     assert "if (override.n_ubatch) {" in monitor

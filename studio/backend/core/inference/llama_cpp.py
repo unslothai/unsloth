@@ -3643,8 +3643,7 @@ class LlamaCppBackend:
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
             return False
         if not self._is_diffusion and (
-            self._requested_n_batch != intent.n_batch
-            or self._requested_n_ubatch != intent.n_ubatch
+            self._requested_n_batch != intent.n_batch or self._requested_n_ubatch != intent.n_ubatch
         ):
             return False
 
