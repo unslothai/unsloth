@@ -212,7 +212,9 @@ class TestTrainingRawSupport(unittest.TestCase):
         # Feature-detected like the other newer fields, so an older unsloth_zoo
         # without the flag keeps working instead of raising on construction.
         gated = source.split("_supported_fields = ")[1]
-        self.assertNotIn("report_grad_norm = True,", gated.split("MLXTrainer(")[0].split("dict(")[0])
+        self.assertNotIn(
+            "report_grad_norm = True,", gated.split("MLXTrainer(")[0].split("dict(")[0]
+        )
 
     def test_start_training_leaves_unset_max_grad_norm_for_worker_default(self):
         # None is what lets the worker apply the default; a coerced 0.0 would drop
