@@ -333,7 +333,9 @@ def test_transformed_datasets_keep_their_length_cap(tmp_path, trl_has_guard):
         assert args.padding_free is False, "padding-free must be dropped, it disables truncation"
     assert max(len(r["input_ids"]) for r in rows) > _MODEL_MAX_SEQ_LENGTH
     if getattr(trainer.data_collator, "max_length", None) is not None:
-        assert _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH, "overlength rows reached the model"
+        assert (
+            _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH
+        ), "overlength rows reached the model"
 
 
 def test_padding_free_off_keeps_max_length(tmp_path):
