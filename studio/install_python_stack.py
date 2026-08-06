@@ -888,7 +888,9 @@ def _detect_windows_gfx_arch() -> str | None:
     #    adapter that is disabled in Device Manager or sitting on a driver error,
     #    and _dedup_pick()'s shadowing skip would let such a card depose the
     #    working iGPU -- installing wheels for a GPU Windows never exposes. Same
-    #    filter setup.ps1 applies to $wmiGpus.
+    #    filter setup.ps1 applies to $wmiGpus, including the AMD name match: the
+    #    masks index AMD devices, so an Intel or NVIDIA adapter in the list would
+    #    shift every index away from what HIP_VISIBLE_DEVICES actually names.
     try:
         result = subprocess.run(
             [
@@ -897,8 +899,9 @@ def _detect_windows_gfx_arch() -> str | None:
                 "-NonInteractive",
                 "-Command",
                 "(Get-CimInstance Win32_VideoController | Where-Object { "
+                "$_.Name -match 'AMD|Radeon' -and ("
                 "($null -eq $_.ConfigManagerErrorCode) -or "
-                "($_.ConfigManagerErrorCode -eq 0) }).Name",
+                "($_.ConfigManagerErrorCode -eq 0)) }).Name",
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
@@ -906,15 +909,33 @@ def _detect_windows_gfx_arch() -> str | None:
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode == 0:
-            _tokens = []
-            for _name in result.stdout.decode(errors = "replace").splitlines():
-                _arch = _gfx_arch_from_gpu_name(_name.strip())
-                if _arch:
-                    _tokens.append(_arch)
-            _pick = _dedup_pick(_tokens)
+            _names = [n.strip() for n in result.stdout.decode(errors = "replace").splitlines()]
+            _names = [n for n in _names if n]
+            _tokens = [_a for _a in map(_gfx_arch_from_gpu_name, _names) if _a]
+            # Resolve the mask over the ADAPTER list: a name the table does not know
+            # drops out of _tokens, and indexing that shortened list would name a
+            # different card. Mirrors setup.ps1's $nameIdx.
+            _sel = _pick_visible_index(len(_names)) if _names else 0
+            _named = _gfx_arch_from_gpu_name(_names[_sel]) if _names else None
+            # Only borrow another adapter's arch when the user did not select this
+            # one: under a mask, substituting installs for a GPU they masked away.
+            if not _named and not _visible_devices_pinned() and _tokens:
+                _named = _tokens[0]
+            # Only repick when every AMD adapter mapped. Otherwise an unknown name may
+            # BE the discrete card, so skipping the iGPU could pick the wrong one, and
+            # the advisory index would count arches rather than devices.
+            _pick = _dedup_pick(_tokens) if len(_tokens) == len(_names) else _named
             if _pick:
                 print(f"   gfx arch inferred from GPU name (WMI): {_pick}")
                 return _pick
+            if _names and not _pick:
+                # Refusing to substitute leaves no arch, and torch then installs CPU-only.
+                # Say which adapter could not be identified instead of failing silently.
+                print(
+                    f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
+                    f"will be CPU-only. Set UNSLOTH_ROCM_GFX_ARCH to your GPU's arch "
+                    f"(e.g. gfx1200) to install AMD wheels."
+                )
     except Exception:
         pass
     return None

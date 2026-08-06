@@ -1,6 +1,8 @@
 """AMD ROCm support tests across install pathways (all mocked, no AMD HW)."""
 
+import contextlib
 import importlib.util
+import io
 import json
 import os
 import re
@@ -3347,6 +3349,91 @@ class TestGfxArchNameFallback:
                         result = stack_mod._detect_windows_gfx_arch()
         assert result is None
 
+    @staticmethod
+    def _wmi_arch(names, env):
+        """Drive the WMI fallback over `names`, emulating the probe's AMD filter."""
+        ps_result = MagicMock()
+        ps_result.returncode = 0
+        amd = [n for n in names if re.search(r"AMD|Radeon", n, re.IGNORECASE)]
+        ps_result.stdout = ("\r\n".join(amd) + "\r\n").encode()
+
+        def _run(cmd, **kwargs):
+            if cmd and "powershell.exe" in str(cmd[0]).lower():
+                return ps_result
+            raise FileNotFoundError(cmd[0])
+
+        buf = io.StringIO()
+        with patch.dict(os.environ, {}, clear = False):
+            for _v in (
+                "HIP_PATH",
+                "ROCM_PATH",
+                "UNSLOTH_ROCM_GFX_ARCH",
+                "UNSLOTH_ENABLE_AMD_SMI",
+                "HIP_VISIBLE_DEVICES",
+                "ROCR_VISIBLE_DEVICES",
+                "CUDA_VISIBLE_DEVICES",
+            ):
+                os.environ.pop(_v, None)
+            os.environ.update(env)
+            with contextlib.redirect_stdout(buf):
+                with patch("shutil.which", return_value = None):
+                    with patch("os.path.isfile", return_value = False):
+                        with patch("subprocess.run", side_effect = _run):
+                            result = stack_mod._detect_windows_gfx_arch()
+        return result, buf.getvalue()
+
+    def test_wmi_probe_lists_only_amd_adapters(self):
+        # The masks index AMD devices, so an Intel or NVIDIA adapter ahead of the Radeon
+        # would shift every index away from the device HIP_VISIBLE_DEVICES names. Same
+        # -match filter setup.ps1 applies to $wmiGpus.
+        source = _STACK_PATH.read_text(encoding = "utf-8")
+        assert "$_.Name -match 'AMD|Radeon'" in source
+        arch, _ = self._wmi_arch(
+            ["Intel(R) UHD Graphics", "AMD Radeon RX 9060 XT"], {"HIP_VISIBLE_DEVICES": "0"}
+        )
+        assert arch == "gfx1200"
+
+    def test_wmi_unmappable_adapter_suppresses_the_repick(self):
+        # A driver-only host can report a name the table does not know ("AMD Radeon
+        # Graphics"). It then drops out of the arch list, so neither the mask nor the
+        # advisory index can be trusted to name a device: skipping the iGPU could land on
+        # the wrong card and the advisory would count arches, not GPUs. setup.ps1 only
+        # repicks when every adapter mapped, so this must too.
+        arch, out = self._wmi_arch(
+            ["AMD Radeon Graphics", "AMD Radeon 780M Graphics", "AMD Radeon RX 9060 XT"], {}
+        )
+        assert arch == "gfx1103"
+        assert "setx HIP_VISIBLE_DEVICES" not in out
+
+    def test_wmi_repicks_the_dgpu_when_every_adapter_maps(self):
+        # Negative control: with the whole list mapped the #7776 preference still runs and
+        # the advisory names the dGPU's real index.
+        arch, out = self._wmi_arch(["AMD Radeon 780M Graphics", "AMD Radeon RX 9060 XT"], {})
+        assert arch == "gfx1200"
+        assert "setx HIP_VISIBLE_DEVICES 1" in out
+
+    def test_wmi_masked_unmappable_adapter_warns_instead_of_substituting(self):
+        # Under a mask the selected adapter is the user's choice, so another card's arch
+        # must not stand in for it (same rule setup.ps1 follows). That leaves no arch and
+        # torch goes CPU-only, which has to be said out loud, not swallowed.
+        arch, out = self._wmi_arch(
+            ["AMD Radeon Graphics", "AMD Radeon RX 9060 XT"], {"HIP_VISIBLE_DEVICES": "0"}
+        )
+        assert arch is None
+        assert "UNSLOTH_ROCM_GFX_ARCH" in out and "AMD Radeon Graphics" in out
+
+    def test_wmi_unpinned_unmappable_adapter_still_infers(self):
+        # Negative control: unpinned there is no choice to respect, so the one adapter
+        # that did map still decides and the host keeps its wheels.
+        arch, _ = self._wmi_arch(["AMD Radeon Graphics", "AMD Radeon RX 9060 XT"], {})
+        assert arch == "gfx1200"
+
+    def test_wmi_mask_selects_the_adapter_it_names(self):
+        arch, _ = self._wmi_arch(
+            ["AMD Radeon 780M Graphics", "AMD Radeon RX 9060 XT"], {"HIP_VISIBLE_DEVICES": "0"}
+        )
+        assert arch == "gfx1103"
+
     def test_wmi_fallback_skips_disabled_adapters(self):
         # WMI keeps listing a Radeon that is disabled in Device Manager or sitting on
         # a driver error, and _dedup_pick()'s shadowing skip would let one depose the
@@ -5395,6 +5482,38 @@ class TestApplyHostOverrides:
         assert out.rocm_gfx_target == "gfx1010"
         assert out.rocm_gfx_targets == ["gfx1100", "gfx1010"]
         assert out.has_rocm is True
+
+    def test_shadowing_igpu_does_not_veto_the_forwarded_dgpu(self, monkeypatch):
+        # #7776: unmasked, setup skips a leading APU for the discrete card, but
+        # _pick_rocm_gfx_target() still reads that APU as device 0. Discarding the forward
+        # as "advisory" would give torch gfx120X and llama.cpp the gfx1103 iGPU bundle,
+        # which then runs on the wrong card once the user follows setup's own setx advice.
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        for _v in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(_v, raising = False)
+        host = rocm_host(rocm_gfx_target = "gfx1103", rocm_gfx_targets = ["gfx1103", "gfx1200"])
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx1200")
+        assert out.rocm_gfx_target == "gfx1200"
+        assert out.rocm_gfx_targets == ["gfx1103", "gfx1200"]
+
+    def test_masked_host_still_keeps_the_probed_arch(self, monkeypatch):
+        # Negative control: the repick never overrides a pin, so under a mask a differing
+        # forward is a mispick again and the probe's visible-device pick must survive.
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
+        host = rocm_host(rocm_gfx_target = "gfx1103", rocm_gfx_targets = ["gfx1103", "gfx1200"])
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx1200")
+        assert out.rocm_gfx_target == "gfx1103"
+
+    def test_shadowing_exception_needs_a_probed_dgpu(self, monkeypatch):
+        # The exception only covers a card the probe actually saw. A family label is a
+        # bundle name, so gfx103X over a gfx1033 APU must stay advisory as before.
+        monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
+        for _v in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(_v, raising = False)
+        host = rocm_host(rocm_gfx_target = "gfx1033", rocm_gfx_targets = ["gfx1033"])
+        out = _apply_host_overrides(host, override_rocm_gfx = "gfx103X")
+        assert out.rocm_gfx_target == "gfx1033"
 
     def test_forwarded_gfx_absent_from_host_stays_authoritative(self, monkeypatch):
         # An arch no probe here ever reported is not a setup mispick: it is an explicit
