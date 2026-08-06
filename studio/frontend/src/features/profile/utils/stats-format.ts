@@ -15,8 +15,9 @@ const FULL_FORMATTERS = new Map<Locale, Intl.NumberFormat>();
 function compactFormatter(
   locale: Locale,
   maximumFractionDigits: 0 | 1,
+  numberingSystem?: "latn",
 ): Intl.NumberFormat {
-  const key = `${locale}:${maximumFractionDigits}`;
+  const key = `${locale}:${maximumFractionDigits}:${numberingSystem ?? ""}`;
   const cached = COMPACT_FORMATTERS.get(key);
   if (cached) {
     return cached;
@@ -24,6 +25,7 @@ function compactFormatter(
   const formatter = new Intl.NumberFormat(locale, {
     notation: "compact",
     maximumFractionDigits,
+    ...(numberingSystem ? { numberingSystem } : {}),
   });
   COMPACT_FORMATTERS.set(key, formatter);
   return formatter;
@@ -31,9 +33,16 @@ function compactFormatter(
 
 /** Magnitude of the compact form, so "past 100 of a unit" is asked of Intl
  * rather than derived from a hardcoded 1e3/1e6/1e9 ladder that only matches
- * locales grouping in thousands. ja and zh group in 万, hi in लाख. */
+ * locales grouping in thousands. ja and zh group in 万, hi in लाख.
+ *
+ * Probed through a latn formatter, never the display one: the default numbering
+ * system is per-locale AND per-ICU-build, and ar-EG / ar-SA resolve to `arab`,
+ * where the integer part is "١" and Number() gives NaN. NaN < 100 is false, so
+ * every Arabic value silently lost its decimal ("٢ مليون" for 1.9M). The unit
+ * grouping is identical across numbering systems, so this only changes the
+ * digits we parse, not which unit Intl picked. */
 function compactInteger(locale: Locale, value: number): number {
-  for (const part of compactFormatter(locale, 1).formatToParts(value)) {
+  for (const part of compactFormatter(locale, 1, "latn").formatToParts(value)) {
     if (part.type === "integer") {
       return Math.abs(Number(part.value));
     }

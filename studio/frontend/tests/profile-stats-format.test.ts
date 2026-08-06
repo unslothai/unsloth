@@ -29,6 +29,34 @@ test("compact numbers match the tile format", () => {
   assert.equal(formatCompactNumber(Number.NaN, "en"), "0");
 });
 
+test("a non-Latin numbering system keeps its decimal", () => {
+  // The threshold used to be read off the DISPLAY string, so a locale whose
+  // digits are not ASCII gave Number("\u0661") -> NaN, NaN < 100 -> false, and every
+  // Arabic value silently lost its decimal. Which locales default to `arab`
+  // varies by ICU build, so pin an explicit one rather than bare "ar".
+  const arab = "ar-EG" as Parameters<typeof formatCompactNumber>[1];
+  const onePointNine = formatCompactNumber(1_900_000, arab);
+  // The decimal separator is the Arabic one; what matters is that a fraction survived.
+  assert.ok(
+    /\u0661[\u066b.,]\u0669/.test(onePointNine),
+    `expected a 1.9-style value, got ${onePointNine}`,
+  );
+  // ...and past 100 of a unit it is still dropped, exactly as in en.
+  assert.ok(
+    !/[\u066b.,]/.test(formatCompactNumber(190_000_000, arab)),
+    "expected no decimal past 100 of a unit",
+  );
+});
+
+test("the latn probe does not change which unit Intl picked", () => {
+  // Unit grouping is a locale property, not a numbering-system one, so probing
+  // in latn must leave ja/zh (\u4e07) and hi (\u0932\u093e\u0916) exactly as they were.
+  assert.equal(formatCompactNumber(1_900_000, "ja"), "190\u4e07");
+  assert.equal(formatCompactNumber(190_000_000, "ja"), "1.9\u5104");
+  assert.equal(formatCompactNumber(1_900_000, "zh-CN"), "190\u4e07");
+  assert.equal(formatCompactNumber(1_234, "en"), "1.2K");
+});
+
 test("rounding up a unit steps to the next suffix", () => {
   // Rounding 999.5K to "1000K" is four digits, which is not compact.
   assert.equal(formatCompactNumber(999_999, "en"), "1M");
