@@ -175,6 +175,10 @@ _COMMAND_PREFIXES = frozenset(
         "command",
         "builtin",
         "exec",
+        # bash: "coproc [NAME] command ... The command is executed
+        # asynchronously", and with a NAME the command must be a compound one,
+        # so the word behind a simple `coproc` is what runs.
+        "coproc",
         "time",
         "nohup",
         "nice",
@@ -1695,7 +1699,63 @@ _CMD_INTERNAL_COMMANDS = frozenset(
 )
 
 
+# One outermost scan's allowance for the nested ones inside it, in characters
+# of command text, with a depth cap for the same reason. A quoted `cmd /c`
+# payload is a SUFFIX of the line it sits in, so every level re-reads what the
+# one above it read and a budget granted per call is no bound at all:
+# `cmd /c "` twenty deep took seconds, before the command it screens had
+# started. Shared across the whole scan instead, and what it cannot finish
+# reading is refused rather than passed.
+_MAX_NESTED_SCAN_CHARS = 20_000
+_MAX_NESTED_SCAN_DEPTH = 16
+_scan_state = threading.local()
+
+
 def _find_blocked_commands(command: str) -> set[str]:
+    """Screen ``command``, bounding the nested scans it starts (see
+    _MAX_NESTED_SCAN_CHARS). The outermost call owns the allowance and reports
+    the refusal, so a payload the budget stopped short of cannot ride in on the
+    scan giving up."""
+    outermost = not getattr(_scan_state, "depth", 0)
+    if outermost:
+        _scan_state.chars = _MAX_NESTED_SCAN_CHARS
+        _scan_state.overflowed = False
+    _scan_state.depth = getattr(_scan_state, "depth", 0) + 1
+    if not outermost:
+        # The outermost line has to be read whatever its length; the allowance
+        # is for what that read then starts.
+        _scan_state.chars -= len(command)
+    try:
+        if _scan_state.chars < 0 or _scan_state.depth > _MAX_NESTED_SCAN_DEPTH:
+            _scan_state.overflowed = True
+            return set()
+        blocked = _find_blocked_commands_inner(command)
+        if outermost and _scan_state.overflowed:
+            # Something below was never read, so the command word that led
+            # there is refused, the way an unread cmd payload already is.
+            head = _shell_lex_head(command)
+            blocked = blocked | {head} if head else blocked | {"cmd"}
+        return blocked
+    finally:
+        _scan_state.depth -= 1
+
+
+def _shell_lex_head(command: str) -> str:
+    """The first word of ``command``, for naming a scan that could not finish."""
+    for token in command.split():
+        return _token_basename_plain(token)
+    return ""
+
+
+def _token_basename_plain(token: str) -> str:
+    """``token`` reduced to the program name it holds, meta-characters aside."""
+    token = token.strip(";&|()`{}\"'")
+    base = os.path.basename(token.replace("\\", "/")).lower()
+    stem, ext = os.path.splitext(base)
+    return stem if ext in {".exe", ".com", ".bat", ".cmd"} else base
+
+
+def _find_blocked_commands_inner(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
     A token is at command position if it is the first token, or follows a
@@ -2207,6 +2267,13 @@ def _find_blocked_commands(command: str) -> set[str]:
             exec_words = [i + 1] if child in (-1, i + 1) else [i + 1, child]
             for word in exec_words:
                 base = _token_basename(tokens[word])
+                if base == "start" and lexed_posix:
+                    # find runs the action itself, so this is a command
+                    # position like any other: the `-exec start "" powershell`
+                    # of a find action and `fd . -x start "" powershell` launch,
+                    # and screening the name alone said nothing about what it
+                    # was pointed at.
+                    start_indexes.add(word)
                 if _is_sed_command(base):
                     # find runs its -exec child directly, but the walk above only
                     # reaches `find`, so a sed there never got its program
@@ -2269,6 +2336,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             # Trailing dots and spaces are Win32's to ignore, so `cmd /c
             # powershell.exe.` runs powershell whatever the lexer was.
             name = _token_basename(_win32_name(cmd_word))
+            if _CMD_VARIABLE_RE.sub("", _CMD_DELAYED_RE.sub("", name)) == "" and name:
+                # Nothing but an expansion, so no reading of it is a name and
+                # what it runs is unknowable: `cmd //c %ComSpec% //c start ""
+                # powershell` is a nested cmd whose command line went unread.
+                # Refused, as the same shape already is in a start target.
+                blocked.add(name)
             if name in _blocked_commands():
                 blocked.add(name)
             else:

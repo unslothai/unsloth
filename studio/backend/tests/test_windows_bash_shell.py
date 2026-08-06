@@ -13,6 +13,7 @@ because studio-backend-ci is Linux-only.
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -1543,6 +1544,63 @@ def test_cmd_strips_the_quotes_around_its_command_line(monkeypatch, bash, comman
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
     assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # A command word that is nothing but an expansion cannot be resolved,
+        # and this one is a nested cmd whose command line then went unread.
+        ('cmd //c %ComSpec% //c start "" powershell', True),
+        ('cmd //c cmd //c start "" powershell', True),
+        # A name that merely holds an expansion still names its own program.
+        ("cmd //c my%X%prog", False),
+    ],
+)
+def test_an_expansion_only_command_word_fails_closed(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # bash runs a coproc's command asynchronously, so the word behind it is
+        # a command position: consuming `coproc` as the command itself left
+        # what it runs unscreened.
+        ('coproc start "" powershell -c ls', True),
+        ("coproc rm -rf x", True),
+        ("coproc echo start", False),
+        # find and fd run their exec action directly, so a `start` there is a
+        # launch like any other, including behind a wrapper.
+        ('find . -exec start "" powershell ;', True),
+        ('fd . -x start "" powershell', True),
+        ('find . -exec env start "" powershell ;', True),
+        ('find . -exec start "" notepad ;', False),
+    ],
+)
+def test_a_command_another_command_runs_is_screened(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+def test_nested_payload_scans_share_one_allowance(monkeypatch):
+    # A quoted `cmd /c` payload is a SUFFIX of the line it sits in, so every
+    # level re-reads what the one above it read, and an allowance granted per
+    # call is no bound at all: twenty deep took seconds before the command it
+    # screens had started. The scan is refused rather than passed when the
+    # shared allowance runs out.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    started = time.monotonic()
+    assert tools._find_blocked_commands('cmd /c "' * 20 + "echo ok" + '"' * 20)
+    assert time.monotonic() - started < 5  # ~0.1s here; the bound is what matters
+    # A payload no deeper than a real one is read in full, so the bound costs
+    # no detection: this one is nested and still found.
+    assert "powershell" in tools._find_blocked_commands('cmd /c "start "" powershell"')
+    assert not tools._find_blocked_commands('cmd /c "echo ok"')
 
 
 def test_a_chain_of_cmd_payloads_is_bounded_and_fails_closed(monkeypatch):
