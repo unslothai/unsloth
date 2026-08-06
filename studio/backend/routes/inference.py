@@ -1662,6 +1662,10 @@ async def _aclose_stream_resources(
     # closes below, which are what actually stop llama-server decoding. #7617
     live = [w for w in watchers if w is not None]
     if live:
+        # cancel before the first await: a cancel landing here would otherwise stop the
+        # gather before it steps its children, leaving watchers never even cancelled.
+        for watcher in live:
+            watcher.cancel()
         try:
             await asyncio.gather(
                 *(_stop_local_disconnect_cancel_watcher(w) for w in live),
@@ -1695,6 +1699,11 @@ async def _aclose_stream_resources(
         raise asyncio.CancelledError()
 
 
+# the loop holds only weak references to tasks, so a bare ensure_future() close can be
+# collected before it runs. Strong ref until done, discarded after.
+_LATE_CLOSE_TASKS: set = set()
+
+
 async def _aclose_quietly(obj) -> None:
     try:
         await obj.aclose()
@@ -1718,9 +1727,11 @@ def _discard_task_outcome(task: asyncio.Task) -> None:
         return
     if result is not None and hasattr(result, "aclose") and not getattr(result, "is_closed", False):
         try:
-            asyncio.ensure_future(_aclose_quietly(result))
+            closing = asyncio.ensure_future(_aclose_quietly(result))
         except RuntimeError:
-            pass
+            return
+        _LATE_CLOSE_TASKS.add(closing)
+        closing.add_done_callback(_LATE_CLOSE_TASKS.discard)
 
 
 def _release_admission(admission_lease = None, tracker = None) -> None:
@@ -1783,7 +1794,11 @@ async def _send_stream_with_preheader_cancel(
             send_task.add_done_callback(_discard_task_outcome)
             return
         try:
-            send_task.result()
+            # closing the client does not close a response the send already produced during
+            # the aclose() above, so close it here rather than drop it.
+            sent = send_task.result()
+            if sent is not None:
+                await _aclose_quietly(sent)
         except (asyncio.CancelledError, Exception):
             pass
 
