@@ -6,10 +6,10 @@ import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import { LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
+import { CopyIcon, LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
-import { ArrowLeft, ArrowRight, Copy, Minus, Square, X } from "lucide-react";
+import { ArrowLeft, ArrowRight, Minus, Square, X } from "lucide-react";
 import {
   type MouseEvent,
   type ReactElement,
@@ -417,10 +417,10 @@ export function WindowTitlebar({
             }
           >
             {maximized ? (
-              <Copy
-                aria-hidden="true"
+              <HugeiconsIcon
+                icon={CopyIcon}
                 strokeWidth={1.75}
-                className="size-[17px]"
+                className="size-[17px] rotate-180"
               />
             ) : (
               <Square
