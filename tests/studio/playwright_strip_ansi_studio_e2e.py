@@ -34,7 +34,7 @@ ESC = "\u001b"
 
 
 def info(msg: str) -> None:
-    print(f"[ansi-studio] {msg}", flush=True)
+    print(f"[ansi-studio] {msg}", flush = True)
 
 
 def fail(msg: str) -> None:
@@ -58,7 +58,13 @@ print("backend raw terminal output has ANSI escapes")
     subprocess.run([str(STUDIO_PY), "-c", code], cwd = BACKEND, check = True)
 
 
-def api_json(path: str, *, method: str = "GET", body: dict | None = None, token: str | None = None):
+def api_json(
+    path: str,
+    *,
+    method: str = "GET",
+    body: dict | None = None,
+    token: str | None = None,
+):
     import json
 
     headers = {"Content-Type": "application/json"}
@@ -119,7 +125,7 @@ def wait_for_vite() -> None:
 
 
 def main() -> None:
-    ART.mkdir(parents=True, exist_ok=True)
+    ART.mkdir(parents = True, exist_ok = True)
 
     if AUTH_DIR.exists():
         shutil.rmtree(AUTH_DIR)
@@ -133,7 +139,17 @@ def main() -> None:
         env = {**os.environ, "UNSLOTH_API_ONLY": "1"},
     )
     vite = subprocess.Popen(
-        ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", str(VITE_PORT), "--strictPort"],
+        [
+            "npm",
+            "run",
+            "dev",
+            "--",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(VITE_PORT),
+            "--strictPort",
+        ],
         cwd = FRONTEND,
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
