@@ -479,9 +479,14 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
     return base or fam.base_repo
 
 
-# Byte-identical ungated unsloth mirrors of the gated vendor bases: a GGUF/FP8 pick ships only the
-# denoiser, so a gated base still 401s on the companions. Swapped at the fetch sites only, never in
-# ``resolve_base_repo``, whose result keys the UPSTREAM-id tables below (see ``canonical_base``).
+# Byte-identical unsloth mirrors of the vendor bases: a GGUF/FP8 pick ships only the denoiser, so
+# the companions come from the base. For the gated vendors that is a 401 the mirror removes; for
+# the ungated ones it is simply the last third-party fetch on the load path. Swapped at the fetch
+# sites only, never in ``resolve_base_repo``, whose result keys the UPSTREAM-id tables below (see
+# ``canonical_base``).
+#
+# A mirror stands in for the WHOLE base, including a plain bf16 pipeline load, so it must be a
+# complete copy. A companions-only repo here would break every pick that needs the transformer.
 _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"),
     ("black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell"),
@@ -495,13 +500,17 @@ _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("ideogram-ai/ideogram-4-fp8", "unsloth/ideogram-4-fp8"),
     ("ideogram-ai/ideogram-4-nf4", "unsloth/ideogram-4-nf4"),
     ("ideogram-ai/ideogram-4-nf4-diffusers", "unsloth/ideogram-4-nf4-diffusers"),
+    # Not gated. Mirrored because it is where the Qwen-Image-2512 GGUF/FP8/bnb-4bit picks get their
+    # VAE, text encoder, tokenizer and scheduler: the repo is named by the base_model card tag on
+    # unsloth/Qwen-Image-2512-GGUF, not by the family table, so nothing else redirects it.
+    ("Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"),
 )
 _GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _GATED_MIRROR_PAIRS}
 _MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _GATED_MIRROR_PAIRS}
 
 
 def mirror_repo(repo_id: Optional[str]) -> Optional[str]:
-    """The ungated unsloth mirror of ``repo_id``, or None when it is not a gated vendor base."""
+    """The unsloth mirror of ``repo_id``, or None when it is not a mirrored vendor base."""
     return _GATED_MIRRORS.get((repo_id or "").strip().lower())
 
 

@@ -40,6 +40,7 @@ from core.inference.diffusion_families import (
     prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
+    sd_cpp_companion_only_repo_ids,
     supported_family_names,
 )
 
@@ -175,15 +176,45 @@ def _all_cached(monkeypatch):
 
 def test_gated_mirror_table_round_trips():
     """Both directions, exact case: canonical_base must hand back a real repo id."""
-    assert len(_GATED_MIRROR_PAIRS) == 12
+    assert len(_GATED_MIRROR_PAIRS) == 13
     for upstream, mirror in _GATED_MIRROR_PAIRS:
         assert mirror_repo(upstream) == mirror
         assert canonical_base(mirror) == upstream
         # Case-insensitive in, since a card tag may carry any casing.
         assert mirror_repo(upstream.upper()) == mirror
-    # An ungated base is left alone.
+    # A base with no mirror is left alone.
     assert mirror_repo("Qwen/Qwen-Image") is None
     assert canonical_base("Qwen/Qwen-Image") == "Qwen/Qwen-Image"
+
+
+def test_no_mirror_is_a_companion_only_repo():
+    """A mirror substitutes for the WHOLE base, so it must never be a components-only repo.
+
+    ``prefer_ungated_mirror`` also fires on a plain bf16 pipeline pick, where the transformer is
+    read from the base. Pointing one of these at a repo that ships only a VAE or text encoder would
+    turn a working load into a missing-weights error, and the companion-only set is exactly the
+    list of repos with no denoiser.
+    """
+    companions = sd_cpp_companion_only_repo_ids()
+    for _upstream, mirror in _GATED_MIRROR_PAIRS:
+        assert mirror.lower() not in companions, mirror
+
+
+def test_the_qwen_2512_mirror_covers_the_card_tag_route(monkeypatch):
+    """#8001: the 2512 companions come from a repo the family table never names.
+
+    ``unsloth/Qwen-Image-2512-GGUF`` carries ``base_model: Qwen/Qwen-Image-2512``, and
+    ``_resolve_base_repo`` trusts that tag, so the fetch lands on the vendor repo no matter what
+    the family default says. The mirror is the only thing that redirects it.
+    """
+    _no_cache(monkeypatch)
+    assert mirror_repo("Qwen/Qwen-Image-2512") == "unsloth/Qwen-Image-2512"
+    assert prefer_ungated_mirror("Qwen/Qwen-Image-2512") == "unsloth/Qwen-Image-2512"
+    # The family default is a DIFFERENT repo and keeps its own (absent) mirror status, so the
+    # redirect cannot be mistaken for the family fallback doing the work.
+    assert mirror_repo("Qwen/Qwen-Image") is None
+    # status(), saved configs and a trained adapter's base_model must still read the vendor id.
+    assert canonical_base("unsloth/Qwen-Image-2512") == "Qwen/Qwen-Image-2512"
 
 
 def test_prefer_ungated_mirror_swaps_gated_bases(monkeypatch):
