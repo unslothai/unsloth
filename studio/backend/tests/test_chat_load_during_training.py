@@ -1175,6 +1175,40 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             gb = self.route._estimate_gguf_required_gb(cfg)
         self.assertAlmostEqual(gb, 3000 / (1024**3), places = 9)  # both shards
 
+    def test_local_dspark_sidecar_is_only_counted_when_requested(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dspark-model-Q8_0.gguf"
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = str(sidecar),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
+                off_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "off",
+                )
+                dspark_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "dspark",
+                )
+                extras_gb = self.route._estimate_gguf_required_gb(
+                    cfg,
+                    speculative_type = "off",
+                    llama_extra_args = ["--spec-type", "draft-dspark"],
+                )
+        self.assertAlmostEqual(off_gb, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(dspark_gb, 5000 / (1024**3), places = 9)
+        self.assertAlmostEqual(extras_gb, 5000 / (1024**3), places = 9)
+
     def test_remote_threads_token_and_adds_companions(self):
         import utils.models.model_config as mc
 
@@ -1198,10 +1232,47 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3
             ) as comp,
         ):
-            gb = self.route._estimate_gguf_required_gb(cfg, hf_token = "tok")
+            gb = self.route._estimate_gguf_required_gb(
+                cfg,
+                hf_token = "tok",
+                speculative_type = "dspark",
+            )
         self.assertEqual(captured["token"], "tok")  # token threaded for gated repos
         self.assertAlmostEqual(gb, 12.0, places = 6)  # 10 GB variant + 2 GB companions
         self.assertTrue(comp.call_args.kwargs["include_mmproj"])
+        self.assertFalse(comp.call_args.kwargs["include_mtp"])
+        self.assertTrue(comp.call_args.kwargs["include_dspark"])
+
+    def test_remote_companions_choose_preferred_dspark_sidecar(self):
+        siblings = [
+            SimpleNamespace(rfilename = "mtp-model.gguf", size = 100),
+            SimpleNamespace(rfilename = "dspark/dspark-model-BF16.gguf", size = 300),
+            SimpleNamespace(rfilename = "dspark/dspark-model-Q8_0.gguf", size = 200),
+            SimpleNamespace(rfilename = "dflash-model-Q8_0.gguf", size = 400),
+        ]
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            total = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = "tok",
+                include_mmproj = False,
+                include_dspark = True,
+            )
+        self.assertEqual(total, 300)  # root MTP plus the preferred Q8_0 DSpark file
+        with patch(
+            "huggingface_hub.model_info",
+            return_value = SimpleNamespace(siblings = siblings),
+        ):
+            dspark_only = self.route._remote_gguf_companion_bytes(
+                "org/repo",
+                hf_token = "tok",
+                include_mmproj = False,
+                include_mtp = False,
+                include_dspark = True,
+            )
+        self.assertEqual(dspark_only, 200)
 
     def test_remote_unknown_variant_returns_none(self):
         import utils.models.model_config as mc

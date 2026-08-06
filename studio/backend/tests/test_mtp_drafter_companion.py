@@ -36,6 +36,7 @@ from utils.models.model_config import (
     _is_mtp_drafter,
     _local_gguf_companion_search_root,
     detect_gguf_model,
+    detect_dspark_file,
     detect_mtp_file,
     extract_model_size_b,
     list_local_gguf_variants,
@@ -188,6 +189,111 @@ def test_detect_mtp_file_finds_root_sibling(tmp_path):
 def test_detect_mtp_file_none_without_sibling(tmp_path):
     (tmp_path / "model-Q4_K_M.gguf").write_bytes(b"x")
     assert detect_mtp_file(str(tmp_path / "model-Q4_K_M.gguf")) is None
+
+
+def test_detect_dspark_file_prefers_matching_q8_sidecar(tmp_path):
+    weight = tmp_path / "DeepSeek-V4-Flash-0731-UD-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    folder = tmp_path / "dspark"
+    folder.mkdir()
+    q8 = folder / "dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    q8.write_bytes(b"q8")
+    (folder / "dspark-Other-Model-Q8_0.gguf").write_bytes(b"foreign")
+
+    assert detect_dspark_file(str(weight)) == str(q8.resolve())
+
+
+def test_detect_dspark_file_accepts_the_suffix_naming_scheme(tmp_path):
+    """``<model>-dspark.gguf`` pairs too, the same second scheme MTP accepts."""
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    folder = tmp_path / "dspark"
+    folder.mkdir()
+    sidecar = folder / "model-Q8_0-dspark.gguf"
+    sidecar.write_bytes(b"draft")
+
+    assert detect_dspark_file(str(weight)) == str(sidecar.resolve())
+
+
+def test_detect_dspark_file_rejects_a_weight_copy_in_the_dspark_folder(tmp_path):
+    """A published drafter NAME is required even inside ``dspark/``: a weight
+    copy parked there would otherwise launch as --model-draft."""
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    folder = tmp_path / "dspark"
+    folder.mkdir()
+    (folder / "model-Q8_0.gguf").write_bytes(b"a full weight, not a sidecar")
+
+    assert detect_dspark_file(str(weight)) is None
+
+
+def test_detect_dspark_file_does_not_cross_attach_a_sibling_family(tmp_path):
+    """A folder holding a model and its "-Lite" sibling must not pair across
+    them: the family has to prefix the weight at a non-alphanumeric boundary."""
+    base = tmp_path / "DeepSeek-V4-Flash-Q4_K_M.gguf"
+    base.write_bytes(b"target")
+    lite_sidecar = tmp_path / "dspark-DeepSeek-V4-Flash-Lite-Q8_0.gguf"
+    lite_sidecar.write_bytes(b"foreign")
+
+    assert detect_dspark_file(str(base)) is None
+
+    own = tmp_path / "dspark-DeepSeek-V4-Flash-Q8_0.gguf"
+    own.write_bytes(b"mine")
+    assert detect_dspark_file(str(base)) == str(own.resolve())
+
+
+def test_detect_dspark_file_skips_an_incomplete_split_set(tmp_path):
+    """A partial split would fail llama-server's draft startup and disable
+    speculation, so a complete lower-precision copy wins instead."""
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    (tmp_path / "dspark-model-Q8_0-00001-of-00002.gguf").write_bytes(b"x")
+    complete = tmp_path / "dspark-model-BF16.gguf"
+    complete.write_bytes(b"x")
+
+    assert detect_dspark_file(str(weight)) == str(complete.resolve())
+
+
+def test_detect_dspark_file_sums_shards_so_a_split_cannot_outrank_a_smaller_copy(
+    tmp_path,
+):
+    """Candidates are collapsed to shard 1, so size must be summed across the
+    set or a large split copy outranks a smaller single file at equal precision."""
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    folder = tmp_path / "dspark"
+    folder.mkdir()
+    for shard in (1, 2):
+        (folder / f"dspark-model-Q8_0-0000{shard}-of-00002.gguf").write_bytes(b"x" * 4000)
+    single = tmp_path / "dspark-model-Q8_0.gguf"
+    single.write_bytes(b"x" * 5000)
+
+    assert detect_dspark_file(str(weight)) == str(single.resolve())
+
+
+def test_detect_dspark_file_keeps_a_split_sidecar_on_its_snapshot_path(tmp_path):
+    """llama-server opens the sibling shards implicitly, and the blob target of
+    a cache symlink has no sibling shard names, so a split must NOT resolve."""
+    blobs = tmp_path / "blobs"
+    snapshot = tmp_path / "snapshots" / "abc"
+    blobs.mkdir()
+    snapshot.mkdir(parents = True)
+    weight = snapshot / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+
+    first = snapshot / "dspark-model-Q8_0-00001-of-00002.gguf"
+    second = snapshot / "dspark-model-Q8_0-00002-of-00002.gguf"
+    (blobs / "sha_1").write_bytes(b"d" * 4096)
+    (blobs / "sha_2").write_bytes(b"d")
+    try:
+        first.symlink_to(blobs / "sha_1")
+        second.symlink_to(blobs / "sha_2")
+    except OSError:
+        pytest.skip("symlinks unavailable")
+
+    found = detect_dspark_file(str(weight), str(snapshot))
+    assert found == str(first)
+    assert (Path(found).parent / second.name).exists()
 
 
 def test_detect_gguf_model_rejects_drafter_file(tmp_path):
@@ -356,7 +462,7 @@ def test_native_companion_parent_accepts_root_and_mtp_subdir(tmp_path):
     nested_drafter.write_bytes(b"x")
 
     assert native_gguf_companion_parent_allowed(root_drafter, weight)
-    assert native_gguf_companion_parent_allowed(nested_drafter, weight, allow_mtp_subdir = True)
+    assert native_gguf_companion_parent_allowed(nested_drafter, weight, allowed_subdirs = ("mtp",))
 
 
 def test_native_companion_parent_rejects_other_nested_directory(tmp_path):
@@ -385,7 +491,7 @@ def test_native_companion_parent_rejects_mtp_symlink_escape(tmp_path):
         pytest.skip(f"symlinks unavailable: {exc}")
 
     assert not native_gguf_companion_parent_allowed(
-        model_dir / "MTP" / drafter.name, weight, allow_mtp_subdir = True
+        model_dir / "MTP" / drafter.name, weight, allowed_subdirs = ("mtp",)
     )
 
 
@@ -989,6 +1095,29 @@ def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, m
     snapshots[:] = [with_mtp, dspark_only]
     found = backend._cached_repo_mtp_drafter("some/repo")
     assert found is not None and found.endswith("mtp-model.gguf")
+
+
+def test_cached_dspark_lookup_prefers_q8_and_excludes_dflash(tmp_path, monkeypatch):
+    import core.inference.llama_cpp as llama_cpp_module
+
+    snap = tmp_path / "snapshot"
+    for rel in (
+        "dspark/dspark-model-BF16.gguf",
+        "dspark/dspark-model-Q8_0.gguf",
+        "dflash-model-Q8_0.gguf",
+    ):
+        path = snap / rel
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"x")
+    monkeypatch.setattr(
+        "utils.models.model_config._iter_hf_cache_snapshots",
+        lambda *a, **k: [snap],
+    )
+    backend = llama_cpp_module.LlamaCppBackend.__new__(llama_cpp_module.LlamaCppBackend)
+
+    assert backend._cached_repo_dspark_drafter("some/repo").endswith(
+        "dspark/dspark-model-Q8_0.gguf"
+    )
 
 
 # ── Deletion: only auto-fetched companions are reclaimed ─────────────

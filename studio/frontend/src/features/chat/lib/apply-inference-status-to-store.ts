@@ -16,6 +16,7 @@ import {
   type ReasoningStyle,
   loadOptionalBool,
   loadedGpuMemoryFields,
+  normalizeSpeculativeType,
   resolveToolsEnabledOnLoad,
   useChatRuntimeStore,
 } from "../stores/chat-runtime-store";
@@ -33,33 +34,10 @@ function sameArray<T>(a: T[] | null, b: T[] | null): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
-// Canonicalises backend / persisted speculative mode values onto the UI modes.
-export function normalizeSpeculativeType(
-  v: string | null | undefined,
-): string | null {
-  if (v == null) return null;
-  const s = String(v).trim().toLowerCase();
-  if (!s) return null;
-  if (s === "auto" || s === "default") return "auto";
-  if (s === "off") return "off";
-  if (s === "mtp" || s === "draft-mtp") return "mtp";
-  if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
-    return "ngram";
-  }
-  if (s === "mtp+ngram") return "mtp+ngram";
-  const parts = s
-    .split(",")
-    .map((p) => p.trim())
-    .filter(Boolean);
-  const hasMtp = parts.some((p) => p === "mtp" || p === "draft-mtp");
-  const hasNgram = parts.some(
-    (p) => p === "ngram" || p === "ngram-mod" || p === "ngram-simple",
-  );
-  if (hasMtp && hasNgram) return "mtp+ngram";
-  if (hasMtp) return "mtp";
-  if (hasNgram) return "ngram";
-  return "auto";
-}
+// Canonicalises backend / persisted speculative mode values onto the UI
+// modes. Re-exported from the store, which owns the vocabulary: a second
+// copy meant every new mode had to be added twice or the two would disagree.
+export { normalizeSpeculativeType } from "../stores/chat-runtime-store";
 
 export function clampLocalReasoningEffort(
   value: ReasoningEffort,

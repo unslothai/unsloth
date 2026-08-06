@@ -209,7 +209,8 @@ _DEVICE_FLAGS: frozenset[str] = frozenset({"--device", "-dev", "--main-gpu", "-m
 # opt-in, not default. Layer flags are shared with llama_cpp's override
 # detection; the MoE flags are strip-only (manual's --n-cpu-moe slider owns them).
 _GPU_LAYER_FLAGS: frozenset[str] = frozenset({"-ngl", "--gpu-layers", "--n-gpu-layers"})
-_LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | frozenset({"-fit", "--fit"})
+_FIT_FLAGS: frozenset[str] = frozenset({"-fit", "--fit"})
+_LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | _FIT_FLAGS
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
 
@@ -482,6 +483,7 @@ def strip_shadowing_flags(
     strip_tensor_split: bool = False,
     strip_offload: bool = False,
     strip_device: bool = False,
+    strip_fit: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
 
@@ -496,7 +498,9 @@ def strip_shadowing_flags(
     ``strip_tensor_split`` removes ``--tensor-split`` *alone*, so manual mode can
     replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
     row/none/layer choice intact. ``strip_device`` is enabled when ``gpu_ids``
-    owns placement.
+    owns placement. ``strip_fit`` removes ``--fit`` *alone*, for the modes whose
+    placement is fixed (DSpark requires ``--fit off``) and which therefore cannot
+    let an inherited fit flag win by last-arg.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -515,6 +519,8 @@ def strip_shadowing_flags(
         shadowing |= _OFFLOAD_SHADOWING_FLAGS
     if strip_device:
         shadowing |= _DEVICE_FLAGS
+    if strip_fit:
+        shadowing |= _FIT_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []

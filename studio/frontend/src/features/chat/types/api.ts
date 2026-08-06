@@ -55,14 +55,15 @@ export interface LoadModelRequest {
   /**
    * Speculative decoding mode for GGUF models. Canonical values: "auto"
    * (platform-aware: MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "mtp"
-   * (force draft-mtp), "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
+   * (force draft-mtp), "dspark" (force draft-dspark with a sidecar),
+   * "ngram" (force ngram-mod), "mtp+ngram" (ngram-mod +
    * draft-mtp chain), "off". Legacy "default"/"draft-mtp"/"ngram-mod"/
    * "ngram-simple" are still accepted by the backend.
    */
   speculative_type?: string | null;
   /**
    * Override --spec-draft-n-max for MTP speculative decoding. Applied only
-   * when speculative_type resolves to "mtp" or "mtp+ngram".
+   * when speculative_type resolves to "mtp", "mtp+ngram", or "dspark".
    */
   spec_draft_n_max?: number | null;
   /**
@@ -298,9 +299,12 @@ export interface InferenceStatusResponse {
   /** Model's MoE expert-layer count (the n_cpu_moe ceiling); 0 if not MoE. */
   n_moe_layers?: number;
   /**
-   * Why MTP was disabled on the loaded model despite being requested.
+   * Why a speculative drafter was disabled despite being requested.
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
    * it; "runtime_error" -> the current build could not run it;
+   * "drafter_not_found" -> its MTP or DSpark sidecar was unavailable;
+   * "dspark_fit_required" -> DSpark required fixed placement but Studio could
+   * not confirm the target and sidecar fit;
    * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models
    * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
    * (updating won't help; choose MTP in Settings to force it). Null otherwise.

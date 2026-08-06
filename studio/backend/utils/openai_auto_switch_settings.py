@@ -265,17 +265,21 @@ VALID_SPECULATIVE_TYPES = frozenset(
     {
         "auto",
         "mtp",
+        "dspark",
         "ngram",
         "mtp+ngram",
         "off",
         "default",
         "draft-mtp",
+        "draft-dspark",
         "ngram-mod",
         "ngram-simple",
     }
 )
-# Only these consume spec_draft_n_max (mirrors MTP_SPECULATIVE_TYPES in the UI).
-MTP_SPECULATIVE_TYPES = frozenset({"mtp", "mtp+ngram", "draft-mtp"})
+# Only these consume spec_draft_n_max (mirrors DRAFT_N_MAX_SPEC_TYPES in the UI).
+DRAFT_N_MAX_SPEC_TYPES = frozenset(
+    {"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark"}
+)
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
 
 # Mirrors PARALLEL_MIN/MAX in llama_server_args.py. Mirrored not imported: that module owns
@@ -341,8 +345,9 @@ def normalize_model_override(payload: dict[str, Any]) -> dict[str, Any]:
     speculative_type = _clean_str(payload.get("speculative_type"), VALID_SPECULATIVE_TYPES)
     if speculative_type:
         entry["speculative_type"] = speculative_type
-        # MTP-only; storing it otherwise shows an edit the loader ignores.
-        if speculative_type in MTP_SPECULATIVE_TYPES:
+        # Only the modes that launch a drafter with a configurable depth (MTP
+        # and DSpark); storing it otherwise shows an edit the loader ignores.
+        if speculative_type in DRAFT_N_MAX_SPEC_TYPES:
             spec_draft_n_max = _bounded_int(payload.get("spec_draft_n_max"), minimum = 1, maximum = 16)
             if spec_draft_n_max:
                 entry["spec_draft_n_max"] = spec_draft_n_max

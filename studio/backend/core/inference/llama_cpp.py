@@ -139,6 +139,7 @@ class GgufLoadIntent:
     gguf_path: Optional[str] = None
     mmproj_path: Optional[str] = None
     mtp_draft_path: Optional[str] = None
+    dspark_draft_path: Optional[str] = None
     hf_repo: Optional[str] = None
     hf_variant: Optional[str] = None
     hf_token: Optional[str] = None
@@ -1158,10 +1159,22 @@ def _is_companion_gguf_path(path: str) -> bool:
 
 
 def _is_mtp_only_drafter_path(path: str) -> bool:
-    """MTP only, the one kind Studio launches today (``--spec-type draft-mtp``).
-    DSpark needs ``draft-dspark`` plus ``--fit off``, so drafter discovery must
-    narrow to MTP rather than reuse the broad companion predicate."""
+    """MTP only, not the other companion GGUFs. Each drafter kind launches
+    differently (DSpark needs ``draft-dspark`` plus a fixed ``--fit off``), so
+    discovery narrows to one kind rather than reusing the broad companion
+    predicate, which exists to EXCLUDE companions from variant menus."""
     return _drafter_path_kind(path) == "mtp"
+
+
+def _is_dspark_drafter_path(path: str) -> bool:
+    """True for a DSpark sidecar, excluding the separate DFlash method.
+
+    Broader than model_config.detect_dspark_file, which additionally requires a
+    published drafter NAME: a repo's ``dspark/`` directory holds only sidecars,
+    while a user's local folder may hold anything. Only ever used against repo
+    listings and cache snapshots for that reason.
+    """
+    return _drafter_path_kind(path) == "dspark"
 
 
 _BIG_ENDIAN_GGUF_FILENAME_RE = re.compile(r"(^|[-_])be(?:[._-]|$)", re.IGNORECASE)
@@ -2192,6 +2205,13 @@ def _extra_args_requests_mtp(
     return bool(_accumulated_spec_types(extra_args, env) & {"mtp", "draft-mtp"})
 
 
+def _extra_args_requests_dspark(
+    extra_args: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
+) -> bool:
+    """True if DSpark lands in llama.cpp's accumulated spec-type vector."""
+    return "draft-dspark" in _accumulated_spec_types(extra_args, env)
+
+
 @functools.lru_cache(maxsize = 1)
 def _metal_device_is_paravirtual() -> bool:
     """True when Metal is a virtualised Apple GPU, whose offload can corrupt output.
@@ -2471,7 +2491,10 @@ def _extra_args_requests_separate_draft(
     _extra_args_requests_mtp; ngram-* load no model). Accumulating for the same reason as
     _extra_args_requests_mtp: a later --spec-default or --spec-type cannot clear an
     inherited draft-simple, so reading only the last under-reserves the model it loads."""
-    return bool(_accumulated_spec_types(extra_args, env) & {"draft-simple", "draft-eagle3"})
+    return bool(
+        _accumulated_spec_types(extra_args, env)
+        & {"draft-simple", "draft-eagle3", "draft-dspark"}
+    )
 
 
 def _extra_args_spec_draft_n_max(extra_args: Optional[Iterable[str]]) -> Optional[int]:
@@ -2730,13 +2753,16 @@ def _build_ngram_mod_flags(
 
 
 # Canonical Speculative Decoding modes exposed by the Unsloth chat UI.
-# Dropdown renders five (auto, mtp, ngram, mtp+ngram, off); the load API
+# Dropdown renders six (auto, mtp, dspark, ngram, mtp+ngram, off); the load API
 # also accepts legacy values the original Switch and external callers emit
 # (default, draft-mtp, ngram-mod, ngram-simple).
-_CANONICAL_SPEC_MODES = {"auto", "mtp", "ngram", "mtp+ngram", "off", "ngram-simple"}
+_CANONICAL_SPEC_MODES = {
+    "auto", "mtp", "dspark", "ngram", "mtp+ngram", "off", "ngram-simple"
+}
 _LEGACY_SPEC_MODE_MAP = {
     "default": "auto",
     "draft-mtp": "mtp",
+    "draft-dspark": "dspark",
     "ngram-mod": "ngram",
 }
 
@@ -2744,7 +2770,7 @@ _LEGACY_SPEC_MODE_MAP = {
 def _canonicalize_spec_mode(value):
     """Map any accepted ``speculative_type`` input onto a canonical mode.
 
-    Returns ``auto``, ``mtp``, ``ngram``, ``mtp+ngram``, ``off``,
+    Returns ``auto``, ``mtp``, ``dspark``, ``ngram``, ``mtp+ngram``, ``off``,
     ``ngram-simple``, or ``None`` (callers treat ``None`` as ``auto``).
     Unknown strings collapse to ``auto`` so a stale UI value or typo falls
     back to the safe platform-aware path.
@@ -3694,7 +3720,7 @@ class LlamaCppBackend:
         if (
             intent.gguf_path is None
             and self._spec_fallback_reason == "drafter_not_found"
-            and speculative_type in ("auto", "mtp", "mtp+ngram")
+            and speculative_type in ("auto", "mtp", "mtp+ngram", "dspark")
             and not spec_owned_by_extra_args
         ):
             return False
@@ -3704,7 +3730,10 @@ class LlamaCppBackend:
             # user's prior value in its intent. Only a changed value should retry MTP.
             compared_draft_n_max = self._last_load_intent.spec_draft_n_max
         if (
-            (self._speculative_type == "draft-mtp" or self._spec_fallback_reason == "runtime_error")
+            (
+                self._speculative_type in ("draft-mtp", "draft-dspark")
+                or self._spec_fallback_reason == "runtime_error"
+            )
             and intent.spec_draft_n_max is not None
             and intent.spec_draft_n_max != (compared_draft_n_max or 0)
         ):
@@ -3715,13 +3744,16 @@ class LlamaCppBackend:
         if tuple(_invoked_extras or ()) != tuple(self.requested_extra_args or ()):
             return False
         if (intent.gguf_path is not None or intent.compare_mtp_draft) and speculative_type in (
-            "auto",
-            "mtp",
-            "mtp+ngram",
+            "auto", "mtp", "mtp+ngram", "dspark"
         ):
             try:
+                intent_draft = (
+                    intent.dspark_draft_path
+                    if speculative_type == "dspark"
+                    else intent.mtp_draft_path
+                )
                 requested_draft = (
-                    Path(intent.mtp_draft_path).resolve() if intent.mtp_draft_path else None
+                    Path(intent_draft).resolve() if intent_draft else None
                 )
                 # A drafter the last load dropped on purpose counts as launched here:
                 # the file is still there, so comparing it against the stored None
@@ -3950,13 +3982,19 @@ class LlamaCppBackend:
 
     # ── llama-server capability probe ─────────────────────────────
 
+    # These published prebuilts advertise draft-dspark but predate the upstream
+    # loader reshape fix, so attempting one only adds a crashing launch before
+    # the target-only retry. Matched on exact release identity, which keeps a
+    # custom build patched from the same base tag usable.
+    _KNOWN_BROKEN_DSPARK_RELEASES = frozenset({"b10265-mix-89aa77b"})
+
     # Cached on (path, mtime); `unsloth studio update` bumps mtime.
     _capability_cache: dict[tuple[str, int], dict[str, object]] = {}
 
     @classmethod
     def probe_server_capabilities(cls, binary: Optional[str] = None) -> dict[str, object]:
         """Parse `llama-server --help` for feature flags. Returns
-        {found, mtp_token, supports_mtp, ngram_mod_flavor,
+        {found, mtp_token, supports_mtp, supports_dspark, ngram_mod_flavor,
         supports_ngram_mod, spec_draft_n_max_flag, cache flag support}.
 
         ``ngram_mod_flavor``: ``"new"`` when the post-rename
@@ -3977,6 +4015,7 @@ class LlamaCppBackend:
                 "found": False,
                 "mtp_token": None,
                 "supports_mtp": False,
+                "supports_dspark": False,
                 "mtp_probe_inconclusive": True,
                 "ngram_mod_flavor": None,
                 "supports_ngram_mod": False,
@@ -4002,6 +4041,7 @@ class LlamaCppBackend:
             return cached
 
         mtp_token: Optional[str] = None
+        supports_dspark = False
         ngram_mod_flavor: Optional[str] = None
         spec_draft_n_max_flag: Optional[str] = None
         supports_kv_unified = False
@@ -4084,6 +4124,12 @@ class LlamaCppBackend:
                     line for line in help_text.splitlines() if "--spec-type" in line
                 )
             mtp_token = cls._mtp_token_from_spec_help(spec_help)
+            supports_dspark = bool(
+                re.search(
+                    r"(?<![a-z0-9_-])draft-dspark(?![a-z0-9_-])",
+                    spec_help.lower(),
+                )
+            )
             # Only a resolved --spec-type block confirms missing MTP; empty/crash
             # leaves saw_spec_type False so supports_mtp fails open.
             saw_spec_type = bool(spec_help.strip()) and "--spec-type" in spec_help
@@ -4149,10 +4195,26 @@ class LlamaCppBackend:
             supports_mtp = False
             mtp_probe_inconclusive = True
 
+        if supports_dspark:
+            try:
+                from utils.llama_cpp_freshness import read_install_marker
+
+                marker = read_install_marker(bin_path) or {}
+                release_tag = marker.get("release_tag") or marker.get("tag")
+                if release_tag in cls._KNOWN_BROKEN_DSPARK_RELEASES:
+                    supports_dspark = False
+                    logger.info(
+                        "Disabling DSpark for known-broken llama.cpp prebuilt %s",
+                        release_tag,
+                    )
+            except Exception as exc:
+                logger.debug("Could not inspect llama.cpp prebuilt identity: %s", exc)
+
         info = {
             "found": True,
             "mtp_token": mtp_token,
             "supports_mtp": supports_mtp,
+            "supports_dspark": bool(supports_dspark and saw_spec_type and probe_ok),
             "mtp_probe_inconclusive": mtp_probe_inconclusive,
             "ngram_mod_flavor": ngram_mod_flavor,
             "supports_ngram_mod": ngram_mod_flavor is not None,
@@ -7343,6 +7405,81 @@ class LlamaCppBackend:
             near_path = near_path,
         )
 
+    def _cached_repo_dspark_drafter(
+        self,
+        hf_repo: str,
+        *,
+        cache_dir: Optional[str] = None,
+    ) -> Optional[str]:
+        """The preferred already-cached DSpark sidecar for a repo, Q8_0 first
+        (dspark_preference_key), so an offline reuse picks the same file the
+        online download would have fetched."""
+        try:
+            from utils.models.model_config import (
+                _iter_hf_cache_snapshots,
+                dspark_preference_key,
+            )
+
+            snapshots = (
+                _iter_hf_cache_snapshots(hf_repo)
+                if cache_dir is None
+                else _iter_hf_cache_snapshots(hf_repo, cache_dir)
+            )
+            candidates: list[Path] = []
+            for snap in snapshots:
+                candidates.extend(
+                    snap / name
+                    for name in _gguf_snapshot_files(snap)
+                    if _is_dspark_drafter_path(name)
+                )
+            for candidate in sorted(
+                candidates, key = lambda p: dspark_preference_key(p.name)
+            ):
+                if candidate.is_file():
+                    return str(candidate)
+        except Exception as exc:
+            logger.debug("Cached DSpark drafter lookup failed for %s: %s", hf_repo, exc)
+        return None
+
+    def _download_dspark(
+        self,
+        *,
+        hf_repo: str,
+        hf_token: Optional[str] = None,
+        near_path: Optional[str] = None,
+    ) -> Optional[str]:
+        """Download the published DSpark sidecar, preferring its Q8_0 copy."""
+
+        def _pick_dspark(candidates: list[str]) -> Optional[str]:
+            from utils.models.model_config import dspark_preference_key
+
+            files = sorted(
+                (name for name in candidates if _is_dspark_drafter_path(name)),
+                key = dspark_preference_key,
+            )
+            return files[0] if files else None
+
+        if near_path:
+            cached = _companion_snapshot_sibling(near_path, _pick_dspark)
+            if cached:
+                logger.info("Reusing cached DSpark drafter: %s", cached)
+                return cached
+        if _hf_env_offline():
+            cached = self._cached_repo_dspark_drafter(
+                hf_repo,
+                cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
+            )
+            if cached:
+                logger.info("Reusing cached DSpark drafter (offline): %s", cached)
+                return cached
+        return self._download_companion_gguf(
+            hf_repo = hf_repo,
+            hf_token = hf_token,
+            pick = _pick_dspark,
+            label = "DSpark drafter",
+            near_path = near_path,
+        )
+
     def _resolve_launch_mmproj_path(
         self, *, model_path: str, mmproj_path: Optional[str]
     ) -> Optional[str]:
@@ -7379,7 +7516,12 @@ class LlamaCppBackend:
             logger.debug(f"Could not size mmproj {launch_mmproj_path}: {e}")
             return 0
 
-    def _resolve_launch_mtp_path(self, *, mtp_draft_path: Optional[str]) -> Optional[str]:
+    def _resolve_launch_mtp_path(
+        self,
+        *,
+        mtp_draft_path: Optional[str],
+        drafter_label: str = "MTP",
+    ) -> Optional[str]:
         """Return mtp_draft_path iff it exists on disk, else None.
 
         No family check needed: the drafter is only ever auto-resolved from
@@ -7388,7 +7530,7 @@ class LlamaCppBackend:
         if not mtp_draft_path:
             return None
         if not Path(mtp_draft_path).is_file():
-            logger.warning(f"MTP drafter file not found: {mtp_draft_path}")
+            logger.warning(f"{drafter_label} drafter file not found: {mtp_draft_path}")
             return None
         return str(mtp_draft_path)
 
@@ -8204,6 +8346,7 @@ class LlamaCppBackend:
         gguf_path = intent.gguf_path
         mmproj_path = intent.mmproj_path
         mtp_draft_path = intent.mtp_draft_path
+        dspark_draft_path = intent.dspark_draft_path
         hf_repo = intent.hf_repo
         hf_variant = intent.hf_variant
         hf_token = intent.hf_token
@@ -8462,6 +8605,9 @@ class LlamaCppBackend:
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
             # mtp_draft_path arrives set for local Gemma loads (detected
             # sibling); for -hf loads it's None here and resolved just below.
+            # The canonical mode drives which drafter is downloaded, sized and
+            # launched, so resolve it once before either branch can use it.
+            _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
             # Scope HF_HUB_OFFLINE to the download block only when DNS is
             # dead; cleanup runs even on exception so a transient hiccup
             # can't quarantine future loads.
@@ -8499,13 +8645,22 @@ class LlamaCppBackend:
                     # drafter speeds up even sub-3B (Gemma E2B), and the resolver
                     # below decides the final emission. Skipped only when the
                     # user disabled MTP or drives --spec-type manually.
-                    _spec_canon = _canonicalize_spec_mode(speculative_type) or "auto"
                     if (
                         not mtp_draft_path
                         and _spec_canon in ("auto", "mtp", "mtp+ngram")
                         and not _extra_args_set_spec_type(extra_args)
                     ):
                         mtp_draft_path = self._download_mtp(
+                            hf_repo = hf_repo,
+                            hf_token = hf_token,
+                            near_path = model_path,
+                        )
+                    if (
+                        not dspark_draft_path
+                        and _spec_canon == "dspark"
+                        and not _extra_args_set_spec_type(extra_args)
+                    ):
+                        dspark_draft_path = self._download_dspark(
                             hf_repo = hf_repo,
                             hf_token = hf_token,
                             near_path = model_path,
@@ -8519,6 +8674,14 @@ class LlamaCppBackend:
 
             # Set identifier early so _read_gguf_metadata can use it (DeepSeek).
             self._model_identifier = model_identifier
+
+            # MTP and DSpark are mutually exclusive, and the drafter sizing and
+            # lifecycle path below is architecture agnostic, so it carries the
+            # one drafter the mode selected. From here mtp_draft_path means
+            # "the drafter this load will launch", whichever kind that is;
+            # _spec_canon is the only thing that says which.
+            if _spec_canon == "dspark":
+                mtp_draft_path = dspark_draft_path
 
             # Read GGUF metadata (context_length, chat_template); header-only.
             self._read_gguf_metadata(model_path)
@@ -8974,8 +9137,11 @@ class LlamaCppBackend:
                     _mtp_probe_raised = False
                     if not _user_mtp_via_extras:
                         try:
+                            _fit_caps = self.probe_server_capabilities(binary) or {}
                             _mtp_binary_ok = bool(
-                                (self.probe_server_capabilities(binary) or {}).get("mtp_token")
+                                _fit_caps.get("supports_dspark")
+                                if _mtp_effective == "dspark"
+                                else _fit_caps.get("mtp_token")
                             )
                         except Exception:
                             _mtp_binary_ok = False
@@ -8984,7 +9150,7 @@ class LlamaCppBackend:
                         not _extra_args_set_spec_type(extra_args)
                         and _mtp_model_for_fit
                         and (
-                            _mtp_effective in ("mtp", "mtp+ngram")
+                            _mtp_effective in ("mtp", "mtp+ngram", "dspark")
                             or (_mtp_effective == "auto" and not _mtp_sub_3b_for_fit)
                         )
                         and (
@@ -9000,11 +9166,17 @@ class LlamaCppBackend:
                     )
                     # The duplicated full target-KV copy (ctx_tgt) is an MTP-only
                     # cost: the MTP head runs a second context over the target
-                    # model's own KV geometry. The separate-drafter spec modes
-                    # (draft-simple/draft-eagle3, reached via _user_draft_via_extras)
-                    # load a small distinct drafter with its own KV and keep no such
-                    # copy, so only charge it when the engaged mode is truly MTP.
-                    _engaged_is_mtp = bool(_user_mtp_via_extras or _auto_studio_mtp)
+                    # model's own KV geometry. Every separate-drafter mode loads a
+                    # distinct drafter with its own KV and keeps no such copy, so
+                    # only charge it when the engaged mode is truly MTP. Those modes
+                    # arrive by two routes, hence the two conditions: draft-simple
+                    # and draft-eagle3 via _user_draft_via_extras (already excluded,
+                    # they never set _user_mtp_via_extras), and DSpark via Studio's
+                    # own resolution, which does set _auto_studio_mtp.
+                    _engaged_is_mtp = bool(
+                        _user_mtp_via_extras
+                        or (_auto_studio_mtp and _mtp_effective != "dspark")
+                    )
 
                     # Effective draft depth: extras win (last-wins at launch), else
                     # the field, else the platform default (2 GPU / 3 CPU).
@@ -9014,7 +9186,9 @@ class LlamaCppBackend:
                         # _detected_gpus (not gpus) so manual -- which empty
                         # gpus to bypass the planner -- keep the GPU draft depth the
                         # launch flags also use, instead of the CPU default.
-                        _mtp_eff_n_max = 2 if _detected_gpus else 3
+                        _mtp_eff_n_max = (
+                            3 if _mtp_effective == "dspark" else (2 if _detected_gpus else 3)
+                        )
                     # Separate-drafter weights live on GPU (an embedded head is
                     # already in model_size). Size the drafter the launch loads, by
                     # precedence: extras --model-draft (last-wins), else Unsloth's
@@ -10050,6 +10224,7 @@ class LlamaCppBackend:
                     _draft_device = ",".join(f"Vulkan{i}" for i in _vulkan_pin_ids)
                 launch_mtp_draft_path = self._resolve_launch_mtp_path(
                     mtp_draft_path = mtp_draft_path,
+                    drafter_label = "DSpark" if _spec_canon == "dspark" else "MTP",
                 )
                 _pv_suppressed_draft_path: Optional[str] = None
                 _pv_suppressed_spec_extra_args: Optional[List[str]] = None
@@ -10138,7 +10313,13 @@ class LlamaCppBackend:
                     model_path = model_path,
                     gpus = bool(_detected_gpus),
                     binary = binary,
-                    mtp_draft_path = launch_mtp_draft_path,
+                    mtp_draft_path = (
+                        None if _spec_canon == "dspark" else launch_mtp_draft_path
+                    ),
+                    dspark_draft_path = (
+                        launch_mtp_draft_path if _spec_canon == "dspark" else None
+                    ),
+                    dspark_fit_allowed = not use_fit,
                     draft_device = _draft_device,
                 )
                 # _build_speculative_flags judged the stripped list, so a user
@@ -10403,10 +10584,27 @@ class LlamaCppBackend:
                 # below when the Studio picker owns the GPU selection.
                 if extra_args:
                     _emit_extra_args = list(extra_args)
+                    if self._speculative_type == "draft-dspark":
+                        _without_fit = strip_shadowing_flags(
+                            _emit_extra_args,
+                            strip_context = False,
+                            strip_cache = False,
+                            strip_spec = False,
+                            strip_template = False,
+                            strip_split_mode = False,
+                            strip_fit = True,
+                        )
+                        if _without_fit != _emit_extra_args:
+                            logger.info(
+                                "Dropped user --fit override: managed DSpark requires "
+                                "the fixed --fit off placement."
+                            )
+                        _emit_extra_args = _without_fit
                     if gpu_ids is not None:
                         # gpu_ids owns placement, so remove competing device flags.
-                        _emit_extra_args = self._strip_device_extra_args(extra_args)
-                        if _emit_extra_args != list(extra_args):
+                        _before_device_strip = list(_emit_extra_args)
+                        _emit_extra_args = self._strip_device_extra_args(_emit_extra_args)
+                        if _emit_extra_args != _before_device_strip:
                             logger.info(
                                 "Dropped user device placement flags from extra args: "
                                 "explicit gpu_ids owns placement."
@@ -10667,6 +10865,7 @@ class LlamaCppBackend:
                         if (
                             _spawn_attempt == 0
                             and fully_gpu_offloaded
+                            and not _extra_args_requests_dspark(run_cmd, env = env)
                             and _startup_crashed
                             and not _split_axis_crash
                         ):
@@ -10674,6 +10873,7 @@ class LlamaCppBackend:
                             # math placed the model fully on GPU. A startup crash here
                             # means that estimate was optimistic, so fall back to --fit
                             # on and let llama.cpp offload rather than fail the load.
+                            # DSpark is excluded because its layout requires fit off.
                             logger.warning(
                                 "llama-server crashed during startup (exit code %s) "
                                 "with forced --fit off; the fit estimate was optimistic, "
@@ -10794,6 +10994,9 @@ class LlamaCppBackend:
                 _spec_requested_mtp = any(
                     "mtp" in str(t).lower() for t in spec_flags
                 ) or _extra_args_requests_mtp(extra_args, env = _launch_spec_env)
+                _spec_requested_dspark = any(
+                    "draft-dspark" in str(t).lower() for t in spec_flags
+                ) or _extra_args_requests_dspark(extra_args, env = _launch_spec_env)
                 # Is the launched server actually running MTP+tensor? Gates the
                 # probe/watchdog/recovery; cleared if the MTP-drop fallback wins.
                 _mtp_active_for_launched_server = bool(
@@ -10851,7 +11054,11 @@ class LlamaCppBackend:
                 # _requested_spec_mode so a duplicate /load doesn't thrash. The
                 # cancel check stops an /unload-killed attempt respawning. A
                 # decode-probe failure above also routes here.
-                if not healthy and _spec_requested_mtp and not self._cancel_event.is_set():
+                if (
+                    not healthy
+                    and (_spec_requested_mtp or _spec_requested_dspark)
+                    and not self._cancel_event.is_set()
+                ):
                     # Blame the binary only when the output shows MTP itself
                     # failing (unknown arch / draft or context build); an
                     # unrelated crash (e.g. OOM) gets a neutral message.
@@ -10870,14 +11077,14 @@ class LlamaCppBackend:
                         _retry_reason = (
                             "the prebuilt may predate it; retrying without "
                             "speculative decoding -- run `unsloth studio "
-                            "update` for MTP"
+                            "update` for this drafter"
                         )
                         self._spec_fallback_reason = (
                             "binary_outdated" if _arch_unsupported else "runtime_error"
                         )
                     else:
                         _retry_reason = (
-                            "retrying without speculative decoding in case MTP is the cause"
+                            "retrying without speculative decoding in case the drafter is the cause"
                         )
                         self._spec_fallback_reason = "runtime_error"
                     _drafter = (
@@ -10886,7 +11093,7 @@ class LlamaCppBackend:
                         else "embedded head"
                     )
                     logger.warning(
-                        "llama-server failed to start with MTP (%s); %s.",
+                        "llama-server failed to start with speculative drafter (%s); %s.",
                         _drafter,
                         _retry_reason,
                     )
@@ -10898,7 +11105,10 @@ class LlamaCppBackend:
                     # failed and lose a main model that loads fine without it. The
                     # tail loses its spec group and the env goes with it, the same way
                     # the crash replay does it.
-                    if _extra_args_requests_mtp(extra_args, env = _launch_spec_env):
+                    if (
+                        _extra_args_requests_mtp(extra_args, env = _launch_spec_env)
+                        or _extra_args_requests_dspark(extra_args, env = _launch_spec_env)
+                    ):
                         _fb_tail = strip_shadowing_flags(
                             _fb_tail,
                             strip_context = False,
@@ -11182,6 +11392,8 @@ class LlamaCppBackend:
         gpus: bool,
         binary: Optional[str],
         mtp_draft_path: Optional[str] = None,
+        dspark_draft_path: Optional[str] = None,
+        dspark_fit_allowed: bool = True,
         draft_device: Optional[str] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
@@ -11295,6 +11507,55 @@ class LlamaCppBackend:
                 self._spec_draft_n_max = n
                 return n
             return 2 if gpus else 3
+
+        if effective_mode == "dspark":
+            if not dspark_draft_path:
+                logger.warning(
+                    "DSpark requested but no matching dspark-*.gguf sidecar was found; "
+                    "loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "drafter_not_found"
+                return flags
+            if not caps.get("supports_dspark"):
+                logger.warning(
+                    "DSpark requested but llama-server lacks --spec-type "
+                    "draft-dspark; loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "binary_no_mtp"
+                return flags
+            if not dspark_fit_allowed:
+                logger.warning(
+                    "DSpark requires --fit off, but Studio could not confirm a fixed "
+                    "placement for the target and sidecar; loading without speculative "
+                    "decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "dspark_fit_required"
+                return flags
+            draft_n_max = (
+                int(spec_draft_n_max) if spec_draft_n_max is not None else 3
+            )
+            if spec_draft_n_max is not None:
+                self._spec_draft_n_max = draft_n_max
+            n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
+            # DSpark's weight layout is incompatible with llama.cpp's memory
+            # fitting reshape. Placement has already emitted the required
+            # --fit off exactly once before this speculative block.
+            flags.extend(
+                [
+                    "--model-draft", dspark_draft_path,
+                    "--spec-type", "draft-dspark",
+                    str(n_max_flag), str(draft_n_max),
+                ]
+            )
+            self._speculative_type = "draft-dspark"
+            logger.info("Spec decoding: draft-dspark using %s", dspark_draft_path)
+            return flags
 
         def _emit_mtp(*, chain_ngram: bool) -> bool:
             """Append --spec-type mtp[/draft-mtp][,ngram-mod] + n-max."""

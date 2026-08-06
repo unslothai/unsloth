@@ -205,6 +205,73 @@ def test_vulkan_fit_and_mtp_drafter_follow_placement_owner(
     assert ("-dev=Vulkan0" in cmd) is user_device_survives
 
 
+@pytest.mark.parametrize("use_fit", [False, True])
+def test_dspark_composed_argv_respects_placement_fit_decision(tmp_path, use_fit):
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 24_000, 24_000)],
+    )
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._select_gpus = lambda *args, **kwargs: (
+        (None, True) if use_fit else ([0], False)
+    )
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_dspark": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "dspark",
+    )
+
+    cmd = result["cmd"]
+    assert cmd.count("--fit") == 1
+    assert cmd[cmd.index("--fit") + 1] == ("on" if use_fit else "off")
+    if use_fit:
+        assert "--spec-default" in cmd
+        assert "--model-draft" not in cmd
+        assert backend.spec_fallback_reason == "dspark_fit_required"
+    else:
+        assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
+        assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+        assert backend.spec_fallback_reason is None
+
+
+def test_managed_dspark_strips_conflicting_fit_extra_arg(tmp_path):
+    backend, gguf = _backend(
+        tmp_path,
+        vulkan = False,
+        memory = [(0, 24_000, 24_000)],
+    )
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    backend._select_gpus = lambda *args, **kwargs: ([0], False)
+    backend.probe_server_capabilities = lambda _binary = None: {
+        "supports_dspark": True,
+        "spec_draft_n_max_flag": "--spec-draft-n-max",
+    }
+
+    result = _launch(
+        backend,
+        gguf,
+        dspark_draft_path = str(sidecar),
+        speculative_type = "dspark",
+        extra_args = ["--fit", "on", "--top-k", "5"],
+        gpu_ids = [0],
+    )
+
+    cmd = result["cmd"]
+    assert cmd.count("--fit") == 1
+    assert cmd[cmd.index("--fit") + 1] == "off"
+    assert cmd[cmd.index("--top-k") + 1] == "5"
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+
+
 def test_cuda_selection_uses_visibility_and_removes_environment_placement(tmp_path, monkeypatch):
     monkeypatch.setenv("LLAMA_ARG_DEVICE", "CUDA0")
     monkeypatch.setenv("LLAMA_ARG_MAIN_GPU", "0")

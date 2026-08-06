@@ -683,6 +683,35 @@ def test_probe_server_capabilities_detects_draft_mtp(tmp_path):
 
 
 @_NEEDS_BASH
+def test_probe_server_capabilities_detects_dspark(tmp_path):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,draft-dspark,ngram-mod",
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_dspark"] is True
+
+
+@_NEEDS_BASH
+def test_probe_server_capabilities_gates_known_broken_dspark_prebuilt(
+    tmp_path, monkeypatch
+):
+    fake = _make_fake_llama_server(
+        tmp_path / "llama-server",
+        "--spec-type none,draft-mtp,draft-dspark,ngram-mod",
+    )
+    monkeypatch.setattr(
+        "utils.llama_cpp_freshness.read_install_marker",
+        lambda _binary: {"release_tag": "b10265-mix-89aa77b"},
+    )
+    _clear_caps_cache()
+    caps = LlamaCppBackend.probe_server_capabilities(str(fake))
+    assert caps["supports_dspark"] is False
+    assert caps["supports_mtp"] is True
+
+
+@_NEEDS_BASH
 def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch):
     fake = _make_fake_llama_server(
         tmp_path / "llama-server",
@@ -1282,6 +1311,7 @@ def test_backfill_usage_from_timings_passthrough_when_timings_empty():
         # New canonical values pass through unchanged.
         ("auto", "auto"),
         ("mtp", "mtp"),
+        ("dspark", "dspark"),
         ("ngram", "ngram"),
         ("mtp+ngram", "mtp+ngram"),
         ("off", "off"),
@@ -1289,6 +1319,7 @@ def test_backfill_usage_from_timings_passthrough_when_timings_empty():
         # Legacy wire values map onto the new vocabulary.
         ("default", "auto"),
         ("draft-mtp", "mtp"),
+        ("draft-dspark", "dspark"),
         ("ngram-mod", "ngram"),
         # Comma-chained legacy values (e.g. from persisted state) collapse
         # to the right canonical mode.
@@ -1330,6 +1361,7 @@ def _resolver_backend(
         "found": True,
         "mtp_token": mtp_token,
         "supports_mtp": bool(mtp_token),
+        "supports_dspark": True,
         "mtp_probe_inconclusive": mtp_probe_inconclusive,
         "ngram_mod_flavor": "new" if ngram_supported else None,
         "supports_ngram_mod": bool(ngram_supported),
@@ -1457,7 +1489,67 @@ def test_build_speculative_flags_user_extra_args_owns_spec_type(monkeypatch):
     assert backend.speculative_type is None
 
 
-@pytest.mark.parametrize("mode", ["auto", "mtp", "ngram", "mtp+ngram", "off"])
+def test_build_speculative_flags_dspark_requires_sidecar_and_leaves_fit_to_placement(
+    monkeypatch, tmp_path
+):
+    backend = _resolver_backend(monkeypatch)
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+    )
+    parsed = _flags_dict(flags)
+    assert "--fit" not in parsed
+    assert parsed["--model-draft"] == str(sidecar)
+    assert parsed["--spec-type"] == "draft-dspark"
+    assert parsed["--spec-draft-n-max"] == "3"
+
+
+def test_build_speculative_flags_dspark_missing_sidecar_falls_back(monkeypatch):
+    backend = _resolver_backend(monkeypatch)
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+    )
+    assert flags == ["--spec-default"]
+    assert backend.spec_fallback_reason == "drafter_not_found"
+
+
+def test_build_speculative_flags_dspark_declines_when_fit_is_required(
+    monkeypatch, tmp_path
+):
+    backend = _resolver_backend(monkeypatch)
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = str(sidecar),
+        dspark_fit_allowed = False,
+    )
+    assert flags == ["--spec-default"]
+    assert backend.speculative_type == "default"
+    assert backend.spec_fallback_reason == "dspark_fit_required"
+
+
+@pytest.mark.parametrize("mode", ["auto", "mtp", "dspark", "ngram", "mtp+ngram", "off"])
 def test_build_speculative_flags_round_trips_requested_mode(monkeypatch, mode):
     # The status round-trip is the contract that lets the UI dropdown
     # restore its picked value after reload / refresh.

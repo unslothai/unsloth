@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, Response
 from starlette.requests import ClientDisconnect
-from typing import Any, Callable, List, NamedTuple, Optional, Union
+from typing import Any, Callable, Collection, List, NamedTuple, Optional, Union
 import json
 import httpx
 from loggers import get_logger
@@ -1038,6 +1038,7 @@ try:
     from utils.models.model_config import (
         _local_gguf_companion_search_root,
         colocated_split_shards,
+        detect_dspark_file,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -1088,6 +1089,7 @@ except ImportError:
     from utils.models.model_config import (
         _local_gguf_companion_search_root,
         colocated_split_shards,
+        detect_dspark_file,
         detect_mtp_file,
         load_model_defaults,
     )
@@ -3379,7 +3381,7 @@ def _validate_native_gguf_companion(
     gguf_path: str | None,
     label: str,
     *,
-    allow_mtp_subdir: bool = False,
+    allowed_subdirs: Collection[str] = (),
     mtp_search_root: str | Path | None = None,
 ) -> None:
     """Reject a companion GGUF (mmproj / MTP drafter) that a native-lease load
@@ -3409,12 +3411,12 @@ def _validate_native_gguf_companion(
         if not native_gguf_companion_parent_allowed(
             companion,
             gguf,
-            allow_mtp_subdir = allow_mtp_subdir,
+            allowed_subdirs = allowed_subdirs,
             mtp_search_root = mtp_search_root,
         ):
             location = (
-                "beside the selected GGUF or in its MTP directory"
-                if allow_mtp_subdir
+                "beside the selected GGUF or in its companion directory"
+                if allowed_subdirs
                 else "next to the selected GGUF"
             )
             raise HTTPException(
@@ -3443,27 +3445,41 @@ def _loaded_is_local_model(
     return bool(model_id and is_local_path(model_id))
 
 
+# Per-drafter-kind display label and the companion subdirectory a native load
+# may reach into. Keyed by the kinds llama_cpp._drafter_path_kind reports.
+_DRAFTER_NATIVE_RULES = {
+    "mtp": ("MTP drafter", "mtp"),
+    "dspark": ("DSpark drafter", "dspark"),
+}
+
+
 def _validate_native_mtp_drafter(
     companion_path: str | None,
     gguf_path: str | None,
     *,
+    kind: str = "mtp",
     mtp_search_root: str | Path | None = None,
 ) -> None:
-    """Validate an MTP drafter for a native load, every shard of it.
+    """Validate a drafter for a native load, every shard of it.
 
     llama-server opens the sibling shards of a split drafter implicitly, so
     checking only the launch path would let a later shard be a symlink out of
     the permitted directory without ever facing the native rules.
+
+    ``kind`` selects the label and which companion subdirectory is in bounds;
+    the kinds must not share one, or an MTP load would accept a sidecar out of
+    ``dspark/`` and launch it as --model-draft.
     """
     if not companion_path or not gguf_path:
         return
+    label, subdir = _DRAFTER_NATIVE_RULES[kind]
     shards, _ = colocated_split_shards(Path(companion_path))
     for shard in shards or [Path(companion_path)]:
         _validate_native_gguf_companion(
             str(shard),
             gguf_path,
-            "MTP drafter",
-            allow_mtp_subdir = True,
+            label,
+            allowed_subdirs = (subdir,),
             mtp_search_root = mtp_search_root,
         )
 
@@ -3472,16 +3488,23 @@ def _native_gguf_companion_usable(
     companion_path: str | None,
     gguf_path: str | None,
     *,
+    kind: str = "mtp",
     mtp_search_root: str | Path | None = None,
     log_rejection: bool = False,
 ) -> bool:
-    """Whether a native load would accept this MTP drafter, as a predicate for
+    """Whether a native load would accept this drafter, as a predicate for
     reload dedup. Same rules, so the two cannot disagree."""
     try:
-        _validate_native_mtp_drafter(companion_path, gguf_path, mtp_search_root = mtp_search_root)
+        _validate_native_mtp_drafter(
+            companion_path, gguf_path, kind = kind, mtp_search_root = mtp_search_root
+        )
     except HTTPException as exc:
         if log_rejection:
-            logger.warning("Dropping MTP drafter for native load: %s", exc.detail)
+            logger.warning(
+                "Dropping %s for native load: %s",
+                _DRAFTER_NATIVE_RULES[kind][0],
+                exc.detail,
+            )
         return False
     return True
 
@@ -3624,14 +3647,22 @@ def _gguf_request_intent(
     return replace(source, **settings)
 
 
-def _mtp_draft_for_path(
+def _drafter_for_path(
     gguf_path: Optional[str],
     native_grant_backed: bool,
     *,
+    kind: str = "mtp",
     log_native_fallback: bool = False,
 ) -> Optional[str]:
+    """The drafter of ``kind`` that pairs with a local GGUF, or None.
+
+    A native-grant-backed load filters candidates through the native rules in
+    preference order, so a root drafter it must reject still falls through to
+    the in-bounds subdirectory copy instead of reading as no drafter at all.
+    """
     if not gguf_path:
         return None
+    detect = detect_dspark_file if kind == "dspark" else detect_mtp_file
     root = _local_gguf_companion_search_root(gguf_path, gguf_path)
     rejected = False
     accept = None
@@ -3642,20 +3673,46 @@ def _mtp_draft_for_path(
             usable = _native_gguf_companion_usable(
                 candidate,
                 gguf_path,
+                kind = kind,
                 mtp_search_root = root,
                 log_rejection = log_native_fallback,
             )
             rejected |= not usable
             return usable
 
-    detected = detect_mtp_file(
-        gguf_path,
-        search_root = root,
-        accept = accept,
-    )
+    detected = detect(gguf_path, search_root = root, accept = accept)
     if log_native_fallback and rejected and detected:
-        logger.info("Using MTP subdirectory drafter for native load: %s", detected)
+        logger.info(
+            "Using %s subdirectory drafter for native load: %s",
+            _DRAFTER_NATIVE_RULES[kind][0],
+            detected,
+        )
     return detected
+
+
+def _mtp_draft_for_path(
+    gguf_path: Optional[str],
+    native_grant_backed: bool,
+    *,
+    log_native_fallback: bool = False,
+) -> Optional[str]:
+    return _drafter_for_path(
+        gguf_path, native_grant_backed, log_native_fallback = log_native_fallback
+    )
+
+
+def _dspark_draft_for_path(
+    gguf_path: Optional[str],
+    native_grant_backed: bool,
+    *,
+    log_native_fallback: bool = False,
+) -> Optional[str]:
+    return _drafter_for_path(
+        gguf_path,
+        native_grant_backed,
+        kind = "dspark",
+        log_native_fallback = log_native_fallback,
+    )
 
 
 def _active_gguf_intent(
@@ -3701,6 +3758,9 @@ def _active_gguf_intent(
             llama_backend.layer_preserves_tensor_intent and not _is_explicit_tensor_drop(request)
         ),
         mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
+        dspark_draft_path = _dspark_draft_for_path(
+            llama_backend.gguf_path, native_grant_backed
+        ),
         compare_mtp_draft = True,
         extra_args_inherited = request.llama_extra_args is None,
     )
@@ -4809,15 +4869,22 @@ def _effective_load_in_4bit(config: ModelConfig, requested: bool) -> bool:
 
 
 def _remote_gguf_companion_bytes(
-    repo: str, *, hf_token: Optional[str], include_mmproj: bool
+    repo: str,
+    *,
+    hf_token: Optional[str],
+    include_mmproj: bool,
+    include_mtp: bool = True,
+    include_dspark: bool = False,
 ) -> int:
-    """Bytes of MTP/mmproj companion GGUFs llama-server auto-downloads. 0 on error,
-    so it can only add headroom, never refuse a load by itself."""
+    """Bytes of companion GGUFs the requested launch downloads. 0 on error."""
     try:
+        from core.inference.llama_cpp import _is_dspark_drafter_path
         from huggingface_hub import model_info
+        from utils.models.model_config import dspark_preference_key
 
         info = model_info(repo, token = hf_token, files_metadata = True)
         total = 0
+        dspark_candidates: list[tuple[str, int]] = []
         for sibling in info.siblings or []:
             name = sibling.rfilename or ""
             base = Path(name).name.lower()
@@ -4826,8 +4893,16 @@ def _remote_gguf_companion_bytes(
             # Root-level mtp- only: -hf auto-fetches the repo-root drafter, not
             # the MTP/ subdir copies (which now share the mtp- prefix too).
             is_root_mtp = "/" not in name and base.startswith("mtp-")
-            if is_root_mtp or (include_mmproj and "mmproj" in base):
+            if (include_mtp and is_root_mtp) or (include_mmproj and "mmproj" in base):
                 total += getattr(sibling, "size", 0) or 0
+            if include_dspark and _is_dspark_drafter_path(name):
+                dspark_candidates.append((name, getattr(sibling, "size", 0) or 0))
+        if dspark_candidates:
+            # Same preference order the download uses, so the budget sizes the
+            # file the launch will actually fetch.
+            total += min(
+                dspark_candidates, key = lambda c: dspark_preference_key(c[0])
+            )[1]
         return total
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
@@ -4907,6 +4982,7 @@ def _estimate_gguf_required_gb(
     hf_token: Optional[str] = None,
     max_seq_length: int = 0,
     llama_extra_args: Optional[list[str]] = None,
+    speculative_type: Optional[str] = None,
     n_parallel: int = 1,
     cache_type_kv: Optional[str] = None,
     tensor_parallel: bool = False,
@@ -4915,11 +4991,24 @@ def _estimate_gguf_required_gb(
     cache for local files (unreadable pre-download for remote). None when nothing
     resolves so the caller default-denies."""
     try:
+        from core.inference.llama_cpp import (
+            _canonicalize_spec_mode,
+            _extra_args_requests_dspark,
+        )
+
+        dspark_requested = bool(
+            (_canonicalize_spec_mode(speculative_type) or "auto") == "dspark"
+            or _extra_args_requests_dspark(llama_extra_args, env = {})
+        )
         total_bytes = 0
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
             total_bytes += LlamaCppBackend._get_gguf_size_bytes(str(main))
-        for attr in ("gguf_mmproj_file", "gguf_mtp_file"):
+        # Only the drafter the launch will load: the modes are exclusive, and a
+        # 10 GB DSpark sidecar merely sitting on disk must not inflate the guard
+        # for a load that never opens it.
+        drafter_attr = "gguf_dspark_file" if dspark_requested else "gguf_mtp_file"
+        for attr in ("gguf_mmproj_file", drafter_attr):
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
                 total_bytes += Path(f).stat().st_size
@@ -4945,7 +5034,11 @@ def _estimate_gguf_required_gb(
             if main_bytes is None:
                 return None
             companions = _remote_gguf_companion_bytes(
-                repo, hf_token = hf_token, include_mmproj = bool(has_vision)
+                repo,
+                hf_token = hf_token,
+                include_mmproj = bool(has_vision),
+                include_mtp = not dspark_requested,
+                include_dspark = dspark_requested,
             )
             return (main_bytes + companions) / (1024**3)
         return None
@@ -5233,11 +5326,18 @@ def _resolve_gguf_load_intent(
                     True,
                     log_native_fallback = True,
                 )
+            if config.gguf_dspark_file:
+                config.gguf_dspark_file = _dspark_draft_for_path(
+                    config.gguf_file,
+                    True,
+                    log_native_fallback = True,
+                )
         source = GgufLoadIntent(
             model_identifier = config.identifier,
             gguf_path = config.gguf_file,
             mmproj_path = config.gguf_mmproj_file,
             mtp_draft_path = config.gguf_mtp_file,
+            dspark_draft_path = config.gguf_dspark_file,
             hf_variant = config.gguf_variant,
         )
 
@@ -5406,6 +5506,7 @@ def _guard_chat_load_against_training(
             hf_token = request.hf_token,
             max_seq_length = request.max_seq_length,
             llama_extra_args = llama_extra_args,
+            speculative_type = getattr(request, "speculative_type", None),
             n_parallel = n_parallel,
             cache_type_kv = request.cache_type_kv,
             tensor_parallel = (
@@ -6188,6 +6289,9 @@ async def _load_model_impl(
                 gguf_intent = replace(
                     gguf_intent,
                     mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, False),
+                    dspark_draft_path = _dspark_draft_for_path(
+                        llama_backend.gguf_path, False
+                    ),
                     compare_mtp_draft = True,
                 )
             _effective_tensor = _effective_tensor_parallel(

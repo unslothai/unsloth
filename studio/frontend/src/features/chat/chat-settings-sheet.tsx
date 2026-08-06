@@ -398,6 +398,48 @@ interface ChatSettingsPanelProps {
   externalProviderType?: string | null;
 }
 
+/**
+ * Copy for the amber "running without speculative decoding" notice. Mirrors
+ * InferenceStatusResponse.spec_fallback_reason.
+ *
+ * Out of the JSX so the three independent dimensions (reason, drafter kind,
+ * local vs remote) read as a table rather than a five-level nested ternary,
+ * and so each string is directly testable.
+ */
+function specFallbackMessage({
+  reason,
+  drafter,
+  isLocalGguf,
+  updateAvailable,
+}: {
+  reason: string;
+  drafter: "MTP" | "DSpark";
+  isLocalGguf: boolean;
+  updateAvailable: boolean;
+}): string {
+  switch (reason) {
+    case "mla_mtp_disabled":
+      return "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it.";
+    case "dspark_fit_required":
+      return "DSpark requires fixed placement, but Studio could not confirm that the target and sidecar fit with the selected settings. It is running without speculative decoding. Switch GPU Memory to Auto or pin GPU Layers in Manual mode; reducing the context or parallel slots, or choosing a smaller model, may also help. Then reload.";
+    case "runtime_error":
+      return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
+    case "drafter_not_found":
+      if (drafter === "DSpark") {
+        return isLocalGguf
+          ? "No matching DSpark sidecar was found. Place its dspark-*.gguf beside the model or in its dspark folder, then reload the model."
+          : "The DSpark sidecar could not be downloaded, so this model is running without speculative decoding. Check network or Hugging Face access, then reload it.";
+      }
+      return isLocalGguf
+        ? "This local model supports MTP, but no matching drafter file was found. Place its mtp-*.gguf beside the model or in its MTP folder, then reload the model."
+        : "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter.";
+    default:
+      return `${drafter} is not available in the installed llama.cpp build, so this model is running without it.${
+        updateAvailable ? " Update llama.cpp to enable it." : ""
+      }`;
+  }
+}
+
 export function ChatSettingsPanel({
   open,
   onOpenChange,
@@ -466,6 +508,8 @@ export function ChatSettingsPanel({
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
+  const speculativeDrafterLabel =
+    speculativeType === "dspark" ? "DSpark" : "MTP";
   const mtpUpdatable =
     specFallbackReason === "binary_no_mtp" ||
     specFallbackReason === "binary_outdated";
@@ -481,7 +525,7 @@ export function ChatSettingsPanel({
     const result = await applyLlamaUpdate();
     if (result.ok) {
       const reloadHint = result.reloadRequired
-        ? " Reload your model to enable MTP."
+        ? ` Reload your model to enable ${speculativeDrafterLabel}.`
         : "";
       toast.success(
         `llama.cpp updated to ${result.tag ?? "the latest build"}.${reloadHint}`,
@@ -491,7 +535,7 @@ export function ChatSettingsPanel({
         `llama.cpp update failed: ${result.error ?? "unknown error"}`,
       );
     }
-  }, [applyLlamaUpdate]);
+  }, [applyLlamaUpdate, speculativeDrafterLabel]);
   const loadedEffectiveContext = customContextLength ?? ggufContextLength;
   const showSpecFallback =
     !isExternalModel &&
@@ -499,7 +543,8 @@ export function ChatSettingsPanel({
     specFallbackReason != null &&
     (speculativeType === "auto" ||
       speculativeType === "mtp" ||
-      speculativeType === "mtp+ngram");
+      speculativeType === "mtp+ngram" ||
+      speculativeType === "dspark");
   const showContextVramWarning =
     !isExternalModel &&
     isGguf &&
@@ -898,19 +943,12 @@ export function ChatSettingsPanel({
               {showSpecFallback && (
                 <div className="rounded-lg bg-amber-500/[0.08] px-3 py-2 text-ui-12 leading-[1.4] text-nav-fg/80">
                   <p>
-                    {specFallbackReason === "mla_mtp_disabled"
-                      ? "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it."
-                      : specFallbackReason === "runtime_error"
-                        ? "MTP could not start for this model on the installed llama.cpp build, so it is running without speculative decoding."
-                        : specFallbackReason === "drafter_not_found"
-                          ? isLocalGguf
-                            ? "This local model supports MTP, but no matching drafter file was found. Place its mtp-*.gguf beside the model or in its MTP folder, then reload the model."
-                            : "This model supports MTP, but its drafter file could not be downloaded, so MTP is off and it falls back to n-gram speculative decoding where the llama.cpp build supports it. Check your network connection or Hugging Face access, then reload the model to retry the drafter."
-                          : `MTP is not available in the installed llama.cpp build, so this model is running without it.${
-                              llamaUpdateStatus?.update_available
-                                ? " Update llama.cpp to enable it."
-                                : ""
-                            }`}
+                    {specFallbackMessage({
+                      reason: specFallbackReason,
+                      drafter: speculativeDrafterLabel,
+                      isLocalGguf,
+                      updateAvailable: Boolean(llamaUpdateStatus?.update_available),
+                    })}
                   </p>
                   {mtpUpdatable && llamaUpdateStatus?.update_available && (
                     <Button

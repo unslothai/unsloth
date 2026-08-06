@@ -9,6 +9,7 @@ import {
   type GpuIndexKind,
 } from "@/hooks/use-gpu-info";
 import { toast } from "@/lib/toast";
+import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import { create } from "zustand";
 import {
   GPU_LAYERS_AUTO,
@@ -91,9 +92,10 @@ export const CHAT_RAG_CAPTION_KEY = "unsloth_chat_rag_caption_figures";
 export const CHAT_SPECULATIVE_TYPE_KEY = "unsloth_chat_speculative_type";
 export const CHAT_GPU_MEMORY_MODE_KEY = "unsloth_chat_gpu_memory_mode";
 
-// Persist only the model-agnostic intents (auto/ngram/off). MTP modes
-// (mtp/mtp+ngram) and spec_draft_n_max stay session-only: a persisted MTP
-// choice would silently no-op on models without an MTP head. Unknown -> auto.
+// Persist only the model-agnostic intents (auto/ngram/off). The model-specific
+// drafter modes (mtp/mtp+ngram/dspark) and spec_draft_n_max stay session-only:
+// a persisted choice would silently no-op on a model with no MTP head or no
+// DSpark sidecar. Unknown -> auto.
 const PERSISTED_SPEC_MODES = new Set(["auto", "ngram", "off"]);
 
 export type RagSource = { type: "thread" } | { type: "kb"; kbId: string };
@@ -501,6 +503,7 @@ export function normalizeSpeculativeType(
   if (s === "auto" || s === "default") return "auto";
   if (s === "off") return "off";
   if (s === "mtp" || s === "draft-mtp") return "mtp";
+  if (s === "dspark" || s === "draft-dspark") return "dspark";
   if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
     return "ngram";
   }
@@ -1036,7 +1039,7 @@ type ChatRuntimeStore = {
   speculativeType: string | null;
   loadedSpeculativeType: string | null;
   /**
-   * Why MTP was disabled on the loaded model despite being requested, or null.
+   * Why speculative decoding was disabled despite being requested, or null.
    * Mirrors InferenceStatusResponse.spec_fallback_reason.
    */
   specFallbackReason: string | null;
@@ -2614,7 +2617,8 @@ export function resolveSpeculativeSettingsForLoad({
     speculativeType,
     specDraftNMax:
       !usePersistedPreference &&
-      (speculativeType === "mtp" || speculativeType === "mtp+ngram")
+      speculativeType != null &&
+      DRAFT_N_MAX_SPEC_TYPES.has(speculativeType)
         ? state.specDraftNMax
         : null,
   };

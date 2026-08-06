@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 import typer
 
 from unsloth_cli._inference import (
+    SpeculativeType,
     collect_stream,
     configure_quiet_logging,
     connect_studio_server,
@@ -43,6 +44,18 @@ def inference(
             "of by layer. Under non-MPI mlx.launch, select MLX tensor "
             "parallel mode instead of pipeline mode."
         ),
+    ),
+    speculative_type: Optional[SpeculativeType] = typer.Option(
+        None,
+        "--speculative-type",
+        help = "Speculative decoding mode for GGUF models, including DSpark sidecar discovery.",
+    ),
+    spec_draft_n_max: Optional[int] = typer.Option(
+        None,
+        "--spec-draft-n-max",
+        min = 1,
+        max = 16,
+        help = "Maximum draft tokens per step for MTP or DSpark (1..16).",
     ),
     llama_extra_args: Optional[List[str]] = typer.Option(
         None,
@@ -95,6 +108,10 @@ def inference(
         tensor_parallel = tensor_parallel,
         llama_extra_args = llama_extra_args,
     )
+    if speculative_type is not None:
+        load_opts["speculative_type"] = speculative_type
+    if spec_draft_n_max is not None:
+        load_opts["spec_draft_n_max"] = spec_draft_n_max
     chat_backend = (
         None if (no_server or is_mlx_distributed) else connect_studio_server(model, **load_opts)
     )

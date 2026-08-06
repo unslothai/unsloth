@@ -96,9 +96,11 @@ class LoadRequest(BaseModel):
             "Speculative decoding mode for GGUF models. Canonical values: "
             "'auto' (platform-aware: MTP on MTP GGUFs, ngram-mod fallback "
             "for sub-3B), 'mtp' (force draft-mtp only on both GPU and CPU), "
+            "'dspark' (force a draft-dspark sidecar with fit disabled), "
             "'ngram' (force ngram-mod only), 'mtp+ngram' (force "
             "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
+            "'draft-dspark' (-> dspark), "
             "'ngram-mod' (-> ngram), and 'ngram-simple' (kept as-is) are "
             "still accepted. Ignored for non-GGUF models."
         ),
@@ -108,11 +110,11 @@ class LoadRequest(BaseModel):
         ge = 1,
         le = 16,
         description = (
-            "Max draft tokens per step for MTP speculative decoding "
+            "Max draft tokens per step for MTP or DSpark speculative decoding "
             "(--spec-draft-n-max). Defaults to 2 on GPU and 3 on CPU/Mac "
             "when unset (upstream-bench sweet spot for dense Qwen3.6 MTP "
             "quants). Only applied when speculative_type resolves to "
-            "'mtp' or 'mtp+ngram'."
+            "'mtp', 'mtp+ngram', or 'dspark'."
         ),
     )
     n_parallel: Optional[int] = Field(
@@ -526,7 +528,7 @@ class _InferenceRuntimeFields(BaseModel):
         None,
         description = (
             "Canonical UI-facing requested speculative decoding mode "
-            "('auto' / 'mtp' / 'ngram' / 'mtp+ngram' / 'off' / "
+            "('auto' / 'mtp' / 'dspark' / 'ngram' / 'mtp+ngram' / 'off' / "
             "'ngram-simple'), round-tripped from the original LoadRequest "
             "via _canonicalize_spec_mode. None when no model is loaded."
         ),
@@ -534,7 +536,7 @@ class _InferenceRuntimeFields(BaseModel):
     spec_draft_n_max: Optional[int] = Field(
         None,
         description = (
-            "Active --spec-draft-n-max for MTP speculative decoding, or "
+            "Active --spec-draft-n-max for MTP or DSpark speculative decoding, or "
             "None when the platform default is in effect."
         ),
     )
@@ -689,17 +691,18 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
     spec_fallback_reason: Optional[str] = Field(
         None,
         description = (
-            "Why MTP was disabled on the loaded model despite being requested "
-            "(auto on an MTP model, or forced mtp / mtp+ngram). "
+            "Why a speculative drafter was disabled despite being requested. "
             "'binary_no_mtp' / 'binary_outdated' -> a newer prebuilt would "
             "re-enable it (show the update affordance); 'runtime_error' -> the "
             "current build could not run it; 'drafter_not_found' -> the model's "
-            "separate MTP drafter could not be resolved; 'mla_mtp_disabled' -> "
+            "separate MTP or DSpark drafter could not be resolved; "
+            "'dspark_fit_required' -> DSpark required fixed placement but the "
+            "target and sidecar could not be confirmed to fit; 'mla_mtp_disabled' -> "
             "an Auto-mode policy downgrade: the model is MLA (GLM-5.2 et al.) "
             "whose llama.cpp MTP path runs slower than no speculation, so Auto "
             "used ngram-mod or spec-off instead -- updating won't help; choose "
             "MTP in Settings (or set UNSLOTH_MLA_MTP_ENABLED=1) to force it. "
-            "None when MTP engaged or was not requested."
+            "None when the requested strategy engaged or was not requested."
         ),
     )
     llama_cpp_prebuilt_stale: bool = Field(

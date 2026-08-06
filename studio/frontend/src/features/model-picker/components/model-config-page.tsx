@@ -52,11 +52,11 @@ import {
   CONTEXT_LENGTH_MIN,
   DEFAULT_MAX_SEQ_LENGTH,
   DEFAULT_PER_MODEL_CONFIG,
+  DRAFT_N_MAX_SPEC_TYPES,
   KV_CACHE_DTYPES,
   MAX_SEQ_LENGTH_MAX,
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
-  MTP_SPECULATIVE_TYPES,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
   type PerModelConfig,
@@ -96,6 +96,7 @@ const SPECULATIVE_TYPE_LABELS: Record<
 > = {
   auto: "Auto",
   mtp: "MTP",
+  dspark: "DSpark",
   ngram: "Ngram",
   "mtp+ngram": "MTP+Ngram",
   off: "Off",
@@ -499,7 +500,7 @@ function GpuMemorySettings({
 function GgufAdvancedSettings({
   config,
   update,
-  isMtp,
+  showDraftTokens,
   speculativeFallback,
   onEditTemplate,
   layerCount,
@@ -511,7 +512,7 @@ function GgufAdvancedSettings({
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
-  isMtp: boolean;
+  showDraftTokens: boolean;
   speculativeFallback: string;
   onEditTemplate: () => void;
   layerCount: number | null;
@@ -572,8 +573,9 @@ function GgufAdvancedSettings({
           onValueChange={(v) =>
             update({
               speculativeType: v,
-              specDraftNMax:
-                v === "mtp" || v === "mtp+ngram" ? config.specDraftNMax : null,
+              specDraftNMax: DRAFT_N_MAX_SPEC_TYPES.has(v)
+                ? config.specDraftNMax
+                : null,
             })
           }
         >
@@ -595,13 +597,13 @@ function GgufAdvancedSettings({
         </Select>
       </div>
 
-      {isMtp && (
+      {showDraftTokens && (
         <div className={ROW_CLASS}>
           <div className="flex min-w-0 items-center gap-1.5">
             <span className={LABEL_CLASS}>Draft Tokens</span>
             <InfoHint>
-              Max MTP draft tokens per step. Leave blank for the platform
-              default (2 on GPU, 3 on CPU/Mac).
+              Max draft tokens per step. Leave blank for the default (MTP: 2 on
+              GPU, 3 on CPU/Mac; DSpark: 3).
             </InfoHint>
           </div>
           <input
@@ -887,9 +889,11 @@ export function ModelConfigPage({
     );
   }, [gpuDevices, resolvedIsDiffusion]);
 
-  const isMtp =
+  // True for every mode that takes a draft depth, DSpark included, so this
+  // gates the Draft Tokens row rather than naming a drafter.
+  const showDraftTokens =
     config.speculativeType != null &&
-    MTP_SPECULATIVE_TYPES.has(config.speculativeType);
+    DRAFT_N_MAX_SPEC_TYPES.has(config.speculativeType);
   const nativeContextLength =
     target.meta.contextLength ?? stagedDims?.contextLength ?? null;
   const activeLoadedContext =
@@ -1210,7 +1214,7 @@ export function ModelConfigPage({
               <GgufAdvancedSettings
                 config={config}
                 update={update}
-                isMtp={isMtp}
+                showDraftTokens={showDraftTokens}
                 speculativeFallback={speculativeFallback}
                 onEditTemplate={() => setTemplateOpen(true)}
                 layerCount={stagedDims?.layerCount ?? null}
