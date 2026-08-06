@@ -1328,20 +1328,6 @@ def _cmd_split(token: str, chars: str) -> "list[str]":
     return pieces
 
 
-def _strip_cmd_quotes(token: str) -> str:
-    """``token`` without the quotes cmd strips before it resolves a program.
-
-    Only the non-POSIX lexer leaves them on, and the recursive scan re-lexes
-    what it is handed, so `start "" "powershell.exe" -c ls` recursed into a
-    program spelled `"powershell.exe"`, which matches no blocked name. Quoting
-    the path is the ordinary way to write one holding a space, so the hard block
-    was a quote away on any host without Git Bash.
-    """
-    if len(token) >= 2 and token[0] == '"' and token[-1] == '"':
-        return token[1:-1]
-    return token
-
-
 def _blocked_start_program(token: str) -> "set[str]":
     """The blocked names the program `start` launches resolves to.
 
@@ -1362,16 +1348,25 @@ def _blocked_start_program(token: str) -> "set[str]":
     holding one usable, and splitting inside truncated `"C:/A&B/powershell.exe"`
     to `C:/A` and let the program behind it through.
     """
-    unquoted = _strip_cmd_quotes(token)
-    # Quoting is what makes a path holding an operator usable, so only one
-    # outside the quotes is syntax. A group bracket is cmd's too, not part of
-    # the name: it documents a parenthesised body for a single-line `if`, so
-    # `if exist x (start "" powershell)` arrives spelled `powershell)`.
-    target = (
-        _cmd_split(unquoted, "")[0]
-        if unquoted is not token
-        else _cmd_split(token, _CMD_OPERATORS)[0]
-    ).strip("()")
+    # Split BEFORE the quotes come off, so what they protected stays protected:
+    # the caret in `start "" "power^shell"` is part of a filename cmd looks up
+    # literally, and applying the escape to it hard-blocked that name as
+    # powershell. _cmd_split reads both rules in one pass and leaves the marks
+    # in place, so a quoted operator is data here as well and
+    # `"C:/A&B/powershell.exe"` is not truncated to `C:/A`.
+    piece = _cmd_split(token, _CMD_OPERATORS)[0]
+    quoted = _cmd_quoted_offsets(piece)
+    # cmd drops the marks themselves when it resolves the program, wherever they
+    # sit: `pow"ers"hell` runs powershell. A group bracket is cmd's syntax and
+    # not part of the name -- it documents a parenthesised body for a
+    # single-line `if`, so `if exist x (start "" powershell)` arrives spelled
+    # `powershell)` -- but only unquoted, a quoted one being a filename again.
+    chars = [(char, mark) for char, mark in zip(piece, quoted) if char != '"']
+    while chars and chars[0][0] in "()" and not chars[0][1]:
+        chars.pop(0)
+    while chars and chars[-1][0] in "()" and not chars[-1][1]:
+        chars.pop()
+    target = "".join(char for char, _mark in chars)
     # A URL goes to the browser, so its host and path are not a program name and
     # `start "" https://example.com/curl` is not curl.
     if _URL_SCHEME_RE.match(target):
@@ -1719,7 +1714,14 @@ def _find_blocked_commands(command: str) -> set[str]:
         """
         found: "dict[int, str]" = {}
         expect = True  # the next word is one cmd runs
-        control = False  # an `if` or a `for` is open, so else/do hand off
+        # The `if` and `for` statements still waiting for the word that hands
+        # the command along, innermost last. Each is CONSUMED there: the
+        # statement has had its handoff, so a later word spelled the same is an
+        # operand again and `for %i in (x) do echo do start "" pwsh` only
+        # prints. A list rather than a flag because the two nest, and one
+        # cleared by the inner `do` lost the `else` of `if exist x (for %i in
+        # (y) do echo a) else start "" pwsh`, which really launches.
+        control: "list[str]" = []
         depth = 0  # open group brackets, which an `if` branch is written in
         skip = 0  # condition words still to consume
         skip_operand = False  # the word after a bare redirection operator
@@ -1734,7 +1736,8 @@ def _find_blocked_commands(command: str) -> set[str]:
                     # commands, so the `if` it belongs to is still open:
                     # `if exist x (echo a & echo b) else start "" pwsh` runs the
                     # start, and clearing here lost the else that reopens it.
-                    control = control and depth > 0
+                    if not depth:
+                        control.clear()
                 depth += _cmd_group_delta(token)
                 continue
             # A separator with no space around it stays inside the token, under
@@ -1758,7 +1761,8 @@ def _find_blocked_commands(command: str) -> set[str]:
             pieces = [token] if requoted else _cmd_split(token, _CMD_SEPARATORS)
             if len(pieces) > 1:
                 expect = True
-                control = control and depth > 0
+                if not depth:
+                    control.clear()
             depth += _cmd_group_delta(token)
             word = _cmd_word_base(pieces[-1])
             if skip > 0:
@@ -1769,7 +1773,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             # though the word before them was one too. Only where one of those
             # statements is open, though, or `cmd /c echo else start "" pwsh`
             # reads a printed word as a handoff.
-            if control and word in ("else", "do"):
+            statement = {"else": "if", "do": "for"}.get(word, "")
+            if statement and statement in control:
+                # The handoff belongs to the innermost statement of that kind,
+                # and one of a kind is interchangeable with another here, so
+                # which entry goes does not matter -- only how many.
+                control.remove(statement)
                 expect = True
                 continue
             if not expect:
@@ -1782,9 +1791,9 @@ def _find_blocked_commands(command: str) -> set[str]:
                 pass  # it reparses its target, so a command follows it
             elif word == "if":
                 skip = _cmd_condition_words(index + 1)
-                control = True
+                control.append("if")
             elif word == "for":
-                control = True
+                control.append("for")
                 expect = False  # re-armed by its own `do`, above
             else:
                 expect = False
@@ -1844,6 +1853,10 @@ def _find_blocked_commands(command: str) -> set[str]:
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     start_indexes: "set[int]" = set()  # command-position start words, for the scan below
     cmd_for_indexes: "set[int]" = set()  # command-position for words, for the scan below
+    # Every command position this walk reaches, for the nested-shell scan below:
+    # a `cmd /c` payload is only a command line where the cmd running it is
+    # itself executed, and `echo cmd /c start "" powershell` merely prints.
+    run_indexes: "set[int]" = set()
     xargs_index = -1  # an xargs awaiting the command it wraps
     for token_index, token in enumerate(tokens):
         if skip_operand:
@@ -1905,6 +1918,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         if prefix_pending and token.lstrip("-").isdigit():
             continue
         base = _token_basename(token)
+        run_indexes.add(token_index)
         if _is_sed_command(base):
             sed_indexes.append(token_index)
             if xargs_index >= 0:
@@ -2008,6 +2022,80 @@ def _find_blocked_commands(command: str) -> set[str]:
         )
         blocked.update(re.findall(pattern, lowered))
 
+    # `cmd /c start "" prog` puts prog in a command position the scan above
+    # sees only as an argument, so screen what start actually launches.
+    title_tokens: "frozenset[int] | None" = None
+    # The words of every cmd command line read so far. When cmd is the shell the
+    # whole line is one, and it is read with cmd's grammar rather than the POSIX
+    # command positions above, which hand a wrapper's operand to the next word:
+    # `time` is a cmd builtin that shows the clock, and `time start ""
+    # powershell` launches nothing.
+    cmd_run_indexes: "set[int]" = set()
+
+    def _read_cmd_line(begin: int) -> None:
+        """Collect the words cmd runs in the command line starting at ``begin``."""
+        for pos, cmd_word in _cmd_command_positions(begin).items():
+            cmd_run_indexes.add(pos)
+            if cmd_word == "start":
+                start_indexes.add(pos)
+            elif cmd_word == "for":
+                cmd_for_indexes.add(pos)
+
+    def _start_program_index(index: int) -> int:
+        """The token the `start` at ``index`` launches, or -1 for none.
+
+        `start "title" prog` is the documented form: cmd reads a quoted first
+        argument as the window title, but only when something follows it, so the
+        program is the token behind it. A title is data, so it is not screened
+        itself. Microsoft documents the switches AFTER the title too, so they
+        are skipped on both sides of it: `start "" /min powershell` left the
+        program at j + 2 and screened the switch instead. The program is
+        optional in that syntax (`start <"title"> [switches]
+        [<command>|<program> [<parameter>...]]`), so a lone quoted operand is
+        only the title: `start "powershell"` opens a window with that name and
+        runs nothing, where screening it as the program refused the word itself.
+
+        Under Git Bash a quoted word without spaces is not a title by the time
+        cmd sees it, because bash removes the quotes and MSYS re-quotes an
+        argument only when it holds whitespace or is empty -- the same rule as
+        subprocess.list2cmdline. So `start "powershell" -c ls` arrives as `start
+        powershell -c ls` and is the program, and `start "t" powershell` arrives
+        as `start t powershell`, which launches t and passes powershell to it as
+        a parameter rather than running it.
+        test_git_bash_does_not_requote_a_bare_word checks that on Windows.
+        """
+        nonlocal title_tokens
+        if title_tokens is None:
+            # Built at most once per call, and only when a start is actually here.
+            title_tokens = _start_title_indexes(tokens, lexed_posix)
+        first = _skip_start_switches(tokens, index + 1)
+        if first >= len(tokens):
+            return -1
+        if first not in title_tokens:
+            return first
+        behind = _skip_start_switches(tokens, first + 1)
+        return behind if behind < len(tokens) else -1
+
+    def _cmd_runs_here(index: int) -> bool:
+        """Whether the shell word at ``index`` is one the line actually runs."""
+        # A word inside a cmd payload is cmd's whichever lexer read the line, so
+        # the payloads collected so far are consulted first: with Git Bash the
+        # outer `cmd /c cmd /c start "" powershell` is bash's command and the
+        # inner one is only its argument, yet cmd really does run it.
+        if index in cmd_run_indexes:
+            return True
+        if lexed_posix and index in run_indexes:
+            return True
+        # cmd launches a start's program, which is deliberately NOT a command
+        # position above (it is screened by name, not rescanned as command
+        # text), so `start "" cmd /c start "" powershell` needs it named here.
+        return sys.platform == "win32" and any(
+            _start_program_index(pos) == index for pos in start_indexes
+        )
+
+    if not lexed_posix:
+        _read_cmd_line(0)
+
     # Nested shell invocations (bash -c '...', bash -lc '...', cmd /c '...'):
     # on a -c/-/c flag, look back for a shell name (skipping flags) and
     # recursively scan the nested command string.
@@ -2048,27 +2136,15 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # Everything from here on is cmd's command line, which the outer
                 # scan can only read as arguments of cmd. Recursing does not
                 # reach it either: only the one token is passed on, and `start`
-                # by itself blocks nothing.
-                for pos, cmd_word in _cmd_command_positions(i + 1).items():
-                    if cmd_word == "start":
-                        start_indexes.add(pos)
-                    elif cmd_word == "for":
-                        cmd_for_indexes.add(pos)
+                # by itself blocks nothing. Only where this cmd is a command the
+                # line runs, though: `echo cmd /c start "" powershell` prints
+                # those words, and reading them as a command line refused the
+                # message. Visited left to right, so an outer cmd has already
+                # named the inner one by the time it is reached.
+                if _cmd_runs_here(j):
+                    _read_cmd_line(i + 1)
             break  # stop at first non-flag token
 
-    # `cmd /c start "" prog` puts prog in a command position the scan above
-    # sees only as an argument, so screen what start actually launches.
-    title_tokens: "frozenset[int] | None" = None
-    # When cmd is the shell the whole line is its command line, so it is read
-    # with cmd's grammar rather than the POSIX command positions above, which
-    # hand a wrapper's operand to the next word: `time` is a cmd builtin that
-    # shows the clock, and `time start "" powershell` launches nothing.
-    if not lexed_posix:
-        for pos, cmd_word in _cmd_command_positions(0).items():
-            if cmd_word == "start":
-                start_indexes.add(pos)
-            elif cmd_word == "for":
-                cmd_for_indexes.add(pos)
     # `for /f %i in ('CMD') do ...` runs CMD as a child command and reads its
     # output, so the set is a command position the token scan sees only as data.
     # Backquotes are the same form under usebackq.
@@ -2098,38 +2174,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     # prints text, and reading every token named start walked the title branch
     # into a hard block for it.
     for i in sorted(start_indexes):
-        # Built at most once per call, and only when a start is actually here.
-        if title_tokens is None:
-            title_tokens = _start_title_indexes(tokens, lexed_posix)
-        j = _skip_start_switches(tokens, i + 1)
-        if j >= len(tokens):
-            continue
-        # `start "title" prog` is the documented form: cmd reads a quoted first
-        # argument as the window title, but only when something follows it, so
-        # the program is the token behind it. A title is data, so it is not
-        # screened itself. Microsoft documents the switches AFTER the title too,
-        # so they are skipped on both sides of it: `start "" /min powershell`
-        # left the program at j + 2 and screened the switch instead.
-        if j in title_tokens:
-            # Microsoft writes the syntax as `start <"title"> [switches]
-            # [<command>|<program> [<parameter>...]]`, so the program is
-            # optional and a lone quoted operand is only the title: `start
-            # "powershell"` opens a window with that name and runs nothing,
-            # where screening it as the program refused the word itself.
-            k = _skip_start_switches(tokens, j + 1)
-            if k < len(tokens):
-                blocked |= _blocked_start_program(tokens[k])
-            continue
-        # Otherwise this token is the program cmd launches. Under Git Bash a
-        # quoted word without spaces is not a title by the time cmd sees it,
-        # because bash removes the quotes and MSYS re-quotes an argument only
-        # when it holds whitespace or is empty -- the same rule as
-        # subprocess.list2cmdline. So `start "powershell" -c ls` arrives as
-        # `start powershell -c ls` and is caught right here, and `start "t"
-        # powershell` arrives as `start t powershell`, which launches t and
-        # passes powershell to it as a parameter rather than running it.
-        # test_git_bash_does_not_requote_a_bare_word checks that on Windows.
-        blocked |= _blocked_start_program(tokens[j])
+        program = _start_program_index(i)
+        if program >= 0:
+            blocked |= _blocked_start_program(tokens[program])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

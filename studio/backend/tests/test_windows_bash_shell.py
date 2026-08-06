@@ -403,11 +403,8 @@ def test_detached_windows_stay_launchable(monkeypatch, bash, command):
         # from a second lex of the whole line meant a `;` or a `#` glued onto
         # its neighbour stopped the two lining up, and the title was screened
         # in the program's place.
-        'cd /c/proj; cmd //c start "" pwsh -Command ls',
-        'echo done; cmd //c start "" powershell -Command ls',
         'cmd //c start "" pwsh -Command ls; echo ok',
         '(cmd //c start "" pwsh -Command ls)',
-        'ls; cmd //c start "The Build" powershell -Command "Remove-Item x"',
         'start "" powershell -c ls # note',
         # Microsoft documents the switches after the title, not before it.
         'start "" /min powershell -c ls',
@@ -419,6 +416,28 @@ def test_start_screening_survives_separators_and_switch_order(monkeypatch, bash,
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
     assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cd /c/proj; cmd //c start "" pwsh -Command ls',
+        'echo done; cmd //c start "" powershell -Command ls',
+        'ls; cmd //c start "The Build" powershell -Command "Remove-Item x"',
+    ],
+)
+def test_a_semicolon_starts_a_command_for_bash_but_not_for_cmd(monkeypatch, command):
+    # Microsoft lists cmd's command separators as `&`, `&&`, `||` and `|`, and
+    # puts `;` with the characters that merely have to be quoted -- it is an
+    # ARGUMENT delimiter. So the same line reads two ways: bash runs the cmd
+    # behind the `;`, while cmd looks up a program named by the first word and
+    # hands it everything else, launching nothing.
+    # test_cmd_reads_a_semicolon_as_an_argument_delimiter checks that on Windows.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert tools._find_blocked_commands(command)
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert not tools._find_blocked_commands(command)
 
 
 @pytest.mark.parametrize(
@@ -618,6 +637,22 @@ def test_git_bash_does_not_requote_a_bare_word():
         timeout = 60,
     ).stdout.strip()
     assert echoed == 'start "a b" powershell', echoed
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason = "cmd parsing")
+def test_cmd_reads_a_semicolon_as_an_argument_delimiter():
+    # Whether `;` begins a command decides whether the words behind one are a
+    # command line or a first program's arguments, so it is checked against cmd
+    # itself. Microsoft lists only `&`, `&&`, `||` and `|` as command
+    # separators: if `;` were one, the second word would run and print on its
+    # own line. It is echo's argument instead, delimiter included.
+    echoed = subprocess.run(
+        ["cmd", "/c", "echo one; echo two"],
+        capture_output = True,
+        text = True,
+        timeout = 60,
+    ).stdout.strip()
+    assert echoed == "one; echo two", echoed
 
 
 @pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
@@ -1067,6 +1102,79 @@ def test_quotes_protect_cmd_separators_under_the_cmd_lexer(monkeypatch, command,
 def test_quoting_decides_what_is_cmd_syntax_in_place(monkeypatch, command, blocked):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # Quoting protects a caret the same way it protects an operator, so the
+        # name cmd looks up is a file really called `power^shell`. Applying the
+        # escape to it hard-blocked the benign name as powershell.
+        ('cmd /c start "" "power^shell"', False),
+        ('cmd /c start "" power^shell', True),
+        ('cmd /c start "" "powershell"', True),
+        # cmd drops the marks wherever they sit when it resolves the program.
+        ('cmd /c start "" pow"ers"hell', True),
+        # ...but a quoted bracket is part of the filename, not cmd's grouping.
+        ('cmd /c start "" "power)shell"', False),
+        ('cmd /c if exist x (start "" powershell)', True),
+    ],
+)
+def test_a_quoted_start_target_is_a_filename(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+def test_a_quoted_caret_reaches_cmd_unquoted_through_git_bash(monkeypatch):
+    # The same line the other way round: bash removes the quotes and MSYS
+    # re-quotes nothing without whitespace, so cmd is handed a real escape and
+    # powershell does launch.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert "powershell" in tools._find_blocked_commands('cmd /c start "" "power^shell"')
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # A statement is consumed by its own handoff word, so a later one is an
+        # operand again: these only print the words behind `echo`.
+        ('cmd /c for %i in (x) do echo do start "" powershell', False),
+        ('cmd /c if exist x (echo a) else echo else start "" powershell', False),
+        # The real handoffs still count, including one statement's after
+        # another's has been used up.
+        ('cmd /c for %i in (x) do start "" powershell', True),
+        ('cmd /c if exist x (echo a) else start "" powershell', True),
+        ('cmd /c if exist x (for %i in (y) do echo a) else start "" powershell', True),
+        ('cmd /c for %i in (x) do for %j in (y) do start "" powershell', True),
+    ],
+)
+def test_a_for_or_if_hands_off_once(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # A `cmd /c` payload is a command line only where that cmd is itself
+        # run. echo prints these words, so reading them as one refused a
+        # message; the same words in command position really do launch.
+        ('echo cmd /c start "" powershell', False),
+        ('cmd /c cmd /c start "" powershell', True),
+        # cmd launches a start's program, which is deliberately not a command
+        # position (it is screened by name), so it is named separately.
+        ('cmd /c start "" cmd /c start "" powershell', True),
+        ('cmd /c echo start "" cmd /c start "" powershell', False),
+    ],
+)
+def test_a_nested_cmd_payload_needs_a_cmd_that_runs(monkeypatch, bash, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
     assert bool(tools._find_blocked_commands(command)) is blocked
 
 
