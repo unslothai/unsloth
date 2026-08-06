@@ -225,10 +225,43 @@ def _collated_width(trainer):
 
 
 @pytest.mark.parametrize(
+    "name, dataset",
+    [
+        ("input_ids", lambda tok: _tokenized_dataset(tok)),
+        ("labels", lambda tok: _tokenized_dataset(tok, with_labels = True)),
+    ],
+)
+def test_pretokenized_rows_are_truncated_so_the_cap_is_really_enforced(
+    tmp_path, trl_has_guard, name, dataset
+):
+    """A pre-tokenized dataset is truncated here, exactly as TRL would have done.
+
+    TRL enforces `max_length` in `_prepare_dataset` (`truncate_dataset`), not in the
+    collator: the LM collator it builds is constructed without a `max_length`. The
+    Zoo's prep returns already-tokenized rows untouched, so leaving the rows long
+    meant nothing enforced the cap and a 402-token row reached the model under a
+    128-token request. Truncating restores TRL's own contract, and padding-free can
+    then stay on rather than being dropped.
+    """
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    trainer = _build(tmp_path, dataset = dataset)
+    args = trainer.args
+
+    assert _longest(trainer) == _MODEL_MAX_SEQ_LENGTH, f"{name}: rows were not truncated"
+    # Truncation happened, so the cap is spent and padding-free keeps its speed win.
+    assert args.max_length is None, f"{name}: the cap should be consumed by the truncation"
+    assert args.max_seq_length == _MODEL_MAX_SEQ_LENGTH, f"{name}: the cap must be recorded"
+    assert args.padding_free is True, f"{name}: padding-free no longer needs dropping"
+    # Padding-free CONCATENATES the batch into one flat sequence, so the collated width is
+    # rows x cap, not the cap. Two rows at exactly 2 x 128 is the proof that neither row
+    # exceeded it; asserting 128 here would be asserting that padding-free was off.
+    assert _collated_width(trainer) == 2 * _MODEL_MAX_SEQ_LENGTH
+
+
+@pytest.mark.parametrize(
     "name, dataset, config_kwargs",
     [
-        ("input_ids", lambda tok: _tokenized_dataset(tok), {}),
-        ("labels", lambda tok: _tokenized_dataset(tok, with_labels = True), {}),
         (
             "skip_prepare_dataset",
             lambda tok: _tokenized_dataset(tok),
@@ -239,11 +272,10 @@ def _collated_width(trainer):
 def test_unprepared_datasets_keep_their_length_cap(
     tmp_path, trl_has_guard, name, dataset, config_kwargs
 ):
-    """Nothing truncates these, so `max_length` must survive.
+    """`skip_prepare_dataset` means the user asked for the dataset to be left alone.
 
-    Neither Unsloth's prep (rows already carry `input_ids` / `labels`) nor TRL
-    (`skip_prepare_dataset`) tokenizes here, so clearing `max_length` would let
-    overlength rows reach training. Drop padding-free and let the collator cap.
+    TRL skips truncation there too, so touching the rows would break the promise the
+    flag makes. Drop padding-free instead and keep the cap for the collator.
     """
     trainer = _build(tmp_path, dataset = dataset, **config_kwargs)
     args = trainer.args
@@ -255,7 +287,7 @@ def test_unprepared_datasets_keep_their_length_cap(
         assert (
             args.padding_free is False
         ), f"{name}: padding-free must be dropped, since it disables truncation"
-    # The rows themselves stay long: enforcement lives in the collator.
+    # The rows themselves stay long: the user owns preparation here.
     assert _longest(trainer) > _MODEL_MAX_SEQ_LENGTH
     if getattr(trainer.data_collator, "max_length", None) is not None:
         assert (
