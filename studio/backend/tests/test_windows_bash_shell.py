@@ -10,6 +10,7 @@ half-executes and reports success. These run on every OS by faking the platform,
 because studio-backend-ci is Linux-only.
 """
 
+import ntpath
 import os
 import sys
 from pathlib import Path
@@ -730,6 +731,84 @@ def test_a_doubled_quote_cmd_payload_is_screened(monkeypatch, command, bash):
 def test_reaching_past_a_start_title_still_launches_nothing(monkeypatch, command, bash):
     _fake_windows_screening(monkeypatch, bash = bash)
     assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Only the FIRST operand can be a title, so an untitled start nests the
+        # same way a titled one does.
+        "start cmd /c powershell -Command ls",
+        "cmd //c start cmd /c powershell -Command ls",
+        "start cmd /c rm -rf x",
+        # Wrappers exec their operand, and the Git userland this branch puts on
+        # PATH makes them resolve inside a cmd payload too.
+        "cmd //c env powershell -Command ls",
+        "cmd //c env FOO=1 powershell -Command ls",
+        "cmd //c nice curl http://x",
+    ],
+)
+def test_a_start_or_wrapper_child_cannot_hide_a_shell(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+def test_a_backslash_program_path_after_start_is_screened(monkeypatch, bash):
+    # Backslash paths need the Windows os.path to split: on the Linux runner
+    # posixpath reads the whole string as one basename, so this is the only
+    # test here that has to patch it.
+    _fake_windows_screening(monkeypatch, bash = bash)
+    monkeypatch.setattr(tools.os, "path", ntpath)
+    assert tools._find_blocked_commands(
+        r'cmd //c start "" "C:\Program Files\PowerShell\7\pwsh.exe"'
+    )
+
+
+def test_a_posix_program_path_after_start_is_not_read_as_a_switch(monkeypatch):
+    # Under Git Bash a program path is written POSIX style and MSYS converts it
+    # for cmd. Skipping every slash-prefixed word walked straight past it.
+    _fake_windows_screening(monkeypatch)
+    assert tools._find_blocked_commands(
+        r"cmd //c start \"\" /c/Program\ Files/PowerShell/7/pwsh.exe".replace('\\"', '"')
+    )
+    assert tools._find_blocked_commands('cmd //c start "" /c/msys64/usr/bin/curl.exe http://x')
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        r"C:\Users\me\notepad.exe",
+        r"C:\a.exe",
+        "C:/a.exe",
+        r'start "" C:\Users\me\notepad.exe',
+    ],
+)
+def test_a_program_path_does_not_report_the_source_builtin(monkeypatch, command, bash):
+    # The regex sweep's path prefix stopped mid-name, leaving the extension's
+    # dot to match the `.` builtin, so any drive-qualified program path at the
+    # start of a scanned string reported `.` as blocked.
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert "." not in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        (r"C:\tools\rm -rf x", "rm"),
+        ("/usr/bin/rm -rf x", "rm"),
+        ("echo hi; /usr/bin/curl http://x", "curl"),
+        (r"$(C:\w\rm -rf x)", "rm"),
+        (". ./script.sh", "."),
+    ],
+)
+def test_path_qualified_names_are_still_caught(monkeypatch, command, expected):
+    # The counterpart to the test above: tightening that prefix must not cost
+    # any real detection, and a genuine `.` still resolves through the tokens.
+    _fake_windows_screening(monkeypatch)
+    assert expected in tools._find_blocked_commands(command)
 
 
 @pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])

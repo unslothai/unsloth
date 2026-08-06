@@ -1349,6 +1349,13 @@ def _cmd_unquote(token: str) -> str:
 # `start` launches its argument as a program, so that argument is a command
 # position. These switches precede it; the value-taking ones eat a token.
 _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
+# Only these are switches. Skipping ANY slash-prefixed word walked straight past
+# the program under Git Bash, where a POSIX path is how one is written:
+# `start "" /c/Program Files/PowerShell/7/pwsh.exe` read the path as a switch.
+_START_SWITCHES = _START_SWITCHES_WITH_VALUE | {
+    "/min", "/max", "/wait", "/b", "/i", "/low", "/normal", "/high",
+    "/realtime", "/abovenormal", "/belownormal", "/separate", "/shared",
+}
 # cmd keywords whose command word does not follow immediately, or at all.
 _CMD_CONTROL_FLOW = frozenset({"if", "else", "do", "for"})
 
@@ -1649,7 +1656,11 @@ def _find_blocked_commands(command: str) -> set[str]:
         words_alt = "|".join(re.escape(w) for w in sorted(_BLOCKED_COMMANDS))
         pattern = (
             rf"(?:^|[;&|`\n(]\s*|[$]\(\s*|<\(\s*)"
-            rf"(?:[\w./\\-]*/|[a-zA-Z]:[/\\][\w./\\-]*)?"
+            # The path prefix has to END on a separator. Letting it stop
+            # mid-name left the extension's dot to match the `.` builtin, so
+            # every `C:\dir\prog.exe` at the start of a scanned string reported
+            # `.` as a blocked command.
+            rf"(?:[\w./\\-]*/|[a-zA-Z]:[/\\](?:[\w.-]*[/\\])*)?"
             rf"({words_alt})(?:\.(?:exe|com|bat|cmd))?\b"
         )
         blocked.update(re.findall(pattern, lowered))
@@ -1675,6 +1686,17 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue
             indexes.append(k)
             base = _token_basename(_cmd_unquote(token))
+            if base in _COMMAND_PREFIXES:
+                # `env`/`nice` and friends exec their operand, and this branch
+                # now puts the Git userland on PATH, so they resolve inside a
+                # cmd payload too: `cmd /c env powershell` recorded only env and
+                # left the shell it runs sitting in argument position.
+                k += 1
+                while k < len(tokens) and (
+                    tokens[k].startswith("-") or "=" in _cmd_unquote(tokens[k])
+                ):
+                    k += 1  # env's own flags and VAR=VALUE assignments
+                continue
             if base not in _CMD_CONTROL_FLOW:
                 k, expect = k + 1, False
                 continue
@@ -1786,7 +1808,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         j = i + 1
         while j < len(tokens):
             switch = _win_switch(_cmd_unquote(tokens[j]).lower())
-            if not switch.startswith("/"):
+            if switch not in _START_SWITCHES:
                 break
             # /d C:\dir and friends carry their value in the next token.
             j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
@@ -1819,23 +1841,25 @@ def _find_blocked_commands(command: str) -> set[str]:
         # `find . -exec env start "" powershell \;` still resolves to start
         # where testing the word right after the flag read `env` and stopped.
         runnable = _runnable_index(i)
-        if titled and runnable and j + 1 < len(tokens):
-            k = j + 1
+        if runnable:
+            k = j + 1 if titled else j
             # Switches may also FOLLOW the title: the documented shape is
             # `START ["title"] [switches] command`, so `start "" /b powershell`
             # put /b where the program was expected and the scan stopped there.
             while k < len(tokens):
                 switch = _win_switch(_cmd_unquote(tokens[k]).lower())
-                if not switch.startswith("/"):
+                if switch not in _START_SWITCHES:
                     break
                 k += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
             if k < len(tokens):
                 blocked |= _scan_cmd_payload(_cmd_unquote(tokens[k]))
                 # start launches a COMMAND LINE, not just a program, so the
-                # child may be a shell of its own: `start "" cmd /c powershell`
+                # child may be a shell of its own: `start cmd /c powershell`
                 # reaches powershell through a nested cmd that this pass had
                 # already walked past. Re-scanning the remainder re-runs every
-                # pass over it, which screens that nesting to any depth.
+                # pass over it, which screens that nesting to any depth. It runs
+                # untitled too: only the FIRST operand is the title, so the
+                # nesting is identical either way.
                 blocked |= _find_blocked_commands(" ".join(tokens[k:]))
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
