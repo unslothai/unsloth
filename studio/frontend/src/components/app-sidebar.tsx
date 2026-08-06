@@ -2415,7 +2415,7 @@ export function AppSidebar() {
           "relative pb-[11px] group-data-[collapsible=icon]:px-0",
           // Tighter top with the update card so the fade hugs it; fuller top
           // for the profile on its own.
-          showUpdateCard ? "pt-1" : "pt-1.5",
+          showUpdateCard ? "pt-0.5" : "pt-1",
         )}
       >
         {/* Fade above the profile box, shown only when there's more list below
@@ -2426,11 +2426,12 @@ export function AppSidebar() {
           className={cn(
             // The scroll area hard-clips at the fade's bottom edge, so a plain
             // ramp is still part-transparent there and slices the last row
-            // mid-glyph. from-[16px] holds it opaque across the clip.
-            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[16px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
+            // mid-glyph. from-[6px] holds it opaque just across the clip:
+            // enough to cover it, short enough not to read as a white band.
+            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[6px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
             // Shorter fade with the update card so the list reads closer to
             // it, but still tall enough to clear a row.
-            showUpdateCard ? "h-9" : "h-14",
+            showUpdateCard ? "h-7" : "h-10",
             canScrollDown ? "opacity-100" : "opacity-0",
           )}
         />
