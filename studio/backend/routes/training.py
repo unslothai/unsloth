@@ -182,31 +182,40 @@ _PROGRESS_STALL_TIMEOUT_POLLS = 1800  # ~30 min at 1 poll/sec
 def _stop_training_if_active(backend, *, save: bool, expected_job_id: Optional[str]):
     from core.training.lifecycle import training_lifecycle_guard
     with training_lifecycle_guard():
-        is_active = backend.is_training_active()
-        stopped = (
-            backend.stop_training(
+        is_active = not _run_finished(backend) and backend.is_training_active()
+        if not is_active:
+            stopped = False
+        elif expected_job_id is None:
+            stopped = backend.stop_training(save = save)
+        else:
+            stopped = backend.stop_training(
                 save = save,
                 expected_job_id = expected_job_id,
             )
-            if is_active
-            else False
-        )
     return is_active, stopped
 
 
 def _is_finalizing(progress, msg_lower: str) -> bool:
     """Worker alive past the last step, `complete` not yet drained.
 
-    The post-training save emits no step updates, so the bar sat at 100% labelled
-    "training" for its whole duration, indistinguishable from a hang. Non-terminal
-    by design: the last step means the optimizer loop ended, not that the save
-    succeeded, so completion still comes solely from is_completed.
+    The save emits no step updates, so the bar sat at 100% labelled "training", which is
+    indistinguishable from a hang. Non-terminal by design: the last step means the optimizer
+    loop ended, not that the save succeeded, so completion still comes solely from
+    is_completed.
     """
     if any(k in msg_lower for k in ("saving", "merging")):
         return True
     total = getattr(progress, "total_steps", 0) or 0
     step = getattr(progress, "step", 0) or 0
     return total > 0 and step >= total
+
+
+def _run_finished(backend) -> bool:
+    """Whether the run reported terminal (see TrainingBackend.is_run_finished), so status and
+    progress stop waiting on the worker to exit. getattr-guarded like the other backend reads
+    here: a stand-in without it keeps the old liveness-only behaviour."""
+    check = getattr(backend, "is_run_finished", None)
+    return bool(check()) if callable(check) else False
 
 
 def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
@@ -1728,11 +1737,12 @@ def _training_status_identity(backend) -> TrainingStatusIdentitySnapshot:
         if current_start_request_id is not None
         else None
     )
+    status_start_request = getattr(backend, "status_start_request", None)
     return TrainingStatusIdentitySnapshot(
         current_job_id = getattr(backend, "current_job_id", "") or "",
         current_start_request_id = current_start_request_id,
         current_start_request = current_start_request,
-        status_start_request = backend.status_start_request(),
+        status_start_request = status_start_request() if callable(status_start_request) else None,
         new_job_spawn_id = getattr(backend, "_new_job_spawn_id", None),
         spawn_in_progress = getattr(backend, "_spawn_in_progress", False),
     )
@@ -1877,7 +1887,9 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
         backend = get_training_backend()
         for _ in range(3):
             identity_before = _training_status_identity(backend)
-            is_active = await asyncio.to_thread(backend.is_training_active)
+            is_active = await asyncio.to_thread(
+                lambda: not _run_finished(backend) and backend.is_training_active()
+            )
             identity = _training_status_identity(backend)
             if identity != identity_before:
                 continue
@@ -1989,6 +2001,10 @@ async def stream_training_progress(
             )
 
         # ── Helpers ──────────────────────────────────────────────
+        def run_active() -> bool:
+            """A run that reported terminal is done, even while its worker tears down."""
+            return not _run_finished(backend) and backend.is_training_active()
+
         def build_progress(
             step: int,
             loss: Optional[float],
@@ -2096,7 +2112,7 @@ async def stream_training_progress(
         if resume_from_step is None:
             if not is_current_job():
                 return
-            is_active = await asyncio.to_thread(backend.is_training_active)
+            is_active = await asyncio.to_thread(run_active)
             if not is_current_job():
                 return
             tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
@@ -2165,7 +2181,7 @@ async def stream_training_progress(
         while True:
             if not is_current_job():
                 return
-            is_active = await asyncio.to_thread(backend.is_training_active)
+            is_active = await asyncio.to_thread(run_active)
             if not is_current_job():
                 return
             if not is_active:
