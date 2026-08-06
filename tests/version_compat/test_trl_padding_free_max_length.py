@@ -2,30 +2,12 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """Padding-free + `max_length` handshake across TRL versions.
 
-TRL >= 1.0.0 refuses to build an SFTTrainer when padding-free is on, packing is
-off and `args.max_length` is set:
-
-    ValueError: When `padding_free=True` without packing, `max_length` is not
-    enforced. Either enable packing ..., or set `max_length=None`.
-
-Unsloth auto-enables padding-free whenever the user leaves `padding_free` at its
-`None` default, and rl.py's `max_length_check` codegen always wrote
-`args.max_length`, so every default SFT run tripped that guard. rl.py now hands
-those TRLs the `None` they ask for and keeps truncating through
-`max_seq_length`, which is what Unsloth's own dataset prep reads.
-
-Two things the swap must not break, both pinned below:
-
-* the resolved length is unchanged, so `max_seq_length` still wins over
-  `max_length` exactly as it does on TRL < 1.0.0;
-* the swap only happens when Unsloth's dataset prep really runs its truncating
-  tokenize pass. For an already-tokenized dataset, or for
-  `dataset_kwargs={"skip_prepare_dataset": True}`, nothing would truncate, so
-  padding-free is turned off and `max_length` kept instead.
-
-The assertions branch on whether the installed TRL actually carries the guard,
-so the same file pins the new behaviour on TRL >= 1.0.0 and the untouched old
-behaviour on TRL < 1.0.0.
+TRL >= 1.0.0 refuses padding-free without packing while `args.max_length` is set,
+which every default SFT run tripped. rl.py now hands those TRLs the `None` they
+ask for and truncates through `max_seq_length` instead. Pinned below: the
+resolved length is unchanged, and the swap only happens when Unsloth's dataset
+prep really tokenizes -- otherwise padding-free is dropped and `max_length` kept.
+Assertions branch on whether the installed TRL carries the guard.
 """
 
 from __future__ import annotations
@@ -50,8 +32,7 @@ if importlib.util.find_spec("torch") is None:
 if importlib.util.find_spec("trl") is None or importlib.util.find_spec("unsloth") is None:
     pytest.skip("trl or unsloth not installed", allow_module_level = True)
 
-# Apply the CUDA spoof before any unsloth-touching import, so a CPU-only runner
-# can still import unsloth and generate the patched trainer.
+# Spoof CUDA before any unsloth import, so CPU-only runners can still patch.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import _zoo_aggressive_cuda_spoof as _spoof  # noqa: E402
 
@@ -77,24 +58,17 @@ if hasattr(torch, "accelerator"):
 _MODEL = "hf-internal-testing/tiny-random-LlamaForCausalLM"
 # Model-level length the trainer resolves from when the user names none.
 _MODEL_MAX_SEQ_LENGTH = 128
-# Deliberately smaller than _MODEL_MAX_SEQ_LENGTH, so honouring it is visible.
+# Smaller than the model cap, so honouring it is visible.
 _USER_MAX_LENGTH = 64
 
 
 @pytest.fixture(scope = "module", autouse = True)
 def patched_sft():
-    """Import unsloth, and make sure the SFT trainer really did get patched.
+    """Import unsloth, and force both halves of the SFT patch on.
 
-    `import unsloth` alone is not enough: under `UNSLOTH_ALLOW_CPU=1` (which
-    CPU-only CI sets so unsloth imports without a GPU) both halves of the SFT
-    patch are deliberately skipped, so drift detectors keep seeing the pristine
-    upstream TRL classes -- `rl.PatchFastRL` returns before
-    `patch_trl_rl_trainers`, and `_gpu_init` guards `_patch_trl_trainer`, which
-    installs the `__init__` wrapper that resolves packing / padding-free. These
-    tests are about the patched trainer, so ask for both explicitly, in
-    `_gpu_init`'s order: the codegen swaps `trl.SFTTrainer` out wholesale, so
-    the wrapper has to go on afterwards or it is thrown away. Both are
-    no-ops once applied, so this stays inert wherever the import did the work.
+    `UNSLOTH_ALLOW_CPU=1` (which CPU-only CI sets) skips both, so ask explicitly,
+    in `_gpu_init`'s order: the codegen swaps `trl.SFTTrainer` out wholesale, so
+    the `__init__` wrapper has to go on afterwards. Both are no-ops once applied.
     """
     global torch  # the `import torch._dynamo` below would otherwise shadow it
     import unsloth  # noqa: F401
@@ -190,13 +164,8 @@ def test_default_sft_construction_does_not_trip_the_guard(tmp_path, trl_has_guar
 
 
 def test_explicit_max_length_resolves_the_same_on_every_trl(tmp_path, trl_has_guard):
-    """The resolved truncation length does not depend on the TRL version.
-
-    Unsloth's precedence (documented by the `max_length_check` codegen: the
-    model / args `max_seq_length` wins) already resolved `max_length` before the
-    padding-free swap runs, and the swap only moves that same number across to
-    `max_seq_length`. It must never reinstate the raw user `max_length`.
-    """
+    """The swap only moves the already-resolved length across to `max_seq_length`;
+    it must never reinstate the raw user `max_length`."""
     trainer = _build(tmp_path, max_length = _USER_MAX_LENGTH)
     args = trainer.args
 
@@ -212,10 +181,8 @@ def test_explicit_max_length_resolves_the_same_on_every_trl(tmp_path, trl_has_gu
 def test_max_seq_length_still_beats_max_length(tmp_path, trl_has_guard):
     """`max_seq_length=4096, max_length=512` must truncate at 4096, not 512.
 
-    The bridge above the padding-free block copies `max_seq_length` into
-    `max_length`, so `max_seq_length` wins. Re-reading the user's raw
-    `max_length` inside the padding-free branch would silently invert that and
-    train on a quarter of the requested context on TRL >= 1.0.0 only.
+    Re-reading the raw user `max_length` inside the padding-free branch would
+    invert that precedence, on TRL >= 1.0.0 only.
     """
     from datasets import Dataset
 
@@ -274,12 +241,9 @@ def test_unprepared_datasets_keep_their_length_cap(
 ):
     """Nothing truncates these, so `max_length` must survive.
 
-    Unsloth's `sft_prepare_dataset` skips its tokenize pass entirely when the
-    dataset already carries `input_ids` / `labels`, and TRL skips the whole
-    prepare step for `skip_prepare_dataset=True`. Clearing `args.max_length`
-    there would tell TRL the caller supplied truncated rows, and overlength rows
-    would reach padding-free training untouched. Drop padding-free instead and
-    let TRL's collator enforce the cap.
+    Neither Unsloth's prep (rows already carry `input_ids` / `labels`) nor TRL
+    (`skip_prepare_dataset`) tokenizes here, so clearing `max_length` would let
+    overlength rows reach training. Drop padding-free and let the collator cap.
     """
     trainer = _build(tmp_path, dataset = dataset, **config_kwargs)
     args = trainer.args
@@ -302,10 +266,8 @@ def test_unprepared_datasets_keep_their_length_cap(
 def _transformed_dataset(tok):
     """A dataset that tokenizes on access through `with_transform`.
 
-    `column_names` keeps describing the backing table (`["text"]`) while every
-    row yields `input_ids`, so a check that trusts `column_names` concludes the
-    tokenize pass will run and truncate. It will not: `sft_prepare_dataset`
-    reads the yielded row, sees `input_ids` and skips tokenization.
+    `column_names` still says `["text"]` while rows yield `input_ids`, so a check
+    that trusts `column_names` wrongly concludes the tokenize pass will truncate.
     """
     from datasets import Dataset
 
@@ -341,12 +303,9 @@ def test_transformed_datasets_keep_their_length_cap(tmp_path, trl_has_guard):
 def _pristine_sft_config_cls():
     """TRL's own SFTConfig, not Unsloth's generated subclass of it.
 
-    `PatchFastRL` rebinds `trl.SFTConfig` (and the `trl.trainer.*` aliases) to
-    `UnslothSFTConfig`, which re-adds a `max_seq_length` field that no TRL from
-    0.22.2 to 1.9.2 declares itself. A caller who did `from trl import SFTConfig`
-    before `import unsloth` still holds the pristine class, and passes an
-    instance of it as `args`. That instance has `max_length` and no
-    `max_seq_length`, which is the case this file pins below.
+    `PatchFastRL` rebinds `trl.SFTConfig` to `UnslothSFTConfig`, which re-adds a
+    `max_seq_length` field no TRL from 0.22.2 to 1.9.2 declares. A caller who
+    imported SFTConfig before `import unsloth` still passes the pristine class.
     """
     from trl import SFTConfig
     return SFTConfig.__bases__[0] if SFTConfig.__name__.startswith("Unsloth") else SFTConfig
@@ -355,11 +314,8 @@ def _pristine_sft_config_cls():
 def test_pristine_trl_config_without_max_seq_length_still_truncates(tmp_path, trl_has_guard):
     """A config with `max_length` and no `max_seq_length` must keep its cap.
 
-    The padding-free branch parks the resolved length in `max_seq_length` before
-    handing TRL the `max_length=None` it demands. Gating that copy on
-    `hasattr(args, 'max_seq_length')` skipped it for every pristine
-    `trl.SFTConfig` -- no TRL version declares the field -- so the cap was
-    cleared and never stored, and raw-text SFT lost its truncation.
+    Gating the copy into `max_seq_length` on `hasattr` skipped it for every
+    pristine `trl.SFTConfig`, so the cap was cleared and never stored.
     """
     from datasets import Dataset
 
@@ -425,9 +381,8 @@ def _padding_free_codegen_block():
 def test_generator_copies_the_cap_without_a_hasattr_gate():
     """The copy into `max_seq_length` must not be conditional.
 
-    `hasattr(args, 'max_seq_length')` is False for every pristine TRL SFTConfig
-    on every supported version, so a gate there is not a safety check, it is an
-    unconditional skip.
+    `hasattr(args, 'max_seq_length')` is False for every pristine TRL SFTConfig,
+    so a gate there is an unconditional skip, not a safety check.
     """
     block = _padding_free_codegen_block()
 

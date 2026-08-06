@@ -145,10 +145,9 @@ def _should_skip_auto_packing_error(exc: Exception) -> bool:
 
 
 def _should_skip_auto_padding_free_error(exc: Exception) -> bool:
-    """TRL >= 1.0.0 rejects padding-free without packing while `max_length` is set.
+    """Net for a TRL that words the padding-free / `max_length` guard differently.
 
-    rl.py already clears `max_length` for those versions, so this is only the net
-    for a TRL that words the same guard differently. Both terms must appear, so an
+    rl.py already handles the known wording; both terms must appear here so an
     unrelated ValueError still propagates.
     """
     message = str(exc).lower()

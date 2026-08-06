@@ -504,10 +504,8 @@ _ZOO_MAP_NUM_PROC_ASSIGNMENT = re.compile(
 )
 
 # The Zoo seeds its truncation length from args.max_length and only falls through
-# to args.max_seq_length when that is 0. Unsloth now hands TRL >= 1.0.0 a
-# max_length of None under padding-free (see rl.py), which is neither 0 nor an
-# int, so normalise it here or the fall-through is skipped and the length ends up
-# None (no truncation, then a None > 0 comparison).
+# to args.max_seq_length when that is 0. rl.py now hands TRL >= 1.0.0 a None
+# there, so normalise it or the fall-through is skipped and nothing truncates.
 _ZOO_MAX_LENGTH_SEED = re.compile(
     r"^(?P<indent>[ \t]*)max_seq_length[ \t]*=[ \t]*getattr\(args,[ \t]*[\"']max_length[\"'],[ \t]*0\)[ \t]*$",
     flags = re.MULTILINE,

@@ -1222,51 +1222,31 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                 "            print('Unsloth: We did not find `max_seq_length` or `max_length` in the model or args. We will set it to 1024.')\n"
                 "            args.max_length = 1024\n"
             )
-            # TRL >= 1.0.0 refuses to build an SFTTrainer when padding-free is on,
-            # packing is off and `max_length` is set, because TRL cannot enforce
-            # truncation on a flattened batch (it already passes max_length=None to
-            # its own collator in that case). Unsloth auto-enables padding-free
-            # whenever the user leaves `padding_free` at its None default, and the
-            # block above always writes `args.max_length`, so the pair tripped that
-            # guard for essentially every SFT user.
+            # TRL >= 1.0.0 refuses padding-free without packing while `max_length` is
+            # set, since it cannot truncate a flattened batch. Unsloth auto-enables
+            # padding-free and the block above always writes `args.max_length`, so
+            # essentially every SFT user tripped that guard.
             #
-            # The resolved length from the block above is the one we keep: it already
-            # applies Unsloth's documented precedence (`max_seq_length`, capped by the
-            # model, wins over `max_length`), so TRL >= 1.0.0 truncates at exactly the
-            # same place older TRLs do.
+            # Keep the length that block resolved (`max_seq_length`, capped by the
+            # model, wins) and move it to wherever it will actually be enforced:
+            #   * Unsloth's dataset prep will tokenize -> park it in `max_seq_length`,
+            #     which prep reads, and hand TRL the None it asks for.
+            #   * it will not (`skip_prepare_dataset`, or rows that already carry
+            #     `input_ids` / `labels`) -> nothing would truncate, so turn
+            #     padding-free off and keep `max_length` for TRL's own collator.
             #
-            # Where that length lands depends on whether Unsloth's dataset prep will
-            # really run its truncating tokenize pass:
-            #   * it will -> hand TRL the None it asks for and truncate during prep,
-            #     which reads `max_seq_length`.
-            #   * it will not (`skip_prepare_dataset`, or a dataset that already
-            #     carries `input_ids` / `labels`, both of which make the Zoo's
-            #     sft_prepare_dataset skip tokenization) -> clearing `max_length`
-            #     would silently let overlength rows reach training, since TRL's
-            #     collator is handed max_length=None under padding-free. Turn
-            #     padding-free off instead and keep `max_length`, so TRL's own
-            #     collator truncates.
-            # The copy into `max_seq_length` is unconditional, and has to be. No TRL
-            # from 0.22.2 to 1.9.2 declares `max_seq_length` on SFTConfig -- only
-            # Unsloth's own generated UnslothSFTConfig adds the field back -- so a
-            # hasattr() gate here would skip the copy for every caller who hands us a
-            # pristine `trl.SFTConfig` (anyone who did `from trl import SFTConfig`
-            # before `import unsloth`), and clearing `max_length` right after would
-            # drop the cap on the floor. `args` is a plain dataclass instance, so the
-            # assignment just creates the attribute, and `to_dict()` iterates declared
-            # fields, so nothing downstream sees an extra key.
+            # The copy is unconditional on purpose: no TRL from 0.22.2 to 1.9.2
+            # declares `max_seq_length` on SFTConfig (only UnslothSFTConfig re-adds
+            # it), so a hasattr() gate would skip it for every pristine
+            # `trl.SFTConfig` and the clear below would drop the cap. `args` is a
+            # dataclass instance, so the assignment just adds the attribute and
+            # `to_dict()` never sees it.
             #
-            # `max_length` has to go out as None specifically. TRL's guard reads
-            # `args.max_length is not None`, so 0 -- the value the Zoo's fall-through
-            # chain treats as unset -- still raises the very ValueError this block
-            # exists to avoid. None it is, and rl_replacements.py normalises that None
-            # to 0 inside the Zoo so the chain reaches `max_seq_length`.
-            # The schema is read off the first yielded row, exactly like the Zoo's
-            # sft_prepare_dataset does, and only falls back to `column_names`: a
-            # `with_transform` / `set_transform` dataset still reports its backing
-            # columns there while it yields `input_ids`.
-            # Only emitted for a TRL that carries the guard, so older versions
-            # receive exactly what they did before.
+            # It must be None, not 0: TRL's guard reads `args.max_length is not None`,
+            # and rl_replacements.py normalises the None back to 0 inside the Zoo.
+            # The schema comes off the first yielded row like the Zoo does, falling
+            # back to `column_names` (a `with_transform` dataset reports its backing
+            # columns there while yielding `input_ids`).
             if "`max_length` is not enforced" in old_RLTrainer_source:
                 max_length_check += (
                     "if getattr(args, 'padding_free', False) is True and not getattr(args, 'packing', False) "
