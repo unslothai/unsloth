@@ -13187,6 +13187,10 @@ async def _load_model_impl(
                     preserve_thinking_default = _sf_flags.get("preserve_thinking_default", False),
                     supports_tools = _sf_flags["supports_tools"],
                     context_length = _positive_int_or_none(_model_info.get("context_length")),
+                    native_context_length = _positive_int_or_none(
+                        _model_info.get("native_context_length")
+                    ),
+                    max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
                     chat_template = _chat_template,
                 )
 
@@ -13915,6 +13919,8 @@ async def _load_model_impl(
             preserve_thinking_default = _sf_flags.get("preserve_thinking_default", False),
             supports_tools = _sf_flags["supports_tools"],
             context_length = _positive_int_or_none(_model_info.get("context_length")),
+            native_context_length = _positive_int_or_none(_model_info.get("native_context_length")),
+            max_context_length = _positive_int_or_none(_model_info.get("max_context_length")),
             chat_template = _chat_template,
         )
 
@@ -16014,6 +16020,8 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
             preserve_thinking_default = _sf_flags.get("preserve_thinking_default", False),
             supports_tools = _sf_flags["supports_tools"],
             context_length = _positive_int_or_none(model_info.get("context_length")),
+            native_context_length = _positive_int_or_none(model_info.get("native_context_length")),
+            max_context_length = _positive_int_or_none(model_info.get("max_context_length")),
             chat_template = chat_template,
             llama_cpp_supports_mtp = _supports_mtp,
             llama_cpp_prebuilt_stale = _stale,
@@ -23556,6 +23564,11 @@ def _openai_model_objects() -> list[dict]:
             and (model_info.get("audio_type") in _TRANSFORMERS_TTS_AUDIO_TYPES)
         ):
             entry["task"] = _TTS_MODEL_TASK
+
+        for _field in ("native_context_length", "max_context_length"):
+            _value = _positive_int_or_none(model_info.get(_field))
+            if _value is not None:
+                entry[_field] = _value
         models.append(entry)
 
     return models

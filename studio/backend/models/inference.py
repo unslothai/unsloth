@@ -1067,7 +1067,7 @@ class _InferenceRuntimeFields(BaseModel):
     )
     native_context_length: Optional[int] = Field(
         None,
-        description = "Model's native context length from GGUF metadata (not capped by VRAM)",
+        description = "Model's native context length, from GGUF metadata or the MLX model config",
     )
     supports_reasoning: bool = Field(
         False,
