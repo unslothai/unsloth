@@ -50,6 +50,11 @@ test("strips OSC sequences terminated by ST (ESC backslash)", () => {
   assert.equal(stripAnsi(titled), "");
 });
 
+test("strips SCS charset resets emitted by terminfo sgr0", () => {
+  const reset = `${ESC}(B${ESC}[mok`;
+  assert.equal(stripAnsi(reset), "ok");
+});
+
 test("stripAnsiDeep cleans nested tool object fields before JSON display", () => {
   const payload = {
     stdout: `${ESC}[32mfile.txt${ESC}[0m`,

@@ -10,6 +10,7 @@ const BEL = String.fromCharCode(7);
 const ANSI_ESCAPE_PATTERN = new RegExp(
   [
     `${ESC}(?:[@-Z\\-_]|\\[[0-?]*[ -/]*[@-~])`,
+    `${ESC}\\([ -/]*[0-?]*[@-~]`,
     `${ESC}\\](?:[\\s\\S]*?)(?:${BEL}|${ESC}\\\\)`,
   ].join("|"),
   "g",

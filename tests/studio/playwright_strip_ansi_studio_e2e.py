@@ -10,6 +10,8 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -23,7 +25,6 @@ from _playwright_robust import chromium_launch_args, wait_for_health  # noqa: E4
 ROOT = Path(__file__).resolve().parents[2]
 FRONTEND = ROOT / "studio" / "frontend"
 BACKEND = ROOT / "studio" / "backend"
-AUTH_DIR = Path.home() / ".unsloth/studio/auth"
 STUDIO_PY = Path.home() / ".unsloth/studio/unsloth_studio/bin/python"
 BACKEND_PORT = int(os.environ.get("STUDIO_PORT", "8888"))
 VITE_PORT = int(os.environ.get("VITE_PORT", "8000"))
@@ -39,6 +40,31 @@ def info(msg: str) -> None:
 
 def fail(msg: str) -> None:
     raise AssertionError(f"[ansi-studio] FAIL: {msg}")
+
+
+def drain_process_output(proc: subprocess.Popen[str]) -> None:
+    if proc.stdout is None:
+        return
+    for _ in proc.stdout:
+        pass
+
+
+def start_logged_process(
+    args: list[str],
+    *,
+    cwd: Path,
+    env: dict[str, str],
+) -> subprocess.Popen[str]:
+    proc = subprocess.Popen(
+        args,
+        cwd = cwd,
+        stdout = subprocess.PIPE,
+        stderr = subprocess.STDOUT,
+        text = True,
+        env = env,
+    )
+    threading.Thread(target = drain_process_output, args = (proc,), daemon = True).start()
+    return proc
 
 
 def backend_terminal_has_ansi() -> None:
@@ -82,8 +108,8 @@ def api_json(
         return resp.status, json.loads(raw)
 
 
-def bootstrap_password() -> tuple[str, str]:
-    bootstrap_path = AUTH_DIR / ".bootstrap_password"
+def bootstrap_password(auth_dir: Path) -> tuple[str, str]:
+    bootstrap_path = auth_dir / ".bootstrap_password"
     deadline = time.time() + 180
     while time.time() < deadline:
         if bootstrap_path.is_file():
@@ -127,18 +153,21 @@ def wait_for_vite() -> None:
 def main() -> None:
     ART.mkdir(parents = True, exist_ok = True)
 
-    if AUTH_DIR.exists():
-        shutil.rmtree(AUTH_DIR)
+    studio_home = Path(tempfile.mkdtemp(prefix = "unsloth-ansi-studio-"))
+    auth_dir = studio_home / "auth"
+    auth_dir.mkdir(parents = True, exist_ok = True)
+    studio_env = {
+        **os.environ,
+        "UNSLOTH_STUDIO_HOME": str(studio_home),
+        "UNSLOTH_API_ONLY": "1",
+    }
 
-    studio = subprocess.Popen(
+    studio = start_logged_process(
         [str(STUDIO_PY), "run.py", "--host", "127.0.0.1", "--port", str(BACKEND_PORT)],
         cwd = BACKEND,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
-        env = {**os.environ, "UNSLOTH_API_ONLY": "1"},
+        env = studio_env,
     )
-    vite = subprocess.Popen(
+    vite = start_logged_process(
         [
             "npm",
             "run",
@@ -151,14 +180,12 @@ def main() -> None:
             "--strictPort",
         ],
         cwd = FRONTEND,
-        stdout = subprocess.PIPE,
-        stderr = subprocess.STDOUT,
-        text = True,
+        env = {**os.environ},
     )
     try:
         wait_for_health(BACKEND_BASE, timeout = 180.0, info = info)
         wait_for_vite()
-        _pw, access = bootstrap_password()
+        _pw, access = bootstrap_password(auth_dir)
 
         with sync_playwright() as p:
             browser = p.chromium.launch(headless = True, args = chromium_launch_args())
@@ -192,6 +219,7 @@ def main() -> None:
                 proc.wait(timeout = 10)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        shutil.rmtree(studio_home, ignore_errors = True)
 
 
 if __name__ == "__main__":
