@@ -5076,23 +5076,27 @@ def _estimate_gguf_required_gb(
         )
         # Auto loads the sidecar whenever the model has one, so size it there too
         # or the guard admits a load 11 GB larger than it estimated.
-        dspark_requested = bool(
-            _forced_dspark or (_spec_mode == "auto" and getattr(config, "gguf_dspark_file", None))
-        )
+        _auto_dspark = _spec_mode == "auto"
         _dspark_capable = True
-        if dspark_requested:
+        if _forced_dspark or _auto_dspark:
             # Gate on the same answer the loader uses: _download_dspark skips the
             # sidecar on a binary without usable draft-dspark, so charging its
-            # ~11 GB here would refuse a load that never opens it. An unreadable
-            # probe keeps it counted, since this guard protects a running training
-            # job and default-denies.
+            # ~11 GB here would refuse a load that never opens it. Probed for Auto
+            # too, not just an explicit request: a remote config has no
+            # gguf_dspark_file until the listing, so keying the probe on that would
+            # leave the remote Auto charge ungated. An unreadable probe keeps the
+            # sidecar counted, since this guard protects a running training job and
+            # default-denies.
             try:
                 _dspark_capable = bool(
                     LlamaCppBackend.probe_server_capabilities().get("supports_dspark")
                 )
             except Exception:
                 pass
-            dspark_requested = _dspark_capable
+        dspark_requested = bool(
+            _dspark_capable
+            and (_forced_dspark or (_auto_dspark and getattr(config, "gguf_dspark_file", None)))
+        )
         # Forced DSpark on a binary that cannot run it falls back to --spec-default,
         # which loads no drafter at all, so charging the MTP one would refuse a load
         # that fits. Auto is different: it falls through to the MTP branch, and keeps
@@ -5145,10 +5149,10 @@ def _estimate_gguf_required_gb(
                 # the absent one contributes 0, and over-estimating is the safe
                 # direction for a guard that protects a running training job.
                 include_mtp = (
-                    not _charge_no_drafter and (_spec_mode == "auto" or not dspark_requested)
+                    not _charge_no_drafter and (_auto_dspark or not dspark_requested)
                 ),
                 include_dspark = (
-                    not _charge_no_drafter and (_spec_mode == "auto" or dspark_requested)
+                    _dspark_capable and (_auto_dspark or dspark_requested)
                 ),
             )
             return (main_bytes + companions) / (1024**3)

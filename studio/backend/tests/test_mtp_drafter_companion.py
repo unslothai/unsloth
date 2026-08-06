@@ -850,8 +850,11 @@ def _dspark_download_probe(
         label,
         cancel_event = None,
         near_path = None,
+        outcome = None,
     ):
         reached["hit"] = True
+        if outcome is not None:
+            outcome["listed"] = True
         return "/cache/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
 
     b = LlamaCppBackend()
@@ -877,6 +880,37 @@ def test_download_dspark_fetches_when_the_binary_supports_it(monkeypatch):
     got, reached = _dspark_download_probe(monkeypatch, supports_dspark = True)
     assert got == "/cache/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
     assert reached is True
+
+
+def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatch):
+    """The reuse check retries a failed fetch but must never retry a repo that
+    ships none, so the two "returned None" cases have to stay distinguishable."""
+    import core.inference.llama_cpp as llama_cpp_module
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_dspark": True}),
+    )
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: None
+    )
+
+    def _companion(listed):
+        def _fake(*, hf_repo, hf_token, pick, label, cancel_event = None,
+                  near_path = None, outcome = None):
+            if outcome is not None:
+                outcome["listed"] = listed
+            return None
+        return _fake
+
+    for listed, expect_absent in ((False, True), (True, False)):
+        b = LlamaCppBackend()
+        b._download_companion_gguf = _companion(listed)
+        assert b._download_dspark(hf_repo = "org/repo", binary = "/fake/llama-server") is None
+        assert b._dspark_sidecar_absent is expect_absent
 
 
 def test_download_dspark_still_reports_a_cached_sidecar_it_cannot_run(monkeypatch):

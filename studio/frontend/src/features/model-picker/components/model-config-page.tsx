@@ -562,10 +562,12 @@ function GgufAdvancedSettings({
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS_WRAP}>Speculative Decoding</span>
           <InfoHint>
-            Faster generation. Auto picks MTP / ngram based on the model and
-            platform, and does not change output. Pick a strategy to force it.
-            DSpark is opt in and trades VRAM for speed; on quantized targets its
-            greedy output can differ from a non speculative run.
+            Faster generation. Auto picks the best strategy for the model and
+            platform: DSpark when the model ships a drafter sidecar, otherwise
+            MTP / ngram. Pick a strategy to force it, or Off to disable.
+            DSpark downloads a sidecar of about 11 GB and trades VRAM for speed;
+            on quantized targets its greedy output can differ from a non
+            speculative run. MTP and ngram do not change output.
           </InfoHint>
         </div>
         <Select

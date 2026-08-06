@@ -2956,6 +2956,7 @@ class LlamaCppBackend:
         # a newer prebuilt would help; "runtime_error" -> it may not.
         self._spec_fallback_reason: Optional[str] = None
         self._spec_drafter_kind: Optional[str] = None
+        self._dspark_sidecar_absent: bool = False
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         # Block-diffusion model (e.g. DiffusionGemma): served by the diffusion
@@ -3714,16 +3715,15 @@ class LlamaCppBackend:
                 return False
         elif speculative_type != (backend_spec or "auto"):
             return False
-        # Reload so the next Apply retries the drafter fetch. MTP only: its
-        # drafter_not_found means a download failed for a repo that publishes
-        # one, which a retry can fix. DSpark reaches the same reason when the
-        # repo simply ships no sidecar, the permanent state for every repo but
-        # one, so retrying there relaunches an identical server forever.
+        # Reload so the next Apply retries the drafter fetch. Worth it when the
+        # repo publishes a drafter and the fetch failed; not when it publishes
+        # none, which for DSpark is the permanent state of every repo but one and
+        # would relaunch an identical server forever.
         if (
             intent.gguf_path is None
             and self._spec_fallback_reason == "drafter_not_found"
-            and speculative_type in ("auto", "mtp", "mtp+ngram")
-            and self._spec_drafter_kind != "dspark"
+            and speculative_type in ("auto", "mtp", "mtp+ngram", "dspark")
+            and not (self._spec_drafter_kind == "dspark" and self._dspark_sidecar_absent)
             and not spec_owned_by_extra_args
         ):
             return False
@@ -7212,6 +7212,7 @@ class LlamaCppBackend:
         label: str,
         cancel_event: Optional[threading.Event] = None,
         near_path: Optional[str] = None,
+        outcome: Optional[dict] = None,
     ) -> Optional[str]:
         """Resolve and fetch a companion GGUF (mmproj / MTP drafter) by name.
 
@@ -7282,6 +7283,11 @@ class LlamaCppBackend:
             except Exception as e:
                 logger.debug(f"Offline cache lookup for {label} failed: {e}")
 
+        # "The repo publishes none" and "the fetch failed" both return None, but
+        # only the second is worth retrying on the next Apply. Left unset on the
+        # early returns above, where the answer is genuinely unknown.
+        if outcome is not None and not cancel_event.is_set():
+            outcome["listed"] = target is not None
         if target is None or cancel_event.is_set():
             return None
 
@@ -7512,13 +7518,19 @@ class LlamaCppBackend:
         if cached:
             logger.info("Reusing cached DSpark drafter: %s", cached)
             return cached
-        return self._download_companion_gguf(
+        outcome: dict = {}
+        found = self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
             pick = _pick_dspark,
             label = "DSpark drafter",
             near_path = near_path,
+            outcome = outcome,
         )
+        # Distinguishes a repo that ships no sidecar (the permanent state for
+        # every repo but one) from a fetch that failed and could yet succeed.
+        self._dspark_sidecar_absent = outcome.get("listed") is False
+        return found
 
     def _resolve_launch_mmproj_path(
         self, *, model_path: str, mmproj_path: Optional[str]
@@ -11974,6 +11986,7 @@ class LlamaCppBackend:
             self._mtp_draft_suppressed_path = None
             self._spec_fallback_reason = None
             self._spec_drafter_kind = None
+            self._dspark_sidecar_absent = False
             self._last_load_intent = None
             self._mtp_runtime_fallback_active = False
             self._hf_variant = None

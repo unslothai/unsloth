@@ -326,16 +326,16 @@ def test_already_in_target_state_auto_request_matches_auto_backend_for_non_mtp_m
 
 
 def test_forced_dspark_without_a_sidecar_stops_reloading():
-    """drafter_not_found means "retry the fetch" for MTP, where the repo does
-    publish one. For DSpark it also means "this repo has no sidecar", the
-    permanent state for every repo but one, so retrying relaunched an identical
-    server on every Apply."""
+    """drafter_not_found covers both "the fetch failed" and "this repo publishes
+    none". The second is the permanent state of every repo but one, so retrying
+    it relaunched an identical server on every Apply."""
     backend = _mtp_backend(
         _model_identifier = "unsloth/Qwen3-7B-GGUF",
         _speculative_type = "default",
         _requested_spec_mode = "dspark",
         _spec_fallback_reason = "drafter_not_found",
         _spec_drafter_kind = "dspark",
+        _dspark_sidecar_absent = True,
     )
     assert (
         _matches(
@@ -351,6 +351,34 @@ def test_forced_dspark_without_a_sidecar_stops_reloading():
             is_vision = False,
         )
         is True
+    )
+
+
+def test_forced_dspark_retries_when_the_fetch_failed_rather_than_the_repo():
+    """The other half: the repo does publish a sidecar and the download failed, so
+    the next Apply should reload and re-run _download_dspark."""
+    backend = _mtp_backend(
+        _model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        _speculative_type = "default",
+        _requested_spec_mode = "dspark",
+        _spec_fallback_reason = "drafter_not_found",
+        _spec_drafter_kind = "dspark",
+        _dspark_sidecar_absent = False,
+    )
+    assert (
+        _matches(
+            backend,
+            gguf_path = None,
+            model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+            hf_variant = "Q4_K_M",
+            n_ctx = 8192,
+            cache_type_kv = None,
+            speculative_type = "dspark",
+            chat_template_override = None,
+            extra_args = None,
+            is_vision = False,
+        )
+        is False
     )
 
 
