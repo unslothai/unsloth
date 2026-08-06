@@ -37,8 +37,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14        # Apple Silicon, macOS 14 Sonoma
-            experimental: false
+          # No macos-14 leg. This job is install.sh --local --no-torch followed
+          # by assert-llama-loads.sh, and that exact pair already runs on
+          # macos-14 in studio-mac-update-smoke, studio-mac-ui-smoke,
+          # studio-mac-inference-smoke and clean-machine-install-ci.
+          # Every path that triggers this workflow
+          # triggers at least one of those on macos-14 too (checked per path),
+          # so the leg re-derived a result five other jobs had already produced
+          # while holding one of the 5 macOS slots available account-wide.
+          #
+          # The versions below are the point of this matrix: they are the only
+          # place macOS 15, 26 and Intel are exercised at all. Do not trim them.
           - os: macos-15        # Apple Silicon, macOS 15 Sequoia
             experimental: false
           - os: macos-26        # Apple Silicon, macOS 26 Tahoe
