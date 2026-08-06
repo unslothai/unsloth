@@ -1060,33 +1060,28 @@ with sync_playwright() as p:
     step("rapid submit: 100 ms follow-up queues behind the first turn")
     rapid_bubbles_before = _bubble_count()
     composer_form = page.locator('form:has(textarea[aria-label="Message input"])').first
-    composer.fill("Reply with exactly: rapid-first")
+    # Long on purpose: the queue check below needs this turn to still be running
+    # 100 ms from now. A short reply can complete first on a fast runner.
+    composer.fill("Count from 1 to 200. Put each number on its own line.")
     composer_form.evaluate("form => form.requestSubmit()")
     page.wait_for_timeout(100)
     composer.fill("Reply with exactly: rapid-second")
     composer_form.evaluate("form => form.requestSubmit()")
 
     # The follow-up must materialize as queued work instead of a second direct
-    # append. This control exists only while that queued item is cancellable,
-    # which in turn requires the first turn to still be running: nothing can
-    # queue behind a turn that already finished. gemma-3-270m on a fast runner
-    # can answer inside the 100 ms above, exactly as the Stop button a few lines
-    # up is already documented to do, so treat a miss as inapplicable only when
-    # the first turn is demonstrably done, and still fail when it was in flight.
-    try:
-        page.wait_for_selector(
-            'button[aria-label="Remove queued prompt 1"]',
-            state = "attached",
-            timeout = 10_000,
-        )
-    except Exception:
-        still_streaming = page.evaluate(
-            """() => !!document.querySelector('button[aria-label="Stop generating"]')"""
-        )
-        if still_streaming:
-            shoot("04-rapid-submit-no-queue-while-streaming")
-            raise
-        info("SKIP queued-prompt control: first turn finished inside the 100 ms window")
+    # append. This control exists only while the first turn is still running,
+    # so the assertion below silently depends on that turn outlasting the 100 ms
+    # wait. The first prompt above is deliberately long-running for that reason:
+    # a five-token reply from gemma-3-270m can land inside the window, exactly
+    # as the Stop button a few lines up is already documented to do, and then
+    # there is nothing to queue behind and this times out for no real fault.
+    # Asserted unconditionally: with a first turn that cannot finish that fast,
+    # a missing queue control is a genuine regression.
+    page.wait_for_selector(
+        'button[aria-label="Remove queued prompt 1"]',
+        state = "attached",
+        timeout = 10_000,
+    )
     page.wait_for_function(
         """(want) => {
             const replies = Array.from(
