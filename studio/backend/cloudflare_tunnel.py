@@ -55,7 +55,15 @@ _PUBLIC_PROBE_RETRY_DELAY = 1.0
 _DNS_POLL_DELAY = 2.0
 # Retry transient DoH failures, but give up fast when DoH is blocked outright.
 _DNS_MAX_DOH_ERRORS = 3
-_DOH_URL = "https://cloudflare-dns.com/dns-query?name={host}&type=A"
+# two resolvers: a too-early query negative-caches the nxdomain at one resolver
+_DOH_URLS = (
+    "https://cloudflare-dns.com/dns-query?name={host}&type=A",
+    "https://dns.google/resolve?name={host}&type=A",
+)
+# skip the first seconds so the first query does not seed those negative caches
+_DNS_INITIAL_GRACE = 3.0
+# cap the dns wait so a stale negative cache cannot starve the health probe
+_DNS_WAIT_MAX = 20.0
 
 
 def _windows_hidden_kwargs() -> dict:
@@ -212,23 +220,33 @@ def _wait_for_dns(host: str, deadline: float) -> None:
     import json
     import urllib.request
 
+    deadline = min(deadline, time.monotonic() + _DNS_WAIT_MAX)
+    grace = deadline - time.monotonic()
+    if grace > 0:
+        time.sleep(min(_DNS_INITIAL_GRACE, grace))
     errors = 0
     while True:
         answered = False
-        try:
-            req = urllib.request.Request(
-                _DOH_URL.format(host = host),
-                headers = {"Accept": "application/dns-json", "User-Agent": "unsloth-studio"},
-            )
-            with urllib.request.urlopen(req, timeout = 5) as response:
-                answered = bool(json.loads(response.read(65536)).get("Answer"))
-            errors = 0
-        except Exception:
+        round_errored = True
+        for doh_url in _DOH_URLS:
+            try:
+                req = urllib.request.Request(
+                    doh_url.format(host = host),
+                    headers = {"Accept": "application/dns-json", "User-Agent": "unsloth-studio"},
+                )
+                with urllib.request.urlopen(req, timeout = 5) as response:
+                    answered = bool(json.loads(response.read(65536)).get("Answer"))
+                round_errored = False
+            except Exception:
+                continue
+            if answered:
+                return
+        if round_errored:
             errors += 1
             if errors >= _DNS_MAX_DOH_ERRORS:
                 return
-        if answered:
-            return
+        else:
+            errors = 0
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return

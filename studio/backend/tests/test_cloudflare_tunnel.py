@@ -541,7 +541,53 @@ def test_wait_for_dns_bails_on_persistent_doh_errors(monkeypatch):
     _patch_urlopen(monkeypatch, handler)
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
     ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
-    assert len(calls) == ct._DNS_MAX_DOH_ERRORS
+    assert len(calls) == ct._DNS_MAX_DOH_ERRORS * len(ct._DOH_URLS)
+
+
+def test_wait_for_dns_second_resolver_rescues_negative_cached_first(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append(req.full_url)
+        if "cloudflare-dns.com" in req.full_url:
+            return _FakeResponse(b'{"Status":3}')
+        return _FakeResponse(b'{"Status":0,"Answer":[{"data":"104.16.0.1"}]}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
+    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 5)
+    assert len(calls) == 2
+    assert "dns.google" in calls[1]
+
+
+def test_wait_for_dns_delays_first_query(monkeypatch):
+    order = []
+
+    def handler(req):
+        order.append("query")
+        return _FakeResponse(b'{"Status":0,"Answer":[{"data":"104.16.0.1"}]}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "sleep", lambda s: order.append(("sleep", s)))
+    ct._wait_for_dns("words.trycloudflare.com", ct.time.monotonic() + 30)
+    assert order[0] == ("sleep", ct._DNS_INITIAL_GRACE)
+    assert order[1] == "query"
+
+
+def test_wait_for_dns_is_capped_below_the_probe_deadline(monkeypatch):
+    clock = [0.0]
+    calls = []
+
+    def handler(req):
+        calls.append(req.full_url)
+        return _FakeResponse(b'{"Status":3}')
+
+    _patch_urlopen(monkeypatch, handler)
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    ct._wait_for_dns("words.trycloudflare.com", 300.0)
+    assert calls
+    assert clock[0] <= ct._DNS_WAIT_MAX + ct._DNS_POLL_DELAY
 
 
 def test_verify_public_url_accepts_studio_marker(monkeypatch):
