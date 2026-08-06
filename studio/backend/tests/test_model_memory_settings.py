@@ -203,7 +203,8 @@ class TestMemlockLimit:
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(
-            resource, "getrlimit",
+            resource,
+            "getrlimit",
             lambda _w: (resource.RLIM_INFINITY, resource.RLIM_INFINITY),
         )
         assert mm.memlock_limit_bytes() is None
