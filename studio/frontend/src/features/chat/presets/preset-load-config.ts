@@ -11,13 +11,15 @@ import {
   DEFAULT_PER_MODEL_CONFIG,
   DEFAULT_MAX_SEQ_LENGTH,
   KV_CACHE_DTYPES,
-  MTP_SPECULATIVE_TYPES,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
-  SPECULATIVE_TYPES,
   normalizeMaxSeqLength,
   type PerModelConfig,
 } from "@/features/model-picker/model-config/per-model-config";
+import {
+  DRAFT_N_MAX_SPEC_TYPES,
+  SPECULATIVE_TYPES,
+} from "@/lib/speculative-modes";
 import {
   GPU_LAYERS_AUTO,
   useChatRuntimeStore,
@@ -77,7 +79,7 @@ export function normalizePresetLoadConfig(
   const speculativeType = rawSpecType ?? null;
   const specDraftNMax =
     speculativeType != null &&
-    MTP_SPECULATIVE_TYPES.has(speculativeType) &&
+    DRAFT_N_MAX_SPEC_TYPES.has(speculativeType) &&
     typeof partial.specDraftNMax === "number" &&
     Number.isFinite(partial.specDraftNMax)
       ? Math.max(1, Math.min(16, Math.round(partial.specDraftNMax)))
