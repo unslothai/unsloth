@@ -76,9 +76,9 @@ def test_status_reads_do_not_block_behind_a_reap(monkeypatch):
             answered.set()
 
         threading.Thread(target = read_status, daemon = True).start()
-        assert answered.wait(timeout = 5), (
-            "a status read blocked behind the reap; the event loop would stall with it"
-        )
+        assert answered.wait(
+            timeout = 5
+        ), "a status read blocked behind the reap; the event loop would stall with it"
     finally:
         release.set()
         unloading.join(timeout = 10)
@@ -96,9 +96,9 @@ def test_status_reads_do_not_block_during_a_llama_cpp_update():
             answered.set()
 
         threading.Thread(target = read_status, daemon = True).start()
-        assert answered.wait(timeout = 5), (
-            "a status read blocked for the length of the llama.cpp install"
-        )
+        assert answered.wait(
+            timeout = 5
+        ), "a status read blocked for the length of the llama.cpp install"
 
 
 def test_ggml_download_drops_its_adopted_pid(monkeypatch):
@@ -116,9 +116,7 @@ def test_ggml_download_drops_its_adopted_pid(monkeypatch):
         def poll(self):
             return 0
 
-    monkeypatch.setattr(
-        ggml_mod, "_cached_model_path", lambda model_id: None
-    )
+    monkeypatch.setattr(ggml_mod, "_cached_model_path", lambda model_id: None)
     import core.inference.stt_download_worker as worker_mod
 
     monkeypatch.setattr(worker_mod, "spawn_download", lambda *a, **k: _Finished())
@@ -199,9 +197,7 @@ def test_download_probe_expires(monkeypatch):
 
 def test_unknown_model_is_never_memoised(monkeypatch):
     called = []
-    monkeypatch.setattr(
-        mtmd_mod, "_cached_model_paths", lambda model_id: called.append(model_id)
-    )
+    monkeypatch.setattr(mtmd_mod, "_cached_model_paths", lambda model_id: called.append(model_id))
     assert mtmd_mod.is_model_downloaded("not-a-model") is False
     assert called == []
 
