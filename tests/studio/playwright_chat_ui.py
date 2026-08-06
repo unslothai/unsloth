@@ -1087,15 +1087,26 @@ with sync_playwright() as p:
             // A node captured before the submit is detached by now: its input
             // event never reaches React's delegated handler and requestSubmit
             // fires on a form that is no longer in the document.
-            const deadline = Date.now() + 4000;
+            // Wait for the first turn to have actually started rather than
+            // guessing a delay. A fixed timeout raced the request being issued
+            // at all: the follow-up went out before there was anything to queue
+            // behind, and the hold had nothing to hold. The user bubble appears
+            // when the first submit registers, and the response is held, so the
+            // turn is still running from then until we release it.
+            const userBubbles = () =>
+                document.querySelectorAll('[data-role="user"]').length;
+            const startedWith = userBubbles();
+            const deadline = Date.now() + 20000;
             const trySubmit = () => {
                 const composer = document.querySelector(
                     'textarea[aria-label="Message input"]'
                 );
-                if (!composer || !composer.isConnected || !composer.form) {
+                if (userBubbles() <= startedWith
+                    || !composer || !composer.isConnected || !composer.form) {
                     if (Date.now() > deadline) {
                         window.__unslothRapid.error =
-                            "no connected composer to send the follow-up into";
+                            "first turn never registered, or no connected "
+                            + "composer to send the follow-up into";
                         return;
                     }
                     setTimeout(trySubmit, 25);
@@ -1112,7 +1123,7 @@ with sync_playwright() as p:
                 composer.form.requestSubmit();
                 window.__unslothRapid.submitted = true;
             };
-            setTimeout(trySubmit, 100);
+            setTimeout(trySubmit, 25);
             const poll = setInterval(() => {
                 if (document.querySelector(
                     'button[aria-label="Remove queued prompt 1"]'
