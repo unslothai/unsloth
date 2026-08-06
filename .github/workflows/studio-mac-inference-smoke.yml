@@ -140,8 +140,17 @@ jobs:
           path: hf-cache
           key: ${{ runner.os }}-hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v2
 
+      # Shared preamble, but it sits below phase 1's model priming because the
+      # install probe (stories260K) rides along in that same step. `!cancelled()`
+      # keeps it out of the implicit `success()` chain: a phase-1 GGUF download
+      # failure or 15-minute timeout is a phase-1 resource problem, and skipping
+      # the shared install because of it would take the assert-llama gate --
+      # and with it phases 2 and 3 -- down as well. A step timeout sets the step
+      # to failed, not cancelled (actions/runner StepsRunner.cs), so `!cancelled()`
+      # is true here; a real run cancellation still skips.
       - name: Install Unsloth (--local, --no-torch)
         id: install
+        if: ${{ !cancelled() }}
         timeout-minutes: 20
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -155,8 +164,14 @@ jobs:
       # Last step of the shared preamble. Phases 2 and 3 gate on its outcome:
       # once checkout, install and this check have passed, a failure inside one
       # phase says nothing about the others, so the others should still run.
+      # Gates on `install` explicitly rather than on the implicit `success()`,
+      # for the same reason as the step above: the implicit check is job-wide, so
+      # a phase-1 download failure would skip it and silently take phases 2 and 3
+      # with it. A broken install still skips this step, so its outcome stays
+      # non-success and the phases below correctly stay out.
       - name: Assert llama.cpp loads on this macOS
         id: assert-llama
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         timeout-minutes: 5
         run: bash .github/scripts/assert-llama-loads.sh
 
