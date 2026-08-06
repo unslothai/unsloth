@@ -2458,8 +2458,8 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
     <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the settings column below. Load progress shows in a toast. */}
-      <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
-        <div className="flex items-center gap-2">
+      <div className="pointer-events-none relative z-40 flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
+        <div className="pointer-events-auto flex items-center gap-2">
           {pageMode === "train" ? (
             <TrainBaseSelector
               families={trainFamilies}
@@ -2517,7 +2517,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             ]}
           />
         </div>
-        <div className="flex items-center gap-2">
+        <div className="pointer-events-auto flex items-center gap-2">
           {/* Video is a separate page, so it sits out here rather than in the mode strip. */}
           <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
         </div>
