@@ -266,6 +266,60 @@ def test_pretokenized_rows_are_truncated_so_the_cap_is_really_enforced(
     assert _collated_width(trainer) == 2 * _MODEL_MAX_SEQ_LENGTH
 
 
+def test_a_with_transform_dataset_keeps_its_cap(tmp_path, trl_has_guard):
+    """A transform recreates rows on read, so map() cannot cap them.
+
+    If the BACKING table carries input_ids the schema check says "tokenized", but
+    Dataset.map writes that table while the transform keeps handing back the original
+    overlength rows. Clearing max_length there would train uncapped with padding-free
+    still on, which is the worst of both.
+    """
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    from datasets import Dataset
+
+    def _transformed(tok):
+        ids = tok("The quick brown fox. " * 200)["input_ids"]
+        assert len(ids) > _MODEL_MAX_SEQ_LENGTH
+        base = Dataset.from_list([{"input_ids": list(ids), "attention_mask": [1] * len(ids)}] * 4)
+        # Backing schema HAS input_ids, and the transform re-inflates every row on read.
+        return base.with_transform(
+            lambda batch: {
+                "input_ids": [list(ids)] * len(batch["input_ids"]),
+                "attention_mask": [[1] * len(ids)] * len(batch["input_ids"]),
+            }
+        )
+
+    trainer = _build(tmp_path, dataset = _transformed)
+    assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH, "the cap must survive"
+    assert trainer.args.padding_free is False, "padding-free must be dropped instead"
+
+
+def test_a_raw_eval_split_is_left_for_the_tokenizer(tmp_path, trl_has_guard):
+    """A raw conversational eval split must not be sliced as if it were tokens.
+
+    `messages: list[dict]` is a per-row sequence too, so a blanket truncation would cut
+    conversation turns off the end and silently corrupt evaluation.
+    """
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    from datasets import Dataset
+
+    text = "The quick brown fox. " * 200
+    raw = Dataset.from_list([{"text": text}] * 4)
+    trainer = _build(
+        tmp_path, dataset = _tokenized_dataset, eval_dataset = {"validation": raw}
+    )
+
+    # The train split was tokenized and capped, so the cap is consumed.
+    assert trainer.args.max_length is None
+    split = trainer.eval_dataset["validation"]
+    # The raw split is untouched: no truncation ran over it, so the tokenizer pass that
+    # follows sees exactly what the user passed. A blanket map would have sliced it.
+    if "text" in (split.column_names or []):
+        assert all(r["text"] == text for r in split), "a raw column was sliced"
+
+
 def test_a_torch_formatted_dataset_is_still_truncated(tmp_path, trl_has_guard):
     """A set_format dataset hands batched map() tensors, not lists.
 

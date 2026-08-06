@@ -1284,25 +1284,42 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # Only a MATERIALISED tokenized dataset. A with_transform dataset yields
                     # input_ids on access while column_names still says ["text"], so mapping it
                     # would truncate the wrong thing; that case keeps the fallback below.
+                    # One predicate, applied per DATASET, because the train split and each eval
+                    # split can be in different shapes. Truncating is only safe for a materialised
+                    # tokenized table: raw conversational rows (messages: list[dict]) are per-row
+                    # sequences too and would be sliced into corrupted turns, and a with_transform
+                    # dataset recreates its rows on read, so map() writes the backing table while
+                    # the reader keeps handing back overlength input_ids.
+                    "    def _unsloth_truncatable(_ds):\n"
+                    "        if _ds is None or not hasattr(_ds, 'map'): return False\n"
+                    "        try:\n"
+                    "            if str((getattr(_ds, 'format', None) or {}).get('type', '')).lower() == 'custom':\n"
+                    "                return False\n"
+                    "        except Exception:\n"
+                    "            return False\n"
+                    "        try:\n"
+                    "            _cols = getattr(_ds, 'column_names', None)\n"
+                    "            if isinstance(_cols, dict):\n"
+                    "                _cols = [_c for _v in _cols.values() for _c in (_v or [])]\n"
+                    "            return bool(_cols) and 'input_ids' in _cols\n"
+                    "        except Exception:\n"
+                    "            return False\n"
                     "    _unsloth_can_truncate = False\n"
                     "    if not _unsloth_prep_truncates and not _unsloth_skip_prepare:\n"
-                    "        try:\n"
-                    "            _unsloth_real_columns = getattr(train_dataset, 'column_names', None)\n"
-                    "            if isinstance(_unsloth_real_columns, dict):\n"
-                    "                _unsloth_real_columns = [_c for _v in _unsloth_real_columns.values() for _c in (_v or [])]\n"
-                    "            _unsloth_can_truncate = bool(_unsloth_real_columns) and 'input_ids' in _unsloth_real_columns and hasattr(train_dataset, 'map')\n"
-                    "        except Exception:\n"
-                    "            _unsloth_can_truncate = False\n"
+                    "        _unsloth_can_truncate = _unsloth_truncatable(train_dataset)\n"
                     "    if _unsloth_can_truncate:\n"
                     "        _unsloth_cap = args.max_length\n"
+                    # TRL forwards its preparation map_kwargs; honour the same setting so a large
+                    # pre-tokenized dataset is not rewritten single-process.
+                    "        _unsloth_map_kw = {}\n"
+                    "        _unsloth_nproc = getattr(args, 'dataset_num_proc', None)\n"
+                    "        if _unsloth_nproc: _unsloth_map_kw['num_proc'] = _unsloth_nproc\n"
                     # Same rule as TRL's truncate_dataset: slice every per-row list column, so
                     # input_ids, labels, attention_mask and the masks stay aligned. Written out
                     # rather than imported, because trl.data_utils drags in the processor stack
-                    # and an ImportError there would silently drop the cap.
-                    # isinstance(list) is not enough: a dataset with a torch/numpy format hands
-                    # batched map() tensors, where `if _col` raises on the ambiguous truth value and
-                    # a list check would silently leave the rows long. Ask for a per-row sequence
-                    # instead, excluding str/bytes so a text column is never sliced.
+                    # and an ImportError there would silently drop the cap. A torch/numpy format
+                    # hands batched map() tensors, where `if _col` raises on the ambiguous truth
+                    # value, so ask for a per-row sequence and exclude str/bytes.
                     "        def _unsloth_is_sequence_column(_col):\n"
                     "            try:\n"
                     "                if len(_col) == 0: return False\n"
@@ -1313,20 +1330,37 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            return hasattr(_first, '__len__')\n"
                     "        def _unsloth_truncate_rows(_batch):\n"
                     "            return {_k: ([_v[:_unsloth_cap] for _v in _col] if _unsloth_is_sequence_column(_col) else _col) for _k, _col in _batch.items()}\n"
+                    # Read a row BACK after the rewrite. Every case above is a guess about what the
+                    # dataset will do; this is the one check that observes it. Anything still over
+                    # the cap keeps max_length and drops padding-free, so an unforeseen shape
+                    # degrades to the safe path instead of silently training uncapped.
+                    "        def _unsloth_within_cap(_ds):\n"
+                    "            try:\n"
+                    "                for _row in _ds:\n"
+                    "                    return len(_row['input_ids']) <= _unsloth_cap\n"
+                    "            except Exception:\n"
+                    "                return False\n"
+                    "            return True\n"
+                    "        _unsloth_orig_train = train_dataset\n"
+                    "        _unsloth_orig_eval = eval_dataset if 'eval_dataset' in locals() else None\n"
                     "        try:\n"
-                    "            train_dataset = train_dataset.map(_unsloth_truncate_rows, batched = True)\n"
-                    # eval_dataset gets the same cut: max_length is cleared below, so a long eval
-                    # row would otherwise reach the model unclipped at evaluation time.
-                    # TRL accepts a dict of named eval splits, which has no .map of its own. Cut
-                    # each split: skipping them while still clearing max_length below would leave
-                    # evaluation running at the full length the cap was meant to stop.
+                    "            train_dataset = train_dataset.map(_unsloth_truncate_rows, batched = True, **_unsloth_map_kw)\n"
+                    # Each eval split is tested on its own: a raw split stays raw for the tokenizer
+                    # pass that follows, and only a materialised tokenized one is cut.
                     "            if 'eval_dataset' in locals() and eval_dataset is not None:\n"
                     "                if isinstance(eval_dataset, dict):\n"
-                    "                    eval_dataset = {_k: (_v.map(_unsloth_truncate_rows, batched = True) if hasattr(_v, 'map') else _v) for _k, _v in eval_dataset.items()}\n"
-                    "                elif hasattr(eval_dataset, 'map'):\n"
-                    "                    eval_dataset = eval_dataset.map(_unsloth_truncate_rows, batched = True)\n"
-                    "            _unsloth_prep_truncates = True\n"
+                    "                    eval_dataset = {_k: (_v.map(_unsloth_truncate_rows, batched = True, **_unsloth_map_kw) if _unsloth_truncatable(_v) else _v) for _k, _v in eval_dataset.items()}\n"
+                    "                elif _unsloth_truncatable(eval_dataset):\n"
+                    "                    eval_dataset = eval_dataset.map(_unsloth_truncate_rows, batched = True, **_unsloth_map_kw)\n"
+                    "            if _unsloth_within_cap(train_dataset):\n"
+                    "                _unsloth_prep_truncates = True\n"
+                    "            else:\n"
+                    "                train_dataset = _unsloth_orig_train\n"
+                    "                if 'eval_dataset' in locals(): eval_dataset = _unsloth_orig_eval\n"
+                    "                print('Unsloth: the pre-tokenized dataset still exceeds `max_length` after truncation, so padding-free batching is being turned off instead.')\n"
                     "        except Exception as _unsloth_truncate_error:\n"
+                    "            train_dataset = _unsloth_orig_train\n"
+                    "            if 'eval_dataset' in locals(): eval_dataset = _unsloth_orig_eval\n"
                     # Never silent: a swallowed failure here reads as the cap being enforced.
                     "            print('Unsloth: could not truncate the pre-tokenized dataset to `max_length` (' + str(_unsloth_truncate_error) + ').')\n"
                     "    if _unsloth_prep_truncates:\n"
