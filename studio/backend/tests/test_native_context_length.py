@@ -12,6 +12,7 @@ Needs no GPU, network, or libraries beyond pytest and pydantic.
 
 import io
 import json
+import re
 import struct
 import sys
 import types as _types
@@ -412,16 +413,20 @@ class TestRouteCompleteness:
             ), f"GGUF LoadResponse block #{i} missing runtime fields:\n{block[:200]}"
         assert "for name in _InferenceRuntimeFields.model_fields" in self._source
 
-    def test_non_gguf_load_responses_omit_field(self):
-        """Non-GGUF LoadResponse blocks do not set native_context_length (defaults to None)."""
+    def test_non_gguf_load_responses_report_the_native_window(self):
+        """Non-GGUF LoadResponse blocks carry native_context_length and max_context_length.
+
+        These once had to be absent, back when only GGUF knew its own window; a non-GGUF
+        block that leaves them off now defaults them to None and blanks the control.
+        """
         blocks = self._find_construction_blocks("LoadResponse")
         non_gguf = [b for b in blocks if "is_gguf = True" not in b and "is_gguf=True" not in b]
-        # Non-GGUF paths shouldn't reference native_context_length
-        # (Pydantic defaults it to None, so omitting it is correct).
+        assert non_gguf, "Expected at least one non-GGUF LoadResponse block"
         for block in non_gguf:
-            assert (
-                "native_context_length" not in block
-            ), f"Non-GGUF LoadResponse should not set native_context_length:\n{block[:200]}"
+            for field in ("native_context_length", "max_context_length"):
+                assert re.search(
+                    rf"{field} = _positive_int_or_none\(\s*_model_info\.get\(", block
+                ), f"Non-GGUF LoadResponse should read {field} from _model_info:\n{block[:200]}"
 
     def test_non_gguf_load_responses_set_runtime_context_length(self):
         """Non-GGUF LoadResponse blocks report runtime context_length."""

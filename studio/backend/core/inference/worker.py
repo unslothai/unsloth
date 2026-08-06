@@ -427,12 +427,21 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _entry = (
                 _bm.get(mc.identifier) or _bm.get(getattr(backend, "active_model_name", None)) or {}
             )
-            try:
-                _context_length = _entry.get("context_length")
-                if _context_length is not None:
-                    model_info["context_length"] = int(_context_length)
-            except Exception as _ctx_exc:
-                logger.warning("context_length forward failed: %s", _ctx_exc)
+            # The whole context triple, not just what is being served: the
+            # parent reports the model's own window and this machine's ceiling
+            # too, and it has no way to recompute either once the worker holds
+            # the model.
+            for _ctx_field in (
+                "context_length",
+                "native_context_length",
+                "max_context_length",
+            ):
+                try:
+                    _ctx_value = _entry.get(_ctx_field)
+                    if _ctx_value is not None:
+                        model_info[_ctx_field] = int(_ctx_value)
+                except Exception as _ctx_exc:
+                    logger.warning("%s forward failed: %s", _ctx_field, _ctx_exc)
             # Backend post-load audio classification outranks pre-load config.
             model_info.update(
                 {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}

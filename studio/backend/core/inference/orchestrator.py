@@ -118,6 +118,27 @@ class GenStreamErrorRaised(RuntimeError):
         self.public = bool(public)
 
 
+def _mirrored_model_entry(model_info: dict, model_name: str) -> dict:
+    """The parent's view of a model the worker holds.
+
+    Measured or classified in the subprocess and unrecoverable once the model lives
+    there, so a field the worker sends and this does not copy is one the API can never
+    report.
+    """
+    return {
+        "is_vision": model_info.get("is_vision", False),
+        "is_lora": model_info.get("is_lora", False),
+        "is_mlx": model_info.get("is_mlx", False),
+        "display_name": model_info.get("display_name", model_name),
+        "is_audio": model_info.get("is_audio", False),
+        "audio_type": model_info.get("audio_type"),
+        "has_audio_input": model_info.get("has_audio_input", False),
+        "context_length": model_info.get("context_length"),
+        "native_context_length": model_info.get("native_context_length"),
+        "max_context_length": model_info.get("max_context_length"),
+    }
+
+
 class InferenceOrchestrator:
     """
     Inference backend orchestrator — subprocess-based.
@@ -1378,16 +1399,9 @@ class InferenceOrchestrator:
                     # self.models" guard, and the worker's absent-name fallback would unload
                     # its *active* model, not the already-gone one.
                     self.models = {}
-                    self.models[self.active_model_name] = {
-                        "is_vision": model_info.get("is_vision", False),
-                        "is_lora": model_info.get("is_lora", False),
-                        "is_mlx": model_info.get("is_mlx", False),
-                        "display_name": model_info.get("display_name", model_name),
-                        "is_audio": model_info.get("is_audio", False),
-                        "audio_type": model_info.get("audio_type"),
-                        "has_audio_input": model_info.get("has_audio_input", False),
-                        "context_length": model_info.get("context_length"),
-                    }
+                    self.models[self.active_model_name] = _mirrored_model_entry(
+                        model_info, model_name
+                    )
                     self.models[self.active_model_name].update(
                         _mlx_runtime_mirror_fields(model_info)
                     )
