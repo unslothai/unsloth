@@ -1355,8 +1355,19 @@ _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 # the program under Git Bash, where a POSIX path is how one is written:
 # `start "" /c/Program Files/PowerShell/7/pwsh.exe` read the path as a switch.
 _START_SWITCHES = _START_SWITCHES_WITH_VALUE | {
-    "/min", "/max", "/wait", "/b", "/i", "/low", "/normal", "/high",
-    "/realtime", "/abovenormal", "/belownormal", "/separate", "/shared",
+    "/min",
+    "/max",
+    "/wait",
+    "/b",
+    "/i",
+    "/low",
+    "/normal",
+    "/high",
+    "/realtime",
+    "/abovenormal",
+    "/belownormal",
+    "/separate",
+    "/shared",
 }
 # cmd keywords whose command word does not follow immediately, or at all.
 _CMD_CONTROL_FLOW = frozenset({"if", "else", "do", "for"})
@@ -1398,8 +1409,6 @@ def _cmd_quoted_program(payload: str) -> str:
         return ""
     end = payload.find('"', 1)
     return payload[1:end] if end > 1 else ""
-
-
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -1806,6 +1815,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     # recursively scan the nested command string.
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
     _SHELLS_WIN = {"cmd", "cmd.exe"}
+
     def _nested_shell_at(i: int) -> None:
         nonlocal blocked
         token = tokens[i]
@@ -1959,7 +1969,6 @@ def _find_blocked_commands(command: str) -> set[str]:
                     if k < len(tokens):
                         blocked |= _scan_cmd_payload(_cmd_unquote(tokens[k]))
                         start_children.add(k)
-
 
     # start can launch a shell and a shell can run a start, so the two feed each
     # other. Every dependency points BACKWARD (a -c flag reads the shell name

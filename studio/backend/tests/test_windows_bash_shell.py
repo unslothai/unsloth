@@ -881,6 +881,7 @@ def test_a_cmd_control_flow_body_is_screened(monkeypatch, command, bash):
     _fake_windows_screening(monkeypatch, bash = bash)
     assert tools._find_blocked_commands(command)
 
+
 @pytest.mark.parametrize("depth", [1, 2, 5, 8])
 def test_a_launcher_chain_is_screened_at_any_depth(monkeypatch, depth):
     # Alternating whole passes needed one round per layer, so a bounded number
@@ -919,6 +920,7 @@ def test_inspecting_a_file_named_after_a_blocked_command_is_allowed(monkeypatch,
         'cmd /c "C:/Program Files/PowerShell/7/pwsh.exe" -c ls'
     )
     assert "rm" in tools._find_blocked_commands('cmd /c "C:/tools/rm C:/logs/x.exe"')
+
 
 @pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
 @pytest.mark.parametrize(
