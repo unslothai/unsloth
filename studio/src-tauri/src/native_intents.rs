@@ -205,7 +205,7 @@ impl NativeIntakeState {
             &token,
             classified.display_label,
             classified.size_bytes,
-            classified.modified_ms,
+            None,
         )?;
         Ok(NativeDocumentFolderSelection {
             token: lease.native_path_lease,
@@ -551,6 +551,7 @@ pub fn open_path_token(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -677,6 +678,10 @@ mod tests {
 
         let lease = state.sign_document_folder_path(&path).unwrap();
         assert!(lease.token.contains('.'));
+        let payload = lease.token.split('.').next().unwrap();
+        let payload: serde_json::Value =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap();
+        assert!(payload["modified_ms"].is_null());
         assert_eq!(
             lease.display_name,
             path.file_name().unwrap().to_string_lossy()

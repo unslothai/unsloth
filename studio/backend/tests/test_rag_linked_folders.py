@@ -54,9 +54,14 @@ def test_schema_is_idempotent_and_persists_folder_tables(rag_home):
                 "SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'linked_folder%'"
             )
         }
+        job_columns = {
+            row["name"]
+            for row in second.execute("PRAGMA table_info(linked_folder_sync_jobs)")
+        }
     finally:
         second.close()
     assert {"linked_folders", "linked_folder_files", "linked_folder_sync_jobs"} <= tables
+    assert "rebuild_requested" in job_columns
 
 
 @requires_sqlite_vec
@@ -221,6 +226,45 @@ def test_extension_changing_rename_reingests_with_the_new_parser(rag_home, stub_
 
 
 @requires_sqlite_vec
+def test_rename_reuse_verifies_content_before_reusing_the_document(rag_home, stub_embeddings):
+    source, folder = _folder(rag_home)
+    original = source / "original.txt"
+    original.write_text("first words", encoding = "utf-8")
+    assert _run(folder["id"])["status"] == "completed"
+    conn = rag_db.get_connection()
+    try:
+        before = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
+    finally:
+        conn.close()
+
+    renamed = source / "renamed.txt"
+    original.rename(renamed)
+    renamed.write_text("other words", encoding = "utf-8")
+    os.utime(renamed, ns = (renamed.stat().st_atime_ns, before["mtime_ns"]))
+    assert renamed.stat().st_ino == before["inode"]
+    assert renamed.stat().st_size == before["size_bytes"]
+
+    result = _run(folder["id"])
+    assert result["renamed"] == 0
+    assert result["changed"] == 1
+    conn = rag_db.get_connection()
+    try:
+        after = dict(
+            conn.execute(
+                "SELECT * FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+            ).fetchone()
+        )
+        assert after["document_id"] != before["document_id"]
+        assert store.search_lexical(conn, folder["scope"], "other", 5)
+    finally:
+        conn.close()
+
+
+@requires_sqlite_vec
 def test_changed_file_failure_and_unavailable_scan_retain_prior_index(
     rag_home, stub_embeddings, monkeypatch
 ):
@@ -337,6 +381,26 @@ def test_validate_folder_rejects_symlink_root(rag_home):
         pytest.skip("directory symlinks are unavailable")
     with pytest.raises(ValueError, match = "Symbolic-link"):
         folder_sync.validate_folder_path(str(alias))
+
+
+@requires_sqlite_vec
+def test_linked_folders_cannot_overlap_within_a_scope(rag_home):
+    parent = rag_home / "parent"
+    child = parent / "child"
+    child.mkdir(parents = True)
+    folder_sync.create_folder(
+        scope_type = "project", scope_id = "one", path = str(parent)
+    )
+
+    with pytest.raises(ValueError, match = "cannot overlap"):
+        folder_sync.create_folder(
+            scope_type = "project", scope_id = "one", path = str(child)
+        )
+
+    other_scope = folder_sync.create_folder(
+        scope_type = "project", scope_id = "two", path = str(child)
+    )
+    assert other_scope["path"] == str(child)
 
 
 def test_backend_routes_match_linked_folder_client_contract():
@@ -472,6 +536,7 @@ def test_sync_requests_are_atomically_deduplicated_and_history_is_pruned(rag_hom
         conn.commit()
     finally:
         conn.close()
+
     monkeypatch.setattr(folder_sync.config, "FOLDER_JOB_HISTORY_LIMIT", 1)
     active = folder_sync.request_sync(folder["id"])
     conn = rag_db.get_connection()
@@ -487,6 +552,95 @@ def test_sync_requests_are_atomically_deduplicated_and_history_is_pruned(rag_hom
             ).fetchone()["id"]
             == active
         )
+    finally:
+        conn.close()
+
+
+@requires_sqlite_vec
+def test_rebuild_requested_during_running_sync_queues_a_successor(rag_home):
+    _, folder = _folder(rag_home)
+    sync_job = folder_sync.request_sync(folder["id"])
+    conn = rag_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE linked_folder_sync_jobs SET status='running' WHERE id=?", (sync_job,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert folder_sync.request_sync(folder["id"], rebuild = True) == sync_job
+    folder_sync.reconcile_folder(sync_job)
+
+    conn = rag_db.get_connection()
+    try:
+        successor = conn.execute(
+            "SELECT * FROM linked_folder_sync_jobs WHERE folder_id=? AND status='pending'",
+            (folder["id"],),
+        ).fetchone()
+        assert successor is not None
+        assert successor["id"] != sync_job
+        assert successor["kind"] == "rebuild"
+    finally:
+        conn.close()
+
+
+@requires_sqlite_vec
+def test_requested_rebuild_promotes_an_intervening_pending_sync(rag_home):
+    _, folder = _folder(rag_home)
+    completed = folder_sync.request_sync(folder["id"])
+    conn = rag_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE linked_folder_sync_jobs "
+            "SET status='completed', rebuild_requested=1 WHERE id=?",
+            (completed,),
+        )
+        pending = "intervening-sync"
+        conn.execute(
+            "INSERT INTO linked_folder_sync_jobs"
+            "(id, folder_id, kind, status, stage, created_at) "
+            "VALUES(?,?,'sync','pending','queued',?)",
+            (pending, folder["id"], folder_sync._now()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    folder_sync._queue_requested_rebuild(completed)
+    conn = rag_db.get_connection()
+    try:
+        successor = conn.execute(
+            "SELECT kind, rebuild_requested FROM linked_folder_sync_jobs WHERE id=?", (pending,)
+        ).fetchone()
+        assert tuple(successor) == ("rebuild", 0)
+        assert conn.execute(
+            "SELECT rebuild_requested FROM linked_folder_sync_jobs WHERE id=?", (completed,)
+        ).fetchone()["rebuild_requested"] == 0
+    finally:
+        conn.close()
+
+
+@requires_sqlite_vec
+def test_pending_rebuild_promotion_clears_a_recovered_successor_flag(rag_home):
+    _, folder = _folder(rag_home)
+    job_id = folder_sync.request_sync(folder["id"])
+    conn = rag_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE linked_folder_sync_jobs SET rebuild_requested=1 WHERE id=?", (job_id,)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert folder_sync.request_sync(folder["id"], rebuild = True) == job_id
+    conn = rag_db.get_connection()
+    try:
+        job = conn.execute(
+            "SELECT kind, rebuild_requested FROM linked_folder_sync_jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        assert tuple(job) == ("rebuild", 0)
     finally:
         conn.close()
 
@@ -555,6 +709,24 @@ def test_unexpected_reconcile_failure_resets_folder_status(rag_home, monkeypatch
     current = folder_sync.get_folder(folder["id"])
     assert current["status"] == "error"
     assert current["last_error"] == "unexpected"
+
+
+@requires_sqlite_vec
+def test_reconcile_errors_do_not_persist_native_paths(rag_home, monkeypatch):
+    source, folder = _folder(rag_home)
+    private_path = source / "private" / "notes.txt"
+    monkeypatch.setattr(
+        folder_sync,
+        "_scan",
+        lambda *args: (_ for _ in ()).throw(OSError(f"cannot read {private_path}")),
+    )
+
+    result = _run(folder["id"])
+    current = folder_sync.get_folder(folder["id"])
+    assert result["status"] == "failed"
+    assert str(source) not in result["error"]
+    assert str(source) not in current["last_error"]
+    assert "<native_path>" in result["error"]
 
 
 def test_project_rag_cleanup_runs_off_the_event_loop(monkeypatch):

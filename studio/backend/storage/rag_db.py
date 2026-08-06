@@ -145,6 +145,7 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             renamed INTEGER NOT NULL DEFAULT 0,
             failed INTEGER NOT NULL DEFAULT 0,
             error TEXT,
+            rebuild_requested INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             started_at TEXT,
             completed_at TEXT
@@ -188,6 +189,14 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         "SELECT d.sha256 FROM documents d WHERE d.id=linked_folder_files.document_id) "
         "WHERE content_hash IS NULL"
     )
+    job_cols = {
+        r[1] for r in conn.execute("PRAGMA table_info(linked_folder_sync_jobs)").fetchall()
+    }
+    if "rebuild_requested" not in job_cols:
+        conn.execute(
+            "ALTER TABLE linked_folder_sync_jobs "
+            "ADD COLUMN rebuild_requested INTEGER NOT NULL DEFAULT 0"
+        )
     # Retire duplicate active jobs from older schemas before enforcing atomic
     # per-folder scheduling for manual and periodic requests.
     conn.execute(

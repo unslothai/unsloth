@@ -43,6 +43,38 @@ def _hash_file(path: str) -> str:
     return digest.hexdigest()
 
 
+def _path_key(path: str) -> str:
+    return os.path.normcase(os.path.normpath(path))
+
+
+def _same_file(left: str, right: str) -> bool:
+    try:
+        return os.path.samefile(left, right)
+    except OSError:
+        return False
+
+
+def _paths_overlap(left: str, right: str) -> bool:
+    try:
+        if os.path.commonpath((left, right)) in (left, right):
+            return True
+    except ValueError:
+        pass
+    return any(_same_file(left, str(parent)) for parent in Path(right).parents) or any(
+        _same_file(right, str(parent)) for parent in Path(left).parents
+    )
+
+
+def _error_text(exc: Exception, native_path: str | None = None) -> str:
+    from utils.native_path_leases import redact_native_paths
+
+    error = redact_native_paths(str(exc) or exc.__class__.__name__)
+    if native_path:
+        error = error.replace(native_path, "<native_path>")
+        error = error.replace(os.path.normpath(native_path), "<native_path>")
+    return error
+
+
 def _is_within(root: str, path: str) -> bool:
     try:
         return os.path.normcase(os.path.commonpath([root, path])) == os.path.normcase(root)
@@ -122,13 +154,18 @@ def create_folder(
     now = _now()
     conn = rag_db.get_connection()
     try:
-        path_comparison = "path=? COLLATE NOCASE" if os.name == "nt" else "path=?"
+        conn.execute("BEGIN IMMEDIATE")
+        normalized_key = _path_key(normalized)
         existing = conn.execute(
-            f"SELECT * FROM linked_folders WHERE scope=? AND {path_comparison}",
-            (scope, normalized),
-        ).fetchone()
-        if existing is not None:
-            return dict(existing)
+            "SELECT * FROM linked_folders WHERE scope=?", (scope,)
+        ).fetchall()
+        for row in existing:
+            existing_key = _path_key(row["path"])
+            if existing_key == normalized_key or _same_file(row["path"], normalized):
+                conn.rollback()
+                return dict(row)
+            if _paths_overlap(existing_key, normalized_key):
+                raise ValueError("Linked folders in the same scope cannot overlap")
         conn.execute(
             "INSERT INTO linked_folders(id, scope_type, scope_id, scope, path, name, "
             "root_device, root_inode, auto_sync, status, created_at, updated_at) "
@@ -152,6 +189,9 @@ def create_folder(
         return dict(
             conn.execute("SELECT * FROM linked_folders WHERE id=?", (folder_id,)).fetchone()
         )
+    except Exception:
+        conn.rollback()
+        raise
     finally:
         conn.close()
 
@@ -280,9 +320,21 @@ def request_sync(folder_id: str, *, rebuild: bool = False) -> str:
             (folder_id,),
         ).fetchone()
         if active is not None:
-            if rebuild and active["status"] == "pending" and active["kind"] != "rebuild":
+            if rebuild and active["status"] == "pending":
                 conn.execute(
-                    "UPDATE linked_folder_sync_jobs SET kind='rebuild' WHERE id=?", (active["id"],)
+                    "UPDATE linked_folder_sync_jobs SET kind='rebuild', rebuild_requested=0 "
+                    "WHERE id=?",
+                    (active["id"],),
+                )
+            elif rebuild and active["kind"] != "rebuild":
+                conn.execute(
+                    "UPDATE linked_folder_sync_jobs SET rebuild_requested=1 WHERE id=?",
+                    (active["id"],),
+                )
+            elif rebuild:
+                conn.execute(
+                    "UPDATE linked_folder_sync_jobs SET rebuild_requested=0 WHERE id=?",
+                    (active["id"],),
                 )
             conn.commit()
             return active["id"]
@@ -304,6 +356,7 @@ def _prune_terminal_jobs(conn) -> None:
     conn.execute(
         "DELETE FROM linked_folder_sync_jobs WHERE id IN ("
         "SELECT id FROM linked_folder_sync_jobs WHERE status IN ('completed','failed') "
+        "AND rebuild_requested=0 "
         "ORDER BY completed_at DESC, created_at DESC LIMIT -1 OFFSET ?)",
         (limit,),
     )
@@ -624,9 +677,27 @@ def _rename_mapping(folder_id: str, old_rel: str, new_rel: str) -> None:
 
 def _reconcile_folder(job_id: str) -> None:
     """Run one complete reconciliation; called serially by the coordinator."""
-    job = get_job(job_id)
-    if job is None:
-        return
+    conn = rag_db.get_connection()
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute(
+            "SELECT * FROM linked_folder_sync_jobs WHERE id=?", (job_id,)
+        ).fetchone()
+        if row is None or row["status"] not in ("pending", "running"):
+            conn.rollback()
+            return
+        job = dict(row)
+        conn.execute(
+            "UPDATE linked_folder_sync_jobs SET status='running', stage='scanning', "
+            "started_at=COALESCE(started_at, ?) WHERE id=?",
+            (_now(), job_id),
+        )
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
     folder = get_folder(job["folder_id"])
     if folder is None:
         _set_job(
@@ -637,7 +708,6 @@ def _reconcile_folder(job_id: str) -> None:
             completed_at = _now(),
         )
         return
-    _set_job(job_id, status = "running", stage = "scanning", started_at = _now())
     conn = rag_db.get_connection()
     try:
         conn.execute(
@@ -655,12 +725,13 @@ def _reconcile_folder(job_id: str) -> None:
         _establish_root_identity(folder["id"], scanned_identity)
     except Exception as exc:
         # A partial/unavailable scan is never authoritative for deletion.
-        _set_job(job_id, status = "failed", stage = "error", error = str(exc), completed_at = _now())
+        error = _error_text(exc, folder["path"])
+        _set_job(job_id, status = "failed", stage = "error", error = error, completed_at = _now())
         conn = rag_db.get_connection()
         try:
             conn.execute(
                 "UPDATE linked_folders SET status='error', last_error=?, updated_at=? WHERE id=?",
-                (str(exc), _now(), folder["id"]),
+                (error, _now(), folder["id"]),
             )
             conn.commit()
             _prune_terminal_jobs(conn)
@@ -698,7 +769,15 @@ def _reconcile_folder(job_id: str) -> None:
             missing.discard(old_rel)
             new.discard(rel)
             known[rel] = {**known.pop(old_rel), "relative_path": rel}
-            if os.path.splitext(old_rel)[1].lower() == os.path.splitext(rel)[1].lower():
+            same_extension = os.path.splitext(old_rel)[1].lower() == os.path.splitext(rel)[1].lower()
+            same_content = False
+            if same_extension and known[rel].get("content_hash"):
+                snapshot = _snapshot(folder["path"], meta)
+                try:
+                    same_content = _hash_file(snapshot) == known[rel]["content_hash"]
+                finally:
+                    _remove_snapshot(snapshot)
+            if same_content:
                 _rename_mapping(folder["id"], old_rel, rel)
                 renamed += 1
             else:
@@ -812,9 +891,10 @@ def _reconcile_folder(job_id: str) -> None:
 
 
 def _fail_job(job_id: str, exc: Exception) -> None:
-    error = str(exc) or exc.__class__.__name__
-    _set_job(job_id, status = "failed", stage = "error", error = error, completed_at = _now())
     job = get_job(job_id)
+    folder = get_folder(job["folder_id"]) if job is not None else None
+    error = _error_text(exc, folder["path"] if folder else None)
+    _set_job(job_id, status = "failed", stage = "error", error = error, completed_at = _now())
     if job is None:
         return
     conn = rag_db.get_connection()
@@ -829,6 +909,52 @@ def _fail_job(job_id: str, exc: Exception) -> None:
         conn.close()
 
 
+def _queue_requested_rebuild(job_id: str) -> None:
+    conn = rag_db.get_connection()
+    queued = False
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        job = conn.execute(
+            "SELECT folder_id, rebuild_requested, status FROM linked_folder_sync_jobs WHERE id=?",
+            (job_id,),
+        ).fetchone()
+        if job and job["rebuild_requested"] and job["status"] not in ("pending", "running"):
+            active = conn.execute(
+                "SELECT id, kind, status FROM linked_folder_sync_jobs WHERE folder_id=? "
+                "AND status IN ('pending','running') ORDER BY created_at LIMIT 1",
+                (job["folder_id"],),
+            ).fetchone()
+            if active is None:
+                conn.execute(
+                    "INSERT INTO linked_folder_sync_jobs"
+                    "(id, folder_id, kind, status, stage, created_at) "
+                    "VALUES(?,?,'rebuild','pending','queued',?)",
+                    (str(uuid.uuid4()), job["folder_id"], _now()),
+                )
+            elif active["status"] == "pending":
+                conn.execute(
+                    "UPDATE linked_folder_sync_jobs SET kind='rebuild', rebuild_requested=0 "
+                    "WHERE id=?",
+                    (active["id"],),
+                )
+            elif active["kind"] != "rebuild":
+                conn.execute(
+                    "UPDATE linked_folder_sync_jobs SET rebuild_requested=1 WHERE id=?",
+                    (active["id"],),
+                )
+            conn.execute(
+                "UPDATE linked_folder_sync_jobs SET rebuild_requested=0 WHERE id=?", (job_id,)
+            )
+            queued = True
+        conn.commit()
+        if queued:
+            _prune_terminal_jobs(conn)
+    finally:
+        conn.close()
+    if queued:
+        _wake.set()
+
+
 def reconcile_folder(job_id: str) -> None:
     """Reconcile and persist a terminal folder state for every unexpected failure."""
     try:
@@ -836,6 +962,8 @@ def reconcile_folder(job_id: str) -> None:
     except Exception as exc:
         logger.exception("linked-folder job %s failed unexpectedly", job_id)
         _fail_job(job_id, exc)
+    finally:
+        _queue_requested_rebuild(job_id)
 
 
 def _enqueue_periodic() -> None:
