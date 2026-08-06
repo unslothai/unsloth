@@ -247,6 +247,8 @@ def test_download_plan_stages_exactly_what_sd_cli_opens(monkeypatch):
     listed = {(e["repo_id"], f) for e in plan["entries"] for f in e["files"]}
     assert listed == expected
     assert plan["total_bytes"] == 12_300
+    assert plan["required_bytes"] == 12_300
+    assert plan["checkpoint_bytes"] == 4_000
     # The transformer entry is the only one carrying the GGUF filename; the VAE + encoder share one repo entry.
     tr = [e for e in plan["entries"] if e["gguf_filename"]]
     assert len(tr) == 1 and tr[0]["repo_id"] == "unsloth/Z-Image-Turbo-GGUF"

@@ -5115,6 +5115,8 @@ def test_download_plan_scopes_the_base_repo_files(monkeypatch):
     # Sized per repo, so each download job gets its own expected bytes.
     assert base["bytes"] < 24 * GB
     assert plan["total_bytes"] == checkpoint["bytes"] + base["bytes"]
+    assert plan["required_bytes"] == plan["total_bytes"]
+    assert plan["checkpoint_bytes"] == 7 * GB
 
 
 def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypatch):
@@ -5149,6 +5151,9 @@ def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypa
     assert [entry["repo_id"] for entry in plan["entries"]] == ["unsloth/FLUX.1-dev"]
     assert "text_encoder/model.safetensors" in plan["entries"][0]["files"]
     assert plan["total_bytes"] == plan["entries"][0]["bytes"]
+    # Cache state changes the pending download, never the selector's declared footprint.
+    assert plan["required_bytes"] == 7 * GB + plan["total_bytes"]
+    assert plan["checkpoint_bytes"] == 7 * GB
 
 
 def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
@@ -5177,7 +5182,10 @@ def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
         "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
     )
 
-    assert plan == {"entries": [], "total_bytes": 0}
+    assert plan["entries"] == []
+    assert plan["total_bytes"] == 0
+    assert plan["required_bytes"] > 7 * GB
+    assert plan["checkpoint_bytes"] == 7 * GB
 
 
 def test_download_plan_pipeline_kind_is_one_entry(monkeypatch):
@@ -5206,6 +5214,8 @@ def test_download_plan_is_empty_for_a_local_path(tmp_path, monkeypatch):
 
     plan = DiffusionBackend().download_plan(str(local), gguf_filename = "weights.gguf")
     assert plan["entries"] == []
+    assert plan["required_bytes"] == 0
+    assert plan["checkpoint_bytes"] == 0
 
 
 def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monkeypatch):

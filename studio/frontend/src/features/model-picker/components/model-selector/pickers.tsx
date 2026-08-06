@@ -71,6 +71,7 @@ import {
   Download01Icon,
   Flag01Icon,
   Folder02Icon,
+  HelpCircleIcon,
   PinIcon,
   RemoveCircleIcon,
   Search01Icon,
@@ -150,6 +151,7 @@ import type {
   ExternalModelOption,
   LoraModelOption,
   ModelOption,
+  ModelDownloadFootprintResolver,
   ModelSelectorChangeMeta,
 } from "./types";
 import {
@@ -545,6 +547,52 @@ function SizeText({ value }: { value: string }) {
       )}
       <span className="ml-[0.14em]">{unit}</span>
     </>
+  );
+}
+
+/** Keep the row's size treatment consistent with every other model. Diffusion
+ * GGUFs get one small explanation affordance because their checkpoint is only
+ * part of what the loader must keep on disk. */
+export function GgufDownloadFootprint({
+  checkpointBytes,
+  companionBytes,
+}: {
+  checkpointBytes: number;
+  companionBytes: number;
+}) {
+  const totalBytes = checkpointBytes + companionBytes;
+  // Whole-GB rounding is too lossy for a sum: "2.6 GB + 8.2 GB = 11 GB"
+  // looks contradictory. Keep one decimal for the aggregate through GB/TB.
+  const totalLabel =
+    totalBytes >= 1_000_000_000 && totalBytes < 1_000_000_000_000
+      ? `${(totalBytes / 1_000_000_000).toFixed(1)} GB`
+      : totalBytes >= 1_000_000_000_000
+        ? `${(totalBytes / 1_000_000_000_000).toFixed(1)} TB`
+        : formatBytes(totalBytes);
+  return (
+    <span
+      data-model-download-footprint={true}
+      className="flex items-center gap-1 whitespace-nowrap text-foreground/80"
+    >
+      <SizeText value={totalLabel} />
+      <Tooltip delayDuration={0}>
+        <TooltipTrigger asChild={true}>
+          <span
+            data-model-download-footprint-help={true}
+            aria-label="Explain required model size"
+            className="flex size-3.5 shrink-0 items-center justify-center text-muted-foreground/70 hover:text-muted-foreground"
+          >
+            <HugeiconsIcon icon={HelpCircleIcon} className="size-3" strokeWidth={1.8} />
+          </span>
+        </TooltipTrigger>
+        <TooltipContent side="top" className="tooltip-compact">
+          <span className="font-medium">Full required size</span>
+          <span className="ml-1 text-muted-foreground">
+            {formatBytes(checkpointBytes)} model + {formatBytes(companionBytes)} required assets
+          </span>
+        </TooltipContent>
+      </Tooltip>
+    </span>
   );
 }
 
@@ -1085,6 +1133,7 @@ function GgufVariantExpander({
   loadId,
   cachePath,
   onSelect,
+  resolveDownloadFootprint,
   gpuGb,
   systemRamGb,
   budgetKnown = false,
@@ -1105,6 +1154,7 @@ function GgufVariantExpander({
   /** Cache directory this downloaded row represents, if any. */
   cachePath?: string | null;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+  resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   gpuGb?: number;
   systemRamGb?: number;
   budgetKnown?: boolean;
@@ -1318,6 +1368,61 @@ function GgufVariantExpander({
     });
   }, [sortedVariants, showAllQuantizations, onDevice]);
 
+  // A diffusion GGUF is not self-contained: the loader also needs a text
+  // encoder, VAE, tokenizer and configs. Resolve that shared companion set
+  // once from a representative quant, then add it to every listed checkpoint.
+  const footprintVariant = useMemo(
+    () =>
+      displayVariants?.find((variant) => variant.quant === effectiveRecommended) ??
+      displayVariants?.[0] ??
+      null,
+    [displayVariants, effectiveRecommended],
+  );
+  const [companionBytes, setCompanionBytes] = useState<number | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    setCompanionBytes(null);
+    if (!resolveDownloadFootprint || isLocalPath || !footprintVariant) {
+      return () => {
+        cancelled = true;
+      };
+    }
+    const expectedBytes = ggufVariantExpectedBytes(footprintVariant);
+    void resolveDownloadFootprint(repoId, {
+      source: sourceOverride ?? "hub",
+      isLora: false,
+      ggufVariant: footprintVariant.quant,
+      ggufFilename: footprintVariant.filename,
+      isDownloaded: footprintVariant.downloaded,
+      expectedBytes,
+      isGguf: true,
+    })
+      .then((footprint) => {
+        if (cancelled || !footprint) return;
+        const checkpoint =
+          footprint.checkpointBytes > 0
+            ? footprint.checkpointBytes
+            : expectedBytes;
+        const companion = footprint.requiredBytes - checkpoint;
+        if (Number.isFinite(companion) && companion > 0) {
+          setCompanionBytes(companion);
+        }
+      })
+      .catch(() => {
+        // The checkpoint size remains useful when an older backend or a Hub
+        // metadata failure cannot provide the companion footprint.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    footprintVariant,
+    isLocalPath,
+    repoId,
+    resolveDownloadFootprint,
+    sourceOverride,
+  ]);
+
   const variantOptionKeys = useMemo(
     () =>
       (displayVariants ?? []).map((variant) =>
@@ -1461,7 +1566,14 @@ function GgufVariantExpander({
                   </span>
                 )}
                 <span className="font-mono text-ui-10 text-muted-foreground tabular-nums">
-                  <SizeText value={formatBytes(v.size_bytes)} />
+                  {companionBytes === null ? (
+                    <SizeText value={formatBytes(v.size_bytes)} />
+                  ) : (
+                    <GgufDownloadFootprint
+                      checkpointBytes={v.size_bytes}
+                      companionBytes={companionBytes}
+                    />
+                  )}
                 </span>
               </span>
             </button>
@@ -1851,6 +1963,7 @@ export function HubModelPicker({
   externalModels = [],
   value,
   onSelect: onSelectProp,
+  resolveDownloadFootprint,
   onFoldersChange,
   onBrowseHub,
   onModelsChange,
@@ -1869,6 +1982,7 @@ export function HubModelPicker({
   externalModels?: ExternalModelOption[];
   value?: string;
   onSelect: (id: string, meta: ModelSelectorChangeMeta) => void;
+  resolveDownloadFootprint?: ModelDownloadFootprintResolver;
   onFoldersChange?: () => void;
   /** Open the full Hub page to browse more models. */
   onBrowseHub?: () => void;
@@ -3665,6 +3779,7 @@ export function HubModelPicker({
             allowPin={true}
             onHasVision={(v) => reportVision(c.repo_id, v)}
             onSelect={onSelect}
+            resolveDownloadFootprint={resolveDownloadFootprint}
             onConfigure={onConfigure}
             hfToken={hfToken || undefined}
             parentOptionKey={optionKey}
@@ -4459,6 +4574,7 @@ export function HubModelPicker({
                                   repoId={m.id}
                                   onDevice={true}
                                   onSelect={onSelect}
+                                  resolveDownloadFootprint={resolveDownloadFootprint}
                                   onConfigure={onConfigure}
                                   parentOptionKey={optionKey}
                                   onNavigatePastStart={() =>
@@ -4588,6 +4704,7 @@ export function HubModelPicker({
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
+                                resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
                                 parentOptionKey={optionKey}
                                 onNavigatePastStart={() =>
@@ -4703,6 +4820,7 @@ export function HubModelPicker({
                                 repoId={m.id}
                                 onDevice={true}
                                 onSelect={onSelect}
+                                resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
                                 parentOptionKey={optionKey}
                                 onNavigatePastStart={() =>
@@ -4793,6 +4911,7 @@ export function HubModelPicker({
                               <GgufVariantExpander
                                 repoId={id}
                                 onSelect={onSelect}
+                                resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
                                 hfToken={hfToken || undefined}
                                 parentOptionKey={optionKey}
@@ -4906,6 +5025,7 @@ export function HubModelPicker({
                             <GgufVariantExpander
                               repoId={id}
                               onSelect={onSelect}
+                              resolveDownloadFootprint={resolveDownloadFootprint}
                               onConfigure={onConfigure}
                               hfToken={hfToken || undefined}
                               parentOptionKey={optionKey}
@@ -5012,6 +5132,7 @@ export function HubModelPicker({
                               <GgufVariantExpander
                                 repoId={id}
                                 onSelect={onSelect}
+                                resolveDownloadFootprint={resolveDownloadFootprint}
                                 onConfigure={onConfigure}
                                 hfToken={hfToken || undefined}
                                 parentOptionKey={optionKey}

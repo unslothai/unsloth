@@ -261,6 +261,14 @@ jobs:
           mkdir -p logs/playwright_fontscale
           python tests/studio/playwright_ui_font_scale.py
 
+      - name: Image model full-footprint selector regression (Playwright)
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          PW_ART_DIR: logs/playwright_image_footprint
+        run: |
+          mkdir -p logs/playwright_image_footprint
+          python tests/studio/playwright_image_model_footprint.py
+
       - name: Stop second Unsloth
         if: always()
         run: |
@@ -383,6 +391,7 @@ jobs:
             logs/playwright-permissions-*
             logs/playwright_extra
             logs/playwright_fontscale
+            logs/playwright_image_footprint
             logs/playwright_modelcfg
             logs/playwright_ime
             logs/studio-permissions-*.log

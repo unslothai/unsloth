@@ -232,6 +232,10 @@ export interface DiffusionDownloadPlan {
     gguf_filename: string | null;
   }[];
   total_bytes: number;
+  /** Full declared footprint, including files already present in cache. */
+  required_bytes?: number;
+  /** Selected checkpoint's contribution to required_bytes. */
+  checkpoint_bytes?: number;
 }
 
 /** What to stage through the download manager before loading this pick. */

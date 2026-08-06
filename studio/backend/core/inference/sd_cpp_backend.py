@@ -741,7 +741,12 @@ class SdCppDiffusionBackend:
                     "gguf_filename": gguf_filename if repo == fetch_repo_id else None,
                 }
             )
-        return {"entries": entries, "total_bytes": total}
+        return {
+            "entries": entries,
+            "total_bytes": total,
+            "required_bytes": total,
+            "checkpoint_bytes": int(sizes.get((fetch_repo_id, gguf_filename), 0)),
+        }
 
     @staticmethod
     def _assets_by_repo(specs: list[tuple[str, str, str]]) -> dict[str, list[str]]:

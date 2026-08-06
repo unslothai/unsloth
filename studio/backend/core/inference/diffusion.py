@@ -1529,7 +1529,7 @@ class DiffusionBackend:
         te_files = self._te_prequant_plan_files(fam, text_encoder_quant, hf_token)
         sizes: dict[str, int] = {}
         file_sizes: dict[str, dict[str, int]] = {}
-        _required_total, base_files = self._estimate_download_bytes(
+        required_total, base_files = self._estimate_download_bytes(
             repo_id,
             gguf_filename,
             base,
@@ -1550,6 +1550,16 @@ class DiffusionBackend:
         fetch_base = prefer_ungated_mirror(base, hf_token, files = base_files)
         _assert_base_repo_accessible(fetch_base, hf_token)
         entries: list[dict[str, Any]] = []
+        checkpoint_bytes = 0
+        if gguf_filename:
+            checkpoint_bytes = int(
+                file_sizes.get(repo_id, {}).get(gguf_filename, sizes.get(repo_id, 0))
+            )
+        required_total += sum(
+            int(size)
+            for files in te_files.values()
+            for _name, size in files[1]
+        )
 
         def add_missing_entry(
             repo: str,
@@ -1598,7 +1608,12 @@ class DiffusionBackend:
                 base_files,
                 file_sizes.get(base, {}),
             )
-        return {"entries": entries, "total_bytes": sum(entry["bytes"] for entry in entries)}
+        return {
+            "entries": entries,
+            "total_bytes": sum(entry["bytes"] for entry in entries),
+            "required_bytes": int(required_total),
+            "checkpoint_bytes": checkpoint_bytes,
+        }
 
     @staticmethod
     def _hub_file_is_cached(repo_id: str, filename: str) -> bool:

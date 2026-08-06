@@ -2752,6 +2752,13 @@ class DiffusionDownloadPlanResponse(BaseModel):
     total_bytes: int = Field(
         0, description = "Sum of the remaining download entries, 0 when ready or unknown"
     )
+    required_bytes: int = Field(
+        0,
+        description = "Full declared footprint of every file the load requires, including cached files",
+    )
+    checkpoint_bytes: int = Field(
+        0, description = "Declared size of the selected checkpoint within required_bytes"
+    )
 
 
 class DiffusionStatusResponse(BaseModel):
