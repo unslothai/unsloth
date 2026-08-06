@@ -699,6 +699,9 @@ export const de = {
         reloadRequired: "Modell neu laden, um die neuen Speicheroptionen anzuwenden.",
         loadError: "Modellspeicher-Einstellungen konnten nicht geladen werden",
         saveError: "Modellspeicher-Einstellungen konnten nicht gespeichert werden",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu speicher arbeitsspeicher ram resident anheften fixieren sperren geladen halten entladen leerlauf mmap no-mmap load-mode auslagern",
       },
       storage: {
         title: "Speicher",

@@ -697,6 +697,9 @@ export const fr = {
         reloadRequired: "Rechargez le modèle pour appliquer les nouvelles options de mémoire.",
         loadError: "Impossible de charger les paramètres de mémoire du modèle",
         saveError: "Impossible d'enregistrer les paramètres de mémoire du modèle",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu memoire ram resident epingler verrouiller garder charge decharger inactif mmap no-mmap load-mode pagination echange",
       },
       storage: {
         title: "Stockage",

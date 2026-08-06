@@ -674,6 +674,9 @@ export const en = {
         reloadRequired: "Reload the model to apply the new memory flags.",
         loadError: "Failed to load model memory settings",
         saveError: "Failed to save model memory settings",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu memory ram resident residency pin pinned page lock locked keep loaded unload idle mmap no-mmap load-mode swap paging",
       },
       storage: {
         title: "Storage",

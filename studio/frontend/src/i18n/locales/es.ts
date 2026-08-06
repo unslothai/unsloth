@@ -696,6 +696,9 @@ export const es = {
         reloadRequired: "Vuelve a cargar el modelo para aplicar las nuevas opciones de memoria.",
         loadError: "No se pudieron cargar los ajustes de memoria del modelo",
         saveError: "No se pudieron guardar los ajustes de memoria del modelo",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu memoria ram residente fijar anclar bloquear mantener cargado descargar inactivo mmap no-mmap load-mode paginacion intercambio",
       },
       storage: {
         title: "Almacenamiento",

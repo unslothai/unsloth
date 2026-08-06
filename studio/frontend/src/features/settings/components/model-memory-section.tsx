@@ -2,6 +2,7 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Switch } from "@/components/ui/switch";
+import { formatBytes } from "@/features/hub/lib/format";
 import { useT } from "@/i18n";
 import { useEffect, useState } from "react";
 import {
@@ -11,12 +12,6 @@ import {
 } from "../api/model-memory";
 import { SettingsRow } from "./settings-row";
 import { SettingsSection } from "./settings-section";
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(1)} GB`;
-  if (bytes >= 1024 ** 2) return `${Math.round(bytes / 1024 ** 2)} MB`;
-  return `${Math.round(bytes / 1024)} KB`;
-}
 
 export function ModelMemorySection() {
   const t = useT();

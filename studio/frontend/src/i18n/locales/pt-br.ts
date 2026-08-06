@@ -682,6 +682,9 @@ export const ptBR = {
         reloadRequired: "Recarregue o modelo para aplicar as novas opções de memória.",
         loadError: "Falha ao carregar as configurações de memória do modelo",
         saveError: "Falha ao salvar as configurações de memória do modelo",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu memoria ram residente fixar travar manter carregado descarregar ocioso mmap no-mmap load-mode paginacao swap",
       },
       storage: {
         title: "Armazenamento",

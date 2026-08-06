@@ -660,6 +660,9 @@ export const zhCN = {
         reloadRequired: "重新加载模型以应用新的内存选项。",
         loadError: "加载模型内存设置失败",
         saveError: "保存模型内存设置失败",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu 内存 显存 常驻 固定 锁定 保持 已加载 卸载 空闲 mmap no-mmap load-mode 交换 分页",
       },
       storage: {
         title: "存储",

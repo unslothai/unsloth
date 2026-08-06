@@ -681,6 +681,9 @@ export const ru = {
         reloadRequired: "Перезагрузите модель, чтобы применить новые параметры памяти.",
         loadError: "Не удалось загрузить настройки памяти модели",
         saveError: "Не удалось сохранить настройки памяти модели",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu память озу резидентный закрепить блокировать держать загружен выгрузка простой mmap no-mmap load-mode подкачка",
       },
       storage: {
         title: "Хранилище",

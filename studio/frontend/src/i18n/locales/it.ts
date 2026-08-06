@@ -698,6 +698,9 @@ export const it = {
         reloadRequired: "Ricarica il modello per applicare le nuove opzioni di memoria.",
         loadError: "Impossibile caricare le impostazioni di memoria del modello",
         saveError: "Impossibile salvare le impostazioni di memoria del modello",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu memoria ram residente bloccare fissare mantenere caricato scaricare inattivo mmap no-mmap load-mode paginazione swap",
       },
       storage: {
         title: "Archiviazione",

@@ -4,7 +4,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createSettingsSearchIndex } from "../src/features/settings/settings-search.ts";
+import {
+  SETTINGS_SEARCH_KEYWORDS,
+  createSettingsSearchIndex,
+} from "../src/features/settings/settings-search.ts";
+import { en } from "../src/i18n/locales/en.ts";
 
 const UPDATE_ENTRY = "settings.about.updates";
 
@@ -20,4 +24,31 @@ test("browser update searches keep routing to About", () => {
 
   assert.ok(!index.general.includes(UPDATE_ENTRY));
   assert.ok(index.about.includes(UPDATE_ENTRY));
+});
+
+// The words a user types for this feature are not substrings of any of its
+// labels, so without keywords the rows it is named after were unfindable.
+test("model memory rows are reachable by the terms the feature is about", () => {
+  const index = createSettingsSearchIndex(false);
+  const rows = [
+    "settings.resources.modelMemory.title",
+    "settings.resources.modelMemory.keepResident",
+    "settings.resources.modelMemory.noRamReserve",
+  ] as const;
+
+  for (const row of rows) {
+    assert.ok(index.resources.includes(row), `${row} is indexed under Resources`);
+    assert.equal(
+      SETTINGS_SEARCH_KEYWORDS[row],
+      "settings.resources.modelMemory.modelMemoryKeywords",
+      `${row} has synonyms`,
+    );
+  }
+
+  for (const term of ["mlock", "vram", "ulimit", "memlock", "pin"]) {
+    assert.ok(
+      en.settings.resources.modelMemory.modelMemoryKeywords.includes(term),
+      `search matches "${term}"`,
+    );
+  }
 });

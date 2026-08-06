@@ -679,6 +679,9 @@ export const ar = {
         reloadRequired: "أعد تحميل النموذج لتطبيق خيارات الذاكرة الجديدة.",
         loadError: "تعذّر تحميل إعدادات ذاكرة النموذج",
         saveError: "تعذّر حفظ إعدادات ذاكرة النموذج",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu ذاكرة رام مقيم تثبيت قفل إبقاء محمل تفريغ خامل mmap no-mmap load-mode تبديل ترحيل",
       },
       storage: {
         title: "التخزين",

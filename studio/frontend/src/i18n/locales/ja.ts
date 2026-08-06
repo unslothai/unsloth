@@ -662,6 +662,9 @@ export const ja = {
         reloadRequired: "新しいメモリ設定を適用するにはモデルを再読み込みしてください。",
         loadError: "モデルメモリ設定の読み込みに失敗しました",
         saveError: "モデルメモリ設定の保存に失敗しました",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu メモリ ram 常駐 固定 ロック 保持 ロード済み アンロード アイドル mmap no-mmap load-mode スワップ ページング",
       },
       storage: {
         title: "ストレージ",

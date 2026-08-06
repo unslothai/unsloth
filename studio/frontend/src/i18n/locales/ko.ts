@@ -676,6 +676,9 @@ export const ko = {
         reloadRequired: "새 메모리 옵션을 적용하려면 모델을 다시 로드하세요.",
         loadError: "모델 메모리 설정을 불러오지 못했습니다",
         saveError: "모델 메모리 설정을 저장하지 못했습니다",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu 메모리 ram 상주 고정 잠금 유지 로드됨 언로드 유휴 mmap no-mmap load-mode 스왑 페이징",
       },
       storage: {
         title: "저장소",

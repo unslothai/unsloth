@@ -679,6 +679,9 @@ export const hi = {
         reloadRequired: "नई मेमोरी सेटिंग्स लागू करने के लिए मॉडल दोबारा लोड करें।",
         loadError: "मॉडल मेमोरी सेटिंग्स लोड नहीं हो सकीं",
         saveError: "मॉडल मेमोरी सेटिंग्स सहेजी नहीं जा सकीं",
+        // Not rendered: extra terms the settings search matches these rows on.
+        modelMemoryKeywords:
+          "mlock memlock ulimit vram gpu मेमोरी रैम स्थायी पिन लॉक बनाए रखें लोड अनलोड निष्क्रिय mmap no-mmap load-mode स्वैप पेजिंग",
       },
       storage: {
         title: "स्टोरेज",
