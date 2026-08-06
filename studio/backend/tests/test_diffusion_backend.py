@@ -4441,9 +4441,7 @@ def test_load_progress_ignores_a_revision_the_moved_root_has_superseded(tmp_path
     assert progress["fraction"] == 0.55
 
 
-def test_load_progress_counts_one_logical_file_across_roots_at_two_revisions(
-    tmp_path, monkeypatch
-):
+def test_load_progress_counts_one_logical_file_across_roots_at_two_revisions(tmp_path, monkeypatch):
     # Each root serves its OWN refs/main, so after a republish the two roots can be scoped to
     # different revisions. The same logical shard then has a different blob etag in each, so an
     # etag key never collides and both copies are summed -- roughly doubling the count and
