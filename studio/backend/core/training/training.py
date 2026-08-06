@@ -1422,6 +1422,7 @@ class TrainingBackend:
         with self._lock:
             recover = self._in_model_load and not self._xet_fallback_used
             proc = self._proc
+            run_id = self.current_job_id
             if recover:
                 self._xet_fallback_used = True
                 self._needs_xet_respawn = True
@@ -1439,6 +1440,16 @@ class TrainingBackend:
         # Terminate either way so the pump loop proceeds (respawn or finalize).
         if proc is not None and proc.is_alive():
             proc.terminate()
+        if not recover:
+            # Terminal, so is_run_finished() is already true and the UI has stopped
+            # waiting. terminate() is only a request: arm the same backstop as the other
+            # terminal paths so a worker that ignores it cannot hold the GPU for good.
+            self._start_stop_watchdog(
+                cancel = False,
+                expected_job_id = run_id,
+                grace_s = _COMPLETE_EXIT_GRACE_S,
+                terminal_seen = True,
+            )
 
     def _respawn_worker_disable_xet(self) -> None:
         """Respawn the worker once with HF_HUB_DISABLE_XET=1 after a model-load

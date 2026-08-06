@@ -1226,3 +1226,43 @@ def test_mlx_worker_flushes_tracking_before_every_terminal_send():
             f"_send('complete') at worker.py:{send} is not preceded by _finish_tracking(); "
             "the watchdog could force-terminate a pending TB/W&B flush"
         )
+
+
+def test_terminal_stall_arms_the_exit_watchdog(monkeypatch):
+    # An unrecoverable stall is terminal (is_run_finished() goes true), but terminate() is
+    # only a request. Without a backstop a worker that ignores it holds the GPU for good
+    # while the UI has already moved on, and every later start hits the live-_proc guard.
+    monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
+    b = _running_backend()
+    b._start_stop_watchdog = TrainingBackend._start_stop_watchdog.__get__(b)
+    calls = _record_force_terminate(monkeypatch, b)
+    b._in_model_load = True
+    b._xet_fallback_used = True  # already on HTTP, so the stall is unrecoverable
+
+    proc = b._proc
+    proc.terminate = lambda: None  # worker ignores the terminate request
+    b._handle_event({"type": "stall", "message": "no progress"})
+
+    assert b.is_run_finished() is True
+    assert _wait_until(lambda: calls == ["force", "final"]), (
+        "a wedged worker on the terminal stall path must still be reaped"
+    )
+    if b._stop_watchdog:
+        b._stop_watchdog.join(timeout = 5)
+
+
+def test_recoverable_stall_does_not_arm_the_watchdog(monkeypatch):
+    # The Xet fallback respawns the worker, so the run is not terminal and nothing may reap it.
+    monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
+    b = _running_backend()
+    b._start_stop_watchdog = TrainingBackend._start_stop_watchdog.__get__(b)
+    calls = _record_force_terminate(monkeypatch, b)
+    b._in_model_load = True
+
+    b._handle_event({"type": "stall", "message": "no progress"})
+
+    assert b._needs_xet_respawn is True
+    assert b.is_run_finished() is False
+    time.sleep(0.3)
+    assert calls == [], "a respawning run must not be force-terminated"
