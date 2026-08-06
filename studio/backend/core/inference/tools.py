@@ -1351,9 +1351,23 @@ _CMD_SWITCH_RE = re.compile(r"/[a-zA-Z](?::[\w.]+)?")
 # /c/Windows/.../powershell.exe, which is a program and not a switch.
 _START_SWITCHES = frozenset(
     {
-        "/min", "/max", "/separate", "/shared", "/low", "/normal", "/high",
-        "/realtime", "/abovenormal", "/belownormal", "/wait", "/b", "/i",
-        "/d", "/node", "/affinity", "/machine",
+        "/min",
+        "/max",
+        "/separate",
+        "/shared",
+        "/low",
+        "/normal",
+        "/high",
+        "/realtime",
+        "/abovenormal",
+        "/belownormal",
+        "/wait",
+        "/b",
+        "/i",
+        "/d",
+        "/node",
+        "/affinity",
+        "/machine",
     }
 )
 
