@@ -84,6 +84,42 @@ def test_status_reads_do_not_block_behind_a_reap(monkeypatch):
         unloading.join(timeout = 10)
 
 
+def test_a_reaping_server_stays_visible_to_training_admission(monkeypatch):
+    """A dying llama-server still holds VRAM, so it must still read as resident.
+
+    _release_locked() clears the fields, so clearing them before the reap would
+    let summarize_resident_stt() report nothing while the process is alive, and
+    training would start into memory it does not have.
+    """
+    monkeypatch.setattr(mtmd_mod, "forget_pid", lambda pid: None)
+    sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
+    release = threading.Event()
+    _resident(sidecar, _SlowlyDyingProcess(release))
+
+    seen = {}
+
+    def unload():
+        sidecar.unload()
+
+    unloading = threading.Thread(target = unload, daemon = True)
+    unloading.start()
+    try:
+        time.sleep(0.2)  # inside the reap
+        seen["model"] = sidecar.loaded_model
+        seen["device"] = sidecar.device
+    finally:
+        release.set()
+        unloading.join(timeout = 10)
+
+    assert seen["model"] == "qwen3-asr-0.6b", (
+        "the reaping server read as gone; training admission would miss its VRAM"
+    )
+    assert seen["device"] == "llama.cpp"
+    # Once the reap is done the fields are cleared, so it reads as gone.
+    assert sidecar.loaded_model is None
+    assert sidecar._process is None
+
+
 def test_status_reads_do_not_block_during_a_llama_cpp_update():
     """update_maintenance() holds _lock for the whole install; polls continue."""
     sidecar = MtmdSttSidecar(keep_alive_seconds = 0)
@@ -192,6 +228,59 @@ def test_download_probe_expires(monkeypatch):
     assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is False
     assert len(calls) == 2, "an expired entry was still served"
 
+    mtmd_mod._forget_downloaded_probe()
+
+
+def test_an_invalidation_mid_probe_discards_the_stale_answer(monkeypatch):
+    """A download finishing under a probe must not be undone by that probe.
+
+    The probe runs outside the lock, so it can read an incomplete snapshot,
+    then write False back after the download's invalidation already cleared the
+    entry. The model would then read as missing for a whole TTL.
+    """
+    mtmd_mod._forget_downloaded_probe()
+
+    def probe_then_invalidate(model_id):
+        # Stands in for the download completing while this probe is in flight.
+        mtmd_mod._forget_downloaded_probe(model_id)
+        return None
+
+    monkeypatch.setattr(mtmd_mod, "_cached_model_paths", probe_then_invalidate)
+    assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is False
+    with mtmd_mod._downloaded_probe_lock:
+        assert "qwen3-asr-0.6b" not in mtmd_mod._downloaded_probe, (
+            "a stale answer was written back over the invalidation"
+        )
+
+    # The next poll sees the finished download rather than waiting out the TTL.
+    monkeypatch.setattr(mtmd_mod, "_cached_model_paths", lambda mid: ("m.gguf", "p.gguf"))
+    assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is True
+    mtmd_mod._forget_downloaded_probe()
+
+
+def test_the_entry_is_timestamped_after_the_probe(monkeypatch):
+    """A slow cache must not store an entry that is already near expiry."""
+    mtmd_mod._forget_downloaded_probe()
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(mtmd_mod.time, "monotonic", lambda: clock["t"])
+
+    def slow_probe(model_id):
+        clock["t"] += 1.5  # probe takes most of the TTL
+        return ("m.gguf", "p.gguf")
+
+    monkeypatch.setattr(mtmd_mod, "_cached_model_paths", slow_probe)
+    assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is True
+
+    with mtmd_mod._downloaded_probe_lock:
+        stored_at = mtmd_mod._downloaded_probe["qwen3-asr-0.6b"][0]
+    assert stored_at == 1001.5, "the entry was timestamped before the probe ran"
+
+    # The panel's next poll, 750ms later, is still served from the memo.
+    clock["t"] += 0.75
+    called = []
+    monkeypatch.setattr(mtmd_mod, "_cached_model_paths", lambda mid: called.append(mid))
+    assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is True
+    assert called == [], "the entry expired early and the probe ran again"
     mtmd_mod._forget_downloaded_probe()
 
 

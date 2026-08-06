@@ -219,11 +219,16 @@ def _cached_model_paths(model_id: str) -> Optional[tuple[str, str]]:
 _DOWNLOADED_PROBE_TTL_SECONDS = 2.0
 _downloaded_probe_lock = threading.Lock()
 _downloaded_probe: dict[str, tuple[float, bool]] = {}
+# Bumped by every invalidation, so a probe that started earlier cannot write its
+# now-stale answer back over a cleared entry.
+_downloaded_probe_generation = 0
 
 
 def _forget_downloaded_probe(model_id: Optional[str] = None) -> None:
     """Drop memoised answers, for one model or all of them."""
+    global _downloaded_probe_generation
     with _downloaded_probe_lock:
+        _downloaded_probe_generation += 1
         if model_id is None:
             _downloaded_probe.clear()
         else:
@@ -233,14 +238,17 @@ def _forget_downloaded_probe(model_id: Optional[str] = None) -> None:
 def is_model_downloaded(model_id: str) -> bool:
     if model_id not in MTMD_STT_MODELS:
         return False
-    now = time.monotonic()
     with _downloaded_probe_lock:
         cached = _downloaded_probe.get(model_id)
-        if cached is not None and now - cached[0] < _DOWNLOADED_PROBE_TTL_SECONDS:
+        if cached is not None and time.monotonic() - cached[0] < _DOWNLOADED_PROBE_TTL_SECONDS:
             return cached[1]
+        generation = _downloaded_probe_generation
     downloaded = _cached_model_paths(model_id) is not None
     with _downloaded_probe_lock:
-        _downloaded_probe[model_id] = (now, downloaded)
+        # Timestamp now, not before the probe: a slow cache would otherwise
+        # store an entry that is already most of the way to expiry.
+        if generation == _downloaded_probe_generation:
+            _downloaded_probe[model_id] = (time.monotonic(), downloaded)
     return downloaded
 
 
@@ -473,10 +481,15 @@ class MtmdSttSidecar:
         self._cancel_idle_unload_locked()
         self._generation += 1
         process = self._process
-        self._process = None
-        self._port = None
-        self._model_id = None
-        _reap(process)
+        try:
+            # Reap before clearing, not after: a lock-free reader during the
+            # reap has to still see the model, or training admission starts
+            # while the dying llama-server holds its VRAM.
+            _reap(process)
+        finally:
+            self._process = None
+            self._port = None
+            self._model_id = None
 
     def unload(self) -> None:
         # A startup has not assigned _process yet, so releasing alone would let
