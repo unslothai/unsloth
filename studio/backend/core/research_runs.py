@@ -1682,10 +1682,14 @@ class ResearchSupervisor:
                 await self._check_active(run_id)
             timeout = wait_timeout()
             line_task = asyncio.create_task(anext(iterator))
+            discarded = False
             try:
                 while not line_task.done():
                     await asyncio.wait({line_task}, timeout = timeout)
                     if self._cancel_event(run_id).is_set():
+                        # Set first: an iterator that outlasts the bound leaves the task
+                        # pending, and the finally must not spend the bound on it again.
+                        discarded = True
                         await self._discard_task(run_id, line_task, "stream_iterator")
                         await self._check_active(run_id)
                     # A line that arrived during the wait is earned; recomputing the
@@ -1698,7 +1702,7 @@ class ResearchSupervisor:
                 except StopAsyncIteration:
                     return
             finally:
-                if not line_task.done():
+                if not discarded and not line_task.done():
                     await self._discard_task(run_id, line_task, "stream_iterator")
             yield line
 
@@ -1755,6 +1759,7 @@ class ResearchSupervisor:
         last_progress_flush = asyncio.get_running_loop().time()
         finish_reason: str | None = None
         semantic_output_at: float | None = None
+        saw_data_frame = False
         first_output_deadline: float | None = None
 
         async def flush_progress() -> None:
@@ -1895,14 +1900,17 @@ class ResearchSupervisor:
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):
-                            # Studio emits ": keep-alive" while it queues for a slot and
-                            # while it waits on llama-server's headers. Both are live waits,
-                            # not a stalled model, so re-arm; only silence spends the budget.
-                            if line.startswith(":") and semantic_output_at is None:
+                            # Before any frame, ": keep-alive" means Studio is queued for a
+                            # slot or waiting on the backend's headers, so re-arm. After one,
+                            # generation has started and the same comment is only stall filler
+                            # (routes/inference.py sends it every 15 s), which must not renew
+                            # the budget or a wedged model would never time out.
+                            if line.startswith(":") and not saw_data_frame:
                                 first_output_deadline = (
                                     loop.time() + _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
                                 )
                             continue
+                        saw_data_frame = True
                         data = line[5:].strip()
                         if data == "[DONE]":
                             break

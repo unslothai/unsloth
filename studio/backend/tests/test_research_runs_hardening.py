@@ -968,6 +968,96 @@ def test_endless_keepalives_still_end_at_the_wall_clock(monkeypatch):
         _run_stream(supervisor, timeout_seconds = 0.4)
 
 
+def test_stall_keepalives_after_the_first_frame_do_not_renew_the_budget(monkeypatch):
+    """A wedged local GGUF model must still time out.
+
+    routes/inference.py sends the role frame once generation starts and then a
+    ": keep-alive" every 15 s while next(gen) stays silent. A role-only delta is not
+    semantic output, so those comments must not keep renewing the first-output budget.
+    """
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.2)
+
+    class _RoleThenWedged:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            yield 'data: {"choices":[{"delta":{"role":"assistant"}}]}'
+            while True:
+                await asyncio.sleep(0.01)
+                yield ": keep-alive"
+
+    _install_fake_client(monkeypatch, [_RoleThenWedged()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 30.0)
+    assert time.monotonic() - started < 5.0, "must end on the budget, not the wall clock"
+
+
+def test_a_cancelled_stream_iterator_is_only_discarded_once(monkeypatch):
+    """Cancellation must stay inside one cleanup bound, not two.
+
+    An iterator that outlasts _STREAM_CLEANUP_TIMEOUT_SECONDS leaves the task pending,
+    and cleaning it up a second time in the finally would double the advertised wait.
+    """
+    monkeypatch.setattr(research_runs, "_STREAM_CLEANUP_TIMEOUT_SECONDS", 0.2)
+    discards = []
+    real_discard = research_runs.ResearchSupervisor._discard_task
+
+    async def _counting_discard(self, run_id, task, what):
+        discards.append(what)
+        return await real_discard(self, run_id, task, what)
+
+    monkeypatch.setattr(research_runs.ResearchSupervisor, "_discard_task", _counting_discard)
+
+    supervisor = _make_supervisor(_noop_check_active)
+    run = _waiting_run(30.0)
+
+    class _UncancellableStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            # Cancel only once the stream loop owns the task, so the send phase (which
+            # has its own cleanup) is not what gets exercised here.
+            supervisor._cancel_event(run["id"]).set()
+            while True:
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    # Swallows cancellation: exactly what the cleanup bound exists for.
+                    await asyncio.sleep(30)
+                yield ": keep-alive"
+
+    _install_fake_client(monkeypatch, [_UncancellableStream()])
+
+    async def _cancelled(run_id):
+        if supervisor._cancel_event(run_id).is_set():
+            raise research_runs.RunCancelled()
+
+    supervisor._check_active = _cancelled
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.RunCancelled):
+        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
+    elapsed = time.monotonic() - started
+    iterator_discards = [w for w in discards if w == "stream_iterator"]
+    assert len(iterator_discards) == 1, f"discarded {len(iterator_discards)} times: {discards}"
+    assert elapsed < 1.0, f"cancellation took {elapsed:.2f}s, more than one cleanup bound"
+
+
 def test_stream_completion_first_output_timeout_survives_iterator_cleanup(monkeypatch):
     monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.01)
 
