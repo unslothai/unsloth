@@ -345,7 +345,8 @@ class TestReloadRequired:
         import routes.settings as rs
 
         backend = type(
-            "_B", (),
+            "_B",
+            (),
             {"is_loaded": False, "_memory_state": (False, True), "_memory_policy_active": True},
         )()
         monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
@@ -401,14 +402,14 @@ class TestDuplicateLoadComparator:
         ("launched", "policy_active", "keep", "no_res", "satisfied"),
         [
             ((False, False), False, True, False, False),  # turn residency on
-            ((True, False), True, False, True, False),    # no-reserve on, mlocked
-            ((False, True), False, False, True, False),   # no-reserve on, no-mmap
-            ((True, False), True, True, False, True),     # already pinned
-            ((False, False), False, False, True, True),   # already clean
+            ((True, False), True, False, True, False),  # no-reserve on, mlocked
+            ((False, True), False, False, True, False),  # no-reserve on, no-mmap
+            ((True, False), True, True, False, True),  # already pinned
+            ((False, False), False, False, True, True),  # already clean
             # Both off: anything the policy did must be undone, but a launch it
             # never touched is left alone.
-            ((True, False), True, False, False, False),   # our flag still live
-            ((True, False), False, False, False, True),   # user's own flag
+            ((True, False), True, False, False, False),  # our flag still live
+            ((True, False), False, False, False, True),  # user's own flag
             ((False, False), True, False, False, False),  # it suppressed theirs
             ((False, False), False, False, False, True),
             # DirectIO is not a RAM reservation, so no-reserve is satisfied.
@@ -447,7 +448,6 @@ class TestCapabilityProbeFallback:
         caps = LlamaCppBackend.probe_server_capabilities("/nonexistent/llama-server")
         assert caps.get("supports_load_mode") is False
 
-
     def test_an_ungoverned_process_never_asks_for_a_reload(self, monkeypatch):
         """A diffusion GGUF has no llama-server load-mode, so nothing about it
         can contradict the settings."""
@@ -456,7 +456,8 @@ class TestCapabilityProbeFallback:
         import utils.model_memory_settings as mm
 
         backend = type(
-            "_B", (),
+            "_B",
+            (),
             {"is_loaded": True, "_memory_state": None, "_memory_policy_active": False},
         )()
         monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
