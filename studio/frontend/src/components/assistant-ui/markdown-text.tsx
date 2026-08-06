@@ -23,11 +23,12 @@ import { Copy01Icon, Download01Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
 import { createMathPlugin } from "@streamdown/math";
 import { mermaid } from "@streamdown/mermaid";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
   Block,
   type BlockProps,
   Streamdown,
+  StreamdownContext,
   type StreamdownProps,
 } from "streamdown";
 import { createCodePlugin } from "./code-plugin";
@@ -246,6 +247,12 @@ function CodeBlockActions({
 // Collapse a full-HTML answer in place into an artifact card. Diffusion keeps the
 // raw code visible instead (the trailing MessageHtmlArtifacts appends its card).
 function StreamdownBlock(props: BlockProps) {
+  // Streamdown memoises each block on its content, so a block that finished
+  // streaming is never re-parsed and keeps the per-word animation wrappers the
+  // animated path added. Keying the block on the animating flag re-parses each
+  // one once when the message completes, without remounting the whole message.
+  const { isAnimating } = useContext(StreamdownContext);
+  const blockKey = isAnimating ? "live" : "done";
   const shouldCollapseHtmlArtifacts = useChatRuntimeStore(
     (state) =>
       (state.artifactsEnabled || state.collapseHtmlArtifacts) &&
@@ -339,7 +346,7 @@ function StreamdownBlock(props: BlockProps) {
     );
   }
 
-  return <Block {...props} />;
+  return <Block {...props} key={blockKey} />;
 }
 const AUDIO_PLAYER_RE = /<audio-player\s+src="([^"]+)"\s*\/>/;
 
