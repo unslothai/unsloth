@@ -97,9 +97,9 @@ def find_lora_base_model(model_to_inspect):
 
 config_model = find_lora_base_model(model) if isinstance(model, PeftModel) else model
 
-assert config_model.__class__.__name__ == base_model_class, (
-    f"Expected config_model class to be {base_model_class}"
-)
+assert (
+    config_model.__class__.__name__ == base_model_class
+), f"Expected config_model class to be {base_model_class}"
 print("✅ config_model returns correct Base Model class:", str(base_model_class))
 
 
