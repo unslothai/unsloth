@@ -7,6 +7,7 @@ instead of torch/transformers for model loading and generation.
 
 import json
 import os
+import re
 import threading
 from contextlib import contextmanager
 from typing import Optional, Generator
@@ -100,6 +101,79 @@ def _mlx_vlm_model_config(model):
         if model_type is not None:
             return cfg, model_type
     return (configs[0] if configs else None), None
+
+
+# Matched on the context-bearing term rather than a list of field names, since mlx-lm
+# alone spells it four ways and nested configs add more. A bare max_length is a
+# generation default and n_sequences a batch count, so neither term qualifies.
+_MLX_CONTEXT_KEY = re.compile(
+    r"(?:position(?:s|_embeddings)|(?:^|_)ctx|context_len(?:gth)?"
+    r"|seq(?:uence)?_len(?:gth)?|model_max_length)$"
+)
+# A vision tower's token count reads like a length but bounds one image, not the window.
+_MLX_CONTEXT_KEY_EXCLUDE = re.compile(r"(?:^|_)image_")
+# Below one cache block is not a window; above, configs carry sentinel "unlimited" lengths.
+_MLX_MIN_PLAUSIBLE_CONTEXT = 256
+_MLX_MAX_PLAUSIBLE_CONTEXT = 1 << 24
+
+
+def _mlx_config_candidates(model):
+    """Config-ish objects that may carry text-tower dims, most specific first."""
+    language_model = getattr(model, "language_model", None)
+    config, _ = _mlx_vlm_model_config(model)
+    text_config = None
+    if config is not None:
+        text_config = (
+            config.get("text_config")
+            if isinstance(config, dict)
+            else getattr(config, "text_config", None)
+        )
+    return [
+        cfg
+        for cfg in (
+            getattr(language_model, "args", None),
+            text_config,
+            getattr(model, "args", None),
+            config,
+        )
+        if cfg is not None
+    ]
+
+
+def _positive_int(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError, OverflowError):
+        # json.loads accepts Infinity, which must read as an unusable dimension
+        # rather than abort the load.
+        return None
+    return value_int if value_int > 0 else None
+
+
+def mlx_native_context_length(model):
+    """The window the model was trained for, or None when it isn't readable.
+
+    The widest plausible length across every config wins, so a stub text config the
+    blocks were never built from cannot shorten the window the weights support --
+    mlx-vlm's Phi-3-V carries a 4096 text config beside the 131072 its attention uses.
+    """
+    lengths = []
+    for cfg in _mlx_config_candidates(model):
+        try:
+            items = cfg.items() if isinstance(cfg, dict) else vars(cfg).items()
+        except TypeError:
+            continue
+        lengths += [
+            length
+            for name, value in items
+            if _MLX_CONTEXT_KEY.search(str(name))
+            and not _MLX_CONTEXT_KEY_EXCLUDE.search(str(name))
+            and (length := _positive_int(value)) is not None
+            and _MLX_MIN_PLAUSIBLE_CONTEXT <= length <= _MLX_MAX_PLAUSIBLE_CONTEXT
+        ]
+    return max(lengths) if lengths else None
 
 
 def _render_registered_vlm_prompt(
@@ -1079,6 +1153,19 @@ class MLXInferenceBackend:
             wired_limit_gb,
         )
 
+    def _resolve_context_lengths(self, model, max_seq_length):
+        """Resolve (served, native, ceiling) for a freshly loaded model.
+
+        Mirrors the GGUF resolution order: whatever the load attached or was asked for is
+        honored verbatim, while asking for nothing takes the trained window. Nothing here
+        bounds the KV cache, which mlx-lm grows to whatever a request needs.
+        """
+        native = mlx_native_context_length(model)
+        served = runtime_context_length(model, max_seq_length) or native
+        if served:
+            logger.info("MLX context: served=%s native=%s", served, native)
+        return served, native, native
+
     def load_model(
         self,
         config,
@@ -1243,6 +1330,9 @@ class MLXInferenceBackend:
                 self._template_override["reason"],
             )
 
+        _served_ctx, _native_ctx, _max_ctx = self._resolve_context_lengths(
+            self._model, max_seq_length
+        )
         self.active_model_name = model_name
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
@@ -1262,7 +1352,11 @@ class MLXInferenceBackend:
             "is_audio": _audio_type is not None and _audio_type != "audio_vlm",
             "audio_type": _audio_type,
             "has_audio_input": is_audio_input_type(_audio_type),
-            "context_length": runtime_context_length(self._model, max_seq_length),
+            "context_length": _served_ctx,
+            # Nothing here measures the machine, so the window and its ceiling are the
+            # same number, and a request may exceed both.
+            "native_context_length": _native_ctx,
+            "max_context_length": _max_ctx,
             "mlx_kv_bits": self._kv_quant["kv_bits"],
             "mlx_kv_bits_requested": self._kv_quant["requested_kv_bits"],
             "mlx_kv_quant_eligibility": self._kv_quant["eligibility"],

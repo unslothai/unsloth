@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 
 import contextlib
+import copy
 import json
 import subprocess
 import sys
@@ -2557,3 +2558,42 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     assert backend._template_override["applied"] is None
     assert backend._template_override["reason"] == mlx_inference.MLX_TEMPLATE_DROPS_IMAGE
     assert backend._processor.chat_template == "{{ native }}"
+
+
+# Spellings nobody enumerated: Llama 3.1 carries the second beside its scaled window, and
+# mlx-lm's Kimi Linear the third.
+@pytest.mark.parametrize("name", ["n_ctx", "original_max_position_embeddings", "model_max_length"])
+def test_mlx_native_context_length_reads_every_spelling_and_every_config(name):
+    from core.inference.mlx_inference import mlx_native_context_length
+
+    # One term per family, matched by shape rather than by an enumerated name.
+    args = SimpleNamespace(**{name: 40960})
+    assert mlx_native_context_length(SimpleNamespace(args = args)) == 40960
+    # The metadata read before a load answers by this rule too, so no dash-then-number.
+    from routes.models import _get_max_position_embeddings
+
+    assert _get_max_position_embeddings(SimpleNamespace(**{name: 40960})) == 40960
+    # The wrapper counts too, not just the most specific config: mlx-vlm's Phi-3-V keeps a
+    # 4096 text config beside the 131072 its blocks are built with.
+    stub = SimpleNamespace(args = SimpleNamespace(**{name: 4096}))
+    text = SimpleNamespace(**{name: 4096})
+    cfg = SimpleNamespace(model_type = "x", text_config = text, **{name: 131072})
+    vlm = SimpleNamespace(language_model = stub, config = cfg)
+    assert mlx_native_context_length(vlm) == 131072
+
+
+def test_a_load_serves_the_request_or_the_window_the_model_was_trained_for():
+    """A request wins verbatim; asking for nothing takes the trained window, and a model
+    whose dims are unreadable resolves to nothing rather than to a number of its own."""
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    resolve = MLXInferenceBackend._resolve_context_lengths
+    wide = SimpleNamespace(args = SimpleNamespace(max_position_embeddings = 262144))
+    blank = SimpleNamespace(args = SimpleNamespace())
+    assert resolve(None, wide, 0) == (262144, 262144, 262144)
+    assert resolve(None, wide, 8192) == (8192, 262144, 262144)
+    assert resolve(None, wide, 1048576) == (1048576, 262144, 262144)  # above native, still verbatim
+    held = SimpleNamespace(args = wide.args, max_seq_length = 4096)
+    assert resolve(None, held, 0) == (4096, 262144, 262144)  # what the load attached wins
+    assert resolve(None, blank, 0) == (None, None, None)
+    assert resolve(None, blank, 8192) == (8192, None, None)
