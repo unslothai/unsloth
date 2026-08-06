@@ -182,7 +182,7 @@ _PROGRESS_STALL_TIMEOUT_POLLS = 1800  # ~30 min at 1 poll/sec
 def _stop_training_if_active(backend, *, save: bool, expected_job_id: Optional[str]):
     from core.training.lifecycle import training_lifecycle_guard
     with training_lifecycle_guard():
-        is_active = not _run_finished(backend) and backend.is_training_active()
+        is_active = _run_active(backend)
         if not is_active:
             stopped = False
         elif expected_job_id is None:
@@ -216,6 +216,13 @@ def _run_finished(backend) -> bool:
     here: a stand-in without it keeps the old liveness-only behaviour."""
     check = getattr(backend, "is_run_finished", None)
     return bool(check()) if callable(check) else False
+
+
+def _run_active(backend) -> bool:
+    """Liveness minus terminal: a run that reported terminal is done even while its worker
+    tears down. The GPU admission guards deliberately keep using is_training_active(), since
+    a worker still winding down is still holding its VRAM."""
+    return backend.is_training_active() and not _run_finished(backend)
 
 
 def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
@@ -1755,6 +1762,7 @@ def _training_status_identity(backend) -> TrainingStatusIdentitySnapshot:
     snapshot = getattr(backend, "training_status_identity", None)
     if callable(snapshot):
         return snapshot()
+    status_start_request = getattr(backend, "status_start_request", None)
     current_start_request_id = getattr(backend, "current_start_request_id", None)
     current_start_request = (
         backend.get_start_request(current_start_request_id)
@@ -1911,9 +1919,7 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
         backend = get_training_backend()
         for _ in range(3):
             identity_before = _training_status_identity(backend)
-            is_active = await asyncio.to_thread(
-                lambda: not _run_finished(backend) and backend.is_training_active()
-            )
+            is_active = await asyncio.to_thread(_run_active, backend)
             identity = _training_status_identity(backend)
             if identity != identity_before:
                 continue
@@ -2027,7 +2033,7 @@ async def stream_training_progress(
         # ── Helpers ──────────────────────────────────────────────
         def run_active() -> bool:
             """A run that reported terminal is done, even while its worker tears down."""
-            return not _run_finished(backend) and backend.is_training_active()
+            return _run_active(backend)
 
         def build_progress(
             step: int,

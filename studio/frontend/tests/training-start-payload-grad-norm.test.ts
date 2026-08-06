@@ -18,33 +18,20 @@ registerBundlerResolver();
 const { buildTrainingStartPayload } = await import(
   "../src/features/training/api/mappers.ts"
 );
+const { initialTrainingConfigState } = await import(
+  "../src/features/training/stores/training-config-policy.ts"
+);
 
 const CONFIG: TrainingConfigState = {
-  userEditRevision: 0,
+  ...initialTrainingConfigState,
   currentStep: 5,
   modelType: "text",
   selectedModel: "unsloth/gemma-3-270m-it",
-  modelKnownCached: false,
-  modelLocalPath: null,
-  modelFormat: null,
   projectName: "grad-norm",
   trainingMethod: "lora",
-  trainingMethodProvenance: {
-    learningRateManuallySet: false,
-    modelAdapterLearningRate: null,
-    datasetFormatBeforeCpt: null,
-  },
   datasetSource: "huggingface",
-  browseDatasetSelection: {
-    source: "huggingface",
-    dataset: "unsloth/test",
-    knownCached: false,
-    localPath: null,
-  },
   datasetFormat: "auto",
   dataset: "unsloth/test",
-  datasetKnownCached: false,
-  datasetLocalPath: null,
   datasetSubset: null,
   datasetSplit: "train",
   datasetEvalSplit: null,
@@ -91,12 +78,9 @@ const CONFIG: TrainingConfigState = {
   isLoadingModelDefaults: false,
   modelDefaultsError: null,
   modelDefaultsAppliedFor: null,
-  advancedSettingsBaseline: null,
-  trainOnCompletionsDefaultPendingFor: null,
   isCheckingDataset: false,
   isDatasetImage: false,
   isDatasetAudio: false,
-  datasetCheckFailed: false,
   trustRemoteCode: false,
   approvedRemoteCodeFingerprint: null,
   finetuneVisionLayers: false,
@@ -110,7 +94,7 @@ const CONFIG: TrainingConfigState = {
 };
 
 test("the payload leaves max_grad_norm unset so the backend default governs", () => {
-  const payload = buildTrainingStartPayload(CONFIG, "");
+  const payload = buildTrainingStartPayload(CONFIG, null);
 
   assert.equal(
     Object.hasOwn(payload, "max_grad_norm"),
@@ -123,7 +107,7 @@ test("the payload leaves max_grad_norm unset so the backend default governs", ()
 });
 
 test("the sibling clip knobs keep their existing wire contract", () => {
-  const payload = buildTrainingStartPayload(CONFIG, "");
+  const payload = buildTrainingStartPayload(CONFIG, null);
 
   assert.equal(payload.max_grad_value, null);
   assert.equal(payload.weight_decay, CONFIG.weightDecay);
