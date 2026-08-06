@@ -450,9 +450,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         .catch(() => undefined);
     };
     const handleResize = () => {
-      setNativeMacControlsHidden(
-        window.innerHeight >= window.screen.height - 1,
-      );
+      refresh();
     };
     refresh();
     window.addEventListener("resize", handleResize);
@@ -578,7 +576,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
  * whenever either the customization or the resolved theme changes.
  */
 function AppearanceCustomizationEffect() {
-  const { resolved } = useTheme();
+  const { theme, resolved } = useTheme();
   const customization = useAppearanceCustomStore((s) => s.customization);
   useEffect(() => {
     applyCustomizationToDocument(customization, resolved);
@@ -586,9 +584,11 @@ function AppearanceCustomizationEffect() {
   useEffect(() => {
     if (!isTauri) return;
     void import("@tauri-apps/api/window")
-      .then(({ getCurrentWindow }) => getCurrentWindow().setTheme(resolved))
+      .then(({ getCurrentWindow }) =>
+        getCurrentWindow().setTheme(theme === "system" ? null : theme),
+      )
       .catch(() => undefined);
-  }, [resolved]);
+  }, [theme]);
   return null;
 }
 
