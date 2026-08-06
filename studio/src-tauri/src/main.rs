@@ -52,6 +52,11 @@ fn reveal_main_window(app: tauri::AppHandle) {
 #[tauri::command]
 fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
     use tauri_plugin_autostart::ManagerExt;
+    // The plugin's is_enabled only checks that the entry file exists, so an
+    // entry the user disabled from a DE startup-apps UI would read as on.
+    if cfg!(target_os = "linux") && linux_autostart_disabled(&app) {
+        return Ok(false);
+    }
     app.autolaunch()
         .is_enabled()
         .map_err(|error| error.to_string())
@@ -81,8 +86,8 @@ fn harden_autostart_entry(app: &tauri::AppHandle) {
     }
     #[cfg(windows)]
     quote_windows_run_value(app);
-    #[cfg(not(windows))]
-    let _ = app;
+    #[cfg(target_os = "macos")]
+    rewrite_macos_launch_agent(app);
 }
 
 /// auto-launch writes the Run value as `{path} {args}` unquoted; Windows
@@ -125,11 +130,13 @@ fn quote_windows_run_value(app: &tauri::AppHandle) {
 /// Exec is parsed as whitespace-delimited words, so a binary path is quoted
 /// when it contains reserved characters (AppImage under "~/My Apps/" breaks
 /// otherwise). `"`, `` ` ``, `$` and `\` are the characters the spec requires
-/// escaping inside quotes.
+/// escaping inside quotes. A literal `%` introduces a field code, so it is
+/// escaped as `%%` independent of the quoting decision.
 fn exec_quoted(binary: &str) -> String {
+    let binary = binary.replace('%', "%%");
     const RESERVED: &str = " \t\n\"'\\><~|&;$*?#()`";
     if !binary.chars().any(|c| RESERVED.contains(c)) {
-        return binary.to_string();
+        return binary;
     }
     let mut quoted = String::with_capacity(binary.len() + 2);
     quoted.push('"');
@@ -171,22 +178,98 @@ fn hardened_autostart_entry(entry: &str) -> Option<String> {
     Some(format!("{hardened}\nTryExec={binary}"))
 }
 
+fn linux_autostart_entry_path(app: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    // auto-launch hardcodes ~/.config regardless of XDG_CONFIG_HOME; mirror it
+    // or this points at a file the plugin never writes.
+    Some(
+        dirs::home_dir()?
+            .join(".config")
+            .join("autostart")
+            .join(format!("{}.desktop", app.package_info().name)),
+    )
+}
+
+/// Startup-application UIs disable an entry by adding Hidden=true or
+/// X-GNOME-Autostart-enabled=false instead of deleting the file.
+fn autostart_entry_disabled(entry: &str) -> bool {
+    entry.lines().any(|line| {
+        matches!(
+            line.trim(),
+            "Hidden=true" | "X-GNOME-Autostart-enabled=false"
+        )
+    })
+}
+
+fn linux_autostart_disabled(app: &tauri::AppHandle) -> bool {
+    linux_autostart_entry_path(app)
+        .and_then(|path| fs::read_to_string(path).ok())
+        .is_some_and(|entry| autostart_entry_disabled(&entry))
+}
+
 fn guard_linux_autostart_entry(app: &tauri::AppHandle) {
-    let Some(home_dir) = dirs::home_dir() else {
+    let Some(path) = linux_autostart_entry_path(app) else {
         return;
     };
-    // auto-launch hardcodes ~/.config regardless of XDG_CONFIG_HOME; mirror it
-    // or the guard reads a file the plugin never writes.
-    let path = home_dir
-        .join(".config")
-        .join("autostart")
-        .join(format!("{}.desktop", app.package_info().name));
     let Ok(entry) = fs::read_to_string(&path) else {
         return;
     };
     if let Some(hardened) = hardened_autostart_entry(&entry) {
         let _ = fs::write(&path, hardened);
     }
+}
+
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn xml_escaped(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// auto-launch interpolates the executable path into plist XML unescaped, so
+/// a path containing & or < writes a malformed LaunchAgent. Same structure as
+/// the plugin's template, with the strings escaped.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+fn macos_launch_agent_plist(label: &str, binary: &str) -> String {
+    format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+         <!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n\
+         <plist version=\"1.0\">\n\
+         <dict>\n  \
+         <key>Label</key>\n  \
+         <string>{}</string>\n  \
+         <key>ProgramArguments</key>\n  \
+         <array>\n    \
+         <string>{}</string>\n    \
+         <string>--hidden</string>\n  \
+         </array>\n  \
+         <key>RunAtLoad</key>\n  \
+         <true/>\n\
+         </dict>\n\
+         </plist>",
+        xml_escaped(label),
+        xml_escaped(binary),
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn rewrite_macos_launch_agent(app: &tauri::AppHandle) {
+    let Some(home_dir) = dirs::home_dir() else {
+        return;
+    };
+    let name = &app.package_info().name;
+    let path = home_dir
+        .join("Library")
+        .join("LaunchAgents")
+        .join(format!("{name}.plist"));
+    if !path.exists() {
+        return;
+    }
+    let Ok(binary) = std::env::current_exe() else {
+        return;
+    };
+    let plist = macos_launch_agent_plist(name, &binary.display().to_string());
+    let _ = fs::write(&path, plist);
 }
 
 /// A moved or re-downloaded AppImage leaves the autostart entry pointing at
@@ -197,6 +280,11 @@ fn reconcile_autostart_entry(app: &tauri::AppHandle) {
     use tauri_plugin_autostart::ManagerExt;
     // A dev run would repoint the entry at target/debug.
     if cfg!(debug_assertions) {
+        return;
+    }
+    // Respect an entry the user disabled from a DE startup-apps UI; enable()
+    // would rewrite the file without the disabled marker.
+    if cfg!(target_os = "linux") && linux_autostart_disabled(app) {
         return;
     }
     let autolaunch = app.autolaunch();
@@ -848,6 +936,37 @@ mod tests {
     #[test]
     fn autostart_hardening_needs_an_exec_line() {
         assert!(hardened_autostart_entry("[Desktop Entry]\nType=Application").is_none());
+    }
+
+    #[test]
+    fn exec_quoting_escapes_percent_field_codes() {
+        let entry = "[Desktop Entry]\nExec=/home/n/Unsloth%20Studio.AppImage --hidden";
+        let hardened = hardened_autostart_entry(entry).expect("guard must be added");
+        assert!(hardened.contains("Exec=/home/n/Unsloth%%20Studio.AppImage --hidden\n"));
+        // TryExec is a plain string field, so the raw path stays there.
+        assert!(hardened.ends_with("\nTryExec=/home/n/Unsloth%20Studio.AppImage"));
+    }
+
+    #[test]
+    fn autostart_disabled_markers_are_detected() {
+        assert!(autostart_entry_disabled("[Desktop Entry]\nHidden=true"));
+        assert!(autostart_entry_disabled(
+            "[Desktop Entry]\nX-GNOME-Autostart-enabled=false"
+        ));
+        assert!(!autostart_entry_disabled("[Desktop Entry]\nExec=/a --hidden"));
+    }
+
+    #[test]
+    fn macos_plist_escapes_xml_metacharacters() {
+        let plist = macos_launch_agent_plist(
+            "Unsloth",
+            "/Applications/AI & ML/Unsloth.app/Contents/MacOS/unsloth-studio",
+        );
+        assert!(plist.contains(
+            "<string>/Applications/AI &amp; ML/Unsloth.app/Contents/MacOS/unsloth-studio</string>"
+        ));
+        assert!(plist.contains("<string>--hidden</string>"));
+        assert!(plist.contains("<key>RunAtLoad</key>"));
     }
 
     #[test]
