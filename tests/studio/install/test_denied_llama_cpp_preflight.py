@@ -50,7 +50,7 @@ def _function_source(text: str, name: str) -> str:
         elif text[index] == "}":
             depth -= 1
             if depth == 0:
-                return text[match.start():index + 1]
+                return text[match.start() : index + 1]
     raise AssertionError(f"unbalanced braces in {name}")
 
 
@@ -94,7 +94,7 @@ def test_setup_and_the_installer_use_the_same_probe() -> None:
     assert "$llamaDirState = Get-LlamaCppInstallReadState -Path $LlamaCppDir" in SETUP_PS1
     assert '$llamaDirState -eq "Denied"' in SETUP_PS1
     assert '$llamaDirState -eq "Readable"' in SETUP_PS1
-    assert "(Get-LlamaCppInstallReadState -Path $dir) -ne \"Denied\"" in INSTALL_PS1
+    assert '(Get-LlamaCppInstallReadState -Path $dir) -ne "Denied"' in INSTALL_PS1
 
 
 def test_the_probe_keeps_all_three_answers() -> None:
@@ -143,7 +143,7 @@ def test_direct_setup_and_update_preflight_before_phase_one() -> None:
         "PHASE 3.4: Prefer prebuilt llama.cpp",
     ):
         assert position < SETUP_PS1.index(later), later
-    failure = SETUP_PS1[position:SETUP_PS1.index("# Back up User PATH", position)]
+    failure = SETUP_PS1[position : SETUP_PS1.index("# Back up User PATH", position)]
     assert "Exit-SetupFailure $llamaPreflightFailure" in failure
 
 
@@ -193,7 +193,7 @@ def test_the_preflight_fails_the_install_with_the_shared_reason() -> None:
 def test_the_preflight_cannot_be_the_thing_that_breaks_the_run() -> None:
     """The early preflight must tolerate an unavailable profile or path."""
     body = _function_source(INSTALL_PS1, "Invoke-ManagedLlamaCppPreflight")
-    guard = 'if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }'
+    guard = "if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) { return $null }"
     assert guard in body
     assert body.index(guard) < body.index("Get-ManagedLlamaCppDir")
     # Both probes swallow their own failures rather than terminating.
@@ -224,13 +224,10 @@ def test_a_tree_the_user_pointed_at_is_never_called_a_cache_we_own() -> None:
         " else { $env:UNSLOTH_LOCAL_LLAMA_CPP_DIR }" in body
     )
     # Compare canonical paths, as setup.ps1 does.
-    assert (
-        "(Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir)"
-        in body
-    )
+    assert "(Get-CanonicalDir -Path $suppliedDir) -eq (Get-CanonicalDir -Path $dir)" in body
     assert "$LocalIsCanonical = ($ResolvedLocal -eq $LlamaCppDir)" in SETUP_PS1
     assert (
-        'Exit-PathAccessDenied -Path $ResolvedLocal'
+        "Exit-PathAccessDenied -Path $ResolvedLocal"
         ' -Label "the UNSLOTH_LOCAL_LLAMA_CPP_DIR build" -UserSupplied' in SETUP_PS1
     )
 
@@ -293,6 +290,4 @@ def test_setup_sh_reports_a_denied_default_home_cache() -> None:
     assert 'if _studio_dir_unsearchable "$LLAMA_CPP_DIR"; then' in block
     assert '_path_access_denied "$LLAMA_CPP_DIR" "llama.cpp install"' in block
     # Preserve the custom-home ownership guard's more cautious wording.
-    assert block.index("_assert_studio_owned_or_absent") < block.index(
-        "_studio_dir_unsearchable"
-    )
+    assert block.index("_assert_studio_owned_or_absent") < block.index("_studio_dir_unsearchable")

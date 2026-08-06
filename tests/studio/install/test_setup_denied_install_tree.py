@@ -63,7 +63,10 @@ def test_prebuilt_metadata_probe_cannot_terminate_setup():
     assert "Test-PathQuiet -Path $existingMetaPath -PathType Leaf" in SETUP_PS1
     assert "$llamaDirState = Get-LlamaCppInstallReadState -Path $LlamaCppDir" in SETUP_PS1
     assert '$llamaDirState -eq "Denied"' in SETUP_PS1
-    assert 'Get-PathState -Path (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf' in SETUP_PS1
+    assert (
+        'Get-PathState -Path (Join-Path $Path "UNSLOTH_PREBUILT_INFO.json") -PathType Leaf'
+        in SETUP_PS1
+    )
 
 
 def test_every_denial_route_reports_instead_of_proceeding():
