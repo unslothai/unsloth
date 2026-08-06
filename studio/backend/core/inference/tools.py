@@ -1318,6 +1318,25 @@ def _cmd_group_delta(token: str) -> int:
     return delta
 
 
+def _cmd_unquoted_split(text: str, chars: str) -> "list[str]":
+    """``text`` split on the ``chars`` that are OUTSIDE quotation marks.
+
+    Grouping brackets and cmd's argument delimiters are syntax bare and data
+    quoted, and reading a spelling rather than the quote state got both wrong:
+    `"(safe)start" "" powershell` names a program cmd looks up whole, and
+    splitting it left `start`, which refused a line that launches nothing.
+    """
+    pieces, current = [], []
+    for char, quoted in zip(text, _cmd_quoted_offsets(text)):
+        if char in chars and not quoted:
+            pieces.append("".join(current))
+            current = []
+            continue
+        current.append(char)
+    pieces.append("".join(current))
+    return pieces
+
+
 def _cmd_word_depth_delta(token: str) -> int:
     """How far ``token``'s brackets have moved cmd's grouping by the time it
     reads the command word in it.
@@ -1329,11 +1348,11 @@ def _cmd_word_depth_delta(token: str) -> int:
     the `else` of `if exist x (echo else) else start "" pwsh` is ECHO's data.
     """
     plain = _cmd_split(token, "")[0]
-    pieces = re.split(r"[()]", plain)
+    pieces = _cmd_unquoted_split(plain, "()")
     kept = [index for index, piece in enumerate(pieces) if piece]
     last = kept[-1] if kept else 0
     prefix = plain[: sum(len(piece) for piece in pieces[:last]) + last]
-    return prefix.count("(") - prefix.count(")")
+    return _cmd_group_delta(prefix)
 
 
 def _cmd_split(token: str, chars: str) -> "list[str]":
@@ -1451,6 +1470,14 @@ def _blocked_start_program(token: str) -> "set[str]":
         stem, ext = os.path.splitext(base)
         if ext in {".exe", ".com", ".bat", ".cmd"}:
             base = stem
+        if _CMD_DELAYED_RE.search(base):
+            # A delayed expansion is read when the command RUNS, so the same
+            # line can fill it: `cmd /v:on /c "set X=power&start "" !X!shell"`
+            # assembles powershell out of a fragment that is nothing on its own.
+            # Unknowable here and controllable there, so it is refused. The
+            # `%VAR%` form is read when the line is PARSED, before any set on it
+            # can run, which is why that one is only read both ways.
+            return {target.strip('"').lower()}
         if not base and len(names) > 1:
             # The program name is nothing BUT an expansion, so no reading of it
             # is a name: `start "" %ComSpec% /c powershell` launches cmd with a
@@ -1752,25 +1779,31 @@ def _find_blocked_commands(command: str) -> set[str]:
         `for %i in (x)do start "" powershell` leaves `(x)do` as one token under
         the cmd lexer, whose `do` still hands the body along.
         """
-        plain = _cmd_split(word, "")[0].strip(";&|`{}")
-        pieces = [piece for piece in re.split(r"[()]", plain) if piece]
+        plain = _cmd_split(word, "")[0].strip("&|`{}")
+        # Expansion runs before the line is parsed and a variable can contribute
+        # nothing, an unset `!X!` where delayed expansion is on or a zero-length
+        # `%PATH:~0,0%` anywhere, so `st!X!art` and `st%PATH:~0,0%art` ARE start.
+        # Read first, since what it leaves behind is what cmd then reads for
+        # syntax: the comma of `%PATH:~0,0%` is inside a variable and not a
+        # delimiter. Reading the spelling as cmd leaves it is the safe
+        # direction, a file really named that launching nothing, and it is not
+        # gated on /v:on either, since the registry enables delayed expansion
+        # host-wide and a command line does not show that.
+        if "!" in plain or "%" in plain:
+            plain = _CMD_DELAYED_RE.sub("", _CMD_VARIABLE_RE.sub("", plain)) or plain
+        # An unquoted delimiter then ends the command word, so `start;""
+        # powershell` is a start: cmd reads `;`, `,` and `=` where it reads a
+        # space, which is what makes `echo;hi` print. Quoted, they are filename
+        # characters. A word that BEGINS with one is not a name ending at one,
+        # so `=="a"` stays the comparison half it is.
+        plain = _cmd_unquoted_split(plain, ";,=")[0] or plain
+        pieces = [piece for piece in _cmd_unquoted_split(plain, "()") if piece]
         # The bracket comes off before the prefix, or `(@start` keeps its `@`
         # and never matches: cmd reads the group opener, then the suppression.
         # The marks come off wherever they sit, since cmd removes them when it
         # resolves the command: `pow"er"shell` runs powershell.
         name = (pieces[-1] if pieces else "").replace('"', "").lstrip("@")
-        base = os.path.basename(name.replace("\\", "/")).lower()
-        # Expansion happens before the word is resolved and a variable can
-        # contribute nothing, an unset `!X!` where delayed expansion is on or a
-        # zero-length `%PATH:~0,0%` anywhere, so `st!X!art` and `st%PATH:~0,0%art`
-        # ARE start. Reading the spelling as cmd leaves it is the safe
-        # direction: a file really named that launches nothing. Not gated on
-        # /v:on either, since the registry enables delayed expansion host-wide
-        # and a command line does not show that.
-        if "!" in base or "%" in base:
-            expanded = _CMD_DELAYED_RE.sub("", _CMD_VARIABLE_RE.sub("", base))
-            return expanded or base
-        return base
+        return os.path.basename(name.replace("\\", "/")).lower()
 
     def _cmd_condition_words(index: int) -> int:
         """How many words cmd's `if` condition occupies, starting at ``index``.
@@ -1781,6 +1814,15 @@ def _find_blocked_commands(command: str) -> set[str]:
         parsing further. The three-word comparison is the one that hid a launch:
         `if 1 EQU 1 start "" powershell` left EQU looking like the command.
         """
+        # A redirection between `if` and its test is performed by cmd and never
+        # reaches the condition, so counting from `>nul` in `if >nul exist f
+        # start "" powershell` put the count a word out and left the launch in
+        # argument position. The walk skips those tokens too, so they are not
+        # counted here either.
+        while index < len(tokens) and _REDIR_PREFIX_RE.match(tokens[index]):
+            head = _CMD_REDIR_HEAD_RE.match(tokens[index])
+            attached = tokens[index][head.end() :] if head else ""
+            index += 1 if attached or (head and "&" in head.group(0)) else 2
         words = 0
         for _ in range(2):  # /i and not, in either order
             if index + words >= len(tokens):
@@ -1947,7 +1989,14 @@ def _find_blocked_commands(command: str) -> set[str]:
             if word == "start":
                 expect = False
             elif word == "call":
-                pass  # it reparses its target, so a command follows it
+                # It reparses its target, so a command follows it -- and that
+                # second parse sees the line the FIRST one left, escapes
+                # already applied: `call echo safe ^& start "" powershell`
+                # reaches it with a real separator and the start runs. Only
+                # where a caret was there to remove, since otherwise the second
+                # parse reads what this walk is reading anyway.
+                if index + 1 < len(tokens):
+                    cmd_call_indexes.add(index + 1)
             elif word == "if":
                 skip = _cmd_condition_words(index + 1)
                 control.append(("if", word_depth))
@@ -2016,6 +2065,8 @@ def _find_blocked_commands(command: str) -> set[str]:
     # a `cmd /c` payload is only a command line where the cmd running it is
     # itself executed, and `echo cmd /c start "" powershell` merely prints.
     run_indexes: "set[int]" = set()
+    # Words a `call` reparses, which is a second pass over the text behind it.
+    cmd_call_indexes: "set[int]" = set()
     xargs_index = -1  # an xargs awaiting the command it wraps
     for token_index, token in enumerate(tokens):
         if skip_operand:
@@ -2224,6 +2275,22 @@ def _find_blocked_commands(command: str) -> set[str]:
                 blocked.update(_blocked_matching_glob(name))
         return cmd_grammar_spent
 
+    token_offsets: "list[int] | None" = None
+
+    def _token_offsets() -> "list[int]":
+        """Where each token starts in the source line, or -1 for one the lexer
+        built rather than copied. Built at most once, and only for the scans
+        that have to place a token back in the text they came from."""
+        nonlocal token_offsets
+        if token_offsets is None:
+            offsets, cursor = [], 0
+            for token in tokens:
+                found = command.find(token, cursor)
+                offsets.append(found)
+                cursor = found + len(token) if found >= 0 else cursor
+            token_offsets = offsets
+        return token_offsets
+
     def _cmd_payload_text(index: int) -> str:
         """The source text from ``tokens[index]`` on, dequoted as cmd dequotes
         its command line.
@@ -2238,16 +2305,11 @@ def _find_blocked_commands(command: str) -> set[str]:
         rebuild is what loses it: the cmd lexer splits `"start "" powershell"`
         at the quotes into pieces that no longer sit where they did.
         """
-        cursor = 0
-        for position, token in enumerate(tokens):
-            found = command.find(token, cursor)
-            if found < 0:
-                return ""  # a token the lexer built rather than copied
-            if position == index:
-                payload = command[found:]
-                closing = payload.rfind('"')
-                return payload[1:closing] + payload[closing + 1 :] if closing > 0 else payload[1:]
-            cursor = found + len(token)
+        offsets = _token_offsets()
+        if index < len(offsets) and offsets[index] >= 0:
+            payload = command[offsets[index] :]
+            closing = payload.rfind('"')
+            return payload[1:closing] + payload[closing + 1 :] if closing > 0 else payload[1:]
         return ""
 
     def _start_program_index(index: int) -> int:
@@ -2382,8 +2444,21 @@ def _find_blocked_commands(command: str) -> set[str]:
     # and the grammar budget above caps the total either way.
     read_payloads: "set[int]" = set()
     screened_starts: "set[int]" = set()
+    reparsed_calls: "set[int]" = set()
     while True:
         progressed = False
+        for i in sorted(cmd_call_indexes - reparsed_calls):
+            reparsed_calls.add(i)
+            progressed = True
+            offsets = _token_offsets()
+            text = command[offsets[i] :] if i < len(offsets) and offsets[i] >= 0 else ""
+            # Only where a caret was there for the first pass to remove: cmd
+            # reads `call echo safe ^& start "" powershell` as one command,
+            # then CALL reads what is left, where the `&` is a separator and
+            # the start is a command of its own. Without one the second pass
+            # sees the same words this walk already read.
+            if "^" in text:
+                blocked |= _find_blocked_commands(_cmd_split(text, "")[0])
         for i, j, prev_base in cmd_payloads:
             if i in read_payloads or not _cmd_runs_here(j):
                 continue
@@ -2423,13 +2498,21 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Only where cmd runs a `for` itself. The body is found by re-reading the
     # text, which cannot tell a construct from a quotation of one on its own, so
     # `echo "for /f %i in ('rm -rf x') do echo %i"` was refused for printing.
-    quoted_offsets = _cmd_quoted_offsets(command) if cmd_for_indexes else []
-    for match in _CMD_FOR_SUBSTITUTION_RE.finditer(command if cmd_for_indexes else ""):
-        # A `for` cmd runs somewhere on the line is not this `for`: the outer
-        # one in `for %i in (x) do echo "for /f %j in ('start "" pwsh') ..."` is
-        # real while the inner expression is echo's data, so each match has to
-        # be unquoted where it sits, not merely accompanied by a construct.
-        if match.start() < len(quoted_offsets) and quoted_offsets[match.start()]:
+    # A `for` cmd runs somewhere on the line is not this `for`: the outer one in
+    # `for %i in (x) do echo "for /f %j in ('start "" pwsh') ..."` is real while
+    # the inner expression is echo's data, and `... do rem for /f %j in (...)`
+    # is a comment. So a match counts only where it BEGINS at one of the `for`
+    # words the walk recorded, rather than merely sharing a line with one.
+    # Inside that word rather than at it, since a separator glued in front
+    # leaves the `for` mid-token: `> out&for /f %i in (...)` is one token whose
+    # command word is the for.
+    for_spans = [
+        (_token_offsets()[i], _token_offsets()[i] + len(tokens[i]))
+        for i in cmd_for_indexes
+        if _token_offsets()[i] >= 0
+    ]
+    for match in _CMD_FOR_SUBSTITUTION_RE.finditer(command if for_spans else ""):
+        if not any(begin <= match.start() < end for begin, end in for_spans):
             continue
         # Only one of the two spellings is a child command, and usebackq is what
         # swaps them: Microsoft documents `('<command>')` without it and

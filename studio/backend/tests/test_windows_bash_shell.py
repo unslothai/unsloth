@@ -1161,6 +1161,113 @@ def test_a_handoff_belongs_to_the_statement_at_its_depth(monkeypatch, command, b
 @pytest.mark.parametrize(
     ("command", "blocked"),
     [
+        # cmd reads `;`, `,` and `=` where it reads a space, which is what makes
+        # `echo;hi` print, so an unquoted one ends the command word.
+        ('cmd /c start;"" powershell', True),
+        ('cmd /c start,"" powershell', True),
+        # ...while a quoted one is a filename character, and a word that BEGINS
+        # with a delimiter is not a name ending at one. Written behind another
+        # command, since a payload that OPENS with a quote is dequoted by cmd
+        # itself and the marks are gone by the time the name is read.
+        ('cmd /c echo hi & "start;x" "" powershell', False),
+        ('cmd /c "start;x" "" powershell', True),
+        ('cmd /c if "a"=="a" echo start "" powershell', False),
+        # A quoted bracket is filename data too, so this names a program cmd
+        # looks up whole and powershell is only its argument.
+        ('cmd /c call "(safe)start" "" powershell', False),
+        ('cmd /c echo hi & "(safe)start" "" powershell', False),
+        ('cmd /c if exist x "(safe)start" "" powershell', False),
+        ('cmd /c if exist x (start "" powershell)', True),
+    ],
+)
+def test_quoting_decides_which_cmd_punctuation_is_syntax(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # A redirection between `if` and its test is performed by cmd and never
+        # reaches the condition, so counting it as a condition word put the
+        # count out and left the launch behind it in argument position.
+        ('cmd /c if >nul exist file.txt start "" powershell', True),
+        ('cmd /c if 2>nul not exist file.txt start "" powershell', True),
+        ('cmd /c if > nul exist file.txt start "" powershell', True),
+        ('cmd /c if >nul defined V start "" powershell', True),
+        # ...and the condition still ends where it did, so a text command
+        # behind one only prints.
+        ('cmd /c if >nul exist file.txt echo start "" powershell', False),
+    ],
+)
+def test_a_redirection_is_not_a_condition_word(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # A `for` expression counts where it IS one of the fors cmd runs, not
+        # merely where one shares its line: rem records a comment.
+        ("""cmd /c for %i in (x) do rem for /f %j in ('start "" powershell') do echo %j""", False),
+        ("""cmd /c for /f %i in ('start "" powershell') do echo %i""", True),
+        # ...found inside that word too, since a separator glued in front
+        # leaves the `for` mid-token.
+        ("""cmd /c > out&for /f %i in ('start "" powershell') do echo %i""", True),
+    ],
+)
+def test_a_for_expression_belongs_to_a_for_that_runs(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # A delayed expansion is read when the command RUNS, so the same line
+        # can fill it and a fragment that is nothing on its own assembles a
+        # blocked name. Unknowable here and controllable there, so refused.
+        ('cmd /v:on /c "set X=power&start "" !X!shell"', True),
+        ('cmd /c start "" !X!shell', True),
+        ('cmd /c start "" power!X!shell', True),
+        # `%VAR%` is read when the line is PARSED, before any set on it runs,
+        # so that one stays read-both-ways rather than refused.
+        ('cmd /c start "" report%DATE%.txt', False),
+        ('cmd /c start "" "my!file.txt"', False),
+    ],
+)
+def test_a_delayed_expansion_in_a_program_name_fails_closed(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # CALL reparses what the first pass left, escapes already applied, so
+        # the caret-protected `&` becomes a separator on the second read and
+        # the start behind it runs.
+        ('cmd /c call echo safe ^& start "" powershell', True),
+        ('cmd /c call start "" powershell', True),
+        # Without a caret the second pass reads the same words as the first.
+        ("cmd /c call echo safe & echo start", False),
+        ("cmd /c echo safe ^& echo done", False),
+    ],
+)
+def test_call_reparses_the_line_the_first_pass_left(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
         # A separator ends a redirection target even glued to it, so the word
         # behind it is a command; swallowing the token whole left the launch
         # unscreened. `2>&1` carries a handle rather than a target, so nothing
@@ -1382,8 +1489,11 @@ def test_a_redirection_is_not_the_program_start_launches(monkeypatch, bash, comm
         # registry enables it, and the launcher itself went unread.
         ('cmd /v:on /c st!X!art "" powershell', True),
         ('cmd /c start "" power!X!shell', True),
-        # A name that expands to nothing blocked stays allowed.
-        ('cmd /c start "" my!X!file.txt', False),
+        # A name that expands to nothing blocked stays allowed... unless the
+        # fragment is a delayed one, which the same line can fill
+        # (test_a_delayed_expansion_in_a_program_name_fails_closed).
+        ('cmd /c start "" my!X!file.txt', True),
+        ('cmd /c start "" my%X%file.txt', False),
         ('cmd /c start "" report%DATE%.txt', False),
     ],
 )
