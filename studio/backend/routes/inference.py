@@ -5049,6 +5049,21 @@ def _estimate_gguf_required_gb(
         return None
 
 
+def _guard_device_count(
+    requested_gpu_ids: Optional[list[int]],
+    vulkan_gpu_memory: Optional[list[tuple[int, int, int]]] = None,
+) -> int:
+    """Devices the launch would spread its compute buffers over.
+
+    An explicit pin settles it. Otherwise automatic placement takes ggml's probed
+    Vulkan pool when there is one, since _effective_gpu_count only counts CUDA
+    devices and would charge a multi-GPU Vulkan host for a single buffer set.
+    """
+    if not requested_gpu_ids and vulkan_gpu_memory:
+        return max(1, len(vulkan_gpu_memory))
+    return max(1, LlamaCppBackend._effective_gpu_count(requested_gpu_ids))
+
+
 def _gguf_layer_count(config: ModelConfig) -> Optional[int]:
     """Total block count from a local GGUF header, or None (remote / unreadable)."""
     try:
@@ -5473,6 +5488,20 @@ def _guard_chat_load_against_training(
         and (gpu_ids_are_vulkan_ordinals or (binary and LlamaCppBackend._is_vulkan_backend(binary)))
     )
 
+    # ggml's vulkan pool, probed once: the device count and the free-vram view below both read it
+    vulkan_gpu_memory: Optional[list[tuple[int, int, int]]] = None
+    if is_vulkan_backend and (
+        gpu_ids_are_vulkan_ordinals
+        or diffusion_kind is False
+        or (diffusion_kind is None and not requested_gpu_ids)
+    ):
+        vulkan_gpu_memory = LlamaCppBackend._get_gpu_memory(binary)
+        if not requested_gpu_ids:
+            # automatic placement prefers the discrete cards, like the loader's fit
+            vulkan_gpu_memory = LlamaCppBackend._vulkan_auto_gpu_memory(vulkan_gpu_memory)
+
+    guard_n_devices = _guard_device_count(requested_gpu_ids, vulkan_gpu_memory)
+
     # Size with the count that will actually launch, or a load that fits gets a
     # 409: diffusion never receives --parallel, load_model clamps to 1 on an
     # llama-server without --kv-unified, and it clamps MTP to 1 as well. An
@@ -5514,7 +5543,7 @@ def _guard_chat_load_against_training(
                 )
             ),
             # size the compute buffers for the split the loader would budget
-            n_devices = max(1, LlamaCppBackend._effective_gpu_count(requested_gpu_ids)),
+            n_devices = guard_n_devices,
             # a confirmed diffusion runner ignores the llama-server batch flags, so their reserve must not 409 it
             is_diffusion = diffusion_kind is True,
         )
@@ -5537,11 +5566,9 @@ def _guard_chat_load_against_training(
     vulkan_free_vram_gb = None
     if is_gguf:
         if is_vulkan_backend and (gpu_ids_are_vulkan_ordinals or diffusion_kind is False):
-            gpu_memory = LlamaCppBackend._get_gpu_memory(binary)
-            if not requested_gpu_ids:
-                gpu_memory = LlamaCppBackend._vulkan_auto_gpu_memory(gpu_memory)
             vulkan_free_vram_gb = {
-                index: free_mib / 1024.0 for index, free_mib, _total_mib in gpu_memory
+                index: free_mib / 1024.0
+                for index, free_mib, _total_mib in (vulkan_gpu_memory or [])
             }
         elif is_vulkan_backend and diffusion_kind is None and requested_gpu_ids:
             # Until the header is available, the model may use either the Vulkan

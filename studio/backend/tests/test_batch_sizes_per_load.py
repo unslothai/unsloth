@@ -209,6 +209,25 @@ def test_remote_gguf_guard_counts_explicit_micro_batch():
     assert diffusion == pytest.approx(1.0)
 
 
+def test_guard_device_count_uses_the_automatic_vulkan_pool():
+    # a vulkan-only host has no cuda devices to count, but the loader still spreads over the pool
+    from unittest.mock import patch
+
+    from routes.inference import _guard_device_count
+
+    pool = [(0, 8192, 8192), (1, 8192, 8192), (2, 8192, 8192)]
+    with patch.object(
+        LlamaCppBackend,
+        "_effective_gpu_count",
+        lambda ids = None: len(ids) if ids else 0,
+    ):
+        assert _guard_device_count(None, pool) == 3
+        # an explicit pin wins over the pool, and no pool at all still charges one buffer set
+        assert _guard_device_count([1, 2], pool) == 2
+        assert _guard_device_count(None, []) == 1
+        assert _guard_device_count(None, None) == 1
+
+
 def test_override_strips_shadowing_batch_flags():
     kwargs = model_override_load_kwargs(
         {"n_batch": 4096, "llama_extra_args": ["-b", "512", "--top-k", "20"]},
