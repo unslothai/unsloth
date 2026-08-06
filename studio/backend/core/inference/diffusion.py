@@ -1592,7 +1592,7 @@ class DiffusionBackend:
         fall back to reading the whole root: a cache we cannot scope must still report its bytes,
         never zero."""
         try:
-            rev = (repo_dir / "refs" / "main").read_text().strip()
+            rev = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
         except (OSError, ValueError):
             return None
         # A ref file holds a bare commit hash; anything with a separator is not one, and joining
@@ -1719,6 +1719,14 @@ class DiffusionBackend:
             return sum(fn(local).values())
         candidates: list[Path] = [Path(staged_dir).expanduser()] if staged_dir else []
         for repo_dir in DiffusionBackend._hub_cache_repo_dirs(base):
+            # One revision per root, the one that root serves: the merge is per FILE, so pulling in
+            # a superseded revision whose shards were repacked would count both namings and force
+            # offload on a base that fits. Only a root naming no revision falls back to all of
+            # them, where over-counting still beats reading zero.
+            live_rev = DiffusionBackend._live_snapshot_dir(repo_dir)
+            if live_rev is not None:
+                candidates.append(live_rev)
+                continue
             try:
                 candidates.extend(rev for rev in (repo_dir / "snapshots").iterdir() if rev.is_dir())
             except OSError:

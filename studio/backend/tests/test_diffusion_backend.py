@@ -4002,6 +4002,21 @@ def test_companion_bytes_union_a_base_the_prefetch_split_across_roots(tmp_path, 
     assert plan.offload_policy == OFFLOAD_GROUP
 
 
+def test_companion_bytes_skip_a_superseded_revision_in_the_same_root(tmp_path, monkeypatch):
+    # The merge is per FILE, so a repo that repacked its shards between revisions would have both
+    # namings counted and budget roughly twice the companions it loads -- enough to force offload
+    # on a base that fits resident. Only the revision refs/main names is the one this load reads.
+    live, _other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
+    old_rev, new_rev = "a" * 40, "b" * 40
+    for shard in ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"):
+        _sparse_snapshot_file(live, "bfl/base", old_rev, f"text_encoder/{shard}", 100)
+    _sparse_snapshot_file(live, "bfl/base", new_rev, "text_encoder/model.safetensors", 200)
+    _hub_ref(live, "bfl/base", new_rev)
+
+    # 200, not the 400 that merging both revisions' disjoint file names would report.
+    assert DiffusionBackend._companion_cache_bytes("bfl/base") == 200 * 1024 * 1024
+
+
 def test_plan_memory_sizes_a_pipeline_split_across_both_cache_roots(monkeypatch, tmp_path):
     # A prefetch that landed part of the repo in each root hands back NO snapshot (a snapshot dir
     # the rest of the files are not in would fail the load), so the plan falls back to the cache
