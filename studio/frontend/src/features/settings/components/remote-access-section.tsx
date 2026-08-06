@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { AnimatedShinyText } from "@/components/ui/animated-shiny-text";
 import { Button } from "@/components/ui/button";
 import {
   Dialog,
@@ -72,11 +71,6 @@ function stateDotClass(state?: RemoteAccessStatus["state"]): string {
 
 function AccessStatus({ status }: { status: RemoteAccessStatus | null }) {
   const owner = status?.managedBy ? OWNER_LABEL[status.managedBy] : null;
-  const transitioning =
-    status?.state === "starting" || status?.state === "stopping";
-  const text = `${status ? STATE_LABEL[status.state] : "Unavailable"}${
-    owner ? ` · ${owner}` : ""
-  }`;
   return (
     <output
       className="flex items-center gap-1.5 text-xs text-muted-foreground"
@@ -85,13 +79,8 @@ function AccessStatus({ status }: { status: RemoteAccessStatus | null }) {
       <span
         className={cn("size-2 rounded-full", stateDotClass(status?.state))}
       />
-      {transitioning ? (
-        <AnimatedShinyText className="mx-0 max-w-none" shimmerWidth={60}>
-          {text}
-        </AnimatedShinyText>
-      ) : (
-        text
-      )}
+      {status ? STATE_LABEL[status.state] : "Unavailable"}
+      {owner ? ` · ${owner}` : ""}
     </output>
   );
 }
@@ -156,6 +145,51 @@ function RemoteUrlQrButton({ url }: { url: string }) {
         </code>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function StatusMessage({
+  message,
+  destructive,
+}: {
+  message?: string | null;
+  destructive?: boolean;
+}) {
+  if (!message) {
+    return null;
+  }
+  return (
+    <p
+      className={cn(
+        "border-t border-border/60 px-4 py-2.5 text-xs leading-snug",
+        destructive ? "text-destructive" : "text-muted-foreground",
+      )}
+    >
+      {message}
+    </p>
+  );
+}
+
+function RemoteUrlPanel({ url }: { url: string | null }) {
+  if (!url) {
+    return null;
+  }
+  return (
+    <div className="flex flex-col gap-1.5 border-t border-border/60 p-4">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-sm font-medium text-foreground">Remote URL</span>
+        <div className="flex items-center gap-2">
+          <RemoteUrlQrButton url={url} />
+          <CopyRemoteUrlButton url={url} />
+        </div>
+      </div>
+      <code className="block w-full break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
+        {url}
+      </code>
+      <span className="text-xs text-muted-foreground leading-snug">
+        Anyone with this URL and the remote password can sign in.
+      </span>
+    </div>
   );
 }
 
@@ -288,9 +322,10 @@ export function RemoteAccessSection() {
   const setAutoStart = (enabled: boolean) =>
     perform("auto", () => updateRemoteAccessAutoStart(enabled));
 
-  const statusDescription =
-    remoteAccessBlockMessage(status?.blockReason ?? null, isTauri) ??
-    status?.error;
+  const blockMessage = remoteAccessBlockMessage(
+    status?.blockReason ?? null,
+    isTauri,
+  );
   const stopAction =
     status?.canStop === true ||
     status?.state === "starting" ||
@@ -310,14 +345,14 @@ export function RemoteAccessSection() {
   return (
     <section
       data-settings-label="Remote access"
-      className="overflow-hidden rounded-lg border border-border"
+      className="overflow-hidden rounded-lg border border-border/70"
     >
       <div className="flex items-center justify-between gap-4 bg-muted/30 p-4">
         <div className="flex min-w-0 items-start gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-md border border-border bg-background">
+          <div className="flex size-8 shrink-0 items-center justify-center rounded-md border border-border/70 bg-muted/40">
             <HugeiconsIcon
               icon={Globe02Icon}
-              className="size-4.5 text-foreground"
+              className="size-4 text-foreground"
             />
           </div>
           <div className="flex min-w-0 flex-col gap-0.5">
@@ -345,38 +380,11 @@ export function RemoteAccessSection() {
         </Button>
       </div>
 
-      {statusDescription ? (
-        <p
-          className={cn(
-            "border-t border-border/60 px-4 py-2.5 text-xs leading-snug",
-            status?.state === "error"
-              ? "text-destructive"
-              : "text-muted-foreground",
-          )}
-        >
-          {statusDescription}
-        </p>
-      ) : null}
-
-      {status?.url ? (
-        <div className="flex flex-col gap-1.5 border-t border-border/60 p-4">
-          <div className="flex items-center justify-between gap-3">
-            <span className="text-sm font-medium text-foreground">
-              Remote URL
-            </span>
-            <div className="flex items-center gap-2">
-              <RemoteUrlQrButton url={status.url} />
-              <CopyRemoteUrlButton url={status.url} />
-            </div>
-          </div>
-          <code className="block w-full break-all rounded-md border border-border bg-muted/40 px-3 py-2 font-mono text-xs text-foreground">
-            {status.url}
-          </code>
-          <span className="text-xs text-muted-foreground leading-snug">
-            Anyone with this URL and the remote password can sign in.
-          </span>
-        </div>
-      ) : null}
+      <StatusMessage
+        message={blockMessage ?? status?.error}
+        destructive={!blockMessage}
+      />
+      <RemoteUrlPanel url={status?.url ?? null} />
 
       <div className="border-t border-border/60 px-4 py-1">
         <RemotePasswordRow status={status} onDone={refreshStatus} />
@@ -389,7 +397,7 @@ export function RemoteAccessSection() {
             checked={status?.autoStart ?? false}
             disabled={busy !== null || remoteAccessAutoStartReadOnly(status)}
             onCheckedChange={setAutoStart}
-            aria-label="Start remote access when Unsloth starts"
+            aria-label="Start automatically"
           />
         </SettingsRow>
       </div>
