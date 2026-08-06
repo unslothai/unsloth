@@ -127,14 +127,15 @@ export function fitsDevice(opts: {
  * MLX repos: always the params-based smallest-quant estimate, matching the
  * VRAM badge's quantized-load assumption; their estimatedSizeBytes is the
  * full-precision checkpoint and would wrongly hide models the quantized load
- * path can run. Anything unsizable is hidden (requireKnown) so over-budget
- * models with no metadata don't slip through. An unknown device budget keeps
- * everything. */
+ * path can run. `curatedSizeBytes` outranks both: real data over estimates.
+ * Anything still unsizable is hidden (requireKnown) so over-budget models with
+ * no metadata don't slip through. An unknown device budget keeps everything. */
 export function hfModelFitsDevice(
   model: {
     id: string;
     totalParams?: number;
     estimatedSizeBytes?: number;
+    curatedSizeBytes?: number;
     isGguf?: boolean;
   },
   gpu: {
@@ -151,9 +152,11 @@ export function hfModelFitsDevice(
     return true;
   const params = model.totalParams ?? paramsFromId(model.id);
   const quantBytes = params ? estimateQuantBytes(params) : undefined;
-  const sizeBytes = isGgufId(model.id, model.isGguf)
-    ? (model.estimatedSizeBytes ?? quantBytes)
-    : (quantBytes ?? model.estimatedSizeBytes);
+  const sizeBytes =
+    model.curatedSizeBytes ??
+    (isGgufId(model.id, model.isGguf)
+      ? (model.estimatedSizeBytes ?? quantBytes)
+      : (quantBytes ?? model.estimatedSizeBytes));
   return fitsDevice({
     sizeBytes,
     gpuGb: gpu.memoryTotalGb,
@@ -161,4 +164,97 @@ export function hfModelFitsDevice(
     budgetKnown: gpu.budgetKnown,
     requireKnown: true,
   });
+}
+
+/** The budget a task-scoped (Images / Video) row may claim. Those loads put the
+ * whole pipeline on ONE device (a bare "cuda", the lowest visible ordinal), so
+ * fit is judged against that card, never the multi-GPU sum, which would
+ * recommend a checkpoint that OOMs where the load lands. Chat keeps the sum. */
+export function loadScopedGpu<
+  T extends {
+    available: boolean;
+    memoryTotalGb: number;
+    maxDeviceMemoryGb: number;
+    loadDeviceMemoryGb: number;
+  },
+>(gpu: T, taskScoped: boolean): T {
+  if (!taskScoped || !gpu.available) return gpu;
+  const deviceGb = gpu.loadDeviceMemoryGb || gpu.maxDeviceMemoryGb;
+  return deviceGb > 0 ? { ...gpu, memoryTotalGb: deviceGb } : gpu;
+}
+
+/** One fit predicate for both search lists (curated matches and the Hub rows
+ * below them). The curated list only suppresses ids it kept, so a row it drops
+ * reappears from the Hub list: judge both on the same size and budget, or the
+ * toggle leaks an oversized row. */
+export function searchRowFitsDevice<
+  G extends {
+    available: boolean;
+    memoryTotalGb: number;
+    maxDeviceMemoryGb: number;
+    loadDeviceMemoryGb: number;
+    systemRamAvailableGb: number;
+    budgetKnown?: boolean;
+  },
+>(
+  row: {
+    id: string;
+    totalParams?: number;
+    estimatedSizeBytes?: number;
+    curatedSizeBytes?: number;
+  },
+  opts: {
+    isGguf: boolean;
+    curatedSizeBytes?: number;
+    gpu: G;
+    inferenceGpu: G;
+    taskScoped: boolean;
+  },
+): boolean {
+  const source = opts.isGguf ? opts.inferenceGpu : opts.gpu;
+  return hfModelFitsDevice(
+    {
+      ...row,
+      isGguf: opts.isGguf,
+      curatedSizeBytes: row.curatedSizeBytes ?? opts.curatedSizeBytes,
+    },
+    loadScopedGpu(source, opts.taskScoped),
+  );
+}
+
+/** Order Recommended: curated seeds first in catalog order, then the rest of the
+ * listing, each id once. A seed hands off only to a row that survived `keep`, so
+ * a painted curated row does not vanish when the listing reports it with
+ * metadata the filters reject. Fit is judged on whichever row renders, and the
+ * taking-over row inherits the seed's curated size: a Hub listing carries none,
+ * so a prequantized artifact would otherwise flip to the params guess (which
+ * assumes a quant still to come). */
+export function orderRecommendedRows<
+  T extends { id: string; curatedSizeBytes?: number },
+>(opts: {
+  seeds: readonly T[];
+  results: readonly T[];
+  keep: (row: T) => boolean;
+  deviceFiltered: boolean;
+  fits: (row: T) => boolean;
+}): T[] {
+  const { seeds, results, keep, deviceFiltered, fits } = opts;
+  const seedById = new Map(seeds.map((s) => [s.id, s]));
+  const rows = results.filter(keep).map((row) => {
+    const curatedSizeBytes = seedById.get(row.id)?.curatedSizeBytes;
+    return curatedSizeBytes != null && row.curatedSizeBytes == null
+      ? { ...row, curatedSizeBytes }
+      : row;
+  });
+  const byId = new Map(rows.map((r) => [r.id, r]));
+  const curated: T[] = [];
+  for (const seed of seeds) {
+    const row = byId.get(seed.id) ?? seed;
+    if (!deviceFiltered || fits(row)) curated.push(row);
+  }
+  const curatedIds = new Set(curated.map((r) => r.id));
+  const rest = (deviceFiltered ? rows.filter(fits) : rows).filter(
+    (r) => !curatedIds.has(r.id),
+  );
+  return [...curated, ...rest];
 }

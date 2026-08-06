@@ -101,16 +101,24 @@ _PROGRESS_STALL_TIMEOUT_POLLS = 1800  # ~30 min at 1 poll/sec
 def _is_finalizing(progress, msg_lower: str) -> bool:
     """Worker alive past the last step, `complete` not yet drained.
 
-    The post-training save emits no step updates, so the bar sat at 100% labelled
-    "training" for its whole duration, indistinguishable from a hang. Non-terminal
-    by design: the last step means the optimizer loop ended, not that the save
-    succeeded, so completion still comes solely from is_completed.
+    The save emits no step updates, so the bar sat at 100% labelled "training", which is
+    indistinguishable from a hang. Non-terminal by design: the last step means the optimizer
+    loop ended, not that the save succeeded, so completion still comes solely from
+    is_completed.
     """
     if any(k in msg_lower for k in ("saving", "merging")):
         return True
     total = getattr(progress, "total_steps", 0) or 0
     step = getattr(progress, "step", 0) or 0
     return total > 0 and step >= total
+
+
+def _run_finished(backend) -> bool:
+    """Whether the run reported terminal (see TrainingBackend.is_run_finished), so status and
+    progress stop waiting on the worker to exit. getattr-guarded like the other backend reads
+    here: a stand-in without it keeps the old liveness-only behaviour."""
+    check = getattr(backend, "is_run_finished", None)
+    return bool(check()) if callable(check) else False
 
 
 def _validate_local_dataset_paths(paths: list[str], label: str = "Local dataset") -> list[str]:
@@ -628,7 +636,10 @@ async def stop_training(
     """
     try:
         backend = get_training_backend()
-        is_active = backend.is_training_active()
+        # Terminal-aware like /status and the SSE: otherwise a late Stop on a finished run
+        # latches _should_stop and overwrites the finished banner with "Stopping training...",
+        # which nothing clears, so /status reports the saved run as "stopped" for good.
+        is_active = backend.is_training_active() and not _run_finished(backend)
         logger.info("Stop requested: save=%s is_active=%s", body.save, is_active)
 
         if not is_active:
@@ -665,7 +676,7 @@ async def reset_training(current_subject: str = Depends(get_current_subject)):
 
         if is_active:
             if backend._cancel_requested:
-                # Cancel (save=False) requested — force-terminate to reset immediately.
+                # Cancel (save=False) requested -- force-terminate to reset immediately.
                 logger.info("Force-terminating subprocess for immediate reset (cancel path)")
                 backend.force_terminate()
             else:
@@ -714,7 +725,8 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
         backend = get_training_backend()
         job_id: str = getattr(backend, "current_job_id", "") or ""
 
-        is_active = backend.is_training_active()
+        # A run still tearing down is not training: report terminal without waiting on exit.
+        is_active = backend.is_training_active() and not _run_finished(backend)
 
         try:
             progress = backend.trainer.get_training_progress()
@@ -864,6 +876,10 @@ async def stream_training_progress(
         job_id: str = getattr(backend, "current_job_id", "") or ""
 
         # ── Helpers ──────────────────────────────────────────────
+        def run_active() -> bool:
+            """A run that reported terminal is done, even while its worker tears down."""
+            return backend.is_training_active() and not _run_finished(backend)
+
         def build_progress(
             step: int,
             loss: Optional[float],
@@ -962,7 +978,7 @@ async def stream_training_progress(
 
         # ── Initial status (only on fresh connections) ───────────
         if resume_from_step is None:
-            is_active = backend.is_training_active()
+            is_active = run_active()
             tp = getattr(getattr(backend, "trainer", None), "training_progress", None)
             initial_total_steps = getattr(tp, "total_steps", 0) if tp else 0
             initial_epoch = getattr(tp, "epoch", None) if tp else None
@@ -1022,7 +1038,7 @@ async def stream_training_progress(
             backend.step_history
         )
 
-        while backend.is_training_active():
+        while run_active():
             # Client gone: end the generator without falling through to the final
             # "complete" frame, which a buffered/proxy consumer could otherwise read
             # as a finished run while training is still active.

@@ -244,6 +244,36 @@ fn powershell_script_path(path: &Path) -> PathBuf {
     PathBuf::from(OsString::from_wide(&normalized))
 }
 
+/// Everything passed to `powershell.exe` before the script's own arguments.
+///
+/// Separate from `spawn_script` so a test can assert the property that matters:
+/// that this flag set authorizes this path spelling. #7819 broke first-run
+/// install by editing only the flags, which no test over `powershell_script_path`
+/// can see.
+#[cfg(windows)]
+fn powershell_launch_args(script: &Path) -> Vec<std::ffi::OsString> {
+    use std::ffi::OsString;
+
+    // No -WindowStyle Hidden / -ExecutionPolicy Bypass: that pair is a Microsoft
+    // detection signature, CREATE_NO_WINDOW hides the console, and NSIS writes
+    // resources without a mark-of-the-web so RemoteSigned loads them.
+    let mut launch: Vec<OsString> = [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-ExecutionPolicy",
+        "RemoteSigned",
+        "-File",
+    ]
+    .iter()
+    .map(OsString::from)
+    .collect();
+
+    // Load-bearing: RemoteSigned rejects the `\\?\` spelling Tauri resolves to.
+    launch.push(powershell_script_path(script).into_os_string());
+    launch
+}
+
 /// `Command::new` searches the running executable's own directory before the
 /// system one, and a `currentUser` install puts that directory somewhere the
 /// user can write, so resolve the interpreter absolutely.
@@ -389,23 +419,12 @@ fn spawn_script(
 
     #[cfg(windows)]
     let mut cmd = Command::new(powershell_exe());
-    // No -WindowStyle Hidden / -ExecutionPolicy Bypass: that pair is a Microsoft
-    // detection signature, CREATE_NO_WINDOW below already hides the console, and
-    // NSIS writes resources without a mark-of-the-web so RemoteSigned loads them.
     #[cfg(windows)]
-    cmd.args([
-        "-NoLogo",
-        "-NoProfile",
-        "-NonInteractive",
-        "-ExecutionPolicy",
-        "RemoteSigned",
-        "-File",
-    ])
-    .arg(powershell_script_path(script))
-    .args(args)
-    .current_dir(&work_dir)
-    .stdout(Stdio::piped())
-    .stderr(Stdio::piped());
+    cmd.args(powershell_launch_args(script))
+        .args(args)
+        .current_dir(&work_dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
 
     // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
     // spawned by the install script. Only clear inside AppImage — native installs
@@ -1197,6 +1216,78 @@ mod tests {
                 "a path past MAX_PATH must stay verbatim"
             );
         }
+    }
+
+    /// Run the real interpreter with the real flags against a script addressed
+    /// the way Tauri addresses it. Fails if the execution policy is swapped as
+    /// in #7819, or if `powershell_script_path` is dropped from the call site;
+    /// both leave the assertions over the normalizer itself passing.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_runs_a_script_addressed_the_way_tauri_addresses_it() {
+        use std::fs;
+
+        // A temp file has no Zone.Identifier, so RemoteSigned admits it unsigned.
+        // The path spelling and the flag set are what is under test, not signing.
+        let dir = std::env::temp_dir().join(format!(
+            "unsloth-launch-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        fs::create_dir_all(&dir).expect("create temp dir");
+        let script = dir.join("install.ps1");
+        fs::write(&script, "Write-Output 'unsloth-launcher-ok'\r\n").expect("write script");
+
+        // Resource resolution bottoms out in `canonicalize`, documented to return
+        // extended-length syntax. Assert that, so the test cannot pass vacuously.
+        let resolved = fs::canonicalize(&script).expect("canonicalize");
+        assert!(
+            resolved.as_os_str().to_string_lossy().starts_with(r"\\?\"),
+            "expected a verbatim path to exercise, got {resolved:?}"
+        );
+
+        let output = Command::new(powershell_exe())
+            .args(powershell_launch_args(&resolved))
+            .output()
+            .expect("spawn powershell");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let _ = fs::remove_dir_all(&dir);
+
+        assert!(
+            output.status.success() && stdout.contains("unsloth-launcher-ok"),
+            "the launcher shape failed to authorize {resolved:?}\n\
+             status: {:?}\nstdout: {stdout}\nstderr: {stderr}",
+            output.status.code()
+        );
+    }
+
+    /// Pin the flag set, so a policy swap shows up as a diff. `-File` stays last
+    /// so the script path is never parsed as a flag.
+    #[cfg(windows)]
+    #[test]
+    fn powershell_launch_args_pin_the_defender_friendly_shape() {
+        let args = powershell_launch_args(Path::new(r"\\?\C:\Users\Owner\install.ps1"));
+        let args: Vec<String> = args
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+
+        assert_eq!(
+            args,
+            vec![
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "RemoteSigned",
+                "-File",
+                r"C:\Users\Owner\install.ps1",
+            ]
+        );
+        // The pair Microsoft ships as a detection test must not come back.
+        assert!(!args.iter().any(|a| a == "Bypass" || a == "-WindowStyle"));
     }
 
     #[cfg(windows)]
