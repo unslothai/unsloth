@@ -98,25 +98,37 @@ test("the datasets-server constant is the host that client actually calls", asyn
   );
 });
 
-test("a repo lookup never speaks for the listing", async () => {
+test("a repo lookup speaks for neither the listing nor the assets", async () => {
   const transport = await read("../src/features/hub/lib/hub-transport.ts");
-  // cachedModelInfo runs in parallel with listModels. Tagged on the feed's own
-  // key, its response (a 404 included) called markRemoteNetworkOnline and
-  // deleted the listing's failure and window: the panel lost the classified
-  // cause and the phase read "available" while the listing was still blocked.
+  // cachedModelInfo runs in parallel with listModels and its caller catches, so
+  // nothing waits on it. On the feed's key its response (a 404 included) retired
+  // the listing's diagnosis; on the assets' key its failure blanked every card
+  // and avatar for 30s instead. Only the transport can tell the two URLs apart.
   const at = transport.indexOf("if (!isListingUrl(raw, resource)) {");
   assert.notEqual(at, -1, "the listing/lookup split is what decides the tag");
-  const lookup = transport.slice(at, transport.indexOf("\n  };", at));
+  // Bounded to the non-listing branch: the listing below it is "discovery", and
+  // a slice running past the closing brace swept that in as a false failure.
+  const endAt = transport.indexOf("// proxyFirst is not gated on", at);
+  assert.ok(endAt > at, "the listing branch has to follow it");
+  const lookup = transport.slice(at, endAt);
   for (const call of lookup.matchAll(/direct\(input, init(?:, "(\w+)")?\)/g)) {
-    assert.equal(call[1], "other", "a repo path is not the feed");
+    assert.equal(call[1], "info", "a repo path is neither the feed nor an asset");
   }
-  assert.ok(lookup.includes('direct(input, init, "other")'), "at least one");
-  // And the listing itself stays on the feed's key, or nothing arms it at all.
+  assert.ok(lookup.includes('direct(input, init, "info")'), "at least one");
+  // The hook must not override what only the transport can classify.
   const search = await read("../src/features/hub/hooks/use-hub-model-search.ts");
-  assert.ok(
-    !/service: "other"/.test(search),
-    "the hook must not override what only the transport can classify",
-  );
+  assert.ok(!/service: "/.test(search));
+  // And no gate reads "info", which is what makes arming it harmless.
+  for (const path of [
+    "../src/features/hub/lib/network.ts",
+    "../src/features/hub/hooks/use-online-status.ts",
+  ]) {
+    const gate = await read(path);
+    assert.ok(
+      !/isRemoteNetworkOffline\([^)]*"info"/.test(gate),
+      `${path} must not suppress anything on the lookup's key`,
+    );
+  }
 });
 
 test("clients that only read ask whether the SERVER should go cache-only", async () => {

@@ -143,11 +143,11 @@ function withGgufExpand(input: Parameters<typeof fetch>[0]): string {
   return url.toString();
 }
 
-// Only cachedModelInfo uses this, and a repo lookup is not the listing: it runs
-// in parallel with it, so on the feed's own key its answer (a 404 included)
-// would retire the listing's failure and report the catalog available while the
-// listing was still blocked. The transport tags it: it is the only thing that
-// can tell a listing URL from a repo path, and it sends the latter as "other".
+// Only cachedModelInfo uses this, and a repo lookup is neither the listing nor
+// an asset client: on the feed's key its answer would retire the listing's
+// diagnosis, on the assets' key its failure would blank cards and avatars. The
+// transport tags it "info", being the only thing that can tell a listing URL
+// from a repo path.
 function makeHfFetch(signal?: AbortSignal): typeof fetch {
   // Each call builds its own transport so pagination affinity is per-iterator.
   const transport = createHubTransport("models", {

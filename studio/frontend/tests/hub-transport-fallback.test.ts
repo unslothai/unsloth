@@ -18,6 +18,7 @@ const {
   getHubPhase,
   isRemoteNetworkOffline,
   getLastHubFailure,
+  isDirectHubOffline,
   isHubProxyServing,
   isHuggingFaceOffline,
   markRemoteNetworkOffline,
@@ -644,12 +645,22 @@ test("a repo lookup that succeeds does not retire the feed's diagnosis", async (
   });
 
   await transport(MODEL_INFO_URL, {});
-  assert.equal(seen, "other", "a /revision/ lookup is not the discovery feed");
+  assert.equal(seen, "info", "a /revision/ lookup is neither the feed nor an asset");
   assert.equal(
     getLastHubFailure(HF_ORIGIN)?.kind,
     "csp-blocked",
     "a detail-pane success must not erase why the catalog failed",
   );
+  // Nor may its own failure suppress the card and avatar clients, which is what
+  // "other" would have done for the 30s after a lookup nobody was waiting on.
+  markRemoteNetworkOnline();
+  markRemoteNetworkOffline(
+    HF_ORIGIN,
+    30_000,
+    { kind: "timeout", message: "timed out", origin: HF_ORIGIN, retryable: true },
+    "info",
+  );
+  assert.equal(isDirectHubOffline(), false, "cards and avatars keep fetching");
   markRemoteNetworkOnline();
 });
 

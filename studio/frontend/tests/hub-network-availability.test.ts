@@ -579,3 +579,39 @@ test("a serving proxy is proof the server can reach the Hub", async () => {
   );
   markRemoteNetworkOnline();
 });
+
+test("a repo lookup nobody waited on does not take the Hub down", async () => {
+  markRemoteNetworkOnline();
+  const failure = {
+    kind: "timeout" as const,
+    message: "timed out",
+    origin: HF,
+    retryable: true,
+  };
+  // The pinned-publisher lookup runs beside the listing and its rejection is
+  // caught, so its 15s timeout is evidence for nobody. On a gating key it took
+  // the catalog panel, the cards, the avatars and the quant list with it.
+  markRemoteNetworkOffline(HF, 30_000, failure, "info");
+  assert.equal(isHuggingFaceOffline(), false, "no client waits on this");
+  assert.equal(isDirectHubOffline(), false, "cards and avatars keep fetching");
+  assert.equal(getHubPhase(HF), "available", "and the panel stays quiet");
+  markRemoteNetworkOnline();
+});
+
+test("Retry still clears the lookup's window with the rest", async () => {
+  markRemoteNetworkOnline();
+  const failure = {
+    kind: "timeout" as const,
+    message: "timed out",
+    origin: HF,
+    retryable: true,
+  };
+  markRemoteNetworkOffline(HF, 30_000, failure, "info");
+  assert.equal(isRemoteNetworkOffline(HF, "info"), true);
+  // Excluded from the reachability sweep, not from the explicit reset: an
+  // untouchable window would sit there for its full TTL after a user asked to
+  // re-probe, and would go on delaying the retry timer.
+  clearRemoteBackoff(HF);
+  assert.equal(isRemoteNetworkOffline(HF, "info"), false);
+  markRemoteNetworkOnline();
+});

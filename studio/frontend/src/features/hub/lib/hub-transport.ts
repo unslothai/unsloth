@@ -33,8 +33,10 @@ const FALLBACK_KINDS = new Set([
 ]);
 
 // The service tag is decided here, not by the caller: only this module knows
-// which URLs are the discovery listing and which are a repo-path lookup, and a
-// lookup tagged "discovery" would retire the catalog's diagnosis on success.
+// which URLs are the discovery listing and which are a repo-path lookup. A
+// lookup tagged "discovery" would retire the catalog's diagnosis on success, and
+// tagged "other" its failure would blank the cards and avatars, so it gets
+// "info", which nothing gates on. Nobody waits on it: its caller catches.
 type FetchLike = (
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1],
@@ -396,10 +398,10 @@ export function createHubTransport(
       }
       if (!info) {
         // Not a route the backend can serve, so direct is the only option.
-        return direct(input, init, "other");
+        return direct(input, init, "info");
       }
       try {
-        const response = await direct(input, init, "other");
+        const response = await direct(input, init, "info");
         // The browser reached the Hub, so whatever blocked it has lifted. This
         // is the only clear on the info path: nothing else demotes it, and the
         // flag has no expiry, so one transient timeout would otherwise keep the
