@@ -237,7 +237,15 @@ def test_accepted_training_start_stays_locked_during_preparation():
     pending = runtime_store.split("export function isTrainingStartPending", 1)[1]
     pending = pending.split("const initialState", 1)[0]
     assert "stopRequested" in pending
-    assert "state.stopRequested || state.isStarting || isTrainingRunActive(state)" in pending
+    # Per term rather than one exact string: scoped cancellation added the
+    # startRequestId disjunct, and formatting of the expression is not the contract.
+    for term in (
+        "state.stopRequested",
+        "state.isStarting",
+        "Boolean(state.startRequestId?.trim())",
+        "isTrainingRunActive(state)",
+    ):
+        assert term in pending, term
 
     assert "useTrainingRuntimeStore(isTrainingStartPending)" in actions
     assert "startBlocked," in actions
@@ -475,21 +483,27 @@ def test_training_stop_failure_preserves_the_runtime_latch():
     actions = TRAINING_ACTIONS.read_text(encoding = "utf-8")
     stop = actions.split("const stopTrainingRun = useCallback", 1)[1]
     stop = stop.split("const resumeTrainingRunFromHistory", 1)[0]
-    transport = stop.split("await syncTrainingRuntimeFromBackend().catch(() => undefined)", 1)[0]
-    failure = stop.split("const message =", 1)[1].split(
-        "await syncTrainingRuntimeFromBackend()", 1
-    )[0]
+    # Scoped cancellation moved the request behind a try/catch, so slice on that rather
+    # than on the first sync call, which is now the scope === null early return.
+    attempt = stop.split("try {", 1)[1].split("} catch (error) {", 1)[0]
+    failure = stop.split("} catch (error) {", 1)[1]
 
-    assert "const expectedJobId = runtimeStore.jobId" in transport
-    assert "const expectedResetGeneration = runtimeStore.resetGeneration" in transport
-    assert "expectedJobId ? { expectedJobId } : undefined" in transport
-    assert "currentRuntime.jobId !== expectedJobId" in transport
-    assert "currentRuntime.resetGeneration !== expectedResetGeneration" in transport
-    assert "currentRuntime.setStopRequested(false)" not in stop
-    assert "currentRuntime.setRuntimeError(message)" in failure
-    assert stop.count("await syncTrainingRuntimeFromBackend().catch(() => undefined)") == 3
-    assert "currentRuntime.jobId === expectedJobId" in stop
+    assert "const scope = trainingStopScope(runtimeStore)" in stop
+    assert "const expectedResetGeneration = runtimeStore.resetGeneration" in stop
+    assert "{ expectedJobId: scope.jobId }" in attempt
+    assert "!runtimeMatchesStopScope(currentRuntime, scope)" in failure
+    assert "currentRuntime.resetGeneration !== expectedResetGeneration" in failure
+    assert stop.count("await syncTrainingRuntimeFromBackend().catch(() => undefined)") == 5
+    assert "currentRuntime.jobId === scope.jobId" in stop
     assert "currentRuntime.resetGeneration === expectedResetGeneration" in stop
+
+    # The latch survives a failed *job* stop. The start branch clears it deliberately so a
+    # pending-start cancel stays retryable, so assert per branch, not over the whole body.
+    start_branch = failure.split('if (scope.kind === "start") {', 1)[1].split("} else {", 1)[0]
+    job_branch = failure.split("} else {", 1)[1]
+    assert "currentRuntime.setStopRequested(false)" in start_branch
+    assert "currentRuntime.setStopRequested(false)" not in job_branch
+    assert "currentRuntime.setRuntimeError(message)" in job_branch
 
 
 def test_superseded_training_reset_preserves_the_current_runtime():
@@ -500,15 +514,15 @@ def test_superseded_training_reset_preserves_the_current_runtime():
         "currentRuntime.resetRuntime()", 1
     )[0]
 
-    assert "const expectedJobId = runtimeStore.jobId" in dismiss
+    assert "const scope = trainingStopScope(runtimeStore)" in dismiss
     assert "const expectedResetGeneration = runtimeStore.resetGeneration" in dismiss
-    assert "expectedJobId ? { expectedJobId } : undefined" in guarded_reset
+    assert "{ expectedJobId: scope.jobId }" in guarded_reset
     assert 'response.status === "superseded"' in guarded_reset
-    assert "currentRuntime.jobId !== expectedJobId" in guarded_reset
+    assert "currentRuntime.jobId !== scope.jobId" in guarded_reset
     assert "currentRuntime.resetGeneration !== expectedResetGeneration" in guarded_reset
     assert "await syncTrainingRuntimeFromBackend().catch(() => undefined)" in guarded_reset
     assert "return;" in guarded_reset
-    assert dismiss.count("await syncTrainingRuntimeFromBackend().catch(() => undefined)") == 2
+    assert dismiss.count("await syncTrainingRuntimeFromBackend().catch(() => undefined)") == 3
     assert "await syncTrainingRuntimeFromBackend();" not in dismiss
 
 
@@ -528,7 +542,10 @@ def test_cancel_invalidates_fresh_and_resume_preflight_leases():
     stop = actions.split("const stopTrainingRun = useCallback", 1)[1].split(
         "const resumeTrainingRunFromHistory", 1
     )[0]
-    assert "setStopRequested(false)" not in stop
+    # Only the pending-start branch may clear the latch, and only to keep that cancel
+    # retryable; a failed job stop must still leave it set.
+    job_branch = stop.split("const message =", 1)[1].split("} else {", 1)[1]
+    assert "setStopRequested(false)" not in job_branch
 
     lease_guard = start_runtime.split("export function isTrainingStartLeaseActive", 1)[1].split(
         "export function releaseTrainingStart", 1
