@@ -468,8 +468,14 @@ def test_a_tokenized_eval_split_that_cannot_be_truncated_is_refused(tmp_path, tr
         )
 
 
-def test_a_transformed_eval_split_within_the_cap_is_fine(tmp_path, trl_has_guard):
-    """And the train split still gets its cap consumed, since nothing is over."""
+def test_a_transformed_eval_split_within_the_cap_is_not_refused(tmp_path, trl_has_guard):
+    """Not refused, but not counted as enforcement either.
+
+    A `with_transform` split rebuilds its rows on every read, so sitting under
+    the cap once proves nothing about the next read. The train-side test above
+    already keeps `max_length` for exactly that reason; treating the eval side
+    as enforced was the inconsistency, and it consumed the cap while leaving
+    padding-free on with nothing downstream to truncate."""
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     tok = _load_plain()[1]
@@ -478,7 +484,8 @@ def test_a_transformed_eval_split_within_the_cap_is_fine(tmp_path, trl_has_guard
         dataset = _tokenized_dataset,
         eval_dataset = _short_transformed_dataset(tok),
     )
-    assert trainer.args.max_length is None
+    assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH, "the cap must survive"
+    assert trainer.args.padding_free is False
 
 
 def test_the_truncation_map_resolves_the_serial_worker_sentinel():
@@ -664,3 +671,68 @@ def test_the_cap_check_reads_the_whole_split():
     assert (
         "return len(_row['input_ids']) <= _unsloth_cap" not in block
     ), "that early return inspected only the first row"
+
+
+# --- what the fourth review round found -------------------------------------
+
+def test_a_raw_train_split_does_not_excuse_a_tokenized_eval_split(tmp_path, trl_has_guard):
+    """`_unsloth_prep_truncates` is decided from the train split. A raw train set
+    beside a pre-tokenized eval set skipped the whole truncation block, cleared
+    `max_length`, and left evaluation uncapped: preparation does not re-tokenize
+    rows that already carry `input_ids`."""
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    tok = _load_plain()[1]
+    trainer = _build(tmp_path, eval_dataset = _tokenized_dataset(tok))
+
+    assert trainer.args.max_length is None, "the cap was consumed"
+    assert max(len(x) for x in trainer.eval_dataset["input_ids"]) \
+        == _MODEL_MAX_SEQ_LENGTH, "the eval split was left over the cap"
+
+
+def _tokenized_stream(tok, rows = 4096):
+    """A pre-tokenized IterableDataset whose overlength row is past the scan."""
+    from datasets import Dataset
+
+    long_ids = tok("The quick brown fox. " * 200)["input_ids"]
+    short_ids = long_ids[: _MODEL_MAX_SEQ_LENGTH // 2]
+    def _gen():
+        for i in range(rows):
+            ids = long_ids if i == rows - 1 else short_ids
+            yield {"input_ids": list(ids), "attention_mask": [1] * len(ids)}
+    return Dataset.from_generator(_gen).to_iterable_dataset()
+
+
+def test_a_pretokenized_stream_is_truncated_without_num_proc(tmp_path, trl_has_guard):
+    """`IterableDataset.map` takes no `num_proc`, so forwarding the auto-sized one
+    raised TypeError, the catch restored the stream, and construction died on
+    `cannot be enforced`. The lazy map also caps every row the stream will ever
+    yield, which the 1024-row prefix scan could not promise."""
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    tok = _load_plain()[1]
+    trainer = _build(tmp_path, dataset = _tokenized_stream,
+                     dataset_num_proc = 4)
+
+    assert trainer.args.max_length is None
+    widths = [len(row["input_ids"]) for row in trainer.train_dataset]
+    assert max(widths) == _MODEL_MAX_SEQ_LENGTH, "a row past the scan stayed long"
+
+
+def test_an_unrewritable_stream_is_refused_not_assumed(tmp_path, trl_has_guard):
+    """A stream the truncation cannot rewrite is unverifiable, not verified: the
+    prefix scan called the first 1024 fitting rows proof, and nothing downstream
+    truncates a pre-tokenized row."""
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    tok = _load_plain()[1]
+
+    def _opaque_stream(tok):
+        stream = _tokenized_stream(tok)
+        # No column_names, so `_unsloth_truncatable` refuses to rewrite it.
+        stream._unsloth_hide_columns = True
+        type(stream).column_names = property(lambda self: None)
+        return stream
+
+    with pytest.raises(ValueError, match = "cannot be enforced"):
+        _build(tmp_path, dataset = _opaque_stream)

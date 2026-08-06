@@ -1323,8 +1323,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            for _row in _ds:\n"
                     "                if 'input_ids' not in _row: return True\n"
                     "                if len(_row['input_ids']) > _unsloth_cap: return False\n"
+                    # An unexhausted stream is UNVERIFIED, not verified. Calling the
+                    # first 1024 fitting rows proof let a later overlength row through,
+                    # and in the fallback branch nothing truncates a pre-tokenized row.
+                    # A stream that can be rewritten is capped by the lazy map above and
+                    # never reaches this; one that cannot is refused.
                     "                _seen += 1\n"
-                    "                if _n is None and _seen >= _UNSLOTH_SCAN_ROWS: break\n"
+                    "                if _n is None and _seen >= _UNSLOTH_SCAN_ROWS: return False\n"
                     "        except Exception:\n"
                     "            return False\n"
                     "        return True\n"
@@ -1336,10 +1341,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "    def _unsloth_splits_within_cap(_ev):\n"
                     "        _splits = list(_ev.values()) if isinstance(_ev, dict) else [_ev]\n"
                     "        return all(_unsloth_within_cap(_s) for _s in _splits)\n"
-                    "    _unsloth_can_truncate = False\n"
-                    "    if not _unsloth_prep_truncates and not _unsloth_skip_prepare:\n"
-                    "        _unsloth_can_truncate = _unsloth_truncatable(train_dataset)\n"
-                    "    if _unsloth_can_truncate:\n"
+                    # Not train-only. `_unsloth_prep_truncates` is decided from the train
+                    # split, so a raw train beside a pre-tokenized eval set skipped this
+                    # whole block, consumed `max_length`, and left evaluation uncapped:
+                    # prep does not re-tokenize rows that already carry `input_ids`.
+                    "    if not _unsloth_skip_prepare:\n"
                     # TRL forwards its preparation map_kwargs; honour the same setting so a large
                     # pre-tokenized dataset is not rewritten single-process. Resolved through the
                     # same helper as every other map site: the config layer writes "run
@@ -1371,26 +1377,65 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            return hasattr(_first, '__len__')\n"
                     "        def _unsloth_truncate_rows(_batch):\n"
                     "            return {_k: ([_v[:_unsloth_cap] for _v in _col] if _unsloth_is_sequence_column(_col) else _col) for _k, _col in _batch.items()}\n"
+                    # A stream has no length, and `IterableDataset.map` takes no `num_proc`:
+                    # passing one raised TypeError, the catch below restored the original,
+                    # and the run died on "cannot be enforced" instead of being truncated.
+                    "        def _unsloth_is_stream(_ds):\n"
+                    "            try:    return not hasattr(_ds, '__len__')\n"
+                    "            except Exception: return True\n"
+                    # One split, capped and then checked. A stream's map is lazy and applies
+                    # to EVERY row it will ever yield, which is a stronger guarantee than the
+                    # bounded prefix scan: reading 1024 rows and calling the rest verified let
+                    # a later overlength row through, since nothing else truncates a
+                    # pre-tokenized stream.
+                    # Enforcement, not observation. A `with_transform` split that happens
+                    # to sit under the cap is not enforced -- it rebuilds its rows on every
+                    # read -- so it keeps the old answer: hold `max_length` and turn
+                    # padding-free off. Only a split we rewrote, or a raw one the tokenizer
+                    # pass will cut, counts.
+                    "        def _unsloth_pretokenized(_ds):\n"
+                    "            try:    _row = next(iter(_ds), None)\n"
+                    "            except Exception: return True\n"
+                    "            return isinstance(_row, dict) and 'input_ids' in _row\n"
+                    "        def _unsloth_cap_split(_ds):\n"
+                    "            if _ds is None: return _ds, True\n"
+                    "            if not _unsloth_truncatable(_ds): return _ds, not _unsloth_pretokenized(_ds)\n"
+                    "            _kw = {} if _unsloth_is_stream(_ds) else _unsloth_map_kw\n"
+                    "            _new = _ds.map(_unsloth_truncate_rows, batched = True, **_kw)\n"
+                    "            return _new, (True if _unsloth_is_stream(_new) else _unsloth_within_cap(_new))\n"
                     "        _unsloth_orig_train = train_dataset\n"
                     "        _unsloth_orig_eval = eval_dataset if 'eval_dataset' in locals() else None\n"
                     "        try:\n"
-                    "            train_dataset = train_dataset.map(_unsloth_truncate_rows, batched = True, **_unsloth_map_kw)\n"
-                    # Each eval split is tested on its own: a raw split stays raw for the tokenizer
-                    # pass that follows, and only a materialised tokenized one is cut.
+                    "            _unsloth_capped = True\n"
+                    # A raw train split is tokenized with the cap by prep, so leave it alone.
+                    "            if not _unsloth_prep_truncates:\n"
+                    "                train_dataset, _unsloth_capped = _unsloth_cap_split(train_dataset)\n"
+                    # Each eval split on its own: a raw one stays raw for the tokenizer pass
+                    # that follows, and only a materialised tokenized one is cut.
                     "            if 'eval_dataset' in locals() and eval_dataset is not None:\n"
                     "                if isinstance(eval_dataset, dict):\n"
-                    "                    eval_dataset = {_k: (_v.map(_unsloth_truncate_rows, batched = True, **_unsloth_map_kw) if _unsloth_truncatable(_v) else _v) for _k, _v in eval_dataset.items()}\n"
-                    "                elif _unsloth_truncatable(eval_dataset):\n"
-                    "                    eval_dataset = eval_dataset.map(_unsloth_truncate_rows, batched = True, **_unsloth_map_kw)\n"
-                    "            if _unsloth_within_cap(train_dataset) and _unsloth_splits_within_cap(eval_dataset if 'eval_dataset' in locals() else None):\n"
-                    "                _unsloth_prep_truncates = True\n"
-                    "            else:\n"
-                    "                train_dataset = _unsloth_orig_train\n"
-                    "                if 'eval_dataset' in locals(): eval_dataset = _unsloth_orig_eval\n"
-                    "                print('Unsloth: the pre-tokenized dataset still exceeds `max_length` after truncation, so padding-free batching is being turned off instead.')\n"
+                    "                    _unsloth_new_eval = {}\n"
+                    "                    for _k, _v in eval_dataset.items():\n"
+                    "                        _unsloth_new_eval[_k], _unsloth_split_ok = _unsloth_cap_split(_v)\n"
+                    "                        _unsloth_capped = _unsloth_capped and _unsloth_split_ok\n"
+                    "                    eval_dataset = _unsloth_new_eval\n"
+                    "                else:\n"
+                    "                    eval_dataset, _unsloth_split_ok = _unsloth_cap_split(eval_dataset)\n"
+                    "                    _unsloth_capped = _unsloth_capped and _unsloth_split_ok\n"
+                    "            _unsloth_prep_truncates = _unsloth_capped\n"
+                    # The splits that WERE rewritten keep their truncation: it is the cap
+                    # the caller asked for, applied exactly as TRL's own truncate_dataset
+                    # would. Rolling them back because a different split cannot be
+                    # rewritten put an overlength train set back and turned a healthy run
+                    # into "cannot be enforced". Only the claim of enforcement is dropped.
+                    "            if not _unsloth_capped:\n"
+                    "                print('Unsloth: `max_length` cannot be enforced for every split here, so padding-free batching is being turned off instead.')\n"
                     "        except Exception as _unsloth_truncate_error:\n"
                     "            train_dataset = _unsloth_orig_train\n"
                     "            if 'eval_dataset' in locals(): eval_dataset = _unsloth_orig_eval\n"
+                    # The flag is decided from the train split, so a failure while capping
+                    # an eval split would otherwise leave it reading "cap enforced".
+                    "            _unsloth_prep_truncates = False\n"
                     # Never silent: a swallowed failure here reads as the cap being enforced.
                     "            print('Unsloth: could not truncate the pre-tokenized dataset to `max_length` (' + str(_unsloth_truncate_error) + ').')\n"
                     "    if _unsloth_prep_truncates:\n"
