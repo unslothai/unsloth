@@ -3,11 +3,10 @@
 
 """The two surfaces that hung at 100% when a finished worker would not exit (#7897).
 
-/api/train/status and the /api/train/progress SSE both keyed off is_training_active(),
-which is liveness-based, so a worker wedged in post-save teardown kept the run reported as
-"training" forever. They now consult is_run_finished() as well. A live run must be
-unaffected, and /api/train/stop must be terminal-aware too: a Stop landing in the poll
-window after a run finished must not latch _should_stop over the finished banner.
+/api/train/status and the progress SSE keyed off liveness-based is_training_active(), so a
+worker wedged in post-save teardown kept reporting "training" forever; they now consult
+is_run_finished() too. A live run must be unaffected, and /api/train/stop must be
+terminal-aware too: a late Stop must not latch _should_stop over the finished banner.
 """
 
 from __future__ import annotations
@@ -161,13 +160,10 @@ def test_progress_stream_stays_open_while_training(monkeypatch):
 def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
     """Stop clicked in the poll window after the run already finished.
 
-    The button greys out only once /api/train/status reports is_training_running=False
-    (3s poll, or the extra poll the SSE "complete" frame triggers), so a click can still
-    land on a run that has saved and emitted its terminal event. /stop is terminal-aware
-    like the other run-state surfaces, so it reports idle instead of latching
-    _should_stop and overwriting the finished banner with "Stopping training and saving
-    checkpoint..." -- which no later path clears, leaving the saved run reported as
-    "stopped" with a never-resolving message.
+    The button greys out only once /api/train/status reports is_training_running=False (3s
+    poll), so a click can still land on a run that has saved. /stop is terminal-aware, so it
+    reports idle instead of latching _should_stop and overwriting the finished banner with a
+    "Stopping..." message no later path clears.
     """
     b = _running(monkeypatch)
     b._handle_event(dict(_DONE))
@@ -190,10 +186,9 @@ def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
 def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monkeypatch):
     """The same late Stop, except the run finishes *after* the route's terminal check.
 
-    The route cannot close this gap by itself. The pump publishes the terminal state
-    under the backend lock, so the re-test has to sit inside stop_training() next to the
-    mutation it guards. Without it, /status derives "stopped" (it tests trainer_stopped
-    before is_completed) for a run the DB finalized as completed.
+    The pump publishes terminal state under the backend lock, so the re-test has to sit
+    inside stop_training() next to the mutation it guards. Without it, /status derives
+    "stopped" for a run the DB finalized as completed.
     """
     b = _running(monkeypatch)
     b._db_run_created = True
@@ -225,8 +220,7 @@ def test_stop_mid_run_still_works(monkeypatch):
 
 
 def test_cancel_mid_run_still_works(monkeypatch):
-    # save=False takes the other branch in stop_training; the new guard is scoped to the
-    # save path precisely because that branch has already mutated state by then.
+    # save=False takes the other branch, which the guard skips: it has already mutated state.
     b = _running(monkeypatch)
     b._db_run_created = True
     monkeypatch.setattr(

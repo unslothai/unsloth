@@ -101,10 +101,10 @@ _PROGRESS_STALL_TIMEOUT_POLLS = 1800  # ~30 min at 1 poll/sec
 def _is_finalizing(progress, msg_lower: str) -> bool:
     """Worker alive past the last step, `complete` not yet drained.
 
-    The post-training save emits no step updates, so the bar sat at 100% labelled
-    "training" for its whole duration, indistinguishable from a hang. Non-terminal
-    by design: the last step means the optimizer loop ended, not that the save
-    succeeded, so completion still comes solely from is_completed.
+    The save emits no step updates, so the bar sat at 100% labelled "training", which is
+    indistinguishable from a hang. Non-terminal by design: the last step means the optimizer
+    loop ended, not that the save succeeded, so completion still comes solely from
+    is_completed.
     """
     if any(k in msg_lower for k in ("saving", "merging")):
         return True
@@ -114,9 +114,9 @@ def _is_finalizing(progress, msg_lower: str) -> bool:
 
 
 def _run_finished(backend) -> bool:
-    """Whether the run reported terminal, so status/progress stop waiting on the worker
-    process to exit (see TrainingBackend.is_run_finished). getattr-guarded like the other
-    backend reads here: a stand-in without it keeps the old liveness-only behaviour."""
+    """Whether the run reported terminal (see TrainingBackend.is_run_finished), so status and
+    progress stop waiting on the worker to exit. getattr-guarded like the other backend reads
+    here: a stand-in without it keeps the old liveness-only behaviour."""
     check = getattr(backend, "is_run_finished", None)
     return bool(check()) if callable(check) else False
 
@@ -636,10 +636,9 @@ async def stop_training(
     """
     try:
         backend = get_training_backend()
-        # Terminal-aware like /status and the SSE: a run that already reported terminal has
-        # saved and has nothing left to stop. Otherwise a late Stop latches _should_stop and
-        # overwrites the finished banner with "Stopping training...", which nothing clears,
-        # so /status reports the saved run as "stopped" for good.
+        # Terminal-aware like /status and the SSE: otherwise a late Stop on a finished run
+        # latches _should_stop and overwrites the finished banner with "Stopping training...",
+        # which nothing clears, so /status reports the saved run as "stopped" for good.
         is_active = backend.is_training_active() and not _run_finished(backend)
         logger.info("Stop requested: save=%s is_active=%s", body.save, is_active)
 
@@ -878,8 +877,7 @@ async def stream_training_progress(
 
         # ── Helpers ──────────────────────────────────────────────
         def run_active() -> bool:
-            """Live for streaming purposes: a run that already reported terminal is done,
-            even while its worker is still tearing down (see is_run_finished)."""
+            """A run that reported terminal is done, even while its worker tears down."""
             return backend.is_training_active() and not _run_finished(backend)
 
         def build_progress(

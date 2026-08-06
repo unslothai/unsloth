@@ -9,10 +9,9 @@ run stuck in "Stopping..." forever. These tests pin the bounded recovery: the wa
 escalates to force_terminate() a short grace after "complete" (save done) or after an
 absolute timeout (hang during save), and never force-kills a worker that exits cleanly.
 
-Section (d) covers the same wedge on a run that ends by itself: the model is on disk but
-the process lingers, and since is_training_active() is liveness-based the bar sits at 100%
-forever (issue #7897). The pump arms the same watchdog on a terminal event, and the
-escalation must not relabel a completed run as stopped.
+Section (d) covers the same wedge on a run that ends by itself: the model is on disk but the
+process lingers, so the liveness-based bar sits at 100% forever (#7897). The pump arms the
+same watchdog on a terminal event, and escalation must not relabel a completed run.
 
 Fakes only; no GPU, network, or subprocess.
 """
@@ -933,8 +932,7 @@ def _complete_event(output_dir = "/tmp/out"):
 
 
 def test_terminal_event_arms_watchdog_and_reaps_wedged_worker(monkeypatch):
-    # Saved, reported "complete", never exited: nothing reaped it, so is_training_active()
-    # stayed true off _proc.is_alive() and the UI sat at 100%.
+    # Saved, reported "complete", never exited: nothing reaped it, so the UI sat at 100%.
     monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # ensure the grace fires, not the cap
     b = TrainingBackend()
@@ -956,8 +954,7 @@ def test_terminal_event_arms_watchdog_and_reaps_wedged_worker(monkeypatch):
 
 
 def test_terminal_error_event_also_arms_watchdog(monkeypatch):
-    # A terminal error signals _complete_seen too (nothing is left to save); terminal_seen
-    # starts the grace for a freshly armed watchdog either way.
+    # A terminal error signals _complete_seen too, so the grace starts either way.
     monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = TrainingBackend()
@@ -1062,8 +1059,7 @@ def test_escalation_finalize_still_reports_a_stop_as_stopped(monkeypatch):
 
 
 def test_pump_loop_exits_when_the_watchdog_drops_the_handle(monkeypatch):
-    # The watchdog drops _proc last; the pump read it twice, so a drop in between raised
-    # AttributeError and silently killed the pump.
+    # The watchdog drops _proc last; a drop between the pump's two reads killed the pump.
     b = TrainingBackend()
     proc = _FakeProc(alive = True)
     b._proc = proc
@@ -1140,8 +1136,7 @@ def test_is_run_finished_does_not_leak_into_the_next_run():
 
 
 def test_is_run_finished_false_during_spawn_and_start_windows():
-    # _progress holds the previous run until start_training resets it, so these windows
-    # must not report the new run as already finished.
+    # _progress holds the previous run until start_training resets it.
     b = _running_backend()
     b._handle_event(_complete_event())
     b._spawn_in_progress = True
@@ -1187,15 +1182,13 @@ def test_is_run_finished_true_when_a_stall_is_unrecoverable():
 
 def test_mlx_worker_never_withholds_a_terminal_send_behind_tracking_teardown():
     """MLX teardown closes the TensorBoard writer and calls wandb_run.finish(), either of
-    which can block for many minutes. Putting that in front of `complete` would withhold
-    the event the UI waits on, which is the hang this whole change exists to end, so the
-    teardown stays in the finally and runs only after the send.
+    which can block for minutes. Ahead of `complete` that would withhold the event the UI
+    waits on, so the teardown stays in the finally and runs only after the send.
     """
     import ast
     from pathlib import Path as _P
 
-    # Beside the training module we actually imported, not relative to this file, so the
-    # test travels with the package rather than with its directory layout.
+    # Beside the training module we imported, so the test travels with the package.
     src = (_P(_TRAINING_MODULE_FILE).resolve().parent / "worker.py").read_text()
     tree = ast.parse(src)
     fn = next(
@@ -1238,9 +1231,8 @@ def test_mlx_worker_never_withholds_a_terminal_send_behind_tracking_teardown():
 
 
 def test_terminal_stall_arms_the_exit_watchdog(monkeypatch):
-    # An unrecoverable stall is terminal (is_run_finished() goes true), but terminate() is
-    # only a request. Without a backstop a worker that ignores it holds the GPU for good
-    # while the UI has already moved on, and every later start hits the live-_proc guard.
+    # An unrecoverable stall is terminal, but terminate() is only a request: without a
+    # backstop a worker that ignores it holds the GPU and blocks every later start.
     monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = _running_backend()
@@ -1278,10 +1270,9 @@ def test_recoverable_stall_does_not_arm_the_watchdog(monkeypatch):
 
 
 def test_terminal_error_releases_an_in_flight_stop_watchdog(monkeypatch):
-    # Stop and Save, then the worker fails its checkpoint and reports error instead of
-    # complete. The stop watchdog is already watching this proc, so arming again no-ops;
-    # without a terminal signal it would sit out the full save backstop (600s by default)
-    # with the GPU still blocked.
+    # Stop and Save, then the worker fails its checkpoint and reports error. The stop
+    # watchdog already watches this proc so arming no-ops; without a terminal signal it
+    # would sit out the full 600s save backstop with the GPU still blocked.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = _running_backend()
@@ -1304,9 +1295,8 @@ def test_terminal_error_releases_an_in_flight_stop_watchdog(monkeypatch):
 
 
 def test_terminal_stall_releases_an_in_flight_stop_watchdog(monkeypatch):
-    # Same shape as the error path: Stop and Save, then the download stalls with no
-    # fallback left. The stop's watchdog already watches this proc, so arming again
-    # no-ops, and only the terminal signal keeps it off the 600s save backstop.
+    # Same shape as the error path, via an unrecoverable stall: arming again no-ops, so only
+    # the terminal signal keeps the in-flight watchdog off the 600s save backstop.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = _running_backend()

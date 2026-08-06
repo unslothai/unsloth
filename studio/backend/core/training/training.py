@@ -54,9 +54,8 @@ def _env_int(name: str, default: int) -> int:
 _STOP_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_GRACE_S", 15)
 _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
-# Backstop to reclaim the GPU from a worker wedged in teardown after a run ended on its
-# own. is_run_finished already unwedges the UI, so this stays generous: a post-run wandb
-# sync can legitimately take a while and must not be cut short.
+# Backstop to reclaim the GPU from a worker wedged in teardown. Generous: is_run_finished
+# already unwedges the UI, and a post-run wandb sync can legitimately take a while.
 _COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S", 120)
 
 # Watchdog DB finalize: a few short retries so a transient SQLite lock doesn't lose the
@@ -1118,8 +1117,8 @@ class TrainingBackend:
                 if self.current_job_id != run_id:
                     return False
                 # The pump can finish the run between the route's terminal check and this
-                # lock; it publishes under the same lock, so re-test here. Latching
-                # _should_stop after the fact reports a saved run as stopped for good.
+                # lock, so re-test: latching _should_stop after the fact would report a
+                # saved run as stopped for good.
                 if save and self._run_finished_locked():
                     return False
                 if save or not run_id:
@@ -1148,11 +1147,10 @@ class TrainingBackend:
         grace_s: Optional[float] = None,
         terminal_seen: bool = False,
     ) -> None:
-        """Start a daemon that force-terminates the worker if it does not exit on its own.
-        Armed by a requested stop and by a run reaching its own terminal event, since a
-        worker wedged in teardown strands the UI either way. No-op if no worker is alive or
-        a live watchdog already watches this proc (a stale watchdog on an old proc never
-        blocks a new run's watcher). ``grace_s`` overrides the post-terminal grace;
+        """Start a daemon that force-terminates a worker that will not exit. Armed by a stop
+        and by a run's own terminal event, since a wedged worker strands the UI either way.
+        No-op if no worker is alive or a live watchdog already watches this proc (a stale one
+        never blocks a new run). ``grace_s`` overrides the post-terminal grace;
         ``terminal_seen`` starts it now, for an ending that never sets ``_complete_seen``."""
         with self._lock:
             if expected_job_id is not None and self.current_job_id != expected_job_id:
@@ -1185,11 +1183,11 @@ class TrainingBackend:
         grace_s: Optional[float] = None,
         terminal_seen: bool = False,
     ) -> None:
-        """Escalate a worker that will not exit to force_terminate(): grace after
-        "complete", else the absolute backstop (see the module timeouts). No-ops on a clean
-        exit; exits silently if a new run replaces the worker. ``grace_s`` overrides
-        ``_STOP_GRACE_S``; ``terminal_seen`` starts the grace at entry so an ending that
-        never sets ``_complete_seen`` (an error) does not sit out the whole backstop."""
+        """Escalate a worker that will not exit to force_terminate(): grace after "complete",
+        else the absolute backstop (module timeouts). No-ops on a clean exit or once a new run
+        replaces the worker. ``grace_s`` overrides ``_STOP_GRACE_S``; ``terminal_seen`` starts
+        the grace at entry, so an ending that never sets ``_complete_seen`` (an error) does
+        not sit out the whole backstop."""
         started = time.monotonic()
         complete_at: Optional[float] = started if terminal_seen else None
         reason = ""
@@ -1280,8 +1278,7 @@ class TrainingBackend:
                 self._progress.status_message = self._progress.error = error_message
             elif status != "completed":
                 self._progress.status_message = "Training stopped."
-            # A completed run keeps its message: reaping a wedged worker after the save
-            # must not report the finished run as stopped.
+            # A completed run keeps its message; reaping a wedged worker must not relabel it.
         # Create the row if a start-time create failed (no-op otherwise; skips when the pump
         # is mid-create, in which case its create-then-finalize records the run instead).
         self._ensure_db_run_created()
@@ -1446,11 +1443,10 @@ class TrainingBackend:
         if proc is not None and proc.is_alive():
             proc.terminate()
         if not recover:
-            # Terminal, so is_run_finished() is already true and the UI has stopped
-            # waiting. terminate() is only a request: arm the same backstop as the other
-            # terminal paths so a worker that ignores it cannot hold the GPU for good.
-            # Signal first: a stop watchdog already watching this proc makes the arming
-            # call a no-op, and only this tells it to use its grace over the save backstop.
+            # terminate() is only a request: arm the same backstop as the other terminal
+            # paths so a worker that ignores it cannot hold the GPU for good. Signal first,
+            # since arming no-ops when a watchdog already watches this proc and only this
+            # drops it to the grace.
             self._complete_seen.set()
             self._start_stop_watchdog(
                 cancel = False,
@@ -1609,11 +1605,10 @@ class TrainingBackend:
     def is_run_finished(self) -> bool:
         """Whether the current run reached its own terminal state (saved and finalized).
 
-        is_training_active() is liveness-based, so it stays true until the worker exits --
-        which can lag by minutes behind a slow teardown (a wandb sync) or never happen at
-        all if the worker wedges, leaving the UI at 100%. Status and progress read this so
-        a finished run reports terminal at once; the GPU admission guards keep using
-        is_training_active(), since a lingering worker still holds its VRAM."""
+        is_training_active() is liveness-based, so it stays true until the worker exits, which
+        can lag minutes behind a slow teardown or never happen at all, leaving the UI at 100%.
+        Status and progress read this so a finished run reports terminal at once; the GPU
+        admission guards keep using is_training_active(), since a lingering worker holds VRAM."""
         if getattr(self, "_spawn_in_progress", False):
             return False  # a new run is spawning; _progress is still the old run's
         with self._lock:
@@ -1775,8 +1770,8 @@ class TrainingBackend:
                 self._safe_handle_event(event)
                 continue
 
-            # Snapshot: the watchdog drops _proc as its last step, so a second read can
-            # hit None and kill this thread. A dropped handle means it already finalized.
+            # Snapshot: the watchdog drops _proc last, so a re-read can hit None and kill
+            # this thread. A dropped handle means it already finalized.
             proc = self._proc
             if proc is None:
                 self._pump_running = False
@@ -2069,8 +2064,8 @@ class TrainingBackend:
             elif etype == "error":
                 self._progress.is_training = False
                 self._progress.error = event.get("error", "Unknown error")
-                # Terminal, so nothing is left to save: let a stop watchdog already
-                # watching this proc drop to its grace instead of the save backstop.
+                # Nothing left to save: drop an in-flight watchdog to its grace, not the
+                # save backstop.
                 self._complete_seen.set()
                 if self._cancel_requested:
                     self._output_dir = self._progress.output_dir = None
@@ -2127,10 +2122,8 @@ class TrainingBackend:
         elif db_action == "finalize":
             self._finalize_run_in_db(**db_action_kwargs)
 
-        # Bound how long a worker that will not exit can hold the UI: is_training_active()
-        # stays true until _proc dies, so the SSE never sends its final "complete" (bar
-        # stuck at 100%). No-ops on a prompt exit. Outside the lock: _start_stop_watchdog
-        # takes it, not reentrant.
+        # Bound how long a worker that will not exit can hold the UI at 100%. No-ops on a
+        # prompt exit. Outside the lock: _start_stop_watchdog takes it, not reentrant.
         if etype in ("complete", "error"):
             self._start_stop_watchdog(
                 cancel = False,
