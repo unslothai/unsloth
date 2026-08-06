@@ -48,5 +48,12 @@ test("the http branch reports the status the server actually returned", async ()
   const start = states.indexOf('case "http":');
   assert.notEqual(start, -1);
   const branch = states.slice(start, start + 400);
-  assert.match(branch, /failure\.status/, "the status is the diagnosis here");
+  // The interpolation, not a bare mention: the ternary's own condition reads
+  // failure.status, so matching the name alone passed even with the number
+  // dropped from the title.
+  assert.match(
+    branch,
+    /\$\{failure\.status\}/,
+    "the status has to reach the title, not just gate it",
+  );
 });

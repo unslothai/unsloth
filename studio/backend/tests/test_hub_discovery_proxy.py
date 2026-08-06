@@ -488,6 +488,33 @@ class TestHealthHubEndpoint:
         discovery._fetch_upstream("https://huggingface.co/api/models", None)
         assert seen["timeout"] <= discovery._REQUEST_TIMEOUT_SECONDS / 2
 
+    def test_the_request_itself_refuses_to_follow_a_redirect(self, monkeypatch):
+        """A hop could walk onto an internal address, so it is never followed.
+
+        Every other redirect test stubs _fetch_upstream, so without this nothing
+        pins the flag on the call that actually leaves the process.
+        """
+        seen = {}
+
+        class _Resp:
+            status_code = 200
+            headers = {}
+
+            def iter_content(self, chunk_size = 0):
+                yield b"[]"
+
+            def close(self):
+                pass
+
+        class _Session:
+            def get(self, url, **kw):
+                seen["allow_redirects"] = kw.get("allow_redirects")
+                return _Resp()
+
+        monkeypatch.setattr("huggingface_hub.utils.get_session", lambda: _Session())
+        discovery._fetch_upstream("https://huggingface.co/api/models", None)
+        assert seen["allow_redirects"] is False
+
 
 class TestErrorDetailScrubbing:
     def test_the_search_query_is_not_echoed_in_a_transport_error(self, monkeypatch):

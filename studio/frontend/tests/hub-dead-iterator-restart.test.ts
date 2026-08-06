@@ -40,7 +40,9 @@ test("a failed page marks the feed as needing a restart", async () => {
   // built, so the flag tracks the live generator rather than the last error.
   assert.match(src, /iterDeadRef\.current = true;/);
   assert.match(src, /iterRef\.current = iter;\s*\n\s*iterDeadRef\.current = false;/);
-  assert.match(src, /needsRestart/);
+  // Word-bounded: a bare substring is satisfied by any longer identifier, so
+  // renaming this to needsRestartSomething left the check green.
+  assert.match(src, /\bneedsRestart\b/);
 });
 
 test("the manual Load more restarts rather than resuming a dead feed", async () => {
