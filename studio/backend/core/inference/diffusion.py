@@ -1985,6 +1985,11 @@ class DiffusionBackend:
                         speed_mode is not None and str(speed_mode).strip().lower() == SPEED_OFF
                     )
                     transformer_quant = "off" if speed_off else TQ_AUTO
+                # What the USER asked for, frozen before the auto retries below pin a concrete rung
+                # into transformer_quant. build_resolved_record reads this as its `explicit` input
+                # and calls anything but None/""/"auto" an explicit request, so passing the pinned
+                # value would badge a backend decision as the user's own choice.
+                transformer_quant_request = transformer_quant
 
                 # Default-on fast path (GGUF kind only): dense bf16 + torchao quant beats GGUF per-matmul dequant on speed AND quality. Needs CUDA + bf16 + a resident fit.
                 pipe = None
@@ -2163,6 +2168,7 @@ class DiffusionBackend:
                             self._dense_transformer_resident_bytes(fetch_base, _base_local_dir)
                             // (1024 * 1024)
                         )
+                        dense_possible = True
                         if dense_mib > 0:
                             dense_plan = self._plan_memory(
                                 target,
@@ -2180,39 +2186,83 @@ class DiffusionBackend:
                                 base_local_dir = _base_local_dir,
                             )
                             if dense_plan.offload_policy != OFFLOAD_NONE:
+                                dense_possible = False
                                 dense_fallback_allowed = False
-                                # No prequant source: a dense misfit skips the fast path; with one, only the dense fallback is forbidden.
-                                if prequant is None:
-                                    # ...unless auto could have picked a DIFFERENT scheme that does
-                                    # have a hosted checkpoint. auto returns one winner, and a
-                                    # winner with no published prequant that also cannot fit dense
-                                    # would drop the whole pick to GGUF -- even though a lower rung
-                                    # would have loaded. Qwen-Image is the live case: auto takes
-                                    # fp8, only int8 is published, so a host that rejects the dense
-                                    # transient lost the int8 checkpoint it used to get. Only for
-                                    # auto: an explicit scheme is never swapped (same contract as
-                                    # select_transformer_quant_scheme).
-                                    retry = self._auto_prequant_retry_scheme(
-                                        target,
-                                        fam,
-                                        transformer_quant,
-                                        scheme,
-                                        base_repo = base,
-                                        path_override = transformer_prequant_path,
-                                        loras = loras,
-                                    )
-                                    if retry is None:
-                                        dense_declined = True
-                                    else:
-                                        logger.info(
-                                            "diffusion.transformer_quant: %s has no prequant and "
-                                            "does not fit dense; retrying auto at %s",
-                                            scheme,
-                                            retry,
-                                        )
-                                        # Pin it: the load below re-selects from this value.
-                                        transformer_quant = retry
-                                        dense_fallback_allowed = False
+                        elif not _transformer_prefetched:
+                            # dense_mib == 0 with nothing staged is not "no information": the
+                            # prefetch's capacity gate DECLINED the base transformer/ shards, so the
+                            # dense bf16 build cannot run at all. Reading it as unknown and skipping
+                            # the retry left the regression alive on the fresh Qwen cache this was
+                            # written for: fp8 wins, only int8 is published, the load runs fp8 with
+                            # no prequant and no dense fallback, and drops straight to GGUF.
+                            dense_possible = False
+                        # A dense misfit with a prequant source only forbids the dense fallback; with
+                        # none, auto could still have picked a DIFFERENT scheme that does have a
+                        # hosted checkpoint. auto returns one winner, and a winner with no published
+                        # prequant that also cannot build dense would drop the whole pick to GGUF
+                        # even though a lower rung would have loaded. Only for auto: an explicit
+                        # scheme is never swapped (same contract as select_transformer_quant_scheme).
+                        if not dense_possible and prequant is None:
+                            retry = self._auto_prequant_retry_scheme(
+                                target,
+                                fam,
+                                transformer_quant,
+                                scheme,
+                                base_repo = base,
+                                path_override = transformer_prequant_path,
+                                loras = loras,
+                            )
+                            # Existence is not fit: an int8 checkpoint can outweigh the Q4 GGUF that
+                            # planned resident, so a host that fits the GGUF need not fit the rung
+                            # being retried. Size it and replan, exactly as the offload branch does,
+                            # or the load moves it onto CUDA after eviction under a GGUF-sized
+                            # budget and OOMs there.
+                            retry_candidate = (
+                                resolve_dense_quant_candidate(
+                                    fam = fam,
+                                    target = target,
+                                    requested = retry,
+                                    base_repo = base,
+                                    prequant_path = transformer_prequant_path,
+                                    force_dense = _has_active_lora(loras),
+                                    logger = logger,
+                                )
+                                if retry is not None
+                                else None
+                            )
+                            retry_plan = (
+                                self._plan_memory(
+                                    target,
+                                    single_file_path,
+                                    base,
+                                    fam,
+                                    memory_mode,
+                                    cpu_offload,
+                                    kind = kind,
+                                    repo_id = repo_id,
+                                    fetch_base = fetch_base,
+                                    transformer_resident_override_mib = (
+                                        retry_candidate.transient_transformer_mib
+                                    ),
+                                    companion_override_mib = retry_candidate.companions_mib,
+                                )
+                                if retry_candidate is not None
+                                else None
+                            )
+                            if retry_plan is not None and retry_plan.offload_policy == OFFLOAD_NONE:
+                                logger.info(
+                                    "diffusion.transformer_quant: %s has no prequant and cannot "
+                                    "build dense; retrying auto at %s, whose checkpoint is cached "
+                                    "and plans resident",
+                                    scheme,
+                                    retry,
+                                )
+                                # Pin it: the load below re-selects from this value.
+                                transformer_quant = retry
+                                quant_plan = retry_plan
+                                dense_fallback_allowed = False
+                            else:
+                                dense_declined = True
                 if (
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None
@@ -2593,7 +2643,9 @@ class DiffusionBackend:
                                 else "requested",
                             ),
                             "transformer_quant": (
-                                transformer_quant,
+                                # The REQUEST, not the pinned retry: an auto pick that fell back to
+                                # a lower rung is still an auto pick.
+                                transformer_quant_request,
                                 transformer_quant_engaged or "off",
                                 # The None reason matches the load kind (GGUF loaded vs dense kept).
                                 (
