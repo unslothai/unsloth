@@ -285,6 +285,30 @@ def select_transformer_quant_scheme(
     return None
 
 
+def auto_scheme_candidates(target: Any, family: Optional[str] = None) -> tuple[str, ...]:
+    """Every scheme ``auto`` would accept on this device, best first.
+
+    ``select_transformer_quant_scheme`` returns only the winner, which is all the load needs
+    until the winner turns out to have no hosted prequant AND not to fit dense. The caller then
+    needs to know what auto would have picked NEXT, so it can reach a scheme that does have a
+    checkpoint instead of dropping to GGUF. Same ladder, same deny list, same smoke probe as the
+    auto branch of the selector, so the two can never disagree about what is allowed."""
+    if not dense_transformer_supported(target):
+        return ()
+    device = str(getattr(target, "device", "cuda"))
+    cap = _capability()
+    if cap is None:
+        return ()
+    for floor, schemes in _AUTO_LADDER:
+        if cap >= floor:
+            return tuple(
+                scheme
+                for scheme in _prefer_consumer_scheme(schemes, device)
+                if not _family_denied(family, scheme) and _scheme_supported(scheme, device)
+            )
+    return ()
+
+
 def _prefer_consumer_scheme(schemes: tuple[str, ...], device: Any) -> tuple[str, ...]:
     """Reorder an arch tier's schemes for the GPU class. On consumer / workstation cards move
     int8 first: they halve fp8/fp16 FP32-accumulate while int8 runs full-rate, so int8 is as

@@ -733,3 +733,40 @@ def test_the_training_deny_is_a_superset_of_the_inference_deny():
         assert _family_train_denied(fam, TQ_FP8)
         # int8 was never denied on either side and must stay available.
         assert not _family_train_denied(fam, TQ_INT8)
+
+
+def test_auto_scheme_candidates_lists_the_whole_ladder_not_just_the_winner(monkeypatch):
+    # select_transformer_quant_scheme returns one winner. When that winner has no hosted prequant
+    # AND cannot fit dense, the loader needs to know what auto would have picked NEXT, or the pick
+    # drops to GGUF even though a lower rung would have loaded. Same ladder, deny list and probe.
+    from core.inference.diffusion_transformer_quant import auto_scheme_candidates
+
+    _stub_torch(monkeypatch, cc = (10, 0))
+    _allow(monkeypatch, {TQ_FP8, TQ_MXFP8, TQ_INT8})
+    assert auto_scheme_candidates(_target()) == (TQ_FP8, TQ_MXFP8, TQ_INT8)
+    # The deny list still applies: qwen-image keeps mxfp8 out, so fp8 then int8.
+    assert auto_scheme_candidates(_target(), "qwen-image") == (TQ_FP8, TQ_INT8)
+    # Whatever the probe refuses is absent, so the list can never offer an unusable scheme.
+    _allow(monkeypatch, {TQ_INT8})
+    assert auto_scheme_candidates(_target(), "qwen-image") == (TQ_INT8,)
+    # A target the dense path cannot use has no candidates at all.
+    assert auto_scheme_candidates(_target(device = "cpu")) == ()
+
+
+def test_the_candidate_list_agrees_with_the_selector_on_the_winner(monkeypatch):
+    # The two must never disagree about what auto is allowed to pick, so the selector's answer is
+    # always the head of the candidate list. A drift here would let the retry path propose a scheme
+    # auto itself would refuse.
+    from core.inference.diffusion_transformer_quant import auto_scheme_candidates
+
+    for cc, allowed, family in (
+        ((10, 0), {TQ_FP8, TQ_MXFP8, TQ_INT8}, None),
+        ((10, 0), {TQ_FP8, TQ_MXFP8, TQ_INT8}, "qwen-image"),
+        ((8, 9), {TQ_FP8, TQ_INT8}, "qwen-image-edit"),
+        ((8, 0), {TQ_INT8}, None),
+    ):
+        _stub_torch(monkeypatch, cc = cc)
+        _allow(monkeypatch, allowed)
+        chosen = select_transformer_quant_scheme(_target(), "auto", family = family)
+        candidates = auto_scheme_candidates(_target(), family)
+        assert (candidates[0] if candidates else None) == chosen, (cc, family)

@@ -933,6 +933,44 @@ class DiffusionBackend:
         except Exception:  # noqa: BLE001 — widening the prefetch is best-effort only
             return False
 
+
+    @staticmethod
+    def _auto_prequant_retry_scheme(
+        target: Any,
+        fam: Any,
+        requested: Optional[str],
+        chosen: Optional[str],
+        *,
+        base_repo: Optional[str],
+        path_override: Optional[str],
+        loras: Any,
+    ) -> Optional[str]:
+        """A lower auto rung than ``chosen`` that HAS a usable prequant, or None.
+
+        Only when ``auto`` was requested: an explicit scheme is honored or refused, never
+        swapped. A baked LoRA takes the dense path regardless, so it gets no retry."""
+        if normalize_transformer_quant(requested) != TQ_AUTO or _has_active_lora(loras):
+            return None
+        try:
+            from .diffusion_transformer_quant import auto_scheme_candidates
+
+            candidates = auto_scheme_candidates(target, getattr(fam, "name", None))
+        except Exception:  # noqa: BLE001 -- no candidates is just "no retry"
+            return None
+        seen_chosen = False
+        for candidate in candidates:
+            if candidate == chosen:
+                seen_chosen = True
+                continue
+            # Strictly BELOW the winner: a higher rung was already rejected by the ladder.
+            if not seen_chosen:
+                continue
+            if usable_prequant_source(
+                fam, candidate, path_override = path_override, base_repo = base_repo
+            ):
+                return candidate
+        return None
+
     def _prefetch_files(
         self,
         repo_id: str,
@@ -2083,7 +2121,36 @@ class DiffusionBackend:
                                 dense_fallback_allowed = False
                                 # No prequant source: a dense misfit skips the fast path; with one, only the dense fallback is forbidden.
                                 if prequant is None:
-                                    dense_declined = True
+                                    # ...unless auto could have picked a DIFFERENT scheme that does
+                                    # have a hosted checkpoint. auto returns one winner, and a
+                                    # winner with no published prequant that also cannot fit dense
+                                    # would drop the whole pick to GGUF -- even though a lower rung
+                                    # would have loaded. Qwen-Image is the live case: auto takes
+                                    # fp8, only int8 is published, so a host that rejects the dense
+                                    # transient lost the int8 checkpoint it used to get. Only for
+                                    # auto: an explicit scheme is never swapped (same contract as
+                                    # select_transformer_quant_scheme).
+                                    retry = self._auto_prequant_retry_scheme(
+                                        target,
+                                        fam,
+                                        transformer_quant,
+                                        scheme,
+                                        base_repo = base,
+                                        path_override = transformer_prequant_path,
+                                        loras = loras,
+                                    )
+                                    if retry is None:
+                                        dense_declined = True
+                                    else:
+                                        logger.info(
+                                            "diffusion.transformer_quant: %s has no prequant and "
+                                            "does not fit dense; retrying auto at %s",
+                                            scheme,
+                                            retry,
+                                        )
+                                        # Pin it: the load below re-selects from this value.
+                                        transformer_quant = retry
+                                        dense_fallback_allowed = False
                 if (
                     kind == "gguf"
                     and normalize_transformer_quant(transformer_quant) is not None

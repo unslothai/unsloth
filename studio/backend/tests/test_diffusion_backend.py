@@ -5421,3 +5421,67 @@ def test_a_superseding_load_fences_queued_generations_too(fake_runtime, tmp_path
 
     assert seen == [1]
     assert backend._teardown_waiters == 0
+
+
+# ── auto retry to a scheme that has a hosted prequant ────────────────────────────
+
+
+def test_auto_retries_a_lower_scheme_that_has_a_prequant(monkeypatch):
+    # Qwen-Image is the live case. auto picks fp8, but only an int8 DiT checkpoint is published,
+    # so usable_prequant_source(fp8) is empty; on a host that rejects the ~40 GB dense transient
+    # the pick used to drop to GGUF even though the int8 checkpoint would have loaded. The retry
+    # walks the rest of auto's ladder for a rung that HAS one.
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setattr(
+        "core.inference.diffusion_transformer_quant.auto_scheme_candidates",
+        lambda target, family = None: ("fp8", "mxfp8", "int8"),
+    )
+    have = {"int8"}
+    monkeypatch.setattr(
+        "core.inference.diffusion.usable_prequant_source",
+        lambda fam, scheme, path_override = None, base_repo = None: (
+            "src" if scheme in have else None
+        ),
+    )
+    fam = types.SimpleNamespace(name = "qwen-image")
+    retry = DiffusionBackend._auto_prequant_retry_scheme(
+        object(), fam, "auto", "fp8", base_repo = "Qwen/Qwen-Image",
+        path_override = None, loras = None,
+    )
+    assert retry == "int8"
+
+    # An EXPLICIT scheme is never swapped: same contract as select_transformer_quant_scheme.
+    assert DiffusionBackend._auto_prequant_retry_scheme(
+        object(), fam, "fp8", "fp8", base_repo = "Qwen/Qwen-Image",
+        path_override = None, loras = None,
+    ) is None
+
+    # Nothing below the winner has a checkpoint -> no retry, and the caller declines dense.
+    have.clear()
+    assert DiffusionBackend._auto_prequant_retry_scheme(
+        object(), fam, "auto", "fp8", base_repo = "Qwen/Qwen-Image",
+        path_override = None, loras = None,
+    ) is None
+
+
+def test_the_retry_never_climbs_above_the_scheme_auto_already_chose(monkeypatch):
+    # Rungs ABOVE the winner were already rejected by the ladder (denied, or the probe refused
+    # them), so offering one back would hand the loader a scheme auto itself would not pick.
+    from core.inference.diffusion import DiffusionBackend
+
+    monkeypatch.setattr(
+        "core.inference.diffusion_transformer_quant.auto_scheme_candidates",
+        lambda target, family = None: ("fp8", "mxfp8", "int8"),
+    )
+    # fp8 (above the chosen mxfp8) has a prequant; int8 (below) does not.
+    monkeypatch.setattr(
+        "core.inference.diffusion.usable_prequant_source",
+        lambda fam, scheme, path_override = None, base_repo = None: (
+            "src" if scheme == "fp8" else None
+        ),
+    )
+    assert DiffusionBackend._auto_prequant_retry_scheme(
+        object(), types.SimpleNamespace(name = "qwen-image"), "auto", "mxfp8",
+        base_repo = "Qwen/Qwen-Image", path_override = None, loras = None,
+    ) is None
