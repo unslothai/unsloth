@@ -387,7 +387,7 @@ def _repair_bad_anyio() -> None:
     installed = _installed_anyio_version()
     if installed is None or installed < _ANYIO_BAD_FLOOR:
         return
-    _safe_print(_dim(f"   anyio {installed[0]}.{installed[1]} found -- reinstalling anyio<4.14..."))
+    _note(f"anyio {installed[0]}.{installed[1]} found -- reinstalling anyio<4.14...")
     pip_install(
         "Repairing anyio version",
         "--no-cache-dir",
@@ -696,13 +696,13 @@ def _pick_visible_index(num_tokens: int, warn: bool = True) -> int:
             # warns the same). Callers with a deduplicated list pass warn=False: there the
             # index space is arches, not devices, so out of range is normal.
             if warn:
-                print(
+                _safe_print(
                     f"   [WARN] {_env}={_first} is out of range ({num_tokens} GPU(s) "
                     f"detected); defaulting to GPU 0 for arch selection."
                 )
         except ValueError:
             if warn:
-                print(
+                _safe_print(
                     f"   [WARN] {_env}={_val} is not a device index; defaulting to "
                     f"GPU 0 for arch selection. Use UNSLOTH_ROCM_GFX_ARCH to choose "
                     f"the arch directly."
@@ -755,7 +755,7 @@ def _detect_windows_gfx_arch() -> str | None:
                 and any(_windows_rocm_index_url(t) for t in _distinct)
             ):
                 _usable = [t for t in _distinct if _windows_rocm_index_url(t)]
-                print(
+                _safe_print(
                     f"   [WARN] the pinned GPU is {_pick}, which has no AMD Windows "
                     f"wheels, so torch will be CPU-only. {', '.join(_usable)} on this "
                     f"host does have wheels -- clear the visible-device mask or point "
@@ -779,17 +779,17 @@ def _detect_windows_gfx_arch() -> str | None:
                 # Not always device 1: on gfx1036,gfx1010,gfx1200 it is device 2, and
                 # saying "mask 1" would expose the gfx1010 the wheels do not target.
                 _other_idx = tokens.index(_other)
-                print(
+                _safe_print(
                     f"   multiple AMD GPUs detected ({', '.join(_distinct)}); "
                     f"installing for {_other} instead of the integrated {_pick}."
                 )
-                print(
+                _safe_print(
                     f"   Run 'setx HIP_VISIBLE_DEVICES {_other_idx}' and reopen your "
                     f"terminal so Unsloth uses {_other} at runtime too, not just at "
                     f"install time."
                 )
                 return _other
-        print(
+        _safe_print(
             f"   multiple AMD GPUs detected ({', '.join(_distinct)}); "
             f"installing for {_pick}. Set HIP_VISIBLE_DEVICES to the GPU index "
             f"you want (then rerun) to install for a different device."
@@ -942,11 +942,11 @@ def _detect_windows_gfx_arch() -> str | None:
             # resolved and reported against the adapter list above.
             _pick = _dedup_pick(_tokens, warn = False) if len(_tokens) == len(_names) else _named
             if _pick:
-                print(f"   gfx arch inferred from GPU name (WMI): {_pick}")
+                _safe_print(f"   gfx arch inferred from GPU name (WMI): {_pick}")
                 return _pick
             if _names and not _pick:
                 # No arch means CPU-only torch; name the adapter instead of failing silently.
-                print(
+                _safe_print(
                     f"   [WARN] could not map '{_names[_sel]}' to a gfx arch, so torch "
                     f"will be CPU-only. Set UNSLOTH_ROCM_GFX_ARCH to your GPU's arch "
                     f"(e.g. gfx1200) to install AMD wheels."
@@ -1295,7 +1295,7 @@ def _persist_bnb_rocm_version(version: str) -> bool:
         finally:
             tmp_path.unlink(missing_ok = True)
     except (OSError, UnicodeDecodeError) as exc:
-        print(
+        _safe_print(
             f"   Warning: could not persist BNB_ROCM_VERSION={version} "
             f"to {sitecustomize_path}: {exc}"
         )
@@ -1545,7 +1545,7 @@ def _install_bnb_windows_rocm() -> bool:
             force_pip = True,
         )
         if not _ok:
-            print(
+            _safe_print(
                 _red(
                     "   bnb pre-release install failed; falling back to PyPI "
                     f"{_BNB_ROCM_PYPI_FALLBACK}, which carries the ROCm 4-bit fix"
@@ -1679,14 +1679,14 @@ def _cap_cuda_family_for_pre_turing(family: str, exe: "str | None") -> str:
     if not sms or all(sm >= floor for sm in sms):
         return family  # no GPU here sits under the family's floor
     if not _span_covers(_CU126_SM_RANGE, sms):
-        print(
+        _safe_print(
             f"   NVIDIA GPUs below sm_{floor} are present, but no PyTorch 2.11 CUDA "
             f"family covers this mix -- keeping {family}, which cannot use "
             + ",".join(f"sm_{sm}" for sm in sorted(set(sms)) if sm < floor)
             + ". Set UNSLOTH_TORCH_INDEX_FAMILY=cu126 to choose the other way"
         )
         return family
-    print(
+    _safe_print(
         f"   NVIDIA GPUs below sm_{floor} are present -- selecting cu126, because "
         f"PyTorch 2.11's {family} wheels ship no kernels for them"
     )
@@ -1986,7 +1986,7 @@ def _ensure_cuda_torch() -> None:
             return
         index_url = _detect_cuda_torch_index_url()
         _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
-        print(
+        _safe_print(
             f"   torch cannot import but an explicit CUDA index is pinned -- reinstalling "
             f"CUDA torch from {_strip_index_url_credentials(index_url)}"
         )
@@ -2058,7 +2058,7 @@ def _ensure_cuda_torch() -> None:
     if index_url is None:
         index_url = _detect_cuda_torch_index_url()
     _torch_pkg, _vision_pkg, _audio_pkg = _CUDA_TORCH_PKG_SPEC
-    print(
+    _safe_print(
         f"   {_why} -- reinstalling CUDA torch from {_strip_index_url_credentials(index_url)}\n"
         f"   (set UNSLOTH_TORCH_BACKEND=rocm or cpu to keep a deliberate "
         f"non-CUDA torch)"
@@ -2121,7 +2121,7 @@ def _ensure_xpu_torch() -> None:
         # reinstalling never fixes a driver -- it would just re-download the trio twice per
         # update, since this helper runs at two repair points.
         if _xpu_wheel_supported_on_disk():
-            print(
+            _safe_print(
                 _red(
                     "   torch did not respond in time; the installed XPU build is supported, "
                     "so this is the Intel GPU compute driver -- update it and re-run"
@@ -2149,7 +2149,7 @@ def _ensure_xpu_torch() -> None:
     else:
         _why = "torch cannot import"
 
-    print(
+    _safe_print(
         f"   {_why} but an explicit XPU index is pinned -- reinstalling XPU torch from "
         f"{_strip_index_url_credentials(pin)}"
     )
@@ -2302,9 +2302,9 @@ def _ensure_xpu_triton() -> None:
     if not generic or "xpu" not in spec.lower():
         return
 
-    print(f"   replacing triton {generic} with {spec} (Intel XPU)")
+    _safe_print(f"   replacing triton {generic} with {spec} (Intel XPU)")
     if not _ensure_venv_pip():
-        print(
+        _safe_print(
             _red(
                 f"   no pip in the venv to fetch {spec}; generic triton {generic} left in "
                 "place -- it shadows torch XPU triton, so torch.compile will not use the XPU"
@@ -2348,7 +2348,7 @@ def _ensure_xpu_triton() -> None:
         wheels = glob.glob(os.path.join(tmp, "*.whl"))
         # The exit code alone is not enough: no wheel on disk means nothing to install from.
         if dl is None or dl.returncode != 0 or not wheels:
-            print(
+            _safe_print(
                 _red(
                     f"   could not fetch {spec}; generic triton {generic} left in place -- "
                     "it shadows torch XPU triton, so torch.compile will not use the XPU"
@@ -2364,7 +2364,7 @@ def _ensure_xpu_triton() -> None:
             # A read-only or locked venv leaves generic triton REGISTERED; installing over it
             # would let a later upgrade or uninstall delete the shared files again. Change
             # nothing.
-            print(
+            _safe_print(
                 _red(
                     f"   could not remove generic triton {generic}; leaving it in place -- it "
                     "shadows torch XPU triton, so torch.compile will not use the XPU"
@@ -2460,7 +2460,7 @@ def _ensure_cpu_torch() -> None:
         # probe) and the base update won't reinstall an already-installed torch, so
         # reinstall from the pin (self-resolving, no loop).
         _torch_pkg, _vision_pkg, _audio_pkg = _CPU_TORCH_PKG_SPEC
-        print(
+        _safe_print(
             f"   torch cannot import but an explicit CPU index is pinned -- reinstalling "
             f"CPU torch from {_strip_index_url_credentials(pin)}"
         )
@@ -2484,7 +2484,7 @@ def _ensure_cpu_torch() -> None:
     if _lines[-1] != "gpu":
         return  # already a CPU build
 
-    print(
+    _safe_print(
         "   torch is a GPU build but an explicit CPU index is pinned -- reinstalling "
         f"CPU torch from {_strip_index_url_credentials(pin)}"
     )
@@ -2595,7 +2595,7 @@ def _ensure_rocm_torch() -> None:
             _want = (_GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "") or "").lower()
             _have = _installed_rocm_wheel_family()
             if _want and _have and _have != _want:
-                print(
+                _safe_print(
                     f"   installed ROCm torch is the {_have} build but {gfx_arch} needs "
                     f"{_want} -- reinstalling for this GPU"
                 )
@@ -2603,9 +2603,9 @@ def _ensure_rocm_torch() -> None:
         if not _torch_already_rocm:
             index_url = _win_rocm_pin or _windows_rocm_index_url(gfx_arch)
             if index_url is None:
-                print(f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping")
+                _safe_print(f"   No AMD Windows torch index for GPU arch {gfx_arch} -- skipping")
                 return
-            print(
+            _safe_print(
                 f"   {gfx_arch or 'pinned ROCm index'} (Windows) -- installing torch from "
                 f"{_strip_index_url_credentials(index_url)}"
             )
@@ -2627,7 +2627,7 @@ def _ensure_rocm_torch() -> None:
                 _audio_pkg,
                 constrain = False,
             ):
-                print(
+                _safe_print(
                     f"   Warning: AMD Windows ROCm torch install failed for {gfx_arch or 'the pinned index'}; "
                     "keeping the existing torch build. Re-run 'unsloth studio update' "
                     "later to retry ROCm."
@@ -2641,7 +2641,7 @@ def _ensure_rocm_torch() -> None:
         # Always install AMD Windows bitsandbytes, even when torch was already a
         # ROCm build, so `studio update` repairs a broken bnb.
         if not _install_bnb_windows_rocm():
-            print(
+            _safe_print(
                 "   Warning: AMD Windows bitsandbytes install failed "
                 "(pre-release and PyPI); "
                 "ROCm torch is installed but bitsandbytes may need manual install"
@@ -2669,7 +2669,7 @@ def _ensure_rocm_torch() -> None:
     ver = _detect_rocm_version()
     if ver is None:
         if _rocm_pin is None and not _inferred_linux_gfx:
-            print("   ROCm detected but version unreadable -- skipping torch reinstall")
+            _safe_print("   ROCm detected but version unreadable -- skipping torch reinstall")
             return
         # Explicit pin or inferred gfx: the index drives the install.
         ver = (0, 0)
@@ -2740,7 +2740,7 @@ def _ensure_rocm_torch() -> None:
             _torch_pkg, _vision_pkg, _audio_pkg = _WINDOWS_ROCM_TORCH_PKG_SPECS.get(
                 _inferred_linux_gfx, ("torch", "torchvision", "torchaudio")
             )
-            print(
+            _safe_print(
                 f"\n   {_inferred_linux_gfx} inferred (ROCm runtime not visible) -- "
                 f"installing torch from {_strip_index_url_credentials(index_url)}\n"
                 f"   AMD wheels bundle their own ROCm runtime; install the kernel stack "
@@ -2814,7 +2814,7 @@ def _ensure_rocm_torch() -> None:
                     "torchvision>=0.26.0,<0.27.0",
                     "torchaudio>=2.11.0,<2.12.0",
                 )
-                print(
+                _safe_print(
                     f"\n   {_selected_gfx} (AMD Strix) is the runtime target with ROCm "
                     f"{ver[0]}.{ver[1]}.\n"
                     f"   Routing torch install to AMD's arch-specific index\n"
@@ -2824,7 +2824,7 @@ def _ensure_rocm_torch() -> None:
                 )
             else:
                 _gfx_str = ", ".join(sorted(_detected_strix))
-                print(
+                _safe_print(
                     f"\n   Strix GPU ({_gfx_str}) present but HIP_VISIBLE_DEVICES "
                     f"selects a non-Strix runtime target ({_runtime_gfx});\n"
                     f"   skipping AMD per-gfx index override.\n"
@@ -2848,7 +2848,7 @@ def _ensure_rocm_torch() -> None:
         and _strix_override_url is None
     )
     if _gfx906_override:
-        print(
+        _safe_print(
             f"\n   gfx906 (MI50 / Radeon VII / Vega 20) is the runtime target with ROCm "
             f"{ver[0]}.{ver[1]}.\n"
             f"   Routing torch install to the {_GFX906_LEGACY_TAG} index: the last wheel\n"
@@ -2863,7 +2863,7 @@ def _ensure_rocm_torch() -> None:
     if _strix_override_url is not None and _strix_override_pkgs is not None:
         index_url = _strix_override_url
         _torch_pkg, _vision_pkg, _audio_pkg = _strix_override_pkgs
-        print(
+        _safe_print(
             f"   Strix arch-specific override -- installing torch from "
             f"{_strip_index_url_credentials(index_url)}"
         )
@@ -2886,7 +2886,7 @@ def _ensure_rocm_torch() -> None:
     elif _gfx906_override and _GFX906_LEGACY_TAG not in _installed_torch_ver:
         index_url = f"{_PYTORCH_WHL_BASE}/{_GFX906_LEGACY_TAG}"
         _torch_pkg, _vision_pkg, _audio_pkg = _ROCM_TORCH_PKG_SPECS["_default"]
-        print(
+        _safe_print(
             f"   gfx906 legacy override -- installing torch from "
             f"{_strip_index_url_credentials(index_url)}"
         )
@@ -2922,11 +2922,11 @@ def _ensure_rocm_torch() -> None:
                 None,
             )
         if tag is None:
-            print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall")
+            _safe_print(f"   No PyTorch wheel for ROCm {ver[0]}.{ver[1]} -- skipping torch reinstall")
         else:
             if _override_idx is None:
                 index_url = f"{_PYTORCH_WHL_BASE}/{tag}"
-            print(f"   ROCm torch -- installing from {_strip_index_url_credentials(index_url)}")
+            _safe_print(f"   ROCm torch -- installing from {_strip_index_url_credentials(index_url)}")
             # Only the _grouped_mm-bug gfx arches need the 2.11 spec; other gfx indexes ship
             # <2.11 and stay on the default range (matches install.ps1 / setup.ps1).
             if tag in _ROCM_GFX_TORCH211_LEAVES:
@@ -2955,7 +2955,7 @@ def _ensure_rocm_torch() -> None:
     # source-built bnb (the only 4-bit path on this arch) on every `studio update`.
     # Skip the auto-install and leave whatever bnb is present.
     if rocm_torch_ready and _runtime_is_gfx906:
-        print(
+        _safe_print(
             _dim(
                 "   gfx906: skipping prebuilt bitsandbytes (no gfx906 kernels). "
                 "Build bitsandbytes from source for 4-bit QLoRA -- "
@@ -2967,7 +2967,7 @@ def _ensure_rocm_torch() -> None:
         # 4-bit use). Drop it if this run pulled it in; a pre-existing source build
         # (present before the base install) is left untouched.
         if _GFX906_BNB_ABSENT_BEFORE_BASE and _bitsandbytes_installed():
-            print(_dim("   gfx906: removing generic bitsandbytes pulled in as a dependency"))
+            _safe_print(_dim("   gfx906: removing generic bitsandbytes pulled in as a dependency"))
             subprocess.run(
                 [sys.executable, "-m", "pip", "uninstall", "-y", "bitsandbytes"],
                 capture_output = True,
@@ -2993,7 +2993,7 @@ def _ensure_rocm_torch() -> None:
                 _fallback_note = (
                     ", which carries the ROCm 4-bit fix" if _bnb_rocm_arch_has_binary() else ""
                 )
-                print(
+                _safe_print(
                     _red(
                         "   bnb pre-release install failed; falling back to PyPI "
                         f"{_BNB_ROCM_PYPI_FALLBACK}{_fallback_note}"
@@ -3009,7 +3009,7 @@ def _ensure_rocm_torch() -> None:
                 constrain = False,
             )
         if not _bnb_rocm_arch_has_binary():
-            print(
+            _safe_print(
                 _red(
                     "   aarch64: bitsandbytes ships no ROCm kernels on this arch; "
                     "4-bit QLoRA needs a source build -- "
@@ -3164,7 +3164,15 @@ _UNICODE_TO_ASCII: dict[str, str] = {
 
 
 def _safe_print(*args: object, **kwargs: object) -> None:
-    """Drop-in print() replacement that survives non-UTF-8 consoles and detached stdout."""
+    """Drop-in print() replacement that survives non-UTF-8 consoles and detached stdout.
+
+    Also closes an open progress bar line first. _progress() leaves the cursor
+    mid-line, so anything printed between two progress steps would otherwise be
+    glued onto the bar. Doing it here rather than per call site is what makes the
+    rule hold for every message: nothing in this module calls print() directly
+    (enforced by test_no_bare_print_calls).
+    """
+    _end_progress_line()
     try:
         print(*args, **kwargs)
     except OSError:
@@ -3245,13 +3253,45 @@ def _title(msg: str) -> str:
 _RULE = "\u2500" * 52
 
 
+def _end_progress_line() -> None:
+    """Close an in-place progress bar line so the next print starts on its own line."""
+    global _PROGRESS_LINE_ACTIVE
+    if not _PROGRESS_LINE_ACTIVE or VERBOSE:
+        return
+    try:
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+    except OSError:
+        pass
+    _PROGRESS_LINE_ACTIVE = False
+
+
+def _note(message: str, color_fn = None) -> None:
+    """Print a detail line under the current step, aligned to the value column.
+
+    Closing the progress bar line is _safe_print()'s job; this adds the column
+    alignment, so a mid-install note reads as a detail of the step above it.
+    """
+    if color_fn is None:
+        color_fn = _dim
+    prefix = " " * (_INDENT + _COL)
+    wrap_width = max(24, shutil.get_terminal_size((100, 20)).columns - len(prefix))
+    lines = textwrap.wrap(
+        message,
+        width = wrap_width,
+        break_long_words = False,
+        break_on_hyphens = False,
+    ) or [""]
+    for line in lines:
+        _safe_print(f"{prefix}{color_fn(line)}")
+
+
 def _step(
     label: str,
     value: str,
     color_fn = None,
 ) -> None:
     """Print a single step line in the column format."""
-    global _PROGRESS_LINE_ACTIVE
     if color_fn is None:
         color_fn = _green
     padded = label[:_COL]
@@ -3267,13 +3307,6 @@ def _step(
         break_long_words = False,
         break_on_hyphens = False,
     ) or [""]
-    if _PROGRESS_LINE_ACTIVE and not VERBOSE:
-        try:
-            sys.stdout.write("\n")
-            sys.stdout.flush()
-        except OSError:
-            pass
-        _PROGRESS_LINE_ACTIVE = False
     _safe_print(f"{prefix}{color_fn(lines[0])}")
     continuation_prefix = " " * plain_prefix_width
     for line in lines[1:]:
@@ -3320,7 +3353,7 @@ def run(
         if result.stdout:
             # Redact before printing: the failing pip command may carry a pinned --index-url
             # with userinfo/?token= creds, so raw pip error text would leak them.
-            print(_redact_install_output(result.stdout))
+            _safe_print(_redact_install_output(result.stdout))
         sys.exit(result.returncode)
     return result
 
@@ -3357,7 +3390,7 @@ def _print_optional_install_failure(label: str, result: subprocess.CompletedProc
     _step("warning", f"{label} failed (exit code {result.returncode})", _cyan)
     if result.stdout:
         # Redact any pinned --index-url credentials before printing captured output.
-        print(_redact_install_output(result.stdout).strip())
+        _safe_print(_redact_install_output(result.stdout).strip())
 
 
 def _flash_attn_install_disabled() -> bool:
@@ -3588,11 +3621,11 @@ def pip_install_try(
     if result.returncode == 0:
         # As pip_install below: `nobuild` only catches a build that reaches the log.
         if VERBOSE and result.stdout:
-            print(_redact_install_output(result.stdout))
+            _safe_print(_redact_install_output(result.stdout))
         return True
     if VERBOSE and result.stdout:
         # pip/uv echo index URLs (credentials included) in failure output.
-        print(_redact_install_output(result.stdout))
+        _safe_print(_redact_install_output(result.stdout))
     return False
 
 
@@ -3635,7 +3668,7 @@ def pip_install(
         if USE_UV:
             uv_cmd = _build_uv_cmd(args) + constraint_args_uv + req_args_uv
             if VERBOSE:
-                print(f"   {label}...")
+                _safe_print(f"   {label}...")
             result = subprocess.run(
                 uv_cmd,
                 stdout = subprocess.PIPE,
@@ -3651,11 +3684,11 @@ def pip_install(
                 # install, where sdist-only dependencies show up -- reported
                 # "built: none" and stayed green. Redacted: uv echoes credentialed URLs.
                 if VERBOSE and result.stdout:
-                    print(_redact_install_output(result.stdout))
+                    _safe_print(_redact_install_output(result.stdout))
                 return
-            print(_red(f"   uv failed, falling back to pip..."))
+            _safe_print(_red(f"   uv failed, falling back to pip..."))
             if result.stdout:
-                print(_redact_install_output(result.stdout))
+                _safe_print(_redact_install_output(result.stdout))
 
         pip_cmd = _build_pip_cmd(args) + constraint_args_pip + req_args_pip
         run(f"{label} (pip)" if USE_UV else label, pip_cmd)
@@ -3748,7 +3781,7 @@ def install_python_stack() -> int:
     # the preflight that an interrupted run left the venv half-built. Stop if it
     # survives rather than mutate the venv behind a marker that still verifies.
     if not install_manifest.remove_manifest():
-        print(
+        _safe_print(
             f"error: could not remove the stale {install_manifest.MANIFEST_NAME} in "
             f"{install_manifest.venv_root()}; refusing to install behind a marker "
             "that would still report this venv as complete",
@@ -3982,13 +4015,10 @@ def install_python_stack() -> int:
                 _win_amd_gpu = True
                 break
         if _win_amd_gpu and not _rocm_windows_torch_installed:
-            _safe_print(
-                _dim("  Note:"),
-                "AMD GPU detected but ROCm PyTorch could not be auto-installed.",
-            )
-            _safe_print(
-                " " * 8,
-                "Manual install may be required. See: https://docs.unsloth.ai/get-started/install-and-update/amd",
+            _note(
+                "AMD GPU detected but ROCm PyTorch could not be auto-installed. "
+                "Manual install may be required. See: "
+                "https://docs.unsloth.ai/get-started/install-and-update/amd"
             )
 
     # 3. Extra dependencies
@@ -4019,12 +4049,12 @@ def install_python_stack() -> int:
         # and crashes transformers.quantizers. Unsloth stubs it at runtime, so
         # installing it only ships a package that crashes on import -- skip it.
         _progress("dependency overrides (skipped, Windows ROCm)")
-        _safe_print("   Windows ROCm -- skipping torchao (no working build; stubbed at runtime)")
+        _note("Windows ROCm -- skipping torchao (no working build; stubbed at runtime)")
     else:
         _progress("dependency overrides")
         _torch_ver = _probe_installed_torch_version()
         _torchao_spec = _select_torchao_spec(_torch_ver)
-        _safe_print(f"   torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}")
+        _note(f"torch {_torch_ver or 'unknown'} detected -- installing {_torchao_spec}")
         pip_install(
             "Installing dependency overrides",
             "--force-reinstall",
@@ -4038,7 +4068,7 @@ def install_python_stack() -> int:
     if not IS_WINDOWS and not IS_MACOS:
         if not _has_working_git():
             _progress("triton kernels (skipped, no git)")
-            _safe_print("   no working git -- skipping triton kernels (training speedup only)")
+            _note("no working git -- skipping triton kernels (training speedup only)")
         else:
             _progress("triton kernels")
             pip_install(
@@ -4110,11 +4140,7 @@ def install_python_stack() -> int:
     ]
     for _plugin_name, plugin_dir in local_dd_plugins:
         if not plugin_dir.is_dir():
-            _safe_print(
-                _red(
-                    f"❌ Missing local plugin directory: {plugin_dir}",
-                ),
-            )
+            _note(f"❌ Missing local plugin directory: {plugin_dir}", _red)
             return 1
     _progress("local plugin")
     for plugin_name, plugin_dir in local_dd_plugins:
@@ -4163,7 +4189,8 @@ def install_python_stack() -> int:
         )
         is None
     ):
-        print(
+        _end_progress_line()
+        _safe_print(
             f"error: could not write {install_manifest.MANIFEST_NAME} to "
             f"{install_manifest.venv_root()}",
             file = sys.stderr,

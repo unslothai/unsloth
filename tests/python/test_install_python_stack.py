@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import ast
+import contextlib
 import glob
 import importlib
+import io
 import os
 import sys
 import tempfile
@@ -282,3 +285,102 @@ class TestPinnedIndexClearsUvEnv:
         configuration still applies to base packages."""
         env = ips._install_env_for_cmd(["uv", "pip", "install", "unsloth"])
         assert env is None
+
+
+class TestProgressLineNotes:
+    """_progress() leaves the cursor mid-line, so anything printed between two
+    progress steps has to close that line first. Before this was centralised in
+    _note(), a real install rendered the torchao message glued onto the bar:
+      deps  [=======-------------]  5/14  dependency overrides   torch 2.11...
+    """
+
+    def _render(self, emit) -> str:
+        buf = io.StringIO()
+        with mock.patch.dict(os.environ, {"COLUMNS": "100"}), \
+                mock.patch.object(ips, "VERBOSE", False), \
+                mock.patch.object(ips, "_TOTAL", 14), \
+                mock.patch.object(ips, "_STEP", 4), \
+                mock.patch.object(ips, "_PROGRESS_LINE_ACTIVE", False), \
+                contextlib.redirect_stdout(buf):
+            emit()
+        return buf.getvalue()
+
+    def test_note_does_not_glue_onto_the_progress_bar(self):
+        msg = "torch 2.11.0+cu130 detected -- installing torchao==0.17.0"
+        out = self._render(lambda: (ips._progress("dependency overrides"), ips._note(msg)))
+        bar_lines = [ln for ln in out.split("\n") if "5/14" in ln]
+        assert len(bar_lines) == 1, f"expected one bar line, got {bar_lines!r}"
+        assert msg not in bar_lines[0], f"note glued onto the bar: {bar_lines[0]!r}"
+        assert any(ln.strip() == msg for ln in out.split("\n")), out
+
+    def test_note_aligns_under_the_step_value_column(self):
+        out = self._render(lambda: (ips._progress("dependency overrides"), ips._note("hello")))
+        note_line = next(ln for ln in out.split("\n") if ln.strip() == "hello")
+        assert len(note_line) - len(note_line.lstrip()) == ips._INDENT + ips._COL
+
+    def test_note_without_an_active_bar_prints_on_its_own(self):
+        out = self._render(lambda: ips._note("standalone"))
+        assert out == f"{' ' * (ips._INDENT + ips._COL)}standalone\n"
+
+    def test_step_still_closes_an_active_bar(self):
+        """_step() used to inline the line-break logic that _end_progress_line()
+        now owns; it must keep breaking out of the bar."""
+        out = self._render(
+            lambda: (ips._progress("dependency overrides"), ips._step("deps", "installed"))
+        )
+        bar_lines = [ln for ln in out.split("\n") if "5/14" in ln]
+        assert len(bar_lines) == 1 and "installed" not in bar_lines[0], out
+
+    def test_progress_line_state_is_cleared(self):
+        """A stale _PROGRESS_LINE_ACTIVE would insert a blank line before the
+        next note instead of closing a bar that is no longer open."""
+        def emit():
+            ips._progress("dependency overrides")
+            ips._note("first")
+            assert ips._PROGRESS_LINE_ACTIVE is False
+            ips._note("second")
+        out = self._render(emit)
+        assert "\n\n" not in out, out
+
+    def test_uv_fallback_warning_does_not_glue_onto_the_bar(self):
+        """A real producer, not _note() directly: pip_install() warns on the uv
+        fallback while the bar for its own step is still open. This is the path
+        that survived the first pass of this fix, when only the call sites that
+        already used the '   message' convention were converted."""
+        fake = mock.Mock(returncode = 1, stdout = "uv output")
+        with mock.patch.object(ips, "USE_UV", True), \
+                mock.patch.object(ips, "subprocess") as sp, \
+                mock.patch.object(ips, "run") as fallback:
+            sp.run.return_value = fake
+            sp.PIPE, sp.STDOUT = -1, -2
+            out = self._render(
+                lambda: (ips._progress("studio deps"), ips.pip_install("Installing studio deps"))
+            )
+        assert fallback.called, "expected the pip fallback to run"
+        bar_lines = [ln for ln in out.split("\n") if "5/14" in ln]
+        assert len(bar_lines) == 1, f"expected one bar line, got {bar_lines!r}"
+        assert "uv failed" not in bar_lines[0], f"warning glued onto the bar: {bar_lines[0]!r}"
+
+    def test_no_bare_print_calls(self):
+        """The line-close lives in _safe_print(), so a direct print() anywhere in
+        the module silently reintroduces the glued-line bug. Roughly 50 call
+        sites across the CUDA/ROCm/CPU/XPU repair helpers rely on this."""
+        src = Path(ips.__file__).read_text(encoding = "utf-8")
+        tree = ast.parse(src)
+        allowed = [
+            (n.lineno, n.end_lineno)
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef) and n.name == "_safe_print"
+        ]
+        offenders = [
+            n.func.lineno
+            for n in ast.walk(tree)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "print"
+            and not any(lo <= n.func.lineno <= hi for lo, hi in allowed)
+        ]
+        assert not offenders, (
+            f"install_python_stack.py:{offenders} call print() directly; "
+            "use _safe_print() or _note() so an open progress bar line is closed first"
+        )
