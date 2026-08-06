@@ -363,9 +363,7 @@ _SUBSTITUTION_SPAN_STEP = 64
 # Distinct from the surrounding quoting because bash expands neither: the `$(` in
 # `sed "s/\$(CC)/gcc/" Makefile` opens no command substitution.
 _ESCAPED_CHAR_STATE = "\\"
-_WIN_CONDITIONAL_KEYWORDS = frozenset(
-    {"exist", "defined", "errorlevel", "cmdextversion", "not"}
-)
+_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "cmdextversion", "not"})
 # cmd's IF also takes a comparison, either glued (`if 1==1 cmd`) or spelled with
 # one of these operators (`if %a% equ 1 cmd`). The body behind it is a command
 # cmd runs, so the operands have to be stepped over to reach it.
