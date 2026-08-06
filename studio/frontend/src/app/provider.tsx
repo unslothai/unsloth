@@ -352,10 +352,17 @@ function DesktopChromeVarsEffect({
     set("--studio-custom-titlebar-height", usesCustomTitlebar ? "34px" : null);
     set("--studio-mac-titlebar-height", usesNativeMacTitlebar ? "34px" : null);
     set("--studio-window-control-inset", usesCustomTitlebar ? "112px" : null);
+    // How far body-portaled surfaces (dialogs, alert dialogs) must stay clear of the
+    // top: either titlebar paints over them, and neither inherits the wrapper's style.
+    set(
+      "--studio-window-chrome-top",
+      usesCustomTitlebar || usesNativeMacTitlebar ? "34px" : null,
+    );
     return () => {
       set("--studio-custom-titlebar-height", null);
       set("--studio-mac-titlebar-height", null);
       set("--studio-window-control-inset", null);
+      set("--studio-window-chrome-top", null);
     };
   }, [usesCustomTitlebar, usesNativeMacTitlebar]);
   return null;
