@@ -1929,6 +1929,4 @@ def test_a_path_qualified_shell_still_has_its_arguments_read(windows_terminal, c
 
 def test_a_path_qualified_program_is_still_just_a_program(windows_terminal):
     # And one that is neither still reports only itself.
-    assert tools._find_blocked_commands('cmd //c "C:\\tools\\pwsh.exe -Command ls"') == {
-        "pwsh"
-    }
+    assert tools._find_blocked_commands('cmd //c "C:\\tools\\pwsh.exe -Command ls"') == {"pwsh"}
