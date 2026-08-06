@@ -1088,7 +1088,7 @@ with sync_playwright() as p:
             const [secondPrompt, holdMs] = args;
             window.__unslothRapid = {
                 intercepted: false, submitted: false, queueSeen: false,
-                observed: false, error: null, seen: [],
+                observed: false, error: null, seen: [], holdUntil: 0,
             };
             const state = window.__unslothRapid;
             const realFetch = window.fetch;
@@ -1105,6 +1105,13 @@ with sync_playwright() as p:
                 );
                 if (!composer || !composer.isConnected || !composer.form) {
                     if (deadline === undefined) deadline = Date.now() + 5000;
+                    // Never retry past the hold. The response is released when
+                    // it expires, so a submit after that races a buffered reply
+                    // finishing first and would report a queue failure for an
+                    // application that behaved correctly.
+                    if (state.holdUntil) {
+                        deadline = Math.min(deadline, state.holdUntil - 250);
+                    }
                     if (Date.now() > deadline) {
                         state.error = "no connected composer for the follow-up";
                         return;
@@ -1130,6 +1137,7 @@ with sync_playwright() as p:
                 const isTurn = url.includes("chat/completions");
                 if (isTurn && !state.intercepted) {
                     state.intercepted = true;
+                    state.holdUntil = Date.now() + holdMs;
                     state.seen.push(url);
                     const response = realFetch(...a);
                     // The request is out and the turn is running. Send the
