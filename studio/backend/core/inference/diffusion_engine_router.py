@@ -74,10 +74,8 @@ def _engine_config() -> tuple[str, str, bool]:
 
 
 def engine_for(name: str) -> Any:
-    """The engine object a name refers to, WITHOUT activating it (nothing is unloaded).
-
-    Lets a caller reach the engine a load is ABOUT to switch to -- the pre-activation gated-repo
-    preflight in /images/load -- since activating it first is what unloads the resident model."""
+    """The engine object a name refers to, WITHOUT activating it: activating unloads the resident
+    model, so /images/load's gated-repo preflight needs the pending engine before the switch."""
     if name == ENGINE_SD_CPP:
         from core.inference.sd_cpp_backend import get_sd_cpp_backend
         return get_sd_cpp_backend()

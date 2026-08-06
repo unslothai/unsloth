@@ -771,7 +771,7 @@ def test_prequant_checkpoint_cached_reads_only_the_cache(monkeypatch, tmp_path):
     assert asked == [("unsloth/Z-Image-Turbo-FP8", "Z-Image-Turbo-FP8.pt", "/models/hub")]
 
     # Only the legacy name on disk does NOT count: whether the repo publishes the canonical one
-    # cannot be known without a network call, so this reads as "would download" and the GGUF runs.
+    # needs a network call, so this reads as "would download" and the GGUF runs.
     ckpt.unlink()
     assert prequant_checkpoint_cached(source) is False
     # Neither name cached -> same answer, for the ordinary reason.
@@ -831,10 +831,9 @@ def _other_root_source():
 
 
 def test_a_hit_only_in_the_other_root_is_revalidated_through_that_root(monkeypatch, tmp_path):
-    # The case this branch exists for: hf_hub_download(cache_dir = live) would not look in
-    # huggingface_hub's import-time root and would re-fetch multiple GB already here, while
-    # returning the cached path raw would pin it past a republish. So the download is re-run
-    # THROUGH the root that holds the copy, which reuses the blob and costs one HEAD.
+    # hf_hub_download(cache_dir = live) would not look in huggingface_hub's import-time root and
+    # would re-fetch multiple GB, while returning the cached path raw would pin it past a
+    # republish. So the download is re-run THROUGH the root that holds the copy: one HEAD.
     default_root = tmp_path / "default-hub"
     default_root.mkdir()
     ckpt = default_root / "Z-Image-Turbo-FP8.pt"
@@ -1033,9 +1032,8 @@ def test_the_legacy_name_is_still_used_once_the_canonical_one_is_absent(monkeypa
 
 def test_a_legacy_copy_in_the_other_root_is_reused_after_the_primary_404s(monkeypatch, tmp_path):
     """Once the primary is absent remotely the legacy name IS the artifact, so it needs the same
-    other-root treatment: hf_hub_download(cache_dir = live) cannot see a copy in huggingface_hub's
-    import-time root and would re-fetch multiple GB, while returning that copy raw would pin it
-    past a republish. Revalidate through the root holding it instead."""
+    other-root treatment: revalidate through the root holding the copy rather than re-fetch multiple
+    GB into the live one, or pin a stale file by returning it raw."""
     from huggingface_hub.errors import EntryNotFoundError
 
     default_root = tmp_path / "default-hub"
@@ -1236,8 +1234,7 @@ def test_load_config_reads_the_same_cache_root_as_the_checkpoint(monkeypatch, tm
 def test_the_config_follows_the_checkpoint_into_the_other_cache_root(monkeypatch, tmp_path):
     """``_resolve_checkpoint_path`` can answer from huggingface_hub's import-time root while Studio
     pins its live one, so a config pinned to the live root misses in exactly the cache-moved case
-    the checkpoint lookup just accepted -- silently, since the raise becomes a None return and the
-    symptom is a dropped prequant. The config must follow the checkpoint's root, then the other."""
+    the checkpoint lookup just accepted -- silently, as the raise becomes a None return."""
     import torch
 
     from core.inference import diffusion_prequant as P

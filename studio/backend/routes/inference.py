@@ -19022,13 +19022,13 @@ async def load_diffusion_model(
         )
         # Refuse while training is running: a multi-GB pipeline would compete with the training subprocess for VRAM.
         _guard_diffusion_load_against_training()
-        # Take the GPU from chat only when the resolved device is non-CPU: gate on the device, not the engine name.
-        # A pure resolve, so it is read before selection, which the refusal below has to precede.
+        # Take the GPU from chat only on a non-CPU device: gate on the device, not the engine name.
+        # Pure resolve, so it can run before selection, which the refusal below has to precede.
         device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
         needs_gpu = device != "cpu"
 
         def _preflight(target):
-            # The gated/unreadable-companion refusal, asked of ONE engine (they check different repos).
+            # Gated/unreadable-companion refusal, asked of ONE engine (they check different repos).
             return target.preflight_base_access(
                 request.model_path,
                 fam,
@@ -19039,12 +19039,11 @@ async def load_diffusion_model(
             )
 
         # Last refusal before anything is torn down: a gated/unreadable companion repo. The download
-        # plan makes the same check, but the images page falls back to THIS route whenever the plan
-        # call fails, and the loader's own copy runs on the load thread, after acquire_for already
-        # evicted chat. It also has to precede selection: activating the other engine unloads the
-        # current one, so a pick refused afterwards destroys the very model this preserves. Costs two
-        # metadata calls the load makes anyway, fails open on offline/transient, and runs only where
-        # something is at stake -- a GPU handoff, or an engine switch.
+        # plan checks the same, but the images page falls back to THIS route when that call fails,
+        # and the loader's own copy runs after acquire_for already evicted chat. Must precede
+        # selection too: activating the other engine unloads the current one, so a pick refused
+        # afterwards destroys the model this preserves. Fails open on offline/transient, and runs
+        # only where something is at stake -- a GPU handoff, or an engine switch.
         try:
             pending_name = predict_engine(fam, model_kind = kind) if fam is not None else None
         except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
@@ -19058,13 +19057,11 @@ async def load_diffusion_model(
         engine = await asyncio.to_thread(
             select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
         )
-        # predict_engine is the selection's read-only twin, not the selection: it never installs,
-        # so a host where the sd-cli install then fails lands on the OTHER engine. Ask the engine
-        # actually activated whenever the prediction missed, so neither the GPU handoff nor the
-        # load is made on an unread companion. Same call the (correct) prediction already made, so
-        # never paid twice. Runs on the CPU path too when a preflight was already owed there: the
-        # switch is what is at stake, and it happens whether or not a GPU is involved. Where none
-        # was owed, CPU still pays nothing.
+        # predict_engine is selection's read-only twin: it never installs, so a host whose sd-cli
+        # install then fails lands on the OTHER engine. Re-ask the engine actually activated when
+        # the prediction missed, so neither the GPU handoff nor the load runs on an unread
+        # companion; a correct prediction already made this call, so it is never paid twice. Runs
+        # on the CPU path too when a preflight was owed there, since the switch is what is at stake.
         if (needs_gpu or preflighted is not None) and engine is not preflighted:
             await asyncio.to_thread(_preflight, engine)
 

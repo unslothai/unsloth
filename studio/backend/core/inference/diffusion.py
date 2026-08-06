@@ -434,8 +434,8 @@ def _assert_local_base_is_pipeline(base_repo: str) -> None:
 
 
 def _repo_access_message(repo: str, *, gated: bool) -> str:
-    """The repo id AND its licence page: the worker's 401/403 names neither, and the base comes
-    from a card tag, so the user never saw which repo it is."""
+    """The repo id AND its licence page: the Hub's 401/403 names neither, and the base comes from a
+    card tag, so the user never saw which repo it is."""
     url = f"https://huggingface.co/{repo}"
     if gated:
         return (
@@ -458,29 +458,27 @@ def _assert_base_repo_accessible(
     """Fail up front, with the licence URL, when a companion base cannot be read.
 
     The Hub gates the BYTE endpoint only, so ``model_info`` answers anonymously for gated repos and
-    a plan built from it dies mid-download on a bare token error. Probes ``probe_file`` (a file the
-    load fetches anyway) and only when ``gated`` is set, so an open repo costs one metadata call;
-    the native plan passes its own asset name, since a repo it reads only for a VAE has no manifest
-    cached. Fails open on any non-access error: offline/transient must not block a load.
+    a plan built from it dies mid-download on a bare token error. Probes ``probe_file`` (fetched by
+    the load anyway) only when ``gated`` is set, so an open repo costs one metadata call; the native
+    plan passes its own asset name, as a repo it reads only for a VAE has no manifest cached. Fails
+    open on any non-access error: offline/transient must not block a load.
 
-    Returns the base's snapshot dir when an ACCESS verdict was excused by a copy that lives only
-    under huggingface_hub's import-time cache root, so the caller can load off disk; None
-    otherwise. That escape is needed because ``from_pretrained`` is pinned to ``hub_cache_dir()``
-    and cannot see the other root, and the metadata failure that earned it also empties the size
-    estimate, so the prefetch stages nothing to reuse."""
+    Returns the base's snapshot dir when an ACCESS verdict was excused by a copy living only under
+    huggingface_hub's import-time root, so the caller can load off disk: ``from_pretrained`` is
+    pinned to ``hub_cache_dir()`` and cannot see it, and the failure that earned the escape also
+    empties the size estimate. None otherwise."""
     repo = (base_repo or "").strip()
     # Only a remote 'org/name' can be gated; a local base is already on disk.
     if not repo or repo.count("/") != 1:
         return None
-    # Blank to None, as load_pipeline does: build_hf_headers sends "" verbatim as a literal
-    # "Bearer " that 401s, which the handling below would read as an open base being unreadable.
+    # Blank to None, as load_pipeline does: build_hf_headers sends "" as a literal "Bearer " that
+    # 401s, which the handling below would read as an open base being unreadable.
     hf_token = (hf_token.strip() if isinstance(hf_token, str) else hf_token) or None
     try:
         if Path(repo).expanduser().exists():
             return None
-    # OSError: invalid path characters -> a remote id. RuntimeError: pathlib, not OSError, when
-    # expanduser() cannot resolve the home dir ('~other/models', or '~/models' with no HOME). Both
-    # have exactly one slash so they reach here, and an escape would 500 this fail-open probe.
+    # OSError: invalid path characters -> a remote id. RuntimeError: pathlib raises it, not OSError,
+    # when expanduser() cannot resolve the home dir; an escape would 500 this fail-open probe.
     except (OSError, RuntimeError, ValueError):
         pass
     try:
@@ -493,23 +491,20 @@ def _assert_base_repo_accessible(
     except Exception:  # noqa: BLE001 — an unexpected hub layout leaves today's behaviour
         return None
 
-    # Set when only huggingface_hub's import-time root holds the excusing copy, so the caller can
-    # load off disk: a from_pretrained pinned to hub_cache_dir() looks in the live root and misses.
+    # Set when only the import-time root holds the excusing copy, which the pinned from_pretrained
+    # would miss.
     other_root_snapshot: Optional[str] = None
 
-    # A base already on disk needs no Hub access, so refusing one would block a load that works
-    # today: hf_hub_download catches the gated/401 HEAD and serves the cached pointer
-    # (file_download._get_metadata_or_catch_error), which is how a downloaded gated base still
-    # loads once the token is cleared or expires. Excuses an ACCESS verdict only, never a 404: a
-    # renamed or removed repo cannot be un-renamed by a stale copy, and the size estimate swallows
-    # that 404 into a zero-byte plan.
+    # A base already on disk needs no Hub access: hf_hub_download catches the gated/401 HEAD and
+    # serves the cached pointer (file_download._get_metadata_or_catch_error), which is how a
+    # downloaded gated base still loads once the token is cleared or expires. Excuses an ACCESS
+    # verdict only, never a 404: a removed repo cannot be un-removed by a stale copy.
     def _already_downloaded() -> bool:
         """True when ``probe_file`` is on disk under EITHER root (Studio pins its live setting, the
-        prefetch downloads under huggingface_hub's import-time constant). Never raises.
-
-        Exact for the native plan, which probes an asset it stages; a proxy for the diffusers plan,
-        which probes the manifest, so a manifest-cached base with missing shards passes and dies
-        mid-download on the bare token error -- the pre-preflight behaviour, never a blocked load."""
+        prefetch writes under huggingface_hub's import-time constant). Never raises. Exact for the
+        native plan, which probes an asset it stages; a proxy for the diffusers plan, which probes
+        the manifest, so a manifest-cached base with missing shards still dies mid-download on the
+        bare token error -- the pre-preflight behaviour, never a blocked load."""
         nonlocal other_root_snapshot
         try:
             from huggingface_hub import try_to_load_from_cache
@@ -517,9 +512,8 @@ def _assert_base_repo_accessible(
                 # Only a str is a cached path; a miss is None and an absent file is a sentinel.
                 hit = try_to_load_from_cache(repo, probe_file, cache_dir = root)
                 if isinstance(hit, str):
-                    # The live root is tried first, so root None here means only the import-time
-                    # one has it. Its parent is the snapshot dir only for a top-level probe, so a
-                    # subfolder name yields nothing rather than a wrong root.
+                    # The live root is tried first, so root None means only the import-time one has
+                    # it. Its parent is the snapshot dir only for a top-level probe.
                     if root is None and "/" not in probe_file:
                         other_root_snapshot = str(Path(hit).parent)
                     return True
@@ -528,12 +522,10 @@ def _assert_base_repo_accessible(
         return False
 
     def _is_auth_error(exc: Any) -> bool:
-        """A 401/403 that hf_raise_for_status did not classify.
-
-        An expired token 401s "Invalid credentials in Authorization header", which _http.py
-        excludes from its RepoNotFound branch by name, and a token missing a permission 403s. Both
-        arrive as plain HfHubHTTPError, so catching only the classified errors fails open on
-        exactly the case this probe exists to catch."""
+        """A 401/403 that hf_raise_for_status did not classify: an expired token 401s "Invalid
+        credentials in Authorization header", which _http.py excludes from its RepoNotFound branch
+        by name, and a token missing a permission 403s. Both arrive as plain HfHubHTTPError, so
+        catching only the classified errors fails open on the very case this probe exists to catch."""
         status = getattr(getattr(exc, "response", None), "status_code", None)
         return status in (401, 403)
 
@@ -545,10 +537,8 @@ def _assert_base_repo_accessible(
         raise ValueError(_repo_access_message(repo, gated = True)) from None
     except RepositoryNotFoundError as exc:
         # 401 and 404 both land here: hf_raise_for_status folds unauthenticated private/gated in
-        # with a missing repo, because "401 is misleading" (_http.py), so the status is re-read to
-        # tell them apart. A 401/403 is an ACCESS verdict and earns the same cache escape as the
-        # other access branches; a genuine 404 never does, and an error carrying no response reads
-        # as neither, so it raises: fail safe.
+        # with a missing repo because "401 is misleading" (_http.py), so re-read the status. A
+        # 401/403 earns the cache escape; a genuine 404, or an error carrying no response, raises.
         if _is_auth_error(exc) and _already_downloaded():
             return other_root_snapshot
         raise ValueError(_repo_access_message(repo, gated = False)) from None
@@ -561,7 +551,7 @@ def _assert_base_repo_accessible(
     except Exception:  # noqa: BLE001 — offline / transient: the download surfaces any real error
         return None
     # Nothing to carry: model_info answered, so the size estimate lists the base files and the
-    # prefetch already resolves each one through whichever root holds it.
+    # prefetch resolves each through whichever root holds it.
     if not gated or _already_downloaded():
         return None
     try:
@@ -725,9 +715,9 @@ def _has_active_lora(loras: Any) -> bool:
     """True when any adapter would actually be baked, for either shape the callers pass.
 
     Weight 0 means disabled, but /images/load passes ``(id, weight)`` tuples while
-    /images/download-plan passes ``LoraSpec`` models. Unpacking a pydantic model yields its
-    ``(field, value)`` pairs, so ``(_lid, w)`` would bind ``w`` to ``("weight", 0.0)`` and read a
-    disabled adapter as active; reading the attribute first covers both."""
+    /images/download-plan passes ``LoraSpec`` models, whose unpacking yields ``(field, value)``
+    pairs -- so ``(_lid, w)`` would bind ``w`` to ``("weight", 0.0)`` and read a disabled adapter
+    as active. Reading the attribute first covers both."""
     for entry in loras or ():
         weight = getattr(entry, "weight", _NO_WEIGHT)
         if weight is _NO_WEIGHT:
@@ -751,13 +741,12 @@ def _uncached_prequant_repo(
     base_repo: Optional[str],
     prequant_path: Optional[str],
 ) -> Optional[str]:
-    """The hosted pre-quant repo an AUTO-derived quant would have to DOWNLOAD for this pick, or
-    None when it costs no extra bytes (no hosted source, a local override, or already cached).
+    """The hosted pre-quant repo an AUTO-derived quant would have to DOWNLOAD for this pick, or None
+    when it costs no extra bytes (no hosted source, a local override, or already cached).
 
     Otherwise an auto GGUF pick fetches the GGUF and then a second multi-GB denoiser it uses
-    instead, which is not what "auto" may spend on the user's behalf. Shared by ``load_pipeline``
-    and ``_dense_quant_prefetch_needed`` so the load and the download plan decline together. Cheap
-    (a refs read + stat) and never raises."""
+    instead. Shared by ``load_pipeline`` and ``_dense_quant_prefetch_needed`` so the load and the
+    download plan decline together. Cheap (a refs read + stat) and never raises."""
     try:
         scheme = select_transformer_quant_scheme(
             target, requested, family = getattr(fam, "name", None)
@@ -838,21 +827,19 @@ class DiffusionBackend:
             return str(resolve_local_gguf_child(local_root, gguf_filename))
         from huggingface_hub import hf_hub_download, try_to_load_from_cache
 
-        # Pin the LIVE root, as the prefetch does. Unpinned, a mid-session cache change misses the
-        # GGUF the prefetch just staged and re-pulls the whole multi-GB file inside the load lock,
-        # after eviction, where unload cannot preempt it and progress already reported 100%.
+        # Pin the LIVE root, as the prefetch does: unpinned, a mid-session cache change misses the
+        # staged GGUF and re-pulls the whole multi-GB file inside the load lock, after eviction,
+        # where unload cannot preempt it and progress already reported 100%.
         cache_dir = hub_cache_dir()
-        # Both probes are best-effort: a malformed or unreadable cache raises here, and letting
-        # that escape would abort a remote load that only had to download. Any failure falls
-        # through to the pinned download below.
+        # Best-effort: an unreadable cache raises here, and letting that escape would abort a load
+        # that only had to download. Any failure falls through to the pinned download below.
         try:
             if not isinstance(
                 try_to_load_from_cache(repo_id, gguf_filename, cache_dir = cache_dir), str
             ):
-                # Same other-root reuse as the pre-quant checkpoint: re-fetching a copy that root
-                # already holds is the download this pins the root to avoid. Reached THROUGH that
-                # root rather than returned raw, so the ref still resolves and a republished GGUF is
-                # picked up; the blob is reused, and offline the cached pointer comes back anyway.
+                # Same other-root reuse as the pre-quant checkpoint, reached THROUGH that root
+                # rather than returned raw, so the ref still resolves and a republished GGUF is
+                # picked up.
                 elsewhere = try_to_load_from_cache(repo_id, gguf_filename, cache_dir = None)
                 if isinstance(elsewhere, str) and Path(elsewhere).is_file():
                     try:
@@ -902,8 +889,7 @@ class DiffusionBackend:
             # plan must not stage the base transformer/ shards either.
             if (
                 auto
-                # Active weights only: an all-zero list is not a bake, and disagreeing here stages
-                # base transformer/ shards for a load that runs the GGUF.
+                # Active weights only: disagreeing with the load stages shards it never reads.
                 and not _has_active_lora(kwargs.get("loras"))
                 and _uncached_prequant_repo(
                     fam,
@@ -922,8 +908,7 @@ class DiffusionBackend:
                 requested = mode,
                 base_repo = kwargs.get("base_repo"),
                 prequant_path = kwargs.get("transformer_prequant_path"),
-                # Same rule as the decline above: an all-zero list bakes nothing, so sizing it
-                # dense stages transformer/ shards the load will not read.
+                # An all-zero list bakes nothing; sizing it dense stages shards the load never reads.
                 force_dense = _has_active_lora(kwargs.get("loras")),
                 logger = None,
             )
@@ -975,10 +960,9 @@ class DiffusionBackend:
         base = fetch_base or prefer_ungated_mirror(base, hf_token, files = base_files)
         # Callers without a per-load event (tests, direct use) fall back to the current one.
         cancel = cancel_event if cancel_event is not None else self._cancel_event
-        # A file cached only under huggingface_hub's import-time root resolves through that root.
-        # The preflight clears a base found under EITHER root, so without this a cache-folder
-        # change turns an already-downloaded gated base into a mid-prefetch Hub token error (and
-        # every other moved asset into a needless re-download) on a load the preflight accepted.
+        # A file cached only under huggingface_hub's import-time root resolves through that root:
+        # the preflight clears a base found under EITHER root, so without this a cache-folder change
+        # turns an already-downloaded gated base into a mid-prefetch Hub token error.
         # GGUF transformer (hub repos only; a local path is already on disk).
         if gguf_filename and not Path(repo_id).expanduser().exists():
             hf_hub_download_with_xet_fallback(
@@ -991,9 +975,8 @@ class DiffusionBackend:
         # Base repo (VAE / text-encoder / scheduler); list comes from the estimate.
         snapshot_root: Optional[str] = None
         # reuse_other_cache_root resolves EACH file through whichever root holds it, so a moved
-        # cache can serve the manifest from the old root while the companions download into the
-        # live one. Returning the manifest's snapshot then points from_pretrained at a directory
-        # the rest of the files are not in, failing a load that would have worked off the hub id.
+        # cache can serve the manifest from the old root while companions land in the live one, and
+        # returning that snapshot would point from_pretrained at a tree missing the rest.
         roots: set[str] = set()
         for rfilename in base_files:
             if cancel.is_set():
@@ -1001,9 +984,8 @@ class DiffusionBackend:
             local = hf_hub_download_with_xet_fallback(
                 base, rfilename, hf_token, cancel_event = cancel, reuse_other_cache_root = True
             )
-            # The snapshot dir is the resolved path minus the file's own relative path, so a
-            # subfolder entry yields the same root as a top-level one. Not resolve()d: that would
-            # follow the symlink into blobs/ and leave the snapshot tree entirely.
+            # The resolved path minus the file's own relative path, so a subfolder entry yields the
+            # same root as a top-level one. Not resolve()d: that follows the symlink into blobs/.
             try:
                 root = str(Path(local).parents[len(Path(rfilename).parts) - 1])
             except (IndexError, ValueError, OSError):
@@ -1011,8 +993,8 @@ class DiffusionBackend:
             roots.add(root)
             if rfilename == "model_index.json":
                 snapshot_root = root or None
-        # Only hand back a snapshot the whole prefetched set actually lives in; otherwise fall
-        # back to the hub id, which resolves each file through its own root as before.
+        # Only hand back a snapshot the whole set lives in; otherwise the hub id resolves each file
+        # through its own root as before.
         if snapshot_root is not None and roots != {snapshot_root}:
             return None
         return snapshot_root
@@ -1138,24 +1120,19 @@ class DiffusionBackend:
 
         ``_run_load`` and ``download_plan`` already make it, but ``_run_load`` runs on the load
         thread, after the route evicted chat, and the plan's 400 does not stop the load: the images
-        page falls back to /images/load on ANY plan failure. Without this, a pick refused only at
-        plan time still unloads the resident chat/video model and only then reports the message.
-        Resolves the base exactly as those two do, so all three agree.
-
-        The one deliberate network step on the pre-eviction path (``validate_load_request`` stays
-        network-free): two metadata calls for a remote pick, none for a local one, both already
-        made by ``_run_load`` moments later. It fails open on offline/transient, so it can refuse
-        a load but never block one that would have worked."""
+        page falls back to /images/load on ANY plan failure. Resolves the base exactly as those two
+        do, so all three agree. The one deliberate network step on the pre-eviction path
+        (``validate_load_request`` stays network-free): two metadata calls for a remote pick, none
+        for a local one, both already made by ``_run_load`` moments later. Fails open on
+        offline/transient, so it can refuse a load but never block one that would have worked."""
         kind = resolve_model_kind(gguf_filename, model_kind)
         if kind == "pipeline":
             base = repo_id  # the full pipeline IS the repo
         else:
             base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
-        # Probe the repo the load will FETCH from. Refusing the upstream id would reject exactly
-        # the gated picks the ungated mirror exists to rescue, and the swap is pure, so it takes
-        # the same decision here as on the load thread.
-        # The excused-snapshot return is for the loader's pinned from_pretrained; only the raise
-        # matters here, and _run_load recomputes it.
+        # Probe the repo the load will FETCH from: refusing the upstream id would reject the gated
+        # picks the ungated mirror rescues, and the swap is pure, so it decides the same here as on
+        # the load thread. Only the raise matters; _run_load recomputes the excused snapshot.
         _assert_base_repo_accessible(prefer_ungated_mirror(base, hf_token), hf_token)
 
     # ── Background load + progress ─────────────────────────────────────────
@@ -1276,12 +1253,10 @@ class DiffusionBackend:
             fetch_base = prefer_ungated_mirror(base, kwargs.get("hf_token"), files = base_files)
             kwargs["_fetch_base"] = fetch_base
             # Same preflight the plan runs: catch a gated base here, not 15 GiB into the prefetch.
-            # Runs on ``fetch_base``, and only once it is decided, so it probes the repo the pull
-            # will actually read: refusing the upstream id would reject exactly the gated picks the
-            # ungated mirror rescues. Everything above is metadata (model_info answers anonymously
-            # for a gated repo), so no byte has moved yet.
-            # Returns a snapshot dir when it excused the base off a copy only the import-time root
-            # holds, which the pinned from_pretrained below could not reach.
+            # Runs on ``fetch_base``, once it is decided, so it probes the repo the pull will read:
+            # refusing the upstream id would reject the gated picks the ungated mirror rescues.
+            # Everything above is metadata, so no byte has moved yet. Returns a snapshot dir when it
+            # excused the base off a copy only the import-time root holds.
             base_snapshot = _assert_base_repo_accessible(fetch_base, kwargs.get("hf_token"))
             with self._lock:
                 # Stamp progress only if this load is still current (a superseder has its own token).
@@ -1290,10 +1265,9 @@ class DiffusionBackend:
                     self._loading.fetch_repo = fetch_base
                     self._loading.expected_bytes = expected
             # Download outside the lock so unload/an eviction can preempt the pull.
-            # The carried snapshot is the fallback, never the override: it only fires when the
-            # estimate came back empty, since the base metadata that fills it is the same call
-            # whose failure earned the escape. Without it the load ends on the bare Hub auth error
-            # with every byte already on disk.
+            # The carried snapshot is the fallback, never the override: it fires only when the
+            # estimate came back empty, since the metadata that fills it is the same call whose
+            # failure earned the escape. Without it the load 401s with every byte already on disk.
             kwargs["_base_local_dir"] = (
                 self._prefetch_files(
                     kwargs["repo_id"],
@@ -1545,9 +1519,8 @@ class DiffusionBackend:
         )
         # Decided once, from the staged file list, and both probed and reported: a gated base
         # answers model_info anonymously, so the plan would otherwise be confident and the 401 land
-        # mid-download. Probing the UPSTREAM would instead refuse the gated picks the mirror
-        # rescues, and probing a different id from the one staged would refuse a load that works.
-        # The route maps ValueError -> 400. Nothing above downloads, so the reorder costs nothing.
+        # mid-download. Probing any id but the one staged would refuse a load that works. The route
+        # maps ValueError -> 400. Nothing above downloads, so the reorder costs nothing.
         fetch_base = prefer_ungated_mirror(base, hf_token, files = base_files)
         _assert_base_repo_accessible(fetch_base, hf_token)
         entries: list[dict[str, Any]] = []
@@ -1599,12 +1572,11 @@ class DiffusionBackend:
 
         The loader reuses a file cached only under huggingface_hub's import-time root
         (``reuse_other_cache_root``, and the gated preflight excuses a base off it), so after a
-        mid-session cache-folder change the bytes the load reads are not in the live root at all.
-        Sizing that root alone reads zero for them. The constant is read HERE, never bound at
-        import: it is what ``cache_dir = None`` resolves to, and tests move it."""
+        cache-folder change the bytes the load reads are not in the live root at all and sizing that
+        root alone reads zero. The constant is read HERE, never bound at import: it is what
+        ``cache_dir = None`` resolves to, and tests move it."""
         # One read of the live root: it is a setting, and load_progress polls this from another
-        # thread, so a second read could land the other side of a cache-folder change and compare
-        # the new root against a `live` built from the old one.
+        # thread, so a second read could compare the new root against a `live` built from the old.
         live_root = hub_cache_dir()
         folder = f"models--{repo_id.replace('/', '--')}"
         live = Path(live_root) / folder
@@ -1615,9 +1587,8 @@ class DiffusionBackend:
             return [live]
         if not other:
             return [live]
-        # normcase/normpath before comparing: on Windows the two roots can differ by case alone,
-        # and every caller below would then walk the same tree twice. Best-effort -- an aliased
-        # spelling just costs a second walk, since both readers below are idempotent.
+        # normcase/normpath before comparing: on Windows the two roots can differ by case alone and
+        # every caller below would walk the same tree twice. Best-effort; both readers are idempotent.
         if os.path.normcase(os.path.normpath(other)) == os.path.normcase(
             os.path.normpath(live_root)
         ):
@@ -1628,18 +1599,16 @@ class DiffusionBackend:
     def _live_snapshot_dir(repo_dir: Path) -> Optional[Path]:
         """The snapshot ``refs/main`` names: the ONE revision a load reads out of this root.
 
-        ``try_to_load_from_cache`` (what the per-file root reuse probes with) defaults to
-        ``main`` and resolves it through ``refs/main``, so this is exactly the tree the loader
-        will read here. None when the cache does not say -- no ref file (a revision pinned to a
-        commit hash never writes one), unreadable, or the snapshot it names is gone. Callers then
-        fall back to reading the whole root: a cache we cannot scope must still report its bytes,
-        never zero."""
+        ``try_to_load_from_cache`` (what the per-file root reuse probes with) defaults to ``main``
+        and resolves it through ``refs/main``, so this is exactly the tree the loader will read.
+        None when the cache does not say -- no ref file (a revision pinned to a commit hash never
+        writes one), unreadable, or the snapshot it names is gone. Callers then read the whole root:
+        a cache we cannot scope must still report its bytes, never zero."""
         try:
             rev = (repo_dir / "refs" / "main").read_text(encoding = "utf-8").strip()
         except (OSError, ValueError):
             return None
-        # A ref file holds a bare commit hash; anything with a separator is not one, and joining
-        # it would walk out of the cache.
+        # A ref file holds a bare commit hash; a separator would join out of the cache.
         if not rev or rev in (".", "..") or "/" in rev or "\\" in rev:
             return None
         snapshot = repo_dir / "snapshots" / rev
@@ -1650,17 +1619,15 @@ class DiffusionBackend:
         """Bytes of ``repo_id`` on disk across every cache root, for progress and the pipeline plan.
 
         Scoped per root to the revision that root serves (``refs/main``), because ``blobs/`` is
-        append-only: a republished repo leaves the superseded revision's blobs there forever, and
-        they carry different etags from the ones now downloading, so nothing dedupes them. Summing
-        the whole dir then counts a stale full copy on top of the live partial one and
-        ``load_progress`` reports "finalizing" through the rest of a multi-GB pull. The in-flight
-        ``blobs/*.incomplete`` still counts: it is this download's own bytes, and dropping it would
-        freeze the bar for the length of each shard.
+        append-only: a republished repo keeps the superseded revision's blobs forever under
+        different etags, so summing the whole dir counts a stale full copy on top of the live
+        partial one and ``load_progress`` reports "finalizing" through the rest of a multi-GB pull.
+        The in-flight ``blobs/*.incomplete`` still counts: those are this download's own bytes, and
+        dropping them would freeze the bar for the length of each shard.
 
-        Keyed by blob filename, not summed per root: a blob is named after the file's etag, so the
-        same file carries the same name in either root and a copy present in both must count once.
-        Scanning only the live root reports 0 for a load a moved cache serves entirely off disk,
-        which pins the progress bar near 0% for the whole construction."""
+        Keyed by blob filename, not summed per root: a blob is named after the file's etag, so a
+        copy present in both roots counts once. Scanning only the live root reports 0 for a load a
+        moved cache serves entirely off disk, pinning the progress bar near 0%."""
         sizes: dict[str, int] = {}
 
         def _add(key: str, path: Path) -> None:
@@ -1690,10 +1657,9 @@ class DiffusionBackend:
                         continue
                     # Dedupe on the path INSIDE the snapshot, so one logical file counts once
                     # however many roots hold it. The etag would not: each root serves its own
-                    # revision, and a republished file has a different blob hash in each, so
-                    # keying on that summed both copies and could report finalizing at roughly
-                    # half the real progress. Works for a no-symlink cache too, which stores the
-                    # file in the snapshot rather than linking to blobs/.
+                    # revision, so a republished file summed both copies and could report
+                    # finalizing at half the real progress. Works for a no-symlink cache too, which
+                    # stores the file in the snapshot rather than linking to blobs/.
                     _add(f"path:{f.relative_to(snapshot).as_posix()}", f)
             except OSError:
                 pass  # the download is writing this tree under the walk; report what we counted
@@ -1745,24 +1711,22 @@ class DiffusionBackend:
 
         ``fn`` maps a directory to ``{relative path: count}`` so the merge happens per FILE. The
         candidates are every cached snapshot revision under EVERY cache root, plus ``staged_dir``
-        (the snapshot the prefetch/preflight handed back). Both roots because the loader's per-file
-        root reuse resolves EACH file through whichever root holds it, so after a cache-folder
-        change the candidates are disjoint PARTS of one repo, not copies of it: a text encoder left
-        in the old snapshot and a VAE prefetched into the live one both load, and taking the larger
-        total would budget only one of them -- under-counting leaves an auto plan resident and
-        OOMing on weights it never counted. Keying on the relative path is what keeps that safe for
-        genuine copies too: a file mirrored in two roots, or shared by two revisions, still counts
-        once, at its largest copy. It also makes the staged dir purely additive, so a snapshot
-        carrying only part of the repo cannot erase what a root does hold."""
+        (the snapshot the prefetch/preflight handed back). Both roots, because the loader's per-file
+        root reuse makes them disjoint PARTS of one repo rather than copies: a text encoder left in
+        the old snapshot and a VAE prefetched into the live one both load, and taking the larger
+        total would budget only one -- under-counting leaves an auto plan resident and OOMing on
+        weights it never counted. Keying on the relative path keeps genuine copies safe too (a file
+        mirrored in two roots still counts once, at its largest) and makes the staged dir purely
+        additive, so a partial snapshot cannot erase what a root does hold."""
         local = Path(base).expanduser()
         if local.is_dir():
             return sum(fn(local).values())
         candidates: list[Path] = [Path(staged_dir).expanduser()] if staged_dir else []
         for repo_dir in DiffusionBackend._hub_cache_repo_dirs(base):
-            # One revision per root, the one that root serves: the merge is per FILE, so pulling in
-            # a superseded revision whose shards were repacked would count both namings and force
-            # offload on a base that fits. Only a root naming no revision falls back to all of
-            # them, where over-counting still beats reading zero.
+            # One revision per root, the one it serves: the merge is per FILE, so a superseded
+            # revision whose shards were repacked would count both namings and force offload on a
+            # base that fits. A root naming no revision falls back to all of them, where
+            # over-counting still beats reading zero.
             live_rev = DiffusionBackend._live_snapshot_dir(repo_dir)
             if live_rev is not None:
                 candidates.append(live_rev)
@@ -1987,8 +1951,7 @@ class DiffusionBackend:
                 # A GGUF pick with the scheme left to us: the hosted pre-quant is free only while
                 # already cached, since fetching it means a SECOND multi-GB denoiser and the GGUF
                 # never runs. An explicit scheme, a LoRA bake and every non-GGUF kind keep today's
-                # behaviour, where the prequant IS the point. An all-zero-weight list is not a
-                # bake, so plain truthiness would fetch the dense companion for no adapter at all.
+                # behaviour, where the prequant IS the point. An all-zero-weight list is not a bake.
                 baking_loras = _has_active_lora(loras)
                 if kind == "gguf" and transformer_quant_auto and not baking_loras:
                     uncached_prequant = _uncached_prequant_repo(
@@ -2091,10 +2054,9 @@ class DiffusionBackend:
                             else None
                         )
                         # Reads the cache, so it looks where the prefetch WROTE (the mirror when one
-                        # was swapped in), and carries the staged snapshot as the plan below does: a
-                        # base served wholly from the import-time root sizes as 0 on the hub id
-                        # alone, and a 0 skips this whole fit check, so the dense build would land
-                        # under a GGUF-sized plan.
+                        # was swapped in) and carries the staged snapshot: a base served wholly from
+                        # the import-time root sizes as 0 on the hub id alone, and a 0 skips this
+                        # fit check, landing the dense build under a GGUF-sized plan.
                         dense_mib = int(
                             self._dense_transformer_resident_bytes(fetch_base, _base_local_dir)
                             // (1024 * 1024)
@@ -2652,8 +2614,7 @@ class DiffusionBackend:
             raise RuntimeError("transformer quant unsupported for this device/scheme")
         if fam is not None and not _has_active_lora(lora_specs):
             # A LoRA bake needs the DENSE transformer (adapters attach before quantize_), so skip
-            # prequant. Active weights only: an all-zero list bakes nothing and must not cost the
-            # caller the dense build the decline above already declined to pay for.
+            # prequant. Active weights only: an all-zero list bakes nothing.
             source = resolve_prequant_source(
                 fam, scheme, path_override = prequant_path, base_repo = base
             )
@@ -2698,11 +2659,9 @@ class DiffusionBackend:
                 "prequant checkpoint unavailable and the dense transformer does not fit resident"
             )
         # Deliberately the hub id, not base_local_dir: diffusers treats a local directory as
-        # terminal (_get_model_file raises "Error no file named ..." rather than falling back to
-        # the hub), and a sharded load raises per missing shard, so a snapshot holding
-        # transformer/config.json, or 2 of 3 shards, would drop a build the hub id completes. Off
-        # the hub id a base only the other root holds costs a re-download, or 401s into the GGUF
-        # fallback, which is what main does today.
+        # terminal (_get_model_file raises rather than falling back to the hub) and a sharded load
+        # raises per missing shard, so a partial snapshot would drop a build the hub id completes.
+        # Off the hub id a base only the other root holds costs a re-download, as main does today.
         transformer = transformer_cls.from_pretrained(
             fetch_base,
             subfolder = "transformer",
@@ -2868,12 +2827,11 @@ class DiffusionBackend:
         same blob cache _companion_cache_bytes sums -- are not counted as companions on
         top of transformer_resident_override_mib (a double-count of the transformer).
 
-        ``base_local_dir`` is the snapshot the load will actually read, carried into the size
-        lookups as an extra source alongside the cache roots. A prefetch split across roots hands
-        back no snapshot at all, and a preflight-excused one can hold less than the repo, so it is
-        additive and never a replacement: the companion lookup unions the sources file by file and
-        the pipeline branch takes the fullest, since under-counting here leaves an auto plan
-        resident and OOMing on weights it never budgeted.
+        ``base_local_dir`` is the snapshot the load will actually read, carried into the size lookups
+        as an extra source alongside the cache roots. A prefetch split across roots hands back no
+        snapshot at all and a preflight-excused one can hold less than the repo, so it is additive
+        and never a replacement: under-counting here leaves an auto plan resident and OOMing on
+        weights it never budgeted.
 
         ``fetch_base`` is the repo the bytes were staged from, so every cache scan below reads it:
         sizing an upstream id whose cache is empty folds the VAE/text-encoder to zero and wrongly
@@ -2885,14 +2843,12 @@ class DiffusionBackend:
             # The whole repo is one cached download, so cached bytes are the resident estimate; a LOCAL path is not cached, so sum its on-disk weights.
             local_repo = Path(repo_id).expanduser() if repo_id else None
             staged_repo = Path(base_local_dir).expanduser() if base_local_dir else None
-            # The bytes land under the repo they were STAGED from, so scan the mirror when there
-            # is one: scanning an upstream id whose cache is empty folds the whole pipeline to
-            # zero and wrongly picks resident placement.
+            # The bytes land under the repo they were STAGED from, so scan the mirror when there is
+            # one: an upstream id whose cache is empty folds the whole pipeline to zero.
             cache_repo = fetch_base or repo_id
-            # Largest of every source the load can read this repo from. A staged snapshot can sit
-            # under the OTHER cache root, and a prefetch that landed half the repo in each root
-            # hands back none at all -- so neither the snapshot nor the cache scan alone sees the
-            # whole thing, and the smaller answer would plan a multi-GB pipeline as unknown.
+            # Largest of every source the load can read this repo from: a staged snapshot can sit
+            # under the OTHER root, and a prefetch that split the repo across roots hands back none
+            # at all, so the smaller answer would plan a multi-GB pipeline as unknown.
             cached = max(
                 self._local_dir_weight_bytes(local_repo, exclude_transformer = False)
                 if local_repo is not None and local_repo.is_dir()
@@ -2943,10 +2899,9 @@ class DiffusionBackend:
                 # Re-planning the dense candidate: the prefetched transformer/ shards land in the same cache, so use the estimate instead of double-counting.
                 companion_mib = companion_override_mib
             else:
-                # Scan the repo the bytes were staged from, and hand over the staged snapshot too:
-                # a base served from the import-time root is invisible to a hub-id scan of the
-                # live one, so the VAE + text encoders would load unbudgeted (transformer/ stays
-                # excluded either way).
+                # Scan the repo the bytes were staged from, and hand over the staged snapshot too: a
+                # base served from the import-time root is invisible to a hub-id scan of the live
+                # one, so the VAE + text encoders would load unbudgeted.
                 companion = self._companion_cache_bytes(fetch_base or base, base_local_dir)
                 companion_mib = int(companion // (1024 * 1024)) if companion else None
             model_dense_mib = None
