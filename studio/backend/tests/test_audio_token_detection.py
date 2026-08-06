@@ -41,3 +41,32 @@ def test_audio_vlm_and_whisper_accept_audio_input():
 
 def test_non_audio_tokens_classify_none():
     assert _classify(["<bos>", "<eos>", "<pad>"]) is None
+
+
+def test_orpheus_snac_codebook_beats_a_stray_audio_marker():
+    """Orpheus ships 28k <custom_token_N> SNAC codes AND a lone <|audio|>.
+
+    audio_vlm used to be tested first and won, so the TTS model came back as an
+    audio-INPUT model: is_audio stayed False (mlx_inference excludes audio_vlm)
+    and the Audio page refused it with "not a TTS audio model".
+    """
+    tokens = ["<|audio|>"] + [f"<custom_token_{i}>" for i in range(28683)]
+    assert _classify(tokens) == "snac"
+    assert is_audio_input_type(_classify(tokens)) is False
+
+
+def test_a_codec_family_is_not_shadowed_by_a_stray_audio_marker():
+    """The same precedence has to hold for every output codec, not just snac."""
+    assert _classify(["<|audio|>", "<|bicodec_semantic_0|>"]) == "bicodec"
+    assert (
+        _classify(
+            [
+                "<|audio|>",
+                "<|audio_start|>",
+                "<|audio_end|>",
+                "<|text_start|>",
+                "<|text_end|>",
+            ]
+        )
+        == "dac"
+    )

@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any
 
 logger = get_logger(__name__)
+from core.inference.audio_errors import AUDIO_UNSUPPORTED_CODE
 from utils.hardware import apply_gpu_ids, is_apple_silicon
 
 _SHARE_OBJECT_MAX_BYTES = 1 << 20
@@ -989,6 +990,12 @@ def run_inference_process(
                             "type": "audio_error",
                             "request_id": cmd.get("request_id"),
                             "error": "Text-to-speech is not supported on the MLX backend yet.",
+                            # Lets the parent raise a typed error, not a generic 500.
+                            "code": AUDIO_UNSUPPORTED_CODE,
+                            "hint": (
+                                "Load this model's GGUF build instead -- llama.cpp "
+                                "carries the snac/bicodec/dac decoders."
+                            ),
                         },
                     )
                 elif cmd_type == "share_object":

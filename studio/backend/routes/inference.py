@@ -46,6 +46,7 @@ from utils.models import extract_model_size_b as _extract_model_size_b
 from utils.api_errors import openai_error_body, anthropic_error_body, error_body_for_path
 from utils.upload_limits import STT_AUDIO_B64_MAX_CHARS, STT_AUDIO_RAW_MAX_BYTES
 from hub.dependencies import get_hf_token
+from core.inference.audio_errors import AudioBackendUnsupportedError
 from core.inference.orchestrator import GenStreamError, GenStreamErrorRaised
 from core.inference.llama_admission import (
     LlamaAdmissionCancelled,
@@ -8018,6 +8019,11 @@ async def _generate_tts_wav(
         except Exception as e:
             if _audio_cancel.is_set():
                 raise HTTPException(status_code = 499, detail = "Audio generation cancelled")
+            # Missing capability, not a failure: no retry helps, and the message
+            # carries no path or user input, so send it as written.
+            if isinstance(e, AudioBackendUnsupportedError):
+                logger.info("Audio generation unsupported on this backend: %s", e.detail)
+                raise HTTPException(status_code = 501, detail = e.message)
             logger.error(f"Audio generation error: {e}", exc_info = True)
             raise HTTPException(status_code = 500, detail = safe_error_detail(e))
         finally:

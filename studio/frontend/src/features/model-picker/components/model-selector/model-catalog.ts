@@ -484,6 +484,24 @@ export const AUDIO_CATALOG: CatalogGroup[] = [
     task: "stt",
     artifacts: [bf16Pipeline("unsloth/whisper-small", 1, { label: "Safetensors" })],
   },
+  // Both sidecars carry tiny/base (GGML_STT_REPOS, STT_MODEL_REPOS) and Voice
+  // settings lists them; only this picker was missing them.
+  {
+    canonicalId: "unsloth/whisper-base",
+    displayName: "Whisper Base",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [bf16Pipeline("unsloth/whisper-base", 1, { label: "Safetensors" })],
+  },
+  {
+    canonicalId: "unsloth/whisper-tiny",
+    displayName: "Whisper Tiny",
+    description: "Speech-to-text",
+    scope: "audio",
+    task: "stt",
+    artifacts: [bf16Pipeline("unsloth/whisper-tiny", 1, { label: "Safetensors" })],
+  },
 ];
 
 // ── canonical keys and lookups ──────────────────────────────────────────────────

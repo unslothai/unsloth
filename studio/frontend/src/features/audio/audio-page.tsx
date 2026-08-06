@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Audio page: Create (Speak = TTS via the main inference slot, Transcribe =
-// STT via the dictation sidecar) and Train (LoRA on the generic trainer). The
+// The Audio page: Create (Generate = TTS via the main inference slot, Transcribe
+// = STT via the dictation sidecar) and Train (LoRA on the generic trainer). The
 // page stays mounted across tab switches (see __root.tsx), so `active` gates
 // polling and popovers rather than lifecycle.
 
@@ -29,10 +29,7 @@ import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { AUDIO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
 import { PillTabs } from "@/features/model-picker/components/model-selector/pill-tabs";
-import {
-  AUDIO_CATALOG,
-  catalogToModelOptions,
-} from "@/features/model-picker/components/model-selector/model-catalog";
+import { AUDIO_CATALOG } from "@/features/model-picker/components/model-selector/model-catalog";
 import type {
   ModelOption,
   ModelSelectorChangeMeta,
@@ -66,10 +63,18 @@ import {
   listAudioGallery,
   type AudioGalleryClip,
 } from "./api";
-import { audioCapabilityLine, audioTaskFor, sttSidecarKeyFor } from "./catalog";
+import {
+  audioCapabilityLine,
+  audioModelsForTask,
+  audioTaskFor,
+  sttSidecarKeyFor,
+} from "./catalog";
 import { AudioTrainPanel } from "./train/audio-train-panel";
 
-const MODELS: ModelOption[] = catalogToModelOptions(AUDIO_CATALOG);
+const MODELS_BY_MODE: Record<CreateMode, ModelOption[]> = {
+  speak: audioModelsForTask("tts"),
+  transcribe: audioModelsForTask("stt"),
+};
 
 const PAGE_SIZE = 50;
 // WAV clips run a few MB a minute; 64 MB keeps a healthy scrollback resident.
@@ -583,13 +588,16 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       <div className="relative flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         <div className="flex items-center gap-2">
           <ModelSelector
-            models={MODELS}
+            models={MODELS_BY_MODE[mode]}
             value={selectorValue}
             onValueChange={handleModelSelect}
             variant="ghost"
             className="!h-[34px]"
             task={AUDIO_GEN_TASKS}
             catalog={AUDIO_CATALOG}
+            // TTS/ASR come from the checkpoint's own tokenizer, not a curated
+            // recipe, so any publisher's audio repo loads here.
+            includeCommunity={true}
             placeholder="Select audio model"
             open={active && selectorOpen}
             onOpenChange={(o) => setSelectorOpen(active && o)}
@@ -652,7 +660,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                     icon={mode === "speak" ? AudioWave01Icon : Mic01Icon}
                     className="size-4 shrink-0"
                   />
-                  {mode === "speak" ? "Speak" : "Transcribe"}
+                  {mode === "speak" ? "Generate audio" : "Transcribe"}
                 </h2>
                 {/* The always-on capability line: which task the selected model actually does. */}
                 <p className="text-ui-11p5 leading-snug text-muted-foreground">
@@ -667,7 +675,7 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                 fit={true}
                 className="h-[30px] self-start [&>button]:h-[30px] [&>button]:px-6"
                 tabs={[
-                  { value: "speak", label: "Speak" },
+                  { value: "speak", label: "Generate" },
                   { value: "transcribe", label: "Transcribe" },
                 ]}
               />

@@ -154,6 +154,9 @@ interface ModelSelectorProps {
   task?: HfTaskFilter;
   /** Canonical model groups (Images / Video pages): collapses a model's artifact repos into one row with a format second level and device-aware routing. Undefined (chat) changes nothing. */
   catalog?: CatalogGroup[];
+  /** Also list community (non-unsloth) models for `task`. Opt-in: only pages
+   *  whose runtime loads arbitrary publishers. */
+  includeCommunity?: boolean;
   /** Trigger text when nothing is loaded. Defaults to "Select model"; task pages name what they pick so it reads as separate from the chat model. */
   placeholder?: string;
 }
@@ -346,6 +349,7 @@ function ModelSelectorContent({
   dataTour,
   task,
   catalog,
+  includeCommunity,
 }: {
   open: boolean;
   models: ModelOption[];
@@ -368,6 +372,7 @@ function ModelSelectorContent({
   dataTour?: string;
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
+  includeCommunity?: boolean;
 }) {
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
@@ -617,6 +622,7 @@ function ModelSelectorContent({
             onEject={hasSelection && onEject ? onEject : undefined}
             task={task}
             catalog={catalog}
+            includeCommunity={includeCommunity}
             section={effectiveHubSection}
             sectionToggle={
               <PillTabs
@@ -703,6 +709,7 @@ export function ModelSelector({
   showCloudIndicator = false,
   task,
   catalog,
+  includeCommunity,
   placeholder,
 }: ModelSelectorProps) {
   const [uncontrolledOpen, setUncontrolledOpen] = useState(false);
@@ -827,14 +834,16 @@ export function ModelSelector({
         onEject={onEject ? handleEject : undefined}
         onFoldersChange={onFoldersChange}
         onPickLocalModel={onPickLocalModel ? handlePickLocalModel : undefined}
-        // The image tab (the only caller passing `task`) is a self-contained curated + on-device picker, so it omits the "Search Hub" button.
-        onBrowseHub={task ? undefined : handleBrowseHub}
+        // A curated task picker (Images / Video) is self-contained, so it omits this.
+        // A community-enabled one (Audio) already lists past unsloth, so it keeps it.
+        onBrowseHub={task && !includeCommunity ? undefined : handleBrowseHub}
         onModelsChange={onModelsChange}
         deleteDisabled={deleteDisabled}
         className={contentClassName}
         dataTour={contentDataTour}
         task={task}
         catalog={catalog}
+        includeCommunity={includeCommunity}
       />
     </Popover>
   );

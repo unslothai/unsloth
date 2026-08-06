@@ -27,6 +27,10 @@ import uuid
 from io import BytesIO
 from pathlib import Path
 from typing import Any, Generator, Optional, Sequence, Tuple, Union
+from core.inference.audio_errors import (
+    AUDIO_UNSUPPORTED_CODE,
+    AudioBackendUnsupportedError,
+)
 from utils.hardware import get_device, prepare_gpu_selection
 from utils.utils import hf_env_offline
 
@@ -2026,6 +2030,12 @@ class InferenceOrchestrator:
                         return wav_bytes, sample_rate
 
                     if rtype == "audio_error":
+                        # Tagged code = no path for this task, not a failure.
+                        if resp.get("code") == AUDIO_UNSUPPORTED_CODE:
+                            raise AudioBackendUnsupportedError(
+                                resp.get("error", "This backend cannot generate audio."),
+                                hint = resp.get("hint"),
+                            )
                         raise RuntimeError(resp.get("error", "Audio generation failed"))
 
                     if rtype == "error":

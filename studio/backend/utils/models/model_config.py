@@ -1072,12 +1072,13 @@ VALID_AUDIO_TYPES = ("snac", "csm", "bicodec", "dac", "whisper", "audio_vlm")
 # or offline miss cannot poison a later authenticated / online lookup.
 _audio_detection_cache: Dict[Tuple[str, Optional[str], bool], Optional[str]] = {}
 
-# Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json)
+# Tokenizer token patterns → audio_type (all 6 types from tokenizer_config.json).
+# ORDER MATTERS: first match wins, so the specific codec fingerprints go before the
+# generic audio_vlm marker. Orpheus carries 28k <custom_token_N> SNAC codes AND a
+# stray <|audio|>; audio_vlm first typed it as audio-input, leaving is_audio False.
 _AUDIO_TOKEN_PATTERNS = {
     "csm": lambda tokens: "<|AUDIO|>" in tokens and "<|audio_eos|>" in tokens,
     "whisper": lambda tokens: "<|startoftranscript|>" in tokens,
-    # Gemma 3n: <audio_soft_token>; Gemma 4: <|audio|> (not csm's <|AUDIO|>).
-    "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
     "bicodec": lambda tokens: any(t.startswith("<|bicodec_") for t in tokens),
     "dac": lambda tokens: (
         "<|audio_start|>" in tokens
@@ -1086,6 +1087,9 @@ _AUDIO_TOKEN_PATTERNS = {
         and "<|text_end|>" in tokens
     ),
     "snac": lambda tokens: (sum(1 for t in tokens if t.startswith("<custom_token_")) > 10000),
+    # Generic, so last. Gemma 3n <audio_soft_token>; Gemma 4 <|audio|> (not csm's
+    # <|AUDIO|>). Neither carries a codebook, so nothing above shadows them.
+    "audio_vlm": lambda tokens: "<audio_soft_token>" in tokens or "<|audio|>" in tokens,
 }
 
 

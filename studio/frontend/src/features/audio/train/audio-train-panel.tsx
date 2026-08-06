@@ -10,13 +10,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { Spinner } from "@/components/ui/spinner";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
 import { usePersistedToggle } from "@/hooks/use-persisted-toggle";
@@ -33,10 +26,13 @@ import {
 import type { TrainingStatusResponse } from "@/features/training/types/runtime";
 import { getHfToken, hfApiToken } from "@/features/hub/stores/hf-token-store";
 import { toast } from "@/lib/toast";
+import { cn } from "@/lib/utils";
 
 import { AudioCharts } from "./audio-charts";
+import { AudioBaseCombobox, AudioDatasetCombobox } from "./hub-comboboxes";
 
-/** Curated audio-trainable bases: complete trainer branches plus model_defaults yamls. */
+/** Curated audio-trainable bases: complete trainer branches plus model_defaults
+ *  yamls. Pinned above the live Hub rows rather than being the whole list. */
 const TRAIN_BASES = [
   { repoId: "unsloth/orpheus-3b-0.1-ft", label: "Orpheus TTS 3B" },
   { repoId: "unsloth/csm-1b", label: "Sesame CSM 1B" },
@@ -47,8 +43,47 @@ const TRAIN_BASES = [
   { repoId: "unsloth/whisper-large-v3", label: "Whisper Large v3 (STT)" },
 ] as const;
 
-// The dataset most of the unsloth TTS notebooks train on; a working first run.
-const EXAMPLE_DATASET = "MrDragonFox/Elise";
+const TRAIN_BASE_IDS = TRAIN_BASES.map((b) => b.repoId);
+const TRAIN_BASE_LABELS = new Map<string, string>(
+  TRAIN_BASES.map((b) => [b.repoId, b.label]),
+);
+
+// audio + text columns, so it maps with no overrides.
+const DEFAULT_DATASET = "Etherll/kaira";
+// Pinned under it: the dataset the unsloth TTS notebooks use.
+const CURATED_DATASETS = [DEFAULT_DATASET, "MrDragonFox/Elise"] as const;
+
+// Page inset plus the trigger's own pl-4, so labels start on the same line as
+// "Select audio model" in the header.
+const HEADER_ALIGNED_PL =
+  "pl-[calc(var(--studio-media-header-left-inset,1.5rem)+1rem)]";
+
+/** Section header, so the run reads as model -> data -> parameters. */
+function Section({
+  title,
+  hint,
+  children,
+}: {
+  title: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="grid gap-3">
+      <div className="grid gap-0.5">
+        <h3 className="text-ui-11p5 font-medium uppercase tracking-wide text-muted-foreground">
+          {title}
+        </h3>
+        {hint ? (
+          <p className="text-ui-11p5 leading-snug text-muted-foreground/80">
+            {hint}
+          </p>
+        ) : null}
+      </div>
+      {children}
+    </section>
+  );
+}
 
 const POLL_MS = 2000;
 
@@ -72,7 +107,7 @@ export function AudioTrainPanel({
   onDeploy?: (outputDir: string) => void;
 }) {
   const [base, setBase] = useState<string>(TRAIN_BASES[0].repoId);
-  const [dataset, setDataset] = useState(EXAMPLE_DATASET);
+  const [dataset, setDataset] = useState<string>(DEFAULT_DATASET);
   const [epochs, setEpochs] = useState(3);
   const [learningRate, setLearningRate] = useState("2e-4");
   const [loraRank, setLoraRank] = useState(16);
@@ -242,44 +277,51 @@ export function AudioTrainPanel({
   );
 
   return (
-    <div className="hover-scrollbar flex min-h-0 flex-1 flex-col gap-6 overflow-y-auto px-8 pb-10 pt-9">
-      <div className="grid max-w-2xl gap-4">
-        <div className="grid gap-1.5">
-          <span className="text-ui-13 font-medium text-foreground">Base model</span>
-          <Select value={base} onValueChange={setBase} disabled={running}>
-            <SelectTrigger className="w-full">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {TRAIN_BASES.map((option) => (
-                <SelectItem key={option.repoId} value={option.repoId}>
-                  {option.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
-            TTS bases fine-tune a voice from audio + transcript pairs; the
-            Whisper base fine-tunes transcription instead.
-          </p>
-        </div>
+    <div
+      className={cn(
+        "hover-scrollbar flex min-h-0 flex-1 flex-col gap-8 overflow-y-auto pb-10 pr-8 pt-9",
+        HEADER_ALIGNED_PL,
+      )}
+    >
+      <div className="grid max-w-2xl gap-8">
+        <Section
+          title="Model"
+          hint="TTS bases fine-tune a voice from audio + transcript pairs; a Whisper base fine-tunes transcription instead."
+        >
+          <div className="grid gap-1.5">
+            <span className="text-ui-13 font-medium text-foreground">
+              Base model
+            </span>
+            <AudioBaseCombobox
+              value={base}
+              onValueChange={setBase}
+              curated={TRAIN_BASE_IDS}
+              labelFor={(id) => TRAIN_BASE_LABELS.get(id)}
+              disabled={running}
+              accessToken={hfApiToken(getHfToken()) ?? undefined}
+            />
+          </div>
+        </Section>
 
-        <div className="grid gap-1.5">
-          <span className="text-ui-13 font-medium text-foreground">
-            Hugging Face dataset
-          </span>
-          <Input
-            value={dataset}
-            onChange={(event) => setDataset(event.target.value)}
-            placeholder="owner/dataset"
-            disabled={running}
-          />
-          <p className="text-ui-11p5 leading-snug text-muted-foreground">
-            Needs an audio column plus a transcript column (audio/text by
-            default; override below). {EXAMPLE_DATASET} is a working example.
-          </p>
-        </div>
+        <Section
+          title="Data"
+          hint={`Needs an audio column plus a transcript column (audio/text by default; override in Advanced). ${DEFAULT_DATASET} maps with no overrides.`}
+        >
+          <div className="grid gap-1.5">
+            <span className="text-ui-13 font-medium text-foreground">
+              Hugging Face dataset
+            </span>
+            <AudioDatasetCombobox
+              value={dataset}
+              onValueChange={setDataset}
+              curated={CURATED_DATASETS}
+              disabled={running}
+              accessToken={hfApiToken(getHfToken()) ?? undefined}
+            />
+          </div>
+        </Section>
 
+        <Section title="Parameters">
         <ParamSlider
           label="Epochs"
           value={epochs}
@@ -309,6 +351,7 @@ export function AudioTrainPanel({
             className="w-32"
           />
         </div>
+        </Section>
 
         <AdvancedDisclosure open={advancedOpen} onOpenChange={setAdvancedOpen}>
           <ParamSlider
@@ -372,22 +415,40 @@ export function AudioTrainPanel({
           </div>
         </AdvancedDisclosure>
 
-        <div className="flex items-center gap-2">
-          {running ? (
-            <Button variant="destructive" onClick={() => void handleStop()}>
-              Stop and save
-            </Button>
-          ) : (
-            <Button onClick={() => void handleStart()} disabled={starting}>
-              {starting ? <Spinner className="mr-2 size-4" /> : null}
-              Start training
-            </Button>
-          )}
-          {completed && outputDir && onDeploy ? (
-            <Button variant="secondary" onClick={() => onDeploy(outputDir)}>
-              Use in Create
-            </Button>
-          ) : null}
+        <div className="grid gap-3 border-t border-border/60 pt-5">
+          {/* The whole run in one line, so Start needs no scroll back up. */}
+          <p className="text-ui-11p5 leading-snug text-muted-foreground">
+            LoRA r{loraRank} on{" "}
+            <span className="text-foreground">
+              {TRAIN_BASE_LABELS.get(base) ?? (base || "no base")}
+            </span>{" "}
+            over{" "}
+            <span className="text-foreground">{dataset || "no dataset"}</span> —{" "}
+            {maxSteps > 0
+              ? `${maxSteps} steps`
+              : `${epochs} epoch${epochs === 1 ? "" : "s"}`}
+            , lr {learningRate}, batch {batchSize}×{gradAccum}
+          </p>
+          <div className="flex items-center gap-2">
+            {running ? (
+              <Button variant="destructive" onClick={() => void handleStop()}>
+                Stop and save
+              </Button>
+            ) : (
+              <Button
+                onClick={() => void handleStart()}
+                disabled={starting || !dataset.trim() || !base.trim()}
+              >
+                {starting ? <Spinner className="mr-2 size-4" /> : null}
+                Start training
+              </Button>
+            )}
+            {completed && outputDir && onDeploy ? (
+              <Button variant="secondary" onClick={() => onDeploy(outputDir)}>
+                Use in Create
+              </Button>
+            ) : null}
+          </div>
         </div>
 
         {status?.message ? (

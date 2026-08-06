@@ -1867,6 +1867,7 @@ export function HubModelPicker({
   onEject,
   task,
   catalog,
+  includeCommunity = false,
 }: {
   models: ModelOption[];
   /** Fine-tuned models, shown as a section in the On Device view. */
@@ -1890,6 +1891,10 @@ export function HubModelPicker({
   task?: HfTaskFilter;
   /** Curated catalog for a task-scoped picker: one canonical row per model, with its published formats as the second level. */
   catalog?: CatalogGroup[];
+  /** Also surface community (non-unsloth) models carrying `task`'s pipeline tags,
+   *  below the unsloth rows and in search. Opt-in: the runtime has to load an
+   *  arbitrary publisher's checkpoint, true of audio, not of the curated pages. */
+  includeCommunity?: boolean;
 }) {
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
@@ -1945,6 +1950,30 @@ export function HubModelPicker({
     keepUnsupportedTags: true,
     accessToken,
     enabled: online && section === "recommended",
+  });
+
+  // Two hooks for the same reason the unsloth pair exists: browse must not refetch
+  // per keystroke, search must not be pinned to the empty query. pinUnslothFirst is
+  // off since the unsloth rows already sit above these.
+  const communityEnabled =
+    includeCommunity && Boolean(task) && online && section === "recommended";
+  const communityQuerySearch = useHubModelSearch(debouncedQuery, {
+    task,
+    ownerScope: "all",
+    sortBy: recommendedSortBy,
+    sortDirection: "desc",
+    pinUnslothFirst: false,
+    accessToken,
+    enabled: communityEnabled && debouncedQuery.trim().length > 0,
+  });
+  const communityBrowse = useHubModelSearch("", {
+    task,
+    ownerScope: "all",
+    sortBy: recommendedSortBy,
+    sortDirection: "desc",
+    pinUnslothFirst: false,
+    accessToken,
+    enabled: communityEnabled && debouncedQuery.trim().length === 0,
   });
 
   // Lowercased repo ids confirmed GGUF by the store or HF search. Absence means
@@ -2390,6 +2419,19 @@ export function HubModelPicker({
       }));
   }, [catalog, models, formatFilter, isKnownGgufRepo, isMac, task]);
 
+  const isUnslothOwned = useCallback(
+    (id: string) => id.toLowerCase().startsWith("unsloth/"),
+    [],
+  );
+
+  /** Pipeline tag is the only signal the Hub gives us, since the real test is the
+   *  checkpoint's tokenizer and that needs the download first. Exports in another
+   *  serialization are never loadable, so drop those by name (as FP8 does above). */
+  const isLoadableCommunityRepo = useCallback(
+    (id: string) => !/(^|[-_/.])(onnx|openvino|tflite|coreml)([-_./]|$)/i.test(id),
+    [],
+  );
+
   // Recommended suggests GGUF anywhere; on Mac also MLX and safetensors. The
   // "recommended" sort also drops models too big for the device. Already-
   // downloaded models stay visible (badged), never hidden.
@@ -2415,13 +2457,24 @@ export function HubModelPicker({
       // Downloaded models show regardless of fit.
       downloadedSet.has(r.id.toLowerCase()) ||
       hfModelFitsDevice(r, r.isGguf ? rowInferenceGpu : rowGpu);
-    return orderRecommendedRows({
+    const unslothRows = orderRecommendedRows({
       seeds: catalogSeedRows,
       results: recommendedSearch.results,
       keep,
       deviceFiltered,
       fits,
     });
+    if (!communityEnabled) return unslothRows;
+    // Appended below everything unsloth publishes, so scrolling past the unsloth
+    // uploads continues into the wider Hub. Same keep/fits gates.
+    const above = new Set(unslothRows.map((r) => r.id.toLowerCase()));
+    const communityRows = communityBrowse.results
+      .filter((r) => !r.id.toLowerCase().startsWith("unsloth/"))
+      .filter((r) => isLoadableCommunityRepo(r.id))
+      .filter((r) => !above.has(r.id.toLowerCase()))
+      .filter(keep)
+      .filter((r) => !deviceFiltered || fits(r));
+    return [...unslothRows, ...communityRows];
   }, [
     recommendedSearch.results,
     catalogSeedRows,
@@ -2435,6 +2488,9 @@ export function HubModelPicker({
     isChatSupported,
     task,
     catalog,
+    communityEnabled,
+    communityBrowse.results,
+    isLoadableCommunityRepo,
   ]);
 
   // Per-row meta + VRAM badge from the recommended listing's own metadata.
@@ -2443,7 +2499,9 @@ export function HubModelPicker({
       string,
       { meta: string | null; status: VramFitStatus | null; est: number }
     >();
-    for (const r of recommendedSearch.results) {
+    // Community rows come from their own listing; without them folded in here
+    // they render with no size or VRAM chip.
+    for (const r of [...recommendedSearch.results, ...communityBrowse.results]) {
       const isG = isKnownGgufRepo(r.id);
       // GGUF param count comes from the repo name or the GGUF metadata, so even
       // repos with no "<n>B" token (Kimi, MiniMax) show a param chip.
@@ -2501,13 +2559,24 @@ export function HubModelPicker({
       map.set(r.id, { meta, status, est });
     }
     return map;
-  }, [recommendedSearch.results, isKnownGgufRepo, gpu, inferenceGpu]);
+  }, [
+    recommendedSearch.results,
+    communityBrowse.results,
+    isKnownGgufRepo,
+    gpu,
+    inferenceGpu,
+  ]);
 
   // Tag-accurate capabilities keyed by repo id, pooled from both HF listings.
   // Rows look it up by id and fall back to name detection when absent.
   const capsById = useMemo(() => {
     const map = new Map<string, ModelCapabilities>();
-    for (const r of [...results, ...recommendedSearch.results]) {
+    for (const r of [
+      ...results,
+      ...recommendedSearch.results,
+      ...communityQuerySearch.results,
+      ...communityBrowse.results,
+    ]) {
       if (map.has(r.id)) continue;
       map.set(
         r.id,
@@ -2519,7 +2588,12 @@ export function HubModelPicker({
       );
     }
     return map;
-  }, [results, recommendedSearch.results]);
+  }, [
+    results,
+    recommendedSearch.results,
+    communityQuerySearch.results,
+    communityBrowse.results,
+  ]);
 
   // Ordered by the On Device dropdown (recent/download date/size/name). The gate keeps diffusion GGUFs in the Images/Video picker and out of chat.
   const sortedCachedGguf = useMemo(
@@ -2946,11 +3020,11 @@ export function HubModelPicker({
     [filteredRecommendedIds],
   );
 
-  const hfIds = useMemo(() => {
-    // Only the Unsloth tab searches the HF listing, and only Unsloth models.
-    if (!showHfSection || section !== "recommended") return [];
-    return (
-      results
+  // One pipeline for both listings, so community rows clear the same gates;
+  // `owned` is the only difference.
+  const searchIdsFrom = useCallback(
+    (rows: readonly HfModelResult[], owned: (id: string) => boolean) =>
+      rows
         .filter(isChatSupported)
         .filter(
           (r) =>
@@ -2960,7 +3034,7 @@ export function HubModelPicker({
         )
         .map((result) => result.id)
         .filter((id) => !isHiddenModelId(id))
-        .filter((id) => id.toLowerCase().startsWith("unsloth/"))
+        .filter(owned)
         .filter((id) => !recommendedSet.has(id))
         // Chat-only keeps runnable formats: GGUF anywhere, plus MLX/safetensors
         // on Mac (matches the empty Recommended view so search stays consistent).
@@ -2971,22 +3045,51 @@ export function HubModelPicker({
         .filter((id) => !/-FP8[-.]|FP8-Dynamic/i.test(id))
         .filter((id) =>
           matchesFormatFilter(id, isKnownGgufRepo(id), formatFilter),
-        )
-    );
+        ),
+    [
+      recommendedSet,
+      chatOnly,
+      isKnownGgufRepo,
+      isChatSupported,
+      formatFilter,
+      fitOnDeviceOnly,
+      downloadedSet,
+      searchRowFits,
+      isMac,
+    ],
+  );
+
+  const hfIds = useMemo(() => {
+    // Only the Unsloth tab searches the HF listing.
+    if (!showHfSection || section !== "recommended") return [];
+    return searchIdsFrom(results, isUnslothOwned);
+  }, [results, showHfSection, section, searchIdsFrom, isUnslothOwned]);
+
+  // Community search hits, listed after the unsloth ones. Deduped against them so
+  // a repo the unsloth listing already returned is not shown twice.
+  const communitySearchIds = useMemo(() => {
+    if (!communityEnabled || !showHfSection) return [];
+    const above = new Set(hfIds.map((id) => id.toLowerCase()));
+    return searchIdsFrom(
+      communityQuerySearch.results,
+      (id) => !isUnslothOwned(id) && isLoadableCommunityRepo(id),
+    ).filter((id) => !above.has(id.toLowerCase()));
   }, [
-    recommendedSet,
-    results,
+    communityEnabled,
     showHfSection,
-    section,
-    chatOnly,
-    isKnownGgufRepo,
-    isChatSupported,
-    formatFilter,
-    fitOnDeviceOnly,
-    downloadedSet,
-    searchRowFits,
-    isMac,
+    communityQuerySearch.results,
+    hfIds,
+    searchIdsFrom,
+    isUnslothOwned,
+    isLoadableCommunityRepo,
   ]);
+
+  /** Unsloth first, then community: one list so rows, keyboard order and the
+   *  empty state cannot drift apart. */
+  const searchRowIds = useMemo(
+    () => [...hfIds, ...communitySearchIds],
+    [hfIds, communitySearchIds],
+  );
 
   const hubOptionKeys = useMemo(() => {
     const keys: string[] = [];
@@ -3033,7 +3136,7 @@ export function HubModelPicker({
           makeModelOptionKey("search-recommended", id),
         ),
       );
-      keys.push(...hfIds.map((id) => makeModelOptionKey("search-hf", id)));
+      keys.push(...searchRowIds.map((id) => makeModelOptionKey("search-hf", id)));
       return keys;
     }
 
@@ -3104,7 +3207,7 @@ export function HubModelPicker({
     fineTunedRows,
     fineTunedCollapsed,
     filteredRecommendedIds,
-    hfIds,
+    searchRowIds,
     sortedLmStudio,
     lmStudioCollapsed,
     recommendedRows,
@@ -4757,7 +4860,9 @@ export function HubModelPicker({
                               hubUrl={hubRepoUrl(id)}
                               alignMeta="hub"
                               showSize={hubRowsShowSize}
-                              hideOwner={true}
+                              // A community row without its owner reads as an
+                              // unsloth upload, and two publishers would collide.
+                              hideOwner={isUnslothOwned(id)}
                               downloaded={downloadedSet.has(id.toLowerCase())}
                               capabilities={capsById.get(id)}
                               meta={
@@ -4947,14 +5052,16 @@ export function HubModelPicker({
 
                 {showHfSection && section === "recommended" ? (
                   <>
-                    {hfIds.length === 0 && !isLoading ? (
+                    {searchRowIds.length === 0 && !isLoading ? (
                       filteredRecommendedIds.length === 0 ? (
                         <div className="px-2.5 py-2 text-xs text-muted-foreground">
-                          No matching Unsloth models.
+                          {communityEnabled
+                            ? "No matching models."
+                            : "No matching Unsloth models."}
                         </div>
                       ) : null
                     ) : (
-                      hfIds.map((id) => {
+                      searchRowIds.map((id) => {
                         const vram = vramMap.get(id);
                         const isSearchGguf = isKnownGgufRepo(id);
                         const optionKey = makeModelOptionKey("search-hf", id);
