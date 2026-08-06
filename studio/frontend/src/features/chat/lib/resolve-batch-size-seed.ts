@@ -37,8 +37,7 @@ export function resolveBatchSizeSeed(options: {
     return {};
   }
   // the baseline is a fact about the running server; the control follows it only while clean
-  const controlIsClean =
-    previous.loaded !== null && previous.value === previous.loaded;
+  const controlIsClean = previous.value === previous.loaded;
   return {
     loaded: effective,
     ...(controlIsClean ? { value: effective } : {}),

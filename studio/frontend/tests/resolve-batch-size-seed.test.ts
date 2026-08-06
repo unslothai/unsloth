@@ -39,8 +39,9 @@ test("an older backend omitting the field says nothing", () => {
   assert.deepEqual(seed(undefined, 2048, 2048), {});
 });
 
-test("first hydration seeds the baseline but never pins the control", () => {
-  assert.deepEqual(seed(4096, null, null), { loaded: 4096 });
+test("a blank control follows an external move off the defaults", () => {
+  // the echo is the requested size, so leaving it blank would revert it on Apply
+  assert.deepEqual(seed(4096, null, null), { loaded: 4096, value: 4096 });
 });
 
 test("a clean control follows a same-model move", () => {
@@ -49,6 +50,8 @@ test("a clean control follows a same-model move", () => {
 
 test("a pending edit keeps the control while the baseline advances", () => {
   assert.deepEqual(seed(1024, 8192, 4096), { loaded: 1024 });
+  // typed against a server still at the defaults
+  assert.deepEqual(seed(1024, 8192, null), { loaded: 1024 });
 });
 
 test("a null echo clears a clean control along with the baseline", () => {

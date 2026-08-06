@@ -1642,10 +1642,8 @@ def test_hydration_clears_the_batch_baselines_for_a_batchless_model():
     # a non-gguf clears; an absent field on a gguf is an older backend saying nothing
     assert "const effective = isGguf ? incoming : null;" in seed
     assert "if (effective === undefined) { return {}; }" in seed
-    assert (
-        "const controlIsClean = previous.loaded !== null && previous.value === previous.loaded;"
-        in seed
-    )
+    # a blank control is clean too, or an external load to an explicit size reads as dirty
+    assert "const controlIsClean = previous.value === previous.loaded;" in seed
     assert "...(controlIsClean ? { value: effective } : {})," in seed
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
     status = " ".join(src.split())
