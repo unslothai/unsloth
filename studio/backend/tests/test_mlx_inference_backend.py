@@ -2012,16 +2012,29 @@ def test_chat_template_override_reports_each_way_it_cannot_apply():
     )
 
     # ...but only on the object that RENDERS. Real models (aya-vision among
-    # them) keep a named set on a nested tokenizer nothing reads.
+    # them) keep a named set on a nested tokenizer nothing reads. A processor
+    # renders only if it can: without apply_chat_template chat_render_target
+    # hands the render to the nested tokenizer, and its set does veto.
     nested_set = SimpleNamespace(chat_template = {"default": "a"})
-    renders_string = SimpleNamespace(chat_template = "native", tokenizer = nested_set)
+    renders_string = SimpleNamespace(
+        chat_template = "native", apply_chat_template = lambda *a, **k: "", tokenizer = nested_set
+    )
     targets, status = mlx_inference._template_override_status("custom", nested_set, renders_string)
     assert status["reason"] is None
     assert renders_string in targets and nested_set not in targets
 
+    cannot_render = SimpleNamespace(chat_template = "native", tokenizer = nested_set)
+    assert mlx_inference._template_override_status("custom", nested_set, cannot_render)[1][
+        "reason"
+    ] == mlx_inference.MLX_TEMPLATE_NAMED_SET
+
     # The same for a callable held by an object that does not render.
     nested_callable = SimpleNamespace(chat_template = "t", _chat_template = lambda: "x")
-    renders_own = SimpleNamespace(chat_template = "native", tokenizer = nested_callable)
+    renders_own = SimpleNamespace(
+        chat_template = "native",
+        apply_chat_template = lambda *a, **k: "",
+        tokenizer = nested_callable,
+    )
     assert (
         mlx_inference._template_override_status("custom", nested_callable, renders_own)[1]["reason"]
         is None
@@ -2322,3 +2335,73 @@ def test_the_model_default_comes_from_the_object_that_renders():
 
     # Text model: no processor at all.
     assert mlx_inference._native_template_source(nested, None) is nested
+
+
+def test_template_targets_follow_the_object_that_can_actually_render():
+    """A processor holding a template it cannot render with is not the target.
+
+    chat_render_target falls back to the nested tokenizer there, so judging
+    eligibility against the processor would install onto an object nothing
+    reads and then pass a probe rendered from the untouched native template.
+    """
+    from core.inference import mlx_inference
+
+    nested = SimpleNamespace(chat_template = "{{ nested }}")
+    # chat_template but no apply_chat_template: it cannot render.
+    unrenderable = SimpleNamespace(chat_template = "{{ processor }}", tokenizer = nested)
+    assert mlx_inference._template_render_targets(nested, unrenderable) == [nested]
+
+    renderable = SimpleNamespace(
+        chat_template = "{{ processor }}",
+        apply_chat_template = lambda *a, **k: "",
+        tokenizer = nested,
+    )
+    assert mlx_inference._template_render_targets(nested, renderable) == [renderable]
+    assert mlx_inference._template_render_targets(nested, None) == [nested]
+
+    # A named set on the unusable target still reports the nested string.
+    named = SimpleNamespace(
+        chat_template = {"default": "{{ a }}"},
+        apply_chat_template = lambda *a, **k: "",
+        tokenizer = nested,
+    )
+    assert mlx_inference._native_template_source(nested, named) is nested
+
+
+def test_a_quantized_entry_is_retainable_when_only_nbytes_is_broken(monkeypatch):
+    """mlx-lm 0.31.2's QuantizedKVCache.nbytes raises; the fallback measures it.
+
+    Reading .nbytes directly reported cross-turn prompt-cache reuse as
+    disabled while insertion, which uses the fallback, retained it fine.
+    """
+    from core.inference import mlx_inference
+
+    class _Broken:
+        state = ()
+        keys = SimpleNamespace(nbytes = 64)
+        values = SimpleNamespace(nbytes = 64)
+
+        @property
+        def nbytes(self):
+            raise NameError("tree_reduce")
+
+    assert mlx_inference._kv_entry_nbytes(_Broken()) == 128
+
+    entry = SimpleNamespace(
+        to_quantized = lambda group_size, bits: _Broken(),
+        max_size = None,
+        window_size = None,
+        state = (),
+    )
+    _install_fake_mlx(monkeypatch)
+    mx = sys.modules["mlx.core"]
+    mx.random = SimpleNamespace(state = [0])
+    mx.array = lambda v: v
+    mx.eval = lambda *a: None
+    mx.clear_cache = lambda: None
+
+    converted, skipped, failure, retainable = mlx_inference._kv_quant_probe(
+        lambda *a, **k: None, [entry], 8
+    )
+    assert (converted, skipped, failure) == (1, 0, None)
+    assert retainable is True

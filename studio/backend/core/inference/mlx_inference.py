@@ -438,11 +438,11 @@ def _kv_quant_probe(language_model, entries, bits):
                 converted += 1
             except Exception as exc:
                 return converted, skipped, f"MLX cannot quantize it ({type(exc).__name__})", True
-            if retainable:
-                try:
-                    int(quantized.nbytes)
-                except Exception:
-                    retainable = False
+            # Through the same helper insertion uses: reading .nbytes directly
+            # would call a converted entry unmeasurable on an mlx-lm whose
+            # QuantizedKVCache.nbytes raises, and report a caveat that is false.
+            if retainable and _kv_entry_nbytes(quantized) is None:
+                retainable = False
         return converted, skipped, None, retainable
     finally:
         mx.random.state[:] = rng_state
@@ -547,13 +547,14 @@ def _template_install_targets(tokenizer, processor):
 def _template_render_targets(tokenizer, processor):
     """Objects a render selector would actually read the template from.
 
-    Both selectors -- chat_render_target for vision, mlx-vlm's
-    get_chat_template for audio -- take the processor when it carries a
-    template and fall back to the nested tokenizer otherwise.
+    Deferred to chat_render_target rather than restated (#7066): it also
+    requires the processor to be able to render, and mlx-vlm's
+    get_chat_template applies the same rule for audio.
     """
-    if processor is not None and getattr(processor, "chat_template", None) is not None:
-        return [processor]
-    return [t for t in (tokenizer,) if t is not None]
+    from core.inference.chat_template_helpers import chat_render_target
+
+    target = chat_render_target(processor, tokenizer)
+    return [target] if target is not None else []
 
 
 def _usable_template(value):
@@ -569,12 +570,10 @@ def _native_template_source(tokenizer, processor):
     string, keeping the nested template reported for a processor carrying a
     named set rather than reporting none at all.
     """
-    if processor is None:
-        return tokenizer
-    from core.inference.chat_template_helpers import chat_render_target
-
-    target = chat_render_target(processor, tokenizer)
-    return target if _usable_template(getattr(target, "chat_template", None)) else tokenizer
+    for target in _template_render_targets(tokenizer, processor):
+        if _usable_template(getattr(target, "chat_template", None)):
+            return target
+    return tokenizer
 
 
 def _template_override_status(override, tokenizer, processor):
@@ -643,14 +642,12 @@ def _image_marker_survives(tokenizer, processor):
     request would. A template that ignores image parts renders both probes the
     same; the text-only probe alone cannot tell.
     """
-    from core.inference.chat_template_helpers import (
-        apply_chat_template_for_generation,
-        chat_render_target,
-    )
+    from core.inference.chat_template_helpers import apply_chat_template_for_generation
 
-    target = chat_render_target(processor) if processor is not None else tokenizer
-    if target is None:
+    targets = _template_render_targets(tokenizer, processor)
+    if not targets:
         return True
+    target = targets[0]
     try:
         marked = apply_chat_template_for_generation(target, _IMAGE_PROBE_MESSAGES)
         return bool(marked) and marked != apply_chat_template_for_generation(
