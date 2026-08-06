@@ -206,7 +206,6 @@ def enable_padding_free_metadata(model, trainer):
                     if ids is None:
                         continue
                     lengths = [len(ids)]
-                    example["seq_lengths"] = lengths
                 seq_lengths.extend(lengths)
 
         batch = original_torch_call(examples)

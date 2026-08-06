@@ -26,6 +26,7 @@ from unsloth.utils.packing import (
     patch_hybrid_linear_attention_varlen,
 )
 
+import copy
 import inspect
 import logging
 from contextlib import ExitStack
@@ -154,6 +155,41 @@ def test_mask_packed_sequence_boundaries_across_multiple_rows():
     for idx in (2, 4, 8, 9):
         assert flat[idx].item() == -100
     assert torch.any(flat != -100)
+
+
+def test_enable_padding_free_metadata_does_not_mutate_examples():
+    # The wrapper derives seq_lengths from input_ids when the dataset does not
+    # carry them. It used to cache that back onto the example, so a collator
+    # wrapper wrote a new column into the caller's rows; the sibling
+    # enable_sample_packing collects the same lengths without writing back.
+    collator = _PaddingFreeCollator()
+    trainer = SimpleNamespace(
+        data_collator = collator,
+        args = SimpleNamespace(remove_unused_columns = True),
+    )
+    enable_padding_free_metadata(_DummyModel(), trainer)
+
+    examples = [
+        {"input_ids": [1, 2, 3], "labels": [1, 2, 3]},
+        {"input_ids": [4, 5], "labels": [4, 5]},
+    ]
+    before = copy.deepcopy(examples)
+
+    batch = trainer.data_collator.torch_call(examples)
+
+    assert examples == before, "collator wrapper mutated the caller's examples"
+    assert torch.equal(
+        batch["packed_seq_lengths"], torch.tensor([3, 2], dtype = torch.int32)
+    )
+
+    # explicit seq_lengths are still honoured, and still not written back
+    explicit = [{"input_ids": [1, 2, 3], "seq_lengths": [2, 1]}]
+    explicit_before = copy.deepcopy(explicit)
+    batch = trainer.data_collator.torch_call(explicit)
+    assert explicit == explicit_before
+    assert torch.equal(
+        batch["packed_seq_lengths"], torch.tensor([2, 1], dtype = torch.int32)
+    )
 
 
 def test_configure_sample_packing():
