@@ -739,29 +739,39 @@ def _hub_file_cached(
     filename: str,
     revision: Optional[str] = None,
 ) -> bool:
-    """Whether ``filename`` of ``repo_id`` is cached at ``revision`` under ANY root Studio reads.
+    """Whether the loader would resolve ``filename`` of ``repo_id`` at ``revision`` with no download.
 
-    Both roots: the loader also resolves files left in huggingface_hub's import-time constant by
-    ``reuse_other_cache_root``, so after a cache-folder change the live root alone says "missing"
-    for bytes that are on disk.
+    Answers what the LOADER will do, not merely whether the bytes exist somewhere. The load fetches
+    through ``hf_hub_download_with_xet_fallback(..., reuse_other_cache_root = True)``, which asks
+    the live root FIRST and unpinned: any hit there wins and the other root is never consulted. So
+    bytes sitting at ``revision`` in the import-time root do not save a download when the live root
+    holds a stale ``refs/main`` for the same file. Both conditions are therefore required:
 
-    ``revision`` must be the sha the caller means to load. Without it the probe follows the local
-    refs/main, which is whatever was current when the repo was last pulled, so a republished file
-    reads as cached. A caller with no sha to pin gets False: this probe only ever licenses skipping
-    work, so the unknown case must be the one that does the work.
+      * the live root has a snapshot at ``revision``, and
+      * its ``refs/main`` already points there, since the load resolves unpinned.
 
-    Never raises; an unreadable cache reports not-cached for the same reason."""
+    Then the load's own lookup lands on the same blob and moves nothing. Either half alone licenses
+    skipping a job the loader will actually run, which is a multi-GB pull outside the download
+    manager's disk preflight and progress.
+
+    ``revision`` must be the sha the caller means to load; without one the answer is False. This
+    probe only ever licenses skipping work, so every unknown resolves to doing the work. Never
+    raises, for the same reason."""
     if not revision:
         return False
     try:
         from huggingface_hub import try_to_load_from_cache
-        for root in (hub_cache_dir(), None):
-            hit = try_to_load_from_cache(repo_id, filename, cache_dir = root, revision = revision)
-            if isinstance(hit, str):
-                return True
+
+        live = hub_cache_dir()
+        pinned = try_to_load_from_cache(repo_id, filename, cache_dir = live, revision = revision)
+        if not isinstance(pinned, str):
+            return False
+        # Unpinned, exactly as the load asks. A different path (or a miss) means refs/main points
+        # elsewhere and the load will revalidate and pull.
+        current = try_to_load_from_cache(repo_id, filename, cache_dir = live)
+        return isinstance(current, str) and Path(current) == Path(pinned)
     except Exception:  # noqa: BLE001 -- a cache we cannot read is not evidence of a hit
         return False
-    return False
 
 
 def _uncached_prequant_repo(

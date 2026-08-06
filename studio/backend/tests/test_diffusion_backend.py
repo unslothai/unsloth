@@ -5464,27 +5464,51 @@ def test_download_plan_omits_a_gguf_that_is_already_cached(monkeypatch):
     assert plan["total_bytes"] < 7 * GB
 
 
-def test_the_cached_gguf_check_reads_both_hub_cache_roots(monkeypatch):
-    # reuse_other_cache_root leaves files under the import-time root, so after a cache-folder
-    # change probing the live root alone re-announces a download for bytes already on disk.
+def test_the_cached_gguf_check_follows_the_loaders_root_selection(monkeypatch):
+    # hf_hub_download_with_xet_fallback(reuse_other_cache_root=True) asks the LIVE root first and
+    # unpinned, and any hit there wins. So a copy at the right sha in the import-time root does not
+    # save a download when the live root holds a stale refs/main: the loader takes the stale one,
+    # revalidates and pulls multi-GB outside the manager. Only a live-root snapshot whose refs/main
+    # already points at the pinned sha means the load moves nothing.
     from core.inference import diffusion as diff
 
-    seen = []
+    live = "/live-root"
+    monkeypatch.setattr("core.inference.diffusion.hub_cache_dir", lambda: live)
 
-    def _probe(
-        repo_id,
-        filename,
-        cache_dir = None,
-        revision = None,
-    ):
-        seen.append((cache_dir, revision))
-        # Only the import-time root (cache_dir None) holds it.
-        return "/blobs/abc" if cache_dir is None else None
+    def _probe(cache_map):
+        def probe(
+            repo_id,
+            filename,
+            cache_dir = None,
+            revision = None,
+            repo_type = None,
+        ):
+            return cache_map.get((cache_dir, revision))
 
-    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", _probe)
-    assert diff._hub_file_cached("unsloth/X-GGUF", "x-Q4_K_M.gguf", revision = "abc123") is True
-    assert [r for _root, r in seen] == ["abc123", "abc123"]
-    assert None in [root for root, _r in seen] and len(seen) == 2
+        return probe
+
+    # 1. Live root pinned AND unpinned resolve to the same blob: the load reads it, nothing moves.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        _probe({(live, "sha1"): "/blobs/a", (live, None): "/blobs/a"}),
+    )
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is True
+
+    # 2. Only the OTHER root has the pinned sha. The live root's stale refs/main wins in the
+    #    loader, so omitting the job would hide the download it is about to do.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        _probe({(None, "sha1"): "/blobs/a", (live, None): "/blobs/stale"}),
+    )
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is False
+
+    # 3. Live root HAS the pinned sha, but refs/main still points at an older snapshot, so the
+    #    load's unpinned lookup lands on the stale blob and re-fetches.
+    monkeypatch.setattr(
+        "huggingface_hub.try_to_load_from_cache",
+        _probe({(live, "sha1"): "/blobs/a", (live, None): "/blobs/stale"}),
+    )
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is False
 
     # Not-cached on error only re-adds an entry that fetches nothing; the other way hides a
     # real download.
@@ -5492,7 +5516,7 @@ def test_the_cached_gguf_check_reads_both_hub_cache_roots(monkeypatch):
         "huggingface_hub.try_to_load_from_cache",
         lambda *a, **k: (_ for _ in ()).throw(OSError("cache unreadable")),
     )
-    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "abc123") is False
+    assert diff._hub_file_cached("unsloth/X-GGUF", "x.gguf", revision = "sha1") is False
 
 
 def test_the_plan_pins_the_cache_probe_to_the_revision_model_info_reported(monkeypatch):
