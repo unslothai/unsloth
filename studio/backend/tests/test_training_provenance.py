@@ -367,6 +367,76 @@ def test_mlx_runtime_4bit_metadata_attests_unpinned_hub_load(tmp_path):
     assert resource_provenance_allows_resume({**config, **updates}) is True
 
 
+class _MappingModel(dict):
+    """Stand-in for the shape ``mlx.nn.Module`` has: an object that is also a ``dict``.
+
+    MLX models keep their parameters in the mapping and everything unsloth_zoo records
+    about the load (``_hf_repo``, ``_unsloth_quantized_source``, ...) as plain attributes,
+    so a mapping-first read answers ``None`` for all of them.
+    """
+
+    def __init__(self, **attrs):
+        super().__init__()
+        for key, value in attrs.items():
+            setattr(self, key, value)
+
+
+def _mlx_runtime_4bit_attrs():
+    return {
+        "_hf_repo": "org/model",
+        "_unsloth_base_commit_hash": "model-commit",
+        "_unsloth_quantized_source": "runtime",
+        "_unsloth_quantization_policy": {"enabled": True, "bits": 4},
+    }
+
+
+def _real_mlx_module(attrs):
+    nn = pytest.importorskip("mlx.nn", reason = "MLX is only installed on Apple Silicon")
+    module = nn.Linear(4, 4)
+    for key, value in attrs.items():
+        setattr(module, key, value)
+    return module
+
+
+@pytest.mark.parametrize(
+    "make_model",
+    [
+        pytest.param(lambda attrs: SimpleNamespace(**attrs), id = "plain-object"),
+        pytest.param(lambda attrs: _MappingModel(**attrs), id = "dict-subclass"),
+        pytest.param(_real_mlx_module, id = "real-mlx-module"),
+    ],
+)
+def test_mlx_runtime_4bit_attests_however_the_model_stores_metadata(tmp_path, make_model):
+    """A model that is also a mapping must attest exactly like a plain object.
+
+    ``mlx.nn.Module`` subclasses ``dict``. Reading its metadata through the mapping
+    protocol finds nothing, which left every runtime-quantized MLX run unattested and so
+    non-resumable, while the plain-object doubles in the tests above kept passing.
+    """
+    model_snapshot = _model_snapshot(tmp_path, "org/model", "model-commit")
+    dataset = _dataset_snapshot(tmp_path, "org/dataset", "dataset-commit")
+    config = {
+        "model_name": "org/model",
+        "hf_dataset": "org/dataset",
+        "dataset_snapshot_path": str(dataset),
+        "load_in_4bit": True,
+    }
+
+    event = build_worker_provenance_event(
+        config,
+        make_model(_mlx_runtime_4bit_attrs()),
+        model_load_target = "org/model",
+        model_load_in_4bit = True,
+        dataset_loaded_from_exact_snapshot = True,
+    )
+    updates = normalize_worker_provenance_event(event, config)
+
+    assert event["model"]["status"] == "attested"
+    assert event["model"]["load_mode"] == "runtime_4bit"
+    assert updates["model_snapshot_path"] == str(model_snapshot)
+    assert resource_provenance_allows_resume({**config, **updates}) is True
+
+
 @pytest.mark.parametrize(
     ("source", "policy"),
     [
