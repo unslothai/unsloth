@@ -1208,8 +1208,15 @@ def _skip_start_switches(
         switch = _win_switch(token.lower())
         if not _START_SWITCH_RE.fullmatch(switch):
             break
-        # /d C:\dir and friends carry their value in the next token.
-        index += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
+        index += 1
+        if switch in _START_SWITCHES_WITH_VALUE:
+            # /d C:\dir and friends carry their value in the next token -- the
+            # next one start SEES, that is: a redirection in between is the
+            # shell's and gone before start reads its arguments, so counting it
+            # as the value left the directory looking like the program.
+            while index < len(tokens) and index in redirects:
+                index += 1
+            index += 1
     return index
 
 
@@ -1474,21 +1481,15 @@ def _blocked_start_program(token: str) -> "set[str]":
         stem, ext = os.path.splitext(base)
         if ext in {".exe", ".com", ".bat", ".cmd"}:
             base = stem
-        if _CMD_DELAYED_RE.search(base):
-            # A delayed expansion is read when the command RUNS, so the same
-            # line can fill it: `cmd /v:on /c "set X=power&start "" !X!shell"`
-            # assembles powershell out of a fragment that is nothing on its own.
-            # Unknowable here and controllable there, so it is refused. The
-            # `%VAR%` form is read when the line is PARSED, before any set on it
-            # can run, which is why that one is only read both ways.
-            return {target.strip('"').lower()}
-        if not base and len(names) > 1:
-            # The program name is nothing BUT an expansion, so no reading of it
-            # is a name: `start "" %ComSpec% /c powershell` launches cmd with a
-            # command line behind it and comes back with no program at all.
-            # Refused rather than passed, the way an unread payload is. A path
-            # that merely holds one (`"%USERPROFILE%/notes.txt"`) still names
-            # its own file and is unaffected.
+        if _CMD_DELAYED_RE.search(base) or _CMD_VARIABLE_RE.search(base):
+            # An expansion in the NAME leaves it unresolvable here: it can be
+            # the whole of it (`%ComSpec%`), it can contribute the characters
+            # that complete one (`power%ComSpec:~9,1%hell` is powershell), and
+            # a delayed one is filled by the very line it sits on (`set
+            # X=power&start "" !X!shell`). Reading it as empty was a guess, and
+            # the guess was wrong in the direction that launches, so the name
+            # is refused instead. Only the name: a path that merely holds an
+            # expansion (`"%USERPROFILE%/notes.txt"`) still names its own file.
             return {target.strip('"').lower()}
         if base in _blocked_commands():
             blocked.add(base)
@@ -1755,6 +1756,23 @@ def _token_basename_plain(token: str) -> str:
     return stem if ext in {".exe", ".com", ".bat", ".cmd"} else base
 
 
+def _scan_as_cmd(command: str) -> "set[str]":
+    """Screen ``command`` as cmd runs it, whatever shell the outer line used.
+
+    A `for /f` set and a `cmd /c` payload are cmd's own command lines even when
+    Git Bash handed them over, and the two grammars disagree: `;` delimits
+    arguments for cmd and separates commands for bash, so the same body read
+    the wrong way refused `for /f %i in ('start "" https://example.com/curl')`,
+    which opens a URL in the browser.
+    """
+    previous = getattr(_scan_state, "cmd_grammar", False)
+    _scan_state.cmd_grammar = True
+    try:
+        return _find_blocked_commands(command)
+    finally:
+        _scan_state.cmd_grammar = previous
+
+
 def _find_blocked_commands_inner(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -1777,7 +1795,12 @@ def _find_blocked_commands_inner(command: str) -> set[str]:
     # Windows host with bash the non-posix lexer never split on `;`, so the
     # command after a control-flow keyword stayed unread and
     # `if true; then rm -rf x; fi` came back with nothing blocked.
-    lexed_posix = _shell_is_posix()
+    # ...and a body cmd itself runs is read with cmd's grammar whatever the
+    # outer shell is, since that is the shell executing it: the `;` of a `for
+    # /f` set is an argument delimiter to cmd and a command separator to bash,
+    # and reading the outer shell's rules into cmd's child refused a line that
+    # only prints.
+    lexed_posix = _shell_is_posix() and not getattr(_scan_state, "cmd_grammar", False)
     try:
         if not lexed_posix:
             tokens = shlex.split(command, posix = False)
@@ -1874,42 +1897,52 @@ def _find_blocked_commands_inner(command: str) -> set[str]:
         parsing further. The three-word comparison is the one that hid a launch:
         `if 1 EQU 1 start "" powershell` left EQU looking like the command.
         """
-        # A redirection between `if` and its test is performed by cmd and never
-        # reaches the condition, so counting from `>nul` in `if >nul exist f
-        # start "" powershell` put the count a word out and left the launch in
-        # argument position. The walk skips those tokens too, so they are not
-        # counted here either.
-        while index < len(tokens) and _REDIR_PREFIX_RE.match(tokens[index]):
-            head = _CMD_REDIR_HEAD_RE.match(tokens[index])
-            attached = tokens[index][head.end() :] if head else ""
-            index += 1 if attached or (head and "&" in head.group(0)) else 2
+
+        # A redirection anywhere in the condition is performed by cmd and never
+        # reaches it, so `if >nul exist f start "" pwsh` and `if not >nul 1 EQU
+        # 2 start "" pwsh` both put the count out and left the launch in
+        # argument position. The walk steps over those tokens without spending
+        # a skip on them, so they are not counted here either -- at any point,
+        # not only in front.
+        def semantic(after: int) -> int:
+            """The next index at or after ``after`` that cmd reads as a word."""
+            while after < len(tokens) and _REDIR_PREFIX_RE.match(tokens[after]):
+                head = _CMD_REDIR_HEAD_RE.match(tokens[after])
+                attached = tokens[after][head.end() :] if head else ""
+                after += 1 if attached or (head and "&" in head.group(0)) else 2
+            return after
+
+        # The count is of semantic words, which is what the walk's skip spends.
         words = 0
+        cursor = semantic(index)
         for _ in range(2):  # /i and not, in either order
-            if index + words >= len(tokens):
+            if cursor >= len(tokens):
                 return words
             # _token_basename would read /i as the path `i`, so the switch is
             # matched on the raw word, through the Git Bash `//i` spelling.
-            word = tokens[index + words].lower()
+            word = tokens[cursor].lower()
             if _win_switch(word) == "/i" or _cmd_word_base(word) == "not":
                 words += 1
-        if index + words >= len(tokens):
+                cursor = semantic(cursor + 1)
+        if cursor >= len(tokens):
             return words
-        if _cmd_word_base(tokens[index + words]) in _CMD_TWO_WORD_TESTS:
+        if _cmd_word_base(tokens[cursor]) in _CMD_TWO_WORD_TESTS:
             return words + 2
-        if (
-            index + words + 1 < len(tokens)
-            and _cmd_word_base(tokens[index + words + 1]) in _CMD_COMPARE_OPS
-        ):
+        behind = semantic(cursor + 1)
+        if behind < len(tokens) and _cmd_word_base(tokens[behind]) in _CMD_COMPARE_OPS:
             return words + 3
         # The `a==b` form is one word unquoted, but the cmd lexer keeps the
         # quotes and splits `"a"=="a"` into `"a"` and `=="a"`, whose second half
         # then took the command position. Read on until both sides are in.
         text = ""
-        for extra in range(words, len(tokens) - index):
-            text += _cmd_split(tokens[index + extra], "")[0]
+        extra = words
+        while cursor < len(tokens):
+            text += _cmd_split(tokens[cursor], "")[0]
+            extra += 1
             head, sep, tail = text.partition("==")
             if sep and head.strip() and tail.strip():
-                return extra + 1
+                return extra
+            cursor = semantic(cursor + 1)
         return words + 1
 
     def _cmd_command_positions(begin: int) -> "dict[int, str]":
@@ -2267,6 +2300,11 @@ def _find_blocked_commands_inner(command: str) -> set[str]:
             exec_words = [i + 1] if child in (-1, i + 1) else [i + 1, child]
             for word in exec_words:
                 base = _token_basename(tokens[word])
+                # find runs the action itself, so its words are commands the
+                # line runs: without that, the `cmd` of `find . -exec cmd //c
+                # start "" powershell ;` was not a command position and its
+                # payload went unread.
+                run_indexes.add(word)
                 if base == "start" and lexed_posix:
                     # find runs the action itself, so this is a command
                     # position like any other: the `-exec start "" powershell`
@@ -2604,7 +2642,7 @@ def _find_blocked_commands_inner(command: str) -> set[str]:
         # them already applied: `echo x ^& start ""` reaches it as a real
         # separator, and reading it raw left the start an operand of echo.
         body = match.group("body") or match.group("alt") or ""
-        blocked |= _find_blocked_commands(_cmd_split(body, "")[0])
+        blocked |= _scan_as_cmd(_cmd_split(body, "")[0])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

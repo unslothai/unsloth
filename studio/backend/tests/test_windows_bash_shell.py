@@ -1237,7 +1237,7 @@ def test_a_for_expression_belongs_to_a_for_that_runs(monkeypatch, command, block
         ('cmd /c start "" power!X!shell', True),
         # `%VAR%` is read when the line is PARSED, before any set on it runs,
         # so that one stays read-both-ways rather than refused.
-        ('cmd /c start "" report%DATE%.txt', False),
+        ('cmd /c start "" report%DATE%.txt', True),
         ('cmd /c start "" "my!file.txt"', False),
     ],
 )
@@ -1444,7 +1444,7 @@ def test_cmd_switches_do_not_hide_the_shell_in_front_of_them(monkeypatch, comman
         # cmd expands its variables before it resolves the program, and a
         # substring expansion can contribute nothing at all.
         ('cmd /c start "" powershell%PATH:~0,0%', True),
-        ('cmd /c start "" report%DATE%.txt', False),
+        ('cmd /c start "" report%DATE%.txt', True),
         # ...and where the program name is nothing BUT an expansion, no reading
         # of it is a name at all, so the line is refused rather than passed:
         # `start "" %ComSpec% /c powershell` launches cmd with a command line
@@ -1494,8 +1494,8 @@ def test_a_redirection_is_not_the_program_start_launches(monkeypatch, bash, comm
         # fragment is a delayed one, which the same line can fill
         # (test_a_delayed_expansion_in_a_program_name_fails_closed).
         ('cmd /c start "" my!X!file.txt', True),
-        ('cmd /c start "" my%X%file.txt', False),
-        ('cmd /c start "" report%DATE%.txt', False),
+        ('cmd /c start "" my%X%file.txt', True),
+        ('cmd /c start "" report%DATE%.txt', True),
     ],
 )
 def test_an_expansion_does_not_hide_the_command_word(monkeypatch, command, blocked):
@@ -1583,6 +1583,82 @@ def test_an_expansion_only_command_word_fails_closed(monkeypatch, command, block
 def test_a_command_another_command_runs_is_screened(monkeypatch, command, blocked):
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # An expansion in the NAME leaves it unresolvable: it can be the whole
+        # of it, and it can contribute exactly the characters that complete a
+        # blocked one, so reading it as empty was a guess that went the way
+        # that launches.
+        ('cmd /c start "" power%ComSpec:~9,1%hell', True),
+        ('cmd /c start "" %ComSpec%', True),
+        ('cmd /c start "" report%DATE%.txt', True),
+        # Only the name, though: a path that merely holds one still names its
+        # own file, and a name with no expansion at all is unaffected.
+        (r'cmd /c start "" "%USERPROFILE%\notes.txt"', False),
+        ('cmd /c start "" notepad', False),
+    ],
+)
+def test_an_expansion_in_a_program_name_is_unresolved(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # find runs the action itself, so its words are commands the line runs
+        # and a shell among them owns the payload behind it.
+        ('find . -exec cmd //c start "" powershell ;', True),
+        ('fd . -x cmd //c start "" powershell', True),
+        ('find . -exec cmd //c echo start "" powershell ;', False),
+    ],
+)
+def test_an_exec_child_owns_its_payload(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # The set of a `for /f` is executed by cmd whatever handed the line
+        # over, and the two grammars disagree about `;`: an argument delimiter
+        # to cmd, a command separator to bash. Read as bash, the first of these
+        # was refused for printing and the second went unscreened.
+        ("""cmd //c for /f %i in ('echo hi;start "" powershell') do echo %i""", False),
+        ("""cmd //c for /f %i in ('start;"" powershell') do echo %i""", True),
+        ("""cmd //c for /f %i in ('start "" powershell') do echo %i""", True),
+    ],
+)
+def test_a_cmd_owned_body_is_read_with_cmd_grammar(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # A redirection is gone before start reads its arguments, so it is not
+        # the value of `/d` and the directory is not the program.
+        (r'cmd /c start "" /d >nul C:\tmp powershell', True),
+        (r'cmd /c start "" /d C:\tmp powershell', True),
+        (r'cmd /c start "" /d C:\tmp notepad', False),
+        # ...and it is not a condition word either, at any point in one.
+        ('cmd /c if not >nul 1 EQU 2 start "" powershell', True),
+        ('cmd /c if not 1 EQU 2 start "" powershell', True),
+        ('cmd /c if not 1 EQU 2 echo start "" powershell', False),
+    ],
+)
+def test_a_redirection_is_skipped_wherever_cmd_removes_it(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
     assert bool(tools._find_blocked_commands(command)) is blocked
 
 
