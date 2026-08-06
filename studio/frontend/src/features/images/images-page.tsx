@@ -2563,7 +2563,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                 {/* Same icon the sidebar submenu uses for this workflow. */}
                 <HugeiconsIcon
                   icon={activeWorkflowTab.icon}
-                  className="size-6 shrink-0"
+                  className="size-[22px] shrink-0"
                 />
                 {activeWorkflowTab.heading ?? activeWorkflowTab.label}
               </h2>

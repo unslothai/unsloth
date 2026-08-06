@@ -1133,7 +1133,7 @@ export function DiffusionTrainPanel({
             <h2 className="flex items-center gap-3 font-heading text-xl font-medium leading-none">
               <HugeiconsIcon
                 icon={TestTubeOutlineIcon}
-                className="size-6 shrink-0"
+                className="size-[22px] shrink-0"
               />
               Train a LoRA
             </h2>
@@ -1494,7 +1494,7 @@ export function DiffusionTrainPanel({
                   <span className="flex items-center gap-3 font-heading text-xl font-medium leading-none">
                     <HugeiconsIcon
                       icon={Settings02Icon}
-                      className="size-6 shrink-0"
+                      className="size-[22px] shrink-0"
                     />
                     Train settings
                   </span>
