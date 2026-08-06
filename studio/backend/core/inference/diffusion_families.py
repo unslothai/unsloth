@@ -498,9 +498,25 @@ _GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
     ("ideogram-ai/ideogram-4-fp8", "unsloth/ideogram-4-fp8"),
     ("ideogram-ai/ideogram-4-nf4", "unsloth/ideogram-4-nf4"),
     ("ideogram-ai/ideogram-4-nf4-diffusers", "unsloth/ideogram-4-nf4-diffusers"),
-    # Not gated. Every Qwen-Image-2512 pick takes its companions from here, named by the artifact
-    # repo's base_model card tag rather than the family table, so nothing else redirects it.
+    # Ungated from here down: mirrored not to drop a gate but to drop the third-party fetch, which
+    # is what a GGUF/FP8 pick's companions still cost. Every licence here permits redistribution,
+    # and each mirror carries the upstream licence text plus the notice its licence prescribes.
+    #
+    # Qwen-Image-2512 is the one no other redirect could reach: its companions are named by the
+    # artifact repo's base_model card tag rather than the family table.
     ("Qwen/Qwen-Image-2512", "unsloth/Qwen-Image-2512"),
+    ("Qwen/Qwen-Image", "unsloth/Qwen-Image"),
+    ("Qwen/Qwen-Image-Edit-2511", "unsloth/Qwen-Image-Edit-2511"),
+    ("black-forest-labs/FLUX.2-klein-4B", "unsloth/FLUX.2-klein-4B"),
+    ("Tongyi-MAI/Z-Image-Turbo", "unsloth/Z-Image-Turbo"),
+    ("Alpha-VLLM/Lumina-Image-2.0", "unsloth/Lumina-Image-2.0"),
+    ("HiDream-ai/HiDream-I1-Full", "unsloth/HiDream-I1-Full"),
+    ("stabilityai/stable-diffusion-xl-base-1.0", "unsloth/stable-diffusion-xl-base-1.0"),
+    ("stabilityai/sdxl-turbo", "unsloth/sdxl-turbo"),
+    # NOT mirrored: hunyuanvideo-community/HunyuanImage-2.1-Diffusers. The Tencent Hunyuan
+    # Community License permits distribution "exclusively in the Territory", and the Territory
+    # excludes the EU, the UK and South Korea. A public Hub repo distributes worldwide, so that
+    # mirror cannot be made compliant and the family keeps fetching upstream.
 )
 _GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _GATED_MIRROR_PAIRS}
 _MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _GATED_MIRROR_PAIRS}
