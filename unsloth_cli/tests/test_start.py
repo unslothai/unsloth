@@ -6828,6 +6828,48 @@ def test_codex_attach_check_allows_short_shard_like_names(tmp_path, monkeypatch)
     start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(lone))
 
 
+def test_codex_preload_gate_defers_to_the_resident_model(fake_studio, monkeypatch):
+    # An explicit knob forces the load endpoint's dedupe to answer, which reads
+    # nothing from disk; gating it would reject a second session for the model
+    # already serving, whose file may since have moved.
+    inner = start._http_json
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        if url.endswith("/api/inference/status"):
+            return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
+        if "/api/models/gguf-variants" in url:
+            pytest.fail("the resident model already serves this request")
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    result = CliRunner().invoke(
+        start.start_app,
+        ["codex", "--model", MODEL["id"], "--gguf-variant", "Q4_K_M", "--no-launch"],
+    )
+    assert result.exit_code == 0, result.output
+
+
+def test_codex_preload_gate_still_runs_for_a_different_variant(fake_studio, monkeypatch):
+    # A different quant is a real reload, so the gate has to run.
+    inner = start._http_json
+    probed = []
+
+    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+        if url.endswith("/api/inference/status"):
+            return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
+        if "/api/models/gguf-variants" in url:
+            probed.append(url)
+            return {"variants": [{"quant": "Q4_K_M"}], "resolved_locally": False}
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    CliRunner().invoke(
+        start.start_app,
+        ["codex", "--model", MODEL["id"], "--gguf-variant", "Q8_0", "--no-launch"],
+    )
+    assert probed, "a different quant reloads, so the gate must check it"
+
+
 def test_codex_attach_check_asks_about_nested_drafter_folders(monkeypatch, capsys):
     # detect_gguf_model reads drafter folders relative to the registered model
     # root, so the same nested path loads or is refused depending on a root
@@ -6842,12 +6884,13 @@ def test_codex_attach_check_asks_about_nested_drafter_folders(monkeypatch, capsy
         {"variants": [{"quant": "Q8_0"}], "resolved_locally": True, "loadable": True},
     )
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/MTP/copies/foo-Q8_0.gguf")
-    # An immediate drafter parent stays a local refusal, no probe needed.
+    # A drafter NAME PREFIX means the same under any root, so it is refused
+    # locally with no probe.
     monkeypatch.setattr(
         start, "_http_json", lambda *a, **k: pytest.fail("an immediate companion needs no probe")
     )
     with pytest.raises(typer.Exit):
-        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/mtp/foo-Q8_0.gguf")
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/mtp-foo-Q8_0.gguf")
 
 
 def test_codex_attach_check_rejects_missing_direct_paths(tmp_path, monkeypatch, capsys):
@@ -6966,15 +7009,17 @@ def test_codex_attach_check_accepts_symlinked_split_shards(tmp_path, monkeypatch
         "/models/mmproj-F16.gguf",
         "./local/MMPROJ-F32.GGUF",
         "/models/mtp-Qwen3-Q8_0.gguf",
-        "/models/MTP/Gemma-4-Q8_0-MTP.gguf",
         "/models/dspark/dspark-DeepSeek-Q8_0.gguf",
         "C:\\models\\mmproj-F16.gguf",
     ],
 )
 def test_codex_attach_check_refuses_companion_gguf_files(monkeypatch, capsys, path):
-    # detect_gguf_model refuses the companions, so the load falls through to the
-    # transformers path -- which unloads the resident llama-server before it
-    # fails. The name settles it; probing would defer on a path that exists here.
+    # detect_gguf_model refuses these whatever the server's model roots are --
+    # the projector and the drafter name prefixes read the basename alone -- so
+    # the load would fall through to the transformers path and unload the
+    # resident llama-server before failing. The name settles it; probing would
+    # defer on a path that exists here. A drafter FOLDER is root-dependent and
+    # is asked about instead (see the nested-drafter test).
     monkeypatch.setattr(
         start,
         "_http_json",

@@ -1563,9 +1563,29 @@ def _resolve_model(
         # a request the resident model already satisfies (e.g. a path-loaded
         # GGUF advertised as a bare basename that collides with a non-GGUF
         # unsloth/<name>).
-        if preload_check is not None:
-            preload_check(base, key, requested, load.gguf_variant)
         active = next((m for m in models if m.get("loaded") is not False), None)
+        if preload_check is not None:
+            # An explicit knob forces match to None so the server's own dedupe
+            # can answer already_loaded, which reads nothing from disk. Gating
+            # that would reject a second session for the model already serving
+            # -- its file may since have moved -- so let the resident answer
+            # first, and only for the same weights it is already serving.
+            resident_serves_request = any(
+                _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
+                and m.get("loaded") is not False
+                for m in models
+            )
+            if resident_serves_request and load.gguf_variant:
+                try:
+                    status = _http_json("GET", f"{base}/api/inference/status", key)
+                except Exception:
+                    status = {}
+                resident_variant = status.get("gguf_variant") if status.get("is_gguf") else None
+                resident_serves_request = bool(resident_variant) and _normalized_variant(
+                    resident_variant
+                ) == _normalized_variant(load.gguf_variant)
+            if not resident_serves_request:
+                preload_check(base, key, requested, load.gguf_variant)
         active_id = active.get("id") if active else None
         if active_id and not _model_id_matches(
             active_id,
@@ -1730,24 +1750,25 @@ def _direct_gguf_is_companion(path: str) -> bool:
     name = parts[-1].lower()
     if not name.endswith(".gguf"):
         return False
+    # Only the root-independent refusals: the projector and the drafter name
+    # prefixes read the basename alone, so they mean the same thing whatever
+    # the server's model roots are. A drafter FOLDER does not -- see below.
     if "mmproj" in name:
         return True
-    if any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS):
-        return True
-    return len(parts) > 1 and parts[-2].lower() in _DRAFTER_DIR_KINDS
+    return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
 
 
 def _direct_gguf_companion_is_uncertain(path: str) -> bool:
     """Whether only the server can say if this path is a companion.
 
     detect_gguf_model reads the drafter folders relative to the registered
-    model root, so ``/models/MTP/copies/foo-Q8_0.gguf`` is refused when the
-    root sits above MTP and loaded when the root is MTP itself. This process
-    does not know the server's roots, so a drafter folder anywhere above the
-    immediate parent is a question for the server, not an answer here.
+    model root, so ``/models/MTP/foo-Q8_0.gguf`` is refused when the root sits
+    above MTP and loaded when MTP is itself a registered root. This process
+    does not know the server's roots, so any drafter folder above the file is
+    a question for the server, not an answer here.
     """
     parts = [segment for segment in path.replace("\\", "/").split("/") if segment]
-    return any(segment.lower() in _DRAFTER_DIR_KINDS for segment in parts[:-2])
+    return any(segment.lower() in _DRAFTER_DIR_KINDS for segment in parts[:-1])
 
 
 # Mirrors model_config._extract_quant_label's pattern; change in lockstep.
