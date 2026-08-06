@@ -1433,7 +1433,7 @@ def test_planner_prompt_shields_untrusted_conversation(research_home, monkeypatc
         **kwargs,
     ):
         captured["planner"] = messages[1]["content"]
-        return json.dumps(_plan()), "Planned.", "stop"
+        return json.dumps(_plan()), "Planned.", "stop", None
 
     monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
 
@@ -1545,9 +1545,9 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
         assert "We were discussing OpenAI." in prompt
         assert "Compare that with Anthropic." in prompt
         if "rigorous web research plan" in system:
-            return json.dumps(_plan()), "Planned several lines of inquiry.", "stop"
+            return json.dumps(_plan()), "Planned several lines of inquiry.", "stop", None
         if "iterative research process" in system:
-            return next(decisions), "Evaluated the evidence and selected the next action.", "stop"
+            return next(decisions), "Evaluated the evidence and selected the next action.", "stop", None
         assert "<document_source_catalog>" in prompt
         assert "private.pdf" in prompt
         if kwargs.get("phase") == "synthesis_audit":
@@ -1567,12 +1567,13 @@ def test_supervisor_planning_and_research_are_durable_with_mocked_io(research_ho
                 ),
                 "Audited document evidence.",
                 "stop",
+                None,
             )
         if kwargs.get("phase") == "synthesis":
-            return "", "Repeated a truncated source URL.", "length"
+            return "", "Repeated a truncated source URL.", "length", None
         report = report_response
         research_db.set_report_progress(run["id"], report)
-        return report, "Checked the available evidence.", "stop"
+        return report, "Checked the available evidence.", "stop", None
 
     tool_calls = []
 
@@ -1772,9 +1773,9 @@ def _run_search_then_finish(
     ):
         system = messages[0]["content"]
         if "rigorous web research plan" in system:
-            return json.dumps(_plan()), "planned", "stop"
+            return json.dumps(_plan()), "planned", "stop", None
         if "iterative research process" in system:
-            return next(decisions), "decided", "stop"
+            return next(decisions), "decided", "stop", None
         synthesis_prompts.append(messages[1]["content"])
         if "evidence-to-claim audit" in system:
             return (
@@ -1797,9 +1798,10 @@ def _run_search_then_finish(
                 ),
                 "audited",
                 "stop",
+                None,
             )
         research_db.set_report_progress(run["id"], report)
-        return report, "synthesized", "stop"
+        return report, "synthesized", "stop", None
 
     monkeypatch.setattr(supervisor, "_stream_completion", fake_stream_completion)
     monkeypatch.setattr(worker, "execute_tool", fake_tool)
@@ -2021,12 +2023,12 @@ def test_synthesis_pass_runs_at_synthesis_phase(research_home, monkeypatch):
     ):
         system = messages[0]["content"]
         if "rigorous web research plan" in system:
-            return json.dumps(_plan()), "p", "stop"
+            return json.dumps(_plan()), "p", "stop", None
         if "iterative research process" in system:
-            return next(decisions), "d", "stop"
+            return next(decisions), "d", "stop", None
         captured.update(kwargs)
         research_db.set_report_progress(run["id"], "# Report\n\nGrounded text.")
-        return "# Report\n\nGrounded text.", "s", "stop"
+        return "# Report\n\nGrounded text.", "s", "stop", None
 
     def fake_tool(name, arguments, *a, **k):
         return "page body" if arguments.get("url") else _two_source_search()
@@ -2258,6 +2260,7 @@ def test_recovered_running_research_resumes_durable_progress(research_home, monk
                 ),
                 "",
                 "stop",
+                None,
             )
         assert "Saved durable snippet" in prompt
         assert "Private durable evidence" in prompt
@@ -2268,6 +2271,7 @@ def test_recovered_running_research_resumes_durable_progress(research_home, monk
             "# Resumed report\n\nSaved finding [Saved source](https://saved.example/source).",
             "",
             "stop",
+            None,
         )
 
     def unexpected_tool(*args, **kwargs):
@@ -2316,12 +2320,12 @@ def test_knowledge_base_evidence_beyond_the_source_cap_is_not_synthesized(
     async def fake_stream_completion(run, messages, **kwargs):
         system = messages[0]["content"]
         if "rigorous web research plan" in system:
-            return json.dumps(_plan()), "planned", "stop"
+            return json.dumps(_plan()), "planned", "stop", None
         if "iterative research process" in system:
-            return next(decisions), "decided", "stop"
+            return next(decisions), "decided", "stop", None
         synthesis_prompts.append(messages[1]["content"])
         research_db.set_report_progress(run["id"], report)
-        return report, "synthesized", "stop"
+        return report, "synthesized", "stop", None
 
     labels = iter(("kept", "capped"))
 

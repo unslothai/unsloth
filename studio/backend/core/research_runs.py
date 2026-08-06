@@ -1684,6 +1684,11 @@ class ResearchSupervisor:
                             if model_waits <= _MAX_MODEL_WAITS and await self._wait_for_local_model(
                                 run
                             ):
+                                payload["max_tokens"] = _resolve_max_tokens(
+                                    None,
+                                    inference,
+                                    messages,
+                                )
                                 continue
                             raise
                         retryable = (
@@ -1841,6 +1846,7 @@ class ResearchSupervisor:
             "model": inference.get("model") or config.get("model") or "",
             "messages": messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
             "temperature": inference.get("temperature", 0.2),
             "max_tokens": resolved_max_tokens,
         }
@@ -2005,6 +2011,11 @@ class ResearchSupervisor:
                                 # without spending a transport attempt.
                                 if not await self._wait_for_local_model(run):
                                     raise
+                                payload["max_tokens"] = _resolve_max_tokens(
+                                    max_tokens,
+                                    inference,
+                                    messages,
+                                )
                             else:
                                 # _completion's policy, so both paths agree; re-check the lease
                                 # and cancellation before re-sending.
