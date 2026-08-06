@@ -1372,30 +1372,6 @@ _START_SWITCHES = frozenset(
 )
 
 
-def _start_is_launched(tokens: "list[str]", index: int) -> bool:
-    """True when ``start`` at ``index`` is run, rather than passed as text.
-
-    Deliberately narrow, and used ONLY to decide whether to read the token after
-    a window title: `echo start "My Title" powershell` is data, and taking the
-    word after the title there refused a line that only prints.
-
-    It reads the one token before `start`: the string opens there, a separator
-    ends the previous command, a wrapper forwards command position, an
-    assignment prefixes one, or a cmd switch introduces a payload
-    (`cmd /c start ...`). Anything richer needs command position propagated
-    through cmd payloads and start children, which is the parse this screen
-    exists to avoid, so the answer here fails towards screening.
-    """
-    if index <= 0:
-        return True
-    prev = tokens[index - 1]
-    if prev in _SHELL_SEPARATORS or _win_switch(prev.lower()).startswith("/"):
-        return True
-    if _ASSIGNMENT_RE.match(prev):
-        return True
-    return os.path.basename(prev.strip('"').lower()) in _COMMAND_PREFIXES
-
-
 def _is_start_title(token: str) -> bool:
     """True when START would read ``token`` as its window title, not the program.
 
@@ -1733,12 +1709,14 @@ def _find_blocked_commands(command: str) -> set[str]:
             # /d C:\dir and friends carry their value in the next token.
             j += 2 if _win_switch(tokens[j].lower()) in _START_SWITCHES_WITH_VALUE else 1
         # cmd reads a quoted first argument as the window title, putting the
-        # program one token further on. Taking that second token unconditionally
-        # refuses ordinary text (`echo start notepad powershell`), so it is read
-        # only when the first is recognisably a title.
+        # program one token further on. Reading that second token only when the
+        # first is recognisably a title keeps `echo start notepad powershell`
+        # runnable; deciding whether `start` itself is executed is deliberately
+        # not attempted, since every local approximation of it under-approximated
+        # and let a real launch through.
         if j < len(tokens):
             blocked |= _find_blocked_commands(tokens[j])
-        if j + 1 < len(tokens) and _is_start_title(tokens[j]) and _start_is_launched(tokens, i):
+        if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.
             while k < len(tokens) and _win_switch(tokens[k].lower()) in _START_SWITCHES:

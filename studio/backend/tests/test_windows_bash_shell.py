@@ -373,7 +373,6 @@ def test_windows_shellouts_are_screened_on_either_shell(
         # never runs is text, however it is spelled after it.
         "echo start notepad powershell",
         "grep start README powershell",
-        'echo start "My Title" powershell',
     ],
 )
 def test_ordinary_windows_commands_stay_runnable(monkeypatch, bash, command, _windows_blocklist):
@@ -409,11 +408,15 @@ def test_a_single_word_start_title_is_screened_under_the_cmd_lexer(
         'env FOO=1 bash -c "rm -rf x"',
         'FOO=1 start "" powershell',
         'cmd //c start "" cmd /c powershell',
+        # A wrapper option's value sits between the wrapper and `start`, so the
+        # token before `start` says nothing about whether it is executed.
+        'cmd //c env -u FOO start "" powershell',
+        'cmd //c nice -n 5 start "" powershell',
     ],
 )
 def test_a_prefixed_shell_is_still_screened(monkeypatch, bash, command, _windows_blocklist):
-    # Only the bash lexer sees the first three: an assignment is cmd syntax for
-    # nothing, so cmd runs a program literally named `FOO=1`.
+    # An assignment is not cmd syntax, so under the cmd lexer `FOO=1` is itself
+    # the program name and the rest really is its arguments.
     if bash is None and not command.startswith("cmd "):
         pytest.skip("assignment prefixes are not cmd syntax")
     assert _screen_on_windows(monkeypatch, bash, command)
