@@ -27,6 +27,21 @@ def _extract(pattern: str, source: str) -> str:
     return match.group(0)
 
 
+def _link_dir(link: Path, target: Path) -> None:
+    """Directory link, without needing SeCreateSymbolicLinkPrivilege on Windows.
+
+    A junction is also the reparse point a Windows venv actually runs into, so this
+    is the faithful construct there rather than a stand-in.
+    """
+    if os.name == "nt":
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(link), str(target)],
+            check = True, capture_output = True, text = True,
+        )
+    else:
+        os.symlink(target, link, target_is_directory = True)
+
+
 def _run_powershell(shell: str, script: str, env: dict[str, str]) -> str:
     result = subprocess.run(
         [shell, "-NoProfile", "-NonInteractive", "-Command", script],
@@ -228,6 +243,128 @@ Write-Output ("active=" + $script:StudioVenvRollbackActive)
     assert (target / "Lib" / "site-packages" / "marker.txt").is_file(), out
     assert not backup.exists(), out
     assert "active=False" in out, out
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+def test_merging_a_split_move_keeps_every_sibling_at_its_own_path(tmp_path: Path, shell: str):
+    """Each entry must land at its own path, not nested under the previous one.
+
+    PowerShell variable names are case-insensitive, so a per-entry $destination
+    reassigns the $Destination parameter. Only the first sibling at a level then
+    lands correctly and the rest are appended to its path, so a restored venv comes
+    back with pyvenv.cfg buried inside Lib. One entry per level hides it, so this
+    uses several.
+    """
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    blocks = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in (
+            "Remove-StudioVenvTreeWithRetry",
+            "Merge-StudioVenvRollbackTree",
+            "Restore-StudioVenvRollback",
+        )
+    )
+    target = tmp_path / "unsloth_studio"
+    backup = tmp_path / "unsloth_studio.rollback.20260804120000.999"
+    # The half left behind, and a moved half with several siblings at two levels.
+    (target / "Scripts").mkdir(parents = True)
+    (target / "Scripts" / "unsloth.exe").write_text("irreplaceable", encoding = "utf-8")
+    (target / "Lib").mkdir()
+    (target / "Lib" / "stayed.py").write_text("stayed", encoding = "utf-8")
+    (backup / "Lib" / "site-packages").mkdir(parents = True)
+    (backup / "Lib" / "site-packages" / "marker.txt").write_text("moved", encoding = "utf-8")
+    (backup / "Lib" / "other.py").write_text("other", encoding = "utf-8")
+    (backup / "pyvenv.cfg").write_text("cfg", encoding = "utf-8")
+    (backup / "unsloth_install_manifest.json").write_text("{}", encoding = "utf-8")
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+function substep {{ param([string]$Text, [string]$Color) }}
+{blocks}
+$script:StudioVenvRollbackActive  = $true
+$script:StudioVenvRollbackDir     = $env:TEST_BACKUP_DIR
+$script:StudioVenvRollbackTarget  = $env:TEST_TARGET_DIR
+$script:StudioVenvRollbackPartial = $true
+Restore-StudioVenvRollback
+Write-Output ("active=" + $script:StudioVenvRollbackActive)
+"""
+    env = os.environ.copy()
+    env["TEST_BACKUP_DIR"] = str(backup)
+    env["TEST_TARGET_DIR"] = str(target)
+    out = _run_powershell(shell, script, env)
+
+    restored = sorted(
+        str(p.relative_to(target)).replace("\\", "/")
+        for p in target.rglob("*") if p.is_file()
+    )
+    assert restored == [
+        "Lib/other.py",
+        "Lib/site-packages/marker.txt",
+        "Lib/stayed.py",
+        "Scripts/unsloth.exe",
+        "pyvenv.cfg",
+        "unsloth_install_manifest.json",
+    ], out
+    assert not backup.exists(), out
+    assert "active=False" in out, out
+
+
+@pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")
+@pytest.mark.parametrize("shell", POWERSHELLS)
+@pytest.mark.parametrize("side", ["destination", "source"])
+def test_merging_a_split_move_never_walks_through_a_link(tmp_path: Path, shell: str, side: str):
+    """A junction on either side is a leaf, not a subtree to recurse into.
+
+    Recursing through one moves venv files to wherever the link points, outside
+    $StudioHome, and replaces the link with a real directory. Either half can carry
+    the link, so both directions are pinned here.
+    """
+    source = INSTALL_PS1.read_text(encoding = "utf-8")
+    blocks = "".join(
+        _extract(rf"    function {name} \{{.*?\n    \}}\n", source)
+        for name in (
+            "Remove-StudioVenvTreeWithRetry",
+            "Merge-StudioVenvRollbackTree",
+            "Restore-StudioVenvRollback",
+        )
+    )
+    target = tmp_path / "unsloth_studio"
+    backup = tmp_path / "unsloth_studio.rollback.20260804120000.999"
+    # A sibling of the environment, never under it.
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("untouched", encoding = "utf-8")
+    target.mkdir()
+    backup.mkdir()
+
+    linked, real = (target, backup) if side == "destination" else (backup, target)
+    _link_dir(linked / "Lib", outside)
+    (real / "Lib").mkdir()
+    (real / "Lib" / "payload.txt").write_text("venv-only", encoding = "utf-8")
+
+    script = f"""
+$ErrorActionPreference = "Stop"
+function substep {{ param([string]$Text, [string]$Color) }}
+{blocks}
+$script:StudioVenvRollbackActive  = $true
+$script:StudioVenvRollbackDir     = $env:TEST_BACKUP_DIR
+$script:StudioVenvRollbackTarget  = $env:TEST_TARGET_DIR
+$script:StudioVenvRollbackPartial = $true
+Restore-StudioVenvRollback
+Write-Output ("active=" + $script:StudioVenvRollbackActive)
+"""
+    env = os.environ.copy()
+    env["TEST_BACKUP_DIR"] = str(backup)
+    env["TEST_TARGET_DIR"] = str(target)
+    out = _run_powershell(shell, script, env)
+
+    # Nothing from the environment may be written through the link.
+    assert not (outside / "payload.txt").exists(), out
+    assert sorted(p.name for p in outside.iterdir()) == ["keep.txt"], out
+    assert (outside / "keep.txt").read_text(encoding = "utf-8") == "untouched", out
+    # An unresolved conflict keeps both copies, so the rollback stays tracked.
+    assert "active=True" in out, out
 
 
 @pytest.mark.skipif(not POWERSHELLS, reason = "PowerShell is unavailable")

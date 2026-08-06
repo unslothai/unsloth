@@ -1837,23 +1837,33 @@ exit 0
         }
         $complete = $true
         foreach ($entry in @(Get-ChildItem -LiteralPath $Source -Force -ErrorAction Stop)) {
-            $destination = Join-Path $Destination $entry.Name
-            if (-not (Test-Path -LiteralPath $destination)) {
-                Move-Item -LiteralPath $entry.FullName -Destination $destination -ErrorAction Stop
+            # Not $destination: PowerShell names are case-insensitive, so that would
+            # reassign the $Destination parameter and nest every later sibling under
+            # the previous entry's name.
+            $entryTarget = Join-Path $Destination $entry.Name
+            if (-not (Test-Path -LiteralPath $entryTarget)) {
+                Move-Item -LiteralPath $entry.FullName -Destination $entryTarget -ErrorAction Stop
                 continue
             }
             # Same relative path on both sides: the move stopped inside this subtree.
             # Recurse so the halves reunite -- Move-Item -Force would overwrite the
             # half that never moved, which is exactly the data this path protects.
-            if ($entry.PSIsContainer -and (Test-Path -LiteralPath $destination -PathType Container)) {
-                if (-not (Merge-StudioVenvRollbackTree -Source $entry.FullName -Destination $destination)) {
+            # A junction on either side is a leaf, not a subtree: recursing through one
+            # moves files to wherever it points, outside $StudioHome. Keep both instead.
+            # Get-Item both sides: Get-ChildItem has reported Attributes inconsistently.
+            $entryItem = Get-Item -LiteralPath $entry.FullName -Force -ErrorAction Stop
+            $targetItem = Get-Item -LiteralPath $entryTarget -Force -ErrorAction Stop
+            $linked = (($entryItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) -or
+                      (($targetItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+            if ($entryItem.PSIsContainer -and $targetItem.PSIsContainer -and -not $linked) {
+                if (-not (Merge-StudioVenvRollbackTree -Source $entry.FullName -Destination $entryTarget)) {
                     $complete = $false
                 }
                 continue
             }
             Write-Host "[WARN] Kept both copies of $($entry.Name)" -ForegroundColor Yellow
             Write-Host "       $($entry.FullName)" -ForegroundColor Yellow
-            Write-Host "       $destination" -ForegroundColor Yellow
+            Write-Host "       $entryTarget" -ForegroundColor Yellow
             $complete = $false
         }
         if ($complete) {
