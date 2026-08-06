@@ -933,6 +933,62 @@ def test_download_dspark_still_reports_a_cached_sidecar_it_cannot_run(monkeypatc
     assert reached is False
 
 
+@pytest.mark.parametrize("shape", ["dangling", "directory"])
+def test_detect_dspark_file_skips_a_sidecar_it_cannot_open(tmp_path, shape):
+    """A dangling snapshot symlink or a directory named like a sidecar must read
+    as "no sidecar", not as a drafter: handing llama-server a --model-draft it
+    cannot open fails the whole load instead of falling back to no speculation.
+    detect_mtp_file has always guarded this."""
+    import os
+
+    weight = tmp_path / "model-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    if shape == "dangling":
+        os.symlink(tmp_path / "missing_blob", sidecar)
+    else:
+        sidecar.mkdir()
+
+    assert detect_dspark_file(str(weight)) is None
+    # Same shape, same answer for MTP: the two must not diverge.
+    mtp = tmp_path / "mtp-model.gguf"
+    if shape == "dangling":
+        os.symlink(tmp_path / "missing_blob", mtp)
+    else:
+        mtp.mkdir()
+    assert detect_mtp_file(str(weight)) is None
+
+
+@pytest.mark.parametrize("kind", ["dspark", "mtp"])
+def test_a_release_specific_sidecar_outranks_the_base_family(tmp_path, kind):
+    """Both prefix-match a 0731 weight, and only one is really its drafter. The
+    prefix rule cannot be tightened to equality -- mtp-gemma-4-12B-it.gguf really
+    does ship beside gemma-4-12B-it-qat-*.gguf -- so ranking settles it."""
+    weight = tmp_path / "DeepSeek-V4-Flash-0731-UD-Q4_K_XL.gguf"
+    weight.write_bytes(b"target")
+    base = tmp_path / f"{kind}-DeepSeek-V4-Flash-Q8_0.gguf"
+    exact = tmp_path / f"{kind}-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    base.write_bytes(b"x" * 10)
+    exact.write_bytes(b"x" * 4000)  # deliberately the larger, so size cannot decide
+
+    detect = detect_dspark_file if kind == "dspark" else detect_mtp_file
+    found = detect(str(weight))
+    assert found is not None and Path(found).name == exact.name
+
+
+def test_a_qat_weight_still_pairs_with_its_base_family_drafter(tmp_path):
+    """Negative control for the ranking above: unsloth/gemma-4-12B-it-qat-GGUF
+    ships mtp-gemma-4-12B-it.gguf, so the prefix rule has to keep working when no
+    more specific sidecar exists."""
+    weight = tmp_path / "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf"
+    weight.write_bytes(b"target")
+    drafter = tmp_path / "mtp-gemma-4-12B-it.gguf"
+    drafter.write_bytes(b"draft")
+
+    found = detect_mtp_file(str(weight))
+    assert found is not None and Path(found).name == drafter.name
+
+
 def test_detect_mtp_file_returns_first_shard_of_split_subdir_drafter(tmp_path):
     """llama-server takes shard 1 as the model path, so a split MTP/ copy must
     not resolve to whichever shard happens to be smallest."""
@@ -1254,7 +1310,10 @@ def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
         link.symlink_to(blob)
         files.append(
             SimpleNamespace(
-                file_name = name,
+                # Basename, like huggingface_hub (file_path.name) and our own
+                # recovery scan (entry.name); the directory only reaches the
+                # predicates via _repo_file_matches' snapshot-relative rebuild.
+                file_name = Path(name).name,
                 file_path = str(link),
                 blob_path = str(blob),
                 size_on_disk = 64,
@@ -1306,6 +1365,38 @@ def test_deleting_the_last_variant_reclaims_an_opt_in_dspark_drafter(tmp_path):
 
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
     assert not (snap / "dspark" / "dspark-DeepSeek-V4-Flash-0731-BF16.gguf").is_symlink()
+
+
+def test_a_suffix_scheme_sidecar_is_not_mistaken_for_a_quant(tmp_path):
+    """The second published naming scheme, <model>-dspark.gguf. Its basename
+    carries no drafter marker, only its dspark/ parent does, so a predicate fed
+    the bare file_name read it as a real Q8_0 variant: deleting the genuine Q8_0
+    would take the sidecar the Q4_K_M still needs, and no companion could ever be
+    reclaimed because a main GGUF always appeared to remain."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        [
+            "model-Q4_K_M.gguf",
+            "model-Q8_0.gguf",
+            "dspark/DeepSeek-V4-Flash-0731-Q8_0-dspark.gguf",
+        ],
+    )
+    _delete_gguf_variant_from_repos(
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q8_0", [repo], None, root = tmp_path
+    )
+
+    assert not (snap / "model-Q8_0.gguf").is_symlink()
+    assert (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert (snap / "dspark" / "DeepSeek-V4-Flash-0731-Q8_0-dspark.gguf").is_symlink()
+
+    # ...and it still goes with the last variant.
+    _delete_gguf_variant_from_repos(
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root = tmp_path
+    )
+    assert not (snap / "dspark" / "DeepSeek-V4-Flash-0731-Q8_0-dspark.gguf").is_symlink()
 
 
 def test_deleting_the_last_variant_keeps_a_dflash_weight(tmp_path):

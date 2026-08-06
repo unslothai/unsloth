@@ -1677,9 +1677,13 @@ def _drafter_matches_weight(candidate_name: str, weight_name: Optional[str], *, 
 
     A multi-model folder must not attach a foreign drafter, so the family the
     drafter names has to PREFIX the weight filename at a non-alphanumeric
-    boundary. Prefix alone is not enough: ``DeepSeek-V4-Flash-Lite`` and
-    ``DeepSeek-V4-Flash`` would otherwise pair in both directions and launch
-    the wrong sidecar as --model-draft.
+    boundary. That blocks one direction of a ``DeepSeek-V4-Flash-Lite`` /
+    ``DeepSeek-V4-Flash`` pair but not the other: the shorter family name is a
+    prefix of the longer weight, so a base-family sidecar still matches a
+    longer-named sibling's weights. Exact equality cannot replace the prefix
+    rule -- ``mtp-gemma-4-12B-it.gguf`` really does ship beside
+    ``gemma-4-12B-it-qat-*.gguf`` -- so the remaining direction is settled by
+    ranking: callers prefer the longest matching stem (see _drafter_stem_rank).
     """
     if weight_name is None:
         return True
@@ -1690,6 +1694,16 @@ def _drafter_matches_weight(candidate_name: str, weight_name: Optional[str], *, 
         and weight.startswith(stem)
         and (len(weight) == len(stem) or not weight[len(stem)].isalnum())
     )
+
+
+def _drafter_stem_rank(candidate_name: str, *, kind: str) -> int:
+    """Sort key placing the most specific family first (longest stem wins).
+
+    Both ``mtp-DeepSeek-V4-Flash-BF16.gguf`` and
+    ``mtp-DeepSeek-V4-Flash-0731-BF16.gguf`` prefix-match a 0731 weight, and
+    only the second is really its drafter.
+    """
+    return -len(_drafter_pairing_stem(candidate_name, kind = kind) or "")
 
 
 def _drafter_launch_path(candidate: Path) -> str:
@@ -1779,7 +1793,7 @@ def detect_mtp_file(
     def _launchable(candidate: Path) -> bool:
         return _drafter_split_is_complete(candidate)
 
-    def _smallest_first(candidate: Path) -> tuple[int, int, str]:
+    def _smallest_first(candidate: Path) -> tuple[int, int, int, str]:
         # Cheapest compatible copy wins. Size first: a fixed precision list ranked unknown quants
         # behind BF16, so a small K-quant lost to a far larger BF16. Precision breaks size ties,
         # name keeps it stable. Split copies collapse to shard 1, so sum across their shards.
@@ -1793,7 +1807,15 @@ def detect_mtp_file(
             precision = 2
         else:
             precision = 3
-        return _drafter_total_size(candidate), precision, name
+        # Family first, for the same reason as DSpark: both a base-family and a
+        # release-specific sidecar prefix-match, and only the longer one is
+        # really this weight's drafter.
+        return (
+            _drafter_stem_rank(candidate.name, kind = "mtp"),
+            _drafter_total_size(candidate),
+            precision,
+            name,
+        )
 
     p = Path(path)
     weight_name = p.name.lower() if p.suffix.lower() == ".gguf" else None
@@ -1900,11 +1922,13 @@ def detect_dspark_file(
     rejection as no sidecar at all.
     """
 
-    def _rank(candidate: Path) -> tuple[int, int, str]:
-        # Precision first (the model card's recommendation), then total size so
-        # a split copy cannot outrank a smaller single file, then name for a
-        # stable order.
+    def _rank(candidate: Path) -> tuple[int, int, int, str]:
+        # Most specific family first, so a base-family sidecar cannot win over
+        # the one that names this exact release. Then precision (the model
+        # card's recommendation), then total size so a split copy cannot
+        # outrank a smaller single file, then name for a stable order.
         return (
+            _drafter_stem_rank(candidate.name, kind = "dspark"),
             dspark_precision_rank(candidate.name),
             _drafter_total_size(candidate),
             candidate.name.lower(),
@@ -1953,7 +1977,12 @@ def detect_dspark_file(
                 try:
                     # Collapse a split copy to shard 1 before ranking.
                     launch = _local_gguf_load_path(candidate)
-                    if not _drafter_split_is_complete(launch):
+                    # is_file() follows the link, so this also drops a dangling
+                    # snapshot symlink and a directory named like a sidecar.
+                    # Without it --model-draft gets a path llama-server cannot
+                    # open, which fails the whole load rather than falling back
+                    # to no speculation (detect_mtp_file guards the same way).
+                    if not (launch.is_file() and _drafter_split_is_complete(launch)):
                         continue
                     resolved = launch.resolve()
                 except OSError:
