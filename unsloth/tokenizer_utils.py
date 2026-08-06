@@ -101,6 +101,7 @@ def _apply_post_load_tokenizer_fixes(tokenizer, model_name, fix_tokenizer):
         return tokenizer
     return _fix_gemma4_base_bos_token(tokenizer, model_name)
 
+
 # Check environments
 # A KAGGLE_* variable is not a Kaggle kernel - the Kaggle CLI reads
 # KAGGLE_USERNAME / KAGGLE_KEY from the environment on ordinary machines, and
