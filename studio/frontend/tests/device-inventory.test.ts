@@ -47,9 +47,10 @@ test("non-forced refresh always coalesces with an in-flight request", () => {
 
 test("HubModelPicker refreshes inventory only on warm opens", () => {
   const source = readFileSync(PICKERS_SOURCE, "utf8");
-  assert.match(source, /if \(!cachedReady\) return;/);
+  assert.match(source, /const warmAtMountRef = useRef\(cachedReady\);/);
+  assert.match(source, /if \(!warmAtMountRef\.current\) return;/);
   assert.doesNotMatch(
     source,
-    /useEffect\(\(\) => \{\s*void refreshInventory\(\);\s*\}, \[refreshInventory\]\);/,
+    /useEffect\(\(\) => \{\s*if \(!cachedReady\) return;\s*void refreshInventory\(\);\s*\}, \[cachedReady, refreshInventory\]\);/,
   );
 });
