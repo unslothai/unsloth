@@ -1088,13 +1088,14 @@ with sync_playwright() as p:
             const [secondPrompt, holdMs] = args;
             window.__unslothRapid = {
                 intercepted: false, submitted: false, queueSeen: false,
-                error: null, seen: [],
+                observed: false, error: null, seen: [],
             };
             const state = window.__unslothRapid;
             const realFetch = window.fetch;
             const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
             const sendFollowUp = () => {
+                if (state.submitted || state.error) return;
                 // Re-query: this is the chat's first message, so sending it
                 // swaps the welcome composer for the dock composer and any
                 // node captured earlier is detached by now.
@@ -1138,6 +1139,8 @@ with sync_playwright() as p:
             // Always restore. A wrapper left in place for the rest of the
             // run is a monkeypatch with no teardown, and every later turn would
             // pay for it.
+            window.__unslothRapidArm = () => setTimeout(sendFollowUp, 100);
+
             window.__unslothRapidRestore = () => {
                 window.fetch = realFetch;
                 clearInterval(poll);
@@ -1151,17 +1154,33 @@ with sync_playwright() as p:
                     clearInterval(poll);
                 }
             }, 25);
-            setTimeout(() => clearInterval(poll), 30000);
+            setTimeout(() => {
+                clearInterval(poll);
+                if (!state.queueSeen && !state.error) {
+                    // Resolve the wait rather than let it die on a generic
+                    // Playwright timeout. That path is the regression this step
+                    // exists to catch, and leaving it unresolved makes the
+                    // screenshot, the explicit message and the fetch teardown
+                    // below unreachable in exactly that case.
+                    state.observed = true;
+                }
+            }, 20000);
         }""",
         ["Reply with exactly: rapid-second", int(RAPID_FIRST_TURN_HOLD_S * 1000)],
     )
 
     composer.fill("Reply with exactly: rapid-first")
     composer_form.evaluate("form => form.requestSubmit()")
+    # Arm the 100 ms path now that the first turn has been submitted. Whichever
+    # fires first wins and the other is a no-op, so this still covers the
+    # pre-render interval the step is named after, while the fetch path keeps
+    # the guarantee when persistence delays the request.
+    page.evaluate("() => window.__unslothRapidArm && window.__unslothRapidArm()")
 
     page.wait_for_function(
         """() => window.__unslothRapid
             && (window.__unslothRapid.queueSeen
+                || window.__unslothRapid.observed
                 || window.__unslothRapid.error)""",
         timeout = 60_000,
     )
@@ -1179,7 +1198,11 @@ with sync_playwright() as p:
     # missing queue control is therefore a real regression, not timing.
     if not state["queueSeen"]:
         shoot("04-rapid-submit-no-queue")
-        fail("follow-up sent during a held first turn did not appear as queued work")
+        fail(
+            "follow-up sent during a held first turn did not appear as queued "
+            f"work (submitted={state['submitted']}, intercepted="
+            f"{state['intercepted']})"
+        )
 
     page.wait_for_function(
         """(want) => {
