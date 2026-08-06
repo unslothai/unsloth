@@ -3007,10 +3007,8 @@ def test_cached_repo_task_gates_an_image_pipeline_on_the_load_path_trust_rule(tm
 def test_cached_repo_task_never_offers_an_sd_cpp_companion_repo_as_a_model(tmp_path):
     """The single-file VAE / text-encoder repos hold no denoiser, so none of them is a pick.
 
-    They used to be third-party repacks, and the trust gate below rejects a community org outright,
-    so this never came up. Their unsloth mirrors clear that gate, and their ids resolve to a family
-    ("unsloth/Z-Image-Turbo-ComfyUI" reads as z-image), so without the companion check each cached
-    companion would have shown up in the Images picker as a row whose load cannot succeed.
+    Their unsloth mirrors clear the trust gate the old third-party ids never did, and the ids
+    resolve to a family, so without the companion check each would list an unloadable Images row.
     """
     from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
 

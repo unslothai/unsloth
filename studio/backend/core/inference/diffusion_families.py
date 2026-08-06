@@ -112,7 +112,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         controlnet_pipeline_class = "FluxControlNetPipeline",
         controlnet_model_class = "FluxControlNetModel",
         sd_cpp_vae = ("black-forest-labs/FLUX.1-schnell", "ae.safetensors"),
-        # unsloth/flux-text-encoders mirrors the two files comfyanonymous/flux_text_encoders publishes for this (CLIP-L + T5-XXL fp16), byte for byte.
+        # Byte-identical mirror of comfyanonymous/flux_text_encoders (CLIP-L + T5-XXL fp16).
         sd_cpp_text_encoders = (
             ("unsloth/flux-text-encoders", "clip_l.safetensors", "clip_l"),
             ("unsloth/flux-text-encoders", "t5xxl_fp16.safetensors", "t5xxl"),
@@ -137,7 +137,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
         # FLUX.2 scales >1MP inputs to ~1MP, so outpaint can't grow.
         inpaint_preserves_size = False,
-        # FLUX.2's 32-channel AE needs the latent-format override. The single-file VAE mirrors Comfy-Org/flux2-dev's copy, but in its own repo: BFL released the FLUX.2 autoencoder under Apache-2.0 while the rest of FLUX.2-dev is non-commercial, and klein-4B is Apache-2.0 too. Shares Qwen3-4B with z-image.
+        # FLUX.2's 32-channel AE needs the latent-format override. The VAE is mirrored on its own because BFL licensed it Apache-2.0 while the rest of FLUX.2-dev is non-commercial. Shares Qwen3-4B with z-image.
         sd_cpp_vae = ("unsloth/FLUX.2-VAE", "split_files/vae/flux2-vae.safetensors"),
         sd_cpp_vae_format = "flux2",
         sd_cpp_text_encoders = (
@@ -148,7 +148,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
     ),
-    # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base, text-to-image only; the Mistral encoder comes from unsloth/FLUX.2-dev-ComfyUI and the VAE from unsloth/FLUX.2-VAE for sd-cli.
+    # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base, text-to-image only; sd-cli takes the Mistral encoder from unsloth/FLUX.2-dev-ComfyUI and the VAE from unsloth/FLUX.2-VAE.
     DiffusionFamily(
         name = "flux.2-dev",
         pipeline_class = "Flux2Pipeline",
@@ -217,7 +217,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "QwenImageInpaintPipeline",
         controlnet_pipeline_class = "QwenImageControlNetPipeline",
         controlnet_model_class = "QwenImageControlNetModel",
-        # Mirrors the one file Comfy-Org/Qwen-Image_ComfyUI publishes for this, byte for byte.
+        # Byte-identical mirror of Comfy-Org/Qwen-Image_ComfyUI.
         sd_cpp_vae = ("unsloth/Qwen-Image-ComfyUI", "split_files/vae/qwen_image_vae.safetensors"),
         # Qwen2.5-VL as a Q4_K_M GGUF keeps the CPU RAM win (bf16 encoder is ~15 GB). sd-cli --qwen2vl aliases --llm.
         sd_cpp_text_encoders = (
@@ -250,7 +250,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "ZImageInpaintPipeline",
         # Z-Image's MLP down-projections peak near 9e5, which overflows float16.
         fp16_incompatible = True,
-        # Mirrors the two files Comfy-Org/z_image_turbo publishes for this (AE + Qwen3-4B), byte for byte.
+        # Byte-identical mirror of Comfy-Org/z_image_turbo (AE + Qwen3-4B).
         sd_cpp_vae = ("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors"),
         sd_cpp_text_encoders = (
             (
@@ -623,7 +623,7 @@ def family_sd_cpp_supported(fam: DiffusionFamily) -> bool:
 
 
 # FLUX.2-klein 9B pairs with Qwen3-8B, the 4B with the family-default Qwen3-4B (a mismatched encoder fails deep in sd-cli), so pick per variant.
-# unsloth/FLUX.2-klein-9B-ComfyUI mirrors the one file Comfy-Org/vae-text-encorder-for-flux-klein-9b publishes for this, byte for byte.
+# Byte-identical mirror of Comfy-Org/vae-text-encorder-for-flux-klein-9b.
 _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (
     (
         "unsloth/FLUX.2-klein-9B-ComfyUI",
@@ -636,12 +636,10 @@ _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (
 def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
     """Lowercased ids of repos that exist ONLY to hand sd.cpp a single-file VAE / text encoder.
 
-    They carry no denoiser, so nothing can be loaded from one. That never mattered while they were
-    third-party repacks, because the cached-model listing only tags a repo as a pickable image
-    model when it is TRUSTED, and a community org never is. Mirroring them into ``unsloth/*`` makes
-    them trusted, which would have turned four companion downloads into four un-loadable rows in
-    everyone's On Device list. Derived from the tables rather than hand-listed, and a repo that is
-    also a real base is excluded: FLUX.1-schnell ships the FLUX.1 VAE and IS loadable."""
+    They carry no denoiser, so nothing can be loaded from one. Third-party repacks never cleared
+    the cached-model trust gate, but their ``unsloth/*`` mirrors do, so they need excluding by hand
+    or each becomes an un-loadable On Device row. Derived from the tables, minus repos that are
+    also a real base: FLUX.1-schnell ships the FLUX.1 VAE and IS loadable."""
     companions: set[str] = set()
     loadable: set[str] = set()
     for fam in _FAMILIES:

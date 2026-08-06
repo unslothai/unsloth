@@ -302,17 +302,15 @@ def test_asset_specs_flux2_klein_selects_encoder_by_variant():
     ]
 
 
-# Community repacks: useful, but nobody controls whether they stay up, stay public or keep their
-# paths, and a rename there breaks every no-GPU load that needs the file. Each one Studio depended
-# on now has a byte-identical unsloth mirror.
+# A rename or takedown in a community repack breaks every no-GPU load needing the file, so each
+# one Studio depended on now has a byte-identical unsloth mirror.
 _REPACKER_ORGS = frozenset(
     {"comfy-org", "comfyanonymous", "quantstack", "city96", "calcuis", "orabazes"}
 )
 
 
 def test_no_sd_cpp_asset_comes_from_a_community_repack():
-    # Vendor repos are fine to fetch from directly (they are the source of truth). What must not
-    # come back is a third-party repack, so this asserts on the org, not on a list of known ids.
+    # Vendor repos are fine (they are the source of truth); repacks are not, so assert on the org.
     from core.inference.diffusion_families import _FAMILIES
 
     offenders = []
@@ -328,8 +326,8 @@ def test_no_sd_cpp_asset_comes_from_a_community_repack():
 
 
 def test_the_moved_sd_cpp_assets_keep_their_upstream_relative_paths():
-    # The mirrors were published under the exact paths the old repos used, so the swap is an id
-    # change only. A mirror that reorganised the files would break sd-cli with a 404 at load time.
+    # The mirrors kept the upstream paths, so the swap is an id change only; a reorganised mirror
+    # would 404 sd-cli at load time.
     want = {
         "flux.1": [
             ("unsloth/flux-text-encoders", "clip_l.safetensors"),
@@ -359,8 +357,8 @@ def test_the_moved_sd_cpp_assets_keep_their_upstream_relative_paths():
         "unsloth/Z-Image-Turbo-ComfyUI",
         "split_files/vae/ae.safetensors",
     )
-    # The FLUX.2 autoencoder is Apache-2.0 by BFL's own carve-out while the conditioner beside it
-    # in the source repack is not, so it is mirrored on its own rather than under those terms.
+    # The FLUX.2 autoencoder is Apache-2.0 while the conditioner beside it in the source repack is
+    # not, so it is mirrored on its own.
     for name in ("flux.2-klein", "flux.2-dev"):
         assert detect_family(name).sd_cpp_vae == (
             "unsloth/FLUX.2-VAE",

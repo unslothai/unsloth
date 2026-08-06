@@ -3965,9 +3965,8 @@ def _cached_repo_task(repo_info) -> Optional[str]:
             sd_cpp_companion_only_repo_ids,
         )
 
-        # A repo that only holds an sd.cpp VAE / text encoder has no denoiser to load, so it is
-        # never a pick however trusted it is. The mirrors of the community repacks live under
-        # unsloth/* and so clear the trust gate below, which the third-party ids never did.
+        # An sd.cpp companion repo holds no denoiser, so it is never a pick even though its
+        # unsloth/* mirror clears the trust gate below (the third-party ids never did).
         if repo_id.strip().lower() in sd_cpp_companion_only_repo_ids():
             return None
         fam = detect_family(repo_id)
