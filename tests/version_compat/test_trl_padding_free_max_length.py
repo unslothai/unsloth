@@ -307,9 +307,7 @@ def test_a_raw_eval_split_is_left_for_the_tokenizer(tmp_path, trl_has_guard):
 
     text = "The quick brown fox. " * 200
     raw = Dataset.from_list([{"text": text}] * 4)
-    trainer = _build(
-        tmp_path, dataset = _tokenized_dataset, eval_dataset = {"validation": raw}
-    )
+    trainer = _build(tmp_path, dataset = _tokenized_dataset, eval_dataset = {"validation": raw})
 
     # The train split was tokenized and capped, so the cap is consumed.
     assert trainer.args.max_length is None
