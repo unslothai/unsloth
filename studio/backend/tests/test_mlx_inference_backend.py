@@ -2024,9 +2024,10 @@ def test_chat_template_override_reports_each_way_it_cannot_apply():
     assert renders_string in targets and nested_set not in targets
 
     cannot_render = SimpleNamespace(chat_template = "native", tokenizer = nested_set)
-    assert mlx_inference._template_override_status("custom", nested_set, cannot_render)[1][
-        "reason"
-    ] == mlx_inference.MLX_TEMPLATE_NAMED_SET
+    assert (
+        mlx_inference._template_override_status("custom", nested_set, cannot_render)[1]["reason"]
+        == mlx_inference.MLX_TEMPLATE_NAMED_SET
+    )
 
     # The same for a callable held by an object that does not render.
     nested_callable = SimpleNamespace(chat_template = "t", _chat_template = lambda: "x")
