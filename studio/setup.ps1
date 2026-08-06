@@ -1513,13 +1513,22 @@ $ROCmGpuLabel = $null
 $script:ROCmGpuLabels = @()   # every AMD adapter name WMI reported (shadowing-aware inference)
 $script:ROCmGfxArch = $null
 # Integrated (APU) gfx arches whose host board also commonly carries a discrete
-# Radeon. HIP enumerates the APU first on such boards, so an index-0 pick reads
-# the iGPU's arch and the dGPU never gets its wheels (#7776: a gfx1036 Raphael
+# Radeon. HIP often enumerates the APU first on such boards, so an index-0 pick
+# reads the iGPU's arch and the dGPU never gets its wheels (#7776: a gfx1036 Raphael
 # iGPU shadowing a gfx1200 RX 9060 XT). Kept in sync with
-# _SHADOWING_INTEGRATED_GFX in studio/install_python_stack.py. The Strix arches
-# (gfx1150/1151/1152) are deliberately absent: those are first-class
-# unified-memory training targets, so their selection must stay untouched.
-$script:ShadowingIntegratedGfx = @("gfx90c", "gfx1013", "gfx1035", "gfx1036", "gfx1037", "gfx1103")
+# _SHADOWING_INTEGRATED_GFX in studio/install_python_stack.py. Every entry is an
+# APU in LLVM's AMDGPU target table. The Strix arches (gfx1150/1151/1152) are
+# deliberately absent: those are first-class unified-memory training targets, so
+# their selection must stay untouched.
+$script:ShadowingIntegratedGfx = @(
+    "gfx90c",   # Renoir / Cezanne
+    "gfx1013",  # Cyan Skillfish
+    "gfx1033",  # Van Gogh
+    "gfx1035",  # Rembrandt
+    "gfx1036",  # Raphael / Mendocino
+    "gfx1103",  # Phoenix / Hawk Point
+    "gfx1153"   # Krackan Point 2
+)
 
 # gfx arch -> AMD per-arch wheel index family. Defined here rather than beside
 # $ROCmIndexUrl because Resolve-ShadowingGfxPick runs during detection, long
@@ -1540,6 +1549,29 @@ $archFamilyMap = @{
     "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"       # MI200/MI100
 }
 
+
+# The one mask -> index resolver for every pick site below. Each site used to
+# inline its own expression and they disagreed: the hipinfo one rejected " 1 "
+# (leading space), the amd-smi one rejected "1,0". A mask the pin check in
+# Resolve-ShadowingGfxPick honours but the index ignores lands on GPU 0, i.e.
+# the iGPU this whole preference exists to skip. Mirrors _pick_visible_index()
+# in studio/install_python_stack.py: "" and "-1" mean "no mask" so the next var
+# is consulted, and an unparseable or out-of-range value falls back to GPU 0.
+function Resolve-VisibleGpuIndex {
+    param([int]$Count)
+    foreach ($visEnv in @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)) {
+        if ($null -eq $visEnv) { continue }
+        $val = $visEnv.Trim()
+        if ($val -eq "" -or $val -eq "-1") { continue }
+        $first = ($val -split ',')[0].Trim()
+        if ($first -match '^\d+$' -and [int]$first -lt $Count) { return [int]$first }
+        if ($first -match '^\d+$') {
+            substep "[WARN] HIP/ROCR/CUDA_VISIBLE_DEVICES index $first is out of range ($Count GPU(s) detected); defaulting to GPU 0 for arch selection" "Yellow"
+        }
+        return 0
+    }
+    return 0
+}
 
 # Mirrors _dedup_pick() in studio/install_python_stack.py. setup.ps1 resolves the
 # arch itself and builds $ROCmIndexUrl from it before ever invoking the Python
@@ -1570,7 +1602,9 @@ function Resolve-ShadowingGfxPick {
     }) | Select-Object -First 1
     if (-not $discreteArch) { return $Picked }
     substep "multiple AMD GPUs detected ($($distinctArches -join ', ')); installing for the discrete $discreteArch instead of the integrated $Picked" "Cyan"
-    substep "Set HIP_VISIBLE_DEVICES to the GPU index you want (then rerun) to install for a different device" "Cyan"
+    # HIP still enumerates the iGPU as device 0 at runtime, so the wheels alone do
+    # not steer training to the dGPU. setx makes it persist across sessions.
+    substep "Run 'setx HIP_VISIBLE_DEVICES 1' and reopen your terminal so Unsloth uses $discreteArch at runtime too, not just at install time" "Cyan"
     return $discreteArch
 }
 if (-not $HasNvidiaSmi) {
@@ -1660,10 +1694,8 @@ if (-not $HasNvidiaSmi) {
                 # Once the arch is printed, keep the ROCm wheel path.
                 $HasROCm = $true
                 $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
-                # All three masks, matching Resolve-ShadowingGfxPick's pin check.
-                $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } elseif ($env:CUDA_VISIBLE_DEVICES -match '^\d') { [int]($env:CUDA_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                 if ($_hipAllArches.Count -gt 0) {
-                    $script:ROCmGfxArch = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
+                    $script:ROCmGfxArch = $_hipAllArches[(Resolve-VisibleGpuIndex $_hipAllArches.Count)]
                     $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $_hipAllArches
                     $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                 } else {
@@ -1717,23 +1749,10 @@ if (-not $HasNvidiaSmi) {
                     $allGfxArches = @([regex]::Matches($smiOut, '(?i)\b(gfx\d+[a-z]?)\b') |
                         ForEach-Object { $_.Groups[1].Value.ToLower() })
                     if ($allGfxArches.Count -gt 0) {
-                        # Resolve which GPU index is runtime-visible.  When a single
-                        # integer index is set, use it; fall back to index 0 otherwise
-                        # (comma-separated lists or unset → first GPU, same as before).
-                        # Same three masks as Resolve-ShadowingGfxPick's pin check --
-                        # amd-smi lists every GPU regardless of them, so an index that
-                        # ignores CUDA_VISIBLE_DEVICES lands on the wrong card.
-                        $visGpu = if ($env:HIP_VISIBLE_DEVICES) { $env:HIP_VISIBLE_DEVICES }
-                                  elseif ($env:ROCR_VISIBLE_DEVICES) { $env:ROCR_VISIBLE_DEVICES }
-                                  elseif ($env:CUDA_VISIBLE_DEVICES) { $env:CUDA_VISIBLE_DEVICES }
-                                  else { $null }
-                        $gpuIdx = 0
-                        if ($visGpu -match '^\s*(\d+)\s*$') { $gpuIdx = [int]$Matches[1] }
-                        if ($gpuIdx -ge $allGfxArches.Count) {
-                            substep "[WARN] HIP/ROCR/CUDA_VISIBLE_DEVICES index $gpuIdx is out of range ($($allGfxArches.Count) GPU(s) detected); defaulting to GPU 0 for arch selection" "Yellow"
-                            $gpuIdx = 0
-                        }
-                        $script:ROCmGfxArch = $allGfxArches[$gpuIdx]
+                        # amd-smi lists every GPU regardless of the masks, so the index
+                        # has to resolve them itself. Shared with the hipinfo path so a
+                        # comma list or a padded value cannot select a different GPU here.
+                        $script:ROCmGfxArch = $allGfxArches[(Resolve-VisibleGpuIndex $allGfxArches.Count)]
                         $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $allGfxArches
                         $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                     } else {
@@ -1741,8 +1760,14 @@ if (-not $HasNvidiaSmi) {
                         # including the GFX target needed for wheel index selection.
                         $smiAsicOut = ""
                         try { $smiAsicOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('static','--asic') } catch {}
-                        if ($smiAsicOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
-                            $script:ROCmGfxArch = $Matches[1].ToLower()
+                        # Collect every token, not just the first: this branch is reached
+                        # precisely when 'list' saw multiple GPUs but printed no arches,
+                        # so a leading iGPU here reintroduces #7776.
+                        $asicGfxArches = @([regex]::Matches($smiAsicOut, '(?i)\b(gfx\d+[a-z]?)\b') |
+                            ForEach-Object { $_.Groups[1].Value.ToLower() })
+                        if ($asicGfxArches.Count -gt 0) {
+                            $script:ROCmGfxArch = $asicGfxArches[(Resolve-VisibleGpuIndex $asicGfxArches.Count)]
+                            $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $asicGfxArches
                             $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                         } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
                             $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
@@ -1765,8 +1790,11 @@ if (-not $HasNvidiaSmi) {
             # however the driver stack enumerated them, so a shadowing iGPU can lead
             # here exactly as it does under HIP (#7776). The arch inference below
             # runs the same shadowing preference over the whole list.
-            $wmiGpus = @(Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match "AMD|Radeon" })
+            # ConfigManagerErrorCode 0 is "working properly": a disabled or
+            # driver-errored Radeon must not depose a working iGPU below.
+            $wmiGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "AMD|Radeon" -and
+                    (($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0)) })
             if ($wmiGpus.Count -gt 0) {
                 $script:ROCmGpuLabels = @($wmiGpus | ForEach-Object { $_.Name })
                 $ROCmGpuLabel = $script:ROCmGpuLabels[0]
@@ -1814,13 +1842,23 @@ if (-not $HasNvidiaSmi) {
             # Only the WMI path can carry more than one name; every other caller
             # left a single synthesized label, so default to it.
             $gpuNames = if ($script:ROCmGpuLabels) { @($script:ROCmGpuLabels) } else { @($ROCmGpuLabel) }
+            # Index over the ADAPTER list, not the inferred arches: an unrecognised
+            # name drops out below, and indexing the shortened list would resolve a
+            # mask to the wrong physical card.
+            $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count
             $nameArches = @()
             foreach ($gpuName in $gpuNames) {
                 $inferred = Get-GfxArchFromGpuName -Name $gpuName -Table $nameArchTable
                 if ($inferred) { $nameArches += $inferred }
             }
-            if ($nameArches.Count -gt 0) {
-                $script:ROCmGfxArch = Resolve-ShadowingGfxPick -Picked $nameArches[0] -AllArches $nameArches
+            $pickedName = Get-GfxArchFromGpuName -Name $gpuNames[$nameIdx] -Table $nameArchTable
+            if (-not $pickedName -and $nameArches.Count -gt 0) { $pickedName = $nameArches[0] }
+            if ($pickedName) {
+                # Only repick when every adapter mapped. Otherwise an unknown name may
+                # BE the discrete card, and skipping the iGPU would pick the wrong one.
+                $script:ROCmGfxArch = if ($nameArches.Count -eq $gpuNames.Count) {
+                    Resolve-ShadowingGfxPick -Picked $pickedName -AllArches $nameArches
+                } else { $pickedName }
                 $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                 substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
                 substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"

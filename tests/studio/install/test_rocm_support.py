@@ -3127,6 +3127,50 @@ class TestDetectWindowsGfxArch:
                 result = stack_mod._detect_windows_gfx_arch()
         assert result == "gfx1200"
 
+    def _hipinfo_pick(self, arches):
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = "".join(f"gcnArchName : {a}\n" for a in arches).encode()
+        with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
+            with patch("subprocess.run", return_value = mock_result):
+                return stack_mod._detect_windows_gfx_arch()
+
+    def test_empty_earlier_mask_defers_to_the_later_pin(self, monkeypatch):
+        # _visible_devices_pinned() skips "" and reads CUDA_VISIBLE_DEVICES, so the
+        # index resolver has to skip it too. Stopping here returned GPU 0 while the
+        # host still counted as pinned, installing iGPU wheels for the masked card.
+        monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
+        for _spelling in ("", "-1"):
+            monkeypatch.setenv("HIP_VISIBLE_DEVICES", _spelling)
+            monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
+            assert stack_mod._pick_visible_index(2) == 1
+            assert self._hipinfo_pick(["gfx1036", "gfx1200"]) == "gfx1200"
+
+    def test_gcn_arch_feature_suffix_is_stripped(self, monkeypatch):
+        # hipinfo can print "gfx90a:sramecc+:xnack-"; setup.ps1:1696 splits on ':'
+        # and the bare token matched neither the wheel table nor the skip set.
+        for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(_m, raising = False)
+        assert self._hipinfo_pick(["gfx1036:xnack-", "gfx1200:xnack-"]) == "gfx1200"
+
+    def test_prefers_a_wheel_backed_discrete_over_an_unsupported_one(self, monkeypatch):
+        # gfx1010 has no Windows wheel index, so stopping at the first non-integrated
+        # token dropped a host that had a perfectly good gfx1200 to CPU torch.
+        for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            monkeypatch.delenv(_m, raising = False)
+        assert stack_mod._windows_rocm_index_url("gfx1010") is None
+        assert self._hipinfo_pick(["gfx1036", "gfx1010", "gfx1200"]) == "gfx1200"
+        # Same when the iGPU itself has no wheels: still prefer the supported card.
+        assert self._hipinfo_pick(["gfx1013", "gfx1010", "gfx1200"]) == "gfx1200"
+
+    def test_shadowing_set_holds_only_apu_arches(self):
+        # gfx1037 is not an AMDGPU target in LLVM, so no Windows tool emits it.
+        assert "gfx1037" not in stack_mod._SHADOWING_INTEGRATED_GFX
+        # gfx1033 (Van Gogh) has a wheel family, so leaving it out let it be
+        # treated as the "discrete" card that deposes another APU.
+        assert "gfx1033" in stack_mod._SHADOWING_INTEGRATED_GFX
+        assert self._hipinfo_pick(["gfx1036", "gfx1033"]) == "gfx1036"
+
     def test_returns_none_on_nonzero_returncode_without_gcnarchname(self):
         # Non-zero exit without gcnArchName must return None (fall through to amd-smi/WMI).
         mock_result = MagicMock()
@@ -3295,22 +3339,29 @@ class TestSetupPs1ShadowingParity:
         # the first AMD match reintroduced #7776 on Adrenalin-only hosts (a 780M
         # ahead of an RX 9060 XT inferred gfx1103 and installed gfx110X-all wheels).
         source = self._setup_ps1()
-        block = source[source.index("$wmiGpus = @(Get-WmiObject Win32_VideoController") :]
+        block = source[source.index("$wmiGpus = @(Get-CimInstance Win32_VideoController") :]
         block = block[: block.index("$ROCmGpuLabel = $script:ROCmGpuLabels[0]")]
         assert "Select-Object -First 1" not in block
+        # A disabled or driver-errored Radeon must not depose a working iGPU.
+        assert "ConfigManagerErrorCode" in block
 
     def test_index_picks_read_the_same_masks_as_the_pin_check(self):
-        # Resolve-ShadowingGfxPick honours CUDA_VISIBLE_DEVICES as a pin, so both
-        # sites that turn a mask into an index have to read it too -- otherwise the
-        # skip is suppressed while the index still resolves to GPU 0.
+        # Resolve-ShadowingGfxPick honours CUDA_VISIBLE_DEVICES as a pin, so every
+        # site that turns a mask into an index has to read it too -- otherwise the
+        # skip is suppressed while the index still resolves to GPU 0. One shared
+        # helper instead of four inline expressions is what keeps them agreeing.
         source = self._setup_ps1()
-        assert "$_hipVisIdx = if (" in source
-        hip_idx = source[source.index("$_hipVisIdx = if (") :]
-        hip_idx = hip_idx[: hip_idx.index("\n")]
-        assert "CUDA_VISIBLE_DEVICES" in hip_idx
-        smi_idx = source[source.index("$visGpu = if (") :]
-        smi_idx = smi_idx[: smi_idx.index("$gpuIdx = 0")]
-        assert "CUDA_VISIBLE_DEVICES" in smi_idx
+        helper = source[source.index("function Resolve-VisibleGpuIndex") :]
+        helper = helper[: helper.index("\n}\n")]
+        for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            assert _mask in helper
+        # hipinfo, amd-smi list, amd-smi static --asic, WMI name inference.
+        assert source.count("Resolve-VisibleGpuIndex $") + source.count(
+            "Resolve-VisibleGpuIndex "
+        ) >= 4
+        # No pick site may still resolve a mask on its own.
+        assert "$_hipVisIdx = if (" not in source
+        assert "$visGpu = if (" not in source
 
     def test_name_inference_runs_the_shadowing_pick(self):
         # Every AMD adapter name gets an arch, then the same preference chooses.
@@ -3319,6 +3370,83 @@ class TestSetupPs1ShadowingParity:
         infer = source[source.index("$nameArches = @()") :]
         infer = infer[: infer.index("Tip: set UNSLOTH_ROCM_GFX_ARCH")]
         assert "Resolve-ShadowingGfxPick" in infer
+
+
+@pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh not installed")
+class TestSetupPs1ShadowingBehaviour:
+    """Runs the real Resolve-ShadowingGfxPick / Resolve-VisibleGpuIndex. The parity
+    class above only greps text, so a rename fails it while a semantic bug passes.
+    Both helpers are sliced out by AST -- setup.ps1 is never dot-sourced."""
+
+    _HARNESS = r"""
+$ErrorActionPreference = "Stop"
+$errors = $null; $tokens = $null
+$ast = [System.Management.Automation.Language.Parser]::ParseFile($env:SETUP_PS1, [ref]$tokens, [ref]$errors)
+if ($errors -and $errors.Count -gt 0) { throw "setup.ps1 has $($errors.Count) parse errors" }
+function substep { param([string]$Message, [string]$Color = "DarkGray") }
+foreach ($n in @("Resolve-VisibleGpuIndex", "Resolve-ShadowingGfxPick")) {
+    $f = $ast.Find({ param($x) $x -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $x.Name -eq $n }, $true)
+    if (-not $f) { throw "$n not found" }
+    Invoke-Expression $f.Extent.Text
+}
+foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
+    $a = $ast.FindAll({ param($x) $x -is [System.Management.Automation.Language.AssignmentStatementAst] }, $true) |
+        Where-Object { $_.Left.Extent.Text -eq $v } | Select-Object -First 1
+    if (-not $a) { throw "$v not found" }
+    Invoke-Expression $a.Extent.Text
+}
+"""
+
+    def _run(self, body: str, env: "dict[str, str] | None" = None) -> str:
+        merged = {k: v for k, v in os.environ.items() if not k.endswith("_VISIBLE_DEVICES")}
+        merged["SETUP_PS1"] = str(PACKAGE_ROOT / "studio" / "setup.ps1")
+        merged.update(env or {})
+        out = subprocess.run(
+            ["pwsh", "-NoProfile", "-NonInteractive", "-Command", self._HARNESS + body],
+            check = True, capture_output = True, text = True, env = merged,
+        )
+        return out.stdout.strip()
+
+    _MIXED = 'Resolve-ShadowingGfxPick -Picked "gfx1036" -AllArches @("gfx1036","gfx1200")'
+
+    def test_unpinned_mixed_host_picks_the_discrete_gpu(self):
+        assert self._run(self._MIXED) == "gfx1200"
+
+    def test_explicit_pin_is_honoured(self):
+        assert self._run(self._MIXED, {"HIP_VISIBLE_DEVICES": "0"}) == "gfx1036"
+
+    def test_strix_is_not_deposed(self):
+        body = 'Resolve-ShadowingGfxPick -Picked "gfx1151" -AllArches @("gfx1151","gfx1200")'
+        assert self._run(body) == "gfx1151"
+
+    def test_no_mask_spellings_do_not_count_as_a_pin(self):
+        for _val in ("", "-1"):
+            assert self._run(self._MIXED, {"HIP_VISIBLE_DEVICES": _val}) == "gfx1200"
+
+    @pytest.mark.parametrize("mask", ["1", "1,0", " 1 "])
+    def test_index_resolves_every_mask_spelling(self, mask):
+        # A comma list and a padded value used to resolve differently per branch,
+        # so a pinned host silently landed on the iGPU at index 0.
+        for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+            assert self._run("Resolve-VisibleGpuIndex 2", {_var: mask}) == "1"
+
+    def test_out_of_range_and_unparseable_masks_fall_back_to_zero(self):
+        for _val in ("7", "GPU-abc123", "-1", ""):
+            assert self._run("Resolve-VisibleGpuIndex 2", {"HIP_VISIBLE_DEVICES": _val}) == "0"
+
+    def test_empty_earlier_mask_defers_to_the_next_one(self):
+        # "" means "no mask", so CUDA_VISIBLE_DEVICES is the operative pin.
+        env = {"HIP_VISIBLE_DEVICES": "", "CUDA_VISIBLE_DEVICES": "1"}
+        assert self._run("Resolve-VisibleGpuIndex 2", env) == "1"
+
+    def test_wheelless_discrete_does_not_depose_a_supported_igpu(self):
+        body = 'Resolve-ShadowingGfxPick -Picked "gfx1036" -AllArches @("gfx1036","gfx1010")'
+        assert self._run(body) == "gfx1036"
+
+    def test_degenerate_inputs_do_not_throw(self):
+        for _all in ("$null", "@()", '@("gfx1036")'):
+            body = f'Resolve-ShadowingGfxPick -Picked "gfx1036" -AllArches {_all}'
+            assert self._run(body) == "gfx1036"
 
 
 # TEST: install_python_stack.py -- _install_bnb_windows_rocm

@@ -633,19 +633,21 @@ def _detect_rocm_version() -> tuple[int, int] | None:
 
 
 # Integrated (APU) gfx arches whose host board also commonly carries a discrete
-# Radeon. HIP enumerates the APU first on most such boards, so an index-0 pick
+# Radeon. HIP often enumerates the APU first on such boards, so an index-0 pick
 # installs wheels for the iGPU and the dGPU is never used (issue #7776: a
-# gfx1036 Raphael iGPU shadowing a gfx1200 RX 9060 XT). Deliberately excludes
-# the Strix arches (gfx1150/1151/1152): those are first-class unified-memory
-# training targets, so their selection must stay untouched.
+# gfx1036 Raphael iGPU shadowing a gfx1200 RX 9060 XT). Every entry is an APU in
+# LLVM's AMDGPU target table. Deliberately excludes the Strix arches
+# (gfx1150/1151/1152): those are first-class unified-memory training targets, so
+# their selection must stay untouched.
 _SHADOWING_INTEGRATED_GFX: "frozenset[str]" = frozenset(
     {
         "gfx90c",  # Renoir / Cezanne
-        "gfx1013",  # Van Gogh
+        "gfx1013",  # Cyan Skillfish
+        "gfx1033",  # Van Gogh
         "gfx1035",  # Rembrandt
         "gfx1036",  # Raphael / Mendocino
-        "gfx1037",  # Raphael-H
         "gfx1103",  # Phoenix / Hawk Point
+        "gfx1153",  # Krackan Point 2
     }
 )
 
@@ -676,25 +678,38 @@ def _pick_visible_index(num_tokens: int) -> int:
     to an index into a list of length num_tokens. Returns 0 (first GPU) for
     unset, empty, '-1', UUID-style, or out-of-range values.
 
-    The three masks must match `_visible_devices_pinned()` exactly. Reading one
-    fewer here means a CUDA_VISIBLE_DEVICES=1 host counts as pinned -- so the
-    shadowing skip is suppressed -- while the index still resolves to GPU 0, and
-    the probes that enumerate every GPU regardless of the masks (amd-smi, WMI)
-    then install the leading iGPU's wheels for a device the user masked away."""
+    Must resolve the same mask `_visible_devices_pinned()` treats as the pin, or
+    the two disagree: that function skips "" / "-1" and reads the next var, so
+    stopping here on an empty HIP_VISIBLE_DEVICES made a host with
+    CUDA_VISIBLE_DEVICES=1 count as pinned while the index still resolved to GPU
+    0, and the probes that enumerate every GPU regardless of the masks (amd-smi,
+    WMI) then installed the leading iGPU's wheels for a device the user masked
+    away."""
     for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         _val = os.environ.get(_env)
         if _val is None:
             continue
         _val = _val.strip()
         if _val == "" or _val == "-1":
-            return 0
+            continue
         _first = _val.split(",")[0].strip()
         try:
             _idx = int(_first)
             if 0 <= _idx < num_tokens:
                 return _idx
+            # Say so rather than silently installing for GPU 0, which on a mixed
+            # host is the iGPU the user was trying to mask off. Matches the
+            # warning setup.ps1's Resolve-VisibleGpuIndex prints.
+            print(
+                f"   [WARN] {_env}={_first} is out of range ({num_tokens} GPU(s) "
+                f"detected); defaulting to GPU 0 for arch selection."
+            )
         except ValueError:
-            pass
+            print(
+                f"   [WARN] {_env}={_val} is not a device index; defaulting to "
+                f"GPU 0 for arch selection. Use UNSLOTH_ROCM_GFX_ARCH to choose "
+                f"the arch directly."
+            )
         return 0
     return 0
 
@@ -732,24 +747,24 @@ def _detect_windows_gfx_arch() -> str | None:
         # enumeration order is the only thing that put the APU first, and the
         # user may still want a different device.
         if _pick in _SHADOWING_INTEGRATED_GFX:
-            _pick_has_wheels = _windows_rocm_index_url(_pick) is not None
-            for _other in tokens:
-                if _other in _SHADOWING_INTEGRATED_GFX:
-                    continue
-                # Deposing a supported APU for a discrete card AMD ships no
-                # Windows wheels for (e.g. gfx1036 + an older gfx1010) resolves
-                # to no index at all and drops the host to CPU -- strictly worse
-                # than the shadowing this preference exists to undo.
-                if _pick_has_wheels and _windows_rocm_index_url(_other) is None:
-                    continue
+            _others = [t for t in tokens if t not in _SHADOWING_INTEGRATED_GFX]
+            # Deposing the pick for a card AMD ships no Windows wheels for (e.g.
+            # gfx1036 + an older gfx1010) resolves to no index and drops the host
+            # to CPU. Prefer a wheel-backed candidate whenever one exists; only
+            # fall back to an unsupported one when the pick has no wheels either.
+            _withWheels = [t for t in _others if _windows_rocm_index_url(t) is not None]
+            _candidates = _withWheels or (
+                [] if _windows_rocm_index_url(_pick) is not None else _others
+            )
+            if _candidates:
+                _other = _candidates[0]
                 print(
                     f"   multiple AMD GPUs detected ({', '.join(_distinct)}); "
-                    f"installing for the discrete {_other} instead of the "
-                    f"integrated {_pick}."
+                    f"installing for {_other} instead of the integrated {_pick}."
                 )
                 print(
-                    f"   Set HIP_VISIBLE_DEVICES to the GPU index you want "
-                    f"(then rerun) to install for a different device."
+                    f"   Run 'setx HIP_VISIBLE_DEVICES 1' and reopen your terminal "
+                    f"so Unsloth uses {_other} at runtime too, not just at install time."
                 )
                 return _other
         print(
@@ -792,8 +807,11 @@ def _detect_windows_gfx_arch() -> str | None:
             text = result.stdout.decode(errors = "replace")
             # findall gets every gcnArchName line so multi-GPU hosts are
             # enumerable and HIP_VISIBLE_DEVICES selects correctly.
+            # Split on ':' like setup.ps1 does: a "gfx90a:sramecc+:xnack-" token
+            # matches neither the wheel table nor the shadowing set.
             _tokens = [
-                t.strip().lower() for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
+                t.split(":")[0].strip().lower()
+                for t in re.findall(r"(?im)^\s*gcnArchName\s*:\s*(\S+)", text)
             ]
             _pick = _dedup_pick(_tokens)
             if _pick:

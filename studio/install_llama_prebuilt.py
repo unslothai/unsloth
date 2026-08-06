@@ -2635,9 +2635,9 @@ def _apply_host_overrides(
         )
     gfx = _normalize_forwarded_gfx(override_rocm_gfx)
     if gfx:
-        # setup.ps1's pick is not fully visible-device aware (neither branch reads
-        # CUDA_VISIBLE_DEVICES; amd-smi matches a bare integer only, so "1,0" falls back to
-        # GPU 0), while _pick_rocm_gfx_target() honours all three vars with HIP's semantics.
+        # setup.ps1 resolves all three masks through Resolve-VisibleGpuIndex, but it also
+        # applies the shadowing-iGPU preference (#7776) that _pick_rocm_gfx_target() does
+        # not, so the two can name different GPUs on a mixed APU + dGPU host.
         # So keep a probed active arch when the forward is only advisory, else
         # _should_auto_vulkan_for_amd_windows() reads a HIP-supported GPU the user masked
         # off and installs an unusable HIP bundle instead of Vulkan. Advisory means:
