@@ -114,6 +114,7 @@ def _build(
     tmp_path,
     dataset = None,
     model_max_seq_length = _MODEL_MAX_SEQ_LENGTH,
+    eval_dataset = None,
     **config_kwargs,
 ):
     """Construct the Unsloth-patched SFTTrainer over a long, truncatable dataset."""
@@ -140,7 +141,13 @@ def _build(
         optim = "adamw_torch",
         **config_kwargs,
     )
-    return SFTTrainer(model = model, processing_class = tok, args = cfg, train_dataset = ds)
+    return SFTTrainer(
+        model = model,
+        processing_class = tok,
+        args = cfg,
+        train_dataset = ds,
+        eval_dataset = eval_dataset,
+    )
 
 
 def _longest(trainer):
@@ -257,6 +264,45 @@ def test_pretokenized_rows_are_truncated_so_the_cap_is_really_enforced(
     # rows x cap, not the cap. Two rows at exactly 2 x 128 is the proof that neither row
     # exceeded it; asserting 128 here would be asserting that padding-free was off.
     assert _collated_width(trainer) == 2 * _MODEL_MAX_SEQ_LENGTH
+
+
+def test_a_torch_formatted_dataset_is_still_truncated(tmp_path, trl_has_guard):
+    """A set_format dataset hands batched map() tensors, not lists.
+
+    `if _col` on a tensor raises on the ambiguous truth value, and an isinstance(list)
+    check simply leaves the column alone; either way the rows stay long while the cap
+    is cleared, which is the exact failure this branch exists to prevent.
+    """
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+
+    def _formatted(tok):
+        ds = _tokenized_dataset(tok)
+        ds.set_format("torch")
+        return ds
+
+    trainer = _build(tmp_path, dataset = _formatted)
+    assert trainer.args.max_length is None
+    assert _longest(trainer) == _MODEL_MAX_SEQ_LENGTH, "formatted rows were not truncated"
+
+
+def test_every_named_eval_split_is_truncated(tmp_path, trl_has_guard):
+    """TRL accepts a dict of named eval splits, and a dict has no .map of its own.
+
+    Skipping them while still clearing max_length would leave evaluation running at the
+    full length the cap was meant to stop.
+    """
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    tok = _load_plain()[1]
+    evals = {"validation": _tokenized_dataset(tok), "test": _tokenized_dataset(tok)}
+    trainer = _build(tmp_path, dataset = _tokenized_dataset, eval_dataset = evals)
+
+    assert trainer.args.max_length is None
+    for name, split in trainer.eval_dataset.items():
+        assert (
+            max(len(x) for x in split["input_ids"]) == _MODEL_MAX_SEQ_LENGTH
+        ), f"{name}: eval split was not truncated"
 
 
 @pytest.mark.parametrize(

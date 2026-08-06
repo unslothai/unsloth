@@ -1299,14 +1299,32 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # input_ids, labels, attention_mask and the masks stay aligned. Written out
                     # rather than imported, because trl.data_utils drags in the processor stack
                     # and an ImportError there would silently drop the cap.
+                    # isinstance(list) is not enough: a dataset with a torch/numpy format hands
+                    # batched map() tensors, where `if _col` raises on the ambiguous truth value and
+                    # a list check would silently leave the rows long. Ask for a per-row sequence
+                    # instead, excluding str/bytes so a text column is never sliced.
+                    "        def _unsloth_is_sequence_column(_col):\n"
+                    "            try:\n"
+                    "                if len(_col) == 0: return False\n"
+                    "                _first = _col[0]\n"
+                    "            except Exception:\n"
+                    "                return False\n"
+                    "            if isinstance(_first, (str, bytes)): return False\n"
+                    "            return hasattr(_first, '__len__')\n"
                     "        def _unsloth_truncate_rows(_batch):\n"
-                    "            return {_k: ([_v[:_unsloth_cap] for _v in _col] if _col and isinstance(_col[0], list) else _col) for _k, _col in _batch.items()}\n"
+                    "            return {_k: ([_v[:_unsloth_cap] for _v in _col] if _unsloth_is_sequence_column(_col) else _col) for _k, _col in _batch.items()}\n"
                     "        try:\n"
                     "            train_dataset = train_dataset.map(_unsloth_truncate_rows, batched = True)\n"
                     # eval_dataset gets the same cut: max_length is cleared below, so a long eval
                     # row would otherwise reach the model unclipped at evaluation time.
-                    "            if 'eval_dataset' in locals() and eval_dataset is not None and hasattr(eval_dataset, 'map'):\n"
-                    "                eval_dataset = eval_dataset.map(_unsloth_truncate_rows, batched = True)\n"
+                    # TRL accepts a dict of named eval splits, which has no .map of its own. Cut
+                    # each split: skipping them while still clearing max_length below would leave
+                    # evaluation running at the full length the cap was meant to stop.
+                    "            if 'eval_dataset' in locals() and eval_dataset is not None:\n"
+                    "                if isinstance(eval_dataset, dict):\n"
+                    "                    eval_dataset = {_k: (_v.map(_unsloth_truncate_rows, batched = True) if hasattr(_v, 'map') else _v) for _k, _v in eval_dataset.items()}\n"
+                    "                elif hasattr(eval_dataset, 'map'):\n"
+                    "                    eval_dataset = eval_dataset.map(_unsloth_truncate_rows, batched = True)\n"
                     "            _unsloth_prep_truncates = True\n"
                     "        except Exception as _unsloth_truncate_error:\n"
                     # Never silent: a swallowed failure here reads as the cap being enforced.
