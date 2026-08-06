@@ -1514,7 +1514,7 @@ export function AppSidebar() {
           {isPinned && variant !== "project" && (
             <HugeiconsIcon icon={BubbleChatIcon} strokeWidth={1.75} className="size-icon! shrink-0" />
           )}
-          <span className="truncate">
+          <span className="min-w-0 flex-1 truncate">
             {pendingRename?.id === item.id ? pendingRename.title : item.title}
           </span>
           {showWorkSpinner && (

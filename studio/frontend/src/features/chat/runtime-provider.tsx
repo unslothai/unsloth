@@ -104,6 +104,7 @@ import { chatHistoryClearBoundary } from "./utils/chat-history-clear-boundary";
 import { syncExportedRepositoryToBackend } from "./utils/delete-thread-message";
 import { getImageInputUnavailableReason } from "./utils/image-input-support";
 import { isAssistantLocalThreadId } from "./utils/thread-ids";
+import { fallbackTitleFromUserText } from "./utils/fallback-chat-title";
 
 const pendingHistoryAppendByMessageId = new Map<string, Promise<void>>();
 // Resolves to the thread id assigned when this message's chat was first persisted.
@@ -579,14 +580,6 @@ async function generateTitleWithModel(payload: {
 }
 
 const inflightTitleByKey = new Set<string>();
-
-function fallbackTitleFromUserText(userText: string): string {
-  const firstLine = (userText || "").split(/\r?\n/, 1)[0] ?? "";
-  const cleaned = firstLine.replace(/\s+/g, " ").trim();
-  const max = 48;
-  if (!cleaned) return "New Chat";
-  return cleaned.slice(0, max) + (cleaned.length > max ? "..." : "");
-}
 
 function cloneContent(
   content: ThreadMessage["content"],
