@@ -1348,6 +1348,22 @@ _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 _CMD_SWITCH_RE = re.compile(r"/[a-zA-Z](?::[\w.]+)?")
 
 
+def _is_start_title(token: str) -> bool:
+    """True when START would read ``token`` as its window title, not the program.
+
+    The cmd lexer keeps the quote marks, so a title still arrives quoted. The
+    posix lexer has stripped them, leaving two spellings a bare program name
+    cannot have: the empty ``start ""`` idiom, and a title containing
+    whitespace. A single-word posix title (``start "job" prog``) is
+    indistinguishable from a program name and is deliberately not guessed.
+    """
+    return (
+        token == ""
+        or any(char.isspace() for char in token)
+        or (len(token) >= 2 and token[0] == '"' and token[-1] == '"')
+    )
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -1643,11 +1659,12 @@ def _find_blocked_commands(command: str) -> set[str]:
             prev = tokens[j]
             if prev.startswith("-"):
                 continue  # skip Unix flags like --login, -l
-            if is_win_c and _CMD_SWITCH_RE.fullmatch(prev):
+            # Git Bash hands cmd a doubled slash, so the preceding switches
+            # carry the same spelling the trigger does and are normalised the
+            # same way: without it `cmd //v:on //c powershell` stopped here.
+            if is_win_c and _CMD_SWITCH_RE.fullmatch(_win_switch(prev)):
                 continue  # skip Windows switches like /s, /q, /v:on
-            # The cmd lexer keeps the quote marks, so `"cmd"` must still read
-            # as cmd here (the posix lexer has already stripped them).
-            prev_base = os.path.basename(prev.strip('"')).lower()
+            prev_base = os.path.basename(prev).lower()
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             elif is_win_c and prev_base in _SHELLS_WIN:
@@ -1672,16 +1689,14 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
             # /d C:\dir and friends carry their value in the next token.
             j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
-        # cmd reads a quoted first argument as the window title, but only when
-        # something follows it -- `start "prog.exe"` launches the program. Which
-        # token that is cannot be decided from the text here: the posix lexer has
-        # already stripped the marks that say so, and guessing wrong leaves the
-        # program unscreened. So when a title is possible both candidates are
-        # screened, which is the fail-closed direction. The cost is that a benign
-        # second positional is screened too (`start "" notepad rm` reads `rm`).
+        # cmd reads a quoted first argument as the window title, so the program
+        # sits one token further on. Screening the token after every `start`
+        # unconditionally refuses ordinary text (`echo start notepad powershell`),
+        # so the second candidate is read only when the first is recognisably a
+        # title rather than a program.
         if j < len(tokens):
             blocked |= _find_blocked_commands(tokens[j])
-        if j + 1 < len(tokens):
+        if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.
             while k < len(tokens) and _win_switch(tokens[k].lower()).startswith("/"):
