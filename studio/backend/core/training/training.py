@@ -112,15 +112,15 @@ def _coerce_optional_bool(value, default: bool) -> bool:
 
 
 def _coerce_optional_nonneg_float(name: str, value):
-    """Reject negatives; HTTP `ge=0` doesn't cover raw `**kwargs` callers."""
+    """Reject negatives and non-finite; `ge=0` misses raw callers, and inf never binds."""
     if value is None:
         return None
     try:
         coerced = float(value)
     except (TypeError, ValueError):
         raise ValueError(f"Unsloth: {name}={value!r} must be a non-negative float or None.")
-    if coerced < 0:
-        raise ValueError(f"Unsloth: {name}={coerced} must be >= 0 (use 0 or None to disable).")
+    if coerced < 0 or not math.isfinite(coerced):
+        raise ValueError(f"Unsloth: {name}={coerced} must be finite and >= 0.")
     return coerced
 
 
@@ -177,7 +177,9 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
         "max_steps": values.get("max_steps", 0),
         "save_steps": values.get("save_steps", 0),
         "weight_decay": values.get("weight_decay", 0.001),
-        "max_grad_norm": values.get("max_grad_norm", 0.0),
+        "max_grad_norm": _coerce_optional_nonneg_float(
+            "max_grad_norm", values.get("max_grad_norm")
+        ),
         "max_grad_value": _coerce_optional_nonneg_float(
             "max_grad_value", values.get("max_grad_value")
         ),

@@ -414,14 +414,25 @@ class TrainingStartRequest(BaseModel):
     max_steps: Optional[int] = Field(None, description = "Maximum training steps")
     save_steps: int = Field(100, description = "Steps between checkpoints")
     weight_decay: float = Field(0.001, description = "Weight decay")
-    max_grad_norm: float = Field(
-        0.0,
+    # All three clip knobs are finite as well as non-negative: JSON 1e309 (and
+    # FastAPI's Infinity literal) floats to inf, which clears ge=0 but never
+    # binds, so the run would train unclipped while reporting a threshold.
+    max_grad_norm: Optional[float] = Field(
+        None,
         ge = 0,
-        description = "Global gradient norm clipping threshold. Set 0 to disable.",
+        allow_inf_nan = False,
+        description = (
+            "Global gradient norm clipping threshold. Unset keeps the training "
+            "backend's own default; 0 turns global-norm clipping off, which on "
+            "MLX leaves per-parameter clipping in force unless max_grad_leaf_norm "
+            "is also 0. Honored on MLX; the CUDA path trains with its own fixed "
+            "thresholds."
+        ),
     )
     max_grad_value: Optional[float] = Field(
         None,
         ge = 0,
+        allow_inf_nan = False,
         description = (
             "MLX-only elementwise gradient value clipping threshold. "
             "If unset, MLX uses its runtime default."
@@ -430,6 +441,7 @@ class TrainingStartRequest(BaseModel):
     max_grad_leaf_norm: Optional[float] = Field(
         None,
         ge = 0,
+        allow_inf_nan = False,
         description = (
             "MLX-only proportional per-parameter gradient norm cap. "
             "Preserves each tensor's gradient direction without global norm "
