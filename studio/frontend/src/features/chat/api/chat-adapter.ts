@@ -1726,6 +1726,10 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedKvCacheDtype",
   "nParallel",
   "loadedNParallel",
+  "nBatch",
+  "loadedNBatch",
+  "nUbatch",
+  "loadedNUbatch",
   "tensorParallel",
   "loadedTensorParallel",
   "gpuMemoryMode",
@@ -2124,6 +2128,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               // split (0 especially) must not be refused as a full-GGUF occupant.
               gpu_layers: effectiveGpuLayers,
               n_parallel: config.nParallel ?? null,
+              n_batch: config.nBatch ?? null,
+              n_ubatch: config.nUbatch ?? null,
             }
           : {}),
       }))
@@ -2160,6 +2166,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             gpu_ids: effectiveGpuIds ?? undefined,
             // Per-model too, or the auto-load reverts a remembered override.
             n_parallel: config.nParallel ?? null,
+            n_batch: config.nBatch ?? null,
+            n_ubatch: config.nUbatch ?? null,
           }
         : {}),
     }).catch((error: unknown) => {
@@ -2233,6 +2241,13 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         const committedSlots = (loadResp.is_diffusion ?? false)
           ? null
           : (config.nParallel ?? null);
+        // same rule for the batch sizes
+        const committedNBatch = (loadResp.is_diffusion ?? false)
+          ? null
+          : (config.nBatch ?? null);
+        const committedNUbatch = (loadResp.is_diffusion ?? false)
+          ? null
+          : (config.nUbatch ?? null);
         useChatRuntimeStore.setState({
           ggufContextLength: loadResp.context_length ?? 131072,
           ggufMaxContextLength:
@@ -2251,6 +2266,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // Click-time value, not the resolved backend echo (see performLoad).
           nParallel: committedSlots,
           loadedNParallel: committedSlots,
+          nBatch: committedNBatch,
+          loadedNBatch: committedNBatch,
+          nUbatch: committedNUbatch,
+          loadedNUbatch: committedNUbatch,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           ...loadedGpuMemoryFields(loadResp),
@@ -2282,6 +2301,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           // a model that cannot use it.
           nParallel: null,
           loadedNParallel: null,
+          nBatch: null,
+          loadedNBatch: null,
+          nUbatch: null,
+          loadedNUbatch: null,
           tensorParallel: loadResp.tensor_parallel ?? false,
           loadedTensorParallel: loadResp.tensor_parallel ?? false,
           // Non-GGUF response: clears any stale GPU baseline a prior manual-GPU
@@ -2606,6 +2629,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         // preset would read as applied and be re-sent by the next Apply.
         nParallel: null,
         loadedNParallel: null,
+        nBatch: null,
+        loadedNBatch: null,
+        nUbatch: null,
+        loadedNUbatch: null,
         tensorParallel: loadResp.tensor_parallel ?? false,
         loadedTensorParallel: loadResp.tensor_parallel ?? false,
         ...loadedGpuMemoryFields(loadResp),

@@ -39,6 +39,8 @@ from utils.helper_precache_settings import (
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
 from utils.openai_auto_switch_settings import (
+    BATCH_SIZE_MAX,
+    BATCH_SIZE_MIN,
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
     DEFAULT_OPENAI_AUTO_SWITCH_ENABLED,
@@ -173,6 +175,9 @@ class ModelOverridePayload(BaseModel):
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)
     # Parallel decode slots (llama-server --parallel), GGUF-only; None follows the server default.
     n_parallel: Optional[int] = Field(default = None, ge = PARALLEL_SLOTS_MIN, le = PARALLEL_SLOTS_MAX)
+    # prompt batch sizes (llama-server --batch-size / --ubatch-size), gguf-only; none follows the llama.cpp defaults (2048 / 512)
+    n_batch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
+    n_ubatch: Optional[int] = Field(default = None, ge = BATCH_SIZE_MIN, le = BATCH_SIZE_MAX)
     tensor_parallel: bool = False
     # Validated in bytes below: pydantic counts characters, so a multi-byte template would pass.
     chat_template_override: Optional[str] = None
@@ -206,6 +211,8 @@ class ModelOverridePayload(BaseModel):
         "custom_context_length",
         "spec_draft_n_max",
         "n_parallel",
+        "n_batch",
+        "n_ubatch",
         "gpu_layers",
         "n_cpu_moe",
         "gpu_ids",
@@ -603,6 +610,8 @@ def update_openai_auto_switch_override(
                 speculative_type = payload.speculative_type,
                 spec_draft_n_max = payload.spec_draft_n_max,
                 n_parallel = payload.n_parallel,
+                n_batch = payload.n_batch,
+                n_ubatch = payload.n_ubatch,
                 tensor_parallel = payload.tensor_parallel,
                 chat_template_override = payload.chat_template_override,
                 gpu_memory_mode = payload.gpu_memory_mode,

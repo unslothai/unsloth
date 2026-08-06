@@ -1462,7 +1462,7 @@ def test_hydration_restores_a_remembered_slot_override():
         "prevState.nParallel === null;" in status
     )
     assert (
-        "status.is_gguf && (slotsUnseeded || slotsModelChanged)" in status
+        "status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged)" in status
     ), "storage is read on a fresh store or a model change, never on a steady poll"
     assert (
         "...(seedLoadParams && (slotsUnseeded || slotsModelChanged) &&" in status
@@ -1538,6 +1538,108 @@ def test_failed_switch_rollback_restores_the_slot_intent_not_the_resolved_count(
     # recreates the previous model at a different slot count.
     assert "loadedNParallel: stateBeforeUnload.loadedNParallel ?? null," in rollback
     assert "n_parallel: stateBeforeUnload.loadedNParallel," in runtime
+
+
+def test_batch_sizes_setting_wired_end_to_end():
+    """The per-load Batch / Micro-batch knobs (llama-server --batch-size / --ubatch-size)
+    follow the same hops as Parallel Slots; a lost hop silently reverts the model to the
+    llama.cpp defaults (2048 / 512)."""
+    config = _read("features/model-picker/model-config/per-model-config.ts")
+    assert '"nBatch",' in config and '"nUbatch",' in config
+    assert "N_BATCH_MAX, Math.round(partial.nBatch)" in config
+    assert "N_BATCH_MAX, Math.round(partial.nUbatch)" in config
+    assert "config.nBatch == null &&" in config
+    assert "config.nUbatch == null &&" in config
+    page = _read("features/model-picker/components/model-config-page.tsx")
+    assert "Batch Size" in page and "Micro-batch Size" in page
+    assert "config.nBatch != null ||" in page
+    assert 'aria-label="Prompt batch size"' in page
+    assert 'aria-label="Prompt micro-batch size"' in page
+    api_types = _read("features/chat/types/api.ts")
+    assert "n_batch?: number | null;" in api_types
+    assert "n_ubatch?: number | null;" in api_types
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    assert "pendingLoadConfig?.nBatch" in runtime
+    assert "n_batch: isGguf ? loadNBatch : null," in runtime
+    assert "n_ubatch: isGguf ? loadNUbatch : null," in runtime
+    assert "n_batch: validateNBatch," in runtime
+    assert "n_ubatch: validateNUbatch," in runtime
+    assert "loadNBatch = pendingLoadConfig?.nBatch ?? null;" in runtime
+    assert "loadNUbatch = pendingLoadConfig?.nUbatch ?? null;" in runtime
+    assert "n_batch: stateBeforeUnload.loadedNBatch," in runtime
+    assert "n_ubatch: stateBeforeUnload.loadedNUbatch," in runtime
+    chat_api = _read("features/chat/api/chat-api.ts")
+    assert "n_batch: payload.n_batch," in chat_api
+    assert "n_ubatch: payload.n_ubatch," in chat_api
+    composer = _read("features/chat/shared-composer.tsx")
+    assert composer.count("n_batch: ownConfig.nBatch ?? null,") == 2
+    assert composer.count("n_ubatch: ownConfig.nUbatch ?? null,") == 2
+    adapter = _read("features/chat/api/chat-adapter.ts")
+    assert adapter.count("n_batch: config.nBatch ?? null,") == 2
+    assert adapter.count("n_ubatch: config.nUbatch ?? null,") == 2
+    assert "loadedNBatch: committedNBatch," in adapter
+    assert "loadedNUbatch: committedNUbatch," in adapter
+    status = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    # Baseline from the echo only; the control never adopts it.
+    assert "loadedNBatch: status.requested_n_batch," in status
+    assert "loadedNUbatch: status.requested_n_ubatch," in status
+    assert "nBatch: status.requested_n_batch," not in status
+    assert "nUbatch: status.requested_n_ubatch," not in status
+    signature = _read("features/model-picker/model-config/config-signature.ts")
+    assert 'config.nBatch ?? "",' in signature
+    assert 'config.nUbatch ?? "",' in signature
+
+
+def test_batch_sizes_reach_an_api_load_through_the_server_mirror():
+    """Same server-mirror hop as the slots: an OpenAI auto-switch load happens without a
+    browser, so the stored override is its only way to carry the batch sizes."""
+    api = " ".join(_read("features/model-picker/api/model-overrides.ts").split())
+    assert "n_batch?: number;" in api
+    assert "n_ubatch?: number;" in api
+    assert "if (config.nBatch && config.nBatch > 0) { payload.n_batch = config.nBatch; }" in api
+    assert (
+        "if (config.nUbatch && config.nUbatch > 0) { payload.n_ubatch = config.nUbatch; }" in api
+    )
+    monitor = " ".join(_read("features/api-monitor/components/saved-model-settings.tsx").split())
+    assert "if (override.n_batch) {" in monitor
+    assert "if (override.n_ubatch) {" in monitor
+
+    route = _read_backend("routes/settings.py")
+    assert "n_batch: Optional[int] = Field(" in route
+    assert "n_batch = payload.n_batch," in route
+    assert "n_ubatch = payload.n_ubatch," in route
+    store = _read_backend("utils/openai_auto_switch_settings.py")
+    assert '("n_batch", "n_ubatch")' in store
+    gguf_block = store.split("    if is_gguf:", 1)[1]
+    assert 'kwargs["n_batch"] = override["n_batch"]' in gguf_block
+    assert 'kwargs["n_ubatch"] = override["n_ubatch"]' in gguf_block
+    # A stored pass-through -b / -ub must not outrank the first-class field.
+    assert 'strip_batch = "n_batch" in kwargs,' in store
+    assert 'strip_ubatch = "n_ubatch" in kwargs,' in store
+
+
+def test_hydration_clears_the_batch_baselines_for_a_batchless_model():
+    """Like the slot baseline: a model whose load never sent the batch sizes must not
+    inherit the previous GGUF's values into the rollback baseline."""
+    src = _read("features/chat/lib/apply-inference-status-to-store.ts")
+    assert "(status.is_gguf === false || status.requested_n_batch === null) && {" in src
+    clear = src.index("status.is_gguf === false || status.requested_n_batch === null")
+    assert "loadedNBatch: null," in src[clear : clear + 200]
+    assert "(status.is_gguf === false || status.requested_n_ubatch === null) && {" in src
+    clear = src.index("status.is_gguf === false || status.requested_n_ubatch === null")
+    assert "loadedNUbatch: null," in src[clear : clear + 200]
+    # A swap under this tab resets the controls too.
+    status = " ".join(src.split())
+    assert "...(seedLoadParams && slotsModelChanged && { nBatch: null, nUbatch: null })," in status
+    # The remembered override is re-adopted only when the echo proves it.
+    assert (
+        "rememberedNBatch != null && rememberedNBatch === "
+        "status.requested_n_batch && { nBatch: rememberedNBatch, }" in status
+    )
+    assert (
+        "rememberedNUbatch != null && rememberedNUbatch === "
+        "status.requested_n_ubatch && { nUbatch: rememberedNUbatch, }" in status
+    )
 
 
 def test_vulkan_inference_devices_are_the_pickable_set():

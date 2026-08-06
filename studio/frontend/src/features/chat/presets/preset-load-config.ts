@@ -12,6 +12,8 @@ import {
   DEFAULT_MAX_SEQ_LENGTH,
   KV_CACHE_DTYPES,
   MTP_SPECULATIVE_TYPES,
+  N_BATCH_MAX,
+  N_BATCH_MIN,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
   SPECULATIVE_TYPES,
@@ -33,6 +35,8 @@ export type PresetLoadConfig = Pick<
   | "speculativeType"
   | "specDraftNMax"
   | "nParallel"
+  | "nBatch"
+  | "nUbatch"
   | "tensorParallel"
   | "gpuMemoryMode"
   | "gpuLayers"
@@ -49,6 +53,8 @@ export const EMPTY_PRESET_LOAD_CONFIG: PresetLoadConfig = {
   speculativeType: null,
   specDraftNMax: null,
   nParallel: null,
+  nBatch: null,
+  nUbatch: null,
   tensorParallel: false,
 };
 
@@ -119,6 +125,14 @@ export function normalizePresetLoadConfig(
             Math.min(N_PARALLEL_MAX, Math.round(partial.nParallel)),
           )
         : null,
+    nBatch:
+      typeof partial.nBatch === "number" && Number.isFinite(partial.nBatch)
+        ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nBatch)))
+        : null,
+    nUbatch:
+      typeof partial.nUbatch === "number" && Number.isFinite(partial.nUbatch)
+        ? Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, Math.round(partial.nUbatch)))
+        : null,
     tensorParallel:
       typeof partial.tensorParallel === "boolean"
         ? partial.tensorParallel
@@ -165,6 +179,8 @@ export function capturePresetLoadConfig(): PresetLoadConfig | undefined {
     speculativeType: normalizeSpeculativeType(snapshot.speculativeType),
     specDraftNMax: snapshot.specDraftNMax ?? null,
     nParallel: snapshot.nParallel ?? null,
+    nBatch: snapshot.nBatch ?? null,
+    nUbatch: snapshot.nUbatch ?? null,
     tensorParallel: snapshot.tensorParallel ?? false,
     ...(snapshot.gpuMemoryMode === "manual"
       ? { gpuMemoryMode: "manual" as const }
@@ -220,6 +236,8 @@ export function applyPresetLoadConfig(
     speculativeType: config.speculativeType ?? null,
     specDraftNMax: config.specDraftNMax ?? null,
     nParallel: config.nParallel ?? null,
+    nBatch: config.nBatch ?? null,
+    nUbatch: config.nUbatch ?? null,
     tensorParallel: config.tensorParallel ?? false,
     chatTemplateOverride: null,
     gpuMemoryMode: config.gpuMemoryMode,
@@ -248,6 +266,12 @@ export function formatPresetLoadConfigSummary(
   }
   if (config.nParallel != null) {
     parts.push(`${config.nParallel} slots`);
+  }
+  if (config.nBatch != null) {
+    parts.push(`Batch ${config.nBatch}`);
+  }
+  if (config.nUbatch != null) {
+    parts.push(`uBatch ${config.nUbatch}`);
   }
   if (config.gpuMemoryMode === "manual") {
     parts.push("GPU manual");

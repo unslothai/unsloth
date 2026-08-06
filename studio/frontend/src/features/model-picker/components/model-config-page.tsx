@@ -57,6 +57,8 @@ import {
   MAX_SEQ_LENGTH_MIN,
   MAX_SEQ_LENGTH_STEP,
   MTP_SPECULATIVE_TYPES,
+  N_BATCH_MAX,
+  N_BATCH_MIN,
   N_PARALLEL_MAX,
   N_PARALLEL_MIN,
   type PerModelConfig,
@@ -107,6 +109,8 @@ function hasNonDefaultAdvanced(config: PerModelConfig): boolean {
     (config.speculativeType ?? "auto") !== "auto" ||
     config.specDraftNMax != null ||
     config.nParallel != null ||
+    config.nBatch != null ||
+    config.nUbatch != null ||
     config.tensorParallel ||
     config.chatTemplateOverride != null ||
     (config.gpuMemoryMode ?? "auto") !== "auto" ||
@@ -662,6 +666,75 @@ function GgufAdvancedSettings({
             }
           }}
           aria-label="Parallel decode slots"
+          className={NUMBER_INPUT_CLASS}
+        />
+      </div>
+
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Batch Size</span>
+          <InfoHint>
+            Logical prompt batch size (--batch-size). Leave blank for the
+            llama.cpp default (2048). Rarely needs changing; the micro-batch
+            below is what usually matters.
+          </InfoHint>
+        </div>
+        <input
+          type="number"
+          min={N_BATCH_MIN}
+          max={N_BATCH_MAX}
+          step={1}
+          value={config.nBatch ?? ""}
+          placeholder="auto"
+          onChange={(event) => {
+            const raw = event.target.value;
+            if (raw === "") {
+              update({ nBatch: null });
+              return;
+            }
+            const parsed = Number.parseInt(raw, 10);
+            if (Number.isFinite(parsed)) {
+              update({
+                nBatch: Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)),
+              });
+            }
+          }}
+          aria-label="Prompt batch size"
+          className={NUMBER_INPUT_CLASS}
+        />
+      </div>
+
+      <div className={ROW_CLASS}>
+        <div className="flex min-w-0 items-center gap-1.5">
+          <span className={LABEL_CLASS}>Micro-batch Size</span>
+          <InfoHint>
+            Physical prompt micro-batch size (--ubatch-size). Leave blank for
+            the llama.cpp default (512). Larger values speed up prompt
+            processing but use more VRAM for the compute buffer; capped at the
+            batch size.
+          </InfoHint>
+        </div>
+        <input
+          type="number"
+          min={N_BATCH_MIN}
+          max={N_BATCH_MAX}
+          step={1}
+          value={config.nUbatch ?? ""}
+          placeholder="auto"
+          onChange={(event) => {
+            const raw = event.target.value;
+            if (raw === "") {
+              update({ nUbatch: null });
+              return;
+            }
+            const parsed = Number.parseInt(raw, 10);
+            if (Number.isFinite(parsed)) {
+              update({
+                nUbatch: Math.max(N_BATCH_MIN, Math.min(N_BATCH_MAX, parsed)),
+              });
+            }
+          }}
+          aria-label="Prompt micro-batch size"
           className={NUMBER_INPUT_CLASS}
         />
       </div>

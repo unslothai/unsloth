@@ -55,6 +55,8 @@ export function applyPerModelConfigToRuntime(
       readPersistedSpeculativeType(),
     specDraftNMax: config.specDraftNMax ?? null,
     nParallel: config.nParallel ?? null,
+    nBatch: config.nBatch ?? null,
+    nUbatch: config.nUbatch ?? null,
     tensorParallel: options.isDiffusion
       ? false
       : (config.tensorParallel ?? false),
@@ -103,6 +105,8 @@ export function currentRuntimePerModelConfig(
     speculativeType: normalizeSpeculativeType(s.speculativeType),
     specDraftNMax: s.specDraftNMax ?? null,
     nParallel: s.nParallel ?? null,
+    nBatch: s.nBatch ?? null,
+    nUbatch: s.nUbatch ?? null,
     tensorParallel: s.tensorParallel ?? false,
     chatTemplateOverride: cleanTemplate(s.chatTemplateOverride),
     // Snapshot the live GPU knobs too so a failed switch rolls the previous
@@ -129,6 +133,8 @@ export function perModelConfigsEqual(
       normalizeSpeculativeType(b.speculativeType) &&
     (a.specDraftNMax ?? null) === (b.specDraftNMax ?? null) &&
     (a.nParallel ?? null) === (b.nParallel ?? null) &&
+    (a.nBatch ?? null) === (b.nBatch ?? null) &&
+    (a.nUbatch ?? null) === (b.nUbatch ?? null) &&
     Boolean(a.tensorParallel) === Boolean(b.tensorParallel) &&
     cleanTemplate(a.chatTemplateOverride) ===
       cleanTemplate(b.chatTemplateOverride) &&

@@ -4841,6 +4841,8 @@ def _estimate_gguf_kv_gb(
     n_parallel: int = 1,
     cache_type_kv: Optional[str] = None,
     tensor_parallel: bool = False,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
 ) -> float:
     """KV-cache VRAM (GB) at the larger of max_seq_length and any `--ctx-size`/`-c`
     override, over n_parallel slots, using the effective cache settings and managed
@@ -4893,7 +4895,9 @@ def _estimate_gguf_kv_gb(
                 llama_extra_args,
                 default = managed_kv_unified,
             ),
-            n_ubatch = _extra_args_n_ubatch(llama_extra_args, n_ctx = ctx),
+            n_ubatch = _extra_args_n_ubatch(
+                llama_extra_args, n_ctx = ctx, n_batch = n_batch, n_ubatch = n_ubatch
+            ),
             flash_attn = False,
         )
         return kv / (1024**3)
@@ -4910,6 +4914,8 @@ def _estimate_gguf_required_gb(
     n_parallel: int = 1,
     cache_type_kv: Optional[str] = None,
     tensor_parallel: bool = False,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -4931,6 +4937,8 @@ def _estimate_gguf_required_gb(
                 n_parallel,
                 cache_type_kv,
                 tensor_parallel,
+                n_batch,
+                n_ubatch,
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -5408,6 +5416,9 @@ def _guard_chat_load_against_training(
             llama_extra_args = llama_extra_args,
             n_parallel = n_parallel,
             cache_type_kv = request.cache_type_kv,
+            # getattr: older callers hand this guard a bare request double
+            n_batch = getattr(request, "n_batch", None),
+            n_ubatch = getattr(request, "n_ubatch", None),
             tensor_parallel = (
                 _effective_tensor_parallel(llama_extra_args, _guard_tensor_parallel)
                 and (
@@ -5560,6 +5571,9 @@ def _resolve_inherited_extra_args(
             # must not last-wins-override it. auto leaves a user's inherited -ngl
             # alone. getattr: a validate request reuses this resolver, no offload fields.
             strip_offload = getattr(request, "gpu_memory_mode", "auto") == "manual",
+            # a set first-class batch field emits its own flag; an inherited -b / -ub (appended last) must not last-wins-override it
+            strip_batch = "n_batch" in fields_set,
+            strip_ubatch = "n_ubatch" in fields_set,
         )
         try:
             extra_llama_args = validate_extra_args(stripped)

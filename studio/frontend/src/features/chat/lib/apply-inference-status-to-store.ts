@@ -232,12 +232,24 @@ export function applyActiveModelStatusToStore(
   // repo id, and the plain lookup misses that record.
   const slotsUnseeded =
     prevState.loadedNParallel === null && prevState.nParallel === null;
+  // same rule for the batch-size pair
+  const batchesUnseeded =
+    prevState.loadedNBatch === null &&
+    prevState.nBatch === null &&
+    prevState.loadedNUbatch === null &&
+    prevState.nUbatch === null;
   const remembered =
-    status.is_gguf && (slotsUnseeded || slotsModelChanged)
+    status.is_gguf && (slotsUnseeded || batchesUnseeded || slotsModelChanged)
       ? resolveResidentInitialConfig(checkpointId, status.gguf_variant ?? null)
       : null;
   const rememberedNParallel = remembered?.remembered
     ? (remembered.config.nParallel ?? null)
+    : null;
+  const rememberedNBatch = remembered?.remembered
+    ? (remembered.config.nBatch ?? null)
+    : null;
+  const rememberedNUbatch = remembered?.remembered
+    ? (remembered.config.nUbatch ?? null)
     : null;
   // A Manual + Auto-layers load sent its positive context pin as max_seq_length,
   // and status only exposes the RESOLVED context; re-seed the pin from the
@@ -403,6 +415,38 @@ export function applyActiveModelStatusToStore(
       rememberedNParallel != null &&
       rememberedNParallel === status.requested_parallel_slots && {
         nParallel: rememberedNParallel,
+      }),
+    // batch-size pair: same baseline / control / remembered rules as the slots
+    ...(seedLoadParams &&
+      status.requested_n_batch != null &&
+      (prevState.loadedNBatch === null || hydratingExistingModel) && {
+        loadedNBatch: status.requested_n_batch,
+      }),
+    ...(seedLoadParams &&
+      status.requested_n_ubatch != null &&
+      (prevState.loadedNUbatch === null || hydratingExistingModel) && {
+        loadedNUbatch: status.requested_n_ubatch,
+      }),
+    ...(seedLoadParams &&
+      (status.is_gguf === false || status.requested_n_batch === null) && {
+        loadedNBatch: null,
+      }),
+    ...(seedLoadParams &&
+      (status.is_gguf === false || status.requested_n_ubatch === null) && {
+        loadedNUbatch: null,
+      }),
+    ...(seedLoadParams && slotsModelChanged && { nBatch: null, nUbatch: null }),
+    ...(seedLoadParams &&
+      (batchesUnseeded || slotsModelChanged) &&
+      rememberedNBatch != null &&
+      rememberedNBatch === status.requested_n_batch && {
+        nBatch: rememberedNBatch,
+      }),
+    ...(seedLoadParams &&
+      (batchesUnseeded || slotsModelChanged) &&
+      rememberedNUbatch != null &&
+      rememberedNUbatch === status.requested_n_ubatch && {
+        nUbatch: rememberedNUbatch,
       }),
     // Re-seed on first hydration, model/variant changes, or a same-model backend
     // placement change. gpuStatusFields preserves dirty local edits in the last

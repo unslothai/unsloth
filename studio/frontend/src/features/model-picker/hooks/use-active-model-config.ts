@@ -21,6 +21,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specDraftNMax = useChatRuntimeStore((s) => s.specDraftNMax);
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
+  const nBatch = useChatRuntimeStore((s) => s.nBatch);
+  const nUbatch = useChatRuntimeStore((s) => s.nUbatch);
   const tensorParallel = useChatRuntimeStore((s) => s.tensorParallel);
   const chatTemplateOverride = useChatRuntimeStore(
     (s) => s.chatTemplateOverride,
@@ -49,6 +51,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
       speculativeType: speculativeType ?? "auto",
       specDraftNMax: specDraftNMax ?? null,
       nParallel: nParallel ?? null,
+      nBatch: nBatch ?? null,
+      nUbatch: nUbatch ?? null,
       tensorParallel: tensorParallel ?? false,
       chatTemplateOverride: chatTemplateOverride ?? null,
     };
@@ -72,6 +76,8 @@ export function useActiveModelConfig(): ActiveModelConfigState {
     speculativeType,
     specDraftNMax,
     nParallel,
+    nBatch,
+    nUbatch,
     tensorParallel,
     chatTemplateOverride,
     gpuMemoryMode,

@@ -157,6 +157,9 @@ class GgufLoadIntent:
     gpu_ids_are_vulkan_ordinals: Optional[bool] = None
     n_threads: Optional[int] = None
     n_parallel: int = 1
+    # none follows the llama.cpp defaults (2048 / 512); values emit --batch-size / --ubatch-size before user extra_args
+    n_batch: Optional[int] = None
+    n_ubatch: Optional[int] = None
     extra_args: Optional[tuple[str, ...]] = None
     # The route materialises inherited extras from the live server, so the list alone
     # cannot say whether the caller named it. Duplicate-load checks need the difference:
@@ -2636,8 +2639,16 @@ def _extra_args_n_ubatch(
     extra_args: Optional[Iterable[str]],
     env: Optional[Mapping[str, str]] = None,
     n_ctx: Optional[int] = None,
+    *,
+    n_batch: Optional[int] = None,
+    n_ubatch: Optional[int] = None,
 ) -> Optional[int]:
-    """Effective ubatch after llama.cpp normalizes it, or None at defaults."""
+    """Effective ubatch after llama.cpp normalizes it, or None at defaults.
+
+    Precedence mirrors the launched command line: env, then the first-class
+    n_batch / n_ubatch fields (emitted as flags, so they beat env), then user
+    extra_args (appended last, so they last-wins-override the emitted flags).
+    """
     values = {
         "batch": _DEFAULT_LLAMA_N_BATCH,
         "ubatch": _DEFAULT_LLAMA_N_UBATCH,
@@ -2655,6 +2666,13 @@ def _extra_args_n_ubatch(
                 overridden = True
             except (TypeError, ValueError):
                 pass
+
+    if n_batch is not None:
+        values["batch"] = int(n_batch)
+        overridden = True
+    if n_ubatch is not None:
+        values["ubatch"] = int(n_ubatch)
+        overridden = True
 
     args = [str(a) for a in extra_args] if extra_args else []
     flags = {
@@ -2953,6 +2971,9 @@ class LlamaCppBackend:
         self._effective_parallel_slots: int = 1
         # --parallel the last load asked for, before any fit-time reduction.
         self._requested_n_parallel: int = 1
+        # --batch-size / --ubatch-size the last load asked for; none = llama.cpp defaults (or whatever extra_args / env set)
+        self._requested_n_batch: Optional[int] = None
+        self._requested_n_ubatch: Optional[int] = None
         self._chat_template: Optional[str] = None
         self._markup_tokens: list = []
         self._markup_profile = None
@@ -3228,6 +3249,16 @@ class LlamaCppBackend:
         return max(1, slots)
 
     @property
+    def requested_n_batch(self) -> Optional[int]:
+        """--batch-size the last load asked for; None means llama.cpp default."""
+        return self._requested_n_batch
+
+    @property
+    def requested_n_ubatch(self) -> Optional[int]:
+        """--ubatch-size the last load asked for; None means llama.cpp default."""
+        return self._requested_n_ubatch
+
+    @property
     def max_context_length(self) -> Optional[int]:
         """Return the largest context that fits on this hardware at load time.
 
@@ -3254,6 +3285,8 @@ class LlamaCppBackend:
         self._effective_parallel_slots = 1
         # Cleared with the effective count so a stale value can't skew the dedupe.
         self._requested_n_parallel = 1
+        self._requested_n_batch = None
+        self._requested_n_ubatch = None
 
     @staticmethod
     def _read_rss_bytes(pid: int) -> Optional[int]:
@@ -3608,6 +3641,11 @@ class LlamaCppBackend:
         if self._requested_n_ctx != int(intent.n_ctx):
             return False
         if not self._is_diffusion and self._requested_n_parallel != max(1, int(intent.n_parallel)):
+            return False
+        if not self._is_diffusion and (
+            self._requested_n_batch != intent.n_batch
+            or self._requested_n_ubatch != intent.n_ubatch
+        ):
             return False
 
         def _norm(value):
@@ -6786,6 +6824,8 @@ class LlamaCppBackend:
         self._swa_full = False
         self._kv_cache_unified = False
         self._n_ubatch = self._DEFAULT_N_UBATCH
+        self._requested_n_batch = None
+        self._requested_n_ubatch = None
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
         self._kv_cache_context_total = None
@@ -8223,6 +8263,8 @@ class LlamaCppBackend:
         gpu_ids_are_vulkan_ordinals = intent.gpu_ids_are_vulkan_ordinals
         n_threads = intent.n_threads
         n_parallel = intent.n_parallel
+        n_batch = intent.n_batch
+        n_ubatch = intent.n_ubatch
         extra_args = list(intent.extra_args) if intent.extra_args is not None else None
         preserve_multi_gpu_on_layer = intent.preserve_multi_gpu_on_layer
         # Serialise the whole load so concurrent /load calls never leave two
@@ -8602,6 +8644,8 @@ class LlamaCppBackend:
                 _effective_ubatch = _extra_args_n_ubatch(
                     extra_args,
                     n_ctx = (requested_ctx if requested_ctx > 0 else self._context_length),
+                    n_batch = n_batch,
+                    n_ubatch = n_ubatch,
                 )
                 planned_kv_unified = _kv_unified_from_args(
                     extra_args,
@@ -9842,6 +9886,12 @@ class LlamaCppBackend:
                     cmd.extend(["-c", str(effective_ctx)])
                 elif not auto_fit:
                     cmd.extend(["-c", "0"])
+
+                # first-class batch sizes, emitted before user extra_args so an explicit -b / -ub pass-through still last-wins-overrides them
+                if n_batch is not None:
+                    cmd.extend(["--batch-size", str(n_batch)])
+                if n_ubatch is not None:
+                    cmd.extend(["--ubatch-size", str(n_ubatch)])
 
                 server_caps = self.probe_server_capabilities(binary)
 
@@ -11094,6 +11144,8 @@ class LlamaCppBackend:
                 self._requested_n_ctx = int(n_ctx)
                 # Local n_parallel may have been reduced above; the snapshot has the ask.
                 self._requested_n_parallel = max(1, int(intent.n_parallel))
+                self._requested_n_batch = intent.n_batch
+                self._requested_n_ubatch = intent.n_ubatch
                 # Commit the known-good snapshot + whether MTP+tensor is live, then
                 # watch this load for a mid-generation crash.
                 self._last_load_intent = intent
