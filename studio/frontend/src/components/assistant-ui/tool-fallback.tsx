@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
-import { stripAnsi } from "@/lib/strip-ansi";
+import { stripAnsi, stringifyToolResult } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
   type ToolCallMessagePartComponent,
@@ -300,11 +300,7 @@ function ToolFallbackResult({
   // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR
   // escapes that a plain <pre> cannot style; strip them so the pane stays
   // readable (#7962).
-  const resultText = imageResult
-    ? null
-    : stripAnsi(
-        typeof result === "string" ? result : JSON.stringify(result, null, 2),
-      );
+  const resultText = imageResult ? null : stringifyToolResult(result);
 
   return (
     <div
