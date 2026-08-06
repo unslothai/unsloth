@@ -2559,7 +2559,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             {/* Icon rides the heading; the line below runs the full width.
                 Same shape on the Video page, so the two stay level. */}
             <div className="mb-2 grid gap-1.5">
-              <h2 className="flex items-center gap-2.5 font-heading text-xl font-medium leading-none text-foreground">
+              <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
                 {/* Same icon the sidebar submenu uses for this workflow. */}
                 <HugeiconsIcon
                   icon={activeWorkflowTab.icon}
