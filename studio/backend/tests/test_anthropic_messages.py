@@ -2101,6 +2101,21 @@ class TestAnthropicMessagesToolRouting:
         )
         assert backend.calls[0][0] == "tools"
 
+        # mcp_enabled is an ask on the OpenAI routes, which wire MCP discovery. This one does
+        # not, and the request model is extra="allow" so the key does arrive: honouring it
+        # would answer an MCP-only request with ALL_TOOLS' terminal/python under an MCP name.
+        reset_tool_policy()
+        backend = _mock_backend(monkeypatch)
+        _drive(
+            anthropic_messages(
+                _basic_payload(mcp_enabled = True, permission_mode = "off"),
+                request = None,
+                current_subject = "t",
+            )
+        )
+        assert backend.calls[0][0] == "plain"
+        assert not backend.calls[0][1].get("tools")
+
         # The same default must not stop gating a request that does ask for server tools.
         for fields in (
             {"enable_tools": True},

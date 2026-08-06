@@ -15144,8 +15144,10 @@ def _anthropic_selects_server_tools(
     """
     if has_client_tool or _effective_enable_tools(payload) is False:
         return False
-    asked = payload.enable_tools is True or bool(getattr(payload, "mcp_enabled", False))
-    return asked or bool(requested_studio_tools)
+    # enable_tools only, not the OpenAI path's mcp_enabled: this model is extra="allow", so
+    # that key does arrive, but nothing here loads MCP schemas. Treating it as intent would
+    # answer an MCP-only request with ALL_TOOLS' built-ins, or reject it for holding terminal.
+    return payload.enable_tools is True or bool(requested_studio_tools)
 
 
 def _anthropic_requested_studio_tools(tools: Optional[list]) -> set[str]:
