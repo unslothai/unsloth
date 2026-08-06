@@ -639,7 +639,6 @@ def test_a_quoted_command_line_is_not_only_a_title(monkeypatch):
         'ls\nstart "" powershell -Command ls',
         'echo hi\nstart "" ssh a@b',
         'FOO=1 start "" powershell -Command ls',
-        'time start "" powershell -Command ls',
         'env start "" powershell -Command ls',
         'nohup start "" powershell -Command ls',
         'echo x | xargs start "" powershell -Command ls',
@@ -652,6 +651,32 @@ def test_a_launched_start_is_read_wherever_the_shell_runs_it(windows_terminal, c
     # really launches. A newline separates commands but lexes as whitespace,
     # leaving no token to look back at, so it is recovered from the raw text.
     assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['time start "" powershell -Command ls', "time powershell -Command ls"],
+)
+def test_a_posix_builtin_wrapper_is_read_only_under_bash(windows_git_bash_only, command):
+    # `time` runs the command behind it under bash. Under cmd it is `time [/t]`,
+    # which sets the clock, so nothing behind it is launched there and the cmd
+    # lane must not read it as a wrapper.
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c time powershell",
+        "cmd /c command powershell",
+        "cmd /c exec powershell",
+        "cmd /c builtin powershell",
+    ],
+)
+def test_a_posix_builtin_wrapper_is_not_read_in_a_cmd_payload(windows_terminal, command):
+    # The other half. A `/c` payload is cmd's line whatever lexed the outer one,
+    # so bash's own builtins do not run anything inside it.
+    assert not tools._find_blocked_commands(command)
 
 
 def test_a_newline_inside_quotes_does_not_start_a_command(windows_terminal):
@@ -689,7 +714,6 @@ def test_blank_and_leading_lines_still_open_a_command(windows_terminal, command)
     [
         'cmd //c env start "" powershell -Command ls',
         'cmd //c FOO=1 start "" powershell -Command ls',
-        'echo hi\ntime start "" powershell -Command ls',
         'echo hi\nFOO=1 start "" powershell -Command ls',
     ],
 )
@@ -1658,3 +1682,56 @@ def test_screening_stays_linear_in_path_fragments(windows_terminal):
     cost(500)
     small, large = cost(1000), cost(4000)
     assert large < small * 10, f"{small = } {large = }"
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c echo ok&cmd /c powershell",
+        "cmd /c echo ok&&cmd /c powershell",
+        "cmd /c echo ok|cmd /c powershell",
+    ],
+)
+def test_a_shell_behind_a_glued_operator_opens_its_payload(windows_cmd_only, command):
+    # cmd needs no whitespace around its separators, so the second `cmd /c`
+    # really runs. Reading the whole token left that shell unrecognised and its
+    # payload unscreened.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c echo hi& call powershell",
+        "cmd /c echo hi&call powershell",
+        "cmd /c echo hi & call powershell",
+    ],
+)
+def test_call_is_read_however_the_operator_is_spelled(windows_cmd_only, command):
+    # The same boundary with the operator glued to the word in front, glued to
+    # CALL, or standing alone. All three run PowerShell.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd /c "C:\\Program -Files\\PowerShell\\7\\pwsh.exe" -Command ls',
+        'cmd /c "C:\\Program - Files\\PowerShell\\7\\pwsh.exe" -Command ls',
+    ],
+)
+def test_a_hyphen_may_open_a_directory_name(windows_terminal, command):
+    # Windows allows a directory name to open with a hyphen, so a fragment
+    # carrying one is still part of the quoted path. Breaking there stopped the
+    # reconstruction at `C:\Program` and let the shell through unnamed.
+    assert "pwsh" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['start "my title" /? powershell', "cmd /c start \"job\" /? powershell"],
+)
+def test_start_help_launches_nothing(windows_terminal, command):
+    # `/?` displays START's help and returns, so the word behind it is never
+    # launched and screening it refused a line that only prints usage.
+    assert not tools._find_blocked_commands(command)
