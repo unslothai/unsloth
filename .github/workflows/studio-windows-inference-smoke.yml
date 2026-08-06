@@ -1,20 +1,23 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
-# Three end-to-end smoke jobs that boot a freshly-installed Unsloth and
-# exercise the surfaces real users hit through the OpenAI / Anthropic
-# SDKs and curl, on the FREE windows-latest runner. Each job picks the
-# smallest model that exercises the behaviour under test, primes
-# HF_HOME via actions/cache, and shares the install.ps1 --local
-# --no-torch bootstrap.
+# One end-to-end smoke job, three phases, that boots a freshly-installed
+# Unsloth and exercises the surfaces real users hit through the OpenAI /
+# Anthropic SDKs and curl, on the FREE windows-latest runner. Each phase
+# picks the smallest model that exercises the behaviour under test and
+# primes its own model cache; all three share a single install.ps1
+# --local --no-torch bootstrap.
 #
 #   1. OpenAI, Anthropic API tests
-#        gemma-3-270m-it UD-Q4_K_XL (~254 MiB).
+#        gemma-3-270m-it UD-Q4_K_XL (~254 MiB), port 18888.
 #   2. Tool calling Tests
-#        Qwen3.5-2B UD-Q4_K_XL (~890 MiB).
+#        Qwen3.5-2B UD-Q4_K_XL (~890 MiB), port 18898.
 #   3. JSON, images
-#        Qwen3-VL-2B-Instruct UD-IQ2_XXS + mmproj-F16 (~1.4 GiB total).
-#        Within the 14 GB windows-latest SSD budget.
+#        Qwen3-VL-2B-Instruct UD-IQ2_XXS + mmproj-F16 (~1.4 GiB total),
+#        port 18899. Within the 14 GB windows-latest SSD budget.
+#
+# The phases run in sequence on one runner. They used to be three parallel
+# jobs, each repeating a ~7 min Windows install to run ~4 min of tests.
 
 name: Windows Unsloth GGUF CI
 
@@ -45,25 +48,47 @@ permissions:
   contents: read
 
 jobs:
-  # ─────────────────────────────────────────────────────────────────────
-  # Job 1: OpenAI, Anthropic API tests
-  # ─────────────────────────────────────────────────────────────────────
-  openai-anthropic:
-    name: OpenAI, Anthropic API tests
+  # One job, three phases. These were three separate windows-latest jobs that
+  # differed only in model, port and test body: the checkout, setup-node,
+  # setup-python, npm/Defender tweaks, `install.ps1 --local --no-torch` and
+  # prebuilt assertion were identical in all three, so every triggering PR ran
+  # the same Windows install three times over.
+  #
+  # Windows is the platform where that actually costs something. Measured over
+  # recent runs, setup is ~7.0 min per job (install.ps1 alone is ~6.4) against
+  # ~3.8 min of tests, so setup dominates and sharing it once saves ~14
+  # runner-minutes and 2 of the 60 concurrent-job slots. The same trade is NOT
+  # worth making on ubuntu (studio-inference-smoke.yml), where setup is ~1.9 min
+  # against ~3.0 min of tests: there the added sequential wall time costs more
+  # feedback latency than the slots are worth.
+  #
+  # Each phase keeps its own model cache directory, HF_HOME, server port, server
+  # log, uploaded artifact and step timeouts, and each is gated on the SHARED
+  # preamble rather than on the phase before it, so a failure still points at one
+  # phase, earlier phases' logs survive it, and later phases still run -- the
+  # same independence the three jobs had.
+  inference-smoke:
+    name: GGUF inference smoke (API, tools, vision)
     runs-on: windows-latest
-    timeout-minutes: 30
+    # Was 30 + 30 + 35 across three runners. Sequentially they share one install,
+    # so the sum is well under 95, but a cold model cache on the vision phase is
+    # the slow case. 90 covers it while still bounding a hang. Every step that can
+    # block also carries its own `timeout-minutes`: the job cap alone is not a
+    # substitute, because hf-download-with-retry.sh retries forever by design and
+    # named the job timeout as its bound.
+    timeout-minutes: 90
     defaults:
       run:
         shell: bash
     env:
-      GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
-      GGUF_VARIANT: UD-Q4_K_XL
-      GGUF_FILE: gemma-3-270m-it-UD-Q4_K_XL.gguf
-      STUDIO_PORT: '18888'
-      HF_HOME: ${{ github.workspace }}/hf-cache
-      # Force UTF-8 for stdio (Windows defaults to cp1252; hf
-      # download / Unsloth CLI print "✓" checkmarks and crash
-      # otherwise).
+      # Only what every phase shares. Model, GGUF file, port and HF_HOME are set
+      # per phase via $GITHUB_ENV instead of here: if a phase-specific key were
+      # also declared at job level, whether the later $GITHUB_ENV write wins is
+      # not something the Actions docs pin down, and a phase quietly talking to
+      # the previous phase's port would be a nasty way to find out.
+      #
+      # Force UTF-8 for stdio (Windows defaults to cp1252; hf download / the
+      # Unsloth CLI print "✓" checkmarks and crash otherwise).
       PYTHONIOENCODING: utf-8
       PYTHONUTF8: '1'
     steps:
@@ -118,6 +143,14 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Phase 1 environment (API + auth)
+        run: |
+          echo "GGUF_REPO=unsloth/gemma-3-270m-it-GGUF" >> "$GITHUB_ENV"
+          echo "GGUF_VARIANT=UD-Q4_K_XL" >> "$GITHUB_ENV"
+          echo "GGUF_FILE=gemma-3-270m-it-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
+          echo "STUDIO_PORT=18888" >> "$GITHUB_ENV"
+          echo "HF_HOME=${{ github.workspace }}/hf-cache" >> "$GITHUB_ENV"
+
       # Split restore + save (rather than the one-step actions/cache) so a
       # transient restore-side failure does not kill the whole job. v5 has a
       # known flake where it logs "Cache hit for: <key>" and then exits
@@ -128,16 +161,18 @@ jobs:
       # populates the cache key on a real miss only; cache keys are
       # immutable, so a corrupted cached entry persists until the -v1
       # suffix below is bumped.
-      - name: Restore HF_HOME cache for ${{ env.GGUF_REPO }}
+      - name: Restore HF_HOME cache for unsloth/gemma-3-270m-it-GGUF
         id: cache-hf
+        timeout-minutes: 15
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: ${{ runner.os }}-hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v2
 
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
+        timeout-minutes: 15
         # Run on a real cache miss AND on the silent-restore-failure mode
         # described above (outcome != success).
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
@@ -150,7 +185,8 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
-      - name: Save HF_HOME cache for ${{ env.GGUF_REPO }}
+      - name: Save HF_HOME cache for unsloth/gemma-3-270m-it-GGUF
+        timeout-minutes: 15
         # Only write a fresh cache entry when we actually rebuilt the
         # directory (Prime ran and succeeded). Skipping when Prime is
         # skipped avoids "already exists" save warnings on the happy path.
@@ -168,7 +204,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
+          key: ${{ runner.os }}-hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v2
 
       - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
         shell: pwsh
@@ -202,6 +238,9 @@ jobs:
           }
 
       - name: Install Unsloth (--local, --no-torch)
+        id: install
+        if: ${{ !cancelled() }}
+        timeout-minutes: 25
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -216,6 +255,9 @@ jobs:
           & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
 
       - name: Assert install.ps1 used the Windows llama.cpp prebuilt
+        id: assert-prebuilt
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        timeout-minutes: 5
         run: |
           # Filesystem check; setup.ps1's stream output isn't captured.
           LLAMA_DIR=~/.unsloth/llama.cpp
@@ -240,6 +282,7 @@ jobs:
           cat "$INFO"
 
       - name: Add Unsloth shim to GITHUB_PATH
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
         run: |
           SHIM_DIR=~/.unsloth/studio/bin
           if [ ! -f "$SHIM_DIR/unsloth.exe" ]; then
@@ -250,6 +293,8 @@ jobs:
           cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
 
       - name: Install OpenAI + Anthropic Python SDKs
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
+        timeout-minutes: 10
         run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
 
       - name: Reset auth + boot Unsloth (API-only)
@@ -262,6 +307,7 @@ jobs:
           echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for /api/health
+        timeout-minutes: 10
         run: |
           for i in $(seq 1 180); do
             if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
@@ -450,162 +496,55 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # Job 2: Tool calling Tests
   # ─────────────────────────────────────────────────────────────────────
-  tool-calling:
-    name: Tool calling Tests
-    runs-on: windows-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        shell: bash
-    env:
-      # Tool calling is the highest-volume GGUF in this workflow
-      # (Qwen3.5-2B at Q4_K_XL = ~1.28 GiB). The previous HF_HOME
-      # cache stored xet chunks + blobs + snapshots = ~4.7 GiB --
-      # 3.7x file-size inflation, dominating the post-step upload
-      # (211 s on first run; subsequent runs hit the cache, but the
-      # one-time cost recurs every time the cache key bumps). Use
-      # main's `--local-dir gguf-cache` pattern: cache the flat .gguf
-      # only, pass an absolute path to Unsloth's /api/inference/load.
-      # The OpenAI/Anth and JSON+images jobs still cover the
-      # gguf_variant resolution path.
-      GGUF_REPO: unsloth/Qwen3.5-2B-GGUF
-      GGUF_FILE: Qwen3.5-2B-UD-Q4_K_XL.gguf
-      STUDIO_PORT: '18898'
-      # Force UTF-8 for stdio (Windows defaults to cp1252; hf
-      # download / Unsloth CLI print "✓" checkmarks and crash
-      # otherwise).
-      PYTHONIOENCODING: utf-8
-      PYTHONUTF8: '1'
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
+      - name: Phase 2 environment (tool calling)
+        run: |
+          echo "GGUF_REPO=unsloth/Qwen3.5-2B-GGUF" >> "$GITHUB_ENV"
+          echo "GGUF_FILE=Qwen3.5-2B-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
+          echo "STUDIO_PORT=18898" >> "$GITHUB_ENV"
+          echo "HF_HOME=${{ github.workspace }}/hf-cache-tools" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
-        with:
-          node-version: '22'
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
-        with:
-          python-version: '3.12'
-
-      # Split restore + save so a transient restore-side failure does not
-      # kill the whole job. See the matching block in the tool-calling job
-      # above for the full rationale (actions/cache#1621).
       - name: Restore GGUF model cache
-        id: cache-gguf
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
+        id: cache-gguf-tools
+        timeout-minutes: 15
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
         with:
-          path: gguf-cache
-          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
+          path: gguf-cache-tools
+          key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v1
 
       - name: Download GGUF if cache miss
-        id: download-gguf
-        if: steps.cache-gguf.outputs.cache-hit != 'true' || steps.cache-gguf.outcome != 'success'
+        id: download-gguf-tools
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' && (steps.cache-gguf-tools.outputs.cache-hit != 'true' || steps.cache-gguf-tools.outcome != 'success') }}
+        timeout-minutes: 15
         env:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
-          mkdir -p gguf-cache
-          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
+          mkdir -p gguf-cache-tools
+          bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache-tools
 
       - name: Save GGUF model cache
-        if: always() && github.ref == 'refs/heads/main' && steps.download-gguf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.download-gguf-tools.outcome == 'success'
+        timeout-minutes: 15
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
-          path: gguf-cache
-          key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
-
-      - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
-        shell: pwsh
-        # See studio-windows-update-smoke.yml for the full rationale.
-        # tl;dr: setup.ps1 needs npm >=11 to skip a 35 s winget Node
-        # reinstall, and Defender's real-time scan dominates the
-        # frontend / uv-pip-extract steps.
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          Write-Host "npm version before upgrade: $(npm -v)"
-          npm install -g 'npm@^11' 2>&1 | Out-Host
-          Write-Host "npm version after upgrade: $(npm -v)"
-          # NOTE: do NOT pre-create these directories. See
-          # studio-windows-update-smoke.yml for the full rationale --
-          # creating an empty studio/frontend/dist trips setup.ps1's
-          # mtime-based staleness check into "frontend up to date, skip
-          # rebuild" and Unsloth boots with an empty dist directory.
-          # Add-MpPreference accepts paths that do not yet exist.
-          foreach ($p in @(
-            "$env:USERPROFILE\.unsloth",
-            "$env:USERPROFILE\AppData\Local\uv",
-            "$env:GITHUB_WORKSPACE\studio\frontend\node_modules",
-            "$env:GITHUB_WORKSPACE\studio\frontend\dist"
-          )) {
-            try {
-              Add-MpPreference -ExclusionPath $p -ErrorAction Stop
-              Write-Host "Defender exclusion added: $p"
-            } catch {
-              Write-Host "Defender exclusion skipped ($($_.Exception.Message)): $p"
-            }
-          }
-
-      - name: Install Unsloth (--local, --no-torch)
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          New-Item -ItemType Directory -Force -Path logs | Out-Null
-          # *>&1 captures Write-Host (Information stream) output;
-          # plain 2>&1 does not. setup.ps1 emits "prebuilt installed
-          # and validated" via Write-Host, and we grep for that.
-          $ProgressPreference = 'SilentlyContinue'
-          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
-
-      - name: Assert install.ps1 used the Windows llama.cpp prebuilt
-        run: |
-          # Filesystem check; setup.ps1's stream output isn't captured.
-          LLAMA_DIR=~/.unsloth/llama.cpp
-          INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
-          BIN="$LLAMA_DIR/build/bin/Release/llama-server.exe"
-          if grep -q "falling back to source build" logs/install.log; then
-            echo "::error::install.ps1 fell back to source-build llama.cpp on Windows."
-            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
-            exit 1
-          fi
-          if [ ! -f "$INFO" ]; then
-            echo "::error::no UNSLOTH_PREBUILT_INFO.json at $INFO."
-            ls -la "$LLAMA_DIR" || true
-            exit 1
-          fi
-          if [ ! -f "$BIN" ]; then
-            echo "::error::no llama-server.exe at $BIN."
-            ls -la "$LLAMA_DIR/build/bin" || true
-            exit 1
-          fi
-          echo "install.ps1 installed the Windows prebuilt llama.cpp:"
-          cat "$INFO"
-
-      - name: Add Unsloth shim to GITHUB_PATH
-        run: |
-          SHIM_DIR=~/.unsloth/studio/bin
-          if [ ! -f "$SHIM_DIR/unsloth.exe" ]; then
-            echo "::error::unsloth.exe shim not found at $SHIM_DIR"
-            ls -la ~/.unsloth/studio/ || true
-            exit 1
-          fi
-          cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
+          path: gguf-cache-tools
+          key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v1
 
       - name: Reset auth + boot Unsloth (API-only, default tool policy)
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
         run: |
           rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
+            > logs/studio_tools.log 2>&1 &
           echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for /api/health, log in, change password, load model
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
+        timeout-minutes: 25
         run: |
           for i in $(seq 1 180); do
             if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
@@ -635,7 +574,7 @@ jobs:
           # via bash parameter expansion -- pathlib.Path on Windows
           # accepts forward slashes natively, so Unsloth's loader sees
           # a normal path.
-          GGUF_PATH="${GITHUB_WORKSPACE//\\//}/gguf-cache/${GGUF_FILE}"
+          GGUF_PATH="${GITHUB_WORKSPACE//\\//}/gguf-cache-tools/${GGUF_FILE}"
           ls -lh "$GGUF_PATH"
           # Retry: same rationale as the OpenAI/Anthropic job.
           LOAD_OK=0
@@ -654,6 +593,7 @@ jobs:
           jq '{status, display_name}' /tmp/load.json
 
       - name: Tool calling, server-side tools, thinking on/off
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
         env:
           BASE_URL: http://127.0.0.1:18898
         run: |
@@ -942,7 +882,7 @@ jobs:
         with:
           name: windows-tool-calling-log
           path: |
-            logs/studio.log
+            logs/studio_tools.log
             logs/install.log
             logs/llama-server/*.log
           retention-days: 7
@@ -950,163 +890,59 @@ jobs:
   # ─────────────────────────────────────────────────────────────────────
   # Job 3: JSON, images
   # ─────────────────────────────────────────────────────────────────────
-  json-images:
-    name: JSON, images
-    runs-on: windows-latest
-    timeout-minutes: 35
-    defaults:
-      run:
-        shell: bash
-    env:
-      GGUF_REPO: unsloth/Qwen3-VL-2B-Instruct-GGUF
-      GGUF_VARIANT: UD-IQ2_XXS
-      GGUF_FILE: Qwen3-VL-2B-Instruct-UD-IQ2_XXS.gguf
-      MMPROJ_FILE: mmproj-F16.gguf
-      STUDIO_PORT: '18899'
-      HF_HOME: ${{ github.workspace }}/hf-cache
-      # Force UTF-8 for stdio (Windows defaults to cp1252; hf
-      # download / Unsloth CLI print "✓" checkmarks and crash
-      # otherwise).
-      PYTHONIOENCODING: utf-8
-      PYTHONUTF8: '1'
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-        with:
-          persist-credentials: false
+      - name: Phase 3 environment (JSON + vision)
+        run: |
+          echo "GGUF_REPO=unsloth/Qwen3-VL-2B-Instruct-GGUF" >> "$GITHUB_ENV"
+          echo "GGUF_VARIANT=UD-IQ2_XXS" >> "$GITHUB_ENV"
+          echo "GGUF_FILE=Qwen3-VL-2B-Instruct-UD-IQ2_XXS.gguf" >> "$GITHUB_ENV"
+          echo "MMPROJ_FILE=mmproj-F16.gguf" >> "$GITHUB_ENV"
+          echo "STUDIO_PORT=18899" >> "$GITHUB_ENV"
+          echo "HF_HOME=${{ github.workspace }}/hf-cache-vision" >> "$GITHUB_ENV"
 
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
-        with:
-          node-version: '22'
-
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
-        with:
-          python-version: '3.12'
-
-      # Split restore + save so a transient restore-side failure does not
-      # kill the whole job. See the matching block in the tool-calling job
-      # for the full rationale (actions/cache#1621). This is the block that
-      # actually broke in run 25713577488: "Cache hit for: <key>" was
-      # logged, the step exited non-zero in ~0.3 s without extracting the
-      # 3.4 GiB archive, and steps 6-15 were skipped.
-      - name: Restore HF_HOME cache for ${{ env.GGUF_REPO }} (model + mmproj)
-        id: cache-hf
+      - name: Restore HF_HOME cache for unsloth/Qwen3-VL-2B-Instruct-GGUF (model + mmproj)
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
+        id: cache-hf-vision
+        timeout-minutes: 20
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
         with:
-          path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
+          path: hf-cache-vision
+          key: ${{ runner.os }}-hf-unsloth/Qwen3-VL-2B-Instruct-GGUF-UD-IQ2_XXS-mmproj-F16.gguf-v2
 
       - name: Prime HF_HOME with the GGUF + mmproj
-        id: prime-hf
-        if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        id: prime-hf-vision
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' && (steps.cache-hf-vision.outputs.cache-hit != 'true' || steps.cache-hf-vision.outcome != 'success') }}
+        timeout-minutes: 20
         env:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
         run: |
           python -m pip install --upgrade huggingface_hub
-          mkdir -p hf-cache
+          mkdir -p hf-cache-vision
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE"
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$MMPROJ_FILE"
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
-      - name: Save HF_HOME cache for ${{ env.GGUF_REPO }} (model + mmproj)
-        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success'
+      - name: Save HF_HOME cache for unsloth/Qwen3-VL-2B-Instruct-GGUF (model + mmproj)
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf-vision.outcome == 'success'
+        timeout-minutes: 20
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
-          path: hf-cache
-          key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
-
-      - name: Pre-install Windows tweaks (npm 11 + Defender exclusions)
-        shell: pwsh
-        # See studio-windows-update-smoke.yml for the full rationale.
-        # tl;dr: setup.ps1 needs npm >=11 to skip a 35 s winget Node
-        # reinstall, and Defender's real-time scan dominates the
-        # frontend / uv-pip-extract steps.
-        run: |
-          $ProgressPreference = 'SilentlyContinue'
-          Write-Host "npm version before upgrade: $(npm -v)"
-          npm install -g 'npm@^11' 2>&1 | Out-Host
-          Write-Host "npm version after upgrade: $(npm -v)"
-          # NOTE: do NOT pre-create these directories. See
-          # studio-windows-update-smoke.yml for the full rationale --
-          # creating an empty studio/frontend/dist trips setup.ps1's
-          # mtime-based staleness check into "frontend up to date, skip
-          # rebuild" and Unsloth boots with an empty dist directory.
-          # Add-MpPreference accepts paths that do not yet exist.
-          foreach ($p in @(
-            "$env:USERPROFILE\.unsloth",
-            "$env:USERPROFILE\AppData\Local\uv",
-            "$env:GITHUB_WORKSPACE\studio\frontend\node_modules",
-            "$env:GITHUB_WORKSPACE\studio\frontend\dist"
-          )) {
-            try {
-              Add-MpPreference -ExclusionPath $p -ErrorAction Stop
-              Write-Host "Defender exclusion added: $p"
-            } catch {
-              Write-Host "Defender exclusion skipped ($($_.Exception.Message)): $p"
-            }
-          }
-
-      - name: Install Unsloth (--local, --no-torch)
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          New-Item -ItemType Directory -Force -Path logs | Out-Null
-          # *>&1 captures Write-Host (Information stream) output;
-          # plain 2>&1 does not. setup.ps1 emits "prebuilt installed
-          # and validated" via Write-Host, and we grep for that.
-          $ProgressPreference = 'SilentlyContinue'
-          & ./install.ps1 --local --no-torch *>&1 | Tee-Object -FilePath logs/install.log
-
-      - name: Assert install.ps1 used the Windows llama.cpp prebuilt
-        run: |
-          # Filesystem check; setup.ps1's stream output isn't captured.
-          LLAMA_DIR=~/.unsloth/llama.cpp
-          INFO="$LLAMA_DIR/UNSLOTH_PREBUILT_INFO.json"
-          BIN="$LLAMA_DIR/build/bin/Release/llama-server.exe"
-          if grep -q "falling back to source build" logs/install.log; then
-            echo "::error::install.ps1 fell back to source-build llama.cpp on Windows."
-            grep -E "llama-prebuilt|llama.cpp" logs/install.log | tail -60
-            exit 1
-          fi
-          if [ ! -f "$INFO" ]; then
-            echo "::error::no UNSLOTH_PREBUILT_INFO.json at $INFO."
-            ls -la "$LLAMA_DIR" || true
-            exit 1
-          fi
-          if [ ! -f "$BIN" ]; then
-            echo "::error::no llama-server.exe at $BIN."
-            ls -la "$LLAMA_DIR/build/bin" || true
-            exit 1
-          fi
-          echo "install.ps1 installed the Windows prebuilt llama.cpp:"
-          cat "$INFO"
-
-      - name: Add Unsloth shim to GITHUB_PATH
-        run: |
-          SHIM_DIR=~/.unsloth/studio/bin
-          if [ ! -f "$SHIM_DIR/unsloth.exe" ]; then
-            echo "::error::unsloth.exe shim not found at $SHIM_DIR"
-            ls -la ~/.unsloth/studio/ || true
-            exit 1
-          fi
-          cygpath -w "$SHIM_DIR" >> "$GITHUB_PATH"
-
-      - name: Install OpenAI + Anthropic Python SDKs
-        run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
+          path: hf-cache-vision
+          key: ${{ runner.os }}-hf-unsloth/Qwen3-VL-2B-Instruct-GGUF-UD-IQ2_XXS-mmproj-F16.gguf-v2
 
       - name: Reset auth + boot Unsloth (API-only)
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
         run: |
           rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
           UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
+            > logs/studio_vision.log 2>&1 &
           echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for /api/health, log in, change password, load model
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
+        timeout-minutes: 25
         run: |
           for i in $(seq 1 180); do
             if curl -fs "http://127.0.0.1:${STUDIO_PORT}/api/health" > /tmp/health.json; then
@@ -1146,6 +982,7 @@ jobs:
           jq '{status, display_name, is_vision}' /tmp/load.json
 
       - name: JSON schema decoding + image input
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
         env:
           BASE_URL: http://127.0.0.1:18899
         run: |
@@ -1367,7 +1204,7 @@ jobs:
         with:
           name: windows-json-images-log
           path: |
-            logs/studio.log
+            logs/studio_vision.log
             logs/install.log
             logs/llama-server/*.log
           retention-days: 7
