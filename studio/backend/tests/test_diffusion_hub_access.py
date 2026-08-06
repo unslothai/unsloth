@@ -64,7 +64,9 @@ def test_a_token_that_still_bounces_names_the_account():
 
 
 def test_an_unparseable_repo_still_gives_the_instruction():
-    message = hub_access_message(_gated("403 Client Error. Cannot access gated repo."), had_token = False)
+    message = hub_access_message(
+        _gated("403 Client Error. Cannot access gated repo."), had_token = False
+    )
 
     assert message is not None
     assert "its Hugging Face page" in message
