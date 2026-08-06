@@ -11,15 +11,19 @@ interface NativeIntentState {
   // Key each batch to the chat that received the OS drop. Registration crosses an
   // async Rust boundary, so the active chat may change before these arrive.
   pendingAttachments: PendingNativeAttachments;
+  pendingImageAttachments: PendingNativeAttachments;
   addIntent: (intent: NativeIntent) => void;
   addAttachments: (targetKey: string, intents: NativeIntent[]) => void;
+  addImageAttachments: (targetKey: string, intents: NativeIntent[]) => void;
   takeAttachments: (targetKey: string) => NativeIntent[];
+  takeImageAttachments: (targetKey: string) => NativeIntent[];
   clearModelIntent: (intentId?: string) => void;
 }
 
 export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
   pendingModelIntent: null,
   pendingAttachments: {},
+  pendingImageAttachments: {},
   addAttachments: (targetKey, intents) => {
     const current = get().pendingAttachments;
     const pendingAttachments = enqueueNativeAttachments(
@@ -31,6 +35,17 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
       set({ pendingAttachments });
     }
   },
+  addImageAttachments: (targetKey, intents) => {
+    const current = get().pendingImageAttachments;
+    const pendingImageAttachments = enqueueNativeAttachments(
+      current,
+      targetKey,
+      intents,
+    );
+    if (pendingImageAttachments !== current) {
+      set({ pendingImageAttachments });
+    }
+  },
   takeAttachments: (targetKey) => {
     const current = get().pendingAttachments;
     const [queued, pendingAttachments] = dequeueNativeAttachments(
@@ -39,6 +54,17 @@ export const useNativeIntentStore = create<NativeIntentState>((set, get) => ({
     );
     if (pendingAttachments !== current) {
       set({ pendingAttachments });
+    }
+    return queued;
+  },
+  takeImageAttachments: (targetKey) => {
+    const current = get().pendingImageAttachments;
+    const [queued, pendingImageAttachments] = dequeueNativeAttachments(
+      current,
+      targetKey,
+    );
+    if (pendingImageAttachments !== current) {
+      set({ pendingImageAttachments });
     }
     return queued;
   },

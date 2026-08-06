@@ -54,20 +54,23 @@ test("documents are an attachment drop, one or many", () => {
   assert.equal(dropped.kind === "docs" ? dropped.paths.length : 0, 3);
 });
 
-test("images are an attachment drop, one or many", () => {
+test("images route to chat vision attachments, one or many", () => {
   const dropped = classifyDropPaths([
     "/photos/cat.PNG",
     "/photos/dog.jpeg",
     "/photos/icon.webp",
   ]);
-  assert.equal(dropped.kind, "docs");
-  assert.equal(dropped.kind === "docs" ? dropped.paths.length : 0, 3);
+  assert.equal(dropped.kind, "images");
+  assert.equal(dropped.kind === "images" ? dropped.paths.length : 0, 3);
 });
 
 test("documents and images can be dropped together", () => {
   const dropped = classifyDropPaths(["/docs/a.pdf", "/photos/cat.png"]);
-  assert.equal(dropped.kind, "docs");
-  assert.equal(dropped.kind === "docs" ? dropped.paths.length : 0, 2);
+  assert.equal(dropped.kind, "attach");
+  if (dropped.kind === "attach") {
+    assert.deepEqual(dropped.docs, ["/docs/a.pdf"]);
+    assert.deepEqual(dropped.images, ["/photos/cat.png"]);
+  }
 });
 
 test("a mixed or unsupported drop is rejected", () => {

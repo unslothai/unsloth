@@ -88,6 +88,11 @@ import {
   DeepResearchComposerButton,
   DeepResearchWebsiteAccessDialog,
 } from "@/features/chat/components/deep-research-composer-button";
+import {
+  useNativeAttachmentTargetKey,
+  useNativeIntentStore,
+} from "@/features/native-intents";
+import { nativeAttachmentIntentToFile } from "@/features/native-intents/native-attachment-file";
 import { cancelResearchRun } from "@/features/chat/api/research-api";
 import {
   ingestResearchUpdate,
@@ -2145,6 +2150,32 @@ const Composer: FC<{
   const hasPendingAudio = useChatRuntimeStore((s) =>
     Boolean(s.pendingAudioName),
   );
+  const nativeAttachmentTargetKey = useNativeAttachmentTargetKey();
+  const hasPendingImageAttachments = useNativeIntentStore((s) =>
+    Boolean(
+      nativeAttachmentTargetKey &&
+        (s.pendingImageAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
+    ),
+  );
+  useEffect(() => {
+    if (!hasPendingImageAttachments || !nativeAttachmentTargetKey) {
+      return;
+    }
+    const intents = useNativeIntentStore
+      .getState()
+      .takeImageAttachments(nativeAttachmentTargetKey);
+    if (intents.length === 0) return;
+    void Promise.all(
+      intents.map(async (intent) => {
+        const file = await nativeAttachmentIntentToFile(intent);
+        await aui.composer().addAttachment(file);
+      }),
+    ).catch((error) => {
+      toast.error("Could not attach dropped images", {
+        description: error instanceof Error ? error.message : String(error),
+      });
+    });
+  }, [hasPendingImageAttachments, nativeAttachmentTargetKey, aui]);
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemId = useAuiState(
     ({ threadListItem }) => threadListItem.id,

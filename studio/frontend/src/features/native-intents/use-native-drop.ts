@@ -20,10 +20,15 @@ interface NativeModelDropOptions {
   isModelLoading: boolean;
   onAutoLoad?: (intent: NativeIntent) => Promise<void> | void;
   onAttach?: (intents: NativeIntent[]) => Promise<void> | void;
+  onAttachImages?: (intents: NativeIntent[]) => Promise<void> | void;
 }
 
 function canAttachDocs(options: NativeModelDropOptions): boolean {
   return options.nativePathLeasesSupported && Boolean(options.onAttach);
+}
+
+function canAttachImages(options: NativeModelDropOptions): boolean {
+  return options.nativePathLeasesSupported && Boolean(options.onAttachImages);
 }
 
 function canAutoLoadModel(options: NativeModelDropOptions): boolean {
@@ -34,6 +39,16 @@ function canAutoLoadModel(options: NativeModelDropOptions): boolean {
   );
 }
 
+function attachmentCount(dropped: ReturnType<typeof classifyDropPaths>): number {
+  if (dropped.kind === "docs" || dropped.kind === "images") {
+    return dropped.paths.length;
+  }
+  if (dropped.kind === "attach") {
+    return dropped.docs.length + dropped.images.length;
+  }
+  return 0;
+}
+
 function dropStateForPaths(
   paths: string[],
   options: NativeModelDropOptions,
@@ -41,10 +56,21 @@ function dropStateForPaths(
   const dropped = classifyDropPaths(paths);
   if (dropped.kind === "none") return { status: "idle" };
   if (dropped.kind === "docs") {
-    // Unlike a browser upload, a document drop only reaches the ingest through a signed
-    // lease, so don't offer it as a target before the backend can verify one.
     return canAttachDocs(options)
       ? { status: "attach", count: dropped.paths.length }
+      : { status: "invalid" };
+  }
+  if (dropped.kind === "images") {
+    return canAttachImages(options)
+      ? { status: "attach", count: dropped.paths.length }
+      : { status: "invalid" };
+  }
+  if (dropped.kind === "attach") {
+    const docsSupported = dropped.docs.length === 0 || canAttachDocs(options);
+    const imagesSupported =
+      dropped.images.length === 0 || canAttachImages(options);
+    return docsSupported && imagesSupported
+      ? { status: "attach", count: attachmentCount(dropped) }
       : { status: "invalid" };
   }
   if (dropped.kind === "unsupported") return { status: "invalid" };
@@ -55,6 +81,31 @@ function dropStateForPaths(
     status: "valid",
     action: options.hasActiveModel ? "replace" : "load",
   };
+}
+
+async function registerDroppedAttachments(
+  dropped: Extract<
+    ReturnType<typeof classifyDropPaths>,
+    { kind: "docs" | "images" | "attach" }
+  >,
+): Promise<{ docs: NativeIntent[]; images: NativeIntent[] }> {
+  if (dropped.kind === "docs") {
+    const docs = await Promise.all(
+      dropped.paths.map(registerNativeAttachmentPath),
+    );
+    return { docs, images: [] };
+  }
+  if (dropped.kind === "images") {
+    const images = await Promise.all(
+      dropped.paths.map(registerNativeAttachmentPath),
+    );
+    return { docs: [], images };
+  }
+  const [docs, images] = await Promise.all([
+    Promise.all(dropped.docs.map(registerNativeAttachmentPath)),
+    Promise.all(dropped.images.map(registerNativeAttachmentPath)),
+  ]);
+  return { docs, images };
 }
 
 export function useNativeModelDrop(options: NativeModelDropOptions): NativeModelDropState {
@@ -91,24 +142,43 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
           toast.error(SUPPORTED_DROP_HINT);
           return;
         }
-        if (dropped.kind === "docs") {
-          if (!canAttachDocs(currentOptions)) {
+        if (
+          dropped.kind === "docs" ||
+          dropped.kind === "images" ||
+          dropped.kind === "attach"
+        ) {
+          const needsDocs =
+            dropped.kind === "docs" ||
+            (dropped.kind === "attach" && dropped.docs.length > 0);
+          const needsImages =
+            dropped.kind === "images" ||
+            (dropped.kind === "attach" && dropped.images.length > 0);
+          if (needsDocs && !canAttachDocs(currentOptions)) {
             toast.error("Attaching files needs the desktop backend", {
               description: "Retry once Studio has finished starting up.",
             });
             return;
           }
+          if (needsImages && !canAttachImages(currentOptions)) {
+            toast.error("Attaching images needs the desktop backend", {
+              description: "Retry once Studio has finished starting up.",
+            });
+            return;
+          }
           try {
-            const intents = await Promise.all(
-              dropped.paths.map(registerNativeAttachmentPath),
-            );
+            const { docs, images } = await registerDroppedAttachments(dropped);
             if (disposed) return;
             const latestOptions = optionsRef.current;
             const attachOptions =
               latestOptions.attachmentScope === currentOptions.attachmentScope
                 ? latestOptions
                 : currentOptions;
-            await attachOptions.onAttach?.(intents);
+            if (docs.length > 0) {
+              await attachOptions.onAttach?.(docs);
+            }
+            if (images.length > 0) {
+              await attachOptions.onAttachImages?.(images);
+            }
           } catch (error) {
             toast.error("Could not attach dropped files", {
               description: error instanceof Error ? error.message : String(error),
