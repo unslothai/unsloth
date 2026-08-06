@@ -2359,16 +2359,23 @@ _PEFT_CONVERSION_SYMBOLS = {
 # converter never runs. Landing an inert body on a REAL transformers is a
 # different matter -- peft would call it and get a wrong answer, so these are
 # replaced by a placeholder that says what is wrong instead.
-_PEFT_CONVERSION_RUNTIME_SYMBOLS = frozenset(
-    (
-        "transformers.core_model_loading.dot_natural_key",
-        "transformers.core_model_loading.rename_source_key",
-        "transformers.core_model_loading.WeightRenaming",
-        "transformers.core_model_loading.WeightConverter",
-        "transformers.conversion_mapping.get_checkpoint_conversion_mapping",
-        "transformers.conversion_mapping.get_model_conversion_mapping",
-    )
-)
+_PEFT_CONVERSION_RUNTIME_SYMBOLS = frozenset((
+    "transformers.core_model_loading.dot_natural_key",
+    "transformers.core_model_loading.rename_source_key",
+    "transformers.core_model_loading.WeightRenaming",
+    "transformers.core_model_loading.WeightConverter",
+    # `build_peft_weight_mapping` buckets its entries with
+    # `isinstance(op, Concatenate)` / `isinstance(op, MergeModulelist)` and
+    # builds `Transpose(dim0 = 0, dim1 = 1)` outright, so an inert stub does not
+    # merely fail to help: the isinstance arms go quiet and the conversion is
+    # skipped. `ConversionOps` stays import-only -- peft subclasses it at module
+    # top and never asks about instances of it.
+    "transformers.core_model_loading.Concatenate",
+    "transformers.core_model_loading.MergeModulelist",
+    "transformers.core_model_loading.Transpose",
+    "transformers.conversion_mapping.get_checkpoint_conversion_mapping",
+    "transformers.conversion_mapping.get_model_conversion_mapping",
+))
 
 
 def _unsupported_conversion_symbol(qualified, donor_value = None):
@@ -2388,19 +2395,21 @@ def _unsupported_conversion_symbol(qualified, donor_value = None):
         "transformers that still exports it, or a peft that does not need it."
     )
     if isinstance(donor_value, type):
+        # `isinstance` has to raise, not answer False. peft buckets its
+        # conversion entries by type, and a placeholder that quietly matches
+        # nothing drops the operations instead of reporting that it cannot do
+        # the job. Subclassing still works: peft does `class PeftConcatenate
+        # (Concatenate)` at module top, and creating a class does not construct
+        # one.
+        class _RefusingMeta(type):
+            def __instancecheck__(cls, instance):
+                raise RuntimeError(message)
 
         def _refuse_init(self, *args, **kwargs):
             raise RuntimeError(message)
-
-        return type(
-            short,
-            (object,),
-            {
-                "__init__": _refuse_init,
-                "__doc__": message,
-            },
-        )
-
+        return _RefusingMeta(short, (object,), {
+            "__init__": _refuse_init, "__doc__": message,
+        })
     def _refuse(*args, **kwargs):
         raise RuntimeError(message)
 

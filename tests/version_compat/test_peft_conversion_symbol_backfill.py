@@ -107,25 +107,55 @@ def test_it_is_idempotent(fake_modules):
     assert F._backfill_missing_conversion_symbols() is False
 
 
+def _peft_converter_source():
+    """peft's own source, from the installed package or from GitHub.
+
+    `version-compat-ci.yml`'s `daily-fresh-fetch` job installs only pytest, so
+    `find_spec("peft")` is None there and this authority check reported as a
+    skip: a new import added upstream would never fail the guard it exists to
+    be. The pinned-symbol suites in this directory already read upstream over
+    the network, so do the same and fall back to the installed copy.
+    """
+    import os
+    import urllib.error
+    import urllib.request
+
+    url = ("https://raw.githubusercontent.com/huggingface/peft/main/"
+           "src/peft/utils/transformers_weight_conversion.py")
+    request = urllib.request.Request(url)
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        request.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(request, timeout = 15) as response:
+            return response.read().decode("utf-8", errors = "replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            pytest.skip(f"GitHub fetch failed ({exc.code}) for {url}")
+    except (urllib.error.URLError, TimeoutError) as exc:
+        pytest.skip(f"GitHub fetch failed ({exc}) for {url}")
+
+    module = "peft.utils.transformers_weight_conversion"
+    if importlib.util.find_spec("peft") is None:
+        pytest.skip("peft is not installed and upstream could not be read")
+    try:
+        import inspect
+        return inspect.getsource(importlib.import_module(module))
+    except ModuleNotFoundError as exc:
+        if (exc.name or "") in (module, "peft.utils", "peft"):
+            pytest.skip("this peft has no weight converter")
+        raise
+
+
 def test_the_symbol_list_matches_what_peft_imports():
     """Two lists that can drift; peft's own source is the authority."""
     # Not `importorskip`: on pytest 8 to 9.0 that also swallows an ImportError
     # raised INSIDE an existing converter, which is exactly the drift this test
     # exists to catch -- peft adding an import we do not backfill would report
     # as a skip. Skip only when the module is genuinely absent.
-    module = "peft.utils.transformers_weight_conversion"
-    if importlib.util.find_spec("peft") is None:
-        pytest.skip("peft is not installed")
-    try:
-        peft = importlib.import_module(module)
-    except ModuleNotFoundError as exc:
-        if (exc.name or "") in (module, "peft.utils", "peft"):
-            pytest.skip("this peft has no weight converter")
-        raise
-    import inspect
+    src = _peft_converter_source()
     import re
 
-    src = inspect.getsource(peft)
     for name, symbols in F._PEFT_CONVERSION_SYMBOLS.items():
         block = re.search(rf"from {re.escape(name)} import \(([^)]*)\)", src)
         if block is None:
@@ -198,22 +228,50 @@ def test_a_class_valued_symbol_stays_a_class(fake_modules):
     F._backfill_missing_conversion_symbols()
     core = fake_modules["transformers.core_model_loading"]
     assert isinstance(core.WeightRenaming, type)
-    assert isinstance(object(), core.WeightRenaming) is False
     with pytest.raises(RuntimeError, match = "would silently mis-convert"):
         core.WeightRenaming("a", "b")
 
 
+def test_a_type_check_against_a_placeholder_raises_rather_than_missing():
+    """Answering False is the dangerous answer. peft buckets its conversion
+    entries by type -- `isinstance(entry, WeightConverter)`, `isinstance(op,
+    Concatenate)` -- so a placeholder that quietly matches nothing drops the
+    operations and converts the adapter wrongly with no error."""
+    placeholder = F._unsupported_conversion_symbol(
+        "transformers.core_model_loading.WeightConverter", donor_value = type)
+    with pytest.raises(RuntimeError, match = "would silently mis-convert"):
+        isinstance(object(), placeholder)
+
+
+def test_a_placeholder_can_still_be_subclassed():
+    """peft does `class PeftConcatenate(Concatenate)` at module top, so class
+    creation has to work even though construction refuses."""
+    placeholder = F._unsupported_conversion_symbol(
+        "transformers.core_model_loading.Concatenate", donor_value = type)
+
+    class Mine(placeholder): pass
+
+    assert issubclass(Mine, placeholder)
+
+
 def test_the_import_only_symbols_still_come_from_the_stub(fake_modules):
-    """`Concatenate`/`ConversionOps` are subclassed by peft at module top, so
-    they must be real usable classes, not refusals."""
+    """`ConversionOps` is subclassed by peft at module top and never asked
+    about instances, so it stays a real usable class."""
     F._backfill_missing_conversion_symbols()
     core = fake_modules["transformers.core_model_loading"]
-
-    class Mine(core.ConversionOps):
-        pass
-
-    assert core.Concatenate(dim = 1).dim == 1
+    class Mine(core.ConversionOps): pass
     assert issubclass(Mine, core.ConversionOps)
+
+
+def test_the_operation_classes_are_treated_as_runtime(fake_modules):
+    """`build_peft_weight_mapping` isinstance-checks Concatenate and
+    MergeModulelist and builds `Transpose(dim0 = 0, dim1 = 1)`, so an inert stub
+    silently skips the conversion instead of doing it."""
+    F._backfill_missing_conversion_symbols()
+    core = fake_modules["transformers.core_model_loading"]
+    for name in ("Concatenate", "MergeModulelist", "Transpose"):
+        with pytest.raises(RuntimeError, match = "would silently mis-convert"):
+            getattr(core, name)(dim = 1)
 
 
 def test_every_runtime_symbol_is_one_we_backfill():
