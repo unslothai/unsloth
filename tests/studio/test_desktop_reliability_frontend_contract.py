@@ -363,28 +363,40 @@ def test_full_app_layout_uses_its_own_initialized_marker():
 
     assert 'invoke<boolean>("has_initialized_app_window_layout")' in source
     setup_layout = source.split("async function showSetupWindow", 1)[1].split(
-        "async function enforceMinimumWindowSize", 1
+        "async function enforceWindowSizeBounds", 1
     )[0]
     reset_call = 'invoke("reset_app_window_layout_initialized")'
     assert reset_call in setup_layout
-    assert setup_layout.index(reset_call) < setup_layout.index("win.setSize")
+    assert setup_layout.index(reset_call) < setup_layout.index("placeWindow(")
     assert 'invoke("mark_app_window_layout_initialized")' in source
     assert "hasInitializedAppLayout && hasSavedState" in source
 
 
 def test_first_app_layout_survives_a_stale_setup_window_size():
     source = APP_PROVIDER.read_text(encoding = "utf-8")
-    minimum_helper = source.split("async function enforceMinimumWindowSize", 1)[1].split(
+    bounds_helper = source.split("async function enforceWindowSizeBounds", 1)[1].split(
         "async function applyAppWindowLayout", 1
     )[0]
     app_layout = source.split("async function applyAppWindowLayout", 1)[1].split(
         "async function showWindowFallback", 1
     )[0]
 
-    assert "requestedSize.width" in minimum_helper
-    assert "requestedSize.height" in minimum_helper
-    assert "requestedSize = { width: finalW, height: finalH };" in app_layout
-    assert "enforceMinimumWindowSize(win, LogicalSize, isCurrent, requestedSize)" in app_layout
+    assert "requestedSize: LogicalWindowSize = bounds.minimum" in bounds_helper
+    assert "constrainWindowSize(currentSize, requestedSize, bounds)" in bounds_helper
+    assert "const cssSafeLogicalWidth = measured.monitor" in app_layout
+    first_size_call = app_layout.split(
+        "requestedSize = calculateFirstAppWindowSize(", 1
+    )[1].split(");", 1)[0]
+    assert "measured.bounds," in first_size_call
+    assert "cssSafeLogicalWidth," in first_size_call
+    assert "finalizeAppWindowLayout({" in app_layout
+    assert "enforceWindowSizeBounds(" in app_layout
+    finalize_call = app_layout.split("finalizeAppWindowLayout({", 1)[1].split("});", 1)[0]
+    assert "measured," in finalize_call
+    # Limit the check to this call's arguments.
+    bounds_call = app_layout.split("enforceWindowSizeBounds(", 1)[1].split(");", 1)[0]
+    assert "bounds," in bounds_call
+    assert "requestedSize," in bounds_call
 
 
 def test_expanded_titlebar_button_and_corner_match_sidebar_edge():

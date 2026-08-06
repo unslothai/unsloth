@@ -37,26 +37,33 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  type LogicalWindowSize,
+  PREFERRED_SETUP_WINDOW_SIZE,
+  type WindowSizeBounds,
+  calculateCenteredPosition,
+  calculateFirstAppWindowSize,
+  constrainWindowSize,
+  fitWindowSize,
+} from "./window-layout";
+import {
+  type MeasuredWindowLayout,
+  type WindowLayoutGuard,
+  finalizeAppWindowLayout,
+  measureWindowLayout,
+} from "./window-layout-lifecycle";
 
 interface AppProviderProps {
   children: ReactNode;
 }
 
 type TauriWindowMode = "setup" | "app";
-type WindowLayoutGuard = () => boolean;
-type LogicalWindowSize = {
-  width: number;
-  height: number;
-};
+type WindowModule = typeof import("@tauri-apps/api/window");
+type TauriWindow = Awaited<ReturnType<WindowModule["getCurrentWindow"]>>;
+type TauriMonitor = NonNullable<
+  Awaited<ReturnType<WindowModule["currentMonitor"]>>
+>;
 
-const MIN_WINDOW_WIDTH = 900;
-const MIN_WINDOW_HEIGHT = 600;
-const SETUP_WINDOW_WIDTH = 760;
-const SETUP_WINDOW_HEIGHT = 560;
-const MINIMUM_APP_WINDOW_SIZE: LogicalWindowSize = {
-  width: MIN_WINDOW_WIDTH,
-  height: MIN_WINDOW_HEIGHT,
-};
 // Keep in step with MOBILE_BREAKPOINT in hooks/use-mobile.ts.
 const MIN_DESKTOP_LAYOUT_WIDTH = 768;
 
@@ -68,72 +75,94 @@ function logicalPerCssPx(monitorScale: number): number {
   return Number.isFinite(ratio) && ratio > 1 ? ratio : 1;
 }
 
+/** Sizes the window and centers it inside the work area. */
+async function placeWindow(
+  win: TauriWindow,
+  { LogicalSize, PhysicalPosition }: WindowModule,
+  { monitor }: MeasuredWindowLayout<TauriMonitor>,
+  size: LogicalWindowSize,
+  isCurrent: WindowLayoutGuard,
+): Promise<void> {
+  await win.setSize(new LogicalSize(size.width, size.height));
+  if (!isCurrent()) return;
+  if (!monitor) {
+    await win.center();
+    return;
+  }
+  // Center from the requested size because GTK may still report stale geometry.
+  const scaleFactor = await win.scaleFactor();
+  if (!isCurrent()) return;
+  const position = calculateCenteredPosition(monitor.workArea, {
+    width: Math.round(size.width * scaleFactor),
+    height: Math.round(size.height * scaleFactor),
+  });
+  await win.setPosition(new PhysicalPosition(position.x, position.y));
+}
+
 async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
-  const { getCurrentWindow, LogicalSize } = await import(
-    "@tauri-apps/api/window"
-  );
+  const windowModule = await import("@tauri-apps/api/window");
   const { invoke } = await import("@tauri-apps/api/core");
   if (!isCurrent()) return;
 
-  const win = getCurrentWindow();
+  const win = windowModule.getCurrentWindow();
   await invoke("reset_app_window_layout_initialized");
+  if (!isCurrent()) return;
+  // Clear app-mode constraints before showing the smaller setup window.
+  await win.setSizeConstraints(null);
   if (!isCurrent()) return;
   await win.setResizable(false);
   if (!isCurrent()) return;
-  await win.setSize(new LogicalSize(SETUP_WINDOW_WIDTH, SETUP_WINDOW_HEIGHT));
-  if (!isCurrent()) return;
-  await win.center();
+  const measured = await measureWindowLayout(windowModule, isCurrent);
+  if (!measured) return;
+  // Keep the non-resizable setup window fully visible.
+  const setupSize = fitWindowSize(
+    PREFERRED_SETUP_WINDOW_SIZE,
+    measured.bounds.maximum,
+  );
+  await placeWindow(win, windowModule, measured, setupSize, isCurrent);
   if (!isCurrent()) return;
   await win.show();
 }
 
-async function enforceMinimumWindowSize(
-  win: Awaited<
-    ReturnType<typeof import("@tauri-apps/api/window")["getCurrentWindow"]>
-  >,
-  LogicalSize: typeof import("@tauri-apps/api/window")["LogicalSize"],
+async function enforceWindowSizeBounds(
+  win: TauriWindow,
+  LogicalSize: WindowModule["LogicalSize"],
   isCurrent: WindowLayoutGuard,
-  requestedSize: LogicalWindowSize = MINIMUM_APP_WINDOW_SIZE,
+  bounds: WindowSizeBounds,
+  requestedSize: LogicalWindowSize = bounds.minimum,
 ): Promise<void> {
-  const [innerSize, scaleFactor] = await Promise.all([
-    win.innerSize(),
-    win.scaleFactor(),
-  ]);
+  const [innerSize, scaleFactor, isMaximized, isFullscreen] = await Promise.all(
+    [win.innerSize(), win.scaleFactor(), win.isMaximized(), win.isFullscreen()],
+  );
   if (!isCurrent()) return;
+  // Let the window manager size maximized and fullscreen windows.
+  if (isMaximized || isFullscreen) return;
 
-  const logicalWidth = Math.round(innerSize.width / scaleFactor);
-  const logicalHeight = Math.round(innerSize.height / scaleFactor);
-  // Linux reports innerSize from a cache updated by WebKitGTK configure events.
-  // That event can arrive after this check, leaving the old setup size in the
-  // cache even though the first app resize has completed.
-  const nextWidth = Math.max(
-    logicalWidth,
-    MIN_WINDOW_WIDTH,
-    requestedSize.width,
-  );
-  const nextHeight = Math.max(
-    logicalHeight,
-    MIN_WINDOW_HEIGHT,
-    requestedSize.height,
-  );
-  if (nextWidth !== logicalWidth || nextHeight !== logicalHeight) {
-    await win.setSize(new LogicalSize(nextWidth, nextHeight));
+  const currentSize = {
+    width: Math.round(innerSize.width / scaleFactor),
+    height: Math.round(innerSize.height / scaleFactor),
+  };
+  // Linux can briefly report the pre-resize size from its GTK cache.
+  const nextSize = constrainWindowSize(currentSize, requestedSize, bounds);
+  if (
+    nextSize.width !== currentSize.width ||
+    nextSize.height !== currentSize.height
+  ) {
+    await win.setSize(new LogicalSize(nextSize.width, nextSize.height));
   }
 }
 
 async function applyAppWindowLayout(
   isCurrent: WindowLayoutGuard,
 ): Promise<void> {
-  const { getCurrentWindow, currentMonitor, LogicalSize } = await import(
-    "@tauri-apps/api/window"
-  );
+  const windowModule = await import("@tauri-apps/api/window");
   const { invoke } = await import("@tauri-apps/api/core");
   const { restoreStateCurrent, StateFlags } = await import(
     "@tauri-apps/plugin-window-state"
   );
   if (!isCurrent()) return;
 
-  const win = getCurrentWindow();
+  const win = windowModule.getCurrentWindow();
   // Setup-window activity may create plugin state before the full app is ever
   // shown, so use a dedicated full-app marker to decide whether restoration is
   // appropriate. Keep checking plugin state so a missing/corrupt state file
@@ -146,54 +175,56 @@ async function applyAppWindowLayout(
 
   await win.setResizable(true);
   if (!isCurrent()) return;
+  let measured = await measureWindowLayout(windowModule, isCurrent);
+  if (!measured) return;
 
   let requestedSize: LogicalWindowSize | undefined;
+  let restored = false;
   if (hasInitializedAppLayout && hasSavedState) {
+    restored = true;
     // Subsequent launch: plugin restores size/position/maximized, with built-in
     // off-screen protection for positions saved on a now-disconnected display.
     await restoreStateCurrent(
       StateFlags.SIZE | StateFlags.POSITION | StateFlags.MAXIMIZED,
     );
+    if (!isCurrent()) return;
+    // Remeasure after restore in case the window moved to another monitor.
+    measured = (await measureWindowLayout(windowModule, isCurrent)) ?? measured;
   } else {
-    // First launch: fit to the current monitor and center.
-    const monitor = await currentMonitor();
-    if (!isCurrent()) return;
-    let finalW = MIN_WINDOW_WIDTH;
-    let finalH = MIN_WINDOW_HEIGHT;
-    if (monitor) {
-      const scale = monitor.scaleFactor;
-      const screenW = monitor.size.width / scale;
-      const screenH = monitor.size.height / scale;
-      finalW = Math.max(
-        MIN_WINDOW_WIDTH,
-        Math.round(screenW * 0.75),
-        // Windows text scaling shrinks CSS px, so the window would open under
-        // the sidebar's mobile breakpoint. No-op elsewhere; never exceed the
-        // screen.
-        Math.min(
-          Math.round(MIN_DESKTOP_LAYOUT_WIDTH * logicalPerCssPx(scale)),
-          Math.round(screenW),
-        ),
-      );
-      const targetH = Math.max(MIN_WINDOW_HEIGHT, Math.round(finalW / 1.618));
-      finalH = Math.min(targetH, Math.round(screenH * 0.85));
-    }
-    requestedSize = { width: finalW, height: finalH };
-    await win.setSize(new LogicalSize(finalW, finalH));
-    if (!isCurrent()) return;
-    await win.center();
+    // First launch: fit to the current work area and center.
+    const cssSafeLogicalWidth = measured.monitor
+      ? Math.round(
+          MIN_DESKTOP_LAYOUT_WIDTH *
+            logicalPerCssPx(measured.monitor.scaleFactor),
+        )
+      : undefined;
+    requestedSize = calculateFirstAppWindowSize(
+      measured.bounds,
+      cssSafeLogicalWidth,
+    );
+    await placeWindow(win, windowModule, measured, requestedSize, isCurrent);
   }
-  if (!isCurrent()) return;
-  await win.show();
-  if (!isCurrent()) return;
-  // Apply constraints after restore/show: doing so before plugin restore can emit
-  // a Resized event and overwrite the plugin's cached saved size.
-  await win.setSizeConstraints({
-    minWidth: MIN_WINDOW_WIDTH,
-    minHeight: MIN_WINDOW_HEIGHT,
+  // Apply work-area constraints after restore to preserve the saved size.
+  await finalizeAppWindowLayout({
+    restored,
+    measured,
+    show: () => win.show(),
+    measure: () => measureWindowLayout(windowModule, isCurrent),
+    setMinimumConstraints: (minimum) =>
+      win.setSizeConstraints({
+        minWidth: minimum.width,
+        minHeight: minimum.height,
+      }),
+    enforceBounds: (bounds) =>
+      enforceWindowSizeBounds(
+        win,
+        windowModule.LogicalSize,
+        isCurrent,
+        bounds,
+        requestedSize,
+      ),
+    isCurrent,
   });
-  if (!isCurrent()) return;
-  await enforceMinimumWindowSize(win, LogicalSize, isCurrent, requestedSize);
 
   if (!isCurrent()) return;
   await invoke("mark_app_window_layout_initialized");
