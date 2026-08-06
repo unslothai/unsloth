@@ -1219,13 +1219,10 @@ def _start_title_indexes(tokens: "list[str]", lexed_posix: bool) -> "frozenset[i
 
 
 # cmd ends a command word at these whether or not whitespace surrounds them.
-_CMD_OPERATOR_RE = re.compile(r"(?<!\^)[&|<>]")
+_CMD_OPERATORS = "&|<>"
 # ...but only these begin another command. `>` redirects into a file, so
 # `echo hi>start powershell` writes to one called start and launches nothing.
-# Microsoft: "The ampersand &, pipe | and parentheses ( ) are special characters
-# that must be preceded by the escape character ^ or quotation marks when you
-# pass them as arguments", so an escaped one is an argument and not a separator.
-_CMD_SEPARATOR_RE = re.compile(r"(?<!\^)[&|]")
+_CMD_SEPARATORS = "&|"
 # A URL is opened in the browser rather than run: "any file type that has a
 # registered association, including URLs, which are automatically detected and
 # opened in the default browser" (the start reference), whose own example is
@@ -1233,16 +1230,41 @@ _CMD_SEPARATOR_RE = re.compile(r"(?<!\^)[&|]")
 _URL_SCHEME_RE = re.compile(r"[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
 # cmd's comparison operators, which sit between the two words of an `if` test.
 _CMD_COMPARE_OPS = frozenset({"equ", "neq", "lss", "leq", "gtr", "geq"})
+# ...and its tests that take one operand of their own before the command.
+_CMD_TWO_WORD_TESTS = frozenset({"exist", "defined", "errorlevel", "cmdextversion"})
 
 
-def _strip_cmd_carets(token: str) -> str:
-    """``token`` with cmd's escape character applied, as cmd applies it.
+def _cmd_split(token: str, chars: str) -> "list[str]":
+    """``token`` split on the ``chars`` cmd reads as syntax, escapes applied.
 
-    The caret escapes the character behind it and is dropped, so it hides a
-    name from a plain comparison the way quoting once did: cmd runs
-    `start "" power^shell` as powershell.
+    Microsoft: "The ampersand &, pipe | and parentheses ( ) are special
+    characters that must be preceded by the escape character ^ or quotation
+    marks when you pass them as arguments." The caret escapes whatever follows
+    it and is then dropped, so both halves of that have to be read together and
+    in one pass: a lookbehind for a single caret cannot tell `ok^&start`, where
+    the & is an argument, from `ok^^&start`, where the first caret escapes the
+    second and the & still separates two commands. Dropping the caret matters on
+    its own too, since it otherwise hides a name from a plain comparison the way
+    quoting did: cmd runs `start "" power^shell` as powershell.
     """
-    return re.sub(r"\^(.)", r"\1", token)
+    pieces: "list[str]" = []
+    current: "list[str]" = []
+    index = 0
+    while index < len(token):
+        char = token[index]
+        if char == "^" and index + 1 < len(token):
+            current.append(token[index + 1])  # escaped, so never syntax
+            index += 2
+            continue
+        if char in chars:
+            pieces.append("".join(current))
+            current = []
+            index += 1
+            continue
+        current.append(char)
+        index += 1
+    pieces.append("".join(current))
+    return pieces
 
 
 def _strip_cmd_quotes(token: str) -> str:
@@ -1280,11 +1302,15 @@ def _blocked_start_program(token: str) -> "set[str]":
     to `C:/A` and let the program behind it through.
     """
     unquoted = _strip_cmd_quotes(token)
-    target = unquoted if unquoted is not token else _CMD_OPERATOR_RE.split(token, 1)[0]
-    # A group bracket is cmd's, not part of the name: it documents a
-    # parenthesised body for a single-line `if`, so the program in
+    # Quoting is what makes a path holding an operator usable, so only one
+    # outside the quotes is syntax. A group bracket is cmd's too, not part of
+    # the name: it documents a parenthesised body for a single-line `if`, so
     # `if exist x (start "" powershell)` arrives spelled `powershell)`.
-    target = _strip_cmd_carets(target).strip("()")
+    target = (
+        _cmd_split(unquoted, "")[0]
+        if unquoted is not token
+        else _cmd_split(token, _CMD_OPERATORS)[0]
+    ).strip("()")
     # A URL goes to the browser, so its host and path are not a program name and
     # `start "" https://example.com/curl` is not curl.
     if _URL_SCHEME_RE.match(target):
@@ -1549,11 +1575,13 @@ def _find_blocked_commands(command: str) -> set[str]:
         found at all. cmd reads the operator, so the word after the last one is
         the command.
         """
-        return _cmd_word_base(_CMD_SEPARATOR_RE.split(tokens[index])[-1]) == "start"
+        return _cmd_word_base(_cmd_split(tokens[index], _CMD_SEPARATORS)[-1]) == "start"
 
     def _cmd_word_base(word: str) -> str:
         """``word`` as cmd resolves it: escapes applied, then the plain basename."""
-        return _token_basename(_strip_cmd_carets(word))
+        # `@` suppresses echoing without changing which command runs, so
+        # `cmd /c @start "" powershell` is still a start.
+        return _token_basename(_cmd_split(word, "")[0].lstrip("@"))
 
     def _cmd_condition_words(index: int) -> int:
         """How many words cmd's `if` condition occupies, starting at ``index``.
@@ -1575,7 +1603,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                 words += 1
         if index + words >= len(tokens):
             return words
-        if _cmd_word_base(tokens[index + words]) in ("exist", "defined", "errorlevel"):
+        if _cmd_word_base(tokens[index + words]) in _CMD_TWO_WORD_TESTS:
             return words + 2
         if (
             index + words + 1 < len(tokens)
@@ -1606,29 +1634,39 @@ def _find_blocked_commands(command: str) -> set[str]:
         """
         found: "set[int]" = set()
         expect = True  # the next word is one cmd runs
+        control = False  # an `if` or a `for` is open, so else/do hand off
         skip = 0  # condition words still to consume
         for index in range(begin, len(tokens)):
             token = tokens[index]
             if _looks_like_separator(token):
                 if lexed_posix and index not in quoted_separators:
                     break
-                if _CMD_SEPARATOR_RE.search(token):
+                if len(_cmd_split(token, _CMD_SEPARATORS)) > 1:
                     expect = True
+                    control = False
                 continue
             # A separator with no space around it stays inside the token, under
             # either lexer: the cmd one takes no punctuation_chars, and bash
             # removes the escape from `ok\&start` before cmd reads the `&`.
-            pieces = _CMD_SEPARATOR_RE.split(token)
+            # A redirection is bash's, consumed before cmd is handed its
+            # arguments, so it holds the command position rather than taking it:
+            # `cmd //c >nul start "" powershell` really does launch.
+            if _REDIR_PREFIX_RE.match(token):
+                continue
+            pieces = _cmd_split(token, _CMD_SEPARATORS)
             if len(pieces) > 1:
                 expect = True
+                control = False
             word = _cmd_word_base(pieces[-1])
             if skip > 0:
                 skip -= 1
                 continue
             # `else` and the `do` of a `for` both hand the command along, from
             # either side: the branch they open is a command position even
-            # though the word before them was one too.
-            if word in ("else", "do"):
+            # though the word before them was one too. Only where one of those
+            # statements is open, though, or `cmd /c echo else start "" pwsh`
+            # reads a printed word as a handoff.
+            if control and word in ("else", "do"):
                 expect = True
                 continue
             if not expect:
@@ -1638,8 +1676,12 @@ def _find_blocked_commands(command: str) -> set[str]:
                 expect = False
             elif word == "if":
                 skip = _cmd_condition_words(index + 1)
+                control = True
+            elif word == "for":
+                control = True
+                expect = False  # re-armed by its own `do`, above
             else:
-                expect = False  # a `for` is re-armed by its own `do`, below
+                expect = False
         return found
 
     def _exec_child_index(start: int) -> "tuple[int, bool]":

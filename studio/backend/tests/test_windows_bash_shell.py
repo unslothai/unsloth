@@ -825,6 +825,44 @@ def test_cmd_command_positions_are_followed_through_its_grammar(
 
 
 @pytest.mark.parametrize(
+    ("command", "blocked", "bash"),
+    [
+        # `cmdextversion <n>` takes an operand like exist and defined do.
+        ('cmd /c if cmdextversion 1 start "" powershell', True, None),
+        ('cmd /c if not cmdextversion 2 start "" pwsh', True, None),
+        # The caret escapes what follows it and is then dropped, so the two have
+        # to be read together: in `ok^&start` the & is an argument, but in
+        # `ok^^&start` the first caret escapes the second and the & still
+        # separates, which a lookbehind for one caret cannot tell apart.
+        ('cmd /c echo ok^&start "" powershell', False, None),
+        ('cmd /c echo ok^^&start "" powershell', True, None),
+        ('cmd /c echo ok^^^&start "" powershell', False, None),
+        # `@` suppresses echoing without changing which command runs.
+        ('cmd /c @start "" powershell', True, None),
+        ('cmd /c @echo start "" powershell', False, None),
+        # A leading redirection is bash's, consumed before cmd is handed its
+        # arguments, so it holds the command position rather than taking it.
+        ('cmd //c >nul start "" powershell', True, r"C:\Program Files\Git\bin\bash.exe"),
+        ('cmd //c 2>nul start "" pwsh', True, r"C:\Program Files\Git\bin\bash.exe"),
+        # ...and `else` or `do` only hand off where one of their statements is
+        # open, or a printed word reads as a handoff.
+        ('cmd /c echo else start "" powershell', False, None),
+        ('cmd /c echo do start "" powershell', False, None),
+        ('cmd /c if exist no_f echo ok else start "" powershell', True, None),
+        # A separator closes the statement with the segment it was opened in,
+        # so a printed `else` or `do` after one is not a handoff either.
+        ('cmd /c if exist x start "" notepad & echo do start "" powershell', False, None),
+        ('cmd /c if exist x start "" notepad & echo else start "" pwsh', False, None),
+        ('cmd /c for %i in (x) do start notepad & echo do start "" pwsh', False, None),
+    ],
+)
+def test_cmd_escapes_prefixes_and_control_words(monkeypatch, command, blocked, bash):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
     "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
 )
 def test_windows_only_names_are_not_hard_blocked_off_windows(monkeypatch, command):
