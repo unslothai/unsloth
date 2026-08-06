@@ -62,7 +62,6 @@ def test_the_blocker_is_still_autouse():
 def test_the_blocker_is_installed_right_now():
     """It is autouse, so this test is already running under it."""
     from tests.security.conftest import _BlockedSocket
-
     assert socket.socket is _BlockedSocket
 
 
@@ -84,7 +83,6 @@ def test_the_original_socket_is_what_gets_restored():
     """Teardown must hand back the real class, not another blocker: nesting two
     installs and restoring in the wrong order would leave the patch behind."""
     import tests.security.conftest as C
-
-    assert not issubclass(socket.socket, C._BlockedSocket) or \
-        socket.socket is C._BlockedSocket, \
-        "socket.socket has been wrapped more than once"
+    assert (
+        not issubclass(socket.socket, C._BlockedSocket) or socket.socket is C._BlockedSocket
+    ), "socket.socket has been wrapped more than once"
