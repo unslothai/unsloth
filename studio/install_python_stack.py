@@ -2130,9 +2130,7 @@ def _ensure_rocm_torch() -> None:
             # same-arch box (two gfx1151) the list is shorter than the device
             # count and a valid index legitimately reads as out of range.
             _runtime_gfx = (
-                gfx_codes[_pick_visible_index(len(gfx_codes), warn = False)]
-                if gfx_codes
-                else None
+                gfx_codes[_pick_visible_index(len(gfx_codes), warn = False)] if gfx_codes else None
             )
             if _runtime_gfx in _strix_gfx:
                 _selected_gfx = _runtime_gfx
