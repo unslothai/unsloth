@@ -2192,6 +2192,14 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         # the bound with words still ahead means the child is merely UNREAD.
         return -1, steps >= _MAX_EXEC_PREFIX_SCAN and i < len(tokens)
 
+    # Defined ahead of the walk below, which reaches _screen_cmd_payload and
+    # through it these sets. Left further down they were unassigned on the
+    # first pass and the screen raised NameError instead of answering.
+    _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
+    # cmd expands %COMSPEC% before it runs anything, and it names cmd.exe, so
+    # `%COMSPEC% /c powershell` is a shell invocation spelled the long way.
+    _SHELLS_WIN = {"cmd", "cmd.exe", "%comspec%"}
+
     expect_command = True  # start of string is a command position
     # What a `/c` hands over is cmd's command line whatever lexed the outer one,
     # so bash's own builtins stop being wrappers inside it.
@@ -2537,10 +2545,6 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         )
         blocked.update(re.findall(pattern, lowered))
 
-    _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
-    # cmd expands %COMSPEC% before it runs anything, and it names cmd.exe, so
-    # `%COMSPEC% /c powershell` is a shell invocation spelled the long way.
-    _SHELLS_WIN = {"cmd", "cmd.exe", "%comspec%"}
 
     def _at_command(index: int) -> bool:
         """Whether the shell runs ``tokens[index]``.

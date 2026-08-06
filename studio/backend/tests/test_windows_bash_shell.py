@@ -2052,3 +2052,21 @@ def test_a_payload_glued_to_the_switch_is_still_a_payload(windows_terminal, comm
     # remainder is read from the raw line, because a quote opening mid-token
     # does not hold that lexer's word together.
     assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd //cC:\\Program equecho",
+        "cmd /cC:\\tools\\pwsh.exe -Command ls",
+        "cmd /c\"rm\" fd",
+        "| https://example.com/cmd //c./a==b/rm -rf dir",
+    ],
+)
+def test_a_glued_payload_never_raises(windows_terminal, command):
+    # The screen answers a yes or no; an exception is neither. Reading a payload
+    # glued to the switch reaches _screen_cmd_payload from inside the main walk,
+    # and the shell name sets it consults were defined BELOW that walk, so they
+    # were unassigned on the first pass. Found by randomised differential
+    # fuzzing, which counts a raise as a crash rather than an answer.
+    assert isinstance(tools._find_blocked_commands(command), set)
