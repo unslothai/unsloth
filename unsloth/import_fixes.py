@@ -2354,6 +2354,70 @@ _PEFT_CONVERSION_SYMBOLS = {
     ),
 }
 
+# Of those, the ones peft calls rather than merely imports. The stubs are
+# deliberately inert: on transformers <5 the whole module is ours and peft's
+# converter never runs. Landing an inert body on a REAL transformers is a
+# different matter -- peft would call it and get a wrong answer, so these are
+# replaced by a placeholder that says what is wrong instead.
+_PEFT_CONVERSION_RUNTIME_SYMBOLS = frozenset((
+    "transformers.core_model_loading.dot_natural_key",
+    "transformers.core_model_loading.rename_source_key",
+    "transformers.core_model_loading.WeightRenaming",
+    "transformers.core_model_loading.WeightConverter",
+    "transformers.conversion_mapping.get_checkpoint_conversion_mapping",
+    "transformers.conversion_mapping.get_model_conversion_mapping",
+))
+
+
+def _unsupported_conversion_symbol(qualified, donor_value = None):
+    """A stand-in that satisfies the import and refuses to answer wrongly.
+
+    Shaped like whatever it replaces: peft runs `isinstance(entry, X)` on the
+    class-valued names, so those stay classes -- never instantiable, which
+    makes the isinstance answer False, and False is right when the class does
+    not exist.
+    """
+    short = qualified.rsplit(".", 1)[-1]
+    message = (
+        f"Unsloth: this transformers does not provide {qualified}, which "
+        "peft.utils.transformers_weight_conversion calls to convert LoRA "
+        "weights. Unsloth supplied a placeholder so the import succeeds; "
+        "answering for it would silently mis-convert the adapter. Pin a "
+        "transformers that still exports it, or a peft that does not need it."
+    )
+    if isinstance(donor_value, type):
+        def _refuse_init(self, *args, **kwargs):
+            raise RuntimeError(message)
+        return type(short, (object,), {
+            "__init__": _refuse_init, "__doc__": message,
+        })
+    def _refuse(*args, **kwargs):
+        raise RuntimeError(message)
+    _refuse.__name__ = _refuse.__qualname__ = short
+    _refuse.__doc__ = message
+    return _refuse
+
+
+def _recover_conversion_pattern_map(real):
+    """Find the model-type map under whatever name this transformers uses.
+
+    peft copies this dict and looks model families up in it, so an empty one
+    is not a harmless placeholder: `_convert_peft_config_moe` misses the
+    lookup and leaves legacy LoRA targets unconverted, with no error. The most
+    likely reason for the name to disappear is a rename, so go by shape --
+    a non-empty module-level `dict[str, str]` -- rather than by name.
+    """
+    best = None
+    for attribute in vars(real).values():
+        if not isinstance(attribute, dict) or not attribute:
+            continue
+        if not all(isinstance(k, str) and isinstance(v, str)
+                   for k, v in attribute.items()):
+            continue
+        if best is None or len(attribute) > len(best):
+            best = attribute
+    return best
+
 
 def _backfill_missing_conversion_symbols():
     """Add only the names a real module is missing, taken from our own stub.
@@ -2389,9 +2453,31 @@ def _backfill_missing_conversion_symbols():
             else:
                 sys.modules.pop(name, None)
         for symbol in missing:
+            qualified = f"{name}.{symbol}"
+            if symbol == "_MODEL_TO_CONVERSION_PATTERN":
+                # peft copies this and looks families up in it, so the stub's
+                # empty dict silently drops every alias. Recover the real one.
+                recovered = _recover_conversion_pattern_map(real)
+                if recovered is None:
+                    logger.warning(
+                        "Unsloth: this transformers exports no model-type "
+                        "conversion map, so peft cannot convert legacy LoRA "
+                        "targets for fused MoE checkpoints. Adapters for other "
+                        "architectures are unaffected.")
+                setattr(real, symbol, dict(recovered) if recovered else {})
+                added.append(qualified)
+                continue
+            if qualified in _PEFT_CONVERSION_RUNTIME_SYMBOLS:
+                # peft calls this one. The stub bodies exist to make the import
+                # work on transformers <5, where peft's converter never runs;
+                # on a real transformers it would run and answer wrongly.
+                setattr(real, symbol, _unsupported_conversion_symbol(
+                    qualified, getattr(donor, symbol, None)))
+                added.append(qualified)
+                continue
             if hasattr(donor, symbol):
                 setattr(real, symbol, getattr(donor, symbol))
-                added.append(f"{name}.{symbol}")
+                added.append(qualified)
     if added:
         logger.info(
             "Unsloth: backfilled %s so peft.utils."
