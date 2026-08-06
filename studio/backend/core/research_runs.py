@@ -20,6 +20,7 @@ from typing import Any, AsyncIterator, Callable
 import httpx
 
 from auth import storage as auth_storage
+from core.inference.llama_admission import llama_admission_config_from_env
 from core.inference.message_content import content_to_text
 from core.inference.tool_loop_controller import is_tool_error, strip_result_for_model
 from core.inference.tools import RAG_SOURCES_SENTINEL, execute_tool
@@ -153,6 +154,18 @@ _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS = 120.0
 # Cancellation is cooperative, so bound the wait for a cancelled iterator to unwind;
 # otherwise a stuck one holds a timed-out call open for the rest of the wall clock.
 _STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
+
+
+def _first_output_budget() -> float:
+    """How long to wait for a first frame, never less than two admission heartbeats.
+
+    UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL has no upper bound and the queue sends
+    nothing until one full interval has passed, so a fixed budget below it would fail a
+    perfectly healthy queued run before it could ever speak. The wall clock still caps
+    the total either way.
+    """
+    interval = llama_admission_config_from_env().keepalive_interval_s
+    return max(_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS, 2.0 * interval)
 
 
 def _auto_scrape_default() -> int:
@@ -1634,6 +1647,17 @@ class ResearchSupervisor:
                     "research.api_key_cleanup_failed run_id=%s", run["id"], exc_info = True
                 )
 
+    @staticmethod
+    def _absorb_late_task(run_id: str, what: str, task: asyncio.Task) -> None:
+        """Retrieve the outcome of a task that outlived the cleanup bound."""
+        if task.cancelled():
+            return
+        error = task.exception()
+        if error is not None:
+            logger.warning(
+                "research.%s_late_cleanup_failed run_id=%s", what, run_id, exc_info = error
+            )
+
     async def _discard_task(self, run_id: str, task: asyncio.Task, what: str) -> None:
         """Cancel a pending task and absorb its outcome, without waiting forever.
 
@@ -1648,6 +1672,9 @@ class ResearchSupervisor:
             raise  # an outer cancellation (wall clock, shutdown) must keep propagating
         if not task.done():
             logger.warning("research.%s_cleanup_timed_out run_id=%s", what, run_id)
+            # The bound expired but the task lives on, so keep the promise above by
+            # absorbing its outcome whenever it finally cooperates.
+            task.add_done_callback(lambda finished: self._absorb_late_task(run_id, what, finished))
             return
         try:
             task.result()
@@ -1859,9 +1886,7 @@ class ResearchSupervisor:
                                     await self._check_active(run["id"])
                             response = await send_task
                             response.raise_for_status()
-                            first_output_deadline = (
-                                loop.time() + _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
-                            )
+                            first_output_deadline = loop.time() + _first_output_budget()
                             break
                         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                             # Only reachable before a body byte is touched (the stream is consumed
@@ -1906,9 +1931,7 @@ class ResearchSupervisor:
                             # (routes/inference.py sends it every 15 s), which must not renew
                             # the budget or a wedged model would never time out.
                             if line.startswith(":") and not saw_data_frame:
-                                first_output_deadline = (
-                                    loop.time() + _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
-                                )
+                                first_output_deadline = loop.time() + _first_output_budget()
                             continue
                         saw_data_frame = True
                         data = line[5:].strip()

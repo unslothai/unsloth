@@ -27,6 +27,17 @@ from core.research_runs import (
 from routes.research_runs import CreateResearchRun, _is_sensitive_key, _sanitize_config
 
 
+@pytest.fixture(autouse = True)
+def _fast_admission_heartbeat(monkeypatch):
+    """Keep the admission heartbeat below the budgets these tests patch.
+
+    The first-output budget is floored at two admission heartbeats, so the shipped 5 s
+    interval would otherwise dominate every sub-second deadline asserted here. The floor
+    itself is covered by test_first_output_budget_never_undercuts_the_admission_heartbeat.
+    """
+    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "0.001")
+
+
 def test_sanitize_query_redacts_payment_card():
     cleaned = _sanitize_public_query("verify card 4111111111111111 statement")
     assert "4111111111111111" not in cleaned
@@ -966,6 +977,67 @@ def test_endless_keepalives_still_end_at_the_wall_clock(monkeypatch):
 
     with pytest.raises(research_runs.ModelWallClockTimeout):
         _run_stream(supervisor, timeout_seconds = 0.4)
+
+
+def test_a_task_outliving_cleanup_has_its_outcome_absorbed(monkeypatch):
+    """A task that ignores the cleanup bound must not later log an unretrieved exception."""
+    monkeypatch.setattr(research_runs, "_STREAM_CLEANUP_TIMEOUT_SECONDS", 0.05)
+    supervisor = _make_supervisor(_noop_check_active)
+
+    absorbed = []
+    real_absorb = research_runs.ResearchSupervisor._absorb_late_task
+
+    def _spy(run_id, what, task):
+        absorbed.append(what)
+        return real_absorb(run_id, what, task)
+
+    monkeypatch.setattr(research_runs.ResearchSupervisor, "_absorb_late_task", staticmethod(_spy))
+
+    async def _drive():
+        gate = asyncio.get_running_loop().create_future()
+
+        async def _stubborn():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                pass  # declines cancellation, then keeps running on its own terms
+            await gate
+            raise RuntimeError("late failure")
+
+        task = asyncio.create_task(_stubborn())
+        await asyncio.sleep(0)
+        await supervisor._discard_task("run-1", task, "stream_iterator")
+        assert not task.done(), "the bound must have expired with the task still running"
+
+        gate.set_result(None)
+        await asyncio.sleep(0.05)
+        assert task.done()
+        # Retrieved by the callback; asyncio only warns for exceptions never retrieved.
+        assert absorbed == ["stream_iterator"], f"outcome was not absorbed: {absorbed}"
+        assert isinstance(task.exception(), RuntimeError)
+
+    asyncio.run(_drive())
+
+
+def test_first_output_budget_never_undercuts_the_admission_heartbeat(monkeypatch):
+    """A slow admission heartbeat must not fail a healthy queued run.
+
+    UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL has no upper bound and the queue stays
+    silent for a full interval, so a budget below it would expire before the queue could
+    prove it is alive.
+    """
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 120.0)
+
+    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "5")
+    assert research_runs._first_output_budget() == 120.0, "the default must be unchanged"
+
+    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL", "300")
+    assert research_runs._first_output_budget() == 600.0, "must clear two 300 s heartbeats"
+
+    # The legacy spelling feeds the same config, so it must lift the floor too.
+    monkeypatch.delenv("UNSLOTH_LLAMA_ADMISSION_KEEPALIVE_INTERVAL")
+    monkeypatch.setenv("UNSLOTH_OPENAI_COMPAT_ADMISSION_KEEPALIVE_INTERVAL", "200")
+    assert research_runs._first_output_budget() == 400.0
 
 
 def test_stall_keepalives_after_the_first_frame_do_not_renew_the_budget(monkeypatch):
