@@ -1180,3 +1180,51 @@ def test_is_run_finished_true_when_a_stall_is_unrecoverable():
     b._handle_event({"type": "stall", "message": "no progress"})
     assert b._needs_xet_respawn is False
     assert b.is_run_finished() is True
+
+
+# ----------------------------------------------------------------------------
+# (f) The terminal event must be the worker's last act.
+# ----------------------------------------------------------------------------
+
+
+def test_mlx_worker_flushes_tracking_before_every_terminal_send():
+    """The parent arms its exit watchdog on `complete`, so anything the worker still
+    does after that send races a force-terminate. The MLX path closes the TensorBoard
+    writer and calls wandb_run.finish() in a finally; both must be flushed first.
+    """
+    import ast
+    from pathlib import Path as _P
+
+    src = (_P(__file__).resolve().parent.parent / "core/training/worker.py").read_text()
+    tree = ast.parse(src)
+    fn = next(
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.FunctionDef) and n.name == "_run_mlx_training"
+    )
+
+    def _is_complete_send(node):
+        return (
+            isinstance(node, ast.Call)
+            and getattr(node.func, "id", "") == "_send"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and node.args[0].value == "complete"
+        )
+
+    sends = sorted(n.lineno for n in ast.walk(fn) if _is_complete_send(n))
+    flushes = sorted(
+        n.lineno for n in ast.walk(fn)
+        if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_finish_tracking"
+    )
+    # Only the sends after _finish_tracking is defined can be guarded by it.
+    defined_at = next(
+        n.lineno for n in ast.walk(fn)
+        if isinstance(n, ast.FunctionDef) and n.name == "_finish_tracking"
+    )
+    guarded = [s for s in sends if s > defined_at]
+    assert guarded, "expected terminal sends after the tracking helper is defined"
+    for send in guarded:
+        assert any(send - 4 <= f < send for f in flushes), (
+            f"_send('complete') at worker.py:{send} is not preceded by _finish_tracking(); "
+            "the watchdog could force-terminate a pending TB/W&B flush"
+        )

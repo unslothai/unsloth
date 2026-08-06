@@ -6,8 +6,8 @@
 /api/train/status and the /api/train/progress SSE both keyed off is_training_active(),
 which is liveness-based, so a worker wedged in post-save teardown kept the run reported as
 "training" forever. They now consult is_run_finished() as well. A live run must be
-unaffected, and /api/train/reset must reap a finished-but-lingering worker instead of
-refusing the user's return to configuration.
+unaffected, and /api/train/stop must be terminal-aware too: a Stop landing in the poll
+window after a run finished must not latch _should_stop over the finished banner.
 """
 
 from __future__ import annotations
@@ -16,7 +16,6 @@ import asyncio
 import sys
 from pathlib import Path
 
-import pytest
 
 _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
@@ -159,22 +158,40 @@ def test_progress_stream_stays_open_while_training(monkeypatch):
     assert "complete" in asyncio.run(_run())
 
 
-def test_reset_reaps_a_finished_but_lingering_worker(monkeypatch):
+def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
+    """Stop clicked in the poll window after the run already finished.
+
+    The button greys out only once /api/train/status reports is_training_running=False
+    (3s poll, or the extra poll the SSE "complete" frame triggers), so a click can still
+    land on a run that has saved and emitted its terminal event. /stop is terminal-aware
+    like the other run-state surfaces, so it reports idle instead of latching
+    _should_stop and overwriting the finished banner with "Stopping training and saving
+    checkpoint..." -- which no later path clears, leaving the saved run reported as
+    "stopped" with a never-resolving message.
+    """
     b = _running(monkeypatch)
     b._handle_event(dict(_DONE))
-    asyncio.run(rt.reset_training(current_subject = "t"))
-    assert b._proc.is_alive() is False, "reset must reap instead of returning 409"
-    assert b.is_training_active() is False
+
+    resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = True), current_subject = "t"))
+    assert resp.status == "idle"
+    assert b._should_stop is False
+
+    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert st.phase == "completed"
+    assert st.message.startswith("Training completed!")
+
+    # ... and it survives the watchdog reaping the wedged worker.
+    b._finalize_stopped_after_escalation(target_proc = b._proc, watched_job_id = "job_1")
+    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert st.phase == "completed"
+    assert st.message.startswith("Training completed!")
 
 
-def test_reset_still_refused_mid_run(monkeypatch):
-    from fastapi import HTTPException
-
+def test_stop_mid_run_still_works(monkeypatch):
     b = _running(monkeypatch)
-    with pytest.raises(HTTPException) as exc:
-        asyncio.run(rt.reset_training(current_subject = "t"))
-    assert exc.value.status_code == 409
-    assert b._proc.is_alive() is True, "a live run must never be reaped by reset"
+    resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = True), current_subject = "t"))
+    assert resp.status == "stopped"
+    assert b._should_stop is True
 
 
 def test_surfaces_tolerate_a_backend_without_is_run_finished(monkeypatch):

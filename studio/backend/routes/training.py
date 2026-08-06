@@ -636,7 +636,13 @@ async def stop_training(
     """
     try:
         backend = get_training_backend()
-        is_active = backend.is_training_active()
+        # Terminal-aware like /status and the progress SSE: a run that already reported
+        # its own terminal event has saved and has nothing left to stop. Without this, a
+        # Stop landing in the poll window right after the run finished still latches
+        # _should_stop and overwrites the finished banner with "Stopping training and
+        # saving checkpoint...", which no later path clears -- /status then reports the
+        # saved run as "stopped" with that stale message for good.
+        is_active = backend.is_training_active() and not _run_finished(backend)
         logger.info("Stop requested: save=%s is_active=%s", body.save, is_active)
 
         if not is_active:
@@ -672,11 +678,9 @@ async def reset_training(current_subject: str = Depends(get_current_subject)):
         is_active = backend.is_training_active()
 
         if is_active:
-            if backend._cancel_requested or _run_finished(backend):
-                # Cancel (save=False), or a finished run whose worker is still tearing
-                # down: nothing is left to save, so reap now instead of refusing the
-                # user's return to configuration until the watchdog gets there.
-                logger.info("Force-terminating subprocess for immediate reset")
+            if backend._cancel_requested:
+                # Cancel (save=False) requested -- force-terminate to reset immediately.
+                logger.info("Force-terminating subprocess for immediate reset (cancel path)")
                 backend.force_terminate()
             else:
                 logger.warning("Rejected reset while training active: is_active=%s", is_active)

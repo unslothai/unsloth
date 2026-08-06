@@ -2203,8 +2203,15 @@ def _run_mlx_training(event_queue, stop_queue, config):
         trainer.save_model = _save_model
 
     # ── 12. Save and finalize ──
+    _tracking_finished = [False]
+
     def _finish_tracking() -> None:
-        # Runs on every save/finalize exit so TB/W&B never leak on early return.
+        # Runs before every terminal send, and in the finally for early returns, so the
+        # parent never sees "complete" while a TB/W&B flush is still outstanding. Both
+        # closes are idempotent, and the flag keeps the trailing call a no-op.
+        if _tracking_finished[0]:
+            return
+        _tracking_finished[0] = True
         if tb_writer is not None:
             try:
                 tb_writer.close()
@@ -2236,6 +2243,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
         if trainer.stop_requested:
             if not _stop_save[0]:
                 # Cancel (save=False): skip saving.
+                _finish_tracking()
                 _send("complete", output_dir = None, status_message = "Training cancelled")
             else:
                 _send("status", status_message = "Saving stopped model...")
@@ -2244,6 +2252,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
                 # Stop-and-save promises a resumable checkpoint, not just model files.
                 if not _stop_checkpoint_ok():
                     return
+                _finish_tracking()
                 _send("complete", output_dir = output_dir, status_message = "Training stopped")
         else:
             _send("status", status_message = "Saving model...")
@@ -2252,6 +2261,7 @@ def _run_mlx_training(event_queue, stop_queue, config):
             # A save-stop can race the natural final save; it made the same promise.
             if trainer.stop_requested and _stop_save[0] and not _stop_checkpoint_ok():
                 return
+            _finish_tracking()
             _send("complete", output_dir = output_dir, status_message = "Training completed")
     finally:
         _finish_tracking()
