@@ -800,8 +800,7 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// Root the WebView profile shares with the stamp file below. None when the
-// environment gives us nothing to derive it from.
+// Root shared by the WebView profile and the version stamp below.
 fn webview_profile_root(bundle_id: &str) -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
     let from_env = |key: &str| {
@@ -820,7 +819,7 @@ fn webview_profile_root(bundle_id: &str) -> Option<std::path::PathBuf> {
     }
     #[cfg(target_os = "linux")]
     {
-        // Tauri points the WebView at LocalData/<bundle id>, and wry keys the
+        // Tauri points the WebView at LocalData/<bid>, and wry keys the
         // WebKitGTK base-cache dir to that same dir.
         from_env("XDG_DATA_HOME")
             .or_else(|| from_env("HOME").map(|h| h.join(".local/share")))
@@ -833,17 +832,15 @@ fn webview_profile_root(bundle_id: &str) -> Option<std::path::PathBuf> {
     }
 }
 
-// Clear WebView caches after an update, before the webview initializes. The
-// in-app update runs setup.sh/setup.ps1 while the old WebView still holds
-// these files, so its clear silently fails and a relaunch can serve the
-// previous frontend from cache.
+// Clear WebView caches after an update, before the webview initializes: the
+// in-app update runs setup.sh/setup.ps1 while the old WebView still holds these
+// files, so its clear fails and a relaunch can serve the previous frontend.
 //
-// Gated on a version stamp for two reasons: an unconditional clear makes every
-// launch a cold-cache launch (the Windows profile keeps the compiled-JS cache),
-// and this runs before the single-instance plugin, so an ungated clear lets a
-// duplicate launch delete a live instance's profile out from under it.
+// Version-stamped, because this runs before the single-instance plugin. Ungated,
+// a duplicate launch would delete a live instance's profile, and every ordinary
+// launch would discard the Windows compiled-JS cache for nothing.
 //
-// Cache-only paths; LocalStorage, IndexedDB, cookies and app data are kept.
+// Cache-only; LocalStorage, IndexedDB, cookies and app data are kept.
 // Mirrors setup.sh _clear_webview_caches / setup.ps1.
 fn clear_webview_caches(bundle_id: &str, version: &str) {
     let Some(root) = webview_profile_root(bundle_id) else {
@@ -864,9 +861,8 @@ fn clear_webview_caches(bundle_id: &str, version: &str) {
     }
     #[cfg(target_os = "macos")]
     if let Ok(home) = std::env::var("HOME") {
-        // WKWebView keeps every cache-typed store under Library/Caches/<bid>
-        // (WebKit/{NetworkCache,CacheStorage,ServiceWorkers}). LocalStorage and
-        // IndexedDB live under Library/WebKit/<bid> and are left alone.
+        // WKWebView keeps every cache-typed store under Library/Caches/<bid>;
+        // Library/WebKit/<bid> is user storage and is left alone.
         paths.push(std::path::PathBuf::from(home).join("Library/Caches").join(bundle_id));
     }
     #[cfg(target_os = "linux")]
@@ -875,8 +871,8 @@ fn clear_webview_caches(bundle_id: &str, version: &str) {
     }
 
     for p in &paths {
-        // Absent is the normal case; anything else is worth a line in the log,
-        // since a silent failure here is what the stale frontend looked like.
+        // Absent is normal; anything else is worth logging, since a silent
+        // failure here is what the stale frontend looked like.
         if let Err(e) = fs::remove_dir_all(p) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 warn!("could not clear WebView cache {}: {e}", p.display());

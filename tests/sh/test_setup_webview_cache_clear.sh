@@ -25,8 +25,8 @@ trap 'rm -rf "$_TMP_ROOT"' EXIT
 assert_gone()    { _l="$1"; if [ -e "$2" ]; then echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); else echo "  PASS: $_l"; PASS=$((PASS+1)); fi; }
 assert_present() { _l="$1"; if [ -e "$2" ]; then echo "  PASS: $_l"; PASS=$((PASS+1)); else echo "  FAIL: $_l (missing: $2)"; FAIL=$((FAIL+1)); fi; }
 
-# Explicit mktemp templates: -p is GNU-only (BSD mktemp gained it in macOS 14),
-# and a bare mktemp -d implies -t and would land outside _TMP_ROOT on macOS.
+# Explicit template: -p is GNU-only (BSD got it in macOS 14) and a bare
+# mktemp -d implies -t, landing outside _TMP_ROOT on macOS.
 new_home() { mktemp -d "$_TMP_ROOT/home.XXXXXX"; }
 
 # Extract just the function definition (top-level, closes at column 0).
@@ -36,8 +36,8 @@ sed -n '/^_clear_webview_caches() {/,/^}/p' "$SETUP_SH" > "$FUNC_FILE"
 . "$FUNC_FILE"
 substep() { :; }  # stub the setup.sh logger
 
-# ── 1. macOS: the real WKWebView layout. Every cache-typed store hangs off
-# Library/Caches/<bid>/WebKit; Library/WebKit/<bid> holds only user storage. ──
+# ── 1. macOS: cache-typed stores hang off Library/Caches/<bid>/WebKit;
+# Library/WebKit/<bid> is user storage only ──
 H=$(new_home)
 mkdir -p "$H/Library/Caches/$BID/WebKit/NetworkCache/Version 17" \
          "$H/Library/Caches/$BID/WebKit/CacheStorage" \
@@ -56,8 +56,8 @@ assert_present "macOS: IndexedDB kept"                   "$H/Library/WebKit/$BID
 assert_present "macOS: Application Support kept"         "$H/Library/Application Support/$BID"
 assert_present "macOS: unrelated app cache kept"         "$H/Library/Caches/com.other.app"
 
-# ── 2. Linux: wry points WebKitGTK's base-cache dir at the app data dir, so
-# the caches sit beside the user storage under ~/.local/share/<bid>. ──
+# ── 2. Linux: wry points the base-cache dir at the app data dir, so caches
+# sit beside user storage under ~/.local/share/<bid> ──
 H=$(new_home)
 D="$H/.local/share/$BID"
 mkdir -p "$D/WebKitCache" "$D/CacheStorage" "$D/serviceworkers" \
@@ -116,7 +116,7 @@ else
     echo "  FAIL: empty HOME -> nonzero exit"; FAIL=$((FAIL+1))
 fi
 
-# ── 7. setup.sh still calls the function (the extract above cannot prove it) ──
+# ── 7. setup.sh still calls it (the sed extract above cannot prove that) ──
 if grep -qE '^[[:space:]]*_clear_webview_caches[[:space:]]*$' "$SETUP_SH"; then
     echo "  PASS: setup.sh invokes _clear_webview_caches"; PASS=$((PASS+1))
 else

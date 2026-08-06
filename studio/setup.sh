@@ -538,22 +538,20 @@ rm -rf "$SCRIPT_DIR/tmp/unsloth_compiled_cache"
 # Cache-only paths: LocalStorage, IndexedDB, cookies, settings, models,
 # and the studio database are untouched.
 _clear_webview_caches() {
-    # No HOME means no per-user paths to derive; bailing keeps `set -u` from
-    # aborting the install and stops "" expanding to /Library or /.cache.
+    # No HOME: bail rather than let `set -u` abort the install or "" expand
+    # to /Library and /.cache.
     [ -n "${HOME:-}" ] || return 0
     _wvc_bid="ai.unsloth.studio"
     _wvc_paths=()
     case "$(uname -s 2>/dev/null)" in
         Darwin)
-            # WKWebView puts every cache-typed store under Library/Caches/<bid>
-            # (WebKit/{NetworkCache,CacheStorage,ServiceWorkers}); LocalStorage
-            # and IndexedDB live under Library/WebKit/<bid> and are left alone.
+            # WKWebView keeps every cache-typed store under Library/Caches/<bid>;
+            # Library/WebKit/<bid> is user storage and is left alone.
             _wvc_paths=("$HOME/Library/Caches/$_wvc_bid")
             ;;
         Linux)
-            # wry points WebKitGTK's base-cache dir at the app DATA dir (same as
-            # base-data), so the caches sit under ~/.local/share/<bid>. Clear
-            # those; sibling localstorage/, databases/ and cookies stay.
+            # wry points WebKitGTK's base-cache dir at the app data dir, so the
+            # caches sit beside localstorage/, databases/ and cookies, which stay.
             _wvc_data="${XDG_DATA_HOME:-$HOME/.local/share}/$_wvc_bid"
             _wvc_paths=(
                 "$_wvc_data/WebKitCache"

@@ -1633,8 +1633,7 @@ if ($env:LOCALAPPDATA) {
     foreach ($wvSub in @("Cache", "Code Cache", "GPUCache", "Service Worker")) {
         $wvPath = Join-Path $wvDefault $wvSub
         # Get-Item -Force, not Test-Path: the probe throws on an ACL denial under
-        # "Stop", and a reparse point here must be unlinked rather than recursed
-        # into, which Remove-Item -Recurse -Force would do on PowerShell 5.1.
+        # "Stop", and a reparse point must be unlinked, not recursed into.
         $wvItem = Get-Item -LiteralPath $wvPath -Force -ErrorAction SilentlyContinue
         if (-not $wvItem) { continue }
         try {
