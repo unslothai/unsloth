@@ -2159,62 +2159,115 @@ const Composer: FC<{
         (s.pendingImageAttachments[nativeAttachmentTargetKey]?.length ?? 0) > 0,
     ),
   );
+  const [materializingDroppedImages, setMaterializingDroppedImages] =
+    useState(false);
   useEffect(() => {
-    if (!hasPendingImageAttachments || !nativeAttachmentTargetKey) {
+    if (!nativeAttachmentTargetKey) {
       return;
     }
     const targetKey = nativeAttachmentTargetKey;
-    const intents = useNativeIntentStore
-      .getState()
-      .takeImageAttachments(targetKey);
-    if (intents.length === 0) return;
-
     let disposed = false;
+    let draining = false;
 
-    void (async () => {
-      for (let index = 0; index < intents.length; index += 1) {
+    const drainPendingImages = async () => {
+      if (disposed || draining) {
+        return;
+      }
+      draining = true;
+      setMaterializingDroppedImages(true);
+      try {
+        while (!disposed) {
+          const intents = useNativeIntentStore
+            .getState()
+            .takeImageAttachments(targetKey);
+          if (intents.length === 0) {
+            break;
+          }
+          for (let index = 0; index < intents.length; index += 1) {
+            if (disposed) {
+              useNativeIntentStore
+                .getState()
+                .addImageAttachments(targetKey, intents.slice(index));
+              return;
+            }
+            const intent = intents[index]!;
+            let file: File;
+            try {
+              file = await nativeAttachmentIntentToFile(intent);
+            } catch (error) {
+              toast.error("Could not attach dropped images", {
+                description:
+                  error instanceof Error ? error.message : String(error),
+              });
+              const remaining = intents.slice(index + 1);
+              if (remaining.length > 0) {
+                useNativeIntentStore
+                  .getState()
+                  .addImageAttachments(targetKey, remaining);
+              }
+              return;
+            }
+            if (
+              disposed ||
+              nativeAttachmentTargetKeyRef.current !== targetKey
+            ) {
+              useNativeIntentStore
+                .getState()
+                .addImageAttachments(targetKey, intents.slice(index));
+              return;
+            }
+            try {
+              await aui.composer().addAttachment(file);
+            } catch (error) {
+              toast.error("Could not attach dropped images", {
+                description:
+                  error instanceof Error ? error.message : String(error),
+              });
+              const remaining = intents.slice(index + 1);
+              if (remaining.length > 0) {
+                useNativeIntentStore
+                  .getState()
+                  .addImageAttachments(targetKey, remaining);
+              }
+              return;
+            }
+          }
+        }
+      } finally {
+        draining = false;
         if (disposed) {
-          useNativeIntentStore
-            .getState()
-            .addImageAttachments(targetKey, intents.slice(index));
+          setMaterializingDroppedImages(false);
           return;
         }
-        const intent = intents[index]!;
-        let file: File;
-        try {
-          file = await nativeAttachmentIntentToFile(intent);
-        } catch (error) {
-          toast.error("Could not attach dropped images", {
-            description: error instanceof Error ? error.message : String(error),
-          });
-          useNativeIntentStore
-            .getState()
-            .addImageAttachments(targetKey, intents.slice(index + 1));
-          continue;
-        }
-        if (disposed || nativeAttachmentTargetKeyRef.current !== targetKey) {
-          useNativeIntentStore
-            .getState()
-            .addImageAttachments(targetKey, intents.slice(index));
-          return;
-        }
-        try {
-          await aui.composer().addAttachment(file);
-        } catch (error) {
-          toast.error("Could not attach dropped images", {
-            description: error instanceof Error ? error.message : String(error),
-          });
-          useNativeIntentStore
-            .getState()
-            .addImageAttachments(targetKey, intents.slice(index + 1));
+        const pending =
+          useNativeIntentStore.getState().pendingImageAttachments[targetKey]
+            ?.length ?? 0;
+        if (pending > 0) {
+          void drainPendingImages();
+        } else {
+          setMaterializingDroppedImages(false);
         }
       }
-    })();
+    };
+
+    const unsubscribe = useNativeIntentStore.subscribe((state) => {
+      const pending =
+        state.pendingImageAttachments[targetKey]?.length ?? 0;
+      if (pending > 0) {
+        void drainPendingImages();
+      }
+    });
+
+    void drainPendingImages();
 
     return () => {
       disposed = true;
+      setMaterializingDroppedImages(false);
+      unsubscribe();
     };
-  }, [hasPendingImageAttachments, nativeAttachmentTargetKey, aui]);
+  }, [nativeAttachmentTargetKey, aui]);
+  const hasMaterializingImageAttachments =
+    hasPendingImageAttachments || materializingDroppedImages;
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemId = useAuiState(
     ({ threadListItem }) => threadListItem.id,
@@ -2254,6 +2307,7 @@ const Composer: FC<{
     !hasPendingAudio &&
     !isComposing &&
     !hasPendingAttachments &&
+    !hasMaterializingImageAttachments &&
     !disabled &&
     !overlay;
 
@@ -2744,8 +2798,16 @@ const Composer: FC<{
 
   const shouldBlockSend = useCallback(
     () =>
-      !hasSendableContent || isComposingRef.current || hasPendingAttachments,
-    [hasPendingAttachments, hasSendableContent, isComposingRef],
+      !hasSendableContent ||
+      isComposingRef.current ||
+      hasPendingAttachments ||
+      hasMaterializingImageAttachments,
+    [
+      hasMaterializingImageAttachments,
+      hasPendingAttachments,
+      hasSendableContent,
+      isComposingRef,
+    ],
   );
 
   const sendReservedComposer = useCallback(() => {

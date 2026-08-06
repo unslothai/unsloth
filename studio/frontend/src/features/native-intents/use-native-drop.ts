@@ -28,7 +28,7 @@ function canAttachDocs(options: NativeModelDropOptions): boolean {
 }
 
 function canAttachImages(options: NativeModelDropOptions): boolean {
-  return options.nativePathLeasesSupported && Boolean(options.onAttachImages);
+  return Boolean(options.onAttachImages);
 }
 
 function canAutoLoadModel(options: NativeModelDropOptions): boolean {
@@ -160,8 +160,8 @@ export function useNativeModelDrop(options: NativeModelDropOptions): NativeModel
             return;
           }
           if (needsImages && !canAttachImages(currentOptions)) {
-            toast.error("Attaching images needs the desktop backend", {
-              description: "Retry once Studio has finished starting up.",
+            toast.error("Attaching images is unavailable right now", {
+              description: "Retry once this chat is ready for attachments.",
             });
             return;
           }
