@@ -1735,3 +1735,31 @@ def test_start_help_launches_nothing(windows_terminal, command):
     # `/?` displays START's help and returns, so the word behind it is never
     # launched and screening it refused a line that only prints usage.
     assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["( call rm -rf x", ") call rm -rf x", "cmd /c echo hi& call powershell"],
+)
+def test_a_call_boundary_only_forwards_where_cmd_parses(windows_git_bash_only, command):
+    # The operator boundary that publishes CALL's child is cmd's, so it must not
+    # apply to a line bash is reading: `( call rm` runs a subshell looking for a
+    # program named call and never reaches rm. Found by randomised differential
+    # fuzzing against the previous scan, which reported neither.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_a_call_boundary_still_forwards_inside_a_quoted_payload():
+    # And it does apply inside a `/c` payload even where bash is the outer
+    # shell, because that payload is cmd's command line.
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(sys, "platform", "win32")
+        patch.setattr(tools, "_shell_is_posix", lambda: True)
+        patch.setattr(
+            tools,
+            "_BLOCKED_COMMANDS",
+            tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+        )
+        assert "powershell" in tools._find_blocked_commands(
+            'cmd //c "echo hi& call powershell"'
+        )

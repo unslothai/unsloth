@@ -2448,6 +2448,11 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 call_child_indexes.add(i + 1)
             elif (
                 not tail
+                # CALL is cmd's builtin, so this boundary only forwards where
+                # cmd is the one parsing. Under bash `( call rm` runs a program
+                # named call and never reaches rm, and the operator branch above
+                # is already lexer-gated the same way.
+                and (not lexed_posix or _cmd_payload)
                 and _ends_with_cmd_operator(token)
                 and i + 2 < len(tokens)
                 and _token_basename(_unwrap_quotes(tokens[i + 1])) in _CMD_ONLY_PREFIXES
