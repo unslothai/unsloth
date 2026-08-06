@@ -101,6 +101,7 @@ def _apply_post_load_tokenizer_fixes(tokenizer, model_name, fix_tokenizer):
         return tokenizer
     return _fix_gemma4_base_bos_token(tokenizer, model_name)
 
+
 # Check environments
 keynames = "\n" + "\n".join(os.environ.keys())
 IS_COLAB_ENVIRONMENT = "\nCOLAB_" in keynames
