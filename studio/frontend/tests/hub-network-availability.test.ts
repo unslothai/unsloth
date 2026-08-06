@@ -201,6 +201,54 @@ test("a caller-driven abort does not blacklist the origin", async () => {
   }
 });
 
+test("a slow optional asset does not take the whole origin down", async () => {
+  reset();
+  const original = globalThis.fetch;
+  // Never resolves: fetchWithTimeout's own AbortController fires the timeout.
+  globalThis.fetch = ((_input: unknown, init: { signal?: AbortSignal }) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener("abort", () =>
+        reject(new DOMException("aborted", "AbortError")),
+      );
+    })) as unknown as typeof fetch;
+  try {
+    await assert.rejects(
+      fetchWithTimeout(`${HF}/api/organizations/unsloth/avatar`, {}, 10),
+      (err: unknown) => {
+        assert.ok(isHubFetchError(err), "the caller still gets the diagnosis");
+        assert.equal(err.failure.kind, "timeout");
+        return true;
+      },
+    );
+    // The avatar, README and dataset-size fetches all use a 10s timeout against
+    // huggingface.co. Arming the 30s window here paused discovery and disabled
+    // the metadata and download controls while the API itself was reachable.
+    assert.equal(
+      getHubPhase(HF),
+      "available",
+      "one slow endpoint is not evidence the origin is unreachable",
+    );
+    assert.equal(getLastHubFailure(HF), null, "and records no origin-wide cause");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test("a connectivity failure still does", async () => {
+  reset();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new TypeError("Failed to fetch");
+  }) as typeof fetch;
+  try {
+    await assert.rejects(fetchWithTimeout(`${HF}/api/models`, {}, 1_000));
+    assert.equal(getHubPhase(HF), "unavailable", "this is the case worth backing off");
+    assert.equal(getLastHubFailure(HF)?.kind, "network-opaque");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("a successful response clears a prior failure", async () => {
   reset();
   markRemoteNetworkOffline(HF, 60_000, {

@@ -360,7 +360,11 @@ export async function fetchWithTimeout(
       throw error;
     }
     const failure = classifyFetchFailure(error, origin, { timedOut });
-    if (origin && (timedOut || isNetworkFetchError(error))) {
+    // Connectivity failures only. A timeout is per-request, and the short ones
+    // belong to optional assets (avatar, README, dataset size), so one slow
+    // endpoint would take the whole origin down for 30s while the API was fine.
+    // The caller still gets the classified timeout and can retry at once.
+    if (origin && !timedOut && isNetworkFetchError(error)) {
       markRemoteNetworkOffline(origin, REMOTE_OFFLINE_TTL_MS, failure);
     }
     throw new HubFetchError(failure, { cause: error });
