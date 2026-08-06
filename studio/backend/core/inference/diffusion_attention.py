@@ -407,9 +407,14 @@ def _warn(logger: Any, what: str, exc: Exception) -> None:
 #
 # HunyuanVideo15AttnProcessor2_0 runs a JOINT [video ; text] self-attention and, on EVERY block
 # and step, materialises a dense [B,1,N,N] boolean mask so the video never attends to padded text.
-# But a dense bool attn_mask DISABLES every fused SDPA kernel (flash rejects it; cuDNN/efficient
-# fall back) and forces the slow math path: on a B200 at the production shape (N~=50k, 121 frames
-# 480p) the SAME attention is 296 ms WITH the dense mask vs 15 ms with attn_mask=None -- a ~20x tax
+# But a dense bool attn_mask costs most of what the fused kernels are for. Established by output
+# identity, not by timing, since dispatch overhead makes timings alone ambiguous: FLASH refuses a
+# non-null mask outright, MATH OOMs on the 75.5 GiB [1,16,N,N] score matrix, and the default
+# dispatch is BITWISE-equal to forced cuDNN (296.11 vs 296.00 ms), so cuDNN is what runs -- on a
+# masked path 20x slower than its own unmasked one. On a B200 at the production shape (N~=50k, 121
+# frames 480p) the SAME attention is 296 ms WITH the dense mask vs 15 ms with attn_mask=None. (An
+# aside worth knowing before optimising here: forced EFFICIENT does the masked attention in 168 ms,
+# so the dispatcher's masked pick is not even the fastest available one.)
 # (torch 2.12; scripts/sdpa_mask_backend_probe.py re-measures it, and also shows MATH OOMing on the
 # 75.5 GiB score matrix and FLASH refusing a dense mask outright). END TO END that is 10.4x: a full
 # 121-frame 832x480 10-step render goes 353.8s -> 33.9s, medians of 3, reproduced across two runs
