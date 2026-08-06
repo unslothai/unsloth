@@ -400,6 +400,21 @@ def _is_hidden_infra_repo(*values: str | None) -> bool:
     return is_hidden_model(*values)
 
 
+def _cached_row_companion(repo_id: str) -> bool:
+    """Whether this row is an sd.cpp companion mirror (VAE / text encoders, no denoiser).
+
+    Same classifier the models API uses. The chat picker is backed by THIS endpoint, so a flag set
+    only on the legacy route arrives as undefined here and the filter never fires -- the same trap
+    ``single_file`` fell into below. Best-effort: a classification failure never hides a row.
+    """
+    try:
+        from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
+        return (repo_id or "").strip().lower() in sd_cpp_companion_only_repo_ids()
+    except Exception:  # noqa: BLE001 -- a classification failure never hides a row
+        return False
+
+
 def _cached_row_task(repo_info, *, gguf: bool) -> Optional[str]:
     """Pipeline task for a cached row, from the same classifiers the models API uses.
 
@@ -893,6 +908,9 @@ def _scan_cached_models() -> list[dict]:
                         row_task is not None
                         and not hf_cache_scan.snapshot_has_pipeline_index(load_snapshot)
                     ),
+                    # Listed so tens of GB of companion weights stay visible and deletable, but
+                    # flagged so no picker offers a denoiser-less repo as a load.
+                    "companion": _cached_row_companion(repo_id),
                     **local_metadata,
                 }
                 last_modified = max(
