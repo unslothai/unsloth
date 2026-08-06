@@ -543,28 +543,30 @@ class TestHostResidencyGate:
 
     def test_discrete_full_offload_does_not_page_lock(self, policy):
         managed, out = policy(
-            True, False, ["--temp", "0.7"],
-            supports_load_mode = True, weights_in_host_memory = False,
+            True,
+            False,
+            ["--temp", "0.7"],
+            supports_load_mode = True,
+            weights_in_host_memory = False,
         )
         assert managed == []
         assert out == ["--temp", "0.7"]
 
     def test_unified_memory_or_partial_offload_still_page_locks(self, policy):
         managed, out = policy(
-            True, False, ["--temp", "0.7"],
-            supports_load_mode = True, weights_in_host_memory = True,
+            True,
+            False,
+            ["--temp", "0.7"],
+            supports_load_mode = True,
+            weights_in_host_memory = True,
         )
         assert managed == ["--load-mode", "mmap+mlock"]
         assert out == ["--temp", "0.7"]
 
     def test_the_gate_does_not_leak_into_the_legacy_flag_path(self, policy):
-        managed, _ = policy(
-            True, False, [], supports_load_mode = False, weights_in_host_memory = False
-        )
+        managed, _ = policy(True, False, [], supports_load_mode = False, weights_in_host_memory = False)
         assert managed == []
-        managed, _ = policy(
-            True, False, [], supports_load_mode = False, weights_in_host_memory = True
-        )
+        managed, _ = policy(True, False, [], supports_load_mode = False, weights_in_host_memory = True)
         assert managed == ["--mlock"]
 
     def test_no_ram_reserve_still_strips_a_user_flag_off_a_discrete_gpu(self, policy):
