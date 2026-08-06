@@ -88,10 +88,11 @@ jobs:
         # XPU escape and hardware summary key on a +xpu wheel or an .../whl/xpu
         # pin, which exist for Linux and Windows only. The BSD userland and
         # bash 3.2 exposure of install.sh and setup.sh themselves stays covered
-        # on macos-14, where studio-mac-update-smoke, studio-mac-ui-smoke,
-        # studio-mac-inference-smoke, studio-mac-install-matrix and
-        # clean-machine-install-ci run them for real (`bash install.sh`, and
-        # `unsloth studio update`, which shells out to `bash studio/setup.sh`).
+        # on macos-15, where studio-mac-ui-smoke (which absorbed the former
+        # studio-mac-update-smoke), studio-mac-inference-smoke,
+        # studio-mac-install-matrix and clean-machine-install-ci run them for
+        # real (`bash install.sh`, and `unsloth studio update`, which shells
+        # out to `bash studio/setup.sh`).
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
