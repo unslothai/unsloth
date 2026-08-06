@@ -41,7 +41,7 @@ VIDEO_PAGE = FRONTEND / "features/video/video-page.tsx"
 CLIPBOARD_FILES = FRONTEND / "features/chat/utils/clipboard-files.ts"
 TAURI_CAPABILITIES = REPO / "studio/src-tauri/capabilities/default.json"
 CHAT_PAGE = FRONTEND / "features/chat/chat-page.tsx"
-TRAINING_SECTION = FRONTEND / "features/studio/sections/training-section.tsx"
+TRAINING_CONFIG_ACTIONS = FRONTEND / "features/studio/wizard/config-actions.tsx"
 MARKDOWN_TEXT = FRONTEND / "components/assistant-ui/markdown-text.tsx"
 IMAGE = FRONTEND / "components/assistant-ui/image.tsx"
 AUDIO_PLAYER = FRONTEND / "components/assistant-ui/audio-player.tsx"
@@ -59,8 +59,7 @@ def test_desktop_update_offer_remains_actionable_from_settings():
     assert "{appContent}" in provider[context_start:context_end]
     assert "appContent={" in provider
     assert "useContext(TauriUpdateContext)" in context
-    # Scope these: bare substrings also match setTimeout(checkForUpdate, 5000)
-    # and the installUpdate() reset.
+    # Scope these: bare substrings also match setTimeout(checkForUpdate, 5000) and installUpdate().
     assert "checkForUpdate," in hook.split("  return {", 1)[1]
     manual = hook.split("async function checkForUpdate()", 1)[1]
     assert "checkedRef.current = true;" in manual.split("try {", 1)[0]
@@ -124,8 +123,7 @@ def test_desktop_update_check_failures_are_retryable():
     assert "setCheckError(String(e));" in hook
     assert "update.checkError !== null" in settings
     assert 't("settings.about.update.retryCheck")' in settings
-    # The reason must reach the user without guessing that every failure is
-    # caused by their network connection.
+    # The reason must reach the user without guessing that every failure is a network problem.
     assert "description = update.checkError ?? label;" in settings
     assert 't("settings.about.update.desktopCheckFailedDescription")' not in settings
     assert "server returned HTTP {status}" in policy
@@ -209,7 +207,7 @@ def test_chat_exports_await_native_saves_and_markdown_uses_shared_helper():
 
 def test_generated_download_buttons_use_the_native_save_boundary():
     helper = NATIVE_FILES.read_text(encoding = "utf-8")
-    training = TRAINING_SECTION.read_text(encoding = "utf-8")
+    training = TRAINING_CONFIG_ACTIONS.read_text(encoding = "utf-8")
     markdown = MARKDOWN_TEXT.read_text(encoding = "utf-8")
     image = IMAGE.read_text(encoding = "utf-8")
     audio = AUDIO_PLAYER.read_text(encoding = "utf-8")
@@ -217,7 +215,7 @@ def test_generated_download_buttons_use_the_native_save_boundary():
     assert "downloadFile(bytes, filename" in helper
     assert "browserUrlDownload(url, filename)" in helper
     assert "if (!isTauri)" in helper
-    assert "downloadFile(yamlStr, filename" in training
+    assert "downloadFile(yaml, filename" in training
     assert "downloadFile(text, filename" in markdown
     assert "fallbackExt" in markdown
     assert 'rust: "rs"' in markdown
@@ -363,8 +361,7 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
-    # The curved transition and sidebar-colored backing are expanded-only;
-    # collapsed content is square and its divider spans the sidebar too.
+    # The curved transition and sidebar-colored backing are expanded-only.
     assert source.count("{showSidebarSurface && pinned && (") == 2
     assert (
         'className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"'
@@ -401,7 +398,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert navigation.count('aria-label="Go back"') == 1
     assert navigation.count('aria-label="Go forward"') == 1
 
-    assert "inline-flex size-[33px] shrink-0" in navigation
+    assert "inline-flex size-[30px] shrink-0" in navigation
 
     assert navigation.count("onDoubleClick={stopTitlebarDrag}") == 3
     assert "maximized" not in navigation
@@ -417,7 +414,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert '"--studio-collapsed-chat-controls-inset": "188px"' in APP_PROVIDER.read_text(
         encoding = "utf-8"
     )
-    assert 'className="!size-[33px] rounded-[10px] text-muted-foreground"' in chat_page
+    assert 'className="!size-[30px] rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
     assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)

@@ -4,24 +4,11 @@
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
-  Combobox,
-  ComboboxContent,
-  ComboboxEmpty,
-  ComboboxInput,
-  ComboboxItem,
-  ComboboxList,
-} from "@/components/ui/combobox";
-import {
   Field,
   FieldDescription,
   FieldGroup,
   FieldLabel,
 } from "@/components/ui/field";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupInput,
-} from "@/components/ui/input-group";
 import {
   Select,
   SelectContent,
@@ -35,25 +22,37 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useDebouncedValue, useHfTokenValidation } from "@/hooks";
-import { useHubDatasetSearch } from "@/features/hub/hooks/use-hub-dataset-search";
-import { useHubInfiniteScroll } from "@/features/hub/hooks/use-hub-infinite-scroll";
-import { cn } from "@/lib/utils";
+import { DatasetSelector, datasetDisplayName } from "@/features/dataset-picker";
+import {
+  bumpInventoryVersion,
+  hfApiToken,
+  useHfTokenStore,
+  useOnlineStatus,
+} from "@/features/hub";
+import {
+  formatUploadSize,
+  getCachedUploadLimitBytes,
+  getCachedUploadLimitLabel,
+  loadUploadLimitSettings,
+} from "@/features/settings";
 import {
   HfDatasetSubsetSplitSelectors,
+  TRAINING_DATASET_UPLOAD_EXTENSIONS,
+  uploadTrainingDataset,
   useTrainingConfigStore,
 } from "@/features/training";
+import { useT } from "@/i18n";
+import { toast } from "@/lib/toast";
 import type { DatasetFormat } from "@/types/training";
 import {
   InformationCircleIcon,
-  Key01Icon,
-  Search01Icon,
   SparklesIcon,
   Upload04Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
+import { HfTokenField } from "../hf-token-field";
 
 const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
   { value: "auto", label: "Auto Detect" },
@@ -64,16 +63,19 @@ const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
 ];
 
 export function DatasetStep() {
+  const t = useT();
+  const hfToken = useHfTokenStore((state) => state.token);
+  const online = useOnlineStatus();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [isUploading, setIsUploading] = useState(false);
   const {
-    hfToken,
-    setHfToken,
     datasetSource,
-    selectHfDataset,
-    selectLocalDataset,
     datasetFormat,
     setDatasetFormat,
     dataset,
-    setDataset,
+    datasetKnownCached,
+    datasetLocalPath,
+    datasetStreaming,
     datasetSubset,
     setDatasetSubset,
     datasetSplit,
@@ -81,285 +83,142 @@ export function DatasetStep() {
     datasetEvalSplit,
     setDatasetEvalSplit,
     uploadedFile,
-    setUploadedFile,
-    modelType,
+    selectLocalDataset,
   } = useTrainingConfigStore(
-    useShallow((s) => ({
-      hfToken: s.hfToken,
-      setHfToken: s.setHfToken,
-      datasetSource: s.datasetSource,
-      selectHfDataset: s.selectHfDataset,
-      selectLocalDataset: s.selectLocalDataset,
-      datasetFormat: s.datasetFormat,
-      setDatasetFormat: s.setDatasetFormat,
-      dataset: s.dataset,
-      setDataset: s.setDataset,
-      datasetSubset: s.datasetSubset,
-      setDatasetSubset: s.setDatasetSubset,
-      datasetSplit: s.datasetSplit,
-      setDatasetSplit: s.setDatasetSplit,
-      datasetEvalSplit: s.datasetEvalSplit,
-      setDatasetEvalSplit: s.setDatasetEvalSplit,
-      uploadedFile: s.uploadedFile,
-      setUploadedFile: s.setUploadedFile,
-      modelType: s.modelType,
+    useShallow((state) => ({
+      datasetSource: state.datasetSource,
+      datasetFormat: state.datasetFormat,
+      setDatasetFormat: state.setDatasetFormat,
+      dataset: state.dataset,
+      datasetKnownCached: state.datasetKnownCached,
+      datasetLocalPath: state.datasetLocalPath,
+      datasetStreaming: state.datasetStreaming,
+      datasetSubset: state.datasetSubset,
+      setDatasetSubset: state.setDatasetSubset,
+      datasetSplit: state.datasetSplit,
+      setDatasetSplit: state.setDatasetSplit,
+      datasetEvalSplit: state.datasetEvalSplit,
+      setDatasetEvalSplit: state.setDatasetEvalSplit,
+      uploadedFile: state.uploadedFile,
+      selectLocalDataset: state.selectLocalDataset,
     })),
   );
 
-  const [inputValue, setInputValue] = useState("");
-  const selectingRef = useRef(false);
-  const debouncedQuery = useDebouncedValue(inputValue);
-  const {
-    results: hfResults,
-    isLoading,
-    isLoadingMore,
-    fetchMore,
-    scannedCount,
-    error: hfSearchError,
-  } = useHubDatasetSearch(debouncedQuery, {
-    modelType,
-    accessToken: hfToken || undefined,
-  });
-
-  const { error: tokenValidationError, isChecking: isCheckingToken } =
-    useHfTokenValidation(hfToken);
-
-  const resultIds = useMemo(() => hfResults.map((r) => r.id), [hfResults]);
-
-  const comboboxAnchorRef = useRef<HTMLDivElement>(null);
-  const { scrollRef, sentinelRef } = useHubInfiniteScroll(fetchMore, scannedCount, {
-    isFetching: isLoading || isLoadingMore,
-    resultCount: hfResults.length,
-    resetKey: debouncedQuery,
-  });
-
-  const handleFileUpload = () => {
-    setUploadedFile("my_dataset.jsonl");
+  const uploadFile = async (file: File) => {
+    setIsUploading(true);
+    try {
+      const uploadLimit = await loadUploadLimitSettings().catch(() => ({
+        maxUploadSizeBytes: getCachedUploadLimitBytes(),
+        maxUploadSizeLabel: getCachedUploadLimitLabel(),
+      }));
+      if (file.size > uploadLimit.maxUploadSizeBytes) {
+        toast.error(t("studio.dataset.fileTooLarge"), {
+          description: t("studio.dataset.fileTooLargeDescription", {
+            file: file.name,
+            size: formatUploadSize(file.size),
+            limit: uploadLimit.maxUploadSizeLabel,
+          }),
+        });
+        return;
+      }
+      const uploaded = await uploadTrainingDataset(file);
+      bumpInventoryVersion();
+      selectLocalDataset(uploaded.stored_path);
+      toast.success(t("studio.dataset.datasetUploaded"), {
+        description: uploaded.filename,
+      });
+    } catch (error) {
+      toast.error(t("studio.dataset.uploadFailed"), {
+        description:
+          error instanceof Error
+            ? error.message
+            : t("studio.dataset.unknownError"),
+      });
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   return (
     <FieldGroup>
+      <HfTokenField />
+
       <Field>
-        <FieldLabel>Source</FieldLabel>
-        <div className="flex gap-2">
-          <Button
-            variant={datasetSource === "huggingface" ? "dark" : "outline"}
-            onClick={() =>
-              selectHfDataset(datasetSource === "huggingface" ? dataset : null)
-            }
-            className="flex-1"
-          >
-            <img
-              src={`${import.meta.env.BASE_URL}huggingface.svg`}
-              alt=""
-              className="size-4 invert"
-              data-icon="inline-start"
-            />
-            Hugging Face
-          </Button>
-          <Button
-            variant={datasetSource === "upload" ? "dark" : "outline"}
-            onClick={() =>
-              selectLocalDataset(
-                datasetSource === "upload" ? uploadedFile : null,
-              )
-            }
-            className="flex-1"
-          >
-            <HugeiconsIcon icon={Upload04Icon} data-icon="inline-start" />
-            Upload
-          </Button>
-        </div>
+        <FieldLabel>{t("studio.training.chooseDataset")}</FieldLabel>
+        <FieldDescription>
+          {t("studio.wizard.datasetPickerDescription")}
+        </FieldDescription>
+        <DatasetSelector />
       </Field>
 
-      {datasetSource === "huggingface" ? (
-        <>
-          <Field>
-            <FieldLabel>
-              Hugging Face Token{" "}
-              <span className="text-muted-foreground font-normal">
-                (Optional)
-              </span>
-            </FieldLabel>
-            <FieldDescription>
-              Required for gated or private datasets.{" "}
-              <a
-                href="https://huggingface.co/settings/tokens"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-primary hover:underline"
-              >
-                Get token
-              </a>
-            </FieldDescription>
-            <InputGroup>
-              <InputGroupAddon>
-                <HugeiconsIcon icon={Key01Icon} className="size-4" />
-              </InputGroupAddon>
-              <InputGroupInput
-                type="password"
-                autoComplete="new-password"
-                name="hf-token"
-                placeholder="hf_..."
-                value={hfToken}
-                onChange={(e) => setHfToken(e.target.value)}
-              />
-            </InputGroup>
-            {(tokenValidationError ?? hfSearchError) && (
-              <p className="text-xs text-destructive">
-                {tokenValidationError ?? hfSearchError}
-                {" — "}
-                <a
-                  href="https://huggingface.co/settings/tokens"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="underline"
-                >
-                  Get or update token
-                </a>
-              </p>
-            )}
-            {isCheckingToken && (
-              <p className="text-xs text-muted-foreground">Checking token…</p>
-            )}
-          </Field>
-
-          <Field>
-            <FieldLabel>Search datasets</FieldLabel>
-            <div ref={comboboxAnchorRef}>
-              <Combobox
-                items={resultIds}
-                filteredItems={resultIds}
-                filter={null}
-                value={dataset}
-                onValueChange={(id) => {
-                  selectingRef.current = true;
-                  setDataset(id);
-                }}
-                onInputValueChange={(val) => {
-                  if (selectingRef.current) {
-                    selectingRef.current = false;
-                    return;
-                  }
-                  setInputValue(val);
-                }}
-                itemToStringValue={(id) => id}
-                autoHighlight={true}
-              >
-                <ComboboxInput
-                  placeholder="Search datasets..."
-                  className="w-full"
-                >
-                  <InputGroupAddon>
-                    <HugeiconsIcon icon={Search01Icon} className="size-4" />
-                  </InputGroupAddon>
-                </ComboboxInput>
-                <ComboboxContent anchor={comboboxAnchorRef}>
-                  {isLoading ? (
-                    <div className="flex items-center justify-center py-4 gap-2 text-xs text-muted-foreground">
-                      <Spinner className="size-4" /> Searching...
-                    </div>
-                  ) : (
-                    <ComboboxEmpty>No datasets found</ComboboxEmpty>
-                  )}
-                  <div
-                    ref={scrollRef}
-                    className="max-h-64 overflow-y-auto overscroll-contain [scrollbar-width:thin]"
-                  >
-                    <ComboboxList className="p-1 !max-h-none !overflow-visible">
-                      {(id: string) => {
-                        return (
-                          <ComboboxItem key={id} value={id} className="gap-2">
-                            <Tooltip>
-                              <TooltipTrigger asChild={true}>
-                                <span className="block min-w-0 flex-1 truncate">
-                                  {id}
-                                </span>
-                              </TooltipTrigger>
-                              <TooltipContent
-                                side="left"
-                                className="max-w-xs break-all"
-                              >
-                                {id}
-                              </TooltipContent>
-                            </Tooltip>
-                          </ComboboxItem>
-                        );
-                      }}
-                    </ComboboxList>
-                    <div ref={sentinelRef} className="h-px" />
-                    {isLoadingMore && (
-                      <div className="flex items-center justify-center py-2">
-                        <Spinner className="size-3.5 text-muted-foreground" />
-                      </div>
-                    )}
-                  </div>
-                </ComboboxContent>
-              </Combobox>
-            </div>
-          </Field>
-
-          <HfDatasetSubsetSplitSelectors
-            variant="wizard"
-            enabled={datasetSource === "huggingface"}
-            datasetName={dataset}
-            accessToken={hfToken || undefined}
-            datasetSubset={datasetSubset}
-            setDatasetSubset={setDatasetSubset}
-            datasetSplit={datasetSplit}
-            setDatasetSplit={setDatasetSplit}
-            datasetEvalSplit={datasetEvalSplit}
-            setDatasetEvalSplit={setDatasetEvalSplit}
-          />
-        </>
-      ) : (
-        <>
-          <Field>
-            <FieldLabel>Upload Dataset</FieldLabel>
-            <FieldDescription>
-              Supports JSONL, JSON, CSV formats
-            </FieldDescription>
-            <button
-              type="button"
-              className={cn(
-                "border-2 border-dashed rounded-xl p-8 text-center transition-colors cursor-pointer hover:border-ring hover:bg-muted/50",
-                uploadedFile && "border-ring-strong bg-primary/5",
-              )}
-              onClick={handleFileUpload}
-            >
-              {uploadedFile ? (
-                <div className="flex flex-col items-center gap-2">
-                  <Badge variant="secondary" className="text-sm">
-                    {uploadedFile}
-                  </Badge>
-                  <span className="text-xs text-muted-foreground">
-                    Click to replace
-                  </span>
-                </div>
-              ) : (
-                <div className="flex flex-col items-center gap-2">
-                  <HugeiconsIcon
-                    icon={Upload04Icon}
-                    className="size-8 text-muted-foreground"
-                  />
-                  <span className="text-sm text-muted-foreground">
-                    Click to upload or drag and drop
-                  </span>
-                </div>
-              )}
-            </button>
-          </Field>
-        </>
+      {datasetSource === "huggingface" && (
+        <HfDatasetSubsetSplitSelectors
+          variant="wizard"
+          enabled={true}
+          datasetName={dataset}
+          accessToken={hfApiToken(hfToken)}
+          localPath={datasetLocalPath}
+          online={online}
+          preferLocalCache={datasetKnownCached && !datasetStreaming}
+          datasetSubset={datasetSubset}
+          setDatasetSubset={setDatasetSubset}
+          datasetSplit={datasetSplit}
+          setDatasetSplit={setDatasetSplit}
+          datasetEvalSplit={datasetEvalSplit}
+          setDatasetEvalSplit={setDatasetEvalSplit}
+        />
       )}
 
       <Field>
-        <div className="flex items-center justify-between">
+        <FieldLabel>{t("studio.wizard.uploadDataset")}</FieldLabel>
+        <FieldDescription>
+          {t("studio.wizard.uploadDatasetDescription")}
+        </FieldDescription>
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept={TRAINING_DATASET_UPLOAD_EXTENSIONS.join(",")}
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) {
+              uploadFile(file).catch(() => undefined);
+            }
+          }}
+        />
+        <Button
+          type="button"
+          variant="outline"
+          className="w-full"
+          disabled={isUploading}
+          onClick={() => fileInputRef.current?.click()}
+        >
+          {isUploading ? (
+            <Spinner className="size-4" />
+          ) : (
+            <HugeiconsIcon icon={Upload04Icon} data-icon="inline-start" />
+          )}
+          {isUploading
+            ? t("studio.dataset.uploading")
+            : t("studio.wizard.chooseFile")}
+        </Button>
+        {datasetSource === "upload" && uploadedFile && (
+          <Badge variant="secondary" className="w-fit max-w-full truncate">
+            {datasetDisplayName(uploadedFile)}
+          </Badge>
+        )}
+      </Field>
+
+      <Field>
+        <div className="flex items-center justify-between gap-4">
           <FieldLabel className="flex items-center gap-1.5">
-            Format
+            {t("studio.wizard.format")}
             <Tooltip>
               <TooltipTrigger asChild={true}>
                 <button
                   type="button"
+                  aria-label={t("studio.wizard.format")}
                   className="text-muted-foreground/50 hover:text-muted-foreground"
                 >
                   <HugeiconsIcon
@@ -369,36 +228,39 @@ export function DatasetStep() {
                 </button>
               </TooltipTrigger>
               <TooltipContent className="max-w-xs">
-                Auto will try to identify and convert your dataset to a
-                supported format.{" "}
+                {t("studio.dataset.targetFormatTooltip")}{" "}
                 <a
                   href="https://unsloth.ai/docs/get-started/fine-tuning-llms-guide/datasets-guide"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-primary underline"
                 >
-                  Read more
+                  {t("studio.params.readMore")}
                 </a>
               </TooltipContent>
             </Tooltip>
           </FieldLabel>
           <Select
             value={datasetFormat}
-            onValueChange={(v) => setDatasetFormat(v as DatasetFormat)}
+            onValueChange={(value) => setDatasetFormat(value as DatasetFormat)}
           >
-            <SelectTrigger className="w-40">
+            <SelectTrigger className="w-44 shrink-0">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {FORMAT_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value} value={opt.value}>
-                  {opt.value === "auto" && (
+              {FORMAT_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.value === "auto" && (
                     <HugeiconsIcon
                       icon={SparklesIcon}
                       className="mr-1.5 inline size-3.5 align-text-bottom"
                     />
                   )}
-                  {opt.label}
+                  {option.value === "auto"
+                    ? t("studio.wizard.autoDetect")
+                    : option.value === "raw"
+                      ? t("studio.dataset.rawText")
+                      : option.label}
                 </SelectItem>
               ))}
             </SelectContent>
