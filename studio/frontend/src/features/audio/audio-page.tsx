@@ -9,9 +9,11 @@
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
   AudioWave01Icon,
+  Copy01Icon,
   Delete02Icon,
   Download01Icon,
   Mic01Icon,
+  MoreVerticalIcon,
   SparklesIcon,
   StopIcon,
 } from "@hugeicons/core-free-icons";
@@ -19,6 +21,13 @@ import { HugeiconsIcon } from "@hugeicons/react";
 import { TestTubeOutlineIcon } from "@/lib/hugeicons-derived";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
@@ -112,6 +121,62 @@ function Field({
         <p className="text-ui-11p5 leading-snug text-muted-foreground">{hint}</p>
       ) : null}
     </div>
+  );
+}
+
+/** Per-row actions for a history clip, in a dots menu so rows keep one line.
+ *  Mirrors the model rows' MoreVertical pattern. */
+function ClipRowMenu({
+  clip,
+  onDownload,
+  onCopyPrompt,
+  onUseAsText,
+  onDelete,
+}: {
+  clip: AudioGalleryClip;
+  onDownload: () => void;
+  onCopyPrompt: () => void;
+  onUseAsText: () => void;
+  onDelete: () => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild={true}>
+        <button
+          type="button"
+          onClick={(event) => event.stopPropagation()}
+          aria-label={`Actions for ${clip.prompt || "clip"}`}
+          // Hidden until the row is hovered or the menu is open, so a long list
+          // stays quiet; keyboard focus reveals it too.
+          className="flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground/60 opacity-0 transition-colors hover:bg-black/5 hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 data-[state=open]:opacity-100 dark:hover:bg-white/10"
+        >
+          <HugeiconsIcon
+            icon={MoreVerticalIcon}
+            strokeWidth={1.75}
+            className="size-3.5"
+          />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-48">
+        <DropdownMenuItem onSelect={onUseAsText}>
+          <HugeiconsIcon icon={SparklesIcon} className="size-4" />
+          Use text again
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onCopyPrompt}>
+          <HugeiconsIcon icon={Copy01Icon} className="size-4" />
+          Copy text
+        </DropdownMenuItem>
+        <DropdownMenuItem onSelect={onDownload}>
+          <HugeiconsIcon icon={Download01Icon} className="size-4" />
+          Download WAV
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem variant="destructive" onSelect={onDelete}>
+          <HugeiconsIcon icon={Delete02Icon} className="size-4" />
+          Delete
+        </DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -567,6 +632,34 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     [srcById],
   );
 
+  /** Download from a history row, whose bytes are only fetched once selected. */
+  const handleDownloadClipById = useCallback(async (clip: AudioGalleryClip) => {
+    try {
+      let src = galleryCache.srcById.get(clip.id);
+      if (!src) {
+        const fetched = await fetchClipObjectUrl(clip.url);
+        galleryCache.srcById.set(clip.id, fetched.url, fetched.bytes);
+        setSrcById(galleryCache.srcById.toRecord());
+        src = fetched.url;
+      }
+      const anchor = document.createElement("a");
+      anchor.href = src;
+      anchor.download = `${clip.id}.wav`;
+      anchor.click();
+    } catch {
+      toast.error("Could not download the clip.");
+    }
+  }, []);
+
+  const handleCopyPrompt = useCallback(async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success("Text copied");
+    } catch {
+      toast.error("Could not copy the text.");
+    }
+  }, []);
+
   // --- Render -------------------------------------------------------------
 
   const selectedClip = clips.find((c) => c.id === selectedId) ?? null;
@@ -877,26 +970,41 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                       }}
                     >
                       {clips.map((clip) => (
-                        <button
+                        // Shell, not a button: the dots menu is a button and cannot nest.
+                        <div
                           key={clip.id}
-                          type="button"
-                          onClick={() => selectClip(clip.id)}
                           className={cn(
-                            "flex items-center gap-2 rounded-md px-2 py-1.5 text-left text-ui-13 transition-colors hover:bg-muted",
+                            "group flex items-center rounded-md pr-1 transition-colors hover:bg-muted",
                             clip.id === selectedId && "bg-muted",
                           )}
                         >
-                          <HugeiconsIcon
-                            icon={AudioWave01Icon}
-                            className="size-3.5 shrink-0 text-muted-foreground"
+                          <button
+                            type="button"
+                            onClick={() => selectClip(clip.id)}
+                            className="flex min-w-0 flex-1 items-center gap-2 px-2 py-1.5 text-left text-ui-13"
+                          >
+                            <HugeiconsIcon
+                              icon={AudioWave01Icon}
+                              className="size-3.5 shrink-0 text-muted-foreground"
+                            />
+                            <span className="min-w-0 flex-1 truncate">
+                              {clip.prompt}
+                            </span>
+                            <span className="shrink-0 text-ui-11p5 text-muted-foreground">
+                              {formatClipDuration(clip.duration_s)}
+                            </span>
+                          </button>
+                          <ClipRowMenu
+                            clip={clip}
+                            onDownload={() => void handleDownloadClipById(clip)}
+                            onCopyPrompt={() => void handleCopyPrompt(clip.prompt)}
+                            onUseAsText={() => {
+                              setMode("speak");
+                              setPrompt(clip.prompt);
+                            }}
+                            onDelete={() => void handleDeleteClip(clip.id)}
                           />
-                          <span className="min-w-0 flex-1 truncate">
-                            {clip.prompt}
-                          </span>
-                          <span className="shrink-0 text-ui-11p5 text-muted-foreground">
-                            {formatClipDuration(clip.duration_s)}
-                          </span>
-                        </button>
+                        </div>
                       ))}
                     </div>
                   </div>

@@ -3,7 +3,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
   FlimSlateIcon,
@@ -1540,7 +1539,6 @@ export function VideoPage({ active = true }: { active?: boolean }) {
         <div className="flex items-center gap-2">
           {/* Images is a separate page, so it sits out here, not in this page's controls. */}
           <MediaPageLink to="/images" label="Images" icon={Image03Icon} />
-          <MediaPageLink to="/audio" label="Audio" icon={AudioWave01Icon} />
         </div>
       </div>
 

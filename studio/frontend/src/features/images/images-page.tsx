@@ -6,7 +6,6 @@ import {
   ArrowLeftRightIcon,
   ArrowUpDownIcon,
   ArrowReloadHorizontalIcon,
-  AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
   FlimSlateIcon,
@@ -2521,7 +2520,6 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         <div className="flex items-center gap-2">
           {/* Video is a separate page, so it sits out here rather than in the mode strip. */}
           <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
-          <MediaPageLink to="/audio" label="Audio" icon={AudioWave01Icon} />
         </div>
       </div>
       {/* Train mode: the full-page training workspace. Unmounted in Create mode so its polling stops; Create's own state is untouched. */}
