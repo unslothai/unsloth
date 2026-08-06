@@ -342,13 +342,22 @@ jobs:
           echo "GGUF_FILE=Qwen3.5-2B-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
           echo "STUDIO_PORT=18898" >> "$GITHUB_ENV"
 
+      # Key suffix bumped v1 -> v2 with the directory rename, and this is not
+      # cosmetic. actions/cache identifies an entry by key AND a version hash
+      # derived from the `path` input, but key uniqueness is global per ref. The
+      # old gguf-cache entry still holds the -v1 key, so a restore into
+      # gguf-cache-tools misses on version while the save is refused with
+      # "Unable to reserve cache with key ... another job may be creating this
+      # cache". Without the bump this phase re-downloads the model on every run,
+      # forever. Measured on staging before the bump: two consecutive runs both
+      # logged "Cache not found for input keys" and both failed to save.
       - name: Restore GGUF model file
         id: cache-gguf-tools
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
         with:
           path: gguf-cache-tools
-          key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v1
+          key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v2
 
       - name: Download GGUF if cache miss
         id: download-gguf-tools
@@ -367,7 +376,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: gguf-cache-tools
-          key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v1
+          key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v2
 
       - name: Reset auth + boot Unsloth (API-only, default tool policy)
         # We deliberately use the API-only mode rather than
@@ -741,7 +750,7 @@ jobs:
         continue-on-error: true
         with:
           path: gguf-cache-vision
-          key: ${{ runner.os }}-gguf-unsloth/gemma-4-E2B-it-GGUF-gemma-4-E2B-it-UD-Q4_K_XL.gguf-mmproj-F16.gguf-v2
+          key: ${{ runner.os }}-gguf-unsloth/gemma-4-E2B-it-GGUF-gemma-4-E2B-it-UD-Q4_K_XL.gguf-mmproj-F16.gguf-v3
 
       - name: Verify cache contains BOTH gguf + mmproj
         id: verify-cache
@@ -784,7 +793,7 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: gguf-cache-vision
-          key: ${{ runner.os }}-gguf-unsloth/gemma-4-E2B-it-GGUF-gemma-4-E2B-it-UD-Q4_K_XL.gguf-mmproj-F16.gguf-v2
+          key: ${{ runner.os }}-gguf-unsloth/gemma-4-E2B-it-GGUF-gemma-4-E2B-it-UD-Q4_K_XL.gguf-mmproj-F16.gguf-v3
 
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
