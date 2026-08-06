@@ -79,6 +79,7 @@ const TOKEN_SCOPED_INVENTORY_DEBOUNCE_MS = 500;
 
 const inFlight = new Map<string, Promise<unknown>>();
 const forceQueue = new Map<string, Promise<unknown>>();
+const postColdForce = new Map<string, Promise<unknown>>();
 
 function emptySource<
   Rows extends readonly unknown[],
@@ -371,7 +372,28 @@ export function useDeviceInventorySources<
         ] as DeviceInventorySourceState<DeviceInventoryRows[typeof source]>;
         const pending = inFlight.get(key);
         if (pending && !current.ready) {
-          await pending.catch(() => undefined);
+          let forced = postColdForce.get(key) as
+            | Promise<DeviceInventoryRows[typeof source]>
+            | undefined;
+          if (!forced) {
+            forced = pending
+              .catch(() => undefined)
+              .then(() =>
+                fetchInventorySource(source, {
+                  hfToken,
+                  tokenFingerprint,
+                  inventoryVersion,
+                  force: true,
+                }),
+              )
+              .finally(() => {
+                if (postColdForce.get(key) === forced) {
+                  postColdForce.delete(key);
+                }
+              });
+            postColdForce.set(key, forced);
+          }
+          return forced;
         }
         return fetchInventorySource(source, {
           hfToken,

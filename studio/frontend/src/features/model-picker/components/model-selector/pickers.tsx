@@ -2092,7 +2092,8 @@ export function HubModelPicker({
   }, []);
 
   const pickerInventory = useChatPickerInventory({ enabled: true });
-  const { cachedGguf, cachedModels, cachedReady } = pickerInventory;
+  const { cachedGguf, cachedModels, cachedReady, refreshInventory } =
+    pickerInventory;
   const lmStudioModels = useMemo(
     () =>
       sortLmStudio(
@@ -2121,6 +2122,10 @@ export function HubModelPicker({
     localDirModels,
     customFolderModels,
   ]);
+  useEffect(() => {
+    if (!cachedReady) return;
+    void refreshInventory();
+  }, [cachedReady, refreshInventory]);
   const [updateConflictKey, setUpdateConflictKey] = useState<string | null>(
     null,
   );
