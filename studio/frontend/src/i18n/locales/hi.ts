@@ -1106,6 +1106,8 @@ export const hi = {
     },
   },
   studio: {
+    imageTraining: "इमेज ट्रेनिंग",
+    goToImageTraining: "इमेज ट्रेनिंग पर जाएं",
     routeTitle: "ट्रेनिंग",
     title: "फ़ाइन-ट्यूनिंग Studio",
     subtitles: {
