@@ -13,9 +13,6 @@ that sentence is exactly the wrong diagnosis.
 So the summary carries the reason, and the client prefers it over its generic string.
 """
 
-import pytest
-
-from core.training.provenance import RESOURCE_PROVENANCE_KEY
 from models.training import TrainingRunSummary
 from routes import training_history
 

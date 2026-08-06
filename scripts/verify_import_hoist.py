@@ -46,6 +46,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+from pathlib import PurePosixPath
 import builtins
 import re as _re_mod
 import subprocess
@@ -515,6 +516,11 @@ def _git_show(ref: str, path: str) -> str | None:
         return None
 
 
+def _is_package_init(path: str) -> bool:
+    """True for a package __init__.py, where __all__ means "public re-export"."""
+    return PurePosixPath(str(path).replace("\\", "/")).name == "__init__.py"
+
+
 def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]:
     """Return list of (severity, message). severity in BLOCKER/WARN/INFO.
 
@@ -571,11 +577,18 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
         # (e.g. `annotations` for lazy PEP 604 `X | None` on py3.9) is not flagged.
         if all(t.startswith("from:__future__:") for t in tids):
             continue
-        # A name listed in __all__ is an intentional public re-export, which is the
-        # whole point of a package __init__: it is loaded by importers, not by this
-        # module, so "no load resolves to it here" is expected rather than a botched
-        # hoist. Without this, adding any new re-export is an automatic blocker.
-        if n in after_exported:
+        # A name listed in __all__ in a package __init__ is an intentional public
+        # re-export: it is loaded by importers, not by this module, so "no load
+        # resolves to it here" is expected rather than a botched hoist. Without this,
+        # adding any new re-export is an automatic blocker.
+        #
+        # Scoped to __init__.py deliberately. Applied to every module that defines
+        # __all__ it exempts 224 names across 27 non-package modules and, worse,
+        # disables rename-clash detection for any name listed there -- one of the two
+        # bugs lint-ci.yml says this tool exists to catch because ruff and pyflakes
+        # miss it. That would make adding a name to __all__ a one-line, reviewer-
+        # invisible way to switch the check off.
+        if n in after_exported and _is_package_init(path):
             continue
         newly_added = bool(tids - before_module_targets)
         was_used_before = bool(tids & before_used)
@@ -713,13 +726,36 @@ _SELF_TESTS = {
         "import os\nimport sys\ndef f(x):\n    return x._b + sys.argv[0]\n",
         None,
     ),
+    # --- the __all__ re-export skip, and its scoping ---
+    "reexport_in_package_init_is_allowed": (
+        'from .a import A\n__all__ = ["A"]\n',
+        'from .a import A\nfrom .b import B\n__all__ = ["A", "B"]\n',
+        None,
+        "pkg/__init__.py",
+    ),
+    "reexport_in_ordinary_module_is_still_blocked": (
+        'from .a import A\n__all__ = ["A"]\n',
+        'from .a import A\nfrom .b import B\n__all__ = ["A", "B"]\n',
+        "BLOCKER",
+        "pkg/helpers.py",
+    ),
+    "unexported_new_import_in_init_is_still_blocked": (
+        'from .a import A\n__all__ = ["A"]\n',
+        'from .a import A\nfrom .b import B\n__all__ = ["A"]\n',
+        "BLOCKER",
+        "pkg/__init__.py",
+    ),
 }
 
 
 def _self_test() -> int:
     ok = True
-    for name, (before, after, expect) in _SELF_TESTS.items():
-        findings = compare(before, after, f"<{name}>")
+    for name, case in _SELF_TESTS.items():
+        # A case may supply its own path; the __all__ skip is scoped to package
+        # __init__.py, so it cannot be exercised through the "<name>" placeholder.
+        before, after, expect = case[0], case[1], case[2]
+        path = case[3] if len(case) > 3 else f"<{name}>"
+        findings = compare(before, after, path)
         blockers = [m for sev, m in findings if sev == "BLOCKER"]
         got = "BLOCKER" if blockers else None
         passed = got == expect
