@@ -293,6 +293,13 @@ export const it = {
         title: "Cambia password",
         description:
           "Inserisci la password attuale e scegline una nuova (almeno {minLength} caratteri).",
+        setTrigger: "Imposta la password remota",
+        setTitle: "Imposta la password remota",
+        setDescription:
+          "Scegli la password con cui i browser remoti accedono come unsloth (almeno {minLength} caratteri). L'app desktop di Unsloth continua ad accedere automaticamente.",
+        setSubmit: "Imposta la password",
+        setting: "Impostazione...",
+        setDone: "Password impostata.",
         currentPassword: "Password attuale",
         newPassword: "Nuova password",
         confirmPassword: "Conferma la nuova password",

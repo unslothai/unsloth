@@ -24,6 +24,7 @@ from typing import List, Literal, Optional, Sequence
 import typer
 
 from unsloth_cli import _studio_deps
+from unsloth_cli._inference import SpeculativeType
 from unsloth_cli.commands import _password_prompt
 
 studio_app = typer.Typer(help = "Unsloth Studio commands.")
@@ -109,11 +110,25 @@ DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 PBKDF2_ITERATIONS = 100_000
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
+_CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
 
 def _consume_start_api_key_marker_env() -> bool:
     """Consume the one-shot readiness marker passed across a Studio re-exec."""
     return os.environ.pop(_START_API_KEY_MARKER_ENV, None) == "1"
+
+
+def _preserve_cloudflare_intent(cloudflare: Optional[bool], secure: bool) -> None:
+    """Carry the user's tri-state choice across compatibility re-execs."""
+    if _CLOUDFLARE_INTENT_ENV in os.environ:
+        return
+    if secure or cloudflare is True:
+        intent = "enabled"
+    elif cloudflare is False:
+        intent = "disabled"
+    else:
+        intent = "unset"
+    os.environ[_CLOUDFLARE_INTENT_ENV] = intent
 
 
 # __file__ is unsloth_cli/commands/studio.py -- two parents up is the package root
@@ -1228,6 +1243,8 @@ def _load_model_via_http(
     load_in_4bit: bool,
     gpu_memory_mode: Literal["auto", "manual"] = "auto",
     tensor_parallel: bool = False,
+    speculative_type: Optional[SpeculativeType] = None,
+    spec_draft_n_max: Optional[int] = None,
     llama_extra_args: Optional[List[str]] = None,
     timeout: int = 600,
 ) -> dict:
@@ -1250,6 +1267,10 @@ def _load_model_via_http(
         payload["gpu_layers"] = -1
     if tensor_parallel:
         payload["tensor_parallel"] = True
+    if speculative_type is not None:
+        payload["speculative_type"] = speculative_type
+    if spec_draft_n_max is not None:
+        payload["spec_draft_n_max"] = spec_draft_n_max
     if llama_extra_args:
         payload["llama_extra_args"] = list(llama_extra_args)
 
@@ -1460,6 +1481,8 @@ def studio_default(
             )
             raise typer.Exit(2)
         return
+
+    _preserve_cloudflare_intent(cloudflare, secure)
 
     # --secure requires the tunnel; force a loopback bind.
     if secure:
@@ -1819,6 +1842,23 @@ def run(
             "delegates placement and sizing to llama.cpp --fit."
         ),
     ),
+    speculative_type: Optional[SpeculativeType] = typer.Option(
+        None,
+        "--speculative-type",
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = (
+            "Speculative decoding mode for GGUF models. DSpark automatically uses a "
+            "matching dspark-*.gguf sidecar when available. Default: unset (Studio auto)."
+        ),
+    ),
+    spec_draft_n_max: Optional[int] = typer.Option(
+        None,
+        "--spec-draft-n-max",
+        min = 1,
+        max = 16,
+        rich_help_panel = _RUN_PANEL_MODEL,
+        help = "Maximum draft tokens per step for MTP or DSpark (1..16).",
+    ),
     load_in_4bit: bool = typer.Option(
         True, "--load-in-4bit/--no-load-in-4bit", rich_help_panel = _RUN_PANEL_MODEL
     ),
@@ -2024,6 +2064,7 @@ def run(
 
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
+    _preserve_cloudflare_intent(cloudflare, secure)
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
 
     # Tool-call healing/nudging are read from the env at backend import. Resolve here
@@ -2229,6 +2270,10 @@ def run(
             args.extend(["--gpu-memory-mode", gpu_memory_mode])
         if gguf_variant:
             args.extend(["--gguf-variant", gguf_variant])
+        if speculative_type is not None:
+            args.extend(["--speculative-type", speculative_type])
+        if spec_draft_n_max is not None:
+            args.extend(["--spec-draft-n-max", str(spec_draft_n_max)])
         # Forward the explicit polarity; a future default flip on one
         # layer must not silently invert behaviour for the other.
         args.append("--load-in-4bit" if load_in_4bit else "--no-load-in-4bit")
@@ -2350,6 +2395,8 @@ def run(
                 load_in_4bit = load_in_4bit,
                 gpu_memory_mode = gpu_memory_mode,
                 tensor_parallel = tensor_parallel,
+                speculative_type = speculative_type,
+                spec_draft_n_max = spec_draft_n_max,
                 llama_extra_args = extra_llama_args,
             )
         except RuntimeError as exc:

@@ -24,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { applyQwenThinkingParams } from "@/features/chat/utils/qwen-params";
+import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 import {
   StudioDictationAdapter,
   isStudioDictationAvailable,
@@ -475,7 +476,7 @@ function resolveCompareSpecDraftNMax(
   speculativeType: string | null,
   value: number | null,
 ): number | null {
-  return speculativeType === "mtp" || speculativeType === "mtp+ngram"
+  return speculativeType != null && DRAFT_N_MAX_SPEC_TYPES.has(speculativeType)
     ? value
     : null;
 }
