@@ -408,7 +408,7 @@ def test_a_single_word_start_title_is_screened_under_the_cmd_lexer(
         'FOO=1 bash -c "rm -rf x"',
         'env FOO=1 bash -c "rm -rf x"',
         'FOO=1 start "" powershell',
-        "cmd //c start \"\" cmd /c powershell",
+        'cmd //c start "" cmd /c powershell',
     ],
 )
 def test_a_prefixed_shell_is_still_screened(monkeypatch, bash, command, _windows_blocklist):
