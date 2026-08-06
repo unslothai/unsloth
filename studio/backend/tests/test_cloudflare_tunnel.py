@@ -678,15 +678,23 @@ def _fake_edge(
             return io.BytesIO(payload)
 
     class _Context:
+        # A default context verifies the chain and matches it against the SNI
+        # name; the probe dials a bare address, so that match is the only thing
+        # binding the answer to the tunnel.
+        check_hostname = True
+        verify_mode = ssl_module.CERT_REQUIRED
+
         def wrap_socket(
             self,
             _raw,
             server_hostname = None,
         ):
             seen["sni"] = server_hostname
+            seen["verified"] = self.check_hostname and self.verify_mode == ssl_module.CERT_REQUIRED
             return _Tls()
 
     def connect(address, timeout = None):
+        seen["timeout"] = timeout
         if connect_error is not None:
             raise OSError(connect_error)
         seen["address"] = address
@@ -707,12 +715,34 @@ def test_edge_probe_selects_the_tunnel_by_sni(monkeypatch):
     assert seen["address"] == ("104.16.0.1", 443)
     # Cloudflare picks the tunnel from SNI and the Host header, not the address.
     assert seen["sni"] == "words.trycloudflare.com"
+    assert seen["verified"] is True
+    assert seen["timeout"] == ct._PUBLIC_PROBE_ATTEMPT_TIMEOUT
+    assert seen["request"].startswith(f"GET {ct._PUBLIC_PROBE_PATH} HTTP/1.1\r\n".encode())
     assert b"Host: words.trycloudflare.com\r\n" in seen["request"]
 
 
 def test_edge_probe_rejects_the_cloudflare_error_page(monkeypatch):
     _fake_edge(monkeypatch, _edge_response(b"530 ", b"<html>error 1033</html>"))
     assert ct._probe_edge("104.16.0.1", "words.trycloudflare.com") is False
+
+
+def test_edge_probe_rejects_a_foreign_responder(monkeypatch):
+    # Well-formed JSON from something that is not this backend, e.g. a proxy.
+    _fake_edge(monkeypatch, _edge_response(b"200 OK", b'{"service":"something else"}'))
+    assert ct._probe_edge("104.16.0.1", "words.trycloudflare.com") is False
+
+
+def test_edge_addresses_keep_one_entry_per_frontend(monkeypatch):
+    import socket as socket_module
+
+    # macOS reports the A records mapped into IPv6; both forms are one frontend.
+    resolved = [
+        (socket_module.AF_INET, 1, 6, "", ("104.16.230.132", 443)),
+        (socket_module.AF_INET6, 1, 6, "", ("::ffff:104.16.230.132", 443, 0, 0)),
+        (socket_module.AF_INET6, 1, 6, "", ("2606:4700::6810:e684", 443, 0, 0)),
+    ]
+    monkeypatch.setattr(socket_module, "getaddrinfo", lambda *_a, **_kw: resolved)
+    assert ct._edge_addresses() == ["104.16.230.132", "2606:4700::6810:e684"]
 
 
 def test_edge_probe_reports_an_unreachable_edge_apart_from_a_wrong_answer(monkeypatch):
@@ -723,7 +753,11 @@ def test_edge_probe_reports_an_unreachable_edge_apart_from_a_wrong_answer(monkey
 def test_edge_verification_skips_the_hostname_entirely(monkeypatch):
     seen = {}
 
-    def probe(address, host):
+    def probe(
+        address,
+        host,
+        _timeout = None,
+    ):
         seen["probe"] = (address, host)
         return True
 
@@ -740,29 +774,53 @@ def test_edge_verification_skips_the_hostname_entirely(monkeypatch):
 
 
 def test_edge_verification_polls_until_the_tunnel_answers(monkeypatch):
-    # Error 1033 answers, so a reply without the marker is not an unreachable edge.
-    answers = [False, False, True]
+    # Error 1033 and a proxy's own page answer, so a reply without the marker is
+    # not an unreachable edge and must not count towards giving up.
+    answers = [False, None, False, None, True]
     monkeypatch.setattr(ct, "_edge_addresses", lambda: ["104.16.0.1"])
-    monkeypatch.setattr(ct, "_probe_edge", lambda _a, _h: answers.pop(0))
+    monkeypatch.setattr(ct, "_probe_edge", lambda *_a: answers.pop(0))
     monkeypatch.setattr(ct.time, "sleep", lambda _s: None)
     assert ct._verify_through_edge("words.trycloudflare.com", ct.time.monotonic() + 5) is True
     assert not answers
 
 
+def test_edge_verification_stops_at_the_deadline_mid_pass(monkeypatch):
+    clock = [0.0]
+    timeouts = []
+
+    def probe(_address, _host, timeout):
+        timeouts.append(timeout)
+        clock[0] += 6.0
+        return False
+
+    monkeypatch.setattr(ct, "_edge_addresses", lambda: ["104.16.0.1", "104.16.0.2"])
+    monkeypatch.setattr(ct, "_probe_edge", probe)
+    monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
+    assert ct._verify_through_edge("words.trycloudflare.com", 3.0) is False
+    # One attempt, given only the time the deadline leaves: the second address is
+    # already past it, and a whole pass must not outlive the caller's budget.
+    assert timeouts == [3.0]
+
+
 def test_edge_verification_leaves_the_fallback_room_in_the_deadline(monkeypatch):
     clock = [0.0]
     monkeypatch.setattr(ct, "_edge_addresses", lambda: ["104.16.0.1"])
-    monkeypatch.setattr(ct, "_probe_edge", lambda _a, _h: False)
+    monkeypatch.setattr(ct, "_probe_edge", lambda *_a: False)
     monkeypatch.setattr(ct.time, "monotonic", lambda: clock[0])
     monkeypatch.setattr(ct.time, "sleep", lambda s: clock.__setitem__(0, clock[0] + s))
     assert ct._verify_through_edge("words.trycloudflare.com", 300.0) is False
-    assert clock[0] < ct._PUBLIC_PROBE_TIMEOUT / 2
+    assert clock[0] <= ct._EDGE_WAIT_MAX + ct._EDGE_PROBE_RETRY_DELAY
+    # What the cap is for: the hostname fallback still needs its DNS wait and
+    # several attempts of its own out of the one shared deadline.
+    left = ct._PUBLIC_PROBE_TIMEOUT - ct._EDGE_WAIT_MAX - ct._DNS_WAIT_MAX
+    assert left >= 5 * ct._PUBLIC_PROBE_RETRY_DELAY
 
 
 def test_blocked_edge_falls_back_to_the_hostname(monkeypatch):
     order = []
 
-    def probe(_address, _host):
+    def probe(*_a):
         order.append("edge")
         return None
 
