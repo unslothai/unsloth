@@ -160,16 +160,19 @@ class TestTrainingRawSupport(unittest.TestCase):
         self.assertNotIn("model_random_state", config)
         self.assertNotIn("lora_random_state", config)
 
-    def test_mlx_max_grad_norm_defaults_to_the_cuda_threshold(self):
-        # Unset must reach the trainer as 1.0 (the CUDA text default), the mode
-        # that also makes MLX report the gradient norm the chart plots.
+    def test_mlx_max_grad_norm_is_honored_without_changing_the_default(self):
+        # The worker used to hardcode 0.0 and drop the request, so an explicit
+        # threshold never reached the trainer. Explicit values must now pass
+        # through, while unset stays 0.0 so the clip mode is unchanged: the chart
+        # is fed by report_grad_norm, not by switching to global-norm clipping.
         from pydantic import ValidationError
 
         from core.training.worker import _resolve_mlx_max_grad_norm
         from models.training import TrainingStartRequest
 
-        self.assertEqual(_resolve_mlx_max_grad_norm(None), 1.0)
+        self.assertEqual(_resolve_mlx_max_grad_norm(None), 0.0)
         self.assertEqual(_resolve_mlx_max_grad_norm(0), 0.0)
+        self.assertEqual(_resolve_mlx_max_grad_norm(1.0), 1.0)
         self.assertEqual(_resolve_mlx_max_grad_norm(0.3), 0.3)
         with self.assertRaises(ValueError):
             _resolve_mlx_max_grad_norm(-1)
@@ -189,14 +192,27 @@ class TestTrainingRawSupport(unittest.TestCase):
 
         with self.assertRaises(ValidationError):
             request(max_grad_norm = float("inf"))
-        # Unset must survive to the resolver; a schema default of 0.0 would turn
-        # global-norm clipping off first.
+        # Unset must survive to the resolver rather than being coerced en route,
+        # so "no opinion" stays distinguishable from an explicit 0.
         self.assertIsNone(request().max_grad_norm)
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
         self.assertIn(
             'max_grad_norm = _resolve_mlx_max_grad_norm(config.get("max_grad_norm"))',
             source,
         )
+
+    def test_mlx_worker_asks_the_trainer_to_report_the_gradient_norm(self):
+        # What refills Studio's Gradient Norm chart on Apple Silicon. MLX returns a
+        # norm for free only under global-norm clipping, so the worker opts in
+        # explicitly; switching clip modes to get it would change the loss
+        # trajectory and cost VLM runs their mx.compile eligibility.
+        source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
+        self.assertIn('if "report_grad_norm" in _supported_fields:', source)
+        self.assertIn('mlx_config_kwargs["report_grad_norm"] = True', source)
+        # Feature-detected like the other newer fields, so an older unsloth_zoo
+        # without the flag keeps working instead of raising on construction.
+        gated = source.split("_supported_fields = ")[1]
+        self.assertNotIn("report_grad_norm = True,", gated.split("MLXTrainer(")[0].split("dict(")[0])
 
     def test_start_training_leaves_unset_max_grad_norm_for_worker_default(self):
         # None is what lets the worker apply the default; a coerced 0.0 would drop

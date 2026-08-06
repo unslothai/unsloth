@@ -1511,15 +1511,15 @@ def _resolve_mlx_output_dir(config, model_name):
 
 
 def _resolve_mlx_max_grad_norm(value):
-    """Global-norm clip threshold for MLX runs; None selects the default.
+    """Global-norm clip threshold for MLX runs; None keeps the trainer's default.
 
-    1.0 matches the CUDA text path (TRL's SFTConfig default) and the public MLX
-    API, so unset lands on the same threshold everywhere; CUDA's vision 0.3 is
-    not mirrored. Explicit 0 turns global-norm clipping off but leaves MLX's
-    per-parameter clipping in force unless max_grad_leaf_norm is also 0.
+    The worker used to hardcode 0.0 and drop the requested value, so an API caller
+    asking for a threshold got none. Unset stays 0.0 so MLX keeps its cheap
+    per-parameter clipping: the gradient-norm chart is fed by report_grad_norm
+    instead, which measures the same norm without changing what gets clipped.
     """
     if value is None:
-        return 1.0
+        return 0.0
     try:
         value = float(value)
     except (TypeError, ValueError):
@@ -1986,7 +1986,6 @@ def _run_mlx_training(event_queue, stop_queue, config):
         eval_steps_val = int(eval_steps_val)
 
     # Re-validate for direct worker callers; training.py normalizes the main path.
-    # Global clipping also yields the pre-clip norm the gradient-norm chart plots.
     max_grad_norm = _resolve_mlx_max_grad_norm(config.get("max_grad_norm"))
     max_grad_value = config.get("max_grad_value")
     if max_grad_value is not None:
@@ -2046,6 +2045,12 @@ def _run_mlx_training(event_queue, stop_queue, config):
         mlx_config_kwargs["dataset_order"] = "torch_randperm"
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
+    if "report_grad_norm" in _supported_fields:
+        # What refills the gradient-norm chart. MLX returns a norm for free only
+        # under global-norm clipping, so ask for it rather than switching clip
+        # modes to get it: switching would alter the loss trajectory and, on VLMs,
+        # make the run ineligible for mx.compile whenever grad accum > 1.
+        mlx_config_kwargs["report_grad_norm"] = True
     if "append_eos" in _supported_fields:
         # Unsloth SFT formatting owns rendered examples; raw/CPT text still
         # needs MLX to append EOS like the CUDA raw-text path.

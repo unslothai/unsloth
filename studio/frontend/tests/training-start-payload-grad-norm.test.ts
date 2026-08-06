@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The mapper used to send max_grad_norm: 0.0 on every run, which turns global-norm
-// clipping off on MLX and leaves the Gradient Norm chart with no samples to plot.
-// Omission is the whole fix, and nothing else fails if it is undone: the field is
-// optional in the request type, so restoring the literal would typecheck and pass
-// every other suite while silently emptying the chart again.
+// The mapper used to send max_grad_norm: 0.0 on every run. The backend now honors
+// an explicit threshold on MLX instead of discarding it, so that hardcoded 0 would
+// override the request for every UI run. Omitting the key is the fix, and nothing
+// else catches it if undone: the field is optional in the request type, so
+// restoring the literal would typecheck and pass every other suite.
 
 import assert from "node:assert/strict";
 import test from "node:test";

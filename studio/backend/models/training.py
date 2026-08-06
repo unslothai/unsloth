@@ -422,11 +422,11 @@ class TrainingStartRequest(BaseModel):
         ge = 0,
         allow_inf_nan = False,
         description = (
-            "Global gradient norm clipping threshold. Unset lets the training "
-            "backend apply its default; 0 turns global-norm clipping off, "
-            "which on MLX leaves per-parameter clipping in force unless "
-            "max_grad_leaf_norm is also 0. Honored on MLX; the CUDA path "
-            "trains with its own fixed thresholds."
+            "Global gradient norm clipping threshold. Unset keeps the training "
+            "backend's own default; 0 turns global-norm clipping off, which on "
+            "MLX leaves per-parameter clipping in force unless max_grad_leaf_norm "
+            "is also 0. Honored on MLX; the CUDA path trains with its own fixed "
+            "thresholds."
         ),
     )
     max_grad_value: Optional[float] = Field(
