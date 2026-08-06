@@ -339,29 +339,16 @@ MLX_KV_QUANT_VLM_CACHE_NOTE = (
 def _kv_entry_nbytes(entry):
     """Bytes held by one cache entry, or None when it cannot be measured.
 
-    mlx-lm 0.31.2's QuantizedKVCache.nbytes raises NameError (a missing
-    tree_reduce import, fixed upstream), which this works around.
+    Read straight off the property, because that is what decides admission:
+    upstream's LRUPromptCache.insert_cache sums ``c.nbytes`` itself, so an
+    entry whose property raises (mlx-lm 0.31.2's QuantizedKVCache, a missing
+    tree_reduce import) cannot enter the cache however else it could be sized.
+    Measuring it another way here would only promise reuse that never happens.
     """
     try:
         return int(entry.nbytes)
     except Exception:
-        pass
-    total = 0
-    pending = [getattr(entry, "keys", None), getattr(entry, "values", None)]
-    seen_array = False
-    while pending:
-        item = pending.pop()
-        if isinstance(item, (tuple, list)):
-            pending.extend(item)
-        elif item is not None:
-            size = getattr(item, "nbytes", None)
-            if size is None:
-                return None
-            seen_array = True
-            total += int(size)
-    # An entry holding its state elsewhere is unmeasurable, not free: reporting
-    # zero would admit it into the cache regardless of the budget.
-    return total if seen_array else None
+        return None
 
 
 def _normalize_mlx_kv_bits(value):
@@ -635,12 +622,23 @@ def _audio_marker_survives(processor, model):
         return False
 
 
-def _image_marker_survives(tokenizer, processor):
+def _image_placeholder(tokenizer, processor):
+    """The model's own image placeholder, when it names one."""
+    for source in (processor, tokenizer):
+        token = getattr(source, "image_token", None)
+        if isinstance(token, str) and token:
+            return token
+    return None
+
+
+def _image_marker_survives(tokenizer, processor, placeholder = None):
     """Whether the installed template still marks where an image goes.
 
     Rendered through the target generation uses, so this sees what a real image
-    request would. A template that ignores image parts renders both probes the
-    same; the text-only probe alone cannot tell.
+    request would. Three ways to fail: rendering an image the same as no image,
+    emitting the structured content object instead of a marker, and dropping
+    the placeholder the model names. A bare difference is not enough on its
+    own, since a template can render the image as ordinary prose.
     """
     from core.inference.chat_template_helpers import apply_chat_template_for_generation
 
@@ -650,9 +648,13 @@ def _image_marker_survives(tokenizer, processor):
     target = targets[0]
     try:
         marked = apply_chat_template_for_generation(target, _IMAGE_PROBE_MESSAGES)
-        return bool(marked) and marked != apply_chat_template_for_generation(
+        if not marked or marked == apply_chat_template_for_generation(
             target, _TEXT_PROBE_MESSAGES
-        )
+        ):
+            return False
+        if _vlm_prompt_issue(marked, _IMAGE_PROBE_MESSAGES):
+            return False
+        return placeholder is None or placeholder in marked
     except BaseException:
         # A load must never fail on a probe, matching _audio_marker_survives.
         return False
@@ -682,10 +684,10 @@ def _revoke_override_that_drops_audio(status, processor, model):
     )
 
 
-def _revoke_override_that_drops_image(status, tokenizer, processor):
+def _revoke_override_that_drops_image(status, tokenizer, processor, placeholder = None):
     return _revoke_override_dropping(
         status,
-        lambda: _image_marker_survives(tokenizer, processor),
+        lambda: _image_marker_survives(tokenizer, processor, placeholder),
         MLX_TEMPLATE_DROPS_IMAGE,
     )
 
@@ -1209,10 +1211,11 @@ class MLXInferenceBackend:
             and is_audio_input_type(_audio_type)
             and _audio_marker_survives(self._processor, self._model)
         )
+        image_placeholder = _image_placeholder(self._tokenizer, self._processor)
         native_marks_image = bool(
             chat_template_override
             and is_vision
-            and _image_marker_survives(self._tokenizer, self._processor)
+            and _image_marker_survives(self._tokenizer, self._processor, image_placeholder)
         )
         self._template_override = _install_template_override(
             chat_template_override,
@@ -1224,7 +1227,7 @@ class MLXInferenceBackend:
             _revoke_override_that_drops_audio(self._template_override, self._processor, self._model)
         if native_marks_image:
             _revoke_override_that_drops_image(
-                self._template_override, self._tokenizer, self._processor
+                self._template_override, self._tokenizer, self._processor, image_placeholder
             )
         # Released once the media checks are done: the pairs strongly reference
         # the tokenizer and processor, and nothing reads them afterwards, so

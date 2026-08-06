@@ -2369,11 +2369,12 @@ def test_template_targets_follow_the_object_that_can_actually_render():
     assert mlx_inference._native_template_source(nested, named) is nested
 
 
-def test_a_quantized_entry_is_retainable_when_only_nbytes_is_broken(monkeypatch):
-    """mlx-lm 0.31.2's QuantizedKVCache.nbytes raises; the fallback measures it.
+def test_an_entry_the_upstream_lru_cannot_size_is_not_retainable(monkeypatch):
+    """Upstream LRUPromptCache.insert_cache sums entry.nbytes itself.
 
-    Reading .nbytes directly reported cross-turn prompt-cache reuse as
-    disabled while insertion, which uses the fallback, retained it fine.
+    So an mlx-lm whose QuantizedKVCache.nbytes raises cannot admit the entry
+    however else it could be measured, and measuring it another way here would
+    drop the no-reuse caveat while every quantized turn still failed to insert.
     """
     from core.inference import mlx_inference
 
@@ -2386,14 +2387,9 @@ def test_a_quantized_entry_is_retainable_when_only_nbytes_is_broken(monkeypatch)
         def nbytes(self):
             raise NameError("tree_reduce")
 
-    assert mlx_inference._kv_entry_nbytes(_Broken()) == 128
+    assert mlx_inference._kv_entry_nbytes(_Broken()) is None
+    assert mlx_inference._kv_entry_nbytes(SimpleNamespace(nbytes = 128)) == 128
 
-    entry = SimpleNamespace(
-        to_quantized = lambda group_size, bits: _Broken(),
-        max_size = None,
-        window_size = None,
-        state = (),
-    )
     _install_fake_mlx(monkeypatch)
     mx = sys.modules["mlx.core"]
     mx.random = SimpleNamespace(state = [0])
@@ -2401,11 +2397,21 @@ def test_a_quantized_entry_is_retainable_when_only_nbytes_is_broken(monkeypatch)
     mx.eval = lambda *a: None
     mx.clear_cache = lambda: None
 
-    converted, skipped, failure, retainable = mlx_inference._kv_quant_probe(
-        lambda *a, **k: None, [entry], 8
-    )
+    def probe(quantized):
+        entry = SimpleNamespace(
+            to_quantized = lambda group_size, bits: quantized,
+            max_size = None,
+            window_size = None,
+            state = (),
+        )
+        return mlx_inference._kv_quant_probe(lambda *a, **k: None, [entry], 8)
+
+    converted, skipped, failure, retainable = probe(_Broken())
     assert (converted, skipped, failure) == (1, 0, None)
-    assert retainable is True
+    assert retainable is False
+
+    # A working property is retainable, so the caveat is not blanket.
+    assert probe(SimpleNamespace(state = (), nbytes = 128))[3] is True
 
 
 def test_a_successful_override_does_not_pin_the_tokenizer_past_load(monkeypatch):
@@ -2432,3 +2438,56 @@ def test_a_successful_override_does_not_pin_the_tokenizer_past_load(monkeypatch)
     assert status["applied"] == "{{ custom }}"
     assert status["restore"] == []
     assert backend._tokenizer.chat_template == "{{ custom }}"
+
+
+def test_an_override_that_renders_the_image_as_prose_is_not_a_marker(monkeypatch):
+    """A difference between the two probes is not proof of a placeholder.
+
+    A template emitting "Image attached", or the content dict itself, renders
+    differently from the text-only probe while placing nothing the processor
+    can bind the image to.
+    """
+    from core.inference import mlx_inference
+
+    nested = SimpleNamespace(chat_template = "{{ nested }}")
+    processor = SimpleNamespace(
+        chat_template = "{{ native }}",
+        apply_chat_template = lambda *a, **k: "",
+        tokenizer = nested,
+        image_token = "<|image_pad|>",
+    )
+    assert mlx_inference._image_placeholder(nested, processor) == "<|image_pad|>"
+
+    def render_as(text_for_image):
+        def render(target, messages, **kwargs):
+            parts = messages[0]["content"]
+            text = "".join(p["text"] for p in parts if p["type"] == "text")
+            images = sum(1 for p in parts if p["type"] == "image")
+            return (text_for_image * images) + text
+
+        monkeypatch.setattr(
+            "core.inference.chat_template_helpers.apply_chat_template_for_generation", render
+        )
+
+    survives = lambda: mlx_inference._image_marker_survives(nested, processor, "<|image_pad|>")
+
+    render_as("<|image_pad|>")
+    assert survives() is True
+
+    # Differs from the text-only render, but places no placeholder.
+    render_as("Image attached. ")
+    assert survives() is False
+
+    # Ignores the image entirely.
+    render_as("")
+    assert survives() is False
+
+    # Emits the structured content object, which _vlm_prompt_issue already names.
+    render_as(str({"type": "image"}))
+    assert survives() is False
+
+    # A model naming no placeholder still gets the weaker difference test.
+    del processor.image_token
+    assert mlx_inference._image_placeholder(nested, processor) is None
+    render_as("Image attached. ")
+    assert mlx_inference._image_marker_survives(nested, processor, None) is True
