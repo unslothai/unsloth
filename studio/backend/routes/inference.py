@@ -12461,7 +12461,14 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
-                    _monitor_usage(monitor_id, _stats.get("usage"), timings = _stats.get("timings"))
+                    # The route already told the client why it stopped; give the
+                    # monitor the same reason so its Stop reason is not blank here.
+                    _monitor_usage(
+                        monitor_id,
+                        _stats.get("usage"),
+                        timings = _stats.get("timings"),
+                        stop_reason = _finish,
+                    )
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
@@ -14231,6 +14238,9 @@ async def _responses_stream(
         full_reasoning = ""
         input_tokens = 0
         output_tokens = 0
+        # Terminal reason from the chat chunks, applied once before finish so it
+        # does not depend on whether usage arrives before or after it.
+        stream_finish_reason: Optional[str] = None
         extractor = _ResponsesReasoningExtractor(
             parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend)
         )
@@ -14718,6 +14728,8 @@ async def _responses_stream(
                 if not choices:
                     _apply_usage(chunk_data.get("usage"))
                     continue
+                if choices[0].get("finish_reason"):
+                    stream_finish_reason = choices[0]["finish_reason"]
 
                 delta = choices[0].get("delta", {}) or {}
                 reasoning_delta, visible_delta = extractor.feed(
@@ -14725,6 +14737,10 @@ async def _responses_stream(
                     delta.get("reasoning_content"),
                 )
                 if reasoning_delta:
+                    # The client has output in hand now, so the first-token
+                    # stamp belongs here; waiting for visible text would time a
+                    # reasoning turn from the end of its thinking block.
+                    api_monitor.mark_first_token(monitor_id)
                     for event in _ensure_reasoning_open():
                         yield event
                     full_reasoning += reasoning_delta
@@ -15028,6 +15044,8 @@ async def _responses_stream(
                 },
             },
         }
+        if stream_finish_reason:
+            api_monitor.set_perf(monitor_id, stop_reason = stream_finish_reason)
         api_monitor.finish(monitor_id)
         yield _sse("response.completed", completed_response)
 

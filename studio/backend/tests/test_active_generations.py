@@ -2731,3 +2731,41 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
         t.join(timeout = 30)
 
     assert orch._active_cancel_events == sent, "claim order must equal send order"
+
+
+def test_responses_stream_reports_reasoning_ttft_and_stop_reason(monkeypatch):
+    # The Responses adapter parses llama-server SSE itself, so the monitor's
+    # First token and Stop reason only appear if this path stamps and forwards
+    # them: a reasoning-first turn otherwise times from the visible text.
+    import asyncio
+
+    from core.inference.api_monitor import api_monitor
+    from models.inference import ChatMessage, ResponsesRequest
+
+    inf_mod = _install_responses_stream_mock(
+        monkeypatch,
+        [
+            {"choices": [{"delta": {"reasoning_content": "thinking"}}]},
+            {"choices": [{"delta": {"content": "hi"}, "finish_reason": "length"}]},
+        ],
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, model = "org/M-GGUF")
+    messages = [ChatMessage(role = "user", content = "hi")]
+
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+
+    async def run():
+        response = await inf_mod._responses_stream(
+            payload, messages, _NeverDisconnectedRequest(), monitor_id
+        )
+        async for _ in response.body_iterator:
+            pass
+
+    asyncio.run(run())
+
+    rows = [r for r in api_monitor.snapshot() if r["id"] == monitor_id]
+    assert rows, "the stream should have opened a monitor row"
+    assert rows[0]["ttft_ms"] is not None
+    assert rows[0]["stop_reason"] == "length"
