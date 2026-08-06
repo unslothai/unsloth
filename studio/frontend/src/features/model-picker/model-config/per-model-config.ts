@@ -56,6 +56,31 @@ export const MAX_SEQ_LENGTH_STEP = 128;
 export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
 
+// Reasons a Mac still cannot serve with MLX.
+const NO_MLX_REASONS = new Set([
+  "mlx_unavailable",
+  "intel_mac",
+  "detection_failed",
+]);
+
+/** Whether MLX will serve this model, and so whether MLX-only settings apply.
+ *
+ *  On a Mac with a working MLX stack every non-GGUF model loads through MLX,
+ *  including plain safetensors repos, so `!isGguf` alone would show these
+ *  controls to CUDA users.
+ */
+export function isServedByMlx(
+  isGguf: boolean,
+  deviceType: string | null | undefined,
+  chatOnlyReason?: string | null,
+): boolean {
+  return (
+    !isGguf &&
+    deviceType === "mac" &&
+    !NO_MLX_REASONS.has(chatOnlyReason ?? "")
+  );
+}
+
 // Matches studio/backend/core/inference/llama_cpp.py _valid_cache_types (f16 is the UI default).
 export const KV_CACHE_DTYPES = [
   "bf16",

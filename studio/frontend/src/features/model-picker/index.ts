@@ -48,6 +48,7 @@ export {
   normalizeMaxSeqLength,
   type PerModelConfig,
   adoptLegacyConfigKey,
+  isServedByMlx,
   resolveInitialConfig,
   resolveResidentInitialConfig,
 } from "./model-config/per-model-config";
