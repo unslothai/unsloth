@@ -709,6 +709,16 @@ def test_probe_server_capabilities_gates_known_broken_dspark_prebuilt(tmp_path, 
     assert caps["supports_mtp"] is True
 
 
+def test_dspark_release_gate_covers_the_whole_broken_window():
+    """Every prebuilt between the llama.cpp#26531 reshape regression and its #26577 fix
+    aborts on a DSpark load, not only the b10265 one that was first seen."""
+    broken = LlamaCppBackend._dspark_release_is_broken
+    assert broken("b10259-mix-abc1234") and broken("b10268-mix-abc1234")
+    assert not broken("b10258-mix-abc1234")
+    assert not broken("b10269-mix-abc1234")
+    assert not broken(None) and not broken("")
+
+
 @_NEEDS_BASH
 def test_probe_server_capabilities_uses_binary_library_env(tmp_path, monkeypatch):
     fake = _make_fake_llama_server(

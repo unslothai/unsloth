@@ -2,7 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import sys
-from typing import List, Literal, Optional
+from typing import List, Optional
 
 import typer
 from rich.console import Console

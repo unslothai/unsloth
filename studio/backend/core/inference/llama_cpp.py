@@ -3980,11 +3980,17 @@ class LlamaCppBackend:
 
     # ── llama-server capability probe ─────────────────────────────
 
-    # These published prebuilts advertise draft-dspark but predate the upstream
-    # loader reshape fix, so attempting one only adds a crashing launch before
-    # the target-only retry. Matched on exact release identity, which keeps a
-    # custom build patched from the same base tag usable.
-    _KNOWN_BROKEN_DSPARK_RELEASES = frozenset({"b10265-mix-89aa77b"})
+    # Prebuilts based on llama.cpp b10259..b10268 advertise draft-dspark but land between
+    # the reshape regression (ggml-org/llama.cpp#26531) and its fix (#26577), so a DSpark
+    # launch aborts on load. Matched on the base build number, not one exact tag: every
+    # release in that window is affected. Source builds carry no install marker, so only
+    # managed prebuilts are gated.
+    _BROKEN_DSPARK_BUILDS = range(10259, 10269)
+
+    @classmethod
+    def _dspark_release_is_broken(cls, release_tag: Optional[str]) -> bool:
+        match = re.match(r"b(\d+)", str(release_tag or ""))
+        return bool(match) and int(match.group(1)) in cls._BROKEN_DSPARK_BUILDS
 
     # Cached on (path, mtime); `unsloth studio update` bumps mtime.
     _capability_cache: dict[tuple[str, int], dict[str, object]] = {}
@@ -4199,7 +4205,7 @@ class LlamaCppBackend:
 
                 marker = read_install_marker(bin_path) or {}
                 release_tag = marker.get("release_tag") or marker.get("tag")
-                if release_tag in cls._KNOWN_BROKEN_DSPARK_RELEASES:
+                if cls._dspark_release_is_broken(release_tag):
                     supports_dspark = False
                     logger.info(
                         "Disabling DSpark for known-broken llama.cpp prebuilt %s",
