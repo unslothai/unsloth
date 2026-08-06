@@ -20,15 +20,14 @@ FAIL=0
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
-# The script deletes $XDG_RUNTIME_DIR/unsloth-studio-launcher-<uid>*.lock, so
-# without a fixture-owned runtime dir this test removes the real launcher's
-# locks (same pattern as test_uninstall_prebuilt_artifacts.sh).
+# The script sweeps $XDG_RUNTIME_DIR/unsloth-studio-launcher-<uid>*.lock, so an
+# unsandboxed runtime dir means this test deletes the real launcher's locks.
 XDG_RUNTIME_DIR="$_TMP_ROOT/run"
 export XDG_RUNTIME_DIR
 mkdir -p "$XDG_RUNTIME_DIR"
 
-# Explicit mktemp template: -p is GNU-only (BSD mktemp gained it in macOS 14),
-# and a bare mktemp -d implies -t and would land outside _TMP_ROOT on macOS.
+# Explicit template: -p is GNU-only (BSD got it in macOS 14) and a bare
+# mktemp -d implies -t, landing outside _TMP_ROOT on macOS.
 new_home() { mktemp -d "$_TMP_ROOT/home.XXXXXX"; }
 
 assert_gone()    { _l="$1"; if [ -e "$2" ]; then echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); else echo "  PASS: $_l"; PASS=$((PASS+1)); fi; }
@@ -107,7 +106,7 @@ mkdir -p "$H/.cache/$BID" "$H/.local/share/$BID" "$H/.config/$BID" \
          "$H/.local/state/$BID" "$H/.cache/other.app"
 : > "$XDG_RUNTIME_DIR/unsloth-studio-launcher-$(id -u).lock"
 run_uninstall "$H" Linux
-# Proves the launcher-lock sweep landed in the fixture runtime dir, not the real one.
+# Proves the lock sweep hit the fixture runtime dir, not the real one.
 assert_gone "linux: fixture launcher lock removed" \
     "$XDG_RUNTIME_DIR/unsloth-studio-launcher-$(id -u).lock"
 assert_gone "linux: ~/.cache/$BID removed"       "$H/.cache/$BID"

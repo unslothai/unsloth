@@ -402,20 +402,18 @@ Environment:
         _StopByPortFile -PortFile (Join-Path $r "share\studio.port") -KnownRoots $knownRoots
     }
     _StopStudioProcesses -KnownRoots $knownRoots
-    # Tauri desktop app and the WebView2 helpers holding its profile open. Both
-    # must exit before the EBWebView dirs are deleted below, so this belongs in
-    # the stop phase rather than next to the delete.
+    # Desktop app plus the WebView2 helpers holding its profile open: both must
+    # exit before the EBWebView dirs are deleted further down.
     $webviewProfile = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "ai.unsloth.studio" } else { $null }
     $studioPids = @(Get-Process -Name "unsloth-studio" -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
     if ($webviewProfile) {
-        # Escape the path: unescaped, a "[" in it is a wildcard character class,
-        # so the helper misses its own profile and can match an unrelated one.
-        # The trailing separator keeps "<id>2\EBWebView" from matching "<id>".
+        # Escape: an unescaped "[" is a wildcard class, so the helper misses its
+        # own profile and matches others. Trailing \ spares "<bid>2\EBWebView".
         $pattern = "*" + [System.Management.Automation.WildcardPattern]::Escape($webviewProfile) + "\*"
         try {
             foreach ($proc in (Get-CimInstance Win32_Process -Filter "Name = 'msedgewebview2.exe'" -ErrorAction SilentlyContinue)) {
-                # CommandLine reads back null across an elevation boundary, so
-                # fall back to the parent chain instead of skipping the helper.
+                # CommandLine is null across an elevation boundary: fall back to
+                # the parent chain rather than skipping the helper.
                 $mine = if ($proc.CommandLine) { $proc.CommandLine -ilike $pattern }
                         else { $studioPids -contains [int]$proc.ParentProcessId }
                 if ($mine) { try { Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue } catch { } }
@@ -524,11 +522,9 @@ Environment:
         _RemovePath $defaultUnslothHome
     }
 
-    # WebView2/app runtime data keyed by the bundle id, created at first
-    # desktop-app launch rather than by install.ps1: LOCALAPPDATA holds the
-    # EBWebView profile whose leftover copy serves a stale frontend to the next
-    # install, APPDATA the app config dir. The processes holding these were
-    # stopped in the stop phase above.
+    # Bundle-id runtime data, created at first app launch rather than by
+    # install.ps1: LOCALAPPDATA holds the EBWebView profile (a leftover copy
+    # serves a stale frontend), APPDATA the app config dir. Already stopped above.
     _Step "Removing WebView caches and app data (ai.unsloth.studio)..."
     if ($env:LOCALAPPDATA) { _RemovePath (Join-Path $env:LOCALAPPDATA "ai.unsloth.studio") }
     if ($env:APPDATA) { _RemovePath (Join-Path $env:APPDATA "ai.unsloth.studio") }
