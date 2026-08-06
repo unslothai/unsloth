@@ -2734,9 +2734,8 @@ def test_claim_order_matches_send_order_under_concurrent_dispatch():
 
 
 def test_responses_stream_reports_reasoning_ttft_and_stop_reason(monkeypatch):
-    # The Responses adapter parses llama-server SSE itself, so the monitor's
-    # First token and Stop reason only appear if this path stamps and forwards
-    # them: a reasoning-first turn otherwise times from the visible text.
+    # This adapter parses SSE itself, so it must stamp/forward TTFT and stop reason
+    # or a reasoning-first turn would time from the visible text instead.
     import asyncio
 
     from core.inference.api_monitor import api_monitor
@@ -2772,8 +2771,7 @@ def test_responses_stream_reports_reasoning_ttft_and_stop_reason(monkeypatch):
 
 
 def test_responses_stream_stamps_tool_call_deltas(monkeypatch):
-    # A turn that opens with a tool call has already sent the client output, so
-    # First token must be stamped there rather than left blank.
+    # A tool-call-opening turn already sent client output, so TTFT must stamp there.
     import asyncio
 
     from core.inference.api_monitor import api_monitor
@@ -2805,8 +2803,7 @@ def test_responses_stream_stamps_tool_call_deltas(monkeypatch):
     monitor_id = api_monitor.start(
         endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
     )
-    # The close path stamps late through append_reply, so assert the stamp is
-    # taken when the delta is emitted -- that is what the metric measures.
+    # append_reply would stamp late; assert it happens at the delta instead.
     stamped: list[str] = []
     real_mark = api_monitor.mark_first_token
     monkeypatch.setattr(

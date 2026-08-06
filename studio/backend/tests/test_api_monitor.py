@@ -714,8 +714,7 @@ def test_set_perf_records_stats_and_snapshot_reports_them():
         model = "local-model",
         prompt = "user: hello",
     )
-    # set_reply, not append_reply: a non-streaming row never stamps a first
-    # token, which is the case the engine prompt_ms fallback exists for.
+    # set_reply never stamps TTFT; this is the case the prompt_ms fallback exists for.
     monitor.set_reply(entry_id, "hi")
     monitor.set_perf(entry_id, tok_per_sec = 42.5, prompt_ms = 123.4, stop_reason = "length")
     monitor.finish(entry_id)
@@ -727,9 +726,8 @@ def test_set_perf_records_stats_and_snapshot_reports_them():
 
 
 def test_measured_ttft_wins_over_engine_prefill():
-    # A request that waits for an admission slot has already spent that time
-    # before llama-server sees it, so prompt_ms (prefill only) would report a
-    # sub-second first token for a request that queued for seconds.
+    # Queue wait happens before llama-server sees the request, so prompt_ms
+    # (prefill only) would under-report TTFT for a request that queued for seconds.
     monitor = ApiMonitor(max_entries = 3)
     entry_id = monitor.start(
         endpoint = "/v1/chat/completions",
@@ -832,9 +830,8 @@ def test_mark_first_token_stamps_ttft_for_reasoning_only_streams():
 
 
 def test_queue_state_counts_direct_overflow_as_queued(monkeypatch):
-    # Direct /v1/completions and /v1/embeddings hold no admission lease, so a
-    # call past the slot count is waiting inside llama-server: clamping it out
-    # of active without queueing it made the readout look idle under load.
+    # Direct calls hold no admission lease, so overflow past the slot count must
+    # count as queued, not get clamped out of the readout.
     from types import SimpleNamespace
 
     import routes.inference as inf
@@ -857,8 +854,7 @@ def test_queue_state_counts_direct_overflow_as_queued(monkeypatch):
 
 
 def test_non_streaming_responses_reports_its_finish_reason(monkeypatch):
-    # The non-streaming Responses body carries finish_reason; the monitor row
-    # showed a blank Stop reason because it was never read off the choice.
+    # Stop reason must be read off the choice, or the row shows a blank.
     import routes.inference as inf
 
     seen = {}
@@ -881,8 +877,7 @@ def test_non_streaming_responses_reports_its_finish_reason(monkeypatch):
 
 
 def test_parked_tool_resume_counts_as_queued():
-    # An approved tool continuation waits on a resume ticket; without it the
-    # readout shows a full server with no queued work.
+    # Without resume tickets counted, the readout shows a full server with nothing queued.
     from core.inference.llama_admission import LlamaAdmissionQueue
 
     queue = LlamaAdmissionQueue("http://llama.test")
@@ -891,9 +886,7 @@ def test_parked_tool_resume_counts_as_queued():
 
 
 def test_top_level_provider_tool_event_stamps_first_token(monkeypatch):
-    # Hosted providers put _toolEvent on the chunk itself, beside choices, with
-    # an empty delta: a stream that opens with one had shown the client a tool
-    # card while the row recorded nothing.
+    # _toolEvent rides the chunk itself, beside choices, with an empty delta.
     import routes.inference as inf
 
     monitor = ApiMonitor(max_entries = 3)

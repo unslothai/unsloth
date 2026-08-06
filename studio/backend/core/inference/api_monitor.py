@@ -105,10 +105,8 @@ class ApiMonitorEntry:
             context_usage = min(1.0, max(0.0, self.total_tokens / self.context_length))
         ttft_ms = None
         if self.first_token_monotonic is not None:
-            # Measured from the request arriving, so it includes the admission
-            # queue wait. The engine's prompt_ms covers prefill only and would
-            # report a sub-second first token for a request that queued for
-            # seconds, so it is only the fallback for rows that never stamped.
+            # Preferred: includes admission-queue wait, unlike engine prompt_ms (prefill only,
+            # measured after llama-server sees the request) which is just the fallback.
             ttft_ms = max(0, int((self.first_token_monotonic - self.started_monotonic) * 1000))
         elif self.prompt_ms is not None:
             ttft_ms = max(0, int(self.prompt_ms))
@@ -307,8 +305,7 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
-            # Only a streaming delta may stamp TTFT: a full-response append would
-            # report end-to-end latency as time to first token.
+            # Only a streaming delta stamps TTFT; a full-response append is end-to-end latency.
             if stamp_first_token and entry.first_token_monotonic is None:
                 entry.first_token_monotonic = time.monotonic()
             # Preview is capped: once the "..." marker is present the head is
@@ -324,8 +321,7 @@ class ApiMonitor:
             entry.updated_at = time.time()
 
     def mark_first_token(self, entry_id: Optional[str]) -> None:
-        """Stamp TTFT for a streaming delta the reply text does not capture
-        (e.g. reasoning tokens, which the monitor stores no text for)."""
+        """Stamp TTFT for deltas with no reply text, e.g. reasoning tokens."""
         if not entry_id:
             return
         with self._lock:
@@ -380,8 +376,7 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
-        # Coerce before storing: these arrive from arbitrary provider payloads,
-        # and snapshot() does arithmetic on them.
+        # Coerce first: values come from arbitrary payloads and snapshot() does math on them.
         prompt_tokens = _token_count_or_none(prompt_tokens)
         completion_tokens = _token_count_or_none(completion_tokens)
         total_tokens = _token_count_or_none(total_tokens)

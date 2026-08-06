@@ -768,9 +768,8 @@ class LlamaAdmissionQueue:
             key = self.key,
             capacity = self._capacity,
             active = self._held,
-            # Resume tickets are approved tool continuations waiting for a slot:
-            # they hold none yet, so a readout without them shows a full server
-            # with nothing queued while a confirmed tool call is still waiting.
+            # Resume tickets are approved tool continuations holding no slot yet; omitting
+            # them would show a full, idle-looking queue while one is still waiting.
             queued = len(self._waiters) + len(self._unpark_tickets),
             # What another caller could actually take, so the admission log never
             # shows free slots next to queued requests: after a shrink, ids below

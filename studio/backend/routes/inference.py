@@ -3117,8 +3117,7 @@ def _monitor_openai_chunk(
     if not isinstance(choices, list) or not choices:
         return
     if isinstance(data, dict) and data.get("_toolEvent"):
-        # Hosted provider tool cards ride the chunk itself (sibling of choices)
-        # with an empty delta, and are output the client has already been shown.
+        # Tool cards ride the chunk itself, sibling of choices with an empty delta; already seen.
         api_monitor.mark_first_token(monitor_id)
     reply_parts: list[tuple[int, str]] = []
     for idx, choice in enumerate(choices):
@@ -3474,8 +3473,7 @@ def _close_load_event(
     api_monitor.finish(entry_id)
 
 
-# Requests proxied straight to llama-server without admission (/v1/completions,
-# /v1/embeddings) still occupy slots; counted here so the monitor includes them.
+# Direct llama-server calls (completions/embeddings) skip admission but occupy a slot; counted here.
 _direct_llama_inflight = 0
 _direct_llama_inflight_lock = threading.Lock()
 
@@ -3494,8 +3492,8 @@ def _direct_llama_request_finished() -> None:
 
 def _monitor_queue_state() -> Optional[dict]:
     """Live slot/queue occupancy of the loaded llama-server, for the API monitor."""
-    # Disabled admission tracks nothing: its queues stay at the default capacity
-    # of 1 and never take leases, so a snapshot would misreport a multi-slot server.
+    # Disabled admission never takes leases and stays at capacity 1, which would
+    # misreport a multi-slot server.
     if not llama_admission_config_from_env().enabled:
         return None
     llama_backend = get_llama_cpp_backend()
@@ -3513,9 +3511,8 @@ def _monitor_queue_state() -> Optional[dict]:
         return {
             "capacity": snapshot.capacity,
             "active": active,
-            # Direct calls hold no lease, so anything past capacity is waiting
-            # inside llama-server and belongs with the queued work, not clamped
-            # away into a readout that looks idle.
+            # Direct calls hold no lease, so anything past capacity is waiting inside
+            # llama-server and counts as queued, not clamped away into a readout that looks idle.
             "queued": snapshot.queued + max(0, busy - snapshot.capacity),
             "free": max(0, snapshot.capacity - active),
         }
@@ -9339,10 +9336,8 @@ async def _proxy_to_external_provider(
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 if monitor_event is None:
                     try:
-                        # Only an SSE delta stream stamps a first token; a
-                        # stream:false provider can return the whole response
-                        # as one line, and stamping that reports end-to-end
-                        # latency as TTFT.
+                        # Only stamp for a real delta stream; a stream:false response arrives as
+                        # one full line, which would be end-to-end latency, not TTFT.
                         _monitor_openai_chunk(
                             monitor_id, json.loads(line), streaming = bool(payload.stream)
                         )
@@ -10589,7 +10584,7 @@ async def openai_chat_completions(
 
                         if event["type"] in ("tool_start", "tool_end"):
                             if event["type"] == "tool_start":
-                                # The tool card is output the client sees, so a turn whose first action is a tool call is timed here, not from the answer after it.
+                                # Tool card is client-visible output; time a tool-opening turn here.
                                 api_monitor.mark_first_token(monitor_id)
                                 for chunk in _flush_reasoning_extractor():
                                     yield chunk
@@ -11646,9 +11641,8 @@ async def openai_chat_completions(
                         "total_tokens": _prompt_tokens + _sum_completion,
                     },
                     _monitor_context_length(),
-                    # With n > 1 the counts are summed across choices while
-                    # _last_timings holds only the final one, so reporting its
-                    # speed beside those totals would be a number for neither.
+                    # Omit for n > 1: totals are summed across choices but _last_timings
+                    # is only the final one, so its speed would match neither.
                     timings = _last_timings if len(_monitor_replies) <= 1 else None,
                     stop_reason = _clamp_finish_reason(_last_finish) if _last_finish else None,
                 )
@@ -12047,8 +12041,7 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
-                    # This path always closes the client stream with "stop", so the
-                    # monitor records the same terminal reason instead of a blank.
+                    # This path always closes the client stream with "stop"; record the same.
                     _monitor_usage(
                         monitor_id,
                         _stats.get("usage"),
@@ -12146,8 +12139,7 @@ async def openai_chat_completions(
             api_monitor.set_reply(monitor_id, _visible_text)
             _stats = _sf_stats_holder.get("stats")
             if _stats:
-                # The response this returns carries finish_reason "stop"; the
-                # monitor records the same instead of leaving the field blank.
+                # This response always carries finish_reason "stop"; record the same.
                 _monitor_usage(
                     monitor_id,
                     _stats.get("usage"),
@@ -12502,8 +12494,7 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
-                    # The route already told the client why it stopped; give the
-                    # monitor the same reason so its Stop reason is not blank here.
+                    # Reuse the stop reason already sent to the client.
                     _monitor_usage(
                         monitor_id,
                         _stats.get("usage"),
@@ -14140,8 +14131,7 @@ async def _responses_non_streaming(
             monitor_id,
             usage_data,
             _monitor_context_length(),
-            # The inner chat monitor is suppressed for this wrapper, so the
-            # perf stats only reach the row if they are read off the body here.
+            # Inner chat monitor is suppressed here, so perf stats must come off the body.
             timings = body.get("timings") if isinstance(body, dict) else None,
             stop_reason = (choices[0].get("finish_reason") if choices else None),
         )
@@ -14292,8 +14282,7 @@ async def _responses_stream(
         full_reasoning = ""
         input_tokens = 0
         output_tokens = 0
-        # Terminal reason from the chat chunks, applied once before finish so it
-        # does not depend on whether usage arrives before or after it.
+        # Terminal reason from the chat chunks; applied once before finish, order-independent.
         stream_finish_reason: Optional[str] = None
         extractor = _ResponsesReasoningExtractor(
             parse_think_markers = _responses_should_parse_think_markers(chat_req, llama_backend)
@@ -14791,9 +14780,8 @@ async def _responses_stream(
                     delta.get("reasoning_content"),
                 )
                 if reasoning_delta:
-                    # The client has output in hand now, so the first-token
-                    # stamp belongs here; waiting for visible text would time a
-                    # reasoning turn from the end of its thinking block.
+                    # Stamp here, not on visible text: the client already has this output,
+                    # so waiting would time from the end of the thinking block instead.
                     api_monitor.mark_first_token(monitor_id)
                     for event in _ensure_reasoning_open():
                         yield event
@@ -14826,9 +14814,8 @@ async def _responses_stream(
                         healed_events = healer.feed(visible_delta)
                     visible_delta = ""
                     if healed_events:
-                        # Healed output goes out here instead of through
-                        # append_reply below, so this is where the client first
-                        # sees a promoted tool call or its surrounding text.
+                        # Sent here, not via append_reply below: this is where the client
+                        # first sees the promoted tool call or its surrounding text.
                         api_monitor.mark_first_token(monitor_id)
                     for event in _healed_event_sse(healed_events):
                         yield event
@@ -14850,8 +14837,7 @@ async def _responses_stream(
                     )
 
                 if delta.get("tool_calls"):
-                    # A tool call is output the client has already received, so
-                    # a turn that opens with one is timed from here too.
+                    # Tool call is output the client already received; time it here too.
                     api_monitor.mark_first_token(monitor_id)
                 for tc in delta.get("tool_calls") or []:
                     if (
