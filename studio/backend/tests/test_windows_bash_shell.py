@@ -2223,9 +2223,7 @@ def test_a_program_named_if_is_launched_directly(windows_cmd_only, command):
     assert not tools._find_blocked_commands(command)
 
 
-@pytest.mark.parametrize(
-    "command", ["C:\\tools\\sed -rf", "\\sed -rf", "C:\\tools\\sed.exe -rf"]
-)
+@pytest.mark.parametrize("command", ["C:\\tools\\sed -rf", "\\sed -rf", "C:\\tools\\sed.exe -rf"])
 def test_a_refusal_names_the_program_not_its_path(windows_cmd_only, command):
     # The passes that fail closed name their token outright, and nothing else
     # normalises it for them, so a backslash path was refused whole. The name
