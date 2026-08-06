@@ -127,9 +127,9 @@ def test_the_resume_gate_allows_a_subdir_snapshot(cache_root, bicodec_subdirs):
 
     blocker = resource_provenance_resume_blocker(config)
 
-    assert blocker is None or "no longer available" not in blocker, (
-        f"a snapshot present on disk was reported as gone: {blocker!r}"
-    )
+    assert (
+        blocker is None or "no longer available" not in blocker
+    ), f"a snapshot present on disk was reported as gone: {blocker!r}"
 
 
 def test_the_worker_keeps_a_subdir_pin_under_strict_resume(cache_root, bicodec_subdirs):
