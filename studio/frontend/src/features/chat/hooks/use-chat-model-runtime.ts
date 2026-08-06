@@ -851,13 +851,17 @@ export function useChatModelRuntime() {
           // (validation, the trust dialog, unload). When the picker staged a
           // config payload, prefer it over the store: React may not have
           // flushed NumericValueInput's blur commit into state yet.
-          const loadChatTemplateOverride =
+          // Per-model like the width below: a template is written against one
+          // model's tokens, so it cannot follow onto a different model.
+          let loadChatTemplateOverride =
             pendingLoadConfig?.chatTemplateOverride?.trim()
               ? pendingLoadConfig.chatTemplateOverride
               : stateBeforeUnload.chatTemplateOverride;
           const loadKvCacheDtype =
             pendingLoadConfig?.kvCacheDtype ?? stateBeforeUnload.kvCacheDtype;
-          const loadMlxKvBits =
+          // Per-model, not a standing preference: eligibility is decided per model,
+          // so a different model must not inherit this one's width.
+          let loadMlxKvBits =
             pendingLoadConfig?.mlxKvBits ?? stateBeforeUnload.mlxKvBits;
           // gpuMemoryMode is a standing preference (kept across a model switch);
           // the rest are per-model knobs the reset below clears, so they are
@@ -1087,6 +1091,14 @@ export function useChatModelRuntime() {
                   : persistedSpeculativeType;
               loadSpecDraftNMax = pendingLoadConfig?.specDraftNMax ?? null;
               loadNParallel = pendingLoadConfig?.nParallel ?? null;
+              // Both payload-only. The store keeps its values: a width is dormant
+              // preset state off MLX, and neither control has a rollback path that
+              // restores it, while a completed load rewrites both from the response.
+              loadMlxKvBits = pendingLoadConfig?.mlxKvBits ?? null;
+              loadChatTemplateOverride =
+                pendingLoadConfig?.chatTemplateOverride?.trim()
+                  ? pendingLoadConfig.chatTemplateOverride
+                  : null;
               // Keep the click-time snapshot in lock-step with the store reset so
               // the load below sizes against the cleared per-model knobs, not the
               // previous model's (gpuMemoryMode is standing, so left as captured).
