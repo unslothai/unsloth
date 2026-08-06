@@ -11,7 +11,7 @@ import {
   useChatModelRuntime,
   useChatRuntimeStore,
 } from "@/features/chat";
-import { useHubAvailability } from "@/features/hub/hooks/use-online-status";
+import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { useHubInfiniteScroll } from "@/features/hub";
 import {
   type ModelPickTarget,
@@ -368,9 +368,11 @@ export function ModelsPage() {
   const navigate = useNavigate();
   const gpu = useGpuInfo();
   const inferenceGpu = useInferenceGpuInfo();
-  // Content availability, not browser reachability: a proxied feed is usable
-  // even while the browser itself cannot reach the Hub.
-  const online = useHubAvailability().phase === "available";
+  // Browser reachability, which is what every client here asks about: the
+  // selected model's metadata and the cached feed each issue their own request.
+  // On the discovery phase they would stay blocked at "probing" until a
+  // *listing* succeeded, and the Downloaded tab has no Retry to make that happen.
+  const online = useOnlineStatus();
   const deviceType = usePlatformStore((s) => s.deviceType);
   const hubSearch = useSearch({ from: "/hub" });
   const urlModel = hubSearch.model ?? null;

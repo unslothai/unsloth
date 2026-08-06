@@ -146,13 +146,25 @@ export function useDiscoverSearch({
   // Already sanitized in useHubPaginatedSearch, where every consumer reads it.
   const rawSearchError = isDatasetMode ? datasetSearch.error : modelSearch.error;
   const retrySearch = isDatasetMode ? datasetSearch.retry : modelSearch.retry;
+  const needsRestart = isDatasetMode
+    ? datasetSearch.needsRestart
+    : modelSearch.needsRestart;
   // Surfaced regardless of availability: the failure IS the thing worth showing.
   const searchError = isDiscoverTab ? rawSearchError : null;
   const searchFailure = isDiscoverTab ? failure : null;
+  // "probing" counts: a lapsed backoff is exactly when the next page should be
+  // allowed to test the network. Only a live backoff ("unavailable") holds it.
+  const canProbe = phase !== "unavailable";
   const fetchMore = useCallback(() => {
-    if (!online || !hasMore) return false;
+    if (!canProbe || !hasMore) return false;
+    // A page that failed took the iterator with it, so resuming would resolve
+    // done and quietly end pagination, leaving Load more inert on screen.
+    if (needsRestart()) {
+      retrySearch();
+      return true;
+    }
     return rawFetchMore();
-  }, [online, hasMore, rawFetchMore]);
+  }, [canProbe, hasMore, needsRestart, rawFetchMore, retrySearch]);
 
   const handleRetrySearch = useCallback(() => {
     // Always re-probe: refusing during the backoff left users unable to test a

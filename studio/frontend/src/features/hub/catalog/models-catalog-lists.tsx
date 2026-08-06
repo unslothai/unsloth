@@ -191,11 +191,13 @@ export function DiscoverList({
                 )
               }
             />
-            {hasMore && (
+            {(hasMore || searchError) && (
               <DiscoverFetchMoreFooter
                 hasActiveFilters={hasActiveFilters}
                 isLoadingMore={isLoadingMore}
                 onFetchMore={onFetchMore}
+                failed={Boolean(searchError)}
+                onRetry={onRetry}
               />
             )}
           </>

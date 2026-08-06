@@ -179,10 +179,15 @@ export function DiscoverFetchMoreFooter({
   hasActiveFilters,
   isLoadingMore,
   onFetchMore,
+  failed = false,
+  onRetry,
 }: {
   hasActiveFilters: boolean;
   isLoadingMore: boolean;
   onFetchMore: () => void;
+  /** The last attempt failed, so this is the only recovery left on screen. */
+  failed?: boolean;
+  onRetry?: () => void;
 }) {
   return (
     <div className="relative z-10 flex flex-col items-center gap-2 rounded-[16px] bg-card px-4 py-4 text-center">
@@ -192,9 +197,16 @@ export function DiscoverFetchMoreFooter({
           Some results may be hidden by your filters.
         </p>
       )}
+      {/* Rows stay on screen when the feed fails, so without this the outage is
+          invisible and there is nothing left to click once the toast goes. */}
+      {failed && (
+        <p className="text-ui-11p5 leading-4 text-muted-foreground">
+          These results may be out of date.
+        </p>
+      )}
       <button
         type="button"
-        onClick={onFetchMore}
+        onClick={failed && onRetry ? onRetry : onFetchMore}
         disabled={isLoadingMore}
         className="inline-flex h-8 items-center gap-1.5 rounded-full bg-foreground/[0.06] px-3 text-ui-12 font-medium text-foreground transition-colors hover:bg-foreground/[0.1] disabled:cursor-not-allowed disabled:opacity-50 dark:bg-white/[0.06] dark:hover:bg-white/[0.1]"
       >
@@ -203,7 +215,7 @@ export function DiscoverFetchMoreFooter({
           strokeWidth={1.75}
           className="size-3.5"
         />
-        {isLoadingMore ? "Loading..." : "Load more"}
+        {isLoadingMore ? "Loading..." : failed ? "Try again" : "Load more"}
       </button>
     </div>
   );
