@@ -192,6 +192,20 @@ _CMD_ONLY_PREFIXES = frozenset({"call"})
 # Windows `time` is `time [/t]`, which sets the clock rather than running the
 # word behind it, and `command`, `builtin` and `exec` are bash's own.
 _POSIX_ONLY_PREFIXES = frozenset({"time", "timeout", "command", "builtin", "exec"})
+
+
+def _selects_its_own_executable(token: str) -> bool:
+    """Whether ``token`` names a program by PATH rather than by bare name.
+
+    A bare `timeout` is whatever the system resolves, and on Windows that is
+    the one taking a delay. A path picks a specific executable instead, so the
+    reasons for reading the bare Windows spelling as a non-wrapper do not carry
+    over to it. Quote marks are cmd's to strip, and either separator counts:
+    cmd accepts both.
+    """
+    bare = token.strip("\"'")
+    return "/" in bare or "\\" in bare
+
 # bash's source builtins. cmd has neither, so a PATH whose last segment happens
 # to spell one names a file rather than the builtin: `cd C:\dir\.` is an
 # ordinary directory walk and reading `.` out of it refused the line.
@@ -2032,7 +2046,15 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 # The closing mark of the span belongs to the program, not to
                 # the arguments behind it.
                 consumed += 1
-            return found | _find_blocked_commands(program_stem + text[consumed:], _cmd_payload = True)
+            respelled = program_stem
+            if program_stem in _POSIX_ONLY_PREFIXES and _selects_its_own_executable(program_word):
+                # ...except where the DIRECTORY is the thing that matters. cmd's
+                # own `timeout` takes a delay, so the cmd lane reads the bare
+                # name as no wrapper at all; dropping the path in front of it
+                # turned `C:/tools/timeout 5 powershell` into that bare name and
+                # lost the launch. Only the suffix comes off here.
+                respelled = os.path.splitext(program_word.strip('"'))[0]
+            return found | _find_blocked_commands(respelled + text[consumed:], _cmd_payload = True)
         if any(char.isspace() or char in "\"'" for char in text):
             return _find_blocked_commands(text, _cmd_payload = True)
         base = _token_basename(text)
@@ -2233,8 +2255,17 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 # behind it, for the reason _glued_empty_quotes gives.
                 i += 1
                 continue
-            base = _token_basename(token)
-            if base in (prefixes or command_prefixes):
+            # Read the way the main walk reads a program: wherever cmd is the
+            # one parsing, a backslash is its path separator, and leaving it
+            # whole meant `start "" C:\tools\timeout 5 powershell` named no
+            # wrapper at all while its forward-slash spelling did.
+            base = _reported_basename(token)
+            # A path picks a specific executable, so cmd's reasons for reading
+            # the bare `timeout` as no wrapper do not reach it. Same rule the
+            # main walk applies, and START's target comes through here.
+            if base in (prefixes or command_prefixes) or (
+                base in _POSIX_ONLY_PREFIXES and _selects_its_own_executable(token)
+            ):
                 wrapper = base
                 i += 1
                 continue
@@ -2496,7 +2527,14 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             blocked |= _blocked_matching_glob(base)
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag,
         # non-numeric token is the real command. sudo is also in _BLOCKED_COMMANDS.
-        if base in active_prefixes:
+        # cmd's own `time` and `timeout` take a clock reading or a delay rather
+        # than a command, which is why the cmd lane subtracts them. A PATH picks
+        # a DIFFERENT executable: `C:/tools/timeout 5 powershell` selects the one
+        # documented as `timeout DURATION COMMAND [ARG]...`, which really does
+        # launch its child, so the wrapper reading has to survive for it.
+        if base in active_prefixes or (
+            base in _POSIX_ONLY_PREFIXES and _selects_its_own_executable(token)
+        ):
             if base == "xargs" and xargs_index < 0:
                 xargs_index = token_index
             prefix_pending = True

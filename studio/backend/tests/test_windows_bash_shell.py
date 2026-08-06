@@ -2245,3 +2245,38 @@ def test_a_blank_attached_command_names_no_program(windows_git_bash_only, comman
 def test_an_attached_command_is_still_read(windows_git_bash_only, command):
     # The other half: a flag that really does carry a command still names it.
     assert "rm" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "C:/tools/timeout 5 powershell -Command ls",
+        "./timeout 5 powershell -Command ls",
+        'cmd /c "C:/tools/timeout 5 powershell -Command ls"',
+        'start "" C:/tools/timeout 5 powershell -Command ls',
+        'start "" C:\\tools\\timeout 5 powershell -Command ls',
+        "C:/tools/time powershell -Command ls",
+        "C:/tools/command powershell -Command ls",
+    ],
+)
+def test_a_path_qualified_wrapper_still_wraps(windows_cmd_only, command):
+    # cmd's own timeout takes a delay and its own time reads the clock, which is
+    # why the bare names are not wrappers there. A path picks a DIFFERENT
+    # executable, and the one it picks takes DURATION COMMAND and launches it.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "timeout 5 powershell -Command ls",
+        "time powershell -Command ls",
+        'cmd /c "timeout 5 powershell -Command ls"',
+        'start "" timeout 5 powershell -Command ls',
+    ],
+)
+def test_a_bare_windows_wrapper_launches_nothing(windows_cmd_only, command):
+    # The other half, and the reason the subtraction exists: cmd's own spelling
+    # of these names runs no child, so reading one as a wrapper refuses a line
+    # that could not have launched anything.
+    assert not tools._find_blocked_commands(command)
