@@ -1649,6 +1649,15 @@ def test_hydration_clears_the_batch_baselines_for_a_batchless_model():
     # A swap under this tab resets the controls too.
     status = " ".join(src.split())
     assert "...(seedLoadParams && slotsModelChanged && { nBatch: null, nUbatch: null })," in status
+    # A null echo is a move too: a clean control follows it back to default.
+    assert (
+        "...(prevState.loadedNBatch !== null && prevState.nBatch === prevState.loadedNBatch "
+        "&& { nBatch: null })," in status
+    )
+    assert (
+        "...(prevState.loadedNUbatch !== null && prevState.nUbatch === prevState.loadedNUbatch "
+        "&& { nUbatch: null })," in status
+    )
     # The remembered override is re-adopted only when the echo proves it.
     assert (
         "rememberedNBatch != null && rememberedNBatch === "

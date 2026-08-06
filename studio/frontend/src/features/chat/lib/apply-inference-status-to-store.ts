@@ -439,10 +439,15 @@ export function applyActiveModelStatusToStore(
     ...(seedLoadParams &&
       (status.is_gguf === false || status.requested_n_batch === null) && {
         loadedNBatch: null,
+        // a null echo is a move too: a clean control follows it back to default, or the tab reads dirty and a later Apply restores the stale override
+        ...(prevState.loadedNBatch !== null &&
+          prevState.nBatch === prevState.loadedNBatch && { nBatch: null }),
       }),
     ...(seedLoadParams &&
       (status.is_gguf === false || status.requested_n_ubatch === null) && {
         loadedNUbatch: null,
+        ...(prevState.loadedNUbatch !== null &&
+          prevState.nUbatch === prevState.loadedNUbatch && { nUbatch: null }),
       }),
     ...(seedLoadParams && slotsModelChanged && { nBatch: null, nUbatch: null }),
     ...(seedLoadParams &&

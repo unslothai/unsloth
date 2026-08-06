@@ -4860,13 +4860,15 @@ def _estimate_gguf_kv_gb(
     n_batch: Optional[int] = None,
     n_ubatch: Optional[int] = None,
     n_devices: int = 1,
+    is_diffusion: bool = False,
 ) -> float:
     """KV-cache plus compute-buffer VRAM (GB) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
     micro-batch, using the effective cache settings and managed launcher
     defaults. Compute buffers scale with the split the loader budgets: tensor
     mode reserves them on every device, a multi-GPU layer split replicates the
-    context-linear term. 0 if metadata is unreadable."""
+    context-linear term; ``is_diffusion`` skips them, since the diffusion
+    runner ignores the llama-server batch flags. 0 if metadata is unreadable."""
     try:
         from core.inference.llama_server_args import parse_ctx_override
 
@@ -4922,6 +4924,8 @@ def _estimate_gguf_kv_gb(
             flash_attn = False,
         )
         # the load also reserves the ubatch-scaled compute buffers, so a large micro-batch must count against training here too
+        if is_diffusion:
+            return kv / (1024**3)
         devices = max(1, int(n_devices))
         if tensor_parallel:
             # mirrors _plan_tensor_parallel: per-device buffer and ctx growth on every device
@@ -4966,6 +4970,7 @@ def _estimate_gguf_required_gb(
     n_batch: Optional[int] = None,
     n_ubatch: Optional[int] = None,
     n_devices: int = 1,
+    is_diffusion: bool = False,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -4990,6 +4995,7 @@ def _estimate_gguf_required_gb(
                 n_batch,
                 n_ubatch,
                 n_devices,
+                is_diffusion,
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -5015,15 +5021,21 @@ def _estimate_gguf_required_gb(
             except Exception:
                 ctx_override = 0
             ctx = max(max_seq_length or 0, ctx_override)
-            effective_ubatch = _extra_args_n_ubatch(
-                llama_extra_args,
-                n_ctx = ctx if ctx > 0 else None,
-                n_batch = n_batch,
-                n_ubatch = n_ubatch,
+            effective_ubatch = (
+                None
+                if is_diffusion
+                else _extra_args_n_ubatch(
+                    llama_extra_args,
+                    n_ctx = ctx if ctx > 0 else None,
+                    n_batch = n_batch,
+                    n_ubatch = n_ubatch,
+                )
             )
-            if effective_ubatch and ctx > 0:
+            if effective_ubatch:
+                # auto context: after download the loader budgets against the native context, so assume it at least fits one full micro-batch
+                budget_ctx = ctx if ctx > 0 else effective_ubatch
                 mask_bytes = (
-                    ctx
+                    budget_ctx
                     * effective_ubatch
                     * 2
                     * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
@@ -5503,6 +5515,8 @@ def _guard_chat_load_against_training(
             ),
             # size the compute buffers for the split the loader would budget
             n_devices = max(1, LlamaCppBackend._effective_gpu_count(requested_gpu_ids)),
+            # a confirmed diffusion runner ignores the llama-server batch flags, so their reserve must not 409 it
+            is_diffusion = diffusion_kind is True,
         )
         if is_gguf
         else None

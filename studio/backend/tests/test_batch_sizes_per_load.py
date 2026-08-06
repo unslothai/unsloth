@@ -185,6 +185,29 @@ def test_remote_gguf_guard_counts_explicit_micro_batch():
     # ctx-capped ubatch (32768) x ctx x 2 x 1.5 mask safety ~= 3 GiB on top
     assert big > base + 2.0
 
+    # auto context (max_seq_length 0) still reserves: assume the native context
+    # fits at least one full micro-batch
+    with (
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            return_value = ([remote_variant], False),
+        ),
+        patch.object(route, "_remote_gguf_companion_bytes", return_value = 0),
+    ):
+        auto_ctx = route._estimate_gguf_required_gb(
+            config, max_seq_length = 0, n_batch = 65536, n_ubatch = 65536
+        )
+        diffusion = route._estimate_gguf_required_gb(
+            config,
+            max_seq_length = 32768,
+            n_batch = 65536,
+            n_ubatch = 65536,
+            is_diffusion = True,
+        )
+    assert auto_ctx > base + 2.0
+    # the diffusion runner ignores the llama-server batch flags, so no reserve
+    assert diffusion == pytest.approx(1.0)
+
 
 def test_override_strips_shadowing_batch_flags():
     kwargs = model_override_load_kwargs(
