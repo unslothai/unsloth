@@ -7453,21 +7453,11 @@ class LlamaCppBackend:
     ) -> Optional[str]:
         """Download the published DSpark sidecar, preferring its Q8_0 copy.
 
-        Gated on ``supports_dspark`` BEFORE the fetch: the sidecar is ~11 GB, and a
-        binary that cannot run ``draft-dspark`` (every prebuilt in the known-broken
-        window included) falls back, so the download would never be opened. A raised
-        probe still fetches, since launch re-probes and may yet engage.
+        The ~11 GB fetch is gated on ``supports_dspark``: a binary that cannot run
+        ``draft-dspark`` (every prebuilt in the known-broken window included) falls
+        back, so the download would never be opened. A raised probe still fetches,
+        since launch re-probes and may yet engage.
         """
-        try:
-            if not self.probe_server_capabilities(binary).get("supports_dspark"):
-                logger.warning(
-                    "Skipping the DSpark sidecar download: llama-server has no usable "
-                    "--spec-type draft-dspark, so this load falls back to no speculative "
-                    "decoding. Run `unsloth studio update`, then reload."
-                )
-                return None
-        except Exception as exc:
-            logger.debug("DSpark capability probe failed before the sidecar fetch: %s", exc)
 
         def _pick_dspark(candidates: list[str]) -> Optional[str]:
             from utils.models.model_config import dspark_preference_key
@@ -7477,19 +7467,30 @@ class LlamaCppBackend:
             )
             return files[0] if files else None
 
-        if near_path:
-            cached = _companion_snapshot_sibling(near_path, _pick_dspark)
-            if cached:
-                logger.info("Reusing cached DSpark drafter: %s", cached)
-                return cached
-        if _hf_env_offline():
+        cached = _companion_snapshot_sibling(near_path, _pick_dspark) if near_path else None
+        if not cached and _hf_env_offline():
             cached = self._cached_repo_dspark_drafter(
                 hf_repo,
                 cache_dir = _hub_cache_dir_for_snapshot_path(near_path),
             )
-            if cached:
-                logger.info("Reusing cached DSpark drafter (offline): %s", cached)
+        try:
+            if not self.probe_server_capabilities(binary).get("supports_dspark"):
+                logger.warning(
+                    "Skipping the DSpark sidecar download: llama-server has no usable "
+                    "--spec-type draft-dspark, so this load falls back to no speculative "
+                    "decoding. Run `unsloth studio update`, then reload."
+                )
+                # A sidecar already on disk is still reported: the route rediscovers it
+                # on every Apply, so answering None would make the reuse check compare
+                # it against a launched None and reload the same server each time.
+                # _build_speculative_flags re-checks the capability and still falls back.
                 return cached
+        except Exception as exc:
+            logger.debug("DSpark capability probe failed before the sidecar fetch: %s", exc)
+
+        if cached:
+            logger.info("Reusing cached DSpark drafter: %s", cached)
+            return cached
         return self._download_companion_gguf(
             hf_repo = hf_repo,
             hf_token = hf_token,
@@ -10600,8 +10601,7 @@ class LlamaCppBackend:
                     _emit_extra_args = list(extra_args)
                     # Extras owning --spec-type return from _build_speculative_flags
                     # before _speculative_type is set, so pass-through DSpark needs
-                    # the accumulated types too or a user --fit on survives and the
-                    # layout llama.cpp cannot reshape aborts the load.
+                    # the accumulated types too.
                     if self._speculative_type == "draft-dspark" or _extra_args_requests_dspark(
                         _emit_extra_args, env = _child_spec_env(_emit_extra_args)
                     ):
@@ -10616,10 +10616,14 @@ class LlamaCppBackend:
                         )
                         if _without_fit != _emit_extra_args:
                             logger.info(
-                                "Dropped user --fit override: managed DSpark requires "
-                                "the fixed --fit off placement."
+                                "Dropped user --fit override: DSpark requires the "
+                                "fixed --fit off placement."
                             )
-                        _emit_extra_args = _without_fit
+                        # Append rather than only strip: the managed command carries
+                        # --fit on whenever the picker chose auto-fit, and llama.cpp
+                        # cannot reshape the DSpark layout. Last wins, so this pins
+                        # the placement whichever side asked for fitting.
+                        _emit_extra_args = [*_without_fit, "--fit", "off"]
                     if gpu_ids is not None:
                         # gpu_ids owns placement, so remove competing device flags.
                         _before_device_strip = list(_emit_extra_args)

@@ -819,9 +819,11 @@ def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
 # ── DSpark sidecar fetch is gated on the binary that would launch it ──
 
 
-def _dspark_download_probe(monkeypatch, *, supports_dspark):
-    """Run _download_dspark against a stubbed capability probe; report whether the
-    ~11 GB fetch (and even the repo listing) was reached."""
+def _dspark_download_probe(monkeypatch, *, supports_dspark, cached = None):
+    """Run _download_dspark against a stubbed capability probe and an optionally
+    cached sidecar; report whether the ~11 GB fetch (and even the repo listing)
+    was reached."""
+    import core.inference.llama_cpp as llama_cpp_module
     from core.inference.llama_cpp import LlamaCppBackend
 
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
@@ -829,6 +831,9 @@ def _dspark_download_probe(monkeypatch, *, supports_dspark):
         LlamaCppBackend,
         "probe_server_capabilities",
         classmethod(lambda cls, binary = None: {"supports_dspark": supports_dspark}),
+    )
+    monkeypatch.setattr(
+        llama_cpp_module, "_companion_snapshot_sibling", lambda near_path, pick: cached
     )
     reached = {}
 
@@ -848,6 +853,7 @@ def _dspark_download_probe(monkeypatch, *, supports_dspark):
     b._download_companion_gguf = _fake_companion
     got = b._download_dspark(
         hf_repo = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        near_path = "/cache/snap/DeepSeek-V4-Flash-0731-Q4_K_M.gguf",
         binary = "/fake/llama-server",
     )
     return got, reached.get("hit", False)
@@ -866,6 +872,19 @@ def test_download_dspark_fetches_when_the_binary_supports_it(monkeypatch):
     got, reached = _dspark_download_probe(monkeypatch, supports_dspark = True)
     assert got == "/cache/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
     assert reached is True
+
+
+def test_download_dspark_still_reports_a_cached_sidecar_it_cannot_run(monkeypatch):
+    """Skipping the fetch must not hide a sidecar already on disk: the route
+    rediscovers it on every Apply, so answering None would leave the reuse check
+    comparing it against the launched None and reloading the same drafter-free
+    server each time. _build_speculative_flags re-checks and still falls back."""
+    cached = "/cache/snap/dspark/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    got, reached = _dspark_download_probe(
+        monkeypatch, supports_dspark = False, cached = cached
+    )
+    assert got == cached
+    assert reached is False
 
 
 def test_detect_mtp_file_returns_first_shard_of_split_subdir_drafter(tmp_path):
@@ -1203,10 +1222,31 @@ def _cache_repo(tmp_path: Path, repo_id: str, names: list[str]):
     ), snap
 
 
-def test_deleting_a_variant_keeps_an_opt_in_dspark_drafter(tmp_path):
-    """DSpark is in no variant plan, so Studio never downloaded it with the quant
-    and must not reclaim it: that would destroy an ~11 GB file the user fetched
-    deliberately."""
+def test_deleting_one_of_several_variants_keeps_the_dspark_drafter(tmp_path):
+    """A sibling quant still uses it, so only the last variant may reclaim it."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path,
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        [
+            "model-Q4_K_M.gguf",
+            "model-Q8_0.gguf",
+            "dspark/dspark-DeepSeek-V4-Flash-0731-BF16.gguf",
+        ],
+    )
+    _delete_gguf_variant_from_repos(
+        "unsloth/DeepSeek-V4-Flash-0731-GGUF", "Q4_K_M", [repo], None, root = tmp_path
+    )
+
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert (snap / "dspark" / "dspark-DeepSeek-V4-Flash-0731-BF16.gguf").is_symlink()
+
+
+def test_deleting_the_last_variant_reclaims_an_opt_in_dspark_drafter(tmp_path):
+    """Studio downloads the sidecar itself once the user opts in, and companion
+    filtering keeps it out of the variant menu, so leaving it behind is an
+    invisible ~11 GB allocation. Nothing can launch it with no main GGUF left."""
     from hub.services.models.deletion import _delete_gguf_variant_from_repos
 
     repo, snap = _cache_repo(
@@ -1219,7 +1259,21 @@ def test_deleting_a_variant_keeps_an_opt_in_dspark_drafter(tmp_path):
     )
 
     assert not (snap / "model-Q4_K_M.gguf").is_symlink()
-    assert (snap / "dspark" / "dspark-DeepSeek-V4-Flash-0731-BF16.gguf").is_symlink()
+    assert not (snap / "dspark" / "dspark-DeepSeek-V4-Flash-0731-BF16.gguf").is_symlink()
+
+
+def test_deleting_the_last_variant_keeps_a_dflash_weight(tmp_path):
+    """Negative control: dflash is a family name a user picks for real weights,
+    and Studio never fetches it as a companion, so it is not reclaimable."""
+    from hub.services.models.deletion import _delete_gguf_variant_from_repos
+
+    repo, snap = _cache_repo(
+        tmp_path, "org/Model-GGUF", ["model-Q4_K_M.gguf", "dflash-model-Q8_0.gguf"]
+    )
+    _delete_gguf_variant_from_repos("org/Model-GGUF", "Q4_K_M", [repo], None, root = tmp_path)
+
+    assert not (snap / "model-Q4_K_M.gguf").is_symlink()
+    assert (snap / "dflash-model-Q8_0.gguf").is_symlink()
 
 
 def test_deleting_the_last_variant_still_reclaims_mtp_and_mmproj(tmp_path):

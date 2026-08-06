@@ -2279,3 +2279,20 @@ def test_dspark_fit_strip_covers_pass_through_spec_type():
     # The helper reads the accumulated types, so pass-through and env both count.
     assert llama_cpp._extra_args_requests_dspark(["--spec-type", "draft-dspark"]) is True
     assert llama_cpp._extra_args_requests_dspark(["--spec-type", "draft-mtp"]) is False
+
+
+def test_dspark_forces_fit_off_rather_than_only_stripping_the_user_flag():
+    """Stripping is not enough: the managed command already carries --fit on
+    whenever the picker chose auto-fit, so dropping the caller's explicit --fit off
+    would leave fitting ON for a layout llama.cpp cannot reshape. The extras go
+    last and llama.cpp is last-wins, so appending pins the placement either way."""
+    src = _load_model_source()
+    block = src[
+        src.index("_emit_extra_args = list(extra_args)") : src.index(
+            "cmd.extend(str(a) for a in _emit_extra_args)"
+        )
+    ]
+    assert '_emit_extra_args = [*_without_fit, "--fit", "off"]' in block
+    assert src.index('cmd.extend(["--fit", "on"])') < src.index(
+        "cmd.extend(str(a) for a in _emit_extra_args)"
+    )

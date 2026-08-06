@@ -264,9 +264,29 @@ def test_managed_dspark_strips_conflicting_fit_extra_arg(tmp_path):
     )
 
     cmd = result["cmd"]
-    assert cmd.count("--fit") == 1
-    assert cmd[cmd.index("--fit") + 1] == "off"
+    assert [cmd[i + 1] for i, a in enumerate(cmd) if a == "--fit"] == ["off", "off"]
     assert cmd[cmd.index("--top-k") + 1] == "5"
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+
+
+def test_pass_through_dspark_overrides_an_auto_fit_placement(tmp_path):
+    """Manual + Auto layers emits --fit on, and a user-owned --spec-type returns
+    from _build_speculative_flags before Studio can refuse DSpark, so the extras
+    must end in --fit off: llama.cpp is last-wins and cannot reshape the layout."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
+    sidecar = tmp_path / "dspark-model-Q8_0.gguf"
+    sidecar.write_bytes(b"draft")
+
+    result = _launch(
+        backend,
+        gguf,
+        gpu_memory_mode = "manual",
+        gpu_layers = -1,
+        extra_args = ["--spec-type", "draft-dspark", "--model-draft", str(sidecar)],
+    )
+
+    cmd = result["cmd"]
+    assert "--fit" in cmd and cmd[len(cmd) - 1 - cmd[::-1].index("--fit") + 1] == "off"
     assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
 
 
