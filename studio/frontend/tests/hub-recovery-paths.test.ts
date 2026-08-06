@@ -73,9 +73,9 @@ test("rows on screen do not hide that the feed failed", async () => {
   // A cached feed substituted after a failed refresh renders rows with
   // hasMore false, which skipped the footer and the panel alike: once the toast
   // went there was nothing on screen saying so and nothing left to click.
-  assert.match(lists, /\{\(hasMore \|\| searchError \|\| !online\) && \(/);
+  assert.match(lists, /\{\(hasMore \|\| searchError \|\| searchFailure\) && \(/);
   const footer = body(lists, "<DiscoverFetchMoreFooter", "/>");
-  assert.ok(footer.includes("failed={Boolean(searchError)"));
+  assert.ok(footer.includes("failed={Boolean(searchError || searchFailure)}"));
   assert.ok(footer.includes("onRetry={onRetry}"));
 
   const states = await read("../src/features/hub/catalog/catalog-states.tsx");
@@ -94,11 +94,11 @@ test("a live backoff is not bypassed by typing", async () => {
   // Ungating `enabled` is what let the error reach the panel, but it also let a
   // changed query, sort or channel build a new iterator and fire immediately.
   // Each attempt failed and re-armed the 30s window, so it never elapsed.
+  // Either term does it. The dataset hook splits them because its `enabled`
+  // also empties the rendered rows; `paused` holds the request on its own.
   for (const m of search.matchAll(/enabled: ([^,\n]+),/g)) {
-    assert.ok(
-      m[1].includes("canProbe"),
-      `an automatic search must respect the live backoff: ${m[1]}`,
-    );
+    const gate = m[1].includes("canProbe") || search.includes("paused: !canProbe");
+    assert.ok(gate, `an automatic search must respect the live backoff: ${m[1]}`);
   }
   // Only "unavailable" holds it: gating on `online` would never let a lapsed
   // window re-probe, since that requires a listing to have already succeeded.
@@ -124,14 +124,14 @@ test("a footer retained over an outage can still act", async () => {
   // rows and no searchError, and useHubInfiniteScroll is gated on `online`:
   // the button rendered enabled and did nothing for the whole window.
   assert.ok(
-    footer.includes("failed={Boolean(searchError) || !online}"),
+    footer.includes("failed={Boolean(searchError || searchFailure)}"),
     "unreachable is as good a reason to offer a re-probe as a failed page",
   );
   // And the same condition has to reach the render, or the prop is decorative:
   // with pagination exhausted, hasMore is false and no searchError is recorded,
   // so on `(hasMore || searchError)` the footer never appeared at all.
   assert.ok(
-    lists.includes("{(hasMore || searchError || !online) && ("),
+    lists.includes("{(hasMore || searchError || searchFailure) && ("),
     "an exhausted listing still has to show the outage",
   );
 });
@@ -155,4 +155,71 @@ test("the retained footer names the cause, not just the staleness", async () => 
     fn.includes('{failureText || "These results may be out of date."}'),
     "shown when there is one, with the generic line only as a fallback",
   );
+});
+
+test("the notice outlives the backoff window, not the other way round", async () => {
+  const lists = await read("../src/features/hub/catalog/models-catalog-lists.tsx");
+  // `online` is the 30s TTL. It flips back on a timer with nothing proven, so
+  // the notice and its Retry disappeared while getHubPhase() still said
+  // "probing" and searchFailure still held the cause. Keying on the cause ties
+  // the notice to what clears it: a request that worked.
+  const footer = body(lists, "<DiscoverFetchMoreFooter", "/>");
+  assert.ok(!/failed=\{[^}]*!online/.test(footer), "a timer must not retire it");
+  assert.ok(
+    !/\{\(hasMore \|\| searchError \|\| !online\) && \(/.test(lists),
+    "nor take the whole footer off screen",
+  );
+  // And the cause is only cleared by markRemoteNetworkOnline, which only
+  // fetchWithTimeout calls, and only on a resolved response.
+  const network = await read("../src/features/hub/lib/network.ts");
+  const online = body(network, "export function markRemoteNetworkOnline", "\nexport function markRemoteNetworkOffline");
+  assert.ok(online.includes("lastFailureByOrigin.delete(origin)"), "success clears it");
+  const fetchFn = body(network, "export async function fetchWithTimeout", "\n  } catch");
+  assert.ok(fetchFn.includes("markRemoteNetworkOnline(origin)"), "on a response");
+});
+
+test("a row the mapper rejects is not treated as an outage", async () => {
+  const paginated = await read(
+    "../src/features/hub/hooks/use-hub-paginated-search.ts",
+  );
+  // next() already handed the item over, so the generator is fine. Letting the
+  // throw out reached the same catch as a network error, which set iterDeadRef
+  // and made needsRestart() true; every restart then re-read the same page and
+  // hit the same row, so the feed could not get past it.
+  const pull = body(paginated, "  let scanned = 0;", "\n  return { items, done: false");
+  assert.ok(pull.includes("try {"), "the mapper call has to be guarded");
+  assert.ok(pull.includes("mapped = mapItem(result.value);"), "inside the loop");
+  assert.ok(pull.includes("continue;"), "and a bad row skipped, like a null one");
+  // Only the mapper is inside it: widening the try to cover the await would
+  // swallow the real network error this dead-iterator machinery exists for.
+  const guarded = body(pull, "try {", "} catch");
+  assert.ok(!guarded.includes("iter.next()"), "next() stays outside the guard");
+  assert.ok(!guarded.includes("result.done"), "and so does the done check");
+});
+
+test("pausing dataset fetches leaves the rendered rows alone", async () => {
+  const datasets = await read(
+    "../src/features/hub/hooks/use-hub-dataset-search.ts",
+  );
+  // This hook's `enabled` does double duty: it gates the request AND returns []
+  // from the results memo, so gating it on the backoff blanked every visible
+  // dataset row for the window. The model hook has no such line, which is why
+  // only datasets went blank.
+  assert.match(datasets, /if \(!enabled\) return \[\];/);
+  assert.ok(
+    datasets.includes("enabled: enabled && !paused"),
+    "the pause has to reach the request and stop there",
+  );
+
+  const search = await read("../src/features/hub/hooks/use-discover-search.ts");
+  const call = body(search, "const datasetSearch = useHubDatasetSearch", "\n  });");
+  assert.ok(
+    call.includes("enabled: isDiscoverTab && isDatasetMode"),
+    "visibility is what `enabled` means here",
+  );
+  assert.ok(call.includes("paused: !canProbe"), "the backoff goes to `paused`");
+  // The model hook keeps the single gate: without the blanking memo there is
+  // nothing to split, and folding it in would be a behaviour change.
+  const model = body(search, "const modelSearch = useHubModelSearch", "\n  });");
+  assert.ok(model.includes("enabled: canProbe &&"), "models are gated as before");
 });

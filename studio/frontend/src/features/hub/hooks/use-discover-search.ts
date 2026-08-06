@@ -132,7 +132,10 @@ export function useDiscoverSearch({
   });
   const datasetSearch = useHubDatasetSearch(debouncedQuery, {
     accessToken,
-    enabled: canProbe && isDiscoverTab && isDatasetMode,
+    // Not folded into `enabled`: that one also means "this tab is showing",
+    // and returns [] when false, so a backoff blanked every rendered row.
+    enabled: isDiscoverTab && isDatasetMode,
+    paused: !canProbe,
     sortBy,
     sortDirection: direction,
   });

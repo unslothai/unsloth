@@ -57,7 +57,16 @@ export async function pullBatch<T>(
       return { items, done: true, scanned };
     }
     scanned += 1;
-    const mapped = mapItem(result.value);
+    // mapItem already returns null to mean "skip", so a throw is the same
+    // answer arriving the hard way. Letting it out marked the generator dead
+    // over an item next() had already handed us, and every restart then hit
+    // the same row at the same position.
+    let mapped: T | null = null;
+    try {
+      mapped = mapItem(result.value);
+    } catch {
+      continue;
+    }
     if (mapped !== null) {
       items.push(mapped);
     }

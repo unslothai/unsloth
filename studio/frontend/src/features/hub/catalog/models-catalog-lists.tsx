@@ -191,19 +191,20 @@ export function DiscoverList({
                 )
               }
             />
-            {/* !online too: with one window per origin, a failed avatar or card
-                takes the feed's gate down without the listing ever failing, so
-                on hasMore alone the outage had no notice and no control. */}
-            {(hasMore || searchError || !online) && (
+            {/* searchFailure, not `online`: that is the backoff TTL, which
+                lapses on a timer, so the notice and its Retry vanished before
+                anything had proved recovery. The cause clears on success. It
+                covers the avatar and card case too, which marks the same origin
+                without the listing ever failing. */}
+            {(hasMore || searchError || searchFailure) && (
               <DiscoverFetchMoreFooter
                 hasActiveFilters={hasActiveFilters}
                 isLoadingMore={isLoadingMore}
                 onFetchMore={onFetchMore}
-                // !online too: the footer is retained over an outage that
-                // the listing never saw (a failed avatar or card marks the same
-                // origin), and useHubInfiniteScroll is gated on it, so the
-                // button was visible and inert for the whole window.
-                failed={Boolean(searchError) || !online}
+                // searchFailure too: the footer is retained over an outage the
+                // listing never saw, and useHubInfiniteScroll is gated on
+                // reachability, so the button was visible and inert meanwhile.
+                failed={Boolean(searchError || searchFailure)}
                 failureText={searchFailure?.message ?? searchError ?? ""}
                 onRetry={onRetry}
               />
