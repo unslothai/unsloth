@@ -359,18 +359,35 @@ def _fast_generate_autocast_source() -> str:
     return textwrap.dedent(src[start:end])
 
 
+class _RecordingTorch:
+    """Real torch, except `autocast` records its arguments instead of applying them.
+
+    `torch.autocast(device_type = "cuda", ...)` disables itself on a host with no
+    CUDA, so reading `_enabled` off the constructed object measures the runner
+    rather than the branch under test, and these tests could never pass on a
+    CPU-only machine. What the code decides to ask for is the thing under test.
+    """
+    def __init__(self, calls): self._calls = calls
+    def __getattr__(self, name): return getattr(torch, name)
+    def autocast(self, device_type = None, dtype = None, enabled = True, **kwargs):
+        self._calls.append((enabled, dtype))
+        return nullcontext()
+
+
 def _fast_generate(model, env, dtype):
     """Build that autocast once and report what it would enter."""
+    calls = []
     scope = {
-        "torch": torch,
+        "torch": _RecordingTorch(calls),
         "os": types.SimpleNamespace(environ = env),
         "self": model,
         "dtype": dtype,
         "DEVICE_TYPE_TORCH": "cuda",
     }
     exec(_fast_generate_autocast_source(), scope)
-    caster = scope["autocaster"]
-    return caster._enabled, (caster.fast_dtype if caster._enabled else None)
+    assert len(calls) == 1, calls
+    enabled, fast_dtype = calls[0]
+    return enabled, (fast_dtype if enabled else None)
 
 
 def test_a_forced_load_cannot_pull_generation_into_float16():
@@ -646,12 +663,9 @@ def test_an_outer_autocast_is_inherited_rather_than_overridden():
     branch raised `TypeError: ... must be torch.dtype, not nullcontext` instead
     of doing nothing. The key has to be absent, not a sentinel.
     """
-    import torch
-    from unsloth.models.rl_replacements import _unsloth_grpo_autocast_kwargs
-
     if not torch.cuda.is_available():
-        import pytest
         pytest.skip("needs CUDA: torch.is_autocast_enabled('cuda') is the branch")
+    from unsloth.models.rl_replacements import _unsloth_grpo_autocast_kwargs
 
     class _Trainer:
         pass
@@ -678,3 +692,7 @@ def test_an_outer_autocast_is_inherited_rather_than_overridden():
     with torch.amp.autocast(device_type = "cuda", dtype = torch.bfloat16):
         forced = _unsloth_grpo_autocast_kwargs(trainer)
     assert forced == {"enabled": True, "dtype": torch.float16}, forced
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))
