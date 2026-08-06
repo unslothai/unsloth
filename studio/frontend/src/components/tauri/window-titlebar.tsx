@@ -6,16 +6,10 @@ import { useSidebarPin } from "@/hooks/use-sidebar-pin";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { isTauri } from "@/lib/api-base";
 import { cn } from "@/lib/utils";
-import {
-  Cancel01Icon,
-  LayoutAlignLeftIcon,
-  MinusSignIcon,
-  SquareIcon,
-  SquareSquareIcon,
-} from "@hugeicons/core-free-icons";
+import { CopyIcon, LayoutAlignLeftIcon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import { ArrowLeft, ArrowRight } from "lucide-react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
+import { ArrowLeft, ArrowRight, Minus, Square, X } from "lucide-react";
 import {
   type MouseEvent,
   type PointerEvent,
@@ -123,7 +117,7 @@ export function DesktopTitlebarNavigation({
     event.stopPropagation();
   };
   const buttonClass =
-    "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+    "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle dark:text-nav-fg-muted transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
   return (
     <div
@@ -417,11 +411,7 @@ export function WindowTitlebar({
             label="Minimize window"
             onClick={() => runWindowAction((appWindow) => appWindow.minimize())}
           >
-            <HugeiconsIcon
-              icon={MinusSignIcon}
-              strokeWidth={1.75}
-              className="size-[15px]"
-            />
+            <Minus aria-hidden="true" strokeWidth={1.75} className="w-[18px]" />
           </WindowControlButton>
           <WindowControlButton
             label={maximized ? "Restore window" : "Maximize window"}
@@ -429,22 +419,26 @@ export function WindowTitlebar({
               runWindowAction((appWindow) => appWindow.toggleMaximize())
             }
           >
-            <HugeiconsIcon
-              icon={maximized ? SquareSquareIcon : SquareIcon}
-              strokeWidth={1.75}
-              className="size-[14px]"
-            />
+            {maximized ? (
+              <HugeiconsIcon
+                icon={CopyIcon}
+                strokeWidth={1.75}
+                className="size-[17px] rotate-180"
+              />
+            ) : (
+              <Square
+                aria-hidden="true"
+                strokeWidth={1.75}
+                className="size-[16px]"
+              />
+            )}
           </WindowControlButton>
           <WindowControlButton
             label="Close window"
             onClick={() => runWindowAction((appWindow) => appWindow.close())}
             className="hover:bg-destructive/10 hover:text-destructive focus-visible:ring-destructive/70 dark:hover:bg-destructive/20"
           >
-            <HugeiconsIcon
-              icon={Cancel01Icon}
-              strokeWidth={1.75}
-              className="size-[15px]"
-            />
+            <X aria-hidden="true" strokeWidth={1.75} className="size-[18px]" />
           </WindowControlButton>
         </div>
       </header>

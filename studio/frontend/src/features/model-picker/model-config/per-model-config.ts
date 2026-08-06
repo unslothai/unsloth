@@ -10,6 +10,7 @@ import {
   publicModelId,
 } from "./model-identity";
 import type { GpuIndexKind } from "@/hooks/use-gpu-info";
+import { DRAFT_N_MAX_SPEC_TYPES } from "@/lib/speculative-modes";
 
 export interface PerModelConfig {
   customContextLength: number | null;
@@ -65,17 +66,10 @@ export const KV_CACHE_DTYPES = [
 ] as const;
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
-export const SPECULATIVE_TYPES = [
-  "auto",
-  "mtp",
-  "ngram",
-  "mtp+ngram",
-  "off",
-] as const;
-export const MTP_SPECULATIVE_TYPES: ReadonlySet<string> = new Set([
-  "mtp",
-  "mtp+ngram",
-]);
+export {
+  DRAFT_N_MAX_SPEC_TYPES,
+  SPECULATIVE_TYPES,
+} from "@/lib/speculative-modes";
 
 const STORAGE_KEY = "unsloth_model_configs";
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
@@ -173,6 +167,9 @@ function canonicalizeSpeculativeType(value: string): string | null {
   }
   if (s === "mtp" || s === "draft-mtp") {
     return "mtp";
+  }
+  if (s === "dspark" || s === "draft-dspark") {
+    return "dspark";
   }
   if (s === "ngram" || s === "ngram-mod" || s === "ngram-simple") {
     return "ngram";
@@ -548,7 +545,7 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
     rawSpecType ?? DEFAULT_PER_MODEL_CONFIG.speculativeType;
   const specDraftNMax =
     speculativeType != null &&
-    MTP_SPECULATIVE_TYPES.has(speculativeType) &&
+    DRAFT_N_MAX_SPEC_TYPES.has(speculativeType) &&
     typeof partial.specDraftNMax === "number" &&
     Number.isFinite(partial.specDraftNMax)
       ? Math.max(1, Math.min(16, Math.round(partial.specDraftNMax)))

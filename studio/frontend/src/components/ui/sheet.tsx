@@ -27,6 +27,17 @@ function SheetClose({
   return <SheetPrimitive.Close data-slot="sheet-close" {...props} />;
 }
 
+function SheetCloseButton({ className }: { className?: string }) {
+  return (
+    <SheetPrimitive.Close data-slot="sheet-close" asChild={true}>
+      <Button variant="ghost" className={className} size="icon-sm">
+        <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
+        <span className="sr-only">Close</span>
+      </Button>
+    </SheetPrimitive.Close>
+  );
+}
+
 function SheetPortal({
   ...props
 }: React.ComponentProps<typeof SheetPrimitive.Portal>) {
@@ -93,16 +104,7 @@ function SheetContent({
           {children}
         </DialogPortalContainerContext.Provider>
         {showCloseButton && (
-          <SheetPrimitive.Close data-slot="sheet-close" asChild>
-            <Button
-              variant="ghost"
-              className="absolute top-4 right-4"
-              size="icon-sm"
-            >
-              <HugeiconsIcon icon={Cancel01Icon} strokeWidth={2} />
-              <span className="sr-only">Close</span>
-            </Button>
-          </SheetPrimitive.Close>
+          <SheetCloseButton className="absolute top-4 right-4" />
         )}
       </SheetPrimitive.Content>
     </SheetPortal>
@@ -159,6 +161,7 @@ export {
   Sheet,
   SheetTrigger,
   SheetClose,
+  SheetCloseButton,
   SheetContent,
   SheetHeader,
   SheetFooter,

@@ -6,8 +6,10 @@
 Set by `unsloth run` at startup; consulted by the inference route gates.
 
   None  -> no CLI override (default). Per-request `enable_tools` is honored.
-  True  -> CLI forced tools on for every request.
-  False -> CLI forced tools off for every request.
+  True  -> CLI forced tools on for every request. Not on /v1/messages: that channel
+           cannot present a confirmation prompt, so it takes the on direction from the
+           request itself (see _anthropic_selects_server_tools).
+  False -> CLI forced tools off for every request, /v1/messages included.
 """
 
 import contextvars
