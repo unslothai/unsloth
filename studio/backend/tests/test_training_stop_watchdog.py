@@ -1198,7 +1198,8 @@ def test_mlx_worker_flushes_tracking_before_every_terminal_send():
     src = (_P(__file__).resolve().parent.parent / "core/training/worker.py").read_text()
     tree = ast.parse(src)
     fn = next(
-        n for n in ast.walk(tree)
+        n
+        for n in ast.walk(tree)
         if isinstance(n, ast.FunctionDef) and n.name == "_run_mlx_training"
     )
 
@@ -1213,12 +1214,14 @@ def test_mlx_worker_flushes_tracking_before_every_terminal_send():
 
     sends = sorted(n.lineno for n in ast.walk(fn) if _is_complete_send(n))
     flushes = sorted(
-        n.lineno for n in ast.walk(fn)
+        n.lineno
+        for n in ast.walk(fn)
         if isinstance(n, ast.Call) and getattr(n.func, "id", "") == "_finish_tracking"
     )
     # Only the sends after _finish_tracking is defined can be guarded by it.
     defined_at = next(
-        n.lineno for n in ast.walk(fn)
+        n.lineno
+        for n in ast.walk(fn)
         if isinstance(n, ast.FunctionDef) and n.name == "_finish_tracking"
     )
     guarded = [s for s in sends if s > defined_at]
