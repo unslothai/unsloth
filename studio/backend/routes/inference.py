@@ -3093,6 +3093,7 @@ def _monitor_openai_chunk(
     monitor_id: Optional[str],
     data: dict,
     context_length = None,
+    streaming: bool = False,
 ):
     if not monitor_id:
         return
@@ -3145,12 +3146,12 @@ def _monitor_openai_chunk(
     if not reply_parts:
         return
     if len(choices) == 1:
-        api_monitor.append_reply(monitor_id, reply_parts[0][1], stamp_first_token = False)
+        api_monitor.append_reply(monitor_id, reply_parts[0][1], stamp_first_token = streaming)
         return
     api_monitor.append_reply(
         monitor_id,
         "\n\n".join(f"Choice {idx + 1}:\n{text}" for idx, text in reply_parts),
-        stamp_first_token = False,
+        stamp_first_token = streaming,
     )
 
 
@@ -3200,7 +3201,7 @@ def _monitor_openai_sse_line(
         if error_message:
             api_monitor.fail(monitor_id, error_message)
             return "error"
-        _monitor_openai_chunk(monitor_id, data, context_length)
+        _monitor_openai_chunk(monitor_id, data, context_length, streaming = True)
     return None
 
 
@@ -3468,8 +3469,8 @@ def _close_load_event(
     api_monitor.finish(entry_id)
 
 
-# Requests proxied straight to llama-server without admission (/v1/completions)
-# still occupy decode slots; counted here so the monitor's readout includes them.
+# Requests proxied straight to llama-server without admission (/v1/completions,
+# /v1/embeddings) still occupy slots; counted here so the monitor includes them.
 _direct_llama_inflight = 0
 _direct_llama_inflight_lock = threading.Lock()
 
@@ -9324,7 +9325,7 @@ async def _proxy_to_external_provider(
                 monitor_event = _monitor_openai_sse_line(monitor_id, line)
                 if monitor_event is None:
                     try:
-                        _monitor_openai_chunk(monitor_id, json.loads(line))
+                        _monitor_openai_chunk(monitor_id, json.loads(line), streaming = True)
                     except Exception:
                         pass
                 if monitor_event == "error":
@@ -13392,6 +13393,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
         kind = "embeddings",
     )
     _tracker.__enter__()
+    _direct_llama_request_started()
     _cancel_watcher = asyncio.create_task(
         _await_cancel_or_disconnect_then_close_client(
             cancel_event = _cancel_event,
@@ -13428,6 +13430,7 @@ async def openai_embeddings(request: Request, current_subject: str = Depends(get
             except Exception:
                 pass
         finally:
+            _direct_llama_request_finished()
             _tracker.__exit__(None, None, None)
     if resp.status_code != 200:
         api_monitor.fail(monitor_id, resp.text[:500])
