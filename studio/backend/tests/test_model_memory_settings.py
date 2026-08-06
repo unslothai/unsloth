@@ -248,7 +248,6 @@ class TestMemoryEnv:
     @pytest.fixture
     def toggles(self, monkeypatch):
         import utils.model_memory_settings as mm
-
         def set(keep, no_res):
             monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
             monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
@@ -320,8 +319,8 @@ class TestReloadRequired:
         ("keep", "no_res", "state", "expected"),
         [
             # no_ram_reserve: neither reservation may survive, whoever asked.
-            (False, True, (True, False), True),   # user --mlock still live
-            (False, True, (False, True), True),   # user --no-mmap still live
+            (False, True, (True, False), True),  # user --mlock still live
+            (False, True, (False, True), True),  # user --no-mmap still live
             (False, True, (False, False), False),
             # keep_resident: satisfied by any mlock, including a user one.
             (True, False, (True, False), False),

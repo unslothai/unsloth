@@ -282,6 +282,7 @@ def _model_memory_reload_required(keep_resident: bool, no_ram_reserve: bool) -> 
     """
     try:
         from routes.inference import get_llama_cpp_backend
+
         backend = get_llama_cpp_backend()
         if not backend.is_loaded:
             return False
