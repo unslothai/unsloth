@@ -680,6 +680,64 @@ class TestEnsureRocmTorch:
         assert mock_pip.call_count == 1
         assert "rocm7.1" in str(mock_pip.call_args_list[0])
 
+    @staticmethod
+    def _windows_repair(installed_family, gfx = "gfx1200"):
+        """Run the Windows ROCm repair with an already-ROCm torch on disk.
+
+        Returns the pip_install_try mock so callers can assert on the reinstall.
+        """
+        probe = MagicMock(returncode = 0, stdout = b"yes\n")
+        pip_try = MagicMock(return_value = True)
+        with patch.dict(os.environ, {}, clear = False):
+            os.environ.pop("UNSLOTH_ROCM_TORCH_INSTALLED", None)
+            with (
+                patch.object(stack_mod, "IS_WINDOWS", True),
+                patch.object(stack_mod, "IS_MACOS", False),
+                patch.object(stack_mod, "_TORCH_BACKEND", ""),
+                patch.object(stack_mod, "_explicit_rocm_torch_index_url", return_value = None),
+                patch.object(
+                    stack_mod, "_explicit_unknown_family_torch_index_url", return_value = None
+                ),
+                patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False),
+                patch.object(stack_mod, "_detect_windows_gfx_arch", return_value = gfx),
+                patch.object(
+                    stack_mod, "_installed_rocm_wheel_family", return_value = installed_family
+                ),
+                patch.object(stack_mod, "_install_bnb_windows_rocm", return_value = True),
+                patch.object(stack_mod, "pip_install_try", pip_try),
+                patch("subprocess.run", return_value = probe),
+            ):
+                _ensure_rocm_torch()
+        return pip_try
+
+    def test_wheel_family_change_forces_a_reinstall(self):
+        # A host that already had gfx103X wheels for its APU keeps them forever once the
+        # #7776 repick moves it to the dGPU: torch.version.hip only says "ROCm", so the
+        # repair path saw a ROCm build and stopped. setup.ps1 force-reinstalls every run,
+        # so this is the standalone `studio update` path.
+        pip_try = self._windows_repair("gfx103x-all")
+        assert pip_try.call_count == 1
+        assert "gfx120X-all" in str(pip_try.call_args)
+
+    def test_matching_wheel_family_is_left_alone(self):
+        # Negative control: the right family must not be re-downloaded on every update.
+        assert self._windows_repair("gfx120x-all").call_count == 0
+
+    def test_unknown_wheel_family_is_left_alone(self):
+        # Older AMD wheels predate the split rocm-sdk-libraries runtime, so the family is
+        # unreadable. Guessing would force a multi-GB reinstall on every update.
+        assert self._windows_repair(None).call_count == 0
+
+    def test_installed_wheel_family_reads_the_amd_runtime_package(self):
+        # The family lives in the rocm-sdk-libraries-<family> distribution AMD's per-arch
+        # index resolves alongside torch; nothing else on disk records it.
+        dist = MagicMock()
+        dist.metadata = {"Name": "rocm_sdk_libraries_gfx120X-all"}
+        with patch("importlib.metadata.distributions", return_value = [dist]):
+            assert stack_mod._installed_rocm_wheel_family() == "gfx120x-all"
+        with patch("importlib.metadata.distributions", return_value = []):
+            assert stack_mod._installed_rocm_wheel_family() is None
+
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)

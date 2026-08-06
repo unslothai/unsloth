@@ -1119,6 +1119,29 @@ def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
     return f"{_ROCM_WINDOWS_INDEX_BASE}/{arch_family}/"
 
 
+def _installed_rocm_wheel_family() -> str | None:
+    """The AMD per-arch family the installed torch came from, normalized (e.g.
+    'gfx120x-all'), or None when nothing on disk identifies it.
+
+    torch.version.hip only says "some ROCm build", so it cannot tell a gfx103X wheel
+    from a gfx120X one. AMD's per-arch index resolves a rocm-sdk-libraries-<family>
+    runtime as a dependency of torch, so that distribution name is the record of which
+    family was installed. None means "unknowable" (a pinned index, or an older wheel
+    that predates the split runtime) and callers must leave the install alone rather
+    than guess -- a wrong guess re-downloads multiple GB on every update.
+    """
+    try:
+        from importlib import metadata
+
+        for _dist in metadata.distributions():
+            _name = (_dist.metadata["Name"] or "").strip().lower().replace("_", "-")
+            if _name.startswith("rocm-sdk-libraries-"):
+                return _name[len("rocm-sdk-libraries-") :]
+    except Exception:
+        return None
+    return None
+
+
 def _detect_bnb_rocm_dll_ver() -> str | None:
     """Scan the installed bitsandbytes package for libbitsandbytes_rocm{VER}.dll.
 
@@ -1980,6 +2003,20 @@ def _ensure_rocm_torch() -> None:
                 _torch_already_rocm = True
         except (OSError, subprocess.TimeoutExpired):
             pass
+        # "Is ROCm" is not "is the RIGHT ROCm": the wheels are per-family, so a host whose
+        # arch now resolves elsewhere (a dGPU added, or the #7776 repick moving a mixed
+        # host off its APU) would keep the old family forever. setup.ps1 force-reinstalls
+        # every run, so this only bites the standalone `studio update` repair path. Act
+        # only on a family we positively read back, never on a guess.
+        if _torch_already_rocm and _win_rocm_pin is None:
+            _want = (_GFX_TO_AMD_INDEX_ARCH.get(gfx_arch or "") or "").lower()
+            _have = _installed_rocm_wheel_family()
+            if _want and _have and _have != _want:
+                print(
+                    f"   installed ROCm torch is the {_have} build but {gfx_arch} needs "
+                    f"{_want} -- reinstalling for this GPU"
+                )
+                _torch_already_rocm = False
         if not _torch_already_rocm:
             index_url = _win_rocm_pin or _windows_rocm_index_url(gfx_arch)
             if index_url is None:
