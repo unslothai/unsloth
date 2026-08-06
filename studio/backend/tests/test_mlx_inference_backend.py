@@ -2226,3 +2226,99 @@ def test_a_created_template_is_not_reported_as_the_model_default():
     backend.models["o"] = {"tokenizer": plain, "processor": None}
     backend._populate_chat_template_info("o")
     assert backend.models["o"]["chat_template_info"]["template"] == "{{ live }}"
+
+
+def _marker_renderer(monkeypatch, marks_image):
+    """Stand in for the real render: only marks_image=True reacts to an image part."""
+
+    def render(target, messages, **kwargs):
+        parts = messages[0]["content"]
+        text = "".join(p["text"] for p in parts if p["type"] == "text")
+        images = sum(1 for p in parts if p["type"] == "image")
+        return f"<img>{text}" if (marks_image and images) else text
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation", render
+    )
+
+
+def test_an_override_that_stops_marking_images_is_revoked(monkeypatch):
+    """A text-only probe renders fine while the image placeholder is gone.
+
+    The failure would otherwise land on the first image request, inside a
+    processor that counts markers against image features.
+    """
+    from core.inference import mlx_inference
+
+    processor = SimpleNamespace(
+        chat_template = "{{ native }}",
+        apply_chat_template = lambda *a, **k: "",
+        tokenizer = SimpleNamespace(chat_template = "{{ nested }}"),
+    )
+    tokenizer = processor.tokenizer
+
+    _marker_renderer(monkeypatch, marks_image = True)
+    assert mlx_inference._image_marker_survives(tokenizer, processor) is True
+
+    status = mlx_inference._install_template_override(
+        "{{ blind }}", tokenizer, processor, lambda: None
+    )
+    assert status["applied"] == "{{ blind }}"
+
+    # The override renders text but never places the image.
+    _marker_renderer(monkeypatch, marks_image = False)
+    mlx_inference._revoke_override_that_drops_image(status, tokenizer, processor)
+    assert status["applied"] is None
+    assert status["reason"] == mlx_inference.MLX_TEMPLATE_DROPS_IMAGE
+    assert processor.chat_template == "{{ native }}"
+    assert tokenizer.chat_template == "{{ nested }}"
+
+
+def test_an_override_that_keeps_the_image_marker_is_left_alone(monkeypatch):
+    from core.inference import mlx_inference
+
+    processor = SimpleNamespace(
+        chat_template = "{{ native }}",
+        apply_chat_template = lambda *a, **k: "",
+        tokenizer = SimpleNamespace(chat_template = "{{ nested }}"),
+    )
+    _marker_renderer(monkeypatch, marks_image = True)
+    status = mlx_inference._install_template_override(
+        "{{ good }}", processor.tokenizer, processor, lambda: None
+    )
+    mlx_inference._revoke_override_that_drops_image(status, processor.tokenizer, processor)
+    assert status["applied"] == "{{ good }}"
+    assert processor.chat_template == "{{ good }}"
+
+
+def test_the_model_default_comes_from_the_object_that_renders():
+    """A processor owning its own template is what generation reads.
+
+    Reporting the nested tokenizer's instead lets "reset to default" install the
+    tokenizer's template over the processor, losing its media and tool variants.
+    """
+    from core.inference import mlx_inference
+
+    nested = SimpleNamespace(chat_template = "{{ nested }}")
+    processor = SimpleNamespace(
+        chat_template = "{{ processor }}",
+        apply_chat_template = lambda *a, **k: "",
+        tokenizer = nested,
+    )
+    assert mlx_inference._native_template_source(nested, processor) is processor
+
+    # No processor template: the nested tokenizer is both render target and default.
+    bare = SimpleNamespace(chat_template = None, tokenizer = nested)
+    assert mlx_inference._native_template_source(nested, bare) is nested
+
+    # A named set renders but is not an editable default, so keep reporting the
+    # nested string rather than reporting none at all.
+    named = SimpleNamespace(
+        chat_template = {"default": "{{ a }}"},
+        apply_chat_template = lambda *a, **k: "",
+        tokenizer = nested,
+    )
+    assert mlx_inference._native_template_source(nested, named) is nested
+
+    # Text model: no processor at all.
+    assert mlx_inference._native_template_source(nested, None) is nested

@@ -26,6 +26,8 @@ export interface ApiModelOverride {
   // biome-ignore lint/style/useNamingConvention: API schema
   kv_cache_dtype?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
+  mlx_kv_bits?: number;
+  // biome-ignore lint/style/useNamingConvention: API schema
   speculative_type?: string;
   // biome-ignore lint/style/useNamingConvention: API schema
   spec_draft_n_max?: number;
@@ -89,6 +91,11 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   }
   if (config.kvCacheDtype) {
     payload.kv_cache_dtype = config.kvCacheDtype;
+  }
+  // Travels beside kv_cache_dtype: without it an API auto-switch loads a
+  // remembered MLX model at full precision.
+  if (config.mlxKvBits != null) {
+    payload.mlx_kv_bits = config.mlxKvBits;
   }
   if (config.speculativeType) {
     payload.speculative_type = config.speculativeType;

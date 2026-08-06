@@ -133,6 +133,11 @@ def _render_registered_vlm_prompt(
 # Rate the chat route decodes uploads to; mlx-vlm does not resample arrays.
 _AUDIO_INPUT_SAMPLE_RATE = 16000
 _AUDIO_PROBE_MESSAGES = [{"role": "user", "content": "audio"}]
+# Same turn with and without an image part, so a diff isolates the image marker.
+_IMAGE_PROBE_MESSAGES = [
+    {"role": "user", "content": [{"type": "image"}, {"type": "text", "text": "hi"}]}
+]
+_TEXT_PROBE_MESSAGES = [{"role": "user", "content": [{"type": "text", "text": "hi"}]}]
 
 
 def _classify_mlx_audio_type(
@@ -514,6 +519,9 @@ MLX_TEMPLATE_NAMED_SET = (
 )
 MLX_TEMPLATE_RENDER_FAILED = "it could not render a conversation: {error}"
 MLX_TEMPLATE_NOT_SETTABLE = "this model's template cannot be replaced: {error}"
+MLX_TEMPLATE_DROPS_IMAGE = (
+    "it does not mark where images go, so this model could not accept image input with it"
+)
 MLX_TEMPLATE_DROPS_AUDIO = (
     "it does not mark where audio goes, so this model could not accept audio input with it"
 )
@@ -551,6 +559,22 @@ def _template_render_targets(tokenizer, processor):
 def _usable_template(value):
     """Whether a chat_template value is one this override can replace."""
     return isinstance(value, str) and value.strip() != ""
+
+
+def _native_template_source(tokenizer, processor):
+    """The object whose chat_template is this model's default.
+
+    The render target, so the editor's "model default" is the text generation
+    really uses. Falls back to the tokenizer when that target holds no usable
+    string, keeping the nested template reported for a processor carrying a
+    named set rather than reporting none at all.
+    """
+    if processor is None:
+        return tokenizer
+    from core.inference.chat_template_helpers import chat_render_target
+
+    target = chat_render_target(processor, tokenizer)
+    return target if _usable_template(getattr(target, "chat_template", None)) else tokenizer
 
 
 def _template_override_status(override, tokenizer, processor):
@@ -612,20 +636,61 @@ def _audio_marker_survives(processor, model):
         return False
 
 
-def _revoke_override_that_drops_audio(status, processor, model):
-    """Undo an installed override that stopped marking where audio goes.
+def _image_marker_survives(tokenizer, processor):
+    """Whether the installed template still marks where an image goes.
+
+    Rendered through the target generation uses, so this sees what a real image
+    request would. A template that ignores image parts renders both probes the
+    same; the text-only probe alone cannot tell.
+    """
+    from core.inference.chat_template_helpers import (
+        apply_chat_template_for_generation,
+        chat_render_target,
+    )
+
+    target = chat_render_target(processor) if processor is not None else tokenizer
+    if target is None:
+        return True
+    try:
+        marked = apply_chat_template_for_generation(target, _IMAGE_PROBE_MESSAGES)
+        return bool(marked) and marked != apply_chat_template_for_generation(
+            target, _TEXT_PROBE_MESSAGES
+        )
+    except BaseException:
+        # A load must never fail on a probe, matching _audio_marker_survives.
+        return False
+
+
+def _revoke_override_dropping(status, survives, reason):
+    """Undo an installed override that stopped marking where media goes.
 
     Capability was classified against the native template, so an override that
-    no longer renders the audio marker would leave the model advertising an
-    input it can no longer place.
+    no longer renders the marker would leave the model advertising an input it
+    can no longer place.
     """
-    if not status["applied"] or _audio_marker_survives(processor, model):
+    if not status["applied"] or survives():
         return status
     _restore_templates(status["restore"])
     status["applied"] = None
     status["restore"] = []
-    status["reason"] = MLX_TEMPLATE_DROPS_AUDIO
+    status["reason"] = reason
     return status
+
+
+def _revoke_override_that_drops_audio(status, processor, model):
+    return _revoke_override_dropping(
+        status,
+        lambda: _audio_marker_survives(processor, model),
+        MLX_TEMPLATE_DROPS_AUDIO,
+    )
+
+
+def _revoke_override_that_drops_image(status, tokenizer, processor):
+    return _revoke_override_dropping(
+        status,
+        lambda: _image_marker_survives(tokenizer, processor),
+        MLX_TEMPLATE_DROPS_IMAGE,
+    )
 
 
 def _restore_templates(installed):
@@ -914,6 +979,9 @@ class MLXInferenceBackend:
         # Load-time runtime knobs; every generation path reads them from here
         # rather than from per-request kwargs.
         self._kv_quant = _kv_quant_status(None, None, False)
+        # Bound here too, so a load that fails before installing leaves the
+        # entry writer and the reason log reading a dict rather than raising.
+        self._template_override = _template_override_status(None, None, None)[1]
 
         self._prompt_cache_history = None
         self._prompt_cache_unavailable = False
@@ -1133,12 +1201,21 @@ class MLXInferenceBackend:
 
         # Captured before installing: chat_template_info must keep reporting
         # what the model shipped with, since the capability classification and
-        # the editor's "model default" both read it.
-        native_template = getattr(self._tokenizer, "chat_template", None)
+        # the editor's "model default" both read it. From the render target, not
+        # the nested tokenizer: on a processor that owns its own template those
+        # are different objects, and saving the wrong default back would install
+        # the tokenizer's template over the processor.
+        native_source = _native_template_source(self._tokenizer, self._processor)
+        native_template = getattr(native_source, "chat_template", None)
         native_marks_audio = bool(
             chat_template_override
             and is_audio_input_type(_audio_type)
             and _audio_marker_survives(self._processor, self._model)
+        )
+        native_marks_image = bool(
+            chat_template_override
+            and is_vision
+            and _image_marker_survives(self._tokenizer, self._processor)
         )
         self._template_override = _install_template_override(
             chat_template_override,
@@ -1148,6 +1225,10 @@ class MLXInferenceBackend:
         )
         if native_marks_audio:
             _revoke_override_that_drops_audio(self._template_override, self._processor, self._model)
+        if native_marks_image:
+            _revoke_override_that_drops_image(
+                self._template_override, self._tokenizer, self._processor
+            )
         if self._template_override["reason"]:
             logger.info(
                 "MLX chat template override not applied: %s",

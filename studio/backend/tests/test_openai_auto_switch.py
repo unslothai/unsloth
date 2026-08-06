@@ -6842,3 +6842,21 @@ def test_two_spellings_of_one_cached_quant_do_not_delete_each_others_save(monkey
     stored = settings.get_model_overrides()
     assert list(stored) in ([repo], [snapshot]), stored
     assert stored[list(stored)[0]]["max_seq_length"] in (4096, 8192)
+
+
+def test_mlx_kv_bits_survives_the_whole_override_projection():
+    # Persisted in the browser but dropped here, an API auto-switch loaded a
+    # remembered MLX model at full precision while the picker honored the width.
+    for bits in (8, 6, 5, 4, 3, 2):
+        assert settings.normalize_model_override({"mlx_kv_bits": bits}) == {"mlx_kv_bits": bits}
+
+    # A discrete set, so a plausible in-range width is still not one mx.quantize takes.
+    # bool is an int subclass, and a string width would reach LoadRequest untyped.
+    for rejected in (7, 1, 0, 9, True, False, "4", 4.5, None):
+        assert settings.normalize_model_override({"mlx_kv_bits": rejected}) == {}
+
+    # Ungated on is_gguf, matching the picker's own load payload.
+    for is_gguf in (True, False):
+        kwargs = settings.model_override_load_kwargs({"mlx_kv_bits": 4}, is_gguf = is_gguf)
+        assert kwargs["mlx_kv_bits"] == 4
+        assert LoadRequest(model_path = "unsloth/A", **kwargs).mlx_kv_bits == 4
