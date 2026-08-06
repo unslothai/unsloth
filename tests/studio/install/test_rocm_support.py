@@ -711,10 +711,9 @@ class TestEnsureRocmTorch:
         return pip_try
 
     def test_wheel_family_change_forces_a_reinstall(self):
-        # A host that already had gfx103X wheels for its APU keeps them forever once the
-        # #7776 repick moves it to the dGPU: torch.version.hip only says "ROCm", so the
-        # repair path saw a ROCm build and stopped. setup.ps1 force-reinstalls every run,
-        # so this is the standalone `studio update` path.
+        # A host with gfx103X wheels for its APU keeps them forever once the #7776 repick
+        # moves it to the dGPU: torch.version.hip only says "ROCm", so the repair path saw
+        # a ROCm build and stopped. setup.ps1 force-reinstalls, so this is `studio update`.
         pip_try = self._windows_repair("gfx103x-all")
         assert pip_try.call_count == 1
         assert "gfx120X-all" in str(pip_try.call_args)
@@ -724,8 +723,8 @@ class TestEnsureRocmTorch:
         assert self._windows_repair("gfx120x-all").call_count == 0
 
     def test_unknown_wheel_family_is_left_alone(self):
-        # Older AMD wheels predate the split rocm-sdk-libraries runtime, so the family is
-        # unreadable. Guessing would force a multi-GB reinstall on every update.
+        # Older wheels predate the split runtime, so the family is unreadable and
+        # guessing would force a multi-GB reinstall on every update.
         assert self._windows_repair(None).call_count == 0
 
     @staticmethod
@@ -748,9 +747,9 @@ class TestEnsureRocmTorch:
             assert stack_mod._installed_rocm_wheel_family() == "gfx120x-all"
 
     def test_orphaned_runtime_does_not_masquerade_as_the_active_family(self):
-        # pip leaves the old rocm-sdk-libraries-<family> behind on a switch: it is a
-        # different distribution name, so it is never uninstalled. Reading the first one
-        # found would report the orphan and redownload the stack on every update.
+        # pip never uninstalls the old rocm-sdk-libraries-<family> on a switch (different
+        # distribution name), so reading the first one found would report the orphan and
+        # redownload the stack on every update.
         reqs = ['rocm-sdk-libraries-gfx120X-all==7.13.0; extra == "libraries"']
         dists = self._dists("rocm_sdk_libraries_gfx103X-all", "rocm_sdk_libraries_gfx120X-all")
         with patch("importlib.metadata.requires", return_value = reqs):
@@ -758,8 +757,7 @@ class TestEnsureRocmTorch:
                 assert stack_mod._installed_rocm_wheel_family() == "gfx120x-all"
 
     def test_two_runtimes_without_a_metapackage_are_unknowable(self):
-        # No `rocm` to arbitrate and two runtimes on disk: neither can be called active,
-        # so the install is left alone rather than guessed at.
+        # No `rocm` to arbitrate between two runtimes on disk, so leave the install alone.
         dists = self._dists("rocm_sdk_libraries_gfx103X-all", "rocm_sdk_libraries_gfx120X-all")
         with patch("importlib.metadata.requires", return_value = None):
             with patch("importlib.metadata.distributions", return_value = dists):
@@ -775,8 +773,8 @@ class TestEnsureRocmTorch:
                 assert stack_mod._installed_rocm_wheel_family() is None
 
     def test_switched_host_does_not_reinstall_on_every_update(self):
-        # End to end for the loop: after the gfx103X -> gfx120X switch the orphan is still
-        # installed, and the next `studio update` must do nothing.
+        # End to end: after the gfx103X -> gfx120X switch the orphan is still installed
+        # and the next `studio update` must do nothing.
         reqs = ['rocm-sdk-libraries-gfx120X-all==7.13.0; extra == "libraries"']
         dists = self._dists("rocm_sdk_libraries_gfx103X-all", "rocm_sdk_libraries_gfx120X-all")
         with patch("importlib.metadata.requires", return_value = reqs):
@@ -936,9 +934,9 @@ class TestEnsureRocmTorch:
     def test_mask_indexes_devices_not_deduplicated_arches(
         self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, mock_machine
     ):
-        # The mask names a device ordinal. On two gfx1100 plus a gfx1151, device 1 is
-        # the second gfx1100, but a deduplicated ['gfx1100','gfx1151'] reads index 1 as
-        # the Strix and routes the whole install to the Strix-only AMD index.
+        # The mask names a device ordinal: on two gfx1100 plus a gfx1151, device 1 is the
+        # second gfx1100, but a deduplicated ['gfx1100','gfx1151'] reads index 1 as the
+        # Strix and routes the install to the Strix-only AMD index.
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"7.14.60850|2.11.0+rocm7.2\n"
@@ -968,8 +966,7 @@ class TestEnsureRocmTorch:
     def test_mask_naming_the_strix_device_still_reroutes(
         self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, mock_machine
     ):
-        # Negative control for the above: device 2 really is the Strix, so the reroute
-        # must still fire. Guards against "fixing" the index by disabling the reroute.
+        # Negative control: device 2 really is the Strix, so the reroute must still fire.
         mock_probe = MagicMock()
         mock_probe.returncode = 0
         mock_probe.stdout = b"7.14.60850|2.11.0+rocm7.2\n"
@@ -982,8 +979,8 @@ class TestEnsureRocmTorch:
         calls = str(mock_pip.call_args_list) + str(mock_pip_try.call_args_list)
         assert "gfx1151" in calls
 
-    # Real rocminfo repeats the gfx token per agent (Name, ISA, marketing name), so a
-    # flat findall counts one GPU several times and every later ordinal is wrong.
+    # rocminfo repeats the gfx token per agent (Name, ISA, marketing name), so a flat
+    # findall counts one GPU several times and every later ordinal is wrong.
     _ROCMINFO = """
 *******
 Agent 1
@@ -3197,9 +3194,8 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1200"
 
     def test_mixed_igpu_dgpu_prefers_discrete(self, monkeypatch):
-        # Issue #7776: HIP enumerates the Raphael iGPU (gfx1036) before the
-        # discrete RX 9060 XT (gfx1200), so an index-0 pick installed
-        # gfx103X-all wheels and the dGPU was never loaded into.
+        # #7776: HIP enumerates the Raphael iGPU (gfx1036) before the discrete RX 9060 XT
+        # (gfx1200), so an index-0 pick installed gfx103X-all wheels and never used the dGPU.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
@@ -3240,8 +3236,8 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1036"
 
     def test_strix_igpu_selection_is_unchanged(self, monkeypatch):
-        # gfx1151 is a supported unified-memory training target, not a shadowing
-        # APU: a Strix host must keep resolving to its own arch-specific wheels.
+        # gfx1151 is a supported training target, not a shadowing APU, so a Strix host
+        # must keep resolving to its own arch-specific wheels.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
@@ -3267,10 +3263,9 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1036"
 
     def test_unsupported_discrete_does_not_depose_a_supported_igpu(self, monkeypatch):
-        # A supported APU next to a discrete card AMD ships no Windows wheels
-        # for (gfx1010 is absent from _GFX_TO_AMD_INDEX_ARCH). Preferring the
-        # dGPU purely for being discrete resolves to no index and falls back to
-        # CPU, which is worse than the shadowing this preference undoes.
+        # A supported APU next to a discrete card with no Windows wheels (gfx1010 is absent
+        # from _GFX_TO_AMD_INDEX_ARCH): preferring the dGPU purely for being discrete
+        # resolves to no index and falls back to CPU, worse than the shadowing itself.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
@@ -3285,8 +3280,8 @@ class TestDetectWindowsGfxArch:
         assert stack_mod._windows_rocm_index_url(result) is not None
 
     def test_unsupported_igpu_still_yields_to_the_discrete_card(self, monkeypatch):
-        # Mirror case: when neither pick has wheels the swap costs nothing, so
-        # the discrete card still wins and the guard is not over-tightened.
+        # Mirror case: with neither pick wheel-backed the swap costs nothing, so the
+        # discrete card still wins and the guard is not over-tightened.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
@@ -3301,9 +3296,8 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1010"
 
     def test_cuda_visible_devices_also_pins_the_igpu(self, monkeypatch):
-        # HIP honours CUDA_VISIBLE_DEVICES with the same semantics as its own
-        # masks (cf. _pick_rocm_gfx_target in studio/install_llama_prebuilt.py),
-        # so a host that exposed only GPU 0 that way keeps getting the iGPU.
+        # HIP honours CUDA_VISIBLE_DEVICES with the same semantics as its own masks, so a
+        # host that exposed only GPU 0 that way keeps getting the iGPU.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
@@ -3316,10 +3310,9 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1036"
 
     def test_cuda_visible_devices_indexes_the_enumeration(self, monkeypatch):
-        # hipinfo is a HIP application, so a mask filters and renumbers its output
-        # before we ever see it: CUDA_VISIBLE_DEVICES=1 leaves the dGPU alone at
-        # logical 0. Re-indexing that with the physical value applies the mask
-        # twice, which is what selected the iGPU on the #7776 host.
+        # hipinfo is a HIP application, so a mask filters and renumbers its output before
+        # we see it: CUDA_VISIBLE_DEVICES=1 leaves the dGPU alone at logical 0. Re-indexing
+        # with the physical value applies the mask twice, which selected the #7776 iGPU.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
@@ -3332,9 +3325,8 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1200"
 
     def test_a_reordering_mask_is_not_applied_twice(self, monkeypatch):
-        # CUDA_VISIBLE_DEVICES=1,0 makes HIP expose [physical 1, physical 0], so
-        # hipinfo prints the dGPU first. Indexing that again read token 1 and
-        # installed the shadowing iGPU's wheel family.
+        # CUDA_VISIBLE_DEVICES=1,0 makes HIP expose [physical 1, physical 0], so hipinfo
+        # prints the dGPU first; indexing that again read token 1, the shadowing iGPU.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
@@ -3347,8 +3339,7 @@ class TestDetectWindowsGfxArch:
         assert result == "gfx1200"
 
     def test_cuda_visible_devices_index_matches_the_other_masks(self, monkeypatch):
-        # _pick_visible_index must treat all three spellings identically, including
-        # the comma-list and out-of-range fallbacks.
+        # All three spellings resolve identically, comma-list and out-of-range included.
         for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_var, raising = False)
         for _value, _expected in (
@@ -3364,11 +3355,9 @@ class TestDetectWindowsGfxArch:
 
     @pytest.mark.parametrize("spelling", ["", "-1"])
     def test_all_hiding_masks_count_as_a_selection(self, monkeypatch, spelling):
-        # "" and "-1" select NO GPU rather than meaning "unset": the ROCm runtime
-        # stores an explicitly empty var as " " (clr flags.cpp) and
-        # parseRequestedDeviceList surfaces zero devices for " " and "-1". So they
-        # are a deliberate choice and must suppress the shadowing skip, not invite
-        # it. Matches _pick_rocm_gfx_target in install_llama_prebuilt.py.
+        # "" and "-1" select NO GPU rather than meaning "unset": the runtime stores an
+        # empty var as " " (clr flags.cpp) and parseRequestedDeviceList then surfaces zero
+        # devices. So they are a deliberate choice and must suppress the shadowing skip.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", spelling)
@@ -3390,10 +3379,9 @@ class TestDetectWindowsGfxArch:
                 return stack_mod._detect_windows_gfx_arch()
 
     def test_an_all_hiding_hip_mask_shadows_a_later_cuda_mask(self, monkeypatch):
-        # clr picks the HIP mask whenever its first byte is not NUL, and an
-        # explicitly empty var is stored as " ", so an empty HIP_VISIBLE_DEVICES
-        # shadows CUDA_VISIBLE_DEVICES instead of deferring to it. Falling through
-        # to the next var would resolve a device the runtime never exposes.
+        # clr picks the HIP mask whenever its first byte is not NUL and stores an empty var
+        # as " ", so an empty HIP_VISIBLE_DEVICES shadows CUDA_VISIBLE_DEVICES rather than
+        # deferring to it; falling through would resolve a device the runtime never exposes.
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         for _spelling in ("", "-1"):
             monkeypatch.setenv("HIP_VISIBLE_DEVICES", _spelling)
@@ -3402,15 +3390,15 @@ class TestDetectWindowsGfxArch:
             assert self._hipinfo_pick(["gfx1036", "gfx1200"]) == "gfx1036"
 
     def test_gcn_arch_feature_suffix_is_stripped(self, monkeypatch):
-        # hipinfo can print "gfx90a:sramecc+:xnack-"; setup.ps1:1696 splits on ':'
-        # and the bare token matched neither the wheel table nor the skip set.
+        # hipinfo can print "gfx90a:sramecc+:xnack-"; setup.ps1 splits on ':' and the
+        # unsplit token matched neither the wheel table nor the skip set.
         for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_m, raising = False)
         assert self._hipinfo_pick(["gfx1036:xnack-", "gfx1200:xnack-"]) == "gfx1200"
 
     def test_prefers_a_wheel_backed_discrete_over_an_unsupported_one(self, monkeypatch):
         # gfx1010 has no Windows wheel index, so stopping at the first non-integrated
-        # token dropped a host that had a perfectly good gfx1200 to CPU torch.
+        # token dropped a host with a perfectly good gfx1200 to CPU torch.
         for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_m, raising = False)
         assert stack_mod._windows_rocm_index_url("gfx1010") is None
@@ -3419,10 +3407,9 @@ class TestDetectWindowsGfxArch:
         assert self._hipinfo_pick(["gfx1013", "gfx1010", "gfx1200"]) == "gfx1200"
 
     def test_pinning_a_wheelless_gpu_says_why_torch_will_be_cpu(self, monkeypatch, capsys):
-        # The pin is honoured, but silently installing CPU torch when another
-        # enumerated GPU does have wheels leaves the user with no idea the mask
-        # caused it. A reordering mask puts the wheel-less card at logical 0 while
-        # hipinfo still reports both visible devices.
+        # The pin is honoured, but silently installing CPU torch while another enumerated
+        # GPU does have wheels hides that the mask caused it. A reordering mask puts the
+        # wheel-less card at logical 0 with both devices still visible to hipinfo.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1,0")
@@ -3432,9 +3419,8 @@ class TestDetectWindowsGfxArch:
         assert "gfx1036" in out
 
     def test_deduplicated_callers_do_not_get_a_bogus_range_warning(self, monkeypatch, capsys):
-        # _detect_amd_gfx_codes() dedupes, so on a dual same-arch Linux box the
-        # list is shorter than the device count and a valid index reads as out
-        # of range. That caller passes warn=False.
+        # _detect_amd_gfx_codes() dedupes, so on a dual same-arch Linux box the list is
+        # shorter than the device count and a valid index reads as out of range.
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising = False)
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "1")
@@ -3445,8 +3431,8 @@ class TestDetectWindowsGfxArch:
         assert "out of range" in capsys.readouterr().out
 
     def test_advisory_names_the_selected_gpus_real_index(self, monkeypatch, capsys):
-        # The chosen card is not always device 1: here it is device 2, and naming
-        # 1 would expose the gfx1010 the installed wheels do not target.
+        # Not always device 1: here it is device 2, and naming 1 would expose the
+        # gfx1010 the installed wheels do not target.
         for _m in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_m, raising = False)
         assert self._hipinfo_pick(["gfx1036", "gfx1010", "gfx1200"]) == "gfx1200"
@@ -3457,8 +3443,8 @@ class TestDetectWindowsGfxArch:
     def test_shadowing_set_holds_only_apu_arches(self):
         # gfx1037 is not an AMDGPU target in LLVM, so no Windows tool emits it.
         assert "gfx1037" not in stack_mod._SHADOWING_INTEGRATED_GFX
-        # gfx1033 (Van Gogh) has a wheel family, so leaving it out let it be
-        # treated as the "discrete" card that deposes another APU.
+        # gfx1033 (Van Gogh) has a wheel family, so omitting it let it pose as the
+        # "discrete" card and depose another APU.
         assert "gfx1033" in stack_mod._SHADOWING_INTEGRATED_GFX
         assert self._hipinfo_pick(["gfx1036", "gfx1033"]) == "gfx1036"
 
@@ -3624,26 +3610,25 @@ class TestGfxArchNameFallback:
         ],
     )
     def test_non_amd_adapters_produce_no_amd_output(self, name):
-        # This path is AMD-only, so a CUDA or Intel user must never see it speak. The
-        # vendor filter lives in a PowerShell string, so the Python side re-applies it
-        # rather than trusting it: otherwise a non-AMD adapter both shifts the mask index
-        # and triggers ROCm advice on a host with no AMD GPU at all.
+        # AMD-only path, so a CUDA or Intel user must never see it speak. The vendor filter
+        # lives in a PowerShell string, so Python re-applies it: a non-AMD adapter would
+        # shift the mask index and trigger ROCm advice on a host with no AMD GPU.
         arch, out = self._wmi_arch([name], {"CUDA_VISIBLE_DEVICES": "0"})
         assert arch is None
         assert out == ""
 
     @pytest.mark.parametrize("code", ["22", "45", "43", "1"])
     def test_sole_unhealthy_adapter_still_yields_its_arch(self, code):
-        # The error-code filter exists so a card Windows is not exposing cannot depose a
-        # live one. With only one adapter there is nothing to depose, and filtering it
-        # out is the only reason the host looks GPU-less -- that hands a working Radeon
-        # CPU torch. Code 45 ("not connected") is routine on muxless laptops.
+        # The filter exists so a card Windows is not exposing cannot depose a live one.
+        # With one adapter there is nothing to depose, and filtering it out is the only
+        # reason the host looks GPU-less, handing a working Radeon CPU torch. Code 45
+        # ("not connected") is routine on muxless laptops.
         arch, _ = self._wmi_arch([f"AMD Radeon RX 9060 XT|{code}"], {})
         assert arch == "gfx1200"
 
     def test_unhealthy_adapter_still_cannot_depose_a_healthy_one(self):
-        # Negative control: with a healthy iGPU present the disabled dGPU must stay out,
-        # so the shadowing skip cannot install wheels for a GPU Windows never exposes.
+        # Negative control: with a healthy iGPU present the disabled dGPU stays out, so
+        # the shadowing skip cannot install wheels for a GPU Windows never exposes.
         arch, _ = self._wmi_arch(["AMD Radeon(TM) 780M Graphics|0", "AMD Radeon RX 9060 XT|22"], {})
         assert arch == "gfx1103"
 
@@ -3655,8 +3640,7 @@ class TestGfxArchNameFallback:
 
     def test_wmi_probe_lists_only_amd_adapters(self):
         # The masks index AMD devices, so an Intel or NVIDIA adapter ahead of the Radeon
-        # would shift every index away from the device HIP_VISIBLE_DEVICES names. Same
-        # -match filter setup.ps1 applies to $wmiGpus.
+        # would shift every index. Same -match filter setup.ps1 applies to $wmiGpus.
         source = _STACK_PATH.read_text(encoding = "utf-8")
         assert "$_.Name -match 'AMD|Radeon'" in source
         arch, _ = self._wmi_arch(
@@ -3666,10 +3650,9 @@ class TestGfxArchNameFallback:
 
     def test_wmi_unmappable_adapter_suppresses_the_repick(self):
         # A driver-only host can report a name the table does not know ("AMD Radeon
-        # Graphics"). It then drops out of the arch list, so neither the mask nor the
-        # advisory index can be trusted to name a device: skipping the iGPU could land on
-        # the wrong card and the advisory would count arches, not GPUs. setup.ps1 only
-        # repicks when every adapter mapped, so this must too.
+        # Graphics"), which drops out of the arch list: skipping the iGPU could then land
+        # on the wrong card and the advisory would count arches, not GPUs. Like setup.ps1,
+        # repick only when every adapter mapped.
         arch, out = self._wmi_arch(
             ["AMD Radeon Graphics", "AMD Radeon 780M Graphics", "AMD Radeon RX 9060 XT"], {}
         )
@@ -3677,16 +3660,16 @@ class TestGfxArchNameFallback:
         assert "setx HIP_VISIBLE_DEVICES" not in out
 
     def test_wmi_repicks_the_dgpu_when_every_adapter_maps(self):
-        # Negative control: with the whole list mapped the #7776 preference still runs and
-        # the advisory names the dGPU's real index.
+        # Negative control: fully mapped, the #7776 preference runs and the advisory
+        # names the dGPU's real index.
         arch, out = self._wmi_arch(["AMD Radeon 780M Graphics", "AMD Radeon RX 9060 XT"], {})
         assert arch == "gfx1200"
         assert "setx HIP_VISIBLE_DEVICES 1" in out
 
     def test_wmi_masked_unmappable_adapter_warns_instead_of_substituting(self):
         # Under a mask the selected adapter is the user's choice, so another card's arch
-        # must not stand in for it (same rule setup.ps1 follows). That leaves no arch and
-        # torch goes CPU-only, which has to be said out loud, not swallowed.
+        # must not stand in (same rule as setup.ps1). That leaves no arch and torch goes
+        # CPU-only, which has to be said out loud.
         arch, out = self._wmi_arch(
             ["AMD Radeon Graphics", "AMD Radeon RX 9060 XT"], {"HIP_VISIBLE_DEVICES": "0"}
         )
@@ -3694,8 +3677,8 @@ class TestGfxArchNameFallback:
         assert "UNSLOTH_ROCM_GFX_ARCH" in out and "AMD Radeon Graphics" in out
 
     def test_wmi_unpinned_unmappable_adapter_still_infers(self):
-        # Negative control: unpinned there is no choice to respect, so the one adapter
-        # that did map still decides and the host keeps its wheels.
+        # Negative control: unpinned there is no choice to respect, so the adapter that
+        # did map still decides and the host keeps its wheels.
         arch, _ = self._wmi_arch(["AMD Radeon Graphics", "AMD Radeon RX 9060 XT"], {})
         assert arch == "gfx1200"
 
@@ -3706,11 +3689,10 @@ class TestGfxArchNameFallback:
         assert arch == "gfx1103"
 
     def test_wmi_fallback_skips_disabled_adapters(self):
-        # WMI keeps listing a Radeon that is disabled in Device Manager or sitting on
-        # a driver error, and _dedup_pick()'s shadowing skip would let one depose the
-        # working iGPU: a driver-only laptop with a live 780M and a disabled RX 9060
-        # installed gfx120X-all wheels for a GPU Windows never exposes. setup.ps1
-        # filters on ConfigManagerErrorCode, so this path has to as well.
+        # WMI keeps listing a Radeon that is disabled or on a driver error, and the
+        # shadowing skip would let one depose the working iGPU: a laptop with a live 780M
+        # and a disabled RX 9060 installed gfx120X-all wheels for a GPU Windows never
+        # exposes. setup.ps1 filters on ConfigManagerErrorCode, so this path does too.
         captured = {}
 
         ps_result = MagicMock()
@@ -3743,9 +3725,9 @@ class TestGfxArchNameFallback:
 
     @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh not installed")
     def test_wmi_adapter_filter_is_valid_powershell(self):
-        # The filter lives in a Python string, so nothing else type-checks it. Run the
-        # real expression over stand-in adapters: a null error code (the property is
-        # absent on some drivers) and 0 stay, anything else goes.
+        # The filter lives in a Python string, so nothing else checks it. Run the real
+        # expression over stand-ins: a null error code (absent on some drivers) and 0
+        # stay, anything else goes.
         source = _STACK_PATH.read_text(encoding = "utf-8")
         assert "ConfigManagerErrorCode" in source
         script = """
@@ -3794,9 +3776,8 @@ class TestSetupPs1ShadowingParity:
         return (PACKAGE_ROOT / "studio" / "setup.ps1").read_text(encoding = "utf-8")
 
     def test_repick_is_wheel_aware(self):
-        # Mirrors _dedup_pick()'s guard: deposing a supported APU for a discrete card
-        # with no AMD Windows wheels resolves to no index and drops the host to CPU,
-        # which is worse than the shadowing the preference exists to undo.
+        # Mirrors _dedup_pick()'s guard: deposing a supported APU for a discrete card with
+        # no Windows wheels resolves to no index and drops the host to CPU.
         source = self._setup_ps1()
         body = source[source.index("function Resolve-ShadowingGfxPick") :]
         body = body[: body.index("\n}\n")]
@@ -3804,32 +3785,31 @@ class TestSetupPs1ShadowingParity:
         assert "pickedHasWheels" in body
 
     def test_arch_family_map_precedes_the_repick(self):
-        # The map is consumed during detection now, not just at install time, so it
-        # has to be defined before the function that reads it.
+        # Consumed during detection now, not just at install time, so it must be
+        # defined before the function that reads it.
         source = self._setup_ps1()
         assert source.index("$archFamilyMap = @{") < source.index(
             "function Resolve-ShadowingGfxPick"
         )
 
     def test_wmi_fallback_keeps_every_amd_adapter(self):
-        # WMI orders controllers however the driver stack enumerated them, so taking
-        # the first AMD match reintroduced #7776 on Adrenalin-only hosts (a 780M
-        # ahead of an RX 9060 XT inferred gfx1103 and installed gfx110X-all wheels).
+        # WMI orders controllers as the driver stack enumerated them, so taking the first
+        # AMD match reintroduced #7776 on Adrenalin-only hosts (a 780M ahead of an RX
+        # 9060 XT inferred gfx1103 and installed gfx110X-all wheels).
         source = self._setup_ps1()
         block = source[source.index("$amdGpus = @(Get-CimInstance Win32_VideoController") :]
         block = block[: block.index("$ROCmGpuLabel = $script:ROCmGpuLabels[0]")]
         assert "Select-Object -First 1" not in block
         # A disabled or driver-errored Radeon must not depose a working iGPU.
         assert "ConfigManagerErrorCode" in block
-        # ... but when the filter would leave nothing, keep the parked card rather
-        # than reporting no AMD GPU at all (matches the Python WMI path).
+        # ... but when the filter would leave nothing, keep the parked card rather than
+        # reporting no AMD GPU (matches the Python WMI path).
         assert "if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus }" in block
 
     def test_index_picks_read_the_same_masks_as_the_pin_check(self):
-        # Resolve-ShadowingGfxPick honours CUDA_VISIBLE_DEVICES as a pin, so every
-        # site that turns a mask into an index has to read it too -- otherwise the
-        # skip is suppressed while the index still resolves to GPU 0. One shared
-        # helper instead of four inline expressions is what keeps them agreeing.
+        # Resolve-ShadowingGfxPick honours CUDA_VISIBLE_DEVICES as a pin, so every site
+        # that turns a mask into an index must read it too, or the skip is suppressed
+        # while the index still resolves to GPU 0. One shared helper keeps them agreeing.
         source = self._setup_ps1()
         helper = source[source.index("function Resolve-VisibleGpuIndex") :]
         helper = helper[: helper.index("\n}\n")]
@@ -3845,8 +3825,8 @@ class TestSetupPs1ShadowingParity:
         assert "$visGpu = if (" not in source
 
     def test_hipinfo_is_not_reindexed(self):
-        # hipinfo already applied the mask; amd-smi and WMI did not. Only the
-        # latter two may call the index resolver, or the mask lands twice.
+        # hipinfo already applied the mask; only amd-smi and WMI may call the index
+        # resolver, or the mask lands twice.
         source = self._setup_ps1()
         hipinfo = source[source.index("$_hipAllArches.Count -gt 0") :]
         hipinfo = hipinfo[: hipinfo.index("Resolve-ShadowingGfxPick")]
@@ -3854,9 +3834,8 @@ class TestSetupPs1ShadowingParity:
         assert "$_hipAllArches[0]" in hipinfo
 
     def test_unknown_selected_wmi_adapter_is_not_substituted(self):
-        # Borrowing another adapter's arch is right when nothing was selected (the
-        # #7776 iGPU is unnameable), but under a mask it installs for a GPU the
-        # user masked away.
+        # Borrowing another adapter's arch is right when nothing was selected, but under
+        # a mask it installs for a GPU the user masked away.
         source = self._setup_ps1()
         block = source[source.index("$pickedName = Get-GfxArchFromGpuName") :]
         block = block[: block.index("if ($pickedName) {")]
@@ -3926,15 +3905,15 @@ foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
         assert self._run(body) == "gfx1151"
 
     def test_all_hiding_spellings_count_as_a_selection(self):
-        # "" / "-1" surface zero devices, so they are a deliberate choice and must
-        # suppress the repick rather than invite it.
+        # "" / "-1" surface zero devices, so they are a deliberate choice and suppress
+        # the repick rather than invite it.
         for _val in ("", "-1"):
             assert self._run(self._MIXED, {"HIP_VISIBLE_DEVICES": _val}) == "gfx1036"
 
     @pytest.mark.parametrize("mask", ["1", "1,0", " 1 "])
     def test_index_resolves_every_mask_spelling(self, mask):
-        # A comma list and a padded value used to resolve differently per branch,
-        # so a pinned host silently landed on the iGPU at index 0.
+        # A comma list and a padded value used to resolve differently per branch, so a
+        # pinned host silently landed on the iGPU at index 0.
         for _var in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             assert self._run("Resolve-VisibleGpuIndex 2", {_var: mask}) == "1"
 
@@ -3943,8 +3922,8 @@ foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
             assert self._run("Resolve-VisibleGpuIndex 2", {"HIP_VISIBLE_DEVICES": _val}) == "0"
 
     def test_an_all_hiding_hip_mask_shadows_a_later_cuda_mask(self):
-        # First-set-wins, same as the Python resolver: an empty HIP mask shadows
-        # CUDA_VISIBLE_DEVICES in the runtime rather than deferring to it.
+        # First-set-wins, as in Python: an empty HIP mask shadows CUDA_VISIBLE_DEVICES
+        # in the runtime rather than deferring to it.
         env = {"HIP_VISIBLE_DEVICES": "", "CUDA_VISIBLE_DEVICES": "1"}
         assert self._run("Resolve-VisibleGpuIndex 2", env) == "0"
 
@@ -3954,10 +3933,9 @@ foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
 
     def test_wheelless_igpu_still_prefers_a_wheel_backed_discrete(self):
         # PowerShell mirror of test_prefers_a_wheel_backed_discrete_over_an_unsupported_one.
-        # gfx90c (Cezanne) has no AMD Windows wheel index, so the guard above is
-        # inactive and every discrete arch qualifies -- taking the first one landed on
-        # gfx1010, which has no wheels either, and $ROCmIndexUrl stayed null: a fresh
-        # install went CPU-only despite the supported gfx1200 in the same enumeration.
+        # gfx90c (Cezanne) has no wheel index, so the guard above is inactive and every
+        # discrete arch qualifies: taking the first landed on the wheel-less gfx1010,
+        # $ROCmIndexUrl stayed null, and the install went CPU-only despite the gfx1200.
         for _igpu in ("gfx90c", "gfx1013", "gfx1153"):
             body = (
                 f'Resolve-ShadowingGfxPick -Picked "{_igpu}" '
@@ -3965,7 +3943,7 @@ foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
             )
             assert self._run(body) == "gfx1200", _igpu
         # Not over-tightened: with nothing wheel-backed to move to, a wheel-less iGPU
-        # still yields to the discrete card, exactly as _dedup_pick() does.
+        # still yields to the discrete card, as _dedup_pick() does.
         body = 'Resolve-ShadowingGfxPick -Picked "gfx90c" -AllArches @("gfx90c","gfx1010")'
         assert self._run(body) == "gfx1010"
 
@@ -5747,9 +5725,9 @@ class TestApplyHostOverrides:
         assert out.rocm_gfx_target == "gfx1200"
 
     def test_forwarded_gfx_does_not_clobber_probed_arch(self, monkeypatch):
-        # setup.ps1's pick is not fully visible-device aware (its amd-smi branch drops
-        # comma masks), so when it resolved the host's OTHER physical
-        # GPU it must not replace the arch detect_host() picked for the visible one.
+        # setup.ps1's pick is not fully visible-device aware (its amd-smi branch drops comma
+        # masks), so when it resolved the host's OTHER physical GPU it must not replace the
+        # arch detect_host() picked for the visible one.
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         host = rocm_host(rocm_gfx_target = "gfx1010", rocm_gfx_targets = ["gfx1100", "gfx1010"])
         out = _apply_host_overrides(host, override_rocm_gfx = "gfx1100")
@@ -5760,8 +5738,7 @@ class TestApplyHostOverrides:
     def test_shadowing_igpu_does_not_veto_the_forwarded_dgpu(self, monkeypatch):
         # #7776: unmasked, setup skips a leading APU for the discrete card, but
         # _pick_rocm_gfx_target() still reads that APU as device 0. Discarding the forward
-        # as "advisory" would give torch gfx120X and llama.cpp the gfx1103 iGPU bundle,
-        # which then runs on the wrong card once the user follows setup's own setx advice.
+        # as "advisory" would give torch gfx120X and llama.cpp the gfx1103 iGPU bundle.
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         for _v in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_v, raising = False)
@@ -5772,7 +5749,7 @@ class TestApplyHostOverrides:
 
     def test_masked_host_still_keeps_the_probed_arch(self, monkeypatch):
         # Negative control: the repick never overrides a pin, so under a mask a differing
-        # forward is a mispick again and the probe's visible-device pick must survive.
+        # forward is a mispick again and the probe's pick survives.
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         monkeypatch.setenv("HIP_VISIBLE_DEVICES", "0")
         host = rocm_host(rocm_gfx_target = "gfx1103", rocm_gfx_targets = ["gfx1103", "gfx1200"])
@@ -5780,8 +5757,8 @@ class TestApplyHostOverrides:
         assert out.rocm_gfx_target == "gfx1103"
 
     def test_shadowing_exception_needs_a_probed_dgpu(self, monkeypatch):
-        # The exception only covers a card the probe actually saw. A family label is a
-        # bundle name, so gfx103X over a gfx1033 APU must stay advisory as before.
+        # The exception only covers a card the probe saw; a family label is a bundle
+        # name, so gfx103X over a gfx1033 APU stays advisory as before.
         monkeypatch.delenv("UNSLOTH_ROCM_GFX_ARCH", raising = False)
         for _v in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             monkeypatch.delenv(_v, raising = False)

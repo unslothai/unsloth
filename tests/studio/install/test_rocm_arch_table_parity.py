@@ -676,12 +676,12 @@ class TestShadowingIntegratedGfxParity:
 
     def test_install_llama_prebuilt_matches_install_python_stack(self):
         # _apply_host_overrides() honours setup's repick only for these arches, so drift
-        # here re-splits torch and llama.cpp across two GPUs on a mixed host.
+        # re-splits torch and llama.cpp across two GPUs on a mixed host.
         assert self._prebuilt_list() == set(stack_mod._SHADOWING_INTEGRATED_GFX)
 
     def test_strix_is_excluded_from_every_copy(self):
-        # gfx1150/1151/1152 are supported unified-memory training targets, not
-        # shadowing APUs -- listing them would silently redirect Strix hosts.
+        # Supported training targets, not shadowing APUs: listing them would silently
+        # redirect Strix hosts.
         assert not (self._STRIX & set(stack_mod._SHADOWING_INTEGRATED_GFX))
         assert not (self._STRIX & self._setup_ps1_list())
         assert not (self._STRIX & self._prebuilt_list())

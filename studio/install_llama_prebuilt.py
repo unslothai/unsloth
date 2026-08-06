@@ -93,9 +93,8 @@ WINDOWS_HIP_PREBUILT_GFX_TARGETS = frozenset(
 WINDOWS_ROCM_FAMILY_GFX_LABELS = frozenset({"gfx103x", "gfx110x", "gfx120x"})
 
 # APUs that lead HIP enumeration and shadow a discrete card (#7776). Mirrors
-# _SHADOWING_INTEGRATED_GFX in install_python_stack.py and $script:ShadowingIntegratedGfx
-# in setup.ps1; kept in step by TestShadowingIntegratedGfxParity. Duplicated rather than
-# imported because this module is also vendored standalone into the backend.
+# install_python_stack.py / setup.ps1 (TestShadowingIntegratedGfxParity keeps them in step);
+# duplicated rather than imported because this module is vendored standalone into the backend.
 SHADOWING_INTEGRATED_GFX = frozenset(
     {
         "gfx90c",  # Renoir / Cezanne
@@ -2651,9 +2650,9 @@ def _apply_host_overrides(
         )
     gfx = _normalize_forwarded_gfx(override_rocm_gfx)
     if gfx:
-        # setup.ps1 resolves all three masks through Resolve-VisibleGpuIndex, but it also
-        # applies the shadowing-iGPU preference (#7776) that _pick_rocm_gfx_target() does
-        # not, so the two can name different GPUs on a mixed APU + dGPU host.
+        # setup.ps1 resolves all three masks via Resolve-VisibleGpuIndex, but also applies the
+        # shadowing-iGPU preference (#7776) that _pick_rocm_gfx_target() does not, so the two
+        # can name different GPUs on a mixed APU + dGPU host.
         # So keep a probed active arch when the forward is only advisory, else
         # _should_auto_vulkan_for_amd_windows() reads a HIP-supported GPU the user masked
         # off and installs an unusable HIP bundle instead of Vulkan. Advisory means:
@@ -2668,10 +2667,10 @@ def _apply_host_overrides(
         _physical = _host_rocm_gfx_targets(host)
         _active = _active_rocm_gfx_target(host)
         _advisory = gfx in _physical or gfx in WINDOWS_ROCM_FAMILY_GFX_LABELS
-        # Except when setup deliberately skipped a shadowing APU for the discrete card
-        # (#7776): unmasked, _pick_rocm_gfx_target() still reads that APU as device 0, so
-        # discarding the forward gives torch the dGPU and llama.cpp the iGPU bundle. Only
-        # unmasked, since the repick itself never overrides a pin.
+        # Except when setup deliberately skipped a shadowing APU for the discrete card (#7776):
+        # unmasked, _pick_rocm_gfx_target() still reads that APU as device 0, so discarding the
+        # forward would give torch the dGPU and llama.cpp the iGPU bundle. Unmasked only, since
+        # the repick must never override a pin.
         if (
             _advisory
             and _active in SHADOWING_INTEGRATED_GFX
