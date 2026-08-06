@@ -54,9 +54,9 @@ def _env_int(name: str, default: int) -> int:
 _STOP_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_GRACE_S", 15)
 _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
-# Backstop for a run that ended on its own: reclaim the GPU from a worker wedged in
-# teardown. Not what unwedges the UI (is_run_finished does, at once), so it is generous --
-# a post-run wandb sync can legitimately take a while and must not be cut short.
+# Backstop to reclaim the GPU from a worker wedged in teardown after a run ended on its
+# own. is_run_finished already unwedges the UI, so this stays generous: a post-run wandb
+# sync can legitimately take a while and must not be cut short.
 _COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S", 120)
 
 # Watchdog DB finalize: a few short retries so a transient SQLite lock doesn't lose the
@@ -1275,8 +1275,8 @@ class TrainingBackend:
                 self._progress.status_message = self._progress.error = error_message
             elif status != "completed":
                 self._progress.status_message = "Training stopped."
-            # A completed run keeps its own message: reaping a worker wedged in
-            # teardown after the save must not report the finished run as stopped.
+            # A completed run keeps its message: reaping a wedged worker after the save
+            # must not report the finished run as stopped.
         # Create the row if a start-time create failed (no-op otherwise; skips when the pump
         # is mid-create, in which case its create-then-finalize records the run instead).
         self._ensure_db_run_created()
@@ -1752,9 +1752,8 @@ class TrainingBackend:
                 self._safe_handle_event(event)
                 continue
 
-            # Snapshot: the watchdog drops _proc as its last step, so reading the
-            # attribute twice can hit None and kill this thread. A dropped handle
-            # means the watchdog already finalized the run.
+            # Snapshot: the watchdog drops _proc as its last step, so a second read can
+            # hit None and kill this thread. A dropped handle means it already finalized.
             proc = self._proc
             if proc is None:
                 self._pump_running = False
@@ -2102,10 +2101,10 @@ class TrainingBackend:
         elif db_action == "finalize":
             self._finalize_run_in_db(**db_action_kwargs)
 
-        # Bound how long a worker that will not exit can hold the UI: until _proc dies
-        # is_training_active() stays true, so /status reports "training" and the SSE
-        # never sends its final "complete" (bar stuck at 100%). No-ops on the normal
-        # prompt exit. Outside the lock: _start_stop_watchdog takes it, not reentrant.
+        # Bound how long a worker that will not exit can hold the UI: is_training_active()
+        # stays true until _proc dies, so the SSE never sends its final "complete" (bar
+        # stuck at 100%). No-ops on a prompt exit. Outside the lock: _start_stop_watchdog
+        # takes it, not reentrant.
         if etype in ("complete", "error"):
             self._start_stop_watchdog(
                 cancel = False,

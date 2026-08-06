@@ -636,12 +636,10 @@ async def stop_training(
     """
     try:
         backend = get_training_backend()
-        # Terminal-aware like /status and the progress SSE: a run that already reported
-        # its own terminal event has saved and has nothing left to stop. Without this, a
-        # Stop landing in the poll window right after the run finished still latches
-        # _should_stop and overwrites the finished banner with "Stopping training and
-        # saving checkpoint...", which no later path clears -- /status then reports the
-        # saved run as "stopped" with that stale message for good.
+        # Terminal-aware like /status and the SSE: a run that already reported terminal has
+        # saved and has nothing left to stop. Otherwise a late Stop latches _should_stop and
+        # overwrites the finished banner with "Stopping training...", which nothing clears,
+        # so /status reports the saved run as "stopped" for good.
         is_active = backend.is_training_active() and not _run_finished(backend)
         logger.info("Stop requested: save=%s is_active=%s", body.save, is_active)
 
@@ -728,8 +726,7 @@ async def get_training_status(current_subject: str = Depends(get_current_subject
         backend = get_training_backend()
         job_id: str = getattr(backend, "current_job_id", "") or ""
 
-        # A finished run whose worker is still tearing down is not training: report the
-        # terminal phase now rather than waiting on the process to exit.
+        # A run still tearing down is not training: report terminal without waiting on exit.
         is_active = backend.is_training_active() and not _run_finished(backend)
 
         try:

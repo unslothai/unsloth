@@ -195,8 +195,7 @@ def test_stop_mid_run_still_works(monkeypatch):
 
 
 def test_surfaces_tolerate_a_backend_without_is_run_finished(monkeypatch):
-    # These routes read the backend defensively (getattr) because stand-in backends are
-    # passed in. A backend lacking the new method must fall back to liveness, not raise.
+    # A stand-in backend lacking the new method must fall back to liveness, not raise.
     class _Minimal:
         current_job_id = "job_min"
         step_history: list = []

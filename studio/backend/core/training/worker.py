@@ -2207,8 +2207,8 @@ def _run_mlx_training(event_queue, stop_queue, config):
 
     def _finish_tracking() -> None:
         # Runs before every terminal send, and in the finally for early returns, so the
-        # parent never sees "complete" while a TB/W&B flush is still outstanding. Both
-        # closes are idempotent, and the flag keeps the trailing call a no-op.
+        # parent never sees "complete" with a TB/W&B flush outstanding; the flag no-ops the
+        # repeat calls.
         if _tracking_finished[0]:
             return
         _tracking_finished[0] = True
