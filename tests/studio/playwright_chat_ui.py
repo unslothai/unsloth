@@ -1126,15 +1126,23 @@ with sync_playwright() as p:
         "Reply with exactly: rapid-second",
     )
 
-    held_first_turn = {"done": False}
+    held_first_turn = {"done": False, "seen": []}
 
     def _hold_first_turn(route):
-        if not held_first_turn["done"]:
-            held_first_turn["done"] = True
-            time.sleep(RAPID_FIRST_TURN_HOLD_S)
+        # Match on the URL here rather than in the glob. A pattern that stops
+        # matching is silent, and this step then tests nothing; the CI run that
+        # found this failed with "never intercepted" precisely because the glob
+        # missed. Intercepting everything and filtering costs one predicate per
+        # request for one step, and it cannot miss.
+        url = route.request.url
+        if "chat/completions" in url or "/inference/chat" in url:
+            held_first_turn["seen"].append(url)
+            if not held_first_turn["done"]:
+                held_first_turn["done"] = True
+                time.sleep(RAPID_FIRST_TURN_HOLD_S)
         route.continue_()
 
-    page.route("**/chat/completions*", _hold_first_turn)
+    page.route("**/*", _hold_first_turn)
     try:
         composer.fill("Reply with exactly: rapid-first")
         composer_form.evaluate("form => form.requestSubmit()")
@@ -1148,10 +1156,16 @@ with sync_playwright() as p:
             timeout = 30_000,
         )
     finally:
-        page.unroute("**/chat/completions*", _hold_first_turn)
+        page.unroute("**/*", _hold_first_turn)
 
     if not held_first_turn["done"]:
-        fail("the first turn's request was never intercepted, so it was not held")
+        # Name what did go past, so the next person does not have to guess which
+        # endpoint the composer actually calls.
+        fail(
+            "the first turn's request was never intercepted, so it was not held; "
+            f"saw {len(held_first_turn['seen'])} candidate URLs: "
+            f"{held_first_turn['seen'][:5]}"
+        )
     submit_error = page.evaluate("() => window.__unslothRapid.error")
     if submit_error:
         shoot("04-rapid-submit-no-composer")
