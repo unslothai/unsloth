@@ -1533,3 +1533,48 @@ def test_a_quoted_command_line_is_screened_when_no_command_follows(windows_git_b
     # separator, a newline, or nothing at all means no command came after it, so
     # the quoted word is the command line START runs.
     assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "notepad start rm -rf x",
+        "dir report.docx start powershell -Command ls",
+    ],
+)
+def test_start_only_launches_where_a_command_may_begin(windows_terminal, command):
+    # START is a launcher at a command position and an ordinary argument
+    # anywhere else. A program already named ahead of it receives these words,
+    # so nothing behind the START runs. Randomised differential fuzzing against
+    # the previous scan reduced to this one family, so it is pinned here.
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    ["env", "nohup", "time", "xargs", "FOO=1", "true &&", "true ;", "echo hi |"],
+)
+def test_start_still_launches_behind_a_real_prefix(windows_git_bash_only, prefix):
+    # The other half, and the reason the rule above is safe: everywhere a
+    # command really does begin, START is read as one.
+    assert "rm" in tools._find_blocked_commands(f"{prefix} start rm -rf x")
+
+
+@pytest.mark.parametrize("command", ["call bash -c pwsh", "call cmd /c powershell"])
+def test_a_call_wrapper_only_forwards_where_cmd_parses(command):
+    # CALL is a cmd builtin, so the shell behind it opens a payload only on the
+    # cmd lane. Under bash `call` is an ordinary program name and everything
+    # after it is its arguments, which run nothing.
+    def screen(posix):
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(sys, "platform", "win32")
+            patch.setattr(tools, "_shell_is_posix", lambda: posix)
+            patch.setattr(
+                tools,
+                "_BLOCKED_COMMANDS",
+                tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+            )
+            return tools._find_blocked_commands(command)
+
+    assert not screen(True)
+    assert screen(False)
