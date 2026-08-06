@@ -712,10 +712,12 @@ def _loadable_variants(identifier: str, variants) -> list:
         # confirm each -- a couple of extra calls per row, never one per
         # spelling, so a wide folder stays a handful of walks and no spelling
         # is claimed that the load would not honour.
-        base = Path(identifier)
+        # The resolver hands back an absolute path, so a relative identifier
+        # has to be resolved the same way or the relative alias is lost.
         try:
+            base = Path(identifier).expanduser().resolve()
             base = base.parent if base.is_file() else base
-            relative = Path(bound).relative_to(base).as_posix()
+            relative = Path(bound).resolve().relative_to(base).as_posix()
         except (OSError, ValueError):
             relative = Path(bound).name
         basename = Path(bound).name

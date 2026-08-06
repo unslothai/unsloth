@@ -6828,6 +6828,46 @@ def test_codex_attach_check_allows_short_shard_like_names(tmp_path, monkeypatch)
     start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(lone))
 
 
+def test_codex_attach_check_honors_loadable_on_an_empty_listing(monkeypatch):
+    # A root-blind lister can have no row for a file detect_gguf_model still
+    # resolves, so an empty answer that reports loadable is loadable.
+    _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True, "loadable": True})
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/MTP/foo-Q8_0.gguf")
+    # Empty and not loadable still fails.
+    _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True, "loadable": False})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/MTP/foo-Q8_0.gguf")
+
+
+def test_codex_preload_gate_runs_for_a_mistyped_resident_variant(fake_studio, monkeypatch):
+    # The server matches intent case-insensitively but does not strip
+    # separators, so Q4KM is not the resident Q4_K_M and really reloads.
+    inner = start._http_json
+    probed = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/api/inference/status"):
+            return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
+        if "/api/models/gguf-variants" in url:
+            probed.append(url)
+            return {"variants": [{"quant": "Q4_K_M"}], "resolved_locally": False}
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    CliRunner().invoke(
+        start.start_app,
+        ["codex", "--model", MODEL["id"], "--gguf-variant", "Q4KM", "--no-launch"],
+    )
+    assert probed, "a separator-mangled quant is not the resident one"
+
+
 def test_codex_preload_gate_defers_to_the_resident_model(fake_studio, monkeypatch):
     # An explicit knob forces the load endpoint's dedupe to answer, which reads
     # nothing from disk; gating it would reject a second session for the model

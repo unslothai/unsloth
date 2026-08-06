@@ -346,6 +346,21 @@ def test_local_answers_report_what_a_load_would_serve(in_tmp_cwd):
     assert aliased.default_variant in aliased.loadable_variants
 
 
+def test_relative_identifiers_keep_their_relative_alias(in_tmp_cwd):
+    # The resolver returns an absolute path, so a relative identifier has to be
+    # resolved the same way or the relative spelling is lost from the answer.
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    (in_tmp_cwd / "models" / "qwen" / "BF16").mkdir(parents = True)
+    (in_tmp_cwd / "models" / "qwen" / "config.json").write_text("{}")
+    (in_tmp_cwd / "models" / "qwen" / "BF16" / "model.gguf").write_bytes(b"GGUF")
+
+    offered = _variants("models/qwen").loadable_variants
+    assert "BF16/model" in offered
+    for spelling in offered:
+        assert _find_local_gguf_by_variant("models/qwen", spelling)
+
+
 def test_loadable_variants_include_the_relative_fallback_label(in_tmp_cwd):
     # The resolver accepts the snapshot-relative stem, so a client sending that
     # spelling must not be rejected by an answer that omitted it.

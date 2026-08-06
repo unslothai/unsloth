@@ -1581,9 +1581,15 @@ def _resolve_model(
                 except Exception:
                     status = {}
                 resident_variant = status.get("gguf_variant") if status.get("is_gguf") else None
-                resident_serves_request = bool(resident_variant) and _normalized_variant(
-                    resident_variant
-                ) == _normalized_variant(load.gguf_variant)
+                # Casefold, not _normalized_variant: that strips separators, so
+                # a mistyped Q4KM would read as the resident Q4_K_M and skip
+                # the gate, while the server's intent match would not dedupe it
+                # and would really reload.
+                resident_serves_request = (
+                    bool(resident_variant)
+                    and str(resident_variant).strip().lower()
+                    == str(load.gguf_variant).strip().lower()
+                )
             if not resident_serves_request:
                 preload_check(base, key, requested, load.gguf_variant)
         active_id = active.get("id") if active else None
@@ -2185,6 +2191,24 @@ def _attach_gguf_check_for_codex(
             and not info["resolved_locally"]
         ):
             continue
+        # The server can answer the gate's actual question with the load
+        # resolver itself, and that settles the round -- including an EMPTY
+        # listing, since a root-blind lister can have no row for a file
+        # detect_gguf_model still resolves. No filename grammar of ours can be
+        # more right than the code that performs the load.
+        if isinstance(variants, list) and isinstance(info, dict):
+            offered = info.get("loadable_variants")
+            if variant and isinstance(offered, list):
+                wanted_variant = str(variant).strip().lower()
+                if not any(
+                    isinstance(q, str) and q.strip().lower() == wanted_variant for q in offered
+                ):
+                    _fail_codex_variant_missing(candidate, variant, variants)
+                return
+            if not variant and isinstance(info.get("loadable"), bool):
+                if not info["loadable"]:
+                    _fail_codex_needs_gguf(candidate)
+                return
         if isinstance(variants, list) and variants:
             # The load resolves the quant only after it has torn the resident
             # model down (llama.cpp kills the old process, then downloads), so
@@ -2218,23 +2242,6 @@ def _attach_gguf_check_for_codex(
                     f"{candidate} has only incomplete GGUF weights on the server; "
                     "finish or re-copy the download before pointing Codex at it."
                 )
-            # The server can answer the gate's actual question with the load
-            # resolver itself. When it does, that settles the round: no
-            # filename grammar of ours can be more right than the code that
-            # performs the load, and every mirror below is only for servers
-            # that predate these fields.
-            offered = info.get("loadable_variants")
-            if variant and isinstance(offered, list):
-                wanted_variant = str(variant).strip().lower()
-                if not any(
-                    isinstance(q, str) and q.strip().lower() == wanted_variant for q in offered
-                ):
-                    _fail_codex_variant_missing(candidate, variant, variants)
-                return
-            if not variant and isinstance(info.get("loadable"), bool):
-                if not info["loadable"]:
-                    _fail_codex_needs_gguf(candidate)
-                return
             # A variantless local load runs detect_gguf_model, which picks from
             # the directory's own top level; rows that live only in quant
             # subdirectories need the variant that resolves them, so accepting
