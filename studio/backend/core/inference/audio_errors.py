@@ -24,7 +24,12 @@ class AudioBackendUnsupportedError(RuntimeError):
     Unlike a generation failure, no retry, shorter input or freed memory helps.
     """
 
-    def __init__(self, detail: str, *, hint: str | None = None):
+    def __init__(
+        self,
+        detail: str,
+        *,
+        hint: str | None = None,
+    ):
         self.detail = detail
         self.hint = hint
         super().__init__(detail if not hint else f"{detail} {hint}")
