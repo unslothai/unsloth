@@ -933,7 +933,6 @@ class DiffusionBackend:
         except Exception:  # noqa: BLE001 — widening the prefetch is best-effort only
             return False
 
-
     @staticmethod
     def _auto_prequant_retry_scheme(
         target: Any,
@@ -953,7 +952,6 @@ class DiffusionBackend:
             return None
         try:
             from .diffusion_transformer_quant import auto_scheme_candidates
-
             candidates = auto_scheme_candidates(target, getattr(fam, "name", None))
         except Exception:  # noqa: BLE001 -- no candidates is just "no retry"
             return None

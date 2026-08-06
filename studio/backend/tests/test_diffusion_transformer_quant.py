@@ -758,7 +758,6 @@ def test_the_candidate_list_agrees_with_the_selector_on_the_winner(monkeypatch):
     # always the head of the candidate list. A drift here would let the retry path propose a scheme
     # auto itself would refuse.
     from core.inference.diffusion_transformer_quant import auto_scheme_candidates
-
     for cc, allowed, family in (
         ((10, 0), {TQ_FP8, TQ_MXFP8, TQ_INT8}, None),
         ((10, 0), {TQ_FP8, TQ_MXFP8, TQ_INT8}, "qwen-image"),
