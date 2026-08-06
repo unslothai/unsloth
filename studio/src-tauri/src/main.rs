@@ -45,6 +45,11 @@ fn was_launched_hidden() -> bool {
 }
 
 #[tauri::command]
+fn reveal_main_window(app: tauri::AppHandle) {
+    show_main_window(&app);
+}
+
+#[tauri::command]
 fn has_saved_window_state(app: tauri::AppHandle) -> bool {
     let Ok(dir) = app.path().app_config_dir() else {
         return false;
@@ -374,6 +379,10 @@ fn setup_unix_termination_signals(app: &tauri::App) -> Result<(), Box<dyn std::e
 }
 
 fn show_main_window(app: &tauri::AppHandle) {
+    // Hidden login starts run as an accessory app (no Dock icon); restore the
+    // regular policy whenever the window is surfaced.
+    #[cfg(target_os = "macos")]
+    let _ = app.set_activation_policy(tauri::ActivationPolicy::Regular);
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.show();
         let _ = window.unminimize();
@@ -550,8 +559,13 @@ fn main() {
             native_intents::open_path_token,
             has_saved_window_state,
             was_launched_hidden,
+            reveal_main_window,
         ])
         .setup(|app| {
+            #[cfg(target_os = "macos")]
+            if was_launched_hidden() {
+                app.set_activation_policy(tauri::ActivationPolicy::Accessory);
+            }
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
