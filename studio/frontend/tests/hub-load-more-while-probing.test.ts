@@ -75,11 +75,14 @@ test("the Discover feed wires the click path through, ungated by phase", async (
   );
 });
 
-test("only a proven success counts as available", async () => {
+test("an answered status is not treated as a connectivity loss", async () => {
   const search = await read("../src/features/hub/hooks/use-discover-search.ts");
-  // A lapsed backoff is "probing", not "available". Treating it as available is
-  // what announced "Back online", retried, failed and looped.
-  assert.match(search, /const online = phase === "available";/);
+  // A 401 or 429 proves the origin answered. Folding it into the offline branch
+  // raised "Can't reach Hugging Face" and then announced "Back online" after.
+  assert.match(
+    search,
+    /const online =\s*\n?\s*phase === "available" \|\| failure\?\.kind === "http";/,
+  );
 });
 
 test("the feed does not re-run the request that just proved recovery", async () => {

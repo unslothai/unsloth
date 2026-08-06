@@ -4,6 +4,7 @@
 import { useEffect, useState } from "react";
 import { LruMap } from "@/features/hub/lib/lru-map";
 import { fetchWithTimeout } from "@/features/hub/lib/network";
+import { hubProxyFirst } from "@/features/hub/lib/hub-endpoint";
 import { useDirectHubOnline } from "@/features/hub/hooks/use-online-status";
 
 type AvatarCacheEntry =
@@ -90,6 +91,7 @@ async function fetchAvatarUrl(
 ): Promise<{ url: string | null; transient: boolean }> {
   // Hardcoded public endpoints: with a mirror configured this would disclose a
   // private owner name to the public Hub. An avatar miss is already non-fatal.
+  if (hubProxyFirst()) return { url: null, transient: false };
   const candidates = [
     `https://huggingface.co/api/organizations/${encodeURIComponent(name)}/overview`,
     `https://huggingface.co/api/users/${encodeURIComponent(name)}/overview`,

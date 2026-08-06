@@ -47,6 +47,15 @@ function describeFailure(
         body: failure.message,
         offlineLike: false,
       };
+    case "http":
+      // The request arrived and was answered, so the status is the diagnosis.
+      return {
+        title: failure.status
+          ? `Hugging Face returned ${failure.status}`
+          : "Hugging Face returned an error",
+        body: failure.message,
+        offlineLike: false,
+      };
     default:
       break;
   }

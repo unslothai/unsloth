@@ -40,3 +40,20 @@ test("every renderable Hub failure kind has a branch in the panel", async () => 
     `these kinds fall through to the generic panel: ${missing.join(", ")}`,
   );
 });
+
+test("the http branch reports the status the server actually returned", async () => {
+  // Reachable on a mirror, where discovery is proxy-first and a non-2xx from the
+  // backend is the only signal there is.
+  const states = await read("../src/features/hub/catalog/catalog-states.tsx");
+  const start = states.indexOf('case "http":');
+  assert.notEqual(start, -1);
+  const branch = states.slice(start, start + 400);
+  // The interpolation, not a bare mention: the ternary's own condition reads
+  // failure.status, so matching the name alone passed even with the number
+  // dropped from the title.
+  assert.match(
+    branch,
+    /\$\{failure\.status\}/,
+    "the status has to reach the title, not just gate it",
+  );
+});

@@ -30,7 +30,7 @@ import {
   selectActiveJob,
   useDownloadManagerStore,
 } from "../download-manager";
-import { useOnlineStatus } from "../hooks/use-online-status";
+import { useBackendHubOnline } from "../hooks/use-online-status";
 import {
   type BaseModelSource,
   type LocalModelInfo,
@@ -262,7 +262,7 @@ export function LocalOnDeviceCard({
   const hfToken = useHfTokenStore((s) => s.token);
   // Update availability is derived from the GGUF variant metadata; offline rows
   // keep the button hidden because there is no remote revision to fetch.
-  const online = useOnlineStatus();
+  const online = useBackendHubOnline();
   const { deleting, runDelete } = useCardDelete({
     action: async () => {
       if (!repoId) return;

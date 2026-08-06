@@ -2,7 +2,16 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { LruMap } from "@/features/hub/lib/lru-map";
-import { fetchWithTimeout } from "@/features/hub/lib/network";
+import {
+  fetchWithTimeout,
+  isDirectHubBlocked,
+  isHubProxyServing,
+} from "@/features/hub/lib/network";
+import {
+  hubEndpointBase,
+  hubProxyFirst,
+} from "@/features/hub/lib/hub-endpoint";
+import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { defaultUrlTransform, type UrlTransform } from "streamdown";
 
@@ -33,12 +42,67 @@ function readmePrefix(kind: ReadmeKind): string {
   return kind === "dataset" ? "datasets/" : "";
 }
 
+// Relative images and links in the card resolve against this. Hardcoding the
+// public Hub would send a mirror user's private repo path there and 404 every
+// asset, so it follows the configured endpoint.
 export function readmeBaseUrl(
   repoId: string,
   kind: ReadmeKind,
   branch: "main" | "master" = "main",
 ): string {
-  return `https://huggingface.co/${readmePrefix(kind)}${repoId}/resolve/${branch}/`;
+  return `${hubEndpointBase()}/${readmePrefix(kind)}${repoId}/resolve/${branch}/`;
+}
+
+/**
+ * Whether the card has to come from the backend: a mirror the browser must not
+ * bypass, or a browser that cannot reach the Hub while the backend demonstrably
+ * can. Exported because the card's load effect is gated on connectivity, and
+ * this route works when the direct one does not.
+ */
+// A card that fell back proves /raw is filtered, not that the origin is
+// unreachable, so it is remembered here rather than promoted to the origin-wide
+// flag: the listing, avatars and dataset sizes may all still work directly.
+let readmeFallbackProven = false;
+
+export function readmeViaBackend(): boolean {
+  // isDirectHubBlocked covers the deep link, pinned publisher and detail pane:
+  // those never run a listing, so the only proof the backend can reach the Hub
+  // is their own model-info fallback.
+  return (
+    hubProxyFirst() ||
+    isHubProxyServing() ||
+    isDirectHubBlocked() ||
+    readmeFallbackProven
+  );
+}
+
+const README_PROXY_PREFIX = "/api/hub/discovery-readme/";
+
+// Same route, two reasons to need it: a mirror we must not bypass, and a browser
+// that cannot reach the Hub while the backend can.
+async function fetchReadmeViaBackend(
+  repoId: string,
+  kind: ReadmeKind,
+  token: string | null,
+): Promise<FetchedReadme | null> {
+  const { authFetch } = await import("@/features/auth/api");
+  const resource = kind === "dataset" ? "datasets" : "models";
+  let transient = false;
+  for (const branch of ["main", "master"] as const) {
+    const params = new URLSearchParams({ repo: repoId, branch });
+    try {
+      const res = await authFetch(
+        `${README_PROXY_PREFIX}${resource}?${params}`,
+        { headers: hubTokenHeader(token) },
+      );
+      if (res.ok) return { markdown: await res.text(), branch };
+      if (res.status !== 404) transient = true;
+    } catch {
+      transient = true;
+    }
+  }
+  if (transient) throw new Error(`Failed to fetch README for ${repoId}`);
+  return null;
 }
 
 async function fetchReadmeOnce(
@@ -48,6 +112,10 @@ async function fetchReadmeOnce(
 ): Promise<FetchedReadme | null> {
   const prefix = readmePrefix(kind);
   const headers: HeadersInit = {};
+  // On a mirror the hardcoded public URL would disclose a private repo name and
+  // its token to huggingface.co, so the card comes from the backend instead,
+  // which resolves the host itself. Coverage ported from #7893.
+  if (readmeViaBackend()) return fetchReadmeViaBackend(repoId, kind, token);
   if (token) headers.Authorization = `Bearer ${token}`;
   let transient = false;
   for (const branch of ["main", "master"] as const) {
@@ -60,9 +128,6 @@ async function fetchReadmeOnce(
           headers,
         },
         README_FETCH_TIMEOUT_MS,
-        // Not the catalog's feed: a filter can block /raw alone, and without
-        // this the card's failure would name the panel and its success would
-        // retire a still-live listing diagnosis.
         { service: "other" },
       );
       if (res.ok) {
@@ -74,7 +139,19 @@ async function fetchReadmeOnce(
     }
   }
   if (transient) {
-    throw new Error(`Failed to fetch README for ${repoId}`);
+    // A filter can block just /raw, so the listing working proves nothing about
+    // this path and neither proxy flag will be set. Take the same backend route
+    // the listing and model-info paths fall back to, rather than leaving the
+    // card permanently unavailable.
+    try {
+      const served = await fetchReadmeViaBackend(repoId, kind, token);
+      // The direct attempt already opened an "other" backoff, so without
+      // recording this the gate shuts on the next card until that window lapses.
+      readmeFallbackProven = true;
+      return served;
+    } catch {
+      throw new Error(`Failed to fetch README for ${repoId}`);
+    }
   }
   return null;
 }
@@ -84,7 +161,11 @@ export function fetchReadme(
   kind: ReadmeKind = "model",
   token: string | null = null,
 ): Promise<FetchedReadme | null> {
-  const key = `${kind}::${repoId}::${fingerprintToken(token)}`;
+  // The route is part of the identity: a direct attempt that failed before the
+  // backend was proven caches a 30s rejection, and without this every
+  // backend-capable retry gets that rejection back instead of the card.
+  const via = readmeViaBackend() ? "backend" : "direct";
+  const key = `${kind}::${repoId}::${fingerprintToken(token)}::${via}`;
   const cached = cache.get(key);
   if (cached && Date.now() < cached.staleAt) return cached.promise;
 

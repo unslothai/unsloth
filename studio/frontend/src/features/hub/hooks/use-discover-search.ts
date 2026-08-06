@@ -107,11 +107,14 @@ export function useDiscoverSearch({
   direction: HfSortDirection;
   channel: HfModelSearchChannel | null;
   ownerScope: "unsloth" | "all";
+  /** Accepted for compatibility; availability is read from the network store. */
+  online?: boolean;
 }): DiscoverSearch {
-  const { phase, failure } = useHubAvailability();
-  // Only a success promotes to "available". A lapsed backoff is "probing", so a
-  // stale window can no longer announce "Back online" without a working request.
-  const online = phase === "available";
+  const { phase, failure, proxyServing } = useHubAvailability();
+  // An http failure means the origin answered, so it is not an outage: reading
+  // it as one raised "Can't reach Hugging Face" for a 401 or 429 and then
+  // announced "Back online" once a later request worked.
+  const online = phase === "available" || failure?.kind === "http";
 
   // Not gated on availability: gating disabled the paginated hook, which
   // discarded the error, so every cause rendered as the same generic panel.
@@ -222,7 +225,9 @@ export function useDiscoverSearch({
     }
   }, [online, isLoading, isLoadingMore]);
   useEffect(() => {
-    if (online && wasUnavailableRef.current && isDiscoverTab) {
+    // Not on proxy-served availability: retrySearch would build a fresh
+    // transport with no affinity and re-attempt the blocked direct request.
+    if (online && !proxyServing && wasUnavailableRef.current && isDiscoverTab) {
       const now = Date.now();
       if (now - lastReconnectAtRef.current > RECONNECT_RETRY_COOLDOWN_MS) {
         lastReconnectAtRef.current = now;
@@ -238,7 +243,7 @@ export function useDiscoverSearch({
       }
     }
     wasUnavailableRef.current = !online;
-  }, [online, retrySearch, isDiscoverTab]);
+  }, [online, proxyServing, retrySearch, isDiscoverTab]);
 
   return {
     results,

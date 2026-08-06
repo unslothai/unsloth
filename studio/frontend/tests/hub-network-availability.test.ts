@@ -13,6 +13,9 @@ import {
   getLastHubFailure,
   isDirectHubOffline,
   isHuggingFaceOffline,
+  setDirectHubBlocked,
+  setHubProxyServing,
+  shouldPreferLocalCache,
   DATASETS_SERVER_ORIGIN,
   isHubFetchError,
   isRemoteNetworkOffline,
@@ -255,6 +258,39 @@ test("sanitizing leaves a message with no trailer alone", () => {
   assert.equal(sanitizeHubErrorMessage(""), "");
 });
 
+test("a proxy URL trailer is stripped as well as a Hub one", () => {
+  // The proxy path's Response.url is same-origin but still carries the query,
+  // and the training and dataset pickers render this string raw.
+  const raw =
+    "Api error with status 502. URL: http://127.0.0.1:8888/api/hub/discovery/models?search=acme-internal&limit=100";
+  const clean = sanitizeHubErrorMessage(raw);
+  assert.ok(!clean.includes("acme-internal"));
+  assert.equal(clean, "Api error with status 502");
+});
+
+test("recordFailure false leaves the origin unmarked for a caller with a fallback", async () => {
+  reset();
+  const original = globalThis.fetch;
+  globalThis.fetch = (async () => {
+    throw new TypeError("Failed to fetch");
+  }) as typeof fetch;
+  try {
+    await assert.rejects(
+      fetchWithTimeout(`${HF}/api/models`, {}, 1_000, { recordFailure: false }),
+    );
+    assert.equal(
+      getHubPhase(HF),
+      "available",
+      "recording here re-renders consumers, whose cleanup aborts the fallback",
+    );
+    // The default still records, for callers with no fallback of their own.
+    await assert.rejects(fetchWithTimeout(`${HF}/api/models`, {}, 1_000));
+    assert.equal(getHubPhase(HF), "unavailable");
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
 test("an avatar success does not erase the discovery diagnosis", async () => {
   reset();
   markRemoteNetworkOffline(
@@ -430,6 +466,21 @@ test("the retry timer wakes on the soonest window, not the longest", async () =>
   markRemoteNetworkOnline();
 });
 
+test("a proxied catalog does not suppress the asset clients", async () => {
+  markRemoteNetworkOnline();
+  // The listing was blocked and the backend serves it. Under a per-path filter
+  // /raw and the avatar endpoint can still answer, so inheriting the feed's
+  // state here would strand metadata for as long as the catalog is proxied.
+  setHubProxyServing(true);
+  assert.equal(isHuggingFaceOffline(), true, "the feed's own view is unchanged");
+  assert.equal(
+    isDirectHubOffline(),
+    false,
+    "a blocked listing is not evidence about an asset path",
+  );
+  markRemoteNetworkOnline();
+});
+
 test("a Hub-only block does not reach the datasets-server gate", async () => {
   markRemoteNetworkOnline();
   const failure = {
@@ -446,6 +497,13 @@ test("a Hub-only block does not reach the datasets-server gate", async () => {
     "a different host's outage is not this one's",
   );
   markRemoteNetworkOnline();
+
+  // Same for the flag: it records a repo lookup on the Hub failing, which is
+  // not evidence about datasets-server.
+  setDirectHubBlocked(true);
+  assert.equal(isDirectHubOffline(), true);
+  assert.equal(isDirectHubOffline(DATASETS_SERVER_ORIGIN), false);
+  markRemoteNetworkOnline();
 });
 
 test("the cause on screen describes the window that is in force", async () => {
@@ -458,13 +516,13 @@ test("the cause on screen describes the window that is in force", async () => {
   };
   markRemoteNetworkOffline(HF, 30_000, live, "discovery");
 
-  // A concurrent request records a second cause with no window of its own.
-  // Taking that cause while keeping the longer window left the panel naming a
-  // spent failure while a different, still-live one held it unavailable.
+  // A concurrent request that already answered records its status with no
+  // window. Taking its cause while keeping the longer window left the panel
+  // naming an answered request while a live failure held it unavailable.
   markRemoteNetworkOffline(
     HF,
     0,
-    { kind: "timeout", message: "timed out", origin: HF, retryable: true },
+    { kind: "http", message: "404", origin: HF, status: 404, retryable: true },
     "discovery",
   );
   assert.equal(getHubPhase(HF, "discovery"), "unavailable");
@@ -472,6 +530,27 @@ test("the cause on screen describes the window that is in force", async () => {
     getLastHubFailure(HF, "discovery")?.kind,
     "network-opaque",
     "the older answer must not explain a newer failure's backoff",
+  );
+  markRemoteNetworkOnline();
+});
+
+test("a serving proxy is proof the server can reach the Hub", async () => {
+  markRemoteNetworkOnline();
+  const failure = {
+    kind: "network-opaque" as const,
+    message: "boom",
+    origin: HF,
+    retryable: true,
+  };
+  markRemoteNetworkOffline(HF, 30_000, failure, "other");
+  assert.equal(isHuggingFaceOffline(), true);
+  assert.equal(shouldPreferLocalCache(), true, "nothing is serving us yet");
+
+  setHubProxyServing(true);
+  assert.equal(
+    shouldPreferLocalCache(),
+    false,
+    "asking the backend for cache-only here empties the quant list it could fetch",
   );
   markRemoteNetworkOnline();
 });

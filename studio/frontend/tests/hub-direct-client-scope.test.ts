@@ -16,6 +16,8 @@ function read(path: string): Promise<string> {
   return readFile(new URL(path, import.meta.url), "utf8");
 }
 
+// gate file -> the module that issues its fetch, and the origin that fetch
+// targets. Both halves have to line up or the window is unreachable.
 // gate file -> the exported function that issues its fetch, and the origin that
 // fetch targets. Both halves have to line up or the window is unreachable.
 const DIRECT_CLIENTS = [
@@ -97,27 +99,70 @@ test("the datasets-server constant is the host that client actually calls", asyn
 });
 
 test("a repo lookup never speaks for the listing", async () => {
-  const src = await read("../src/features/hub/hooks/use-hub-model-search.ts");
-  // cachedModelInfo runs in parallel with listModels. On the feed's own key its
-  // response, a 404 included, called markRemoteNetworkOnline and deleted the
-  // listing's failure and window: the panel lost the classified cause and the
-  // phase read "available" while the listing was still blocked.
-  assert.ok(
-    bodyOf(src, "function makeHfFetch").includes('service: "other"'),
-    "the repo lookup must not retire the listing's diagnosis",
-  );
-  // And the listing itself stays on the feed's key, or nothing arms it at all.
-  const listing = bodyOf(src, "function makeSortFetch");
-  assert.ok(!listing.includes('service: "other"'), "the listing IS the feed");
-  // makeSortFetch is what listModels is handed; makeHfFetch only ever reaches
-  // cachedModelInfo, so tagging it cannot silence a real listing failure.
-  for (const call of src.matchAll(/fetch: (makeHfFetch|sortFetch)\(/g)) {
-    const before = src.slice(Math.max(0, call.index - 400), call.index);
-    const isInfo = before.lastIndexOf("cachedModelInfo(") > before.lastIndexOf("listModels(");
-    assert.equal(
-      call[1] === "makeHfFetch",
-      isInfo,
-      "makeHfFetch is for repo lookups only",
-    );
+  const transport = await read("../src/features/hub/lib/hub-transport.ts");
+  // cachedModelInfo runs in parallel with listModels. Tagged on the feed's own
+  // key, its response (a 404 included) called markRemoteNetworkOnline and
+  // deleted the listing's failure and window: the panel lost the classified
+  // cause and the phase read "available" while the listing was still blocked.
+  const at = transport.indexOf("if (!isListingUrl(raw, resource)) {");
+  assert.notEqual(at, -1, "the listing/lookup split is what decides the tag");
+  const lookup = transport.slice(at, transport.indexOf("\n  };", at));
+  for (const call of lookup.matchAll(/direct\(input, init(?:, "(\w+)")?\)/g)) {
+    assert.equal(call[1], "other", "a repo path is not the feed");
   }
+  assert.ok(lookup.includes('direct(input, init, "other")'), "at least one");
+  // And the listing itself stays on the feed's key, or nothing arms it at all.
+  const search = await read("../src/features/hub/hooks/use-hub-model-search.ts");
+  assert.ok(
+    !/service: "other"/.test(search),
+    "the hook must not override what only the transport can classify",
+  );
+});
+
+test("clients that only read ask whether the SERVER should go cache-only", async () => {
+  // These call our own backend, so what matters is the server's reach, not this
+  // browser's. A proxy currently serving discovery is positive proof the server
+  // can reach the Hub, so telling it to work offline there returned 404 for
+  // every uncached repo and emptied the quant list the user came to download.
+  for (const path of [
+    "../src/features/chat/api/chat-api.ts",
+    "../src/features/hub/inventory/api.ts",
+  ]) {
+    const src = await read(path);
+    assert.ok(src.includes("shouldPreferLocalCache"), path);
+    assert.ok(!/\bisDirectHubOffline\b/.test(src), path);
+    assert.ok(!/\bisHuggingFaceOffline\b/.test(src), path);
+  }
+
+  const network = await read("../src/features/hub/lib/network.ts");
+  const at = network.indexOf("export function shouldPreferLocalCache");
+  assert.notEqual(at, -1);
+  const body = network.slice(at, network.indexOf("\n}", at));
+  assert.ok(
+    body.includes("hubProxyServing"),
+    "a serving proxy has to veto the cache-only request",
+  );
+});
+
+test("actions the backend performs are gated on the backend's reach", async () => {
+  // These trigger listGgufVariants and an update through our own API. Gating
+  // them on browser reachability hid the update action in exactly the case the
+  // server could have applied it: a proxy already serving discovery.
+  for (const path of [
+    "../src/features/hub/catalog/gguf-download-card.tsx",
+    "../src/features/hub/catalog/local-on-device-card.tsx",
+  ]) {
+    const src = await read(path);
+    assert.ok(src.includes("useBackendHubOnline"), path);
+    assert.ok(!/\buseOnlineStatus\b/.test(src), path);
+    assert.ok(!/\buseDirectHubOnline\b/.test(src), path);
+  }
+
+  const hook = await read("../src/features/hub/hooks/use-online-status.ts");
+  const at = hook.indexOf("function getBackendOnlineSnapshot");
+  assert.notEqual(at, -1);
+  assert.ok(
+    hook.slice(at, hook.indexOf("\n}", at)).includes("shouldPreferLocalCache"),
+    "it must ask the same question the request itself asks",
+  );
 });
