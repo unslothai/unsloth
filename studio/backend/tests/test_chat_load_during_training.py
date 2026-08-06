@@ -1240,9 +1240,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertEqual(req.spec_draft_n_max, 3)
         # Omitted stays None rather than defaulting to a mode, so the estimate
         # keeps its previous behaviour for callers that do not send it.
-        self.assertIsNone(
-            ValidateModelRequest(model_path = "org/repo").speculative_type
-        )
+        self.assertIsNone(ValidateModelRequest(model_path = "org/repo").speculative_type)
 
     def test_dspark_sidecar_is_not_charged_to_a_binary_that_cannot_run_it(self):
         """The loader skips the ~11 GB fetch when llama.cpp has no usable
