@@ -1096,7 +1096,7 @@ mod tests {
     async fn authenticated_health_uses_login_bearer_and_accepts_ready_version() {
         let (port, seen, server) = http_sequence_server(vec![
             ("200 OK", r#"{"access_token":"test-access-token"}"#),
-            ("200 OK", r#"{"version":"2026.5.3"}"#),
+            ("200 OK", r#"{"version":"2026.8.4"}"#),
         ])
         .await;
 

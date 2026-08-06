@@ -1547,6 +1547,7 @@ export const ru = {
         loadingDataset: "Загрузка датасета",
         configuring: "Настройка",
         training: "Обучение",
+        finalizing: "Сохранение модели",
         completed: "Завершено",
         error: "Ошибка",
         stopped: "Остановлено",

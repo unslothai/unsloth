@@ -2,6 +2,7 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import asyncio
+import json
 import sys
 import threading
 import time
@@ -2833,8 +2834,20 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
     new_snap = repo_dir / "snapshots" / "new"
     for d in (old_snap / "transformer", new_snap / "vae"):
         d.mkdir(parents = True)
-    (old_snap / "model_index.json").write_text("{}", encoding = "utf-8")
-    (new_snap / "model_index.json").write_text("{}", encoding = "utf-8")
+    # A real manifest, not "{}": the scan reads the denoiser names off it, and one declaring none
+    # has nothing it can prove absent.
+    manifest = json.dumps(
+        {
+            "_class_name": "FluxPipeline",
+            "transformer": ["diffusers", "FluxTransformer2DModel"],
+            "vae": ["diffusers", "AutoencoderKL"],
+        }
+    )
+    (old_snap / "model_index.json").write_text(manifest, encoding = "utf-8")
+    (new_snap / "model_index.json").write_text(manifest, encoding = "utf-8")
+    # Real weights, not just the dirs: an empty transformer/ is a torn denoiser, not a present one.
+    (old_snap / "transformer" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
+    (new_snap / "vae" / "diffusion_pytorch_model.safetensors").write_bytes(b"\0" * 256)
     # Make "new" unambiguously newer than "old" for the mtime rule both this and the loader use.
     os.utime(old_snap, (1_000_000, 1_000_000))
     os.utime(new_snap, (2_000_000, 2_000_000))
@@ -2864,6 +2877,71 @@ def test_pipeline_scans_read_the_snapshot_the_loader_will_open(tmp_path):
         _rev(new_snap, ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]),
     ]
     assert scan.repo_pipeline_missing_denoiser(info) is False
+
+
+@pytest.mark.parametrize(
+    "extra_files, manifest_extra",
+    [
+        # A dual-denoiser pipeline whose second expert never landed.
+        ({}, {"transformer_2": ["diffusers", "WanTransformer3DModel"]}),
+        # A single denoiser whose shard index names two shards and got one.
+        (
+            {
+                "transformer/diffusion_pytorch_model.safetensors.index.json": json.dumps(
+                    {
+                        "weight_map": {
+                            "a": "diffusion_pytorch_model-00001-of-00002.safetensors",
+                            "b": "diffusion_pytorch_model-00002-of-00002.safetensors",
+                        }
+                    }
+                ).encode(),
+                "transformer/diffusion_pytorch_model-00001-of-00002.safetensors": b"\0" * 256,
+            },
+            {},
+        ),
+    ],
+    ids = ["dual-denoiser", "half-sharded"],
+)
+def test_both_cached_listings_agree_on_a_torn_pipeline(extra_files, manifest_extra, tmp_path):
+    # /api/models/cached-models ORs the repo-wide helper while the hub inventory calls the snapshot
+    # one, so a disagreement leaves a row the hub hides as partial still advertised as runnable.
+    import hub.utils.inventory_scan as scan
+
+    manifest = {
+        "_class_name": "WanPipeline",
+        "transformer": ["diffusers", "WanTransformer3DModel"],
+        "vae": ["diffusers", "AutoencoderKLWan"],
+    }
+    manifest.update(manifest_extra)
+    repo_dir = tmp_path / "models--Org--Repo"
+    snapshot = repo_dir / "snapshots" / "abc"
+    snapshot.mkdir(parents = True)
+    files = {
+        "model_index.json": json.dumps(manifest).encode(),
+        "vae/diffusion_pytorch_model.safetensors": b"\0" * 256,
+    }
+    if not extra_files:
+        files["transformer/diffusion_pytorch_model.safetensors"] = b"\0" * 256
+    files.update(extra_files)
+    for name, blob in files.items():
+        target = snapshot / name
+        target.parent.mkdir(parents = True, exist_ok = True)
+        target.write_bytes(blob)
+    info = SimpleNamespace(
+        repo_id = "Org/Repo",
+        repo_path = repo_dir,
+        revisions = [
+            SimpleNamespace(
+                snapshot_path = snapshot,
+                last_modified = float(snapshot.stat().st_mtime),
+                files = [
+                    SimpleNamespace(file_name = Path(n).name, file_path = snapshot / n) for n in files
+                ],
+            )
+        ],
+    )
+    assert scan.snapshot_pipeline_missing_denoiser(snapshot) is True
+    assert scan.repo_pipeline_missing_denoiser(info) is True
 
 
 def test_list_cached_models_flags_single_file_diffusion_repos(monkeypatch, tmp_path):
