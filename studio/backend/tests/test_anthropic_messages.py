@@ -2093,9 +2093,7 @@ class TestAnthropicMessagesToolRouting:
         ):
             with pytest.raises(HTTPException) as exc:
                 _drive(
-                    anthropic_messages(
-                        _basic_payload(**fields), request = None, current_subject = "t"
-                    )
+                    anthropic_messages(_basic_payload(**fields), request = None, current_subject = "t")
                 )
             assert exc.value.status_code == 400
             assert "no confirmation channel" in exc.value.detail["error"]["message"]
