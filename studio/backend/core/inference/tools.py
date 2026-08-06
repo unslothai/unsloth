@@ -2091,6 +2091,19 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             return plain
         return split
 
+    def _reported_basename(tok: str) -> str:
+        """The name to REPORT for ``tok``, cmd's path separator honoured.
+
+        The passes that fail closed name their token outright rather than look
+        it up, so nothing else normalises it for them, and os.path.basename
+        leaves a backslash path whole off Windows: `C:\\tools\\sed -rf` came
+        back refused under its whole path instead of under `sed`.
+        """
+        plain = _token_basename(tok)
+        if not lexed_posix or _cmd_payload:
+            return _cmd_path_basename(_unquote(tok), plain)
+        return plain
+
     def _whitespace_chunks() -> "list[int] | None":
         """For each token, the index of the whitespace-delimited word it came
         from, or ``None`` when the two passes do not line up.
@@ -2559,7 +2572,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 # The wrapper chain outran the hop budget, so the command that
                 # finally runs was never reached: block the chain itself rather
                 # than let `-exec env ...x33 rm -f victim ;` ride in behind it.
-                blocked.add(_token_basename(tokens[i + 1]))
+                blocked.add(_reported_basename(tokens[i + 1]))
                 continue
             exec_words = [i + 1] if child in (-1, i + 1) else [i + 1, child]
             for word in exec_words:
@@ -2737,6 +2750,28 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                     child += 1
             if _is_start_word(token) and _start_is_run(i):
                 target, _title_at = _start_target(i)
+                if (
+                    target < len(tokens)
+                    # cmd's IF, so only where cmd is the one parsing, exactly as
+                    # the main walk gates its own condition scan.
+                    and (not lexed_posix or _cmd_payload)
+                    and _unquote(tokens[target]).lower() == "if"
+                ):
+                    # START does not launch an INTERNAL command itself: it runs
+                    # the command processor over the whole tail (documented as
+                    # `cmd.exe /K`), so IF's body is a command position and
+                    # `start if 1==1 powershell` really does launch one. Read
+                    # from the raw line, since the condition parser wants the
+                    # text rather than the single word behind START. Only the
+                    # bare keyword: `if.exe` and `C:\bin\if` name a program, and
+                    # START launches those directly.
+                    offsets = _token_offsets()
+                    tail_text = (
+                        command[offsets[target] :]
+                        if offsets and target < len(offsets)
+                        else " ".join(tokens[target:])
+                    )
+                    blocked |= _screen_cmd_payload(_unwrap_quotes(tail_text.strip()))
                 if target < len(tokens) and not (
                     _URL_SCHEME_RE.match(_unquote(tokens[target]))
                     or _is_document_target(_unquote(tokens[target]))
@@ -2939,7 +2974,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 # in behind the padding: the `-exec` path fails closed on the
                 # same overflow, and a launcher that fails open instead just
                 # tells an author how long to make the chain.
-                blocked.add(_token_basename(tokens[j]))
+                blocked.add(_reported_basename(tokens[j]))
             if forwarded not in (-1, j):
                 command_indexes.add(forwarded)
                 # Screened the same way START's own target is, not merely looked
@@ -3047,17 +3082,17 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             # The script sits past the scan window, so an empty program here is
             # only ignorance: block the sed itself rather than let an
             # `e rm -rf ~` ride in behind enough padding options.
-            blocked.add(_token_basename(tokens[i]))
+            blocked.add(_reported_basename(tokens[i]))
             continue
         if _sed_program_is_a_placeholder(program):
             # find rewrites `{}` before the child starts, so this is not a
             # program that was read (see _sed_program_is_a_placeholder).
-            blocked.add(_token_basename(tokens[i]))
+            blocked.add(_reported_basename(tokens[i]))
             continue
         if i in sed_xargs and _xargs_hides_sed_program(tokens, sed_xargs[i], i, program):
             # The program comes off stdin or out of an -I placeholder, so it is
             # not in the text to read at all (see _xargs_hides_sed_program).
-            blocked.add(_token_basename(tokens[i]))
+            blocked.add(_reported_basename(tokens[i]))
             continue
         if "$" in program:
             # A program held in a variable (p='...e rm -f victim'; sed "$p" f)

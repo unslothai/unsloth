@@ -2188,3 +2188,48 @@ def test_a_group_closing_on_its_last_word_ends_the_command(windows_cmd_only):
     assert "powershell" in tools._find_blocked_commands(
         "cmd /c if 1==0 (echo no) else powershell -Command ls"
     )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "start if 1==1 powershell -Command ls",
+        "start if not 1==1 powershell -Command ls",
+        "start if exist x powershell -Command ls",
+        'start "" if 1==1 powershell -Command ls',
+        "start /b if 1==1 powershell -Command ls",
+        "cmd /c start if 1==1 powershell -Command ls",
+    ],
+)
+def test_start_hands_an_internal_command_to_the_processor(windows_cmd_only, command):
+    # START does not launch an internal cmd command itself: it runs the command
+    # processor over the whole tail, so IF's body is a command position and the
+    # launch behind the condition is real.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "start if.exe 1==1 powershell",
+        "start C:\\bin\\if 1==1 powershell",
+        "start iffy powershell",
+        "start if",
+    ],
+)
+def test_a_program_named_if_is_launched_directly(windows_cmd_only, command):
+    # Only the bare keyword goes to the processor. A suffix or a path names a
+    # program, which START launches with the rest as its arguments.
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command", ["C:\\tools\\sed -rf", "\\sed -rf", "C:\\tools\\sed.exe -rf"]
+)
+def test_a_refusal_names_the_program_not_its_path(windows_cmd_only, command):
+    # The passes that fail closed name their token outright, and nothing else
+    # normalises it for them, so a backslash path was refused whole. The name
+    # reaches the author in the refusal, so it has to be the program's.
+    blocked = tools._find_blocked_commands(command)
+    assert "sed" in blocked
+    assert not [name for name in blocked if "/" in name or "\\" in name]
