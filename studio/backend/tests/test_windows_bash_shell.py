@@ -1943,9 +1943,7 @@ def test_a_path_qualified_program_is_still_just_a_program(windows_terminal):
 def test_if_skips_its_case_insensitive_switch(windows_terminal):
     # `/i` stands between IF and its comparison, so the condition is still open
     # behind it and the body behind that still runs.
-    assert "powershell" in tools._find_blocked_commands(
-        "cmd /c if /i a==a powershell -Command ls"
-    )
+    assert "powershell" in tools._find_blocked_commands("cmd /c if /i a==a powershell -Command ls")
 
 
 @pytest.mark.parametrize(
@@ -1984,9 +1982,7 @@ def test_a_call_child_path_is_normalised(windows_cmd_only):
 def test_a_single_quote_hides_no_cmd_boundary(windows_cmd_only):
     # cmd has one string delimiter and it is not the single quote, so a lone `'`
     # is an ordinary character and the newline behind it still ends the command.
-    assert "powershell" in tools._find_blocked_commands(
-        "cmd /c echo 'hi\nstart \"\" powershell"
-    )
+    assert "powershell" in tools._find_blocked_commands('cmd /c echo \'hi\nstart "" powershell')
     # A double quote really does open a span, and the newline inside it is data.
     assert not tools._find_blocked_commands('cmd /c echo "hi\nstart "" powershell')
 
@@ -1994,7 +1990,5 @@ def test_a_single_quote_hides_no_cmd_boundary(windows_cmd_only):
 def test_a_caret_escaped_quote_opens_no_span(windows_cmd_only):
     # `^"` is a quote mark cmd prints rather than a delimiter, so the operator
     # behind it is live and the START it opens really launches.
-    assert "powershell" in tools._find_blocked_commands(
-        'cmd /c echo ^"&start "" powershell'
-    )
+    assert "powershell" in tools._find_blocked_commands('cmd /c echo ^"&start "" powershell')
     assert not tools._find_blocked_commands('cmd /c echo "&start "" powershell')

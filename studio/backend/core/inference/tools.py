@@ -1274,7 +1274,10 @@ def _ends_with_cmd_operator(token: str) -> bool:
 
 
 def _newline_command_indexes(
-    text: str, tokens: "list[str]", mode: str, cmd_quoting: bool = False
+    text: str,
+    tokens: "list[str]",
+    mode: str,
+    cmd_quoting: bool = False,
 ) -> "frozenset[int]":
     """Indexes of ``tokens`` that open a new physical line the shell will run.
 
@@ -2598,9 +2601,10 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 while child < len(tokens):
                     command_indexes.add(child)
                     call_child_indexes.add(child)
-                    if _token_basename(
-                        _unwrap_quotes(tokens[child]).replace("\\", "/")
-                    ) not in _CMD_ONLY_PREFIXES:
+                    if (
+                        _token_basename(_unwrap_quotes(tokens[child]).replace("\\", "/"))
+                        not in _CMD_ONLY_PREFIXES
+                    ):
                         break
                     child += 1
             elif (
@@ -2622,9 +2626,10 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 while child < len(tokens):
                     command_indexes.add(child)
                     call_child_indexes.add(child)
-                    if _token_basename(
-                        _unwrap_quotes(tokens[child]).replace("\\", "/")
-                    ) not in _CMD_ONLY_PREFIXES:
+                    if (
+                        _token_basename(_unwrap_quotes(tokens[child]).replace("\\", "/"))
+                        not in _CMD_ONLY_PREFIXES
+                    ):
                         break
                     child += 1
             if _is_start_word(token) and _start_is_run(i):
