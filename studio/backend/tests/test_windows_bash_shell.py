@@ -2168,9 +2168,7 @@ def test_an_operator_inside_a_quoted_path_is_path_text(windows_terminal, command
 def test_a_real_chain_behind_a_path_still_chains(windows_terminal):
     # The other half: whitespace means the payload is not one path, so the
     # operator really does open a second command.
-    assert "rm" in tools._find_blocked_commands(
-        'cmd /c "C:\\tools\\notepad.exe&rm -rf x"'
-    )
+    assert "rm" in tools._find_blocked_commands('cmd /c "C:\\tools\\notepad.exe&rm -rf x"')
 
 
 @pytest.mark.parametrize(

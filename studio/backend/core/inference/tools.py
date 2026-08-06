@@ -1802,9 +1802,10 @@ def _quoted_program_word(payload: str) -> str:
         # a span whose opening mark sat on an earlier word survives it, and it
         # hid the suffix: `"C:\Program Files\cmd.exe"` walked past its own
         # `.exe` and reported the folder in front of it.
-        if os.path.splitext(os.path.basename(bare.replace("\\", "/").rstrip('"')))[
-            1
-        ].lower() in _WINDOWS_EXE_SUFFIXES:
+        if (
+            os.path.splitext(os.path.basename(bare.replace("\\", "/").rstrip('"')))[1].lower()
+            in _WINDOWS_EXE_SUFFIXES
+        ):
             return " ".join(program)
     # PATHEXT makes the suffix optional, so a path that never carries one is
     # still a program: `cmd /c "C:\\tools.v2\\notepad -x"` launches notepad.
@@ -2031,9 +2032,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 # The closing mark of the span belongs to the program, not to
                 # the arguments behind it.
                 consumed += 1
-            return found | _find_blocked_commands(
-                program_stem + text[consumed:], _cmd_payload = True
-            )
+            return found | _find_blocked_commands(program_stem + text[consumed:], _cmd_payload = True)
         if any(char.isspace() or char in "\"'" for char in text):
             return _find_blocked_commands(text, _cmd_payload = True)
         base = _token_basename(text)
