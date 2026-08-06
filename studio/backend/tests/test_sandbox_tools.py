@@ -311,7 +311,13 @@ class TestSandboxEnvIsolation:
         assert env["PYTHONPATH"].endswith("sandbox_site")
         assert "leak-me" not in env["PYTHONPATH"]
 
-    def _trusted_git_bash(self, monkeypatch, tmp_path, *, usr_bin = True):
+    def _trusted_git_bash(
+        self,
+        monkeypatch,
+        tmp_path,
+        *,
+        usr_bin = True,
+    ):
         """Lay out a Program Files Git install and point the resolvers at it."""
         import core.inference.tools as tools_mod
 
@@ -350,7 +356,9 @@ class TestSandboxEnvIsolation:
         from core.inference.tools import _build_safe_env, _windows_bash_userland_dirs
 
         monkeypatch.setattr(sys, "platform", "win32")
-        monkeypatch.setattr(tools_mod, "_windows_program_roots", lambda: [str(tmp_path / "Program Files")])
+        monkeypatch.setattr(
+            tools_mod, "_windows_program_roots", lambda: [str(tmp_path / "Program Files")]
+        )
         shim = tmp_path / "scoop" / "shims"
         shim.mkdir(parents = True)
         monkeypatch.setattr(tools_mod, "_windows_bash", lambda: str(shim / "bash.exe"))
