@@ -2065,6 +2065,41 @@ class TestAnthropicMessagesToolRouting:
             _drive(anthropic_messages(payload, request = None, current_subject = "t"))
             assert backend.calls[0][0] == "tools"
 
+    def test_the_process_tool_default_alone_does_not_trip_the_permission_gate(self, monkeypatch):
+        """`unsloth studio run` resolves the policy to on unless --disable-tools, so reading it
+        as "this request selected server tools" rejected every plain Messages request on a
+        default server: the catalog holds terminal, and permission_mode is omitted."""
+        import routes.inference as inf_mod
+        from fastapi.responses import JSONResponse
+
+        backend = _mock_backend(monkeypatch)
+        passthrough_calls = []
+
+        async def _passthrough(*args, **kwargs):
+            passthrough_calls.append(args)
+            return JSONResponse({"type": "message", "content": []})
+
+        monkeypatch.setattr(inf_mod, "_anthropic_passthrough_non_streaming", _passthrough)
+        set_tool_policy(True)
+
+        _drive(anthropic_messages(_basic_payload(), request = None, current_subject = "t"))
+        assert passthrough_calls or backend.calls, "a plain chat request must still be served"
+
+        # The same default must not stop gating a request that does ask for server tools.
+        for fields in (
+            {"enable_tools": True},
+            {"enable_tools": True, "permission_mode": "ask"},
+            {"tools": [{"type": "terminal", "name": "terminal"}]},
+        ):
+            with pytest.raises(HTTPException) as exc:
+                _drive(
+                    anthropic_messages(
+                        _basic_payload(**fields), request = None, current_subject = "t"
+                    )
+                )
+            assert exc.value.status_code == 400
+            assert "no confirmation channel" in exc.value.detail["error"]["message"]
+
     def test_render_html_gated_for_server_tools(self, monkeypatch):
         # render_html is no longer unconditionally safe: a networked canvas prompts
         # in auto and this channel cannot present that gate, so selecting it under

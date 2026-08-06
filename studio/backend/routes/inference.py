@@ -15618,10 +15618,19 @@ async def anthropic_messages(
     # chat. It must not steal an explicit Anthropic client-tool catalog (Claude
     # Code's Write/Edit/Bash tools) and turn it into Unsloth's local tool loop.
     # An explicit per-request server-tool ask was rejected as mixed mode above.
-    _enable_pre = False if _has_client_tool else _effective_enable_tools(payload)
+    # That default must not count as *this request* selecting server tools either:
+    # `unsloth studio run` resolves the policy to on unless --disable-tools, so
+    # reading it as a selection rejected every plain Messages request on a default
+    # server, the catalog holding terminal/python and permission_mode being omitted.
+    # Only an explicit ask reaches the gate; --disable-tools still vetoes both forms.
+    _policy_pre = _effective_enable_tools(payload)
+    _asked_pre = payload.enable_tools is True or bool(getattr(payload, "mcp_enabled", False))
     _server_tools_requested_pre = (
-        _enable_pre or (_enable_pre is None and bool(requested_studio_tools))
-    ) and not _anthropic_request_has_image(payload)
+        not _has_client_tool
+        and _policy_pre is not False
+        and (_asked_pre or bool(requested_studio_tools))
+        and not _anthropic_request_has_image(payload)
+    )
     if _server_tools_requested_pre:
         from core.inference.tools import ALL_TOOLS as _ALL_TOOLS_PRE
 
