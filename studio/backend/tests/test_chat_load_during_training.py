@@ -1180,7 +1180,6 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         """The sizing gate asks the binary whether it can run draft-dspark, so the
         probe must be stubbed or these assertions track the host's llama.cpp."""
         from core.inference.llama_cpp import LlamaCppBackend
-
         return patch.object(
             LlamaCppBackend,
             "probe_server_capabilities",
@@ -1251,9 +1250,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                         cfg, speculative_type = "dspark"
                     )
                 with self._dspark_capable(True):
-                    capable = self.route._estimate_gguf_required_gb(
-                        cfg, speculative_type = "dspark"
-                    )
+                    capable = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
         self.assertAlmostEqual(incapable, 2000 / (1024**3), places = 9)
         self.assertAlmostEqual(capable, 5000 / (1024**3), places = 9)
 
@@ -1279,9 +1276,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             )
             with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
                 with self._dspark_capable():
-                    gb = self.route._estimate_gguf_required_gb(
-                        cfg, speculative_type = "dspark"
-                    )
+                    gb = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
         self.assertAlmostEqual(gb, 9000 / (1024**3), places = 9)  # 2000 + 3000 + 4000
 
     def test_remote_threads_token_and_adds_companions(self):
