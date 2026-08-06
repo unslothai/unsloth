@@ -6619,9 +6619,7 @@ async def _load_model_impl(
 
             # An Images/Video acquire can land in the gap between the acquire above and load_model clearing the cancel event, so
             # its cancellation is lost. Ownership survives that gap, so this load undoes itself. A zero-VRAM load never yields.
-            # A Vulkan crash recovery can turn an automatic GPU request into a
-            # confirmed zero-VRAM server only after startup. Reconcile the
-            # admission decision with what actually loaded before ownership checks.
+            # Recovery may turn an automatic GPU request into a zero-VRAM load.
             if llama_backend.holds_no_vram:
                 chat_load_needs_gpu = False
             if chat_load_needs_gpu and current_owner() != CHAT:
@@ -6634,8 +6632,7 @@ async def _load_model_impl(
                     ),
                 )
             if not chat_load_needs_gpu:
-                # Zero-VRAM load done, whether requested up front or recovered
-                # after a Vulkan crash, so drop a now-stale CHAT claim.
+                # Drop the stale CHAT claim after any zero-VRAM load.
                 await asyncio.to_thread(release, CHAT)
 
             logger.info(

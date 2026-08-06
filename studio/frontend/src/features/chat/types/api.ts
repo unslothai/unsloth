@@ -3,6 +3,8 @@
 
 import type { TransformersUpgradeInfo } from "@/features/transformers-upgrade";
 
+export type CpuFallbackReason = "vulkan_startup_crash";
+
 export interface BackendModelDetails {
   id: string;
   name?: string | null;
@@ -209,7 +211,7 @@ export interface LoadModelResponse {
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set when an automatic Vulkan startup crash was recovered by loading on CPU. */
-  cpu_fallback_reason?: "vulkan_startup_crash" | null;
+  cpu_fallback_reason?: CpuFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   n_layers?: number | null;
@@ -283,7 +285,7 @@ export interface InferenceStatusResponse {
   gpu_memory_mode?: "auto" | "manual";
   gpu_layers?: number;
   /** Set while the active model is a recovered CPU-only Vulkan load. */
-  cpu_fallback_reason?: "vulkan_startup_crash" | null;
+  cpu_fallback_reason?: CpuFallbackReason | null;
   n_cpu_moe?: number;
   tensor_split?: number[] | null;
   /** n_ctx the active GGUF load was invoked with (0 = Auto); re-seeds a

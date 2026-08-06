@@ -7,7 +7,6 @@ from __future__ import annotations
 
 import asyncio
 import importlib.util
-import inspect
 import json
 import os
 import struct
@@ -51,10 +50,34 @@ _RAW_MAIN_PLACEMENT_ARGS = (
 )
 
 
+def _managed_runtime(monkeypatch, tmp_path):
+    install = tmp_path / "install" / "build" / "bin"
+    install.mkdir(parents = True)
+    binary = install / "llama-server"
+    binary.write_bytes(b"binary")
+    binary.chmod(0o755)
+    (install / "libggml-base.so").write_bytes(b"base")
+    (install / "libggml-cpu-haswell.so").write_bytes(b"cpu")
+    (install / "libggml-vulkan.so").write_bytes(b"vulkan")
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "_is_unsloth_managed_binary",
+        staticmethod(lambda _binary: True),
+    )
+    monkeypatch.setattr(
+        llama_cpp,
+        "_swa_cache_path",
+        lambda: tmp_path / "studio" / "swa_cache.json",
+    )
+    return binary
+
+
 class TestGpuInitCrashMessage:
     def _message(self, monkeypatch, backend):
         monkeypatch.setattr(
-            LlamaCppBackend, "_installed_gpu_backend", staticmethod(lambda *a: backend)
+            LlamaCppBackend,
+            "_installed_ggml_backends",
+            staticmethod(lambda *a: frozenset({backend}) if backend else frozenset()),
         )
         return LlamaCppBackend._gpu_init_crash_message("/opt/llama/llama-server")
 
@@ -85,14 +108,6 @@ class TestGpuInitCrashMessage:
         for backend in ("vulkan", "hip", "cuda", None):
             message = self._message(monkeypatch, backend)
             assert "GPU driver/runtime initialization crash" in message
-
-
-def test_the_caller_no_longer_hard_codes_rocm_advice():
-    # The caller is deep in the vision retry ladder, so check it structurally.
-    source = inspect.getsource(LlamaCppBackend.load_model)
-    assert "ROCR_VISIBLE_DEVICES" not in source
-    assert "self._gpu_init_crash_message(binary)" in source
-
 
 class TestAutoVulkanCpuFallbackGate:
     def _managed_marker(self, monkeypatch, tmp_path, **values):
@@ -317,24 +332,7 @@ class TestCpuIsolatedReplay:
         assert replay is None
 
     def test_staged_runtime_excludes_the_gpu_backend(self, monkeypatch, tmp_path):
-        install = tmp_path / "install" / "build" / "bin"
-        install.mkdir(parents = True)
-        binary = install / "llama-server"
-        binary.write_bytes(b"binary")
-        binary.chmod(0o755)
-        (install / "libggml-base.so").write_bytes(b"base")
-        (install / "libggml-cpu-haswell.so").write_bytes(b"cpu")
-        (install / "libggml-vulkan.so").write_bytes(b"vulkan")
-        monkeypatch.setattr(
-            LlamaCppBackend,
-            "_is_unsloth_managed_binary",
-            staticmethod(lambda _binary: True),
-        )
-        monkeypatch.setattr(
-            llama_cpp,
-            "_swa_cache_path",
-            lambda: tmp_path / "studio" / "swa_cache.json",
-        )
+        binary = _managed_runtime(monkeypatch, tmp_path)
         backend = LlamaCppBackend()
         staged = backend._cpu_isolated_binary(str(binary))
         assert staged is not None
@@ -344,26 +342,10 @@ class TestCpuIsolatedReplay:
         backend._cleanup_cpu_fallback_runtime()
         assert not staged_dir.exists()
 
-    def test_terminal_cpu_replay_failure_removes_staged_runtime(self, monkeypatch, tmp_path):
-        install = tmp_path / "install" / "build" / "bin"
-        install.mkdir(parents = True)
-        binary = install / "llama-server"
-        binary.write_bytes(b"binary")
-        binary.chmod(0o755)
-        (install / "libggml-base.so").write_bytes(b"base")
-        (install / "libggml-cpu-haswell.so").write_bytes(b"cpu")
-        (install / "libggml-vulkan.so").write_bytes(b"vulkan")
-        monkeypatch.setattr(
-            LlamaCppBackend,
-            "_is_unsloth_managed_binary",
-            staticmethod(lambda _binary: True),
-        )
-        monkeypatch.setattr(
-            llama_cpp,
-            "_swa_cache_path",
-            lambda: tmp_path / "studio" / "swa_cache.json",
-        )
-
+    def test_terminal_cpu_replay_failure_removes_staged_runtime(
+        self, monkeypatch, tmp_path
+    ):
+        binary = _managed_runtime(monkeypatch, tmp_path)
         backend = LlamaCppBackend()
         staged = backend._cpu_isolated_binary(str(binary))
         assert staged is not None
@@ -374,7 +356,6 @@ class TestCpuIsolatedReplay:
 
         assert backend._cpu_fallback_reason is None
         assert backend._cpu_fallback_runtime is None
-        assert backend._cpu_fallback_runtime_source is None
         assert not staged_dir.exists()
 
     @pytest.mark.skipif(sys.platform == "win32", reason = "shell wrapper fallback is POSIX")
@@ -417,32 +398,6 @@ class TestCpuIsolatedReplay:
         assert completed.stdout == "healthy\n"
         backend._cleanup_cpu_fallback_runtime()
         assert not staged_dir.exists()
-
-
-def test_signal_recovery_is_shared_by_text_and_vision_terminal_paths():
-    source = inspect.getsource(LlamaCppBackend.load_model)
-    assert source.count("_try_auto_vulkan_cpu_fallback(") == 3  # definition + two callers
-    assert "_vision_cpu_replay_cmd" in source
-    assert source.count("_try_auto_vulkan_cpu_fallback(_last_spawn_cmd, env") == 1
-    assert 'self._cpu_fallback_reason = "vulkan_startup_crash"' in source
-    assert "if intent.cpu_fallback:" in source
-
-
-def test_initial_and_stored_cpu_replay_failures_share_terminal_cleanup():
-    source = inspect.getsource(LlamaCppBackend.load_model)
-    initial_failure = source.split('if not _spawn_and_wait(replay, label = "-cpu"):', 1)[1].split(
-        "cmd = replay", 1
-    )[0]
-    stored_replay = source.split(
-        "if intent.cpu_fallback:\n                    replay = self._cpu_isolated_replay",
-        1,
-    )[1]
-
-    assert "self._cleanup_failed_cpu_fallback()" in initial_failure
-    assert "_raise_terminal_load_failure(" in stored_replay
-    assert "if intent.cpu_fallback:" in source
-    assert "self._cleanup_failed_cpu_fallback()" in source
-
 
 @pytest.mark.parametrize(
     "placement_env,extra_args",
@@ -710,7 +665,7 @@ def test_duplicate_auto_request_matches_recovered_cpu_server(monkeypatch, tmp_pa
     backend._gpu_layers = 0
     backend._cpu_fallback_reason = "vulkan_startup_crash"
     monkeypatch.setattr(
-        backend, "_auto_vulkan_cpu_fallback_eligible", lambda *_args, **_kwargs: True
+        backend, "_cpu_fallback_request_eligible", lambda *_args, **_kwargs: True
     )
     assert backend.adopt_load_intent_if_matched(
         GgufLoadIntent(

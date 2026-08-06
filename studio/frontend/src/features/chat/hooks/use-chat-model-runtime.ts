@@ -63,9 +63,7 @@ import {
 import { recordLastLocalModelLoad } from "../utils/last-local-model-load";
 import { refreshContextUsage } from "../utils/refresh-context-usage";
 import { ensureGpuDeviceCache } from "@/hooks/use-gpu-info";
-import {
-  isMultimodalResponse,
-} from "../types/api";
+import { type CpuFallbackReason, isMultimodalResponse } from "../types/api";
 import { isExternalModelId } from "../external-providers";
 import {
   applyPerModelConfigToRuntime,
@@ -762,7 +760,7 @@ export function useChatModelRuntime() {
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
       const postLoadRefresh = { needed: false };
-      let cpuFallbackReason: "vulkan_startup_crash" | null = null;
+      let cpuFallbackReason: CpuFallbackReason | null = null;
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -1758,15 +1756,14 @@ export function useChatModelRuntime() {
           const loadedDescription = cpuFallbackReason
             ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
             : undefined;
+          const showLoadedToast = cpuFallbackReason ? toast.warning : toast.success;
           if (loadToastDismissedRef.current) {
-            const showLoadedToast = cpuFallbackReason ? toast.warning : toast.success;
             showLoadedToast(loadedTitle, {
               description: loadedDescription,
               closeButton: true,
               duration: 8000,
             });
           } else {
-            const showLoadedToast = cpuFallbackReason ? toast.warning : toast.success;
             showLoadedToast(loadedTitle, {
               id: toastId,
               description: loadedDescription,
