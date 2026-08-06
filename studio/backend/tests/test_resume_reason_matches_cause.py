@@ -37,8 +37,7 @@ def _row(tmp_path, **overrides):
         "dataset_name": "yahma/alpaca-cleaned",
         "started_at": "2026-08-06T00:00:00Z",
         "output_dir": str(tmp_path / "run-1"),
-        # A real run's config: the model it trained plus exactly what
-        # initialize_resource_provenance writes at the start.
+        # A real run's config: the trained model plus what initialize_resource_provenance writes.
         "config_json": json.dumps(
             {
                 "model_name": "unsloth/Llama-3.2-1B-Instruct",

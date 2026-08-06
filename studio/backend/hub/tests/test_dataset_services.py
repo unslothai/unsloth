@@ -219,8 +219,7 @@ def test_delete_cached_dataset_scopes_delete_to_selected_root(monkeypatch, tmp_p
     result = cache_inventory._delete_cached_dataset_blocking("Org/Data")
 
     assert result == {"status": "deleted", "repo_id": "Org/Data"}
-    # Only the selected (active) cache's revision is deleted; the previous
-    # cache's copy is never touched.
+    # Only the selected cache's revision is deleted; the other cache's copy stays.
     assert calls == ["active"]
     assert not (target_hub / "datasets--Org--Data").exists()
     assert (other_hub / "datasets--Org--Data").exists()

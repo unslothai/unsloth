@@ -20,8 +20,7 @@ _TESTS_DIR = Path(__file__).resolve().parent
 if str(_TESTS_DIR) not in sys.path:
     sys.path.insert(0, str(_TESTS_DIR))
 
-# Reuse the absolute-paths test's stub harness for loading core/export/export.py
-# without torch/unsloth.
+# Reuse the absolute-paths stub harness: loads core/export/export.py without torch/unsloth.
 from test_export_absolute_paths import (  # noqa: E402
     _install_export_backend_stubs,
     _load_module,
@@ -65,8 +64,7 @@ def test_non_balanced_resolution_keeps_loader_default(monkeypatch):
 
 
 def test_uuid_mig_mask_falls_back_to_count_detection(monkeypatch):
-    # UUID/MIG masks resolve to NO numeric ids ([]), but get_device_map(None) still
-    # detects >1 GPU, so the empty list must route there, not to the loader default.
+    # UUID/MIG masks resolve to no numeric ids, but get_device_map(None) still sees >1 GPU.
     mod = _export_mod(monkeypatch)
     monkeypatch.setattr(mod, "_IS_MLX", False)
     hw = sys.modules["utils.hardware"]
@@ -248,8 +246,7 @@ def _run_spill_loader(monkeypatch, tmp_path, device_map_kwargs):
 
 
 def test_successful_load_that_offloads_to_cpu_retries_single_device(monkeypatch, tmp_path):
-    # Nothing raises, so only hf_device_map catches it; the parameters would otherwise
-    # stay on meta and kill the export inside safetensors.
+    # Nothing raises, so only hf_device_map catches it; otherwise the params stay on meta and kill the export.
     ok, message, calls = _run_spill_loader(monkeypatch, tmp_path, {"device_map": "balanced"})
     assert ok, message
     assert len(calls) == 2

@@ -132,8 +132,7 @@ def test_rejected_paths_are_client_errors(dataset_name, expected, isolated_studi
     fault, and must never reach the Hub. Matches the hub check-format twin."""
     from utils.paths import dataset_uploads_root
 
-    # Anchor of the studio home: absolute on POSIX ("/x") and Windows ("C:\\x").
-    # A hardcoded "/etc/x" is relative on Windows and misses the branch entirely.
+    # Anchor on the studio home: a hardcoded "/etc/x" is relative on Windows and misses the branch.
     error = _check(
         dataset_name.format(
             anchor = isolated_studio_home.anchor,

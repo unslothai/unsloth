@@ -62,14 +62,13 @@ export function HfDatasetSubsetSplitSelectors({
   useEffect(() => {
     if (hfSubsets.length === 0) return;
 
-    // --- subset ---
     if (!datasetSubset || !hfSubsets.includes(datasetSubset)) {
       const pick = hfSubsets.includes("default") ? "default" : hfSubsets[0];
       setDatasetSubset(pick);
       return;
     }
 
-    // --- split (only once subset is settled) ---
+    // Split, only once the subset is settled.
     if (hfSplits.length === 0) return;
     if (!datasetSplit || !hfSplits.includes(datasetSplit)) {
       const pick = hfSplits.includes("train") ? "train" : hfSplits[0];

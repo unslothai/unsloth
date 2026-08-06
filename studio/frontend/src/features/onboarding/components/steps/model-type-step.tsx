@@ -221,7 +221,7 @@ export function ModelTypeStep(): ReactElement {
             )}
           >
             <CardContent className="flex items-center gap-4 py-4">
-              {/* Invisible spacer matching RadioGroupItem (size-4) in other cards */}
+              {/* Spacer matching RadioGroupItem in the other cards */}
               <div className="size-4 shrink-0" aria-hidden="true" />
               <div
                 className={cn(

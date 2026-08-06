@@ -533,8 +533,7 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
             totalSteps !== null && totalSteps > 0
               ? Math.max(totalSteps, state.totalSteps)
               : state.totalSteps,
-          // A null loss at a new step means the backend reported a non-finite
-          // loss; clear the display instead of keeping the stale value.
+          // A null loss at a new step means non-finite; clear the display rather than keep a stale value.
           currentLoss:
             currentLoss ??
             (step > state.currentStep ? null : state.currentLoss),

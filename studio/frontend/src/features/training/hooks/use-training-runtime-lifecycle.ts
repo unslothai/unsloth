@@ -354,8 +354,7 @@ export function useTrainingRuntimeLifecycle(): void {
       }
     }, METRICS_POLL_INTERVAL_MS);
 
-    // Low-frequency background poll to recover from failed hydration or detect
-    // out-of-band state changes (e.g. training started from another client).
+    // Low-frequency poll: recovers failed hydration and catches out-of-band state changes.
     const idleTimer = setInterval(() => {
       const s = runtimeStore.getState();
       if (!s.hasHydrated || s.isHydrating) {

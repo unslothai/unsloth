@@ -43,8 +43,7 @@ interface RemoteCodeScanResponse {
   provider?: string | null;
 }
 
-/** Scan a model's auto_map code for the consent dialog (backend reads config + repo
- *  .py, never loads the model). Token rides in the POST body, never the URL. */
+/** Scan a model's auto_map code for the consent dialog; the token rides in the POST body, never the URL. */
 export async function getRemoteCodeScan(
   modelName: string,
   hfToken?: string | null,
@@ -113,8 +112,7 @@ export async function getRemoteCodeScan(
   };
 }
 
-/** Decline cleanup: purge what the scan downloaded. Fire-and-forget; the backend only
- *  removes a metadata-only cache entry it created (never weights, a loaded model, or a local path). */
+/** Decline cleanup: fire-and-forget purge of the metadata-only cache entry the scan created (never weights or a local path). */
 export async function discardRemoteCodeDownload(
   modelName: string,
 ): Promise<void> {

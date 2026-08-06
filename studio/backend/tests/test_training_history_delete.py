@@ -616,8 +616,7 @@ def test_delete_artifacts_uses_thread_offload(monkeypatch, tmp_path):
 
     async def fake_to_thread(function, *args):
         calls.append((function, args))
-        # Staging returns (outcome, original, staged); the purge that follows the row
-        # delete returns nothing.
+        # Staging returns (outcome, original, staged); the purge after the row delete returns nothing.
         return ("deleted", None, None) if len(calls) == 1 else None
 
     monkeypatch.setattr(training_history.asyncio, "to_thread", fake_to_thread)

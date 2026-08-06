@@ -14,8 +14,7 @@ from pathlib import Path
 
 _BACKEND = Path(__file__).resolve().parent.parent
 
-# Probes read Hub config to classify a model; a token-less call 404s on a gated repo.
-# Scan callers under routes/ and core/ (probe definitions live in utils/).
+# A token-less probe 404s on a gated repo; scan callers under routes/ and core/ (probes live in utils/).
 _PROBE_FUNCS = {"is_vision_model", "is_embedding_model", "detect_audio_type"}
 _PROBE_CALLER_ROOTS = ("routes", "core")
 
@@ -71,8 +70,7 @@ def test_capability_detection_caches_are_token_aware():
     """Every capability cache is keyed by (model, token_fingerprint) so an unauthenticated
     miss cannot poison a later authenticated lookup (the audio-cache regression)."""
     src = (_BACKEND / "utils" / "models" / "model_config.py").read_text(encoding = "utf-8")
-    # Resolve type aliases first: a cache annotated with an alias is still tuple-keyed, and
-    # matching the literal "Dict[Tuple" fails the moment the key type is given a name.
+    # Resolve type aliases first: an aliased cache is still tuple-keyed, so matching "Dict[Tuple" fails.
     tuple_aliases = {
         line.split("=", 1)[0].strip()
         for line in src.splitlines()

@@ -127,7 +127,7 @@ export async function checkEmbeddingModel(
     headers: hubTokenHeader(hfToken?.trim() || null),
   });
   if (!response.ok) {
-    // If the check fails (e.g. network error), default to non-embedding
+    // Check failure (e.g. network error): default to non-embedding.
     return false;
   }
   const data = (await response.json()) as EmbeddingCheckResponse;

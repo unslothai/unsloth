@@ -61,8 +61,7 @@ def test_the_import_fallback_binds_the_same_names(module_path):
             fallback = _import_map(ast.Module(body = handler.body, type_ignores = []))
             for module, names in primary.items():
                 if module not in fallback:
-                    # The fallback may legitimately skip a module entirely; what it must
-                    # not do is import the same module with fewer names.
+                    # Skipping a module is fine; importing the same module with fewer names is not.
                     continue
                 missing = names - fallback[module]
                 assert not missing, (
