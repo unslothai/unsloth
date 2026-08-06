@@ -408,7 +408,7 @@ test("the replay at hydration fits the context already published", async () => {
     },
     paramsByModel: {},
     // What the status published for the reduced context it loaded with.
-    ggufContextLength: 8192,
+    loadedContextLength: 8192,
     settingsHydrated: false,
   });
   const hydrating = useChatRuntimeStore.getState().hydratePersistedSettings();
@@ -645,12 +645,12 @@ test("turning the memory off is persisted and hydrated back", async () => {
 });
 
 // A safetensors load publishes its context through the cap, not through
-// ggufContextLength, which is null for everything that is not a GGUF.
+// loadedContextLength, which a backend that sizes no window leaves null.
 test("a safetensors context also caps the hydration replay", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: false,
     rememberParamsPerModel: true,
-    ggufContextLength: null,
+    loadedContextLength: null,
     paramsByModel: {},
     params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
   });
@@ -684,7 +684,7 @@ test("a kept context does not follow the next model", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: false,
     rememberParamsPerModel: true,
-    ggufContextLength: null,
+    loadedContextLength: null,
     paramsByModel: {},
     params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
   });
@@ -758,7 +758,7 @@ test("the loaded context caps a global budget with no entry to replay", async ()
   useChatRuntimeStore.setState({
     settingsHydrated: false,
     rememberParamsPerModel: true,
-    ggufContextLength: null,
+    loadedContextLength: null,
     paramsByModel: {},
     params: { ...useChatRuntimeStore.getState().params, checkpoint: LLAMA },
   });
@@ -925,13 +925,13 @@ test("two edits to one model inside a debounce window both survive", async () =>
   );
 });
 
-// Picking an external model leaves the local one resident, so ggufContextLength
+// Picking an external model leaves the local one resident, so loadedContextLength
 // goes on describing a model that has nothing to do with the pick.
 test("a resident GGUF context does not cap an external model", async () => {
   useChatRuntimeStore.setState({
     settingsHydrated: false,
     rememberParamsPerModel: true,
-    ggufContextLength: 8192,
+    loadedContextLength: 8192,
     paramsByModel: {},
     params: {
       ...useChatRuntimeStore.getState().params,
@@ -945,7 +945,7 @@ test("a resident GGUF context does not cap an external model", async () => {
   // A local checkpoint with the same resident context is still capped.
   useChatRuntimeStore.setState({
     settingsHydrated: false,
-    ggufContextLength: 8192,
+    loadedContextLength: 8192,
     paramsByModel: {},
     params: { ...useChatRuntimeStore.getState().params, checkpoint: QWEN },
   });

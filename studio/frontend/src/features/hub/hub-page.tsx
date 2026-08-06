@@ -425,8 +425,8 @@ export function ModelsPage() {
       ? checkpoint
       : null;
   const activeGgufVariant = useChatRuntimeStore((s) => s.activeGgufVariant);
-  const activeGgufContextLength = useChatRuntimeStore(
-    (s) => s.ggufContextLength,
+  const activeLoadedContextLength = useChatRuntimeStore(
+    (s) => s.loadedContextLength,
   );
   const [initialResidentStatusSettled, setInitialResidentStatusSettled] =
     useState(false);
@@ -2087,7 +2087,7 @@ export function ModelsPage() {
               target={settingsTarget}
               loadedConfig={settingsTargetIsResident ? activeModelConfig : null}
               loadedContextLength={
-                settingsTargetIsResident ? activeGgufContextLength : null
+                settingsTargetIsResident ? activeLoadedContextLength : null
               }
               onBack={() => setSettingsTarget(null)}
               onRun={runSettingsTarget}

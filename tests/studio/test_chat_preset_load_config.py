@@ -41,7 +41,7 @@ def test_persisted_preset_serializes_load_config():
 
 def test_capture_reads_gguf_loaded_context():
     source = _read("studio/frontend/src/features/chat/presets/preset-load-config.ts")
-    assert "store.ggufContextLength" in source
+    assert "store.loadedContextLength" in source
     assert "effectiveContextLength" in source
 
 

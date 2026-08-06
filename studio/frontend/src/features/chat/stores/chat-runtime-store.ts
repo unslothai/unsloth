@@ -2484,9 +2484,9 @@ type ChatRuntimeStore = {
   residentCheckpoint: string | null | undefined;
   /** Whether the backend loaded the active model from a filesystem path. */
   activeModelIsLocal: boolean;
-  ggufContextLength: number | null;
-  ggufMaxContextLength: number | null;
-  ggufNativeContextLength: number | null;
+  loadedContextLength: number | null;
+  maxContextLength: number | null;
+  nativeContextLength: number | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -3397,8 +3397,9 @@ function pickLocallyEditedParams(
 }
 
 /** The context the last load or status published for the model on screen.
- * ggufContextLength covers only GGUF, so without this a safetensors model has
- * nothing to clamp the hydration replay against. Keyed by checkpoint. */
+ * loadedContextLength covers only a backend that sizes a window, so without this
+ * a safetensors model has nothing to clamp the hydration replay against. Keyed
+ * by checkpoint. */
 let loadedContext: { checkpoint: string; cap: number } | null = null;
 
 function noteLoadedContext(checkpoint: string, cap: number | undefined): void {
@@ -3672,12 +3673,12 @@ function getHydratedSettingsState(
   // Outside the replay: an install with only a global set has no entry, and the
   // budget restored from it does not fit the load either.
   const capped = nextState.params ?? params;
-  // ggufContextLength describes whatever is resident, which an external pick
+  // loadedContextLength describes whatever is resident, which an external pick
   // leaves loaded, so it is not this checkpoint's context to clamp against.
-  const residentGgufCap = isExternalModelId(checkpoint)
+  const residentContextCap = isExternalModelId(checkpoint)
     ? null
-    : state.ggufContextLength;
-  const cap = loadedContextFor(checkpoint) ?? residentGgufCap;
+    : state.loadedContextLength;
+  const cap = loadedContextFor(checkpoint) ?? residentContextCap;
   if (cap !== null && capped.maxTokens > cap) {
     nextState.params = { ...capped, maxTokens: cap };
   }
@@ -3733,9 +3734,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   activeGgufVariant: null,
   residentCheckpoint: undefined,
   activeModelIsLocal: false,
-  ggufContextLength: null,
-  ggufMaxContextLength: null,
-  ggufNativeContextLength: null,
+  loadedContextLength: null,
+  maxContextLength: null,
+  nativeContextLength: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
@@ -4548,9 +4549,9 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       activeLoadId: null,
       activeNativePathToken: null,
       activeNativePathExpiresAtMs: null,
-      ggufContextLength: null,
-      ggufMaxContextLength: null,
-      ggufNativeContextLength: null,
+      loadedContextLength: null,
+      maxContextLength: null,
+      nativeContextLength: null,
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       contextUsageByThreadId: {},

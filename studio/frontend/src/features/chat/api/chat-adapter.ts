@@ -2237,7 +2237,7 @@ type QueuedResolvedModelRuntime = {
   >["reasoningEffortLevels"];
   supportsPreserveThinking: boolean;
   preserveThinking: boolean;
-  ggufContextLength: number | null;
+  loadedContextLength: number | null;
   loadedIsMultimodal: boolean;
   modelCapabilities: QueuedModelCapabilities | null;
 };
@@ -2251,9 +2251,9 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "activeLoadId",
   "activeGgufVariant",
   "activeModelIsLocal",
-  "ggufContextLength",
-  "ggufMaxContextLength",
-  "ggufNativeContextLength",
+  "loadedContextLength",
+  "maxContextLength",
+  "nativeContextLength",
   "modelRequiresTrustRemoteCode",
   "supportsReasoning",
   "reasoningAlwaysOn",
@@ -2381,7 +2381,7 @@ function queuedResolvedModelFromStore(
     reasoningEffortLevels: state.reasoningEffortLevels,
     supportsPreserveThinking: state.supportsPreserveThinking,
     preserveThinking: state.preserveThinking,
-    ggufContextLength: state.ggufContextLength,
+    loadedContextLength: state.loadedContextLength,
     loadedIsMultimodal: state.loadedIsMultimodal,
     modelCapabilities: activeModel
       ? {
@@ -3077,7 +3077,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
       ggufVariant: candidate.ggufVariant,
       isGguf: candidate.kind === "gguf",
       customContextLength: config.customContextLength,
-      ggufContextLength: null,
+      loadedContextLength: null,
       currentCheckpoint: currentStore.params.checkpoint,
       activeGgufVariant: currentStore.activeGgufVariant,
       maxSeqLength: config.maxSeqLength ?? candidate.maxSeqLength,
@@ -3381,10 +3381,10 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         const committedNUbatch =
           (loadResp.is_diffusion ?? false) ? null : (config.nUbatch ?? null);
         useChatRuntimeStore.setState({
-          ggufContextLength: loadResp.context_length ?? 131072,
-          ggufMaxContextLength:
+          loadedContextLength: loadResp.context_length ?? 131072,
+          maxContextLength:
             loadResp.max_context_length ?? loadResp.context_length ?? 131072,
-          ggufNativeContextLength: loadResp.native_context_length ?? null,
+          nativeContextLength: loadResp.native_context_length ?? null,
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
           reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -3769,8 +3769,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           store.setModels([...store.models, defaultModel]);
         }
         useChatRuntimeStore.setState({
-          ggufContextLength: loadResp.context_length ?? 131072,
-          ggufMaxContextLength:
+          loadedContextLength: loadResp.context_length ?? 131072,
+          maxContextLength:
             loadResp.max_context_length ?? loadResp.context_length ?? 131072,
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
@@ -3890,7 +3890,7 @@ async function resolveQueuedEmptyLocalModel(abortSignal: AbortSignal): Promise<{
             supportsPreserveThinking:
               status.supports_preserve_thinking ?? false,
             preserveThinking: resolvePreserveThinkingOnLoad(status),
-            ggufContextLength: status.is_gguf
+            loadedContextLength: status.is_gguf
               ? (status.context_length ?? null)
               : null,
             loadedIsMultimodal: isMultimodalResponse(status),
@@ -4139,7 +4139,7 @@ export function createOpenAIStreamAdapter(
                 supportsPreserveThinking:
                   queuedEmptyModelRuntime.supportsPreserveThinking,
                 preserveThinking: queuedEmptyModelRuntime.preserveThinking,
-                ggufContextLength: queuedEmptyModelRuntime.ggufContextLength,
+                loadedContextLength: queuedEmptyModelRuntime.loadedContextLength,
                 models: mergeQueuedModelCapabilities(
                   base.models,
                   queuedEmptyModelRuntime.checkpoint,
@@ -4520,10 +4520,10 @@ export function createOpenAIStreamAdapter(
               preserveThinking:
                 queuedEmptyModelRuntime?.preserveThinking ??
                 liveRuntime.preserveThinking,
-              ggufContextLength:
+              loadedContextLength:
                 queuedEmptyModelRuntime !== null
-                  ? queuedEmptyModelRuntime.ggufContextLength
-                  : liveRuntime.ggufContextLength,
+                  ? queuedEmptyModelRuntime.loadedContextLength
+                  : liveRuntime.loadedContextLength,
               loadedIsMultimodal:
                 queuedEmptyModelRuntime?.loadedIsMultimodal ??
                 liveRuntime.loadedIsMultimodal,
@@ -5832,7 +5832,7 @@ export function createOpenAIStreamAdapter(
                               ? { whole_doc: false }
                               : {}),
                             context_length:
-                              runtime.ggufContextLength ??
+                              runtime.loadedContextLength ??
                               params.maxSeqLength ??
                               undefined,
                           },
@@ -6054,7 +6054,7 @@ export function createOpenAIStreamAdapter(
                             ? { whole_doc: false }
                             : {}),
                           context_length:
-                            runtime.ggufContextLength ??
+                            runtime.loadedContextLength ??
                             params.maxSeqLength ??
                             undefined,
                         },
@@ -6224,7 +6224,7 @@ export function createOpenAIStreamAdapter(
                 : streamChatCompletions(
                     requestPayload,
                     runSignal,
-                    // Only when the request targets the LOCAL model. ggufContextLength
+                    // Only when the request targets the LOCAL model. loadedContextLength
                     // stays populated for a resident GGUF even while an external model is
                     // selected, so an external request with a 16K cap was being measured
                     // against an unrelated 4096-token local window and reported as having
@@ -6243,7 +6243,7 @@ export function createOpenAIStreamAdapter(
                     isExternalRequest
                       ? null
                       : (runtime.loadedCustomContextLength ??
-                        runtime.ggufContextLength ??
+                        runtime.loadedContextLength ??
                         (params.maxSeqLength || null)),
                   );
             // Per run, not per module: two turns must not share a cycle.

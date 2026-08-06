@@ -1722,11 +1722,11 @@ export function SharedComposer({
           // active model the UI and later reload/save use the context it actually
           // loaded with, not the previous/default one.
           customContextLength: keepCustomCtx,
-          ggufContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
-          ggufNativeContextLength: resp.is_gguf
+          loadedContextLength: resp.is_gguf ? (resp.context_length ?? null) : null,
+          nativeContextLength: resp.is_gguf
             ? (resp.native_context_length ?? null)
             : null,
-          ggufMaxContextLength: resp.is_gguf
+          maxContextLength: resp.is_gguf
             ? (resp.max_context_length ?? null)
             : null,
           // Compare selections load by repo/variant, never from the file picker,

@@ -2868,7 +2868,7 @@ def test_the_hub_settings_page_matches_a_resident_path_loaded_model():
         in hub
     )
     assert "loadedConfig={settingsTargetIsResident ? activeModelConfig : null}" in hub
-    assert "settingsTargetIsResident ? activeGgufContextLength : null" in hub
+    assert "settingsTargetIsResident ? activeLoadedContextLength : null" in hub
     # The loadable identifier, as every other status reader records it -- except for a
     # speech model, which chat cannot adopt at all. speechOnly rides beside the null so
     # the helper can tell it from the empty slot the idle-unload rule is about.
