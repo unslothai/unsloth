@@ -563,6 +563,57 @@ function Get-NvccMaxArch {
     return $null
 }
 
+# Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
+# every GPU, "uncovered" for an incompatible mix, empty when no fallback is needed or the
+# inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because the wheel must support
+# the host. Mirrors _nvidia_cu126_verdict in install.sh.
+function Get-NvidiaCu126Verdict {
+    # Floor is per-release, not fixed: only 2.11 dropped sm_70 from cu128.
+    param([string]$SmiExe, [int]$LegacyFloorSm = 75)
+    if (-not $SmiExe) { return '' }
+    $raw = Invoke-NvidiaSmiBounded $SmiExe @('--query-gpu=compute_cap', '--format=csv,noheader,nounits') -StdoutOnly
+    if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
+    $legacy = $false
+    $outsideCu126 = $false
+    $seen = $false
+    foreach ($line in ($raw -split "`n")) {
+        $value = $line.Trim()
+        if (-not $value) { continue }
+        if ($value -notmatch '^(\d+)\.(\d+)$') { return '' }
+        $sm = ([int]$Matches[1] * 10) + [int]$Matches[2]
+        if ($sm -lt $LegacyFloorSm) { $legacy = $true }
+        if ($sm -lt 50 -or $sm -gt 90) { $outsideCu126 = $true }
+        $seen = $true
+    }
+    if (-not $seen -or -not $legacy) { return '' }
+    if ($outsideCu126) { return 'uncovered' }
+    return 'cu126'
+}
+
+function Get-CudaFamilyCappedForPreTuring {
+    param([string]$Family, [string]$SmiExe)
+    if ($Family -notin @('cu128', 'cu130')) { return $Family }
+    # Windows pins torch<2.11, whose cu128 still ships sm_70, so only cu130
+    # strands a Volta here. Raise to 75 when that pin reaches 2.11.
+    $legacyFloorSm = if ($Family -eq 'cu128') { 70 } else { 75 }
+    $verdict = Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm
+    if (-not $verdict) { return $Family }
+    # This runs twice per setup; announce once without polluting pipeline output.
+    $announce = -not $script:PreTuringCapAnnounced
+    $script:PreTuringCapAnnounced = $true
+    if ($verdict -eq 'cu126') {
+        if ($announce) {
+            substep "pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $Family wheels start at sm_75" "Yellow"
+        }
+        return 'cu126'
+    }
+    if ($announce) {
+        substep "this host mixes pre-Turing NVIDIA GPUs with GPUs that cu126 cannot serve; no PyTorch 2.11 CUDA family covers both" "Yellow"
+        substep "keeping $Family, so the pre-Turing GPUs will be unusable; set UNSLOTH_TORCH_INDEX_FAMILY=cu126 to choose the other way" "Yellow"
+    }
+    return $Family
+}
+
 # Detect driver's max CUDA version from nvidia-smi and return the highest
 # compatible PyTorch CUDA index tag (e.g. "cu128").
 # PyTorch on Windows ships CPU-only by default from PyPI; CUDA wheels live at
@@ -587,12 +638,13 @@ function Get-PytorchCudaTag {
             $major = [int]$Matches[1]
             $minor = [int]$Matches[2]
             # PyTorch 2.10 offers: cu124, cu126, cu128, cu130
-            if ($major -ge 13) { return "cu130" }
-            if ($major -eq 12 -and $minor -ge 8) { return "cu128" }
-            if ($major -eq 12 -and $minor -ge 6) { return "cu126" }
-            if ($major -ge 12) { return "cu124" }
-            if ($major -ge 11) { return "cu118" }
-            return "cpu"
+            if ($major -ge 13)                        { $family = "cu130" }
+            elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
+            elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
+            elseif ($major -ge 12) { $family = "cu124" }
+            elseif ($major -ge 11) { $family = "cu118" }
+            else { return "cpu" }
+            return (Get-CudaFamilyCappedForPreTuring $family $smiExe)
         }
     } catch { }
 
@@ -1568,7 +1620,10 @@ function Invoke-NvidiaSmiBounded {
     param(
         [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
         [Parameter(Position = 1)][string[]]$SmiArgs = @(),
-        [int]$TimeoutSec = 10
+        [int]$TimeoutSec = 10,
+        # Driver warnings on stderr would corrupt machine-readable --query-gpu
+        # output; the human-readable probes keep the default merge.
+        [switch]$StdoutOnly
     )
     try {
         $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -1587,6 +1642,7 @@ function Invoke-NvidiaSmiBounded {
             return ""
         }
         $global:LASTEXITCODE = $proc.ExitCode
+        if ($StdoutOnly) { return $outTask.Result }
         return ($outTask.Result + "`n" + $errTask.Result)
     } catch {
         $global:LASTEXITCODE = 1
@@ -1686,7 +1742,115 @@ function Invoke-AmdSmiNoElevate {
 $HasROCm = $false
 $HipSdkInstalled = $false   # HIP SDK binary found (independent of device accessibility)
 $ROCmGpuLabel = $null
+$script:ROCmGpuLabels = @()   # every AMD adapter name WMI reported (shadowing-aware inference)
 $script:ROCmGfxArch = $null
+# APU gfx arches whose board commonly also carries a discrete Radeon. HIP often
+# enumerates the APU first, so an index-0 pick reads the iGPU's arch and the dGPU never
+# gets its wheels (#7776: gfx1036 Raphael shadowing a gfx1200 RX 9060 XT). In sync with
+# _SHADOWING_INTEGRATED_GFX in studio/install_python_stack.py. The Strix arches
+# (gfx1150/1151/1152) are deliberately absent: first-class training targets, untouched.
+$script:ShadowingIntegratedGfx = @(
+    "gfx90c",   # Renoir / Cezanne
+    "gfx1013",  # Cyan Skillfish
+    "gfx1033",  # Van Gogh
+    "gfx1035",  # Rembrandt
+    "gfx1036",  # Raphael / Mendocino
+    "gfx1103",  # Phoenix / Hawk Point
+    "gfx1153"   # Krackan Point 2
+)
+
+# gfx arch -> AMD per-arch wheel index family. Defined here, not beside $ROCmIndexUrl,
+# because Resolve-ShadowingGfxPick runs during detection, long before the install block,
+# and must know which arches AMD ships Windows wheels for. In sync with
+# _GFX_TO_AMD_INDEX_ARCH (test_rocm_arch_table_parity.py).
+$archFamilyMap = @{
+    "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
+    "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"      # RDNA 3.5 (Strix Halo/Point)
+    "gfx1152" = "gfx1152"                                 # RDNA 3.5 (Krackan Point)
+    "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"  # RDNA 3
+    "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
+    "gfx1036" = "gfx103X-all"; "gfx1035" = "gfx103X-all"  # RDNA 2 (RX 6000)
+    "gfx1034" = "gfx103X-all"; "gfx1033" = "gfx103X-all"
+    "gfx1032" = "gfx103X-all"; "gfx1031" = "gfx103X-all"
+    "gfx1030" = "gfx103X-all"
+    "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"       # MI200/MI100
+}
+
+
+# True when any of the three masks is set. Mirrors _visible_devices_pinned(): ANY value
+# is a deliberate selection, "" and "-1" included -- those select NO GPU rather than
+# meaning "unset".
+function Test-VisibleDevicesPinned {
+    foreach ($visEnv in @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)) {
+        if ($null -ne $visEnv) { return $true }
+    }
+    return $false
+}
+
+# The one mask -> index resolver for every pick site below; the sites used to inline
+# their own expressions and disagreed (hipinfo rejected " 1 ", amd-smi rejected "1,0"),
+# and a mask Resolve-ShadowingGfxPick honours but the index ignores lands on GPU 0, the
+# very iGPU this preference exists to skip. Mirrors _pick_visible_index(): first-set-wins
+# (the runtime lets an empty HIP mask shadow CUDA_VISIBLE_DEVICES rather than defer to
+# it), and an unparseable or out-of-range value falls back to GPU 0.
+function Resolve-VisibleGpuIndex {
+    param([int]$Count)
+    foreach ($visEnv in @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)) {
+        if ($null -eq $visEnv) { continue }
+        $val = $visEnv.Trim()
+        if ($val -eq "" -or $val -eq "-1") { return 0 }
+        $first = ($val -split ',')[0].Trim()
+        # TryParse, not [int]: '2147483648' overflows and .NET's \d also matches full-width
+        # digits, and either cast throws a TERMINATING error under this script's
+        # $ErrorActionPreference = "Stop", aborting the install where nothing catches it.
+        [int]$parsed = 0
+        if ([int]::TryParse($first, [ref]$parsed)) {
+            if ($parsed -ge 0 -and $parsed -lt $Count) { return $parsed }
+            substep "[WARN] HIP/ROCR/CUDA_VISIBLE_DEVICES index $first is out of range ($Count GPU(s) detected); defaulting to GPU 0 for arch selection" "Yellow"
+        }
+        return 0
+    }
+    return 0
+}
+
+# Mirrors _dedup_pick(). setup.ps1 resolves the arch and builds $ROCmIndexUrl from it
+# before ever invoking the Python stack installer, so the shadowing-iGPU skip has to
+# happen here too or a fresh install still pulls the iGPU's wheel family. Returns $Picked
+# unchanged when pinned, when only one distinct arch exists, or when no discrete arch is.
+function Resolve-ShadowingGfxPick {
+    param([AllowNull()][string]$Picked, [AllowNull()][string[]]$AllArches)
+    if (-not $Picked) { return $Picked }
+    # Only arches in $archFamilyMap have an AMD Windows wheel index.
+    function Test-GfxHasWheels { param([AllowNull()][string]$Arch) return [bool]($Arch -and $archFamilyMap.ContainsKey($Arch)) }
+    # A selected device is honoured verbatim; never repick over the user.
+    if (Test-VisibleDevicesPinned) { return $Picked }
+    if ($script:ShadowingIntegratedGfx -notcontains $Picked) { return $Picked }
+    $distinctArches = @($AllArches | Select-Object -Unique)
+    if ($distinctArches.Count -lt 2) { return $Picked }
+    # Deposing a supported APU for a discrete card with no Windows wheels (gfx1036 + an
+    # older gfx1010) resolves to no index and drops the host to CPU, worse than the
+    # shadowing itself. So prefer a wheel-backed discrete card, and fall back to an
+    # unsupported one only when the pick has no wheels either: taking the first
+    # non-integrated arch instead sent gfx90c,gfx1010,gfx1200 to CPU torch despite the
+    # supported gfx1200. Mirrors _dedup_pick()'s `_withWheels or (...)`.
+    $pickedHasWheels = Test-GfxHasWheels $Picked
+    $others = @($AllArches | Where-Object { $script:ShadowingIntegratedGfx -notcontains $_ })
+    $withWheels = @($others | Where-Object { Test-GfxHasWheels $_ })
+    $candidates = if ($withWheels.Count -gt 0) { $withWheels }
+                  elseif (-not $pickedHasWheels) { $others }
+                  else { @() }
+    $discreteArch = $candidates | Select-Object -First 1
+    if (-not $discreteArch) { return $Picked }
+    # Not always device 1: on gfx1036,gfx1010,gfx1200 the pick is device 2, and
+    # naming 1 would expose the gfx1010 the wheels do not target.
+    $discreteIdx = [array]::IndexOf(@($AllArches), $discreteArch)
+    if ($discreteIdx -lt 0) { $discreteIdx = 1 }
+    substep "multiple AMD GPUs detected ($($distinctArches -join ', ')); installing for the discrete $discreteArch instead of the integrated $Picked" "Cyan"
+    # HIP still enumerates the iGPU as device 0 at runtime, so the wheels alone do not
+    # steer training to the dGPU; setx makes the mask persist across sessions.
+    substep "Run 'setx HIP_VISIBLE_DEVICES $discreteIdx' and reopen your terminal so Unsloth uses $discreteArch at runtime too, not just at install time" "Cyan"
+    return $discreteArch
+}
 if (-not $HasNvidiaSmi) {
     # hipinfo: PATH first, then HIP_PATH/ROCM_PATH bin fallback (mirrors NVIDIA smi path resolution).
     # AMD HIP SDK sets HIP_PATH but may not add the bin dir to PATH depending on install type.
@@ -1774,9 +1938,13 @@ if (-not $HasNvidiaSmi) {
                 # Once the arch is printed, keep the ROCm wheel path.
                 $HasROCm = $true
                 $_hipAllArches = @([regex]::Matches($hipOut, "(?im)^\s*gcnArchName\s*:\s*(\S+)") | ForEach-Object { ($_.Groups[1].Value -split ':')[0].Trim().ToLower() })
-                $_hipVisIdx = if ($env:HIP_VISIBLE_DEVICES -match '^\d') { [int]($env:HIP_VISIBLE_DEVICES -split ',')[0] } elseif ($env:ROCR_VISIBLE_DEVICES -match '^\d') { [int]($env:ROCR_VISIBLE_DEVICES -split ',')[0] } else { 0 }
                 if ($_hipAllArches.Count -gt 0) {
-                    $script:ROCmGfxArch = if ($_hipVisIdx -lt $_hipAllArches.Count) { $_hipAllArches[$_hipVisIdx] } else { $_hipAllArches[0] }
+                    # hipinfo is itself a HIP application, so under a mask it already
+                    # enumerated only the visible devices, renumbered from 0; indexing it
+                    # again applies the mask twice and lands on the wrong card. amd-smi and
+                    # the WMI path below list every GPU, so they still index.
+                    $script:ROCmGfxArch = $_hipAllArches[0]
+                    $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $_hipAllArches
                     $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                 } else {
                     $ROCmGpuLabel = "AMD ROCm"
@@ -1829,27 +1997,25 @@ if (-not $HasNvidiaSmi) {
                     $allGfxArches = @([regex]::Matches($smiOut, '(?i)\b(gfx\d+[a-z]?)\b') |
                         ForEach-Object { $_.Groups[1].Value.ToLower() })
                     if ($allGfxArches.Count -gt 0) {
-                        # Resolve which GPU index is runtime-visible.  When a single
-                        # integer index is set, use it; fall back to index 0 otherwise
-                        # (comma-separated lists or unset → first GPU, same as before).
-                        $visGpu = if ($env:HIP_VISIBLE_DEVICES) { $env:HIP_VISIBLE_DEVICES }
-                                  elseif ($env:ROCR_VISIBLE_DEVICES) { $env:ROCR_VISIBLE_DEVICES }
-                                  else { $null }
-                        $gpuIdx = 0
-                        if ($visGpu -match '^\s*(\d+)\s*$') { $gpuIdx = [int]$Matches[1] }
-                        if ($gpuIdx -ge $allGfxArches.Count) {
-                            substep "[WARN] HIP/ROCR_VISIBLE_DEVICES index $gpuIdx is out of range ($($allGfxArches.Count) GPU(s) detected); defaulting to GPU 0 for arch selection" "Yellow"
-                            $gpuIdx = 0
-                        }
-                        $script:ROCmGfxArch = $allGfxArches[$gpuIdx]
+                        # amd-smi lists every GPU regardless of the masks, so resolve the
+                        # index here, via the shared helper so a comma list or a padded
+                        # value cannot select a different GPU than elsewhere.
+                        $script:ROCmGfxArch = $allGfxArches[(Resolve-VisibleGpuIndex $allGfxArches.Count)]
+                        $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $allGfxArches
                         $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                     } else {
                         # Attempt 2: 'static --asic' exposes ASIC details on ROCm 6+,
                         # including the GFX target needed for wheel index selection.
                         $smiAsicOut = ""
                         try { $smiAsicOut = Invoke-AmdSmiNoElevate $amdSmiExe.Source @('static','--asic') } catch {}
-                        if ($smiAsicOut -match "(?i)\b(gfx\d+[a-z]?)\b") {
-                            $script:ROCmGfxArch = $Matches[1].ToLower()
+                        # Every token, not just the first: this branch is reached precisely
+                        # when 'list' saw multiple GPUs but printed no arches, so a leading
+                        # iGPU here reintroduces #7776.
+                        $asicGfxArches = @([regex]::Matches($smiAsicOut, '(?i)\b(gfx\d+[a-z]?)\b') |
+                            ForEach-Object { $_.Groups[1].Value.ToLower() })
+                        if ($asicGfxArches.Count -gt 0) {
+                            $script:ROCmGfxArch = $asicGfxArches[(Resolve-VisibleGpuIndex $asicGfxArches.Count)]
+                            $script:ROCmGfxArch = Resolve-ShadowingGfxPick $script:ROCmGfxArch $asicGfxArches
                             $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
                         } elseif ($smiAsicOut -match "(?im)Market.?Name\s*[:\|]\s*([^\r\n]+)") {
                             $ROCmGpuLabel = "AMD ROCm ($($Matches[1].Trim()))"
@@ -1868,10 +2034,24 @@ if (-not $HasNvidiaSmi) {
     # so the name-based inference below can still attempt an arch lookup.
     if (-not $HasROCm) {
         try {
-            $wmiGpu = Get-WmiObject Win32_VideoController -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match "AMD|Radeon" } |
-                Select-Object -First 1
-            if ($wmiGpu) { $ROCmGpuLabel = $wmiGpu.Name }
+            # Keep every AMD adapter, not just the first: WMI orders controllers as the
+            # driver stack enumerated them, so a shadowing iGPU can lead here exactly as
+            # under HIP (#7776), and the inference below runs the same preference over the
+            # whole list. ConfigManagerErrorCode 0 is "working properly": a disabled or
+            # driver-errored Radeon must not depose a working iGPU.
+            $amdGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "AMD|Radeon" })
+            $healthyGpus = @($amdGpus | Where-Object {
+                ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
+            # If that leaves none, the filter alone made the host look GPU-less and the
+            # inference forwards nothing: code 45 ("not connected") is routine on a muxless
+            # laptop with a parked dGPU, and with no healthy peer there is nothing to
+            # depose. Mirrors the same fallback in install_python_stack.py's WMI path.
+            $wmiGpus = if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus }
+            if ($wmiGpus.Count -gt 0) {
+                $script:ROCmGpuLabels = @($wmiGpus | ForEach-Object { $_.Name })
+                $ROCmGpuLabel = $script:ROCmGpuLabels[0]
+            }
         } catch {}
     }
     # ── Arch resolution: env-var override → name inference ──────────────────
@@ -1906,14 +2086,39 @@ if (-not $HasNvidiaSmi) {
                 @{ P = "RX 6650|RX 6600|PRO W6600|PRO W6650";                  A = "gfx1032" }  # RDNA 2 (Navi 23) -- gfx103X family
                 @{ P = "RX 6500|RX 6400|RX 6300|PRO W6400|PRO W6500";          A = "gfx1034" }  # RDNA 2 (Navi 24) -- gfx103X family
             )
-            foreach ($row in $nameArchTable) {
-                if ($ROCmGpuLabel -match $row.P) {
-                    $script:ROCmGfxArch = $row.A
-                    $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
-                    substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
-                    substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
-                    break
-                }
+            function Get-GfxArchFromGpuName {
+                param([AllowNull()][string]$Name, [object[]]$Table)
+                if (-not $Name) { return $null }
+                foreach ($row in $Table) { if ($Name -match $row.P) { return $row.A } }
+                return $null
+            }
+            # Only the WMI path carries more than one name; other callers left a single
+            # synthesized label, so default to it.
+            $gpuNames = if ($script:ROCmGpuLabels) { @($script:ROCmGpuLabels) } else { @($ROCmGpuLabel) }
+            # Index over the ADAPTER list, not the inferred arches: an unrecognised name
+            # drops out below, and indexing the shortened list would name the wrong card.
+            $nameIdx = Resolve-VisibleGpuIndex $gpuNames.Count
+            $nameArches = @()
+            foreach ($gpuName in $gpuNames) {
+                $inferred = Get-GfxArchFromGpuName -Name $gpuName -Table $nameArchTable
+                if ($inferred) { $nameArches += $inferred }
+            }
+            $pickedName = Get-GfxArchFromGpuName -Name $gpuNames[$nameIdx] -Table $nameArchTable
+            # Borrow another adapter's arch only when unpinned: an unmappable leading
+            # adapter is exactly the #7776 iGPU and the named discrete card should decide,
+            # but under a mask substituting installs wheels for a GPU they masked away.
+            if (-not $pickedName -and -not (Test-VisibleDevicesPinned) -and $nameArches.Count -gt 0) {
+                $pickedName = $nameArches[0]
+            }
+            if ($pickedName) {
+                # Repick only when every adapter mapped: an unknown name may BE the
+                # discrete card, so skipping the iGPU could pick the wrong one.
+                $script:ROCmGfxArch = if ($nameArches.Count -eq $gpuNames.Count) {
+                    Resolve-ShadowingGfxPick -Picked $pickedName -AllArches $nameArches
+                } else { $pickedName }
+                $ROCmGpuLabel = "AMD ROCm ($script:ROCmGfxArch)"
+                substep "gfx arch inferred from GPU name: $script:ROCmGfxArch" "Cyan"
+                substep "Tip: set UNSLOTH_ROCM_GFX_ARCH=$script:ROCmGfxArch to skip inference next time" "Cyan"
             }
         }
     }
@@ -3449,6 +3654,15 @@ if ((Test-Path -LiteralPath $VenvDir -PathType Container) -and -not $NoTorchMode
         $script:PinChangedForceReinstall = $true
         $shouldRebuild = $false
     }
+    # Same for an unpinned cu* -> cu* move: the cap can change the expected family on a
+    # healthy venv, and only install.ps1 creates venvs, so wiping here strands a direct
+    # `studio update`. CPU/ROCm/XPU drift still rebuilds.
+    if ($shouldRebuild -and -not $_pinnedIdx -and $installedTorchTag -and
+        (Test-CudaFamilyLeaf $installedTorchTag) -and (Test-CudaFamilyLeaf $expectedTorchTag)) {
+        substep "CUDA family $installedTorchTag does not cover this host -- reinstalling $expectedTorchTag in place." "Cyan"
+        $script:PinChangedForceReinstall = $true
+        $shouldRebuild = $false
+    }
     # A +xpu venv is never wiped by a DIRECT update: on a hybrid NVIDIA+Arc box the promotion
     # above is gated on -not $HasNvidiaSmi, so a later pinless update expects a cu* tag, calls the
     # working Arc venv stale and deletes it -- then exits, because only install.ps1 creates venvs.
@@ -3852,18 +4066,6 @@ $ROCmIndexUrl = $null
 # ROCm install still falls back to CPU below, so this is safe.
 if (-not $TorchIndexPinned -and ($HasROCm -or $ROCmGfxArch) -and $CuTag -eq "cpu") {
     $amdIndexBase = if ($env:UNSLOTH_ROCM_WINDOWS_MIRROR) { $env:UNSLOTH_ROCM_WINDOWS_MIRROR.TrimEnd('/') } else { "https://repo.amd.com/rocm/whl" }
-    $archFamilyMap = @{
-        "gfx1201" = "gfx120X-all"; "gfx1200" = "gfx120X-all"  # RDNA 4
-        "gfx1151" = "gfx1151";     "gfx1150" = "gfx1150"      # RDNA 3.5 (Strix Halo/Point)
-        "gfx1152" = "gfx1152"                                 # RDNA 3.5 (Krackan Point)
-        "gfx1103" = "gfx110X-all"; "gfx1102" = "gfx110X-all"  # RDNA 3
-        "gfx1101" = "gfx110X-all"; "gfx1100" = "gfx110X-all"
-        "gfx1036" = "gfx103X-all"; "gfx1035" = "gfx103X-all"  # RDNA 2 (RX 6000)
-        "gfx1034" = "gfx103X-all"; "gfx1033" = "gfx103X-all"
-        "gfx1032" = "gfx103X-all"; "gfx1031" = "gfx103X-all"
-        "gfx1030" = "gfx103X-all"
-        "gfx90a"  = "gfx90a";      "gfx908"  = "gfx908"       # MI200/MI100
-    }
     # gfx120X and Strix have a null _grouped_mm kernel on torch <2.11.0.
     # Mirrors the $torchFloorMap in install.ps1 so both installers enforce
     # the same floor and ceiling when pulling from AMD's per-arch index.

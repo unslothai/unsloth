@@ -11,7 +11,7 @@ import sys
 import time
 import threading
 from pathlib import Path
-from typing import Callable, Mapping, Optional
+from typing import Callable, Mapping, Optional, Sequence
 
 from fastapi import HTTPException
 
@@ -98,6 +98,22 @@ def resolve_transport(use_xet: bool) -> str:
     if unavailable_reason is not None:
         raise HTTPException(status_code = 400, detail = unavailable_reason)
     return transport
+
+
+def write_files_manifest(files: Sequence[str]) -> str:
+    """Stage a scoped job's file list in a temp JSON file and return its path.
+
+    The worker deletes it after reading. A pipeline repo lists hundreds of files, well past
+    what is comfortable on a command line."""
+    import json
+    import tempfile
+
+    handle = tempfile.NamedTemporaryFile(
+        mode = "w", suffix = ".json", prefix = "unsloth-dl-files-", delete = False, encoding = "utf-8"
+    )
+    with handle:
+        json.dump(list(files), handle)
+    return handle.name
 
 
 def spawn_worker(
@@ -501,6 +517,9 @@ def _try_http_retry(
             cancel_marker_transport = original_metadata.transport,
             hub_cache = original_metadata.hub_cache,
             xet_cache = original_metadata.xet_cache,
+            # Carry the scoped file list across the reclaim: the record it overwrites is what a later start for this scope slot is
+            # compared against, so dropping it makes an identical start read as a different file set and 409 instead of adopting.
+            scoped_files = original_metadata.scoped_files or None,
         )
         if claimed:
             break
@@ -534,6 +553,9 @@ def _try_http_retry(
         args.append("--dataset")
     elif variant:
         args.extend(["--variant", variant])
+    # A scoped job must retry as the SAME scoped download; without its file list the HTTP worker would fall through to a full snapshot.
+    if original_metadata.scoped_files:
+        args.extend(["--files-json", write_files_manifest(original_metadata.scoped_files)])
 
     # Re-query at spawn time: sibling state may have changed since XET failed.
     peer_hashes = registry.peer_blob_hashes(key) if variant else frozenset()
@@ -1075,13 +1097,20 @@ def active_download_refs(
         else:
             ref_repo_id = metadata.repo_id if metadata is not None else ref.key
             variant = None
+        # Scoped jobs share one slot per repo, so publish the file list an adopting client needs to recognise its own transfer.
+        # Absent metadata (a job hydrated before the registry knew it) reports null, which the client reads as unprovable.
+        scoped_files = list(metadata.scoped_files) if metadata is not None else []
         downloads.append(
             ActiveDownload(
                 repo_id = ref_repo_id,
                 variant = variant,
                 transport = metadata.transport if metadata is not None else None,
+                cancel_transport = (
+                    metadata.cancel_marker_transport if metadata is not None else None
+                ),
                 state = ref.state,
                 generation = ref.generation,
+                files = scoped_files or None,
             )
         )
     return downloads

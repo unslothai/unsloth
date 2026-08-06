@@ -161,6 +161,8 @@ function Install-UnslothStudio {
     $SkipTorch = $false
     $SkipAutostart = $false
     $ShortcutsOnly = $false
+    # Launcher browser auto-open: "" = undecided (prompt, else keep existing, else on).
+    $OpenBrowserPref = ""
     $WithLlamaCppDir = ""
     $argList = $args
     for ($i = 0; $i -lt $argList.Count; $i++) {
@@ -171,6 +173,8 @@ function Install-UnslothStudio {
             "--verbose"  { $script:UnslothVerbose = $true }
             "-v"         { $script:UnslothVerbose = $true }
             "--shortcuts-only" { $ShortcutsOnly = $true }
+            "--no-browser" { $OpenBrowserPref = '0' }
+            "--browser"    { $OpenBrowserPref = '1' }
             "--package"  {
                 $i++
                 if ($i -ge $argList.Count) {
@@ -220,6 +224,16 @@ function Install-UnslothStudio {
     # the live python.org listing can't be fetched. The installer URL scheme is
     # stable so an older patch still installs. Bump alongside $PythonVersion.
     $PythonFallbackFullVersion = "3.13.13"
+    # Patch releases the stack cannot run; mirrors PYTHON_SKIP in install.sh.
+    # Windows resolves an installed interpreter and hands uv its path rather
+    # than a version, so uv never picks one of these -- but the machine may
+    # already have it, and $PythonFallbackFullVersion above is what replaces it.
+    $PythonSkip = @("3.13.8")
+    # The entry above is skipped for one reason: it cannot `import torch`. A
+    # -NoTorch install never imports it, so refusing the interpreter would send a
+    # locked-down GGUF-only machine into winget/python.org recovery it may not be
+    # able to complete, over a package it will not install.
+    if ($SkipTorch) { $PythonSkip = @() }
 
     # Resolve install destinations. Priority: UNSLOTH_STUDIO_HOME, then
     # STUDIO_HOME alias, then USERPROFILE-redirect, then default.
@@ -742,6 +756,20 @@ function Install-UnslothStudio {
                 "`$portFile = `$null`n`$mutexName = 'Local\UnslothStudioLauncher'`n"
             }
 
+            # Browser auto-open: explicit installer choice wins; else keep the
+            # value baked into the existing launcher so `studio update`
+            # (--shortcuts-only) never resets it.
+            $_openBrowser = $OpenBrowserPref
+            if (-not $_openBrowser -and (Test-Path -LiteralPath $launcherPs1)) {
+                try {
+                    $_prevLauncher = [System.IO.File]::ReadAllText($launcherPs1)
+                    if ($_prevLauncher -match "(?m)^\`$openBrowserDefault = '([01])'") {
+                        $_openBrowser = $Matches[1]
+                    }
+                } catch {}
+            }
+            if ($_openBrowser -ne '0') { $_openBrowser = '1' }
+
             $launcherContent = @"
 $studioHomeExport`$ErrorActionPreference = 'Stop'
 `$basePort = 8888
@@ -749,6 +777,30 @@ $studioHomeExport`$ErrorActionPreference = 'Stop'
 `$timeoutSec = 60
 `$pollIntervalMs = 1000
 `$_ExpectedStudioRootId = '$_studioRootId'
+`$openBrowserDefault = '$_openBrowser'
+
+# Browser auto-open: disabled by -NoBrowser/--no-browser, the
+# UNSLOTH_STUDIO_NO_BROWSER env var, or the baked installer preference.
+# When off the server still starts; the URL is printed instead (PWA use).
+`$openBrowser = (`$openBrowserDefault -ne '0')
+if (`$env:UNSLOTH_STUDIO_NO_BROWSER -and
+    (`$env:UNSLOTH_STUDIO_NO_BROWSER -notin @('0', 'false', 'no', 'off'))) {
+    `$openBrowser = `$false
+}
+foreach (`$_launchArg in `$args) {
+    if (`$_launchArg -in @('-NoBrowser', '--no-browser')) { `$openBrowser = `$false }
+    elseif (`$_launchArg -in @('-Browser', '--browser')) { `$openBrowser = `$true }
+}
+
+function Open-StudioUrl {
+    param([Parameter(Mandatory = `$true)][string]`$Url)
+    if (`$openBrowser) {
+        Start-Process `$Url
+    } else {
+        # Hidden-window launches have no console; never fail on the echo.
+        try { Write-Host "Unsloth Studio is running at: `$Url" } catch {}
+    }
+}
 
 function Test-StudioHealth {
     param([Parameter(Mandatory = `$true)][int]`$Port)
@@ -845,7 +897,7 @@ function Find-FreeLaunchPort {
 # If Unsloth is already healthy on any expected port, just open it and exit.
 `$existingPort = Find-HealthyStudioPort
 if (`$existingPort) {
-    Start-Process "http://localhost:`$existingPort"
+    Open-StudioUrl "http://localhost:`$existingPort"
     exit 0
 }
 
@@ -862,7 +914,7 @@ try {
         `$deadline = (Get-Date).AddSeconds(`$timeoutSec)
         while ((Get-Date) -lt `$deadline) {
             `$port = Find-HealthyStudioPort
-            if (`$port) { Start-Process "http://localhost:`$port"; exit 0 }
+            if (`$port) { Open-StudioUrl "http://localhost:`$port"; exit 0 }
             Start-Sleep -Milliseconds `$pollIntervalMs
         }
         exit 0
@@ -911,7 +963,7 @@ try {
                     [System.IO.File]::WriteAllText(`$portFile, "`$launchPort`n")
                 } catch {}
             }
-            Start-Process "http://localhost:`$launchPort"
+            Open-StudioUrl "http://localhost:`$launchPort"
             `$browserOpened = `$true
             break
         }
@@ -1288,6 +1340,9 @@ exit 0
     # Returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     # The resolved Path is passed to `uv venv --python` to prevent uv from
     # re-resolving the version string back to a conda interpreter.
+    # Candidates on $PythonSkip are dropped as they are enumerated, so no caller
+    # can be handed an interpreter that cannot import torch and the usual
+    # 3.13 -> 3.12 -> 3.11 fallback still applies when the preferred minor is bad.
     function Find-CompatiblePython {
         # -X64Only: best installed x64 interpreter or $null, never ARM64. Last resort for
         # Install-X64Python, where x64 of a lower-priority minor beats ARM64.
@@ -1310,8 +1365,14 @@ exit 0
             foreach ($minor in $minors) {
                 try {
                     $out = & $pyLauncher.Source "-$minor" --version 2>&1 | Out-String
-                    if ($out -match "Python (3\.1[1-3])\.\d+") {
-                        $ver = $Matches[1]
+                    if ($out -match "Python ((3\.1[1-3])\.\d+)") {
+                        # Both captures first: Test-IsCondaPython below runs -match
+                        # and overwrites $Matches. Screening the patch here costs no
+                        # extra subprocess (the text is already in hand) and lets the
+                        # loop carry on to the next launcher and the next minor.
+                        $full = $Matches[1]
+                        $ver = $Matches[2]
+                        if ($PythonSkip -contains $full) { continue }
                         # Resolve the actual executable path and verify it is not conda-based
                         $resolvedExe = (& $pyLauncher.Source "-$minor" -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
                         if ($resolvedExe -and (Test-Path -LiteralPath $resolvedExe -PathType Leaf) -and -not (Test-IsCondaPython $resolvedExe)) {
@@ -1336,8 +1397,10 @@ exit 0
                 if (Test-IsCondaPython $cmd.Source) { continue }
                 try {
                     $out = & $cmd.Source --version 2>&1 | Out-String
-                    if ($out -match "Python (3\.1[1-3])\.\d+") {
-                        $ver = $Matches[1]
+                    if ($out -match "Python ((3\.1[1-3])\.\d+)") {
+                        $full = $Matches[1]
+                        $ver = $Matches[2]
+                        if ($PythonSkip -contains $full) { continue }
                         # PATH entries may be wrappers (e.g. pyenv-win's python.bat).
                         # Resolve the real executable so uv bypasses wrapper re-resolution.
                         $resolvedExe = (& $cmd.Source -S -c "import sys; print(sys.executable)" 2>$null | Out-String).Trim()
@@ -1368,8 +1431,11 @@ exit 0
                     if (Test-IsCondaPython $exe) { continue }
                     try {
                         $out = & $exe --version 2>&1 | Out-String
-                        if ($out -match "Python (3\.1[1-3])\.\d+") {
-                            $candidates += @{ Version = $Matches[1]; Path = $exe }
+                        if ($out -match "Python ((3\.1[1-3])\.\d+)") {
+                            $full = $Matches[1]
+                            $ver = $Matches[2]
+                            if ($PythonSkip -contains $full) { continue }
+                            $candidates += @{ Version = $ver; Path = $exe }
                         }
                     } catch {}
                 }
@@ -1469,6 +1535,25 @@ exit 0
         return (Find-CompatiblePython)
     }
 
+    # Backstop for the screen inside Find-CompatiblePython, for an interpreter that
+    # reports one version to --version and another to sys.version_info (a wrapper or
+    # a shim). Returning $null sends the caller down the install path, which pins
+    # $PythonFallbackFullVersion.
+    function Remove-SkippedPython {
+        param($Candidate)
+        if (-not $Candidate) { return $null }
+        try {
+            $raw = (& $Candidate.Path -c "import sys; print('{}.{}.{}'.format(*sys.version_info[:3]))" 2>$null | Select-Object -First 1)
+        } catch {
+            return $Candidate  # unreadable: not evidence of a bad version
+        }
+        if ($raw -and ($PythonSkip -contains $raw.Trim())) {
+            substep "Python $($raw.Trim()) cannot import torch -- installing another." "Yellow"
+            return $null
+        }
+        return $Candidate
+    }
+
     # ── Windows on ARM: get an x64 CPython ──
     # --architecture x64 forces winget off the ARM64 build; python.org takes the same override.
     function Install-X64Python {
@@ -1494,7 +1579,7 @@ exit 0
     # ── Install Python if no compatible version (3.11-3.13) found ──
     # Find-CompatiblePython returns @{ Version = "3.13"; Path = "C:\...\python.exe" } or $null.
     Write-TauriLog "STEP" "Installing Python"
-    $DetectedPython = Find-CompatiblePython
+    $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
 
     if ($DetectedPython) {
         step "python" "Python $($DetectedPython.Version) already installed"
@@ -1522,7 +1607,7 @@ exit 0
             Refresh-SessionPath
 
             # Re-detect after install (PATH may have changed)
-            $DetectedPython = Find-CompatiblePython
+            $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
 
             if (-not $DetectedPython) {
                 # Python still not functional after winget -- force reinstall.
@@ -1537,7 +1622,7 @@ exit 0
                 } catch { $wingetExit = 1 }
                 $ErrorActionPreference = $prevEAP
                 Refresh-SessionPath
-                $DetectedPython = Find-CompatiblePython
+                $DetectedPython = Remove-SkippedPython (Find-CompatiblePython)
             }
         }
 
@@ -1785,6 +1870,7 @@ exit 0
     $script:StudioVenvRollbackDir = $null
     $script:StudioVenvRollbackTarget = $VenvDir
     $script:StudioVenvRollbackActive = $false
+    $script:StudioVenvRollbackPartial = $false
 
     function Test-VenvPythonReady {
         param([Parameter(Mandatory = $true)][string]$PythonExe)
@@ -1832,16 +1918,35 @@ exit 0
         $script:StudioVenvRollbackDir = $candidate
         $script:StudioVenvRollbackTarget = $ExistingDir
         $script:StudioVenvRollbackActive = $true
+        $script:StudioVenvRollbackPartial = $false
         # Publish the rollback state before the atomic rename so interruption
         # cannot land after Move-Item but before cleanup knows where the old venv went.
         try {
             Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
         } catch {
             # A collision or ordinary rename failure leaves the original in place.
-            # Keep state active only when the rename happened before interruption.
-            if (Test-Path -LiteralPath $ExistingDir) {
+            # On Windows an open handle inside the tree fails the rename *partway*
+            # instead: entries walked before the locked one land at $candidate while
+            # the rest stay at $ExistingDir. Reading only $ExistingDir scores that
+            # split tree as "the rename never happened" and drops the sole reference
+            # to where the other half went, so the caller can neither restore nor
+            # report it. Clear the state only when the destination is genuinely
+            # absent; when both paths exist keep it active so Restore-StudioVenvRollback
+            # can reverse the partial move, and name both locations either way.
+            $candidateExists = Test-Path -LiteralPath $candidate
+            if ((Test-Path -LiteralPath $ExistingDir) -and (-not $candidateExists)) {
                 $script:StudioVenvRollbackActive = $false
                 $script:StudioVenvRollbackDir = $null
+            } elseif ($candidateExists -and (Test-Path -LiteralPath $ExistingDir)) {
+                # Flag the split: both paths now hold halves of the *same* previous
+                # environment, so restoration must merge them rather than clear the
+                # destination first the way the committed-replacement path does.
+                $script:StudioVenvRollbackPartial = $true
+                Write-Host "[WARN] Moving the existing environment aside stopped partway -- files are in both places." -ForegroundColor Yellow
+                Write-Host "       still in place: $ExistingDir" -ForegroundColor Yellow
+                Write-Host "       moved aside:    $candidate" -ForegroundColor Yellow
+                Write-Host "       A running 'unsloth studio' process usually holds a file open here." -ForegroundColor Yellow
+                Write-Host "       Close Unsloth Studio and re-run the installer to reverse the move." -ForegroundColor Yellow
             }
             throw
         }
@@ -1905,15 +2010,90 @@ exit 0
         }
     }
 
+    function Merge-StudioVenvRollbackTree {
+        # Moves every entry of $Source into $Destination without ever overwriting or
+        # deleting what is already there. Returns $true only when $Source ends up
+        # empty and removed, i.e. the two halves were fully reunited.
+        param(
+            [Parameter(Mandatory = $true)][string]$Source,
+            [Parameter(Mandatory = $true)][string]$Destination
+        )
+        if (-not (Test-Path -LiteralPath $Destination)) {
+            [System.IO.Directory]::CreateDirectory($Destination) | Out-Null
+        }
+        $complete = $true
+        foreach ($entry in @(Get-ChildItem -LiteralPath $Source -Force -ErrorAction Stop)) {
+            # Not $destination: PowerShell names are case-insensitive, so that would
+            # reassign the $Destination parameter and nest every later sibling under
+            # the previous entry's name.
+            $entryTarget = Join-Path $Destination $entry.Name
+            if (-not (Test-Path -LiteralPath $entryTarget)) {
+                Move-Item -LiteralPath $entry.FullName -Destination $entryTarget -ErrorAction Stop
+                continue
+            }
+            # Same relative path on both sides: the move stopped inside this subtree.
+            # Recurse so the halves reunite -- Move-Item -Force would overwrite the
+            # half that never moved, which is exactly the data this path protects.
+            # A junction on either side is a leaf, not a subtree: recursing through one
+            # moves files to wherever it points, outside $StudioHome. Keep both instead.
+            # Get-Item both sides: Get-ChildItem has reported Attributes inconsistently.
+            $entryItem = Get-Item -LiteralPath $entry.FullName -Force -ErrorAction Stop
+            $targetItem = Get-Item -LiteralPath $entryTarget -Force -ErrorAction Stop
+            $linked = (($entryItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) -or
+                      (($targetItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+            if ($entryItem.PSIsContainer -and $targetItem.PSIsContainer -and -not $linked) {
+                if (-not (Merge-StudioVenvRollbackTree -Source $entry.FullName -Destination $entryTarget)) {
+                    $complete = $false
+                }
+                continue
+            }
+            Write-Host "[WARN] Kept both copies of $($entry.Name)" -ForegroundColor Yellow
+            Write-Host "       $($entry.FullName)" -ForegroundColor Yellow
+            Write-Host "       $entryTarget" -ForegroundColor Yellow
+            $complete = $false
+        }
+        if ($complete) {
+            Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
+            return (-not (Test-Path -LiteralPath $Source))
+        }
+        return $false
+    }
+
     function Restore-StudioVenvRollback {
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
         if (-not $backup -or -not (Test-Path -LiteralPath $backup)) {
             $script:StudioVenvRollbackActive = $false
+            $script:StudioVenvRollbackPartial = $false
             return
         }
         substep "restoring previous environment after failed install..." "Yellow"
+        if ($script:StudioVenvRollbackPartial) {
+            # $target is not an incomplete *new* environment here -- it is the half of
+            # the previous one the interrupted move left behind. Removing it first,
+            # the way the branch below does, would delete files that exist nowhere
+            # else and "restore" a corrupted venv. Merge the halves instead.
+            $merged = $false
+            try {
+                $merged = Merge-StudioVenvRollbackTree -Source $backup -Destination $target
+            } catch {
+                Write-Host "[WARN] Could not merge $backup back into $target" -ForegroundColor Yellow
+                Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+            if ($merged) {
+                substep "restored previous environment"
+                $script:StudioVenvRollbackActive = $false
+                $script:StudioVenvRollbackDir = $null
+                $script:StudioVenvRollbackPartial = $false
+            } else {
+                Write-Host "[WARN] The previous environment is still split in two." -ForegroundColor Yellow
+                Write-Host "       still in place: $target" -ForegroundColor Yellow
+                Write-Host "       moved aside:    $backup" -ForegroundColor Yellow
+                Write-Host "       Close Unsloth Studio and re-run the installer to finish reversing the move." -ForegroundColor Yellow
+            }
+            return
+        }
         try {
             if (Test-Path -LiteralPath $target) {
                 if (-not (Remove-StudioVenvTreeWithRetry -Path $target -Label "incomplete environment")) {
@@ -1937,6 +2117,7 @@ exit 0
         # backup so interruption cannot restore a partially deleted environment.
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
+        $script:StudioVenvRollbackPartial = $false
         if ($backup -and (Test-Path -LiteralPath $backup)) {
             Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
         }
@@ -2100,7 +2281,10 @@ exit 0
         param(
             [Parameter(Mandatory = $true, Position = 0)][string]$Exe,
             [Parameter(Position = 1)][string[]]$SmiArgs = @(),
-            [int]$TimeoutSec = 10
+            [int]$TimeoutSec = 10,
+            # Driver warnings on stderr would corrupt machine-readable --query-gpu
+            # output; the human-readable probes keep the default merge.
+            [switch]$StdoutOnly
         )
         try {
             $psi = New-Object System.Diagnostics.ProcessStartInfo
@@ -2119,6 +2303,7 @@ exit 0
                 return ""
             }
             $global:LASTEXITCODE = $proc.ExitCode
+            if ($StdoutOnly) { return $outTask.Result }
             return ($outTask.Result + "`n" + $errTask.Result)
         } catch {
             $global:LASTEXITCODE = 1
@@ -2688,6 +2873,52 @@ exit 0
         return ((($Url -split '[?#]', 2)[0].TrimEnd('/') -split '/')[-1]).ToLowerInvariant()
     }
 
+    # Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it
+    # covers every GPU, "uncovered" for an incompatible mix, empty when no fallback is
+    # needed or the inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because
+    # the wheel must support the host. Mirrors _nvidia_cu126_verdict in install.sh.
+    function Get-NvidiaCu126Verdict {
+        # Floor is per-release, not fixed: only 2.11 dropped sm_70 from cu128.
+        param([string]$SmiExe, [int]$LegacyFloorSm = 75)
+        if (-not $SmiExe) { return '' }
+        $raw = Invoke-NvidiaSmiBounded $SmiExe @('--query-gpu=compute_cap', '--format=csv,noheader,nounits') -StdoutOnly
+        if ($LASTEXITCODE -ne 0 -or -not $raw) { return '' }
+        $legacy = $false
+        $outsideCu126 = $false
+        $seen = $false
+        foreach ($line in ($raw -split "`n")) {
+            $value = $line.Trim()
+            if (-not $value) { continue }
+            if ($value -notmatch '^(\d+)\.(\d+)$') { return '' }
+            $sm = ([int]$Matches[1] * 10) + [int]$Matches[2]
+            if ($sm -lt $LegacyFloorSm) { $legacy = $true }
+            if ($sm -lt 50 -or $sm -gt 90) { $outsideCu126 = $true }
+            $seen = $true
+        }
+        if (-not $seen -or -not $legacy) { return '' }
+        if ($outsideCu126) { return 'uncovered' }
+        return 'cu126'
+    }
+
+    function Get-CudaFamilyCappedForPreTuring {
+        param([string]$Family, [string]$SmiExe)
+        if ($Family -notin @('cu128', 'cu130')) { return $Family }
+        # Windows pins torch<2.11, whose cu128 still ships sm_70, so only cu130
+        # strands a Volta here. Raise to 75 when that pin reaches 2.11.
+        $legacyFloorSm = if ($Family -eq 'cu128') { 70 } else { 75 }
+        switch (Get-NvidiaCu126Verdict $SmiExe $legacyFloorSm) {
+            'cu126' {
+                substep "pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $Family wheels start at sm_75" "Yellow"
+                return 'cu126'
+            }
+            'uncovered' {
+                substep "this host mixes pre-Turing NVIDIA GPUs with GPUs that cu126 cannot serve; no PyTorch 2.11 CUDA family covers both" "Yellow"
+                substep "keeping $Family, so the pre-Turing GPUs will be unusable; set UNSLOTH_TORCH_INDEX_FAMILY=cu126 to choose the other way" "Yellow"
+            }
+        }
+        return $Family
+    }
+
     # ── Choose the correct PyTorch index URL based on driver CUDA version ──
     # Mirrors Get-PytorchCudaTag in setup.ps1.
     function Get-TorchIndexUrl {
@@ -2709,12 +2940,13 @@ exit 0
             # Accept both spellings so we don't fall through to the cu126 default.
             if ($output -match 'CUDA(?: UMD)? Version:\s+(\d+)\.(\d+)') {
                 $major = [int]$Matches[1]; $minor = [int]$Matches[2]
-                if ($major -ge 13)                    { return "$baseUrl/cu130" }
-                if ($major -eq 12 -and $minor -ge 8)  { return "$baseUrl/cu128" }
-                if ($major -eq 12 -and $minor -ge 6)  { return "$baseUrl/cu126" }
-                if ($major -ge 12) { return "$baseUrl/cu124" }
-                if ($major -ge 11) { return "$baseUrl/cu118" }
-                return "$baseUrl/cpu"
+                if ($major -ge 13)                        { $family = "cu130" }
+                elseif ($major -eq 12 -and $minor -ge 8)  { $family = "cu128" }
+                elseif ($major -eq 12 -and $minor -ge 6)  { $family = "cu126" }
+                elseif ($major -ge 12) { $family = "cu124" }
+                elseif ($major -ge 11) { $family = "cu118" }
+                else { return "$baseUrl/cpu" }
+                return "$baseUrl/$(Get-CudaFamilyCappedForPreTuring $family $NvidiaSmiExe)"
             }
         } catch {}
         substep "could not determine CUDA version from nvidia-smi, defaulting to cu126" "Yellow"
@@ -2993,7 +3225,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.2" "unsloth-zoo>=2026.8.2" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated no-torch)" { uv pip install --python $VenvPython --no-deps --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.5" "unsloth-zoo>=2026.8.4" }
             if ($baseInstallExit -eq 0) {
                 # Resolve pydantic WITH deps so pip pins pydantic-core
                 # to the matching version (no-torch-runtime.txt below
@@ -3007,7 +3239,7 @@ exit 0
                 }
             }
         } else {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.2" "unsloth-zoo>=2026.8.2" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (migrated)" { uv pip install --python $VenvPython --reinstall-package unsloth --reinstall-package unsloth-zoo "unsloth>=2026.8.5" "unsloth-zoo>=2026.8.4" }
         }
         if ($baseInstallExit -ne 0) {
             Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
@@ -3134,7 +3366,7 @@ exit 0
         if ($SkipTorch) {
             # No-torch: install unsloth + unsloth-zoo with --no-deps, then
             # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.2" "unsloth-zoo>=2026.8.2" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (no-torch)" { uv pip install --python $VenvPython --no-deps --upgrade-package unsloth --upgrade-package unsloth-zoo "unsloth>=2026.8.5" "unsloth-zoo>=2026.8.4" }
             if ($baseInstallExit -eq 0) {
                 # Same pydantic-with-deps trick as the migrated branch.
                 $baseInstallExit = Invoke-InstallCommandRetry -Label "install pydantic" { uv pip install --python $VenvPython pydantic }
@@ -3146,7 +3378,7 @@ exit 0
                 }
             }
         } elseif ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.2" "unsloth-zoo>=2026.8.2" }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (local)" { uv pip install --python $VenvPython --upgrade-package unsloth "unsloth>=2026.8.5" "unsloth-zoo>=2026.8.4" }
         } else {
             $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth" { uv pip install --python $VenvPython --upgrade-package unsloth -- "$PackageName" }
         }
@@ -3174,7 +3406,7 @@ exit 0
         Write-TauriLog "STEP" "Installing unsloth"
         substep "installing unsloth (this may take a few minutes)..."
         if ($StudioLocalInstall) {
-            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.8.2" "unsloth>=2026.8.2" --torch-backend=auto }
+            $baseInstallExit = Invoke-InstallCommandRetry -Label "install unsloth (auto torch backend)" { uv pip install --python $VenvPython "unsloth-zoo>=2026.8.4" "unsloth>=2026.8.5" --torch-backend=auto }
             if ($baseInstallExit -ne 0) {
                 Write-Host "[ERROR] Failed to install unsloth (exit code $baseInstallExit)" -ForegroundColor Red
                 return (Exit-InstallFailure "Failed to install unsloth (exit code $baseInstallExit)" $baseInstallExit)
@@ -3502,6 +3734,37 @@ exit 0
         return
     }
 
+    # Ask once (interactive installs only) whether the launcher should open
+    # the browser after the server is up. Skipped when --no-browser/--browser
+    # was passed or input is redirected; then an existing choice is kept.
+    # Enter keeps the choice baked into the existing launcher so a reinstall
+    # that accepts the defaults never flips a saved no-browser preference.
+    # UNSLOTH_SKIP_AUTOSTART is documented for automated installs, so it must
+    # suppress this prompt too, matching the $IsInteractive gate on the launch
+    # prompt below. Leaving $OpenBrowserPref empty falls through to the existing
+    # "keep the baked choice, else default on" logic.
+    $_browserPromptOk = (-not $SkipAutostart) -and [Environment]::UserInteractive -and
+        (-not [Console]::IsInputRedirected)
+    if (-not $OpenBrowserPref -and $_browserPromptOk) {
+        $_existingPref = ""
+        $_promptLauncher = if ($StudioDataDir) { Join-Path $StudioDataDir "launch-studio.ps1" } else { $null }
+        if ($_promptLauncher -and (Test-Path -LiteralPath $_promptLauncher)) {
+            try {
+                $_prevText = [System.IO.File]::ReadAllText($_promptLauncher)
+                if ($_prevText -match "(?m)^\`$openBrowserDefault = '([01])'") {
+                    $_existingPref = $Matches[1]
+                }
+            } catch {}
+        }
+        $_browserHint = if ($_existingPref -eq '0') { '[y/N]' } else { '[Y/n]' }
+        Write-Host ""
+        $_browserReply = Read-Host "  Open Unsloth Studio in your default browser after launch? $_browserHint"
+        $OpenBrowserPref = if ($_browserReply -match '^[Nn]') { '0' }
+            elseif ($_browserReply -match '^[Yy]') { '1' }
+            elseif ($_existingPref) { $_existingPref }
+            else { '1' }
+    }
+
     # New-StudioShortcuts gates the .lnk shortcuts on env-mode internally.
     New-StudioShortcuts -UnslothExePath $UnslothExe
 
@@ -3536,11 +3799,92 @@ exit 0
     # caller explicitly disabled the post-install prompt.
     # In non-interactive environments (CI, Docker) just print instructions.
     $IsInteractive = (-not $SkipAutostart) -and [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
+    # Select the same bounded free-port range as the generated desktop launcher.
+    # Passing the selected port to both the server and watcher prevents an
+    # existing Studio on 8888 from moving the backend while the watcher stays
+    # behind.
+    function Find-PostInstallStudioPort {
+        param([int]$BasePort = 8888, [int]$MaxPortOffset = 20)
+        $probes = @(
+            @{ Family = [System.Net.Sockets.AddressFamily]::InterNetwork; Host = '127.0.0.1' },
+            @{ Family = [System.Net.Sockets.AddressFamily]::InterNetworkV6; Host = '::1' }
+        )
+        for ($offset = 0; $offset -le $MaxPortOffset; $offset++) {
+            $candidate = $BasePort + $offset
+            $busy = $false
+            foreach ($probe in $probes) {
+                $client = $null
+                try {
+                    $client = [System.Net.Sockets.TcpClient]::new($probe.Family)
+                    $connect = $client.ConnectAsync($probe.Host, $candidate)
+                    if ($connect.Wait(100) -and $client.Connected) {
+                        $busy = $true
+                        break
+                    }
+                } catch {
+                } finally {
+                    if ($client) { $client.Dispose() }
+                }
+            }
+            if (-not $busy) { return $candidate }
+        }
+        return $BasePort
+    }
+
+    # Background watcher for the foreground launch below: once the server is
+    # healthy on the selected port, open the browser per the persisted
+    # preference. Guarded by the per-install root id so a different Studio is
+    # never the one opened.
+    $_browserWatch = {
+        param($RootId, $Port)
+        $deadline = (Get-Date).AddSeconds(120)
+        while ((Get-Date) -lt $deadline) {
+            try {
+                $r = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/health" -TimeoutSec 1 -Method Get
+                # An empty RootId must never mean "any backend will do"; the
+                # caller does not start the job in that case.
+                if ($r.service -eq 'Unsloth UI Backend' -and
+                    $RootId -and $r.studio_root_id -eq $RootId) {
+                    Start-Process "http://localhost:$Port"
+                    break
+                }
+            } catch {}
+            Start-Sleep -Seconds 1
+        }
+    }
     if ($IsInteractive) {
         Write-Host ""
         $reply = Read-Host "  Start Unsloth Studio now? [Y/n]"
         if ([string]::IsNullOrWhiteSpace($reply) -or $reply -match '^[Yy]') {
-            & $UnslothExe studio -p 8888
+            $_launchPort = Find-PostInstallStudioPort
+            # Open the browser once the server is up, unless opted out. The
+            # server prints its own URL, so no watcher is needed when off.
+            $_browserJob = $null
+            if ($OpenBrowserPref -ne '0') {
+                $_watchRootId = ""
+                $_watchIdFile = Join-Path $StudioHome "share\studio_install_id"
+                if (Test-Path -LiteralPath $_watchIdFile) {
+                    try { $_watchRootId = ([System.IO.File]::ReadAllText($_watchIdFile)).Trim() } catch {}
+                }
+                # Fail closed: without our own id we cannot tell our backend from
+                # another Studio on the same port, so open nothing rather than
+                # risk opening a stranger's.
+                if ($_watchRootId) {
+                    try {
+                        $_browserJob = Start-Job -ScriptBlock $_browserWatch -ArgumentList @($_watchRootId, $_launchPort)
+                    } catch {}
+                }
+            }
+            try {
+                & $UnslothExe studio -p $_launchPort
+            } finally {
+                # The server is gone; reap the watcher instead of leaving it to
+                # poll out its 120s deadline and pop a browser after the fact.
+                if ($_browserJob) {
+                    Stop-Job -Job $_browserJob -ErrorAction SilentlyContinue
+                    Remove-Job -Job $_browserJob -Force -ErrorAction SilentlyContinue
+                }
+            }
         } else {
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"

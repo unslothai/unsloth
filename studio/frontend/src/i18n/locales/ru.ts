@@ -5,6 +5,36 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ru = {
+  picker: {
+    onDevice: "На устройстве",
+    huggingFace: "Hugging Face",
+    retry: "Повторить",
+    loadMore: "Загрузить ещё",
+    offlineTitle: "Нет подключения к сети",
+    offlineBody:
+      "Переключитесь на «Устройство», чтобы использовать локальные или кэшированные {noun}.",
+    offlineSwitchDevice: "Устройство",
+    searchAriaLabel: "Поиск: {noun}",
+    modelSourceAriaLabel: "Источник модели",
+    hubSectionAriaLabel: "Раздел Hub",
+    pickModelFile: "Выбрать файл модели на диске",
+    ejectLoadedModel: "Выгрузить загруженную модель",
+    multipleMatches:
+      "В категории «{noun}» найдено несколько совпадений. Выберите одно из списка.",
+    rateLimitedTitle: "Достигнут лимит запросов Hugging Face",
+    rateLimitedBody:
+      "Подождите немного, затем повторите поиск в категории «{noun}».",
+    hfToken: {
+      label: "Токен HF",
+      saved: "Сохранён",
+      add: "Добавить",
+      savedAriaLabel: "Токен Hugging Face сохранён",
+      addAriaLabel: "Задать токен Hugging Face",
+      savedHint: "Токен сохранён. Доступ проверяется при его использовании.",
+      addHint:
+        "Задайте токен для доступа к закрытым и защищённым репозиториям.",
+    },
+  },
   common: {
     cancel: "Отмена",
     close: "Закрыть",
@@ -13,11 +43,11 @@ export const ru = {
     error: "Ошибка",
     export: "Экспорт",
     help: "Справка",
-    loading: "Загрузка...",
-    new: "Создать",
+    loading: "Загрузка…",
+    new: "Новое",
     rename: "Переименовать",
     save: "Сохранить",
-    saving: "Сохранение...",
+    saving: "Сохранение…",
     search: "Поиск",
     shutdown: "Выключить",
   },
@@ -45,7 +75,7 @@ export const ru = {
     navigation: {
       newChat: "Новый чат",
       returnToChat: "Вернуться к чату",
-      returnToChats: "Вернуться к {count} чатам",
+      returnToChats: "Вернуться к чатам ({count})",
       chatGenerating: "Генерация",
       compare: "Сравнить",
       search: "Поиск",
@@ -53,6 +83,11 @@ export const ru = {
       projects: "Проекты",
       train: "Обучение",
       recipes: "Рецепты",
+      images: "Изображения",
+      video: "Видео",
+      more: "Ещё",
+      customizeSidebar: "Настроить боковую панель",
+      newBadge: "Новое",
       export: "Экспорт",
       recents: "Недавние",
       noChatsYet: "Пока нет чатов",
@@ -60,7 +95,7 @@ export const ru = {
       api: "API",
       lightMode: "Светлая тема",
       darkMode: "Тёмная тема",
-      guidedTour: "Обзорный тур",
+      guidedTour: "Обзор интерфейса",
       help: "Справка",
       logOut: "Выйти",
       shutdown: "Выключить",
@@ -152,15 +187,26 @@ export const ru = {
         sttNotDownloaded: "Не скачано",
         sttDownloadStatusFailed: "Не удалось проверить состояние скачивания",
         sttDownload: "Скачать",
+        sttDownloadConfirmTitle: "Скачать {model}?",
+        sttDownloadConfirmBody:
+          "Локальная диктовка работает полностью офлайн, но сначала ей нужна речевая модель {model}. Около {size}, скачивается один раз в ваш кэш Hugging Face.",
+        sttDownloadConfirmBodyUnsized:
+          "Локальная диктовка работает полностью офлайн, но сначала ей нужна речевая модель {model}. Она скачивается один раз в ваш кэш Hugging Face.",
+        sttOpenVoiceSettings: "Открыть настройки «Голос»",
+        sttDownloadStarted: "Скачивание {model}",
         sttDownloading: "Скачивание… {progress}%",
         sttCancelDownload: "Отмена",
-        sttCancellingDownload: "Отмена…",
+        sttCancellingDownload: "Отмена скачивания…",
+        sttCancelDownloadFailed: "Не удалось отменить скачивание",
         sttDownloadComplete: "Модель распознавания речи скачана",
+        sttModelReady: "Модель {model} готова к диктовке",
+        sttRecommended: "Рекомендуется",
         sttDownloadFailed: "Не удалось скачать модель распознавания речи",
         sttLoad: "Загрузить",
         sttUnload: "Выгрузить",
         sttUnloading: "Выгрузка…",
         microphoneLabel: "Микрофон",
+        microphoneFallbackName: "Микрофон {index}",
         microphoneDescription: "Используется для диктовки",
         microphoneFallbackHint:
           "Используется для диктовки. Если речевой движок браузера не может работать с этим устройством, будет использовано системное устройство по умолчанию",
@@ -171,7 +217,7 @@ export const ru = {
           "Доступ к микрофону заблокирован. Разрешите доступ к микрофону для этой страницы Unsloth и повторите попытку.",
         micAccessUnsupported:
           "Доступ к микрофону не поддерживается в этом браузере или контексте.",
-        systemDefault: "Системное устройство по умолчанию",
+        systemDefault: "По умолчанию в системе",
         savedMicDisconnected: "Сохранённый микрофон (не подключён)",
         languageLabel: "Язык диктовки",
         languageDescription: "Язык для распознавания",
@@ -181,10 +227,14 @@ export const ru = {
         sectionTitle: "Словарь диктовки",
         sectionDescription:
           "Задайте, как диктовка записывает определённые слова и выражения",
-        manageLabel: "Пользовательские написания",
+        manageLabel: "Особые варианты написания",
         manage: "Управление",
         backToVoice: "Назад к настройкам голоса",
         addEntry: "Добавить запись",
+        newEntryAria: "Новая словарная запись",
+        entryPlaceholder: "Анна Иванова",
+        entryAria: "Словарная запись {index}",
+        removeEntryAria: "Удалить словарную запись {index}",
       },
       recents: {
         sectionTitle: "История диктовок",
@@ -246,8 +296,9 @@ export const ru = {
         volumeLabel: "Громкость",
         previewLabel: "Прослушать голос",
         previewDescription: "Воспроизвести короткий пример",
+        previewFailed: "Не удалось воспроизвести пример синтеза речи",
         previewAction: "Прослушать",
-        stopAction: "Стоп",
+        stopAction: "Остановить",
         ttsLabel: "Синтез речи",
         notSupported: "Не поддерживается в этом браузере",
       },
@@ -261,6 +312,8 @@ export const ru = {
         "Используется для загрузки закрытых моделей и публикации артефактов.",
       hideToken: "Скрыть токен",
       showToken: "Показать токен",
+      clearToken: "Очистить",
+      checkingToken: "Проверка токена...",
       tokenValidated: "Токен проверен",
       password: "Пароль",
       passwordDescription: "Изменить пароль для этого аккаунта Unsloth.",
@@ -299,7 +352,7 @@ export const ru = {
         sectionTitle: "Вспомогательная LLM",
         preloadOnStartup: "Предзагружать вспомогательную LLM при запуске",
         preloadOnStartupDescription:
-          "Загружать вспомогательную модель AI Assist в фоне при запуске. По умолчанию выключено; AI Assist всё равно может загрузить её по запросу.",
+          "Скачивать вспомогательную модель AI Assist в фоновом режиме при запуске. По умолчанию выключено; AI Assist всё равно может скачать её по запросу.",
         disabledByEnv:
           "Отключено переменной UNSLOTH_HELPER_MODEL_DISABLE в окружении бэкенда.",
         loadError: "Не удалось загрузить настройки вспомогательной LLM.",
@@ -309,14 +362,13 @@ export const ru = {
         sectionTitle: "Автопереключение модели (OpenAI API)",
         enable: "Переключать модель по запросу",
         enableDescription:
-          "Когда OpenAI-совместимый запрос указывает другую загруженную GGUF, загружать её перед обслуживанием. По умолчанию выключено; неизвестные имена продолжают обслуживать загруженную модель.",
+          "Загружать скачанную модель GGUF, указанную в запросе к API, перед обработкой запроса. По умолчанию выключено.",
         idleUnload: "Автовыгрузка при простое",
         idleUnloadDescription:
-          "Выгружать модель после указанного числа секунд простоя, чтобы освободить VRAM; следующий запрос загрузит её снова. 0 оставляет модель загруженной. Минимум 60 секунд.",
-        idleNeedsEnable:
-          "Включите «Переключать модель по запросу», чтобы выгруженная модель загружалась при следующем использовании.",
-        idleActiveViaEnv:
-          "Автовыгрузка при простое активна через переменную окружения UNSLOTH_MODEL_IDLE_TTL.",
+          "Освобождать VRAM после указанного числа секунд простоя. 0 оставляет модель загруженной; минимальное значение: 60.",
+        idleSecondsAriaLabel: "Число секунд до автовыгрузки при простое",
+        idleNeedsEnable: "Сначала включите «Переключать модель по запросу».",
+        idleActiveViaEnv: "Активно через UNSLOTH_MODEL_IDLE_TTL.",
         loadError: "Не удалось загрузить настройки автопереключения модели.",
         saveError: "Не удалось сохранить настройки автопереключения модели.",
         idleError: "Введите 0, чтобы модель оставалась загруженной, или не менее 60 секунд.",
@@ -331,7 +383,7 @@ export const ru = {
         sectionTitle: "Публикация предпросмотра",
         enableLabel: "Публичные ссылки предпросмотра",
         enableDescription:
-          "Позволяет любому по подписанной ссылке общаться с готовой моделью без входа в систему. Отключите, чтобы закрыть публичный предпросмотр; общие ссылки перестанут работать.",
+          "Позволяет любому по подписанной ссылке общаться с готовой моделью без входа в систему. Отключите, чтобы закрыть публичный предпросмотр; опубликованные ссылки перестанут работать.",
         loadError: "Не удалось загрузить настройки публикации предпросмотра.",
         saveError: "Не удалось сохранить настройки публикации предпросмотра.",
         revokeLabel: "Отозвать все ссылки предпросмотра",
@@ -374,7 +426,7 @@ export const ru = {
         saveError: "Не удалось сохранить модель эмбеддингов.",
         saved: "Модель эмбеддингов сохранена.",
         saveAnyway: "Всё равно сохранить",
-        resetAction: "Сбросить к умолчанию",
+        resetAction: "Восстановить значение по умолчанию",
       },
       storage: {
         sectionTitle: "Хранилище",
@@ -483,9 +535,9 @@ export const ru = {
         trainingRuns: "Запуски",
         trainingCompleted: "Завершено",
         trainingSteps: "Шаги",
-        trainingTokens: "Обучено токенов",
+        trainingTokens: "Обработано токенов",
         trainingTime: "Время обучения",
-        bestLoss: "Лучший loss",
+        bestLoss: "Минимальная функция потерь",
         runSteps: "{steps}",
         runLoss: "loss {loss}",
       },
@@ -506,7 +558,7 @@ export const ru = {
         description: "Цвета, используемые в Unsloth в светлой и тёмной теме.",
         standard: "Стандартная",
         classic: "Классическая",
-        minimal: "Минимальная",
+        minimal: "Минималистичная",
       },
       custom: {
         reset: "Сбросить",
@@ -600,6 +652,14 @@ export const ru = {
         compactSidebarDescription:
           "Держать боковую панель развёрнутой, а не свёрнутой в значки.",
       },
+      sidebarNav: {
+        title: "Навигация боковой панели",
+        description:
+          "Закрепляйте вкладки боковой панели и меняйте их порядок. Незакреплённые вкладки собираются в меню «Ещё»; если незакреплённая вкладка всего одна, она просто скрывается, а не превращается в меню из одного пункта. «Новый чат» остаётся на месте.",
+        dragToReorder: "Перетащите, чтобы изменить порядок",
+        pinToSidebar: "Закрепить на боковой панели: {name}",
+        moreHolds: "Ещё ({count})",
+      },
       sidebarMenu: {
         title: "Меню боковой панели",
         description:
@@ -616,6 +676,13 @@ export const ru = {
       disableOverlay: "Отключить оверлей",
       liveMonitor: {
         title: "Монитор в реальном времени",
+        apiTitle: "Монитор API",
+        summary: "Активные запросы, ошибки и использование токенов",
+        status: "активных: {active} · недавних: {recent} · {model}",
+        noModelLoaded: "модель не загружена",
+        autoOpen: "Автоматически показывать плавающий монитор",
+        autoOpenDescription:
+          "Открывает небольшую панель при появлении трафика API.",
         cpu: "CPU",
         ram: "RAM",
         disk: "Диск",
@@ -627,7 +694,10 @@ export const ru = {
       },
       gpu: {
         title: "Устройства GPU",
-        noGpu: "Видимый GPU не обнаружен. Выше показаны ресурсы CPU.",
+        ggufInference: "Инференс GGUF",
+        unavailable: "недоступно",
+        noGpu:
+          "Доступные GPU не обнаружены. Выше показаны ресурсы только для CPU.",
         unknownDevice: "Неизвестный GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -643,7 +713,8 @@ export const ru = {
         modelsFolder: "Папка моделей",
         modelsFolderKeywords:
           "модели папка каталог путь расположение загрузки кэш хранилище диск перенести изменить models folder path hugging face",
-        modelsFolderDescription: "Где хранятся загруженные модели.",
+        modelsFolderDescription:
+          "Здесь хранятся скачанные модели. Измените папку, чтобы хранить модели не на системном диске.",
         openAction: "Открыть",
         copyAction: "Копировать путь",
         copied: "Путь скопирован",
@@ -684,12 +755,12 @@ export const ru = {
       commandBuilder: "Конструктор команды",
       agent: "Кодинг-агент",
       model: "Модель",
-      searchModels: "Поиск моделей GGUF...",
+      searchModels: "Поиск моделей GGUF…",
       noModels: "Подходящих моделей GGUF нет.",
       showingModels:
         "Показано {shown} из {total} совпадений. Продолжайте вводить, чтобы сузить список.",
       quantization: "Квантизация",
-      loadingQuantizations: "Загрузка квантизаций...",
+      loadingQuantizations: "Загрузка квантизаций…",
       noQuantizations: "Без отдельной квантизации",
       recommended: "Рекомендуется",
       downloaded: "Скачано",
@@ -717,7 +788,8 @@ export const ru = {
         title: "Собрать команду",
         description:
           "Запустите агента на модели, уже загруженной в Studio. Сначала загрузите модель, затем замените claude на любого поддерживаемого агента из списка ниже.",
-        noneDetected: "В вашем PATH не найдено поддерживаемых CLI агентов.",
+        noneDetected:
+          "В PATH не найдено ни одного поддерживаемого агента с интерфейсом командной строки.",
         installed: "Установлен",
       },
       supportedAgents: {
@@ -759,7 +831,7 @@ export const ru = {
       remote: {
         title: "Подключение к удалённому Studio",
         description:
-          "Направьте unsloth start на Studio, работающий в другом месте, задав перед запуском следующие переменные (или передайте --api-key напрямую):",
+          "Чтобы подключить unsloth start к удалённому экземпляру Studio, задайте перед запуском следующие переменные (или передайте --api-key напрямую):",
       },
       passthrough: {
         title: "Передача аргументов агенту",
@@ -774,10 +846,32 @@ export const ru = {
     },
     chat: {
       title: "Чат",
-      description: "Управление историей чатов, хранящейся на этом устройстве.",
-      modelDisclaimer: "Показывать оговорку о модели",
+      description: "Настройка поведения чата на этом устройстве.",
+      modelSelection: {
+        title: "Настройки выбора модели",
+        expandQuantizations: "Раскрывать квантизации",
+        expandQuantizationsDescription:
+          "Включено: квантизации моделей GGUF из раздела «On Device» отображаются сразу. Выключено: нажмите модель, чтобы просмотреть её квантизации.",
+        showAllQuantizations: "Показывать все квантизации",
+        showAllQuantizationsDescription:
+          "Включено: показываются все квантизации из раздела «On Device», в том числе не скачанные. Выключено: показываются только скачанные квантизации.",
+      },
+      menu: {
+        title: "Меню чата",
+        description:
+          "Закрепляйте пункты в боковом меню «+» чата. Остальные будут доступны в разделе «Ещё».",
+        chatWithFiles: "Чат с файлами (RAG)",
+        mcp: "MCP",
+        savedPrompts: "Сохранённые промпты",
+        compareChat: "Сравнить чаты",
+        exportChat: "Экспортировать чат",
+      },
+      showResponseModel: "Показывать модель в ответах",
+      showResponseModelDescription:
+        "Показывать метаданные модели в ответах ассистента.",
+      modelDisclaimer: "Показывать предупреждение о модели",
       modelDisclaimerDescription:
-        'Показывать «LLM могут ошибаться» под полем ввода.',
+        "Показывать сообщение «LLM могут ошибаться» под полем ввода.",
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "Сворачивать блоки HTML",
@@ -791,7 +885,7 @@ export const ru = {
       exportHistory: "Экспортировать историю чатов",
       exportHistoryDescription: "Скачать все чаты и сообщения в формате JSON.",
       exportAction: "Экспорт",
-      exportingAction: "Экспорт...",
+      exportingAction: "Экспорт…",
       exportConversations: "Экспортировать «Недавние» и проекты",
       exportConversationsDescription:
         "Скачать «Недавние» или «Недавние» вместе с чатами проектов в формате Raw JSONL, CSV или ShareGPT JSONL, объединённо или по чатам.",
@@ -802,7 +896,7 @@ export const ru = {
       exportPerChatSuffix: "(по чатам)",
       importChats: "Импортировать чаты",
       importChatsDescription:
-        "Импортировать экспорт JSONL, NDJSON или CSV в «Недавние».",
+        "Импортировать файл экспорта в формате JSONL, NDJSON или CSV в раздел «Недавние».",
       importChatsAction: "Импорт",
       importNoConversations: "В файле не найдено диалогов.",
       importedOneChat: "Импортирован 1 диалог в «Недавние».",
@@ -820,12 +914,12 @@ export const ru = {
         "Безвозвратно удалить все чаты на этом устройстве: {count}.",
       clearChatsAction: "Очистить чаты",
       clearOneChatTitle: "Очистить 1 чат?",
-      clearChatsTitle: "Очистить {count} чатов?",
+      clearChatsTitle: "Очистить чаты ({count})?",
       clearChatsConfirmDescription:
         "Безвозвратно удаляет все чаты на этом устройстве. Это действие нельзя отменить.",
-      clearingAction: "Очистка...",
+      clearingAction: "Очистка…",
       clearOneChatAction: "Очистить 1 чат",
-      clearChatCountAction: "Очистить {count} чатов",
+      clearChatCountAction: "Очистить чаты ({count})",
       clearedAllChats: "Все чаты очищены",
       clearedOneChat: "Очищен 1 чат",
       clearedChatCount: "Очищено чатов: {count}",
@@ -845,14 +939,16 @@ export const ru = {
     },
     data: {
       title: "Данные",
+      backToData: "Вернуться к данным",
+      exportFailed: "Не удалось экспортировать чаты",
       description:
         "Управление историей чатов и загруженными файлами, которые хранятся на этом устройстве.",
       archivedChats: "Архивные чаты",
       archivedChatsDescription:
         "Просматривайте чаты, отправленные в архив, и управляйте ими.",
-      manageAction: "Управление",
+      manageAction: "Управлять",
       exportArchivedChats: "Экспорт",
-      exportingArchivedChats: "Экспорт...",
+      exportingArchivedChats: "Экспорт…",
       exportedOneArchivedChat: "Экспортирован 1 архивный чат",
       exportedArchivedChatCount: "Экспортировано архивных чатов: {count}",
       noArchivedChatsToExport: "Нет архивных чатов для экспорта.",
@@ -862,7 +958,7 @@ export const ru = {
         "Переносит в архив все чаты из «Недавних» и проектов.",
       noChatsToArchive: "Нет чатов для архивации.",
       archiveAllAction: "Архивировать все",
-      archivingAction: "Архивация...",
+      archivingAction: "Архивация…",
       archiveAllChatsTitle: "Архивировать все чаты?",
       archiveAllChatsConfirmDescription:
         "Переносит в архив все чаты на этом устройстве. Архивные чаты остаются доступными, их можно вернуть из архива в любой момент.",
@@ -882,11 +978,11 @@ export const ru = {
         "Создайте из своих чатов датасет JSONL для дообучения. Загрузите его в «Обучение», доработайте в «Рецептах» или экспортируйте.",
       fineTuneExportAction: "Экспорт в JSONL",
       fineTuneRunAction: "Запустить",
-      fineTuneExportingAction: "Экспорт...",
+      fineTuneExportingAction: "Экспорт…",
       fineTuneOpenRecipesAction: "Открыть в «Рецептах»",
-      fineTuneOpeningRecipesAction: "Открытие...",
+      fineTuneOpeningRecipesAction: "Открытие…",
       fineTuneTrainAction: "Загрузить во вкладку «Обучение»",
-      fineTuneTrainingAction: "Загрузка...",
+      fineTuneTrainingAction: "Загрузка…",
       fineTuneExportFailed: "Не удалось экспортировать обучающие данные",
       fineTuneRecipeFailed: "Не удалось открыть чаты в «Рецептах»",
       fineTuneTrainFailed:
@@ -926,7 +1022,7 @@ export const ru = {
       osWindows: "Windows",
       secureHttps: "Защищённый HTTPS",
       secureHttpsHint:
-        "Порт 0.0.0.0 по-прежнему доступен глобально. Для полной безопасности запустите Unsloth с флагом --secure, чтобы открыть только эту HTTPS-ссылку.",
+        "Порт, привязанный к адресу 0.0.0.0, по-прежнему доступен глобально. Для полной безопасности запустите Unsloth с флагом --secure, чтобы оставить доступ только по этой HTTPS-ссылке.",
       copyTunnelUrl: "Копировать URL туннеля",
       copySnippet: "Копировать фрагмент",
       copy: "Копировать",
@@ -934,22 +1030,17 @@ export const ru = {
       setupDocs: "Документация по настройке:",
       codingAgents: "Кодинг-агенты",
       codingAgentsHint:
-        "Запустите кодинг-агента к этому серверу. Он использует загруженную модель; локальный сервер выпускает ключ API автоматически, удалённый включает его в команду.",
+        "Запустите кодинг-агента, подключив его к этому серверу. Он будет использовать загруженную модель; локальный сервер автоматически создаст ключ API, а удалённый добавит его в команду.",
       codingAgentsSwap: "Замените claude на codex, openclaw, opencode или hermes.",
       codingAgentDetected: "Установлен на этой машине",
       codingAgentsDetectedHint: "Обнаружены на этой машине: {agents}.",
       relativeNever: "никогда",
       relativeJustNow: "только что",
-      relativeHoursAgo: "{count} ч назад",
-      relativeDaysAgo: "{count} дн назад",
-      relativeMonthsAgo: "{count} мес назад",
-      relativeYearsAgo: "{count} г назад",
       expired: "истёк",
       today: "сегодня",
-      inDays: "через {count} дн",
       created: "Создан {value}",
-      used: "Использован {value}",
-      expires: "Истекает {value}",
+      used: "Использование: {value}",
+      expires: "Срок действия: {value}",
       actionsFor: "Действия для {name}",
       copyPrefix: "Копировать префикс",
       revokeToken: "Отозвать токен",
@@ -963,9 +1054,12 @@ export const ru = {
     },
     about: {
       title: "О программе",
-      description: "Документация, заметки о выпусках, отзывы и данные сборки.",
+      description:
+        "Документация, заметки о выпусках, обратная связь и сведения о сборке.",
       studioVersion: "Версия Unsloth",
       packageVersion: "Версия пакета",
+      desktopAppVersion: "Версия настольного приложения",
+      desktopAppVersionUnavailable: "Недоступно",
       llamaCppVersion: "Версия llama.cpp",
       hardware: "Оборудование",
       gpu: "GPU",
@@ -977,16 +1071,17 @@ export const ru = {
       documentation: "Документация",
       releaseNotes: "Заметки о выпуске",
       whatsNew: "Что нового",
-      feedback: "Отзывы",
+      feedback: "Обратная связь",
       reportIssue: "Сообщить о проблеме",
       license: {
         sectionTitle: "Лицензия",
         studioLabel: "Unsloth",
         studioLicense: "AGPL-3.0",
-        studioDescription: "Открытый исходный код под GNU AGPL v3.0.",
+        studioDescription:
+          "Исходный код открыт и распространяется по лицензии GNU AGPL v3.0.",
         libraryLabel: "Unsloth Core",
         libraryLicense: "Apache-2.0",
-        libraryDescription: "Лицензировано под Apache 2.0.",
+        libraryDescription: "Распространяется по лицензии Apache 2.0.",
       },
       dangerZone: "Опасная зона",
       shutDownStudio: "Выключить Unsloth",
@@ -998,7 +1093,7 @@ export const ru = {
         commandText: "Текст «{label}»",
         copied: "Скопировано",
         copyCommand: "Копировать команду",
-        commandCopied: "«{label}» скопировано",
+        commandCopied: "Скопировано: {label}",
         copyNamedCommand: "Копировать «{label}»",
         checkingInstall: "Проверка способа установки Unsloth...",
         installIntro: "Чтобы установить или обновить Unsloth:",
@@ -1006,7 +1101,7 @@ export const ru = {
         installCommandUnix: "Команда установки для macOS/Linux",
         installCommandWindows: "Команда установки для Windows",
         localInstallDetected:
-          "Обнаружена локальная установка. Обновляйте из исходного checkout, чтобы не заменить его версией с PyPI.",
+          "Обнаружена установка из локальной рабочей копии. Обновляйте Unsloth из исходной рабочей копии, чтобы не заменить эту установку пакетом из PyPI.",
         pullThenUpdate:
           "Загрузите последние изменения, затем запустите локальный установщик:",
         gitPullCommand: "Команда git pull",
@@ -1014,14 +1109,40 @@ export const ru = {
         sourceInstallDetected:
           "Обнаружена установка из исходников или VCS-пакета. Переустановите из исходного локального пути или Git URL.",
         repoCheckoutFallback:
-          "Если у вас всё ещё есть checkout репозитория, запустите локальный установщик из него:",
+          "Если рабочая копия репозитория сохранилась, запустите из неё локальный установщик:",
         restartAfterUpdate: "После обновления перезапустите Unsloth.",
         desktopManaged:
-          "Настольное приложение поддерживает встроенный бэкенд в актуальном состоянии и уведомит о новой версии.",
+          "Настольное приложение автоматически проверяет наличие новых версий. Здесь также можно в любое время проверить наличие обновлений или установить их.",
+        desktopReady: "Обновления настольного приложения",
+        desktopReadyDescription:
+          "Проверьте, доступна ли более новая версия настольного приложения.",
+        desktopChecking: "Проверка обновлений",
+        desktopCheckingDescription: "Обычно это занимает несколько секунд.",
+        desktopAvailable:
+          "Доступна версия {version} настольного приложения",
+        desktopAvailableDescription:
+          "Установите обновление сейчас. После установки настольное приложение перезапустится.",
+        desktopExternalServer:
+          "Выполните `unsloth studio update` в терминале, из которого был запущен сервер.",
+        desktopManualInstall:
+          "Откройте страницу выпуска, чтобы установить последнюю версию пакета для Linux.",
+        desktopCheckFailed: "Не удалось проверить наличие обновлений",
+        desktopCheckFailedDescription:
+          "Проверьте подключение к сети и повторите попытку.",
+        desktopCurrent:
+          "Установлена последняя версия настольного приложения",
+        desktopCurrentDescription:
+          "Unsloth продолжит автоматически проверять наличие обновлений.",
+        checkForUpdates: "Проверить наличие обновлений",
+        checkAgain: "Проверить снова",
+        retryCheck: "Повторить попытку",
+        checking: "Проверка…",
+        updateNow: "Обновить сейчас",
+        openReleasePage: "Открыть страницу выпуска",
         unknownInstall:
           "Не удалось определить способ установки Unsloth. Для установки через установщик или PyPI используйте команды выше.",
         localCheckout:
-          "Для установок из локального checkout запустите локальный установщик из него:",
+          "Для установки из локальной рабочей копии запустите установщик из этой копии:",
         docs: "Документация по установке:",
         docsInstall: "Установка",
         docsUpdating: "Обновление",
@@ -1031,8 +1152,197 @@ export const ru = {
     },
   },
   studio: {
+    imageTraining: "Обучение изображений",
+    goToImageTraining: "Перейти к обучению изображений",
     routeTitle: "Обучение",
-    title: "Студия дообучения",
+    wizard: {
+      modelTitle: "Модель",
+      modelDescription: "Выберите модель и метод обучения",
+      datasetTitle: "Датасет",
+      datasetDescription: "Выберите или загрузите данные для обучения",
+      paramsTitle: "Параметры",
+      paramsDescription: "Настройте параметры обучения",
+      configTitle: "Конфигурация",
+      configDescription: "Сохраняйте и загружайте конфигурации",
+      modelLabel: "Модель",
+      methodLabel: "Метод",
+      datasetLabel: "Датасет",
+      modelTooltip: "Базовая модель, которую вы хотите дообучить.",
+      methodTooltip: "Как обучается модель. LoRA и QLoRA обновляют небольшие адаптеры вместо всех весов.",
+      datasetTooltip: "Обучающие данные для дообучения модели.",
+      hfTokenLabel: "Токен Hugging Face",
+      hfTokenDescription:
+        "Необходим для моделей и наборов данных с ограниченным или закрытым доступом.",
+      hfTokenGet: "Получить токен",
+      hfTokenChecking: "Проверка токена…",
+      modelPickerDescription:
+        "Найдите модель на Hugging Face или выберите доступную для обучения модель на этом устройстве.",
+      trainingMethod: "Метод обучения",
+      trainingMethodDescription: "Выберите способ дообучения {model}",
+      trainingMethodTooltip:
+        "QLoRA использует 4-битное квантование для минимального расхода VRAM. LoRA использует 16-битные веса, а полное дообучение обновляет все веса.",
+      datasetPickerDescription:
+        "Найдите датасет на Hugging Face или выберите датасет на этом устройстве.",
+      uploadDataset: "Загрузить датасет",
+      uploadDatasetDescription:
+        "Поддерживаются CSV, JSONL, JSON и Parquet.",
+      chooseFile: "Выбрать файл",
+      format: "Формат",
+      autoDetect: "Автоопределение",
+      uploadLocalLabel: "Или загрузите локальный файл",
+      sourceBrowse: "Обзор",
+      releaseToUpload: "Отпустите для загрузки",
+      loadYaml: "Загрузить YAML",
+      saveYaml: "Сохранить YAML",
+      resetDefaults: "Сбросить по умолчанию",
+      cachedModelGoneTitle: "Кэшированная модель больше недоступна",
+      cachedModelGoneDescription:
+        "Файлов модели больше нет на этом устройстве, поэтому при запуске обучения они будут загружены снова.",
+      cachedDatasetGoneTitle: "Кэшированный датасет больше недоступен",
+      cachedDatasetGoneDescription:
+        "Файлов датасета больше нет на этом устройстве, поэтому при запуске обучения они будут загружены снова.",
+    },
+    preview: {
+      title: "Предпросмотр запуска",
+      ready: "Готово",
+      notReady: "Не готово",
+      modelPending: "Ожидание модели",
+      datasetPending: "Ожидание датасета",
+      method: "Метод",
+      length: "Длительность",
+      stepZero: "{count} шагов",
+      step: "{count} шаг",
+      stepTwo: "{count} шага",
+      stepFew: "{count} шага",
+      stepMany: "{count} шагов",
+      steps: "{count} шагов",
+      epochZero: "{count} эпох",
+      epoch: "{count} эпоха",
+      epochTwo: "{count} эпохи",
+      epochFew: "{count} эпохи",
+      epochMany: "{count} эпох",
+      epochs: "{count} эпохи",
+      batch: "Батч",
+      context: "Контекст",
+      lr: "LR",
+      hardware: "Оборудование",
+      noGpu: "GPU не обнаружен",
+      hfToken: "Токен HF",
+      saved: "Сохранён",
+      notSet: "Не задан",
+      files: "Файлы",
+      model: "Модель",
+      dataset: "Датасет",
+      downloadsOnStart: "Будет загружено при запуске",
+      continuesOnStart: "Будет продолжено при запуске",
+      noticeModelDownload:
+        "Этой модели пока нет на устройстве. При запуске обучения она будет загружена автоматически.",
+      noticeModelPartial:
+        "Перед загрузкой модели обучение завершит скачивание недостающих файлов.",
+      noticeDatasetDownload:
+        "Этого датасета пока нет на устройстве. При запуске обучения он будет загружен автоматически.",
+      noticeDatasetPartial:
+        "Перед чтением датасета обучение завершит скачивание недостающих файлов.",
+      advancedSettings: "Расширенные настройки",
+      defaultAdvancedSettings: "По умолчанию",
+      nonDefaultAdvancedSettings: "Нестандартных: {count}",
+    },
+    datasetPicker: {
+      noun: "датасеты",
+      selectDataset: "Выберите датасет",
+      hubPlaceholder: "Поиск датасетов Hugging Face...",
+      devicePlaceholder: "Поиск локальных датасетов...",
+      useAsHubDataset: "Использовать как датасет Hugging Face",
+      hfCacheLabel: "Кэш HF",
+      sourceRecipe: "Рецепт",
+      sourceUpload: "Загрузка",
+      sourceLocal: "Локальный",
+      scanningLocal: "Сканирование датасетов на этом устройстве…",
+      couldntScan: "Не удалось просканировать локальные датасеты",
+      someLocationsUnscanned:
+        "Не удалось просканировать некоторые расположения датасетов.",
+      noLocalDatasets:
+        "На этом устройстве пока ничего нет. Скачайте датасет с Hugging Face, создайте его в разделе «Рецепты» или загрузите файл.",
+      openDataRecipes: "Открыть рецепты данных",
+      searchingHub: "Поиск в Hugging Face…",
+      noDatasetsFound: "Датасеты не найдены.",
+      tokenRejectedTitle: "Токен Hugging Face отклонён",
+      tokenRejectedBody:
+        "Обновите токен в разделе «Настройки» → «Общие», затем повторите попытку.",
+      hubUnreachable: "Не удалось подключиться к Hugging Face",
+      cantUseDataset: "Датасет нельзя использовать",
+      reasonInvalidHubId:
+        "Введите допустимый ID датасета Hugging Face: repo или owner/repo. Используйте только латинские буквы, цифры, ., _ или - (не более 96 символов в каждой части).",
+    },
+    modelPicker: {
+      noun: "модели",
+      selectModel: "Выберите модель",
+      hubPlaceholder: "Найдите или вставьте ID Hugging Face...",
+      devicePlaceholder:
+        "Найдите локальную модель или вставьте путь к папке...",
+      useAsHubModel: "Использовать как модель Hugging Face",
+      useAsLocalPath: "Использовать как локальный путь",
+      hfCacheLabel: "Кэш HF",
+      sourceModelsFolder: "Папка моделей",
+      sourceHfCache: "Кэш HF",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "Пользовательская папка",
+      sourceLocalModel: "Локальная модель",
+      scanningLocal: "Сканирование локальных моделей…",
+      couldntScan: "Не удалось просканировать локальные модели",
+      someLocationsUnscanned:
+        "Не удалось просканировать некоторые локальные расположения.",
+      noLocalModels: "Локальные модели не найдены.",
+      noLocalModelsHint:
+        "Вставьте путь к папке выше или переключитесь на Hugging Face.",
+      searchingHub: "Поиск в Hugging Face…",
+      noModelsFound: "Модели не найдены.",
+      tokenRejectedTitle: "Токен Hugging Face отклонён",
+      tokenRejectedBody:
+        "Обновите токен в разделе «Настройки» → «Общие», затем повторите попытку.",
+      hubUnreachable: "Не удалось подключиться к Hugging Face",
+      cantUseModel: "Модель нельзя использовать для обучения",
+      reasonTypeMismatch:
+        "Эта модель не соответствует типу обучения, выбранному на предыдущем шаге.",
+      reasonInvalidHubId:
+        "Введите допустимый ID модели Hugging Face: repo или owner/repo. Используйте только латинские буквы, цифры, ., _ или - (не более 96 символов в каждой части).",
+      reasonEmptyId: "Введите ID модели или путь к локальной модели.",
+      reasonGguf: "Модели GGUF нельзя использовать для обучения.",
+      reasonAdapter:
+        "Выходные файлы адаптера нельзя использовать как базовые модели для обучения.",
+      reasonNotTrainable: "Эта модель на устройстве не поддерживает обучение.",
+      reasonUnsupportedFormat:
+        "Этот формат модели не поддерживается для обучения.",
+      vramNeeds: "Требуется ~{est} ГБ VRAM (GPU: {total} ГБ)",
+      vramTight: "~{est} ГБ VRAM (впритык для {total} ГБ)",
+      vramApprox: "~{est} ГБ VRAM",
+      vramOomBadge: "OOM",
+      vramTightBadge: "Впритык",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "4-битная квантизация. Минимум VRAM и самый быстрый запуск.",
+        note: "4 бита",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "16-битные адаптеры. Баланс качества и памяти.",
+        note: "16 бит",
+      },
+      full: {
+        label: "Полное дообучение",
+        hint: "Обучает все веса. Максимальное качество и расход VRAM.",
+        note: "fp16",
+      },
+      cpt: {
+        label: "Продолженное предобучение",
+        hint:
+          "Продолженное предобучение для новых предметных областей или языков.",
+        note: "продолженное",
+      },
+    },
     subtitles: {
       configure: "Настройте и запустите обучение",
       trainingInProgress: "Обучение выполняется",
@@ -1063,64 +1373,30 @@ export const ru = {
       checkingDataset: "Проверка датасета...",
       trainingConfig: "Конфигурация обучения",
     },
-    model: {
-      title: "Модель",
-      description: "Выберите базовую модель и метод обучения",
-      fasterTrainingBadge: "Обучение в 2 раза быстрее",
-      baseModel: "Базовая модель",
-      localModel: "Локальная модель",
-      localModelTooltip:
-        "Путь к локально загруженной модели или пользовательскому репозиторию HF.",
-      scanningLocalAndCachedModels: "Сканирование локальных и кэшированных моделей...",
-      scanning: "Сканирование...",
-      scanningLocalModels: "Сканирование локальных моделей...",
-      noLocalModelsFound: "Локальные модели не найдены",
-      noLocalModelsFoundManual: "Локальные модели не найдены. Введите путь вручную.",
-      failedToLoadLocalModels: "Не удалось загрузить локальные модели",
-      hfCache: "Кэш HF",
-      customFolders: "Пользовательские папки",
-      localDir: "Локальный каталог",
-      huggingFaceModel: "Модель Hugging Face",
-      huggingFaceModelTooltip:
-        "Ищите модели Hugging Face или выберите из нашего рекомендованного списка.",
-      searchModels: "Поиск моделей...",
-      searching: "Поиск...",
-      noModelsFound: "Модели не найдены",
-      needsVram: "Требуется ~{vram} ГБ VRAM (GPU: {gpu} ГБ)",
-      tightVram: "~{vram} ГБ VRAM (впритык на {gpu} ГБ)",
-      vramEstimate: "~{vram} ГБ VRAM",
-      method: "Метод",
-      methodTooltip:
-        "QLoRA использует 4-битную квантизацию для минимального VRAM. LoRA использует 16 бит. Full обновляет все веса. CPT (Continued Pretraining) обучает на сыром тексте, чтобы адаптировать модель к новой предметной области без чат-форматирования.",
-      readMore: "Подробнее",
-      fullFineTune: "Полное дообучение",
-      checkingToken: "Проверка токена...",
-      getOrUpdateToken: "Получить или обновить токен",
-      huggingFaceTokenOptional: "Токен Hugging Face (необязательно)",
-      continuedPretraining: "Продолженное предобучение",
-      localModels: "Локальные модели",
-      localModelsFound: "Найдено локальных/кэшированных моделей: {count}",
-      loadingLocalModels: "Загрузка локальных моделей...",
-    },
     dataset: {
-      title: "Датасет",
-      description: "Выберите или загрузите данные для обучения",
+      selectors: {
+        subset: "Поднабор",
+        subsetTooltip:
+          "Выберите поднабор (конфигурацию) датасета для использования.",
+        trainSplit: "Обучающая выборка",
+        trainSplitTooltip: "Выберите выборку для обучения.",
+        evaluationSplit: "Оценочная выборка",
+        evaluationSplitTooltip:
+          "Выберите выборку для оценки. «Нет» означает, что оценка во время обучения выполняться не будет.",
+        selectSubset: "Выберите поднабор...",
+        selectSplit: "Выберите выборку...",
+        none: "Нет",
+        loading: "Загрузка конфигураций и выборок датасета...",
+        manualTitle: "Введите параметры датасета вручную",
+        manualDescription:
+          "Введите точные имена конфигурации и выборок Hugging Face, которые нужно использовать.",
+        manualSubsetPlaceholder: "Необязательное имя конфигурации",
+        manualRequired: "Необходимо указать обучающую выборку.",
+        manualTooLong: "Используйте не более 128 символов.",
+        manualInvalid: "Это значение содержит неподдерживаемые символы.",
+      },
       source: "Источник датасета",
-      chooseDataset: "Выбрать датасет",
-      chooseDatasetTooltip:
-        "Используйте вкладки во всплывающем окне для переключения между Hugging Face и выводом локальных рецептов.",
-      localTab: "Локальные",
-      searchHuggingFaceDatasets: "Поиск датасетов Hugging Face...",
-      searchLocalDatasets: "Поиск локальных датасетов...",
-      searching: "Поиск...",
-      noDatasetsFound: "Датасеты не найдены",
-      loadingLocalDatasets: "Загрузка локальных датасетов...",
-      failedToLoadLocalDatasets: "Не удалось загрузить локальные датасеты.",
-      noLocalDatasetsYet: "Пока нет локальных датасетов.",
-      noLocalDatasetsMatchSearch: "Нет локальных датасетов по запросу.",
-      openDataRecipes: "Открыть Data Recipes",
-      browsingSource: "Просмотр {browsing}. Текущий выбор остаётся {current}.",
-      localDatasets: "Локальные датасеты",
+      sourceAriaLabel: "Источник датасета",
       localDataset: "Локальный датасет",
       localDatasetRows: " / {count} строк",
       huggingFaceDataset: "Датасет Hugging Face",
@@ -1132,14 +1408,75 @@ export const ru = {
       updated: "Обновлено",
       evalDataset: "Датасет для оценки",
       uploading: "Загрузка...",
-      upload: "Загрузить",
       uploadEvalFile: "Загрузить файл для оценки",
+      fileTooLarge: "Файл слишком большой",
+      fileTooLargeDescription:
+        "Размер файла {file} — {size}. Для загрузки обучающих данных поддерживается размер до {limit}.",
+      uploadLimitsHint:
+        "CSV, JSONL, JSON, Parquet · до {limit}; PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "Сначала преобразуйте этот файл",
+        genericFile: "Этот файл",
+        description:
+          "{file} — это исходный материал, а не готовый датасет для обучения. Преобразуйте документ в датасет с помощью Data Recipes, затем вернитесь сюда для дообучения.",
+        nextStepTitle: "Рекомендуемый следующий шаг",
+        nextStepDescription:
+          "Откройте Learning Recipes и начните с рецепта на основе документов, например PDF grounded QA.",
+        openAction: "Открыть Learning Recipes",
+      },
       evalDatasetDescription:
         "Необязательно. Если не указан, небольшая часть будет выделена из обучающих данных.",
       advanced: "Дополнительно",
       targetFormat: "Целевой формат",
       targetFormatTooltip:
         "Формат ваших обучающих данных. Автоопределение работает для большинства датасетов.",
+      streamingInfoAriaLabel: "Информация о потоковой передаче датасета",
+      streaming: {
+        label: "Включить потоковую передачу",
+        description:
+          "Передавать текстовые датасеты Hugging Face потоком вместо их скачивания.",
+        unavailable: "Потоковая передача недоступна. Чтобы включить её:",
+        completionsUnavailable:
+          "Недоступно, пока включена потоковая передача датасета.",
+        blockers: {
+          source:
+            "Используйте датасет Hugging Face, а не локальный файл или источник S3.",
+          maxSteps:
+            "Задайте «Макс. шагов» > 0 — длина потоковых датасетов неизвестна.",
+          trainOnCompletions:
+            "Отключите «Только ответы ассистента».",
+          evalSplit:
+            "Выберите отдельную выборку для оценки — оценка включена, но отдельная выборка не задана.",
+          visionModel:
+            "Модели зрения не поддерживают потоковую передачу.",
+          audioModel:
+            "Аудиомодели не поддерживают потоковую передачу.",
+          embeddingModel:
+            "Модели эмбеддингов не поддерживают потоковую передачу: для обучения нужен весь датасет.",
+          imageDataset:
+            "Похоже, этот датасет содержит изображения, поэтому его нельзя передавать потоком.",
+          audioDataset:
+            "Похоже, этот датасет содержит аудио, поэтому его нельзя передавать потоком.",
+          appleSilicon:
+            "Потоковая передача на Apple Silicon (MLX) пока не поддерживается.",
+        },
+        options: {
+          trainOnCompletions: "только ответы ассистента",
+          evaluation: "оценка (нужна отдельная выборка)",
+        },
+        notifications: {
+          disabledForDetectedModality:
+            "Потоковая передача отключена: датасеты с изображениями или аудио необходимо скачивать полностью. Проверьте настройку и снова запустите обучение.",
+          turnedOffMaxSteps:
+            "Потоковая передача отключена: для неё требуется фиксированное значение «Макс. шагов» > 0.",
+          adjusted:
+            "Настройки скорректированы для потоковой передачи. Отключены несовместимые параметры: {options}.",
+          needsMaxSteps:
+            "Для потоковой передачи требуется фиксированное значение «Макс. шагов»: длина потоковых датасетов неизвестна. Сначала задайте «Макс. шагов» > 0.",
+          enabledAdjusted:
+            "Потоковая передача включена. Отключены несовместимые параметры: {options}.",
+        },
+      },
       auto: "Авто",
       rawText: "Сырой текст",
       trainSplitStart: "Начало обучающей выборки",
@@ -1151,6 +1488,9 @@ export const ru = {
       endPlaceholder: "Конец",
       clear: "Очистить",
       dropFileOrClick: "Перетащите 1 файл сюда или нажмите для загрузки",
+      uploadDetails: "Сведения о загрузке",
+      uploadDetailsTooltip:
+        "До {limit} на файл. PDF, DOCX и TXT не являются готовыми датасетами для обучения, поэтому сначала преобразуйте их в разделе «Рецепты».",
       viewDataset: "Просмотреть датасет",
       uploadFailed: "Загрузка не удалась",
       unknownError: "Неизвестная ошибка",
@@ -1161,9 +1501,28 @@ export const ru = {
       uploadOneFileAtATime: "Загружайте по одному файлу за раз",
       uploadSingleFileDescription:
         "Загрузка датасета для обучения принимает один файл.",
-      checkingToken: "Проверка токена...",
-      getOrUpdateToken: "Получить или обновить токен",
       preview: "Предпросмотр датасета",
+      previewLoadingHuggingFace:
+        "Получение предпросмотра датасета из Hugging Face...",
+      previewLoading: "Загрузка предпросмотра...",
+      mappingRequirements: {
+        audioAndText: "аудио и текст",
+        imageAndText: "изображение и текст",
+        instructionAndOutput: "инструкцию и ответ",
+        humanAndGpt: "человека и GPT",
+        userAndAssistant: "пользователя и ассистента",
+      },
+      mappingStatus: {
+        heuristicTitle: "Сопоставление определено эвристически",
+        readyTitle: "Сопоставление готово",
+        requiredTitle: "Сопоставьте столбцы датасета",
+        heuristicDescription:
+          "Мы автоматически определили сопоставление столбцов с помощью эвристик. Проверьте и измените его в выпадающих списках заголовков или используйте ИИ-помощник для более точного сопоставления.",
+        readyDescription:
+          "Всё готово. Этот датасет будет преобразован автоматически.",
+        requiredDescription:
+          "Назначьте роли столбцам с помощью выпадающих списков в заголовках. Как минимум назначьте {required}.",
+      },
       split: "Выборка",
       subset: "Подмножество",
       s3: {
@@ -1193,8 +1552,11 @@ export const ru = {
       },
     },
     params: {
-      title: "Параметры",
-      description: "Настройте гиперпараметры обучения",
+      mode: {
+        simple: "Простой",
+        advanced: "Расширенный",
+        ariaLabel: "Режим параметров",
+      },
       projectName: "Название проекта",
       optional: "Необязательно",
       projectNameDescription:
@@ -1207,13 +1569,9 @@ export const ru = {
       useEpochs: "Использовать эпохи",
       maxStepsTooltip: "Переопределить общее число шагов оптимизатора.",
       epochsTooltip: "Количество полных проходов по датасету.",
-      epochsDescription: "Каждая эпоха представляет собой один полный проход по вашему датасету.",
-      maxStepsDescription:
-        "Ограничивает обучение фиксированным числом шагов оптимизатора.",
       contextLength: "Длина контекста",
       contextLengthTooltip: "Максимальное число токенов на обучающий образец.",
       customContextLength: "Введите своё значение",
-      contextLengthDescription: "Макс. длина последовательности для обучающих образцов",
       learningRate: "Скорость обучения",
       learningRateTooltip:
         "Размер шага обновления весов. Меньшие значения обучают медленнее, но стабильнее.",
@@ -1222,8 +1580,6 @@ export const ru = {
       embeddingLearningRate: "Скорость обучения эмбеддингов",
       embeddingLearningRateTooltip:
         "Используется только когда CPT обучает embed_tokens. Эмбеддинги легче дестабилизировать, чем веса LoRA, поэтому им обычно нужна меньшая скорость обучения. Оставьте пустым, чтобы использовать lr/10; типичный рабочий диапазон в 2-10 раз меньше основной скорости обучения. Повышайте только если адаптация словаря или доменных токенов идёт слишком медленно.",
-      embeddingLearningRateDescription:
-        "Оставьте пустым, чтобы использовать lr/10 (рекомендуется). Типичный диапазон в 2-10 раз меньше основной скорости обучения.",
       rank: "Ранг",
       rankTooltip:
         "Размерность низкоранговых матриц. Чем выше, тем больше ёмкость.",
@@ -1242,12 +1598,15 @@ export const ru = {
       stableRank: "Стабильный ранг",
       memoryEfficient: "Экономия памяти",
       weightDecomposed: "Декомпозиция весов",
+      notSupportedAppleSilicon: "Не поддерживается на Apple Silicon",
       optimization: "Оптимизация",
       schedule: "Расписание",
       memory: "Память",
       optimizer: "Оптимизатор",
       optimizerTooltip:
         "Алгоритм оптимизации. 8-битные варианты снижают потребление памяти. Fused рекомендуется для моделей зрения.",
+      optimizerTooltipMlx:
+        "Алгоритм оптимизации. По умолчанию используется AdamW. Lion потребляет меньше памяти, но обычно требует меньшей скорости обучения.",
       lrScheduler: "Планировщик LR",
       lrSchedulerTooltip:
         "Как скорость обучения меняется в процессе обучения. Linear убывает равномерно; cosine убывает по кривой.",
@@ -1289,29 +1648,68 @@ export const ru = {
       enablePacking: "Включить packing",
       assistantCompletionsOnly: "Только ответы ассистента",
       readMore: "Подробнее",
-      optimizerTooltipMlx:
-        "Алгоритм оптимизации. По умолчанию используется AdamW. Lion требует меньше памяти, но ему обычно нужна меньшая скорость обучения.",
     },
     training: {
-      title: "Обучение",
-      description: "Мониторинг и управление обучением",
-      chartNoDataTitle: "Пока нет данных обучения",
-      chartNoDataDescription: "Начните обучение, чтобы увидеть прогресс loss",
       startTraining: "Начать обучение",
       starting: "Запуск...",
       loadingModel: "Загрузка модели...",
       checkingDataset: "Проверка датасета...",
-      configLabel: "Конфигурация обучения",
-      upload: "Загрузить",
+      startFailed: "Не удалось запустить обучение",
+      startUnconfirmed:
+        "Unsloth не удалось подтвердить запуск обучения. Состояние проверяется в фоновом режиме.",
+      stopFailed: "Не удалось остановить обучение",
+      trainingStillActiveTitle: "Обучение ещё выполняется",
+      stopBeforeConfig:
+        "Сначала остановите обучение, затем вернитесь к настройке.",
+      resumeFailed: "Не удалось возобновить обучение",
+      resumeFailedTitle: "Не удалось возобновить обучение",
+      resumeUnavailable:
+        "Возобновить можно только остановленные или завершившиеся с ошибкой запуски с сохранённым чекпоинтом.",
+      chooseModel: "Выберите модель",
+      chooseDataset: "Выберите датасет",
+      chooseModelAndDataset: "Выберите модель и датасет",
+      modelUnverified:
+        "Не удалось проверить настройки этой модели. Проверьте подключение или токен Hugging Face, затем повторите попытку.",
+      legacyDatasetScriptUnsupported:
+        "Этот датасет Hub использует устаревший пользовательский скрипт и не поддерживается в этом процессе обучения.",
+      hfModelAccessDenied:
+        "Hugging Face отклонил доступ к этой модели. Добавьте действительный токен Hugging Face с доступом к репозиторию, примите необходимые условия доступа и повторите попытку.",
+      hfModelVerificationRateLimited:
+        "Проверка модели Hugging Face ограничена по частоте запросов. Повторите попытку позже.",
+      hfModelVerificationFailed:
+        "Не удалось проверить модель Hugging Face. Проверьте идентификатор репозитория и токен доступа.",
+      hfModelMetadataUnavailable:
+        "Метаданные модели Hugging Face временно недоступны. Повторите попытку перед запуском обучения.",
+      datasetUnverified:
+        "Не удалось проверить совместимость датасета с этой моделью. Проверьте подключение или токен Hugging Face — проверка повторится при запуске обучения.",
+      setupChanged:
+        "Настройки обучения изменились во время проверки. Проверьте их и снова запустите обучение.",
+      validation: {
+        s3MultimodalUnsupported:
+          "Датасеты S3 пока не поддерживаются для обучения моделей зрения или аудио.",
+        s3BucketRequired: "Сначала введите имя бакета S3.",
+        s3CredentialsRequired:
+          "Укажите ключи доступа S3 или включите роль IAM.",
+        modelRequired: "Сначала выберите базовую модель.",
+        learningRatePositive: "Введите скорость обучения больше нуля.",
+        embeddingLearningRateRange:
+          "Введите скорость обучения эмбеддингов больше 0 и меньше 1.",
+        hfDatasetRequired: "Сначала выберите датасет Hugging Face.",
+        hfDatasetSplitRequired:
+          "Сначала выберите или введите обучающую выборку.",
+        localDatasetRequired: "Сначала выберите локальный датасет.",
+        unsupportedDatasetSource: "Источник датасета не поддерживается.",
+      },
       uploadConfigTooltip: "Загрузить сохранённую конфигурацию YAML",
-      save: "Сохранить",
       saveConfigTooltip: "Скачать текущую конфигурацию как YAML",
-      reset: "Сбросить",
       resetConfigTooltip: "Сбросить к значениям модели по умолчанию",
       configLoaded: "Конфигурация загружена",
       failedToLoadConfig: "Не удалось загрузить конфигурацию",
       invalidYamlFile: "Недопустимый файл YAML",
+      configTooLarge:
+        "Файл конфигурации обучения слишком большой (максимум 1 МиБ).",
       failedToReadFile: "Не удалось прочитать файл",
+      failedToSaveConfig: "Не удалось сохранить конфигурацию",
       parametersReset: "Параметры сброшены к значениям модели по умолчанию",
       audioIncompatible:
         "Эта модель не поддерживает аудио. Переключитесь на модель с поддержкой аудио или выберите не-аудио датасет.",
@@ -1322,7 +1720,8 @@ export const ru = {
       continueAction: "Продолжить обучение",
       cancelAction: "Отменить обучение",
       stopTitle: "Остановить обучение",
-      stopDescription: "Выберите, как остановить текущий запуск обучения.",
+      stopDescription:
+        "Выберите, как остановить текущий запуск обучения. «Остановить и сохранить» создаст чекпоинт, с которого позже можно продолжить обучение; если остановить без сохранения, продолжить обучение будет нельзя.",
       stopAction: "Остановить",
       stopping: "Остановка...",
       stopAndSave: "Остановить и сохранить",
@@ -1335,6 +1734,20 @@ export const ru = {
     },
     history: {
       title: "История",
+      filesDeleted: "Файлы удалены",
+      deleteArtifactsLabel: "Также удалить файлы адаптера с диска",
+      deleteArtifactsDescription:
+        "Удаляет папку результатов запуска, включая адаптеры и сохранённые чекпоинты.",
+      deleteArtifactsSharedNote:
+        "Эту папку результатов использует другой запуск. Файлы сохранятся, пока не будет удалён последний использующий их запуск.",
+      artifactsKeptShared:
+        "Запуск удалён. Файлы адаптера сохранены, поскольку эту папку использует другой запуск.",
+      deleteArtifactsActiveError:
+        "Эти файлы используются текущим обучением. Остановите обучение перед их удалением.",
+      deleteArtifactsFailed:
+        "Запуск удалён, но удалить его файлы не удалось.",
+      deleteArtifactsRetainedError:
+        "Не удалось удалить файлы адаптера, поэтому запуск обучения сохранён в истории.",
       emptyTitle: "Пока нет запусков обучения",
       emptyDescription:
         "Пока нет запусков обучения. Запустите первое обучение на вкладке «Настройка».",
@@ -1356,11 +1769,8 @@ export const ru = {
       deleteRun: "Удалить запуск",
       loss: "Loss",
       steps: "Шаги",
-      lossTrendSparkline: "Спарклайн тренда loss",
+      lossTrendSparkline: "Мини-график динамики функции потерь",
       relativeJustNow: "только что",
-      relativeMinutesAgo: "{count} мин назад",
-      relativeHoursAgo: "{count} ч назад",
-      relativeDaysAgo: "{count} дн назад",
       status: {
         completed: "Завершено",
         stopped: "Остановлено",
@@ -1465,6 +1875,7 @@ export const ru = {
         loadingDataset: "Загрузка датасета",
         configuring: "Настройка",
         training: "Обучение",
+        finalizing: "Сохранение модели",
         completed: "Завершено",
         error: "Ошибка",
         stopped: "Остановлено",

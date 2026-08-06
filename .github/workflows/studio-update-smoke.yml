@@ -23,6 +23,9 @@ on:
       - 'unsloth_cli/commands/studio.py'
       - 'pyproject.toml'
       - '.github/workflows/studio-update-smoke.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
   push:
     branches: [main, pip]
   workflow_dispatch:
@@ -64,19 +67,11 @@ jobs:
           # retrieved for pip but doesn't exist on disk".
 
       - name: Install Unsloth (--local, --no-torch)
-        # Pass the workflow token so the llama.cpp prebuilt installer's
-        # GitHub-API call to list releases isn't rate-limited (60/hr
-        # unauthenticated). Without this, three consecutive install +
-        # update + update calls in this job exceed the limit and the
-        # prebuilt path falls back to source build.
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: First update should be a no-op (prebuilt already validated)
         # `unsloth studio update --local` runs studio/setup.sh against

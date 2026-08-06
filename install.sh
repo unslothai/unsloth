@@ -13,6 +13,7 @@
 #   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_PYTHON=3.12 sh      # pin Python version
 #   curl -fsSL https://unsloth.ai/install.sh | UNSLOTH_STUDIO_HOME=/abs/path sh
 # Equivalent flags: ./install.sh --no-torch --python 3.12  (or pipe them: sh -s -- --no-torch)
+# ./install.sh --no-browser: launcher starts the server without opening the browser.
 #
 # Install dir priority: UNSLOTH_STUDIO_HOME > STUDIO_HOME (alias) > $HOME/.unsloth/studio
 #
@@ -64,6 +65,8 @@ _NO_TORCH_FLAG=false
 _SKIP_AUTOSTART=false
 _VERBOSE=false
 _SHORTCUTS_ONLY=false
+# Launcher browser auto-open: "" = undecided (prompt, else keep existing, else on).
+_STUDIO_OPEN_BROWSER=""
 _next_is_package=false
 _next_is_python=false
 _next_is_llama_cpp_dir=false
@@ -95,6 +98,8 @@ for arg in "$@"; do
         --no-torch) _NO_TORCH_FLAG=true ;;
         --verbose|-v) _VERBOSE=true ;;
         --shortcuts-only) _SHORTCUTS_ONLY=true ;;
+        --no-browser) _STUDIO_OPEN_BROWSER=0 ;;
+        --browser) _STUDIO_OPEN_BROWSER=1 ;;
         --with-llama-cpp-dir) _next_is_llama_cpp_dir=true ;;
     esac
 done
@@ -622,6 +627,23 @@ _start_studio_venv_replacement() {
     substep "previous environment preserved for rollback"
 }
 
+# Clear $VENV_DIR for a recreate without ever destroying the only copy. The
+# legacy-layout migration below moves $STUDIO_HOME/.venv straight into $VENV_DIR
+# without going through _start_studio_venv_replacement, so a plain `rm -rf` there
+# is unrecoverable: if the `uv venv` that follows cannot resolve an interpreter
+# (offline, or a uv whose managed-Python manifest predates the patch being asked
+# for) the user is left with no environment at all. Move it aside instead and let
+# the exit/signal traps put it back. When a replacement is already in flight the
+# rollback copy holds the user's real environment and $VENV_DIR is this run's own
+# work, so plain removal stays correct.
+_discard_venv_for_recreate() {  # venv dir
+    if [ "$_VENV_ROLLBACK_ACTIVE" != true ] && [ -d "$1" ] \
+       && _start_studio_venv_replacement "$1"; then
+        return 0
+    fi
+    rm -rf "$1"
+}
+
 _restore_studio_venv_replacement() {
     [ "$_VENV_ROLLBACK_ACTIVE" = true ] || return 0
     [ -n "$_VENV_ROLLBACK_DIR" ] && [ -d "$_VENV_ROLLBACK_DIR" ] || {
@@ -998,6 +1020,22 @@ if [ -z "${UNSLOTH_EXE:-}" ] || [ ! -x "${UNSLOTH_EXE:-}" ]; then
     exit 1
 fi
 
+# Browser auto-open. Priority: --no-browser/--browser arg, then
+# UNSLOTH_STUDIO_NO_BROWSER env var, then studio.conf, default on.
+# When off the server still starts; the URL is printed instead (PWA use).
+OPEN_BROWSER="${STUDIO_OPEN_BROWSER:-1}"
+# Case-insensitive falsy check, matching the PowerShell launcher's -notin.
+case "$(printf '%s' "${UNSLOTH_STUDIO_NO_BROWSER:-}" | tr '[:upper:]' '[:lower:]')" in
+    ''|0|false|no|off) ;;
+    *) OPEN_BROWSER=0 ;;
+esac
+for _arg in "$@"; do
+    case "$_arg" in
+        --no-browser) OPEN_BROWSER=0 ;;
+        --browser)    OPEN_BROWSER=1 ;;
+    esac
+done
+
 BASE_PORT=8888
 MAX_PORT_OFFSET=20
 TIMEOUT_SEC=60
@@ -1131,6 +1169,10 @@ _find_launch_port() {
 # ── Open browser ──
 _open_browser() {
     _url="$1"
+    if [ "$OPEN_BROWSER" = "0" ]; then
+        echo "Unsloth Studio is running at: $_url"
+        return 0
+    fi
     if [ "$(uname)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
         open "$_url"
     elif grep -qi microsoft /proc/version 2>/dev/null; then
@@ -1362,11 +1404,21 @@ LAUNCHER_EOF
 
     chmod +x "$_css_launcher"
 
+    # Browser auto-open: explicit installer choice wins; else keep the existing
+    # studio.conf value so `studio update` (--shortcuts-only) never resets it.
+    _css_open_browser="${_STUDIO_OPEN_BROWSER:-}"
+    if [ -z "$_css_open_browser" ] && [ -f "$_css_data_dir/studio.conf" ]; then
+        _css_open_browser=$(sed -n "s/^STUDIO_OPEN_BROWSER='\([01]\)'\$/\1/p" \
+            "$_css_data_dir/studio.conf" 2>/dev/null | head -n 1)
+    fi
+    [ "$_css_open_browser" = "0" ] || _css_open_browser=1
+
     # studio.conf: exe path + (env-mode only) persisted env vars so fresh
     # shells launch the right install without re-exporting.
     _css_quoted_exe=$(printf '%s' "$_css_exe" | sed "s/'/'\\\\''/g")
     {
         printf '%s\n' "UNSLOTH_EXE='$_css_quoted_exe'"
+        printf '%s\n' "STUDIO_OPEN_BROWSER='$_css_open_browser'"
         if [ "$_STUDIO_HOME_REDIRECT" = "env" ]; then
             # When an override resolves to the legacy default, llama.cpp
             # still lives at ~/.unsloth/llama.cpp (one shared build).
@@ -1793,6 +1845,10 @@ if [ "$_SHORTCUTS_ONLY" = true ]; then
         fi
         create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
     fi
+    # Drain piped stdin (curl | sh -s -- --shortcuts-only ...) before this
+    # early exit; otherwise curl dies with EPIPE, prints "curl: (23) Failure
+    # writing output to destination", and fails the whole pipeline.
+    [ ! -t 0 ] && cat > /dev/null 2>&1
     exit 0
 fi
 
@@ -2036,6 +2092,10 @@ _maybe_reroute_strixhalo_to_2404() {
     [ -n "$_USER_PYTHON" ] && _rr_args="$_rr_args --python $(_rr_q "$_USER_PYTHON")"
     [ "$_VERBOSE" = true ] && _rr_args="$_rr_args --verbose"
     [ "$TAURI_MODE" = true ] && _rr_args="$_rr_args --tauri"
+    # Forward an explicit browser choice; "" (undecided) forwards nothing so
+    # the rerouted install keeps its own default.
+    [ "$_STUDIO_OPEN_BROWSER" = "0" ] && _rr_args="$_rr_args --no-browser"
+    [ "$_STUDIO_OPEN_BROWSER" = "1" ] && _rr_args="$_rr_args --browser"
     if [ -n "${UNSLOTH_WSL_REROUTE_CMD:-}" ]; then
         _rr_cmd="$UNSLOTH_WSL_REROUTE_CMD"               # user took full control
     elif [ -n "$_rr_args" ]; then
@@ -2208,7 +2268,15 @@ esac
 
 # ── Install uv ──
 tauri_log "STEP" "Installing uv package manager"
-UV_MIN_VERSION="0.8.16"
+# 0.9.3 is the first uv whose managed-Python manifest carries CPython 3.13.9.
+# Anything older tops out at 3.13.8, which cannot import torch (see PYTHON_SKIP),
+# so a bare "3.13" request on an older uv resolves straight to the broken patch.
+UV_MIN_VERSION="0.9.3"
+# The floor before this raised it. An offline host may keep a uv between the two,
+# since those installs worked without touching the network; below it the
+# installer rejected the uv outright and still has to, or it proceeds on a uv
+# missing flags it is about to be handed (--default-index, --torch-backend).
+UV_OFFLINE_MIN_VERSION="0.8.16"
 
 # When bytecode compilation is enabled, large installs can exceed uv's 60s default on slow machines. Default to 180s, preserving overrides ("0" disables).
 : "${UV_COMPILE_BYTECODE_TIMEOUT:=180}"
@@ -2262,25 +2330,118 @@ version_ge() {
     return 0
 }
 
-_uv_version_ok() {
+# Patch releases the stack cannot run, space separated.
+#   3.13.8: python/cpython#139783 makes inspect.getsourcelines() drop a function
+#   body when a decorator is followed by a comment, which is the shape torch
+#   2.11's nn/modules/rnn.py has, and _overload_method reads its own source at
+#   import time -- so `import torch` dies with IndentationError. 3.13.9 was an
+#   expedited release carrying only that fix.
+PYTHON_SKIP="3.13.8"
+
+# Every entry above is skipped for one reason: it cannot `import torch`. A
+# --no-torch install never imports it, so refusing the interpreter there would
+# fail a GGUF-only setup on a locked-down host over a package it will not
+# install. SKIP_TORCH is set well before any of this runs.
+_python_skip_applies() {
+    [ "$SKIP_TORCH" != true ]
+}
+
+_python_is_skipped() {  # full x.y.z version
+    _python_skip_applies || return 1
+    for _bad in $PYTHON_SKIP; do
+        [ "$1" = "$_bad" ] && return 0
+    done
+    return 1
+}
+
+# uv picks the patch itself for a bare "3.13", so name a range it cannot satisfy
+# with a skipped release rather than checking afterwards. uv accepts a PEP 440
+# specifier as a python request, and the exclusions come straight from
+# PYTHON_SKIP so there is one list to maintain.
+#
+# The exclusion is spelled "!=3.13.8" rather than ">=3.13.9" on purpose: a host
+# that is offline, or whose uv is too old to know 3.13.9, may still have a
+# perfectly good cached 3.13.7, and a floor would refuse it and fail the install
+# outright. Measured against uv 0.10.7 with only 3.13.7 and 3.13.8 installed and
+# --offline: "3.13" gives 3.13.8, ">=3.13.9,<3.14" errors, ">=3.13,<3.14,!=3.13.8"
+# gives 3.13.7.
+_python_request() {  # requested version -> what uv is asked for
+    _python_skip_applies || { echo "$1"; return 0; }
+    case "$1" in
+        # An explicit patch is the caller's own choice, and a path or a uv
+        # download name is not a version at all. Pass those through untouched.
+        [0-9]*.[0-9]*.*|*/*|*\\*) echo "$1"; return 0 ;;
+        [0-9]*.[0-9]*) ;;
+        *) echo "$1"; return 0 ;;
+    esac
+    _req_minor=${1#*.}
+    # Only a plain X.Y gets a range. "3.13rc1", or a relative path like
+    # "3.13/bin/python" that slipped past the globs above, would otherwise reach
+    # the arithmetic below, and dash aborts the whole install on "Illegal number".
+    case "$_req_minor" in
+        ''|*[!0-9]*) echo "$1"; return 0 ;;
+    esac
+    _req=">=$1,<${1%%.*}.$((_req_minor + 1))"
+    for _bad in $PYTHON_SKIP; do
+        case "$_bad" in
+            "$1".*) _req="$_req,!=$_bad" ;;
+        esac
+    done
+    echo "$_req"
+}
+
+_uv_version_ok() {  # uv command, floor (defaults to UV_MIN_VERSION)
+    _floor=${2:-$UV_MIN_VERSION}
     _raw=$("$1" --version 2>/dev/null | awk '{print $2}') || return 1
     [ -n "$_raw" ] || return 1
     _ver=${_raw%%[-+]*}
     case "$_ver" in
         ''|*[!0-9.]*) return 1 ;;
     esac
-    version_ge "$_ver" "$UV_MIN_VERSION" || return 1
+    version_ge "$_ver" "$_floor" || return 1
     # Prerelease of the exact minimum (e.g. 0.7.14-rc1) is still below stable 0.7.14
-    [ "$_ver" = "$UV_MIN_VERSION" ] && [ "$_raw" != "$_ver" ] && return 1
+    [ "$_ver" = "$_floor" ] && [ "$_raw" != "$_ver" ] && return 1
     return 0
 }
 
 if ! command -v uv >/dev/null 2>&1 || ! _uv_version_ok uv; then
+    # Raising the floor pulled every 0.8.16-0.9.2 host into this block, and those
+    # installs used to succeed without touching the network, so a download
+    # failure must not be fatal for them. An unreadable version counts as
+    # present: that is a minimal image without awk, not an old uv.
+    _uv_present_before=false
+    if command -v uv >/dev/null 2>&1; then
+        # `|| _uv_prev_ver=`: on an image with no awk the pipeline exits 127 and
+        # set -e would kill the install here, which is exactly the host this
+        # block exists to keep working.
+        _uv_prev_ver=$(uv --version 2>/dev/null | awk '{print $2}' 2>/dev/null) \
+            || _uv_prev_ver=""
+        if [ -z "$_uv_prev_ver" ] || _uv_version_ok uv "$UV_OFFLINE_MIN_VERSION"; then
+            _uv_present_before=true
+        fi
+    fi
     substep "installing uv package manager..."
-    _uv_tmp=$(mktemp)
-    download "https://astral.sh/uv/install.sh" "$_uv_tmp"
-    run_maybe_quiet sh "$_uv_tmp" </dev/null
-    rm -f "$_uv_tmp"
+    _uv_refreshed=true
+    # download() exits the shell outright when neither curl nor wget is present,
+    # which an `if` cannot catch, so probe first: a minimal image with uv copied
+    # in but no downloader must keep the install it had before the floor moved.
+    if command -v curl >/dev/null 2>&1 || command -v wget >/dev/null 2>&1; then
+        _uv_tmp=$(mktemp)
+        if download "https://astral.sh/uv/install.sh" "$_uv_tmp"; then
+            run_maybe_quiet sh "$_uv_tmp" </dev/null || _uv_refreshed=false
+        else
+            _uv_refreshed=false
+        fi
+        rm -f "$_uv_tmp"
+    else
+        _uv_refreshed=false
+    fi
+    if [ "$_uv_refreshed" = false ] && [ "$_uv_present_before" = false ]; then
+        tauri_log "ERROR" "Could not install uv"
+        step "error" "could not download uv, and none is installed" "$C_ERR"
+        substep "Check the network, or install uv manually: https://docs.astral.sh/uv/"
+        exit 1
+    fi
     if [ -f "$HOME/.local/bin/env" ]; then
         . "$HOME/.local/bin/env"
     fi
@@ -2387,7 +2548,8 @@ if [ ! -x "$VENV_DIR/bin/python" ]; then
         run_install_cmd "create venv" uv venv "$VENV_DIR" \
             --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
     else
-        run_install_cmd "create venv" uv venv "$VENV_DIR" --python "$PYTHON_VERSION"
+        run_install_cmd "create venv" uv venv "$VENV_DIR" \
+            --python "$(_python_request "$PYTHON_VERSION")"
     fi
 fi
 
@@ -2439,7 +2601,7 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
     if [ "$_VENV_ARCH" = "x86_64" ]; then
         echo "  WARNING: venv was created with an x86_64 (Rosetta) Python on Apple Silicon."
         echo "  Recreating venv with native arm64 Python ${PYTHON_VERSION}..."
-        rm -rf "$VENV_DIR"
+        _discard_venv_for_recreate "$VENV_DIR"
         run_install_cmd "recreate venv (arm64)" uv venv "$VENV_DIR" \
             --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
         if [ -x "$VENV_DIR/bin/python" ]; then
@@ -2451,13 +2613,31 @@ if [ -z "$_USER_PYTHON" ] && [ "$OS" = "macos" ] && [ "$_ARCH" = "arm64" ]; then
         _PY_VER=${_info##* }
     fi
 
-    if [ "$_PY_VER" = "3.13.8" ]; then
-        echo "  WARNING: Python 3.13.8 has a known torch import bug."
+    if _python_is_skipped "$_PY_VER"; then
+        echo "  WARNING: Python $_PY_VER cannot import torch."
         echo "  Recreating venv with Python 3.12..."
-        rm -rf "$VENV_DIR"
+        _discard_venv_for_recreate "$VENV_DIR"
         PYTHON_VERSION="3.12"
         run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
             --python "cpython-${PYTHON_VERSION}-macos-aarch64-none"
+        if [ -x "$VENV_DIR/bin/python" ]; then
+            : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
+        fi
+    fi
+fi
+
+# The request above only decides what a *new* venv gets. A venv from an earlier
+# run, on any platform, can still hold a skipped interpreter, and reusing it is
+# how the reported installs stayed broken across re-runs. Honour --python.
+if [ -z "$_USER_PYTHON" ] && [ -x "$VENV_DIR/bin/python" ]; then
+    _PY_VER=$("$VENV_DIR/bin/python" -c \
+        'import sys; print("{}.{}.{}".format(*sys.version_info[:3]))' 2>/dev/null || echo "")
+    if _python_is_skipped "$_PY_VER"; then
+        echo "  WARNING: Python $_PY_VER cannot import torch."
+        echo "  Recreating venv..."
+        _discard_venv_for_recreate "$VENV_DIR"
+        run_install_cmd "recreate venv" uv venv "$VENV_DIR" \
+            --python "$(_python_request "$PYTHON_VERSION")"
         if [ -x "$VENV_DIR/bin/python" ]; then
             : > "$VENV_DIR/.unsloth-studio-owned" 2>/dev/null || true
         fi
@@ -2686,6 +2866,56 @@ _probe_amd_gfx_arch() {
     printf '%s\n' "$_pg"
 }
 
+# Classify the physical NVIDIA inventory for a cu126 fallback: "cu126" when it covers
+# every GPU, "uncovered" for an incompatible mix, empty when no fallback is needed or the
+# inventory is unreadable. CUDA_VISIBLE_DEVICES is ignored because the wheel must support
+# the host. Shared decision with install.ps1 / setup.ps1 / install_python_stack.py.
+_nvidia_cu126_verdict() {
+    [ -n "$1" ] || return 0
+    _ncv_caps=$(_run_bounded "$1" --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null) || return 0
+    printf '%s\n' "$_ncv_caps" | awk '
+        { gsub(/^[[:space:]]+|[[:space:]]+$/, "") }   # match the .Trim()/.strip() siblings
+        /^[0-9]+\.[0-9]+$/ {
+            split($0, _sm, ".")
+            _n = (_sm[1] * 10) + _sm[2]
+            seen = 1
+            if (_n < 75) legacy = 1
+            if (_n < 50 || _n > 90) outside_cu126 = 1
+            next
+        }
+        /./ { unreadable = 1 }
+        END {
+            if (!seen || unreadable || !legacy) exit
+            print outside_cu126 ? "uncovered" : "cu126"
+        }
+    '
+}
+
+# Cap cu128/cu130 at cu126 when it covers every physical GPU: PyTorch 2.11's cu128/cu130
+# start at sm_75, cu126 spans sm_50-90. Non-x86_64 keeps driver-only selection.
+_cap_cuda_family_for_pre_turing() {
+    case "$_ARCH" in
+        x86_64|amd64) ;;
+        *) printf '%s\n' "$1"; return ;;
+    esac
+    case "$1" in
+        cu128|cu130) ;;
+        *) printf '%s\n' "$1"; return ;;
+    esac
+    case "$(_nvidia_cu126_verdict "$2")" in
+        cu126)
+            echo "[WARN] Pre-Turing NVIDIA GPUs (sm_<75) are present -- selecting cu126, because PyTorch 2.11's $1 wheels start at sm_75." >&2
+            printf '%s\n' "cu126"
+            return
+            ;;
+        uncovered)
+            echo "[WARN] This host mixes pre-Turing NVIDIA GPUs with GPUs that cu126 cannot serve; no PyTorch 2.11 CUDA family covers both." >&2
+            echo "[WARN] Keeping $1, so the pre-Turing GPUs will be unusable. Set UNSLOTH_TORCH_INDEX_FAMILY=cu126 to choose the other way." >&2
+            ;;
+    esac
+    printf '%s\n' "$1"
+}
+
 # ── Detect GPU and choose PyTorch index URL ──
 # Mirrors Get-TorchIndexUrl in install.ps1.
 # On CPU-only machines this returns the cpu index, avoiding the solver
@@ -2861,12 +3091,13 @@ get_torch_index_url() {
     fi
     _major=${_cuda_ver%%.*}
     _minor=${_cuda_ver#*.}
-    if [ "$_major" -ge 13 ]; then echo "$_base/cu130"
-    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 8 ]; then echo "$_base/cu128"
-    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 6 ]; then echo "$_base/cu126"
-    elif [ "$_major" -ge 12 ]; then echo "$_base/cu124"
-    elif [ "$_major" -ge 11 ]; then echo "$_base/cu118"
-    else echo "$_base/cpu"; fi
+    if [ "$_major" -ge 13 ]; then _cuda_tag=cu130
+    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 8 ]; then _cuda_tag=cu128
+    elif [ "$_major" -eq 12 ] && [ "$_minor" -ge 6 ]; then _cuda_tag=cu126
+    elif [ "$_major" -ge 12 ]; then _cuda_tag=cu124
+    elif [ "$_major" -ge 11 ]; then _cuda_tag=cu118
+    else echo "$_base/cpu"; return; fi
+    echo "$_base/$(_cap_cuda_family_for_pre_turing "$_cuda_tag" "$_smi")"
 }
 
 # ── Torch flavor helpers (to repair a stale CPU / wrong-CUDA wheel) ──
@@ -3920,7 +4151,7 @@ if [ "$_MIGRATED" = true ]; then
         # to prevent transitive torch resolution.
         run_install_cmd_retry "install unsloth (migrated no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.2" "unsloth-zoo>=2026.8.2"
+            "unsloth>=2026.8.5" "unsloth-zoo>=2026.8.4"
         # Resolve pydantic WITH deps so pip pins pydantic-core to the
         # matching version (no-torch-runtime.txt below is --no-deps).
         # All transitive deps are torch-free.
@@ -3937,7 +4168,7 @@ if [ "$_MIGRATED" = true ]; then
         run_install_cmd_retry "install unsloth (migrated)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
             --reinstall-package unsloth --reinstall-package unsloth-zoo \
-            "unsloth>=2026.8.2" "unsloth-zoo>=2026.8.2" ${_MLX_LM_EXCLUDE_ARG:-}
+            "unsloth>=2026.8.5" "unsloth-zoo>=2026.8.4" ${_MLX_LM_EXCLUDE_ARG:-}
         [ -n "$_UNSLOTH_TORCH_OVERRIDES" ] && rm -f "$_UNSLOTH_TORCH_OVERRIDES"
         _UNSLOTH_TORCH_OVERRIDES=""
     fi
@@ -4171,7 +4402,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
         # runtime deps (typer, safetensors, transformers, etc.) with --no-deps.
         run_install_cmd_retry "install unsloth (no-torch)" uv pip install --python "$_VENV_PY" --no-deps \
             --upgrade-package unsloth --upgrade-package unsloth-zoo \
-            "unsloth>=2026.8.2" "unsloth-zoo>=2026.8.2"
+            "unsloth>=2026.8.5" "unsloth-zoo>=2026.8.4"
         # Same pydantic-with-deps trick as the migrated branch.
         run_install_cmd_retry "install pydantic (with deps for compatible core)" \
             uv pip install --python "$_VENV_PY" pydantic
@@ -4190,7 +4421,7 @@ elif [ -n "$TORCH_INDEX_URL" ]; then
     elif [ "$STUDIO_LOCAL_INSTALL" = true ]; then
         run_install_cmd_retry "install unsloth (local)" uv pip install --python "$_VENV_PY" \
             ${_UNSLOTH_TORCH_OVERRIDES:+--overrides "$_UNSLOTH_TORCH_OVERRIDES"} \
-            --upgrade-package unsloth "unsloth>=2026.8.2" "unsloth-zoo>=2026.8.2"
+            --upgrade-package unsloth "unsloth>=2026.8.5" "unsloth-zoo>=2026.8.4"
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -4219,7 +4450,7 @@ else
     tauri_log "STEP" "Installing Unsloth"
     substep "installing unsloth (this may take a few minutes)..."
     if [ "$STUDIO_LOCAL_INSTALL" = true ]; then
-        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.2" "unsloth>=2026.8.2" --torch-backend=auto
+        run_install_cmd_retry "install unsloth (auto torch backend)" uv pip install --python "$_VENV_PY" "unsloth-zoo>=2026.8.4" "unsloth>=2026.8.5" --torch-backend=auto
         substep "overlaying local repo (editable)..."
         run_install_cmd "overlay local repo" uv pip install --python "$_VENV_PY" -e "$_REPO_ROOT" --no-deps
         substep "overlaying unsloth-zoo from git main..."
@@ -4456,6 +4687,39 @@ esac
 # create_studio_shortcuts gates persistent menu shortcuts on env-mode;
 # launcher + studio.conf + icon are always written.
 if [ "$TAURI_MODE" != true ]; then
+    # Ask once (interactive installs only) whether the launcher should open
+    # the browser after the server is up. Skipped when --no-browser/--browser
+    # was passed or no TTY; then an existing choice is kept, defaulting to on.
+    # Enter keeps the choice persisted in studio.conf so a reinstall that
+    # accepts the defaults never flips a saved no-browser preference.
+    # UNSLOTH_SKIP_AUTOSTART is documented for automated installs, so it must
+    # suppress this prompt too, exactly as it suppresses the launch prompt
+    # below. Leaving _STUDIO_OPEN_BROWSER empty falls through to the existing
+    # "keep the saved choice, else default on" logic.
+    # _can_read_tty, not `test -r`: the latter only checks permission bits, which
+    # look fine in containers and systemd units where the open() then fails, and
+    # every other prompt was moved off it in #7435 / #7470.
+    if [ "$_SKIP_AUTOSTART" != true ] && [ -z "$_STUDIO_OPEN_BROWSER" ] \
+        && [ -t 1 ] && _can_read_tty; then
+        _existing_open_browser=""
+        if [ -f "$DATA_DIR/studio.conf" ]; then
+            _existing_open_browser=$(sed -n "s/^STUDIO_OPEN_BROWSER='\([01]\)'\$/\1/p" \
+                "$DATA_DIR/studio.conf" 2>/dev/null | head -n 1)
+        fi
+        if [ "$_existing_open_browser" = "0" ]; then
+            _browser_hint="[y/N]"
+        else
+            _browser_hint="[Y/n]"
+        fi
+        echo ""
+        printf "  Open Unsloth Studio in your default browser after launch? %s " "$_browser_hint"
+        read -r _browser_reply </dev/tty || _browser_reply=""
+        case "$_browser_reply" in
+            [nN]*) _STUDIO_OPEN_BROWSER=0 ;;
+            [yY]*) _STUDIO_OPEN_BROWSER=1 ;;
+            *) _STUDIO_OPEN_BROWSER="${_existing_open_browser:-1}" ;;
+        esac
+    fi
     create_studio_shortcuts "$VENV_ABS_BIN/unsloth" "$OS"
 fi
 
@@ -4517,6 +4781,103 @@ printf "  ${C_TITLE}%s${C_RST}\n" "Unsloth Studio installed!"
 printf "  ${C_DIM}%s${C_RST}\n" "$RULE"
 echo ""
 
+# Select the same bounded free-port range as the generated desktop launcher.
+# Passing the selected port to both the server and watcher prevents an existing
+# Studio on 8888 from making the backend move while the watcher stays behind.
+_find_post_install_port() {
+    _pifp_base="${1:-8888}"
+    _pifp_max_offset="${2:-20}"
+    "$VENV_DIR/bin/python" - "$_pifp_base" "$_pifp_max_offset" <<'PY'
+import socket
+import sys
+
+base = int(sys.argv[1])
+max_offset = int(sys.argv[2])
+
+def is_free(port):
+    endpoints = (
+        (socket.AF_INET, ("127.0.0.1", port)),
+        (socket.AF_INET6, ("::1", port, 0, 0)),
+    )
+    for family, address in endpoints:
+        try:
+            with socket.socket(family, socket.SOCK_STREAM) as probe:
+                probe.settimeout(0.1)
+                if probe.connect_ex(address) == 0:
+                    return False
+        except OSError:
+            # IPv6 can be unavailable; match the backend's loopback probe.
+            continue
+    return True
+
+for offset in range(max_offset + 1):
+    candidate = base + offset
+    if is_free(candidate):
+        print(candidate)
+        raise SystemExit(0)
+raise SystemExit(1)
+PY
+}
+
+# Background watcher for the post-install foreground launch below: once the
+# server is healthy on the selected port, open the browser per the persisted
+# preference. Guarded by the per-install root id so a different Studio is never
+# the one opened.
+_post_install_browser_watch() {
+    _pibw_port="$1"
+    _pibw_url="http://localhost:$_pibw_port"
+    _pibw_id=$(cat "$STUDIO_HOME/share/studio_install_id" 2>/dev/null || true)
+    # Fail closed: without our own id we cannot tell our backend from someone
+    # else's on the same port, and opening a stranger's Studio is worse than
+    # opening nothing. The server prints its own URL either way.
+    if [ -z "$_pibw_id" ]; then
+        return 0
+    fi
+    (
+        _pibw_deadline=$(($(date +%s) + 120))
+        while [ "$(date +%s)" -lt "$_pibw_deadline" ]; do
+            _pibw_resp=$(curl -fsS --max-time 1 "http://127.0.0.1:$_pibw_port/api/health" 2>/dev/null \
+                || wget -qO- --timeout=1 "http://127.0.0.1:$_pibw_port/api/health" 2>/dev/null \
+                || true)
+            case "$_pibw_resp" in
+                *'"Unsloth UI Backend"'*)
+                    case "$_pibw_resp" in
+                        *"\"studio_root_id\":\"$_pibw_id\""*|*"\"studio_root_id\": \"$_pibw_id\""*) ;;
+                        *) sleep 1; continue ;;
+                    esac
+                    if [ "$(uname)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
+                        open "$_pibw_url" 2>/dev/null
+                    elif grep -qi microsoft /proc/version 2>/dev/null; then
+                        if command -v powershell.exe >/dev/null 2>&1; then
+                            powershell.exe -NoProfile -Command "Start-Process '$_pibw_url'" >/dev/null 2>&1
+                        elif command -v cmd.exe >/dev/null 2>&1; then
+                            cmd.exe /c start "" "$_pibw_url" >/dev/null 2>&1
+                        elif command -v xdg-open >/dev/null 2>&1; then
+                            xdg-open "$_pibw_url" >/dev/null 2>&1
+                        fi
+                    elif command -v xdg-open >/dev/null 2>&1; then
+                        xdg-open "$_pibw_url" >/dev/null 2>&1
+                    fi
+                    exit 0
+                    ;;
+            esac
+            sleep 1
+        done
+    ) &
+    # Remember the watcher so it can be reaped when the foreground server exits;
+    # otherwise a Ctrl-C leaves it polling for the rest of its 120s deadline and
+    # it can pop a browser long after the installer has visibly finished.
+    _PIBW_PID=$!
+}
+
+# Stop a watcher started above. Safe to call when none is running.
+_stop_post_install_browser_watch() {
+    [ -n "${_PIBW_PID:-}" ] || return 0
+    kill "$_PIBW_PID" 2>/dev/null || true
+    wait "$_PIBW_PID" 2>/dev/null || true
+    _PIBW_PID=""
+}
+
 # In interactive terminals, ask the user before starting Unsloth unless the
 # caller explicitly disabled the post-install prompt.
 # In non-interactive environments (Docker, CI, cloud-init) just print instructions.
@@ -4534,6 +4895,15 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
     case "${_reply:-y}" in
         [Yy]*|"")
             step "launch" "starting Unsloth Studio..."
+            _post_install_port=$(_find_post_install_port 8888 20) || _post_install_port=8888
+            case "$_post_install_port" in
+                ''|*[!0-9]*) _post_install_port=8888 ;;
+            esac
+            # Open the browser once the server is up, unless opted out. The
+            # server prints its own URL, so no watcher is needed when off.
+            if [ "${_STUDIO_OPEN_BROWSER:-1}" != "0" ]; then
+                _post_install_browser_watch "$_post_install_port"
+            fi
             # Detach stdin from the `curl | sh` pipe: as a foreground server the
             # studio would otherwise drain the rest of this piped script, leaving
             # the shell to die parsing the now-truncated tail (`unexpected fi`).
@@ -4542,7 +4912,9 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
             trap '' INT
             # `|| ...`: capture the exit code without set -e aborting first.
             _LAUNCH_EXIT=0
-            (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p 8888 </dev/null) || _LAUNCH_EXIT=$?
+            (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p "$_post_install_port" </dev/null) || _LAUNCH_EXIT=$?
+            # The server is gone; the watcher has nothing left to wait for.
+            _stop_post_install_browser_watch
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
                 echo ""
                 echo "⚠️  Unsloth Studio failed to start after migration."

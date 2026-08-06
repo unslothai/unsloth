@@ -6,6 +6,35 @@ import type { DeepPartialMessageTree } from "../types";
 import type { en } from "./en";
 
 export const ja = {
+  picker: {
+    onDevice: "デバイス上",
+    huggingFace: "Hugging Face",
+    retry: "再試行",
+    loadMore: "さらに読み込む",
+    offlineTitle: "オフラインです",
+    offlineBody:
+      "キャッシュ済みまたはローカルの{noun}を使用するには、「デバイス」に切り替えてください。",
+    offlineSwitchDevice: "デバイス",
+    searchAriaLabel: "{noun}を検索",
+    modelSourceAriaLabel: "モデルのソース",
+    hubSectionAriaLabel: "Hub セクション",
+    pickModelFile: "ディスクからモデルファイルを選択",
+    ejectLoadedModel: "読み込み済みモデルをアンロード",
+    multipleMatches:
+      "一致する{noun}が複数あります。リストから1つ選択してください。",
+    rateLimitedTitle: "Hugging Face のレート制限に達しました",
+    rateLimitedBody: "しばらく待ってから、{noun}の検索を再試行してください。",
+    hfToken: {
+      label: "HF トークン",
+      saved: "保存済み",
+      add: "追加",
+      savedAriaLabel: "Hugging Face トークンは保存済みです",
+      addAriaLabel: "Hugging Face トークンを設定",
+      savedHint: "トークンは保存済みです。使用時にアクセス権を確認します。",
+      addHint:
+        "プライベートまたはアクセス制限付きリポジトリを利用するには、トークンを設定してください。",
+    },
+  },
   common: {
     cancel: "キャンセル",
     close: "閉じる",
@@ -54,6 +83,11 @@ export const ja = {
       projects: "プロジェクト",
       train: "トレーニング",
       recipes: "レシピ",
+      images: "画像",
+      video: "動画",
+      more: "その他",
+      customizeSidebar: "サイドバーをカスタマイズ",
+      newBadge: "新機能",
       export: "エクスポート",
       recents: "履歴",
       noChatsYet: "チャットがまだありません",
@@ -74,11 +108,11 @@ export const ja = {
     dialog: {
       deleteChat: {
         title: "チャットの削除",
-        description: '本当にこのチャット "{name}" を削除しますか？',
+        description: "チャット「{name}」を削除してもよろしいですか？",
       },
       deleteRun: {
         title: "トレーニング実行の削除",
-        description: '本当にこの実行 "{name}" を削除しますか？',
+        description: "トレーニング実行「{name}」を削除してもよろしいですか？",
       },
       renameChat: {
         title: "チャット名の変更",
@@ -153,21 +187,32 @@ export const ja = {
         sttNotDownloaded: "未ダウンロード",
         sttDownloadStatusFailed: "ダウンロード状況を確認できませんでした",
         sttDownload: "ダウンロード",
+        sttDownloadConfirmTitle: "{model} をダウンロードしますか？",
+        sttDownloadConfirmBody:
+          "ローカルの音声入力は完全にオフラインで動作しますが、先に {model} 音声モデルが必要です。サイズは約 {size} で、初回のみ Hugging Face キャッシュにダウンロードされます。",
+        sttDownloadConfirmBodyUnsized:
+          "ローカルの音声入力は完全にオフラインで動作しますが、先に {model} 音声モデルが必要です。初回のみ Hugging Face キャッシュにダウンロードされます。",
+        sttOpenVoiceSettings: "音声設定を開く",
+        sttDownloadStarted: "{model} をダウンロードしています",
         sttDownloading: "ダウンロード中… {progress}%",
         sttCancelDownload: "キャンセル",
         sttCancellingDownload: "キャンセル中…",
+        sttCancelDownloadFailed: "ダウンロードをキャンセルできませんでした",
         sttDownloadComplete: "音声認識モデルをダウンロードしました",
+        sttModelReady: "{model} を音声入力で使用できます",
+        sttRecommended: "推奨",
         sttDownloadFailed: "音声認識モデルをダウンロードできませんでした",
         sttLoad: "読み込み",
         sttUnload: "アンロード",
         sttUnloading: "アンロード中…",
         microphoneLabel: "マイク",
+        microphoneFallbackName: "マイク {index}",
         microphoneDescription: "音声入力に使用します",
         microphoneFallbackHint:
           "音声入力に使用します。ブラウザーの音声エンジンがこのデバイスを使用できない場合は、システムのデフォルトに切り替わります",
         microphoneGrantDescription:
           "デバイス名を表示するにはマイクへのアクセスを許可してください",
-        allowMicrophone: "マイクを許可",
+        allowMicrophone: "マイクへのアクセスを許可",
         micAccessBlocked:
           "マイクへのアクセスがブロックされました。この Unsloth のページでマイクへのアクセスを許可してから、もう一度お試しください。",
         micAccessUnsupported:
@@ -185,6 +230,10 @@ export const ja = {
         manage: "管理",
         backToVoice: "音声に戻る",
         addEntry: "項目を追加",
+        newEntryAria: "新しい辞書項目",
+        entryPlaceholder: "山田 花子",
+        entryAria: "辞書項目 {index}",
+        removeEntryAria: "辞書項目 {index} を削除",
       },
       recents: {
         sectionTitle: "音声入力の履歴",
@@ -215,7 +264,7 @@ export const ja = {
         deleteDescription:
           "この保存された音声入力を削除しますか？元に戻せません。",
         deleteLinkedDescription:
-          "この保存された音声入力を削除しますか？使用したチャットも合わせて削除できます。元に戻せません。",
+          "この保存済みの音声入力を削除しますか？この音声入力を使用したチャットも同時に削除できます。この操作は元に戻せません。",
         deleteWithChat: "チャットと音声入力を削除",
         deleteWithChatFailed: "チャットを削除できませんでした",
         clear: "履歴を消去",
@@ -247,6 +296,7 @@ export const ja = {
         previewLabel: "音声を試聴",
         previewDescription: "短いサンプルを再生します",
         previewAction: "試聴",
+        previewFailed: "TTS のプレビューに失敗しました",
         stopAction: "停止",
         ttsLabel: "音声合成",
         notSupported: "このブラウザーでは対応していません",
@@ -260,6 +310,8 @@ export const ja = {
       huggingFaceTokenDescription: "ゲート付きモデルの読み込みや、アーティファクトのプッシュに使用されます。",
       hideToken: "トークンを非表示",
       showToken: "トークンを表示",
+      clearToken: "クリア",
+      checkingToken: "トークンを確認中...",
       tokenValidated: "トークンは検証済みです",
       password: "パスワード",
       passwordDescription: "この Unsloth アカウントのパスワードを変更します。",
@@ -300,9 +352,12 @@ export const ja = {
       modelAutoSwitch: {
         sectionTitle: "モデル自動切り替え (OpenAI API)",
         enable: "リクエストごとにモデルを切り替え",
-        enableDescription: "OpenAI互換のリクエストが別のダウンロード済み GGUF を指定した場合、応答する前にそのモデルを読み込みます。デフォルトはオフです。不明な名前の場合は、読み込み済みのモデルで応答を続けます。",
+        enableDescription:
+          "API リクエストで指定されたダウンロード済みの GGUF を、応答前に読み込みます。デフォルトではオフです。",
         idleUnload: "アイドル時の自動アンロード",
-        idleUnloadDescription: "指定した秒数だけアイドル状態が続くとモデルをアンロードして VRAM を解放します。次のリクエストで再読み込みされます。0 にすると読み込んだままにします。最小 60 秒。",
+        idleUnloadDescription:
+          "指定した秒数だけアイドル状態が続くと、モデルをアンロードして VRAM を解放します。0 にすると読み込んだままになります。最小値は 60 秒です。",
+        idleSecondsAriaLabel: "アイドル時の自動アンロードまでの秒数",
         idleNeedsEnable: "アンロードされたモデルが次回使用時に再読み込みされるように、「リクエストごとにモデルを切り替え」をオンにしてください。",
         idleActiveViaEnv: "アイドル時の自動アンロードは UNSLOTH_MODEL_IDLE_TTL 環境変数によって有効になっています。",
         loadError: "モデル自動切り替え設定の読み込みに失敗しました。",
@@ -318,11 +373,13 @@ export const ja = {
       previewSharing: {
         sectionTitle: "プレビュー共有",
         enableLabel: "公開プレビューリンク",
-        enableDescription: "署名付きリンクを持つ人なら誰でも、ログインなしで完了したモデルとチャットできるようになります。オフにすると公開プレビュー画面がオフラインになり、共有リンクが機能しなくなります。",
+        enableDescription:
+          "署名付きリンクを持つ人なら誰でも、ログインせずにトレーニングが完了したモデルとチャットできます。オフにすると公開プレビューが利用できなくなり、共有済みのリンクも機能しなくなります。",
         loadError: "プレビュー共有設定の読み込みに失敗しました。",
         saveError: "プレビュー共有設定の保存に失敗しました。",
         revokeLabel: "すべてのプレビューリンクを失効",
-        revokeDescription: "署名シークレットをローテーションして、共有したすべてのリンクを即座に機能不全にします。新しくコピーしたリンクは引き続き機能します。",
+        revokeDescription:
+          "署名用シークレットを更新し、これまでに共有したすべてのリンクを無効にします。今後新たにコピーするリンクは引き続き使用できます。",
         revokeAction: "リンクを失効",
         revoking: "失効中...",
         revokeConfirmTitle: "すべてのプレビューリンクを失効させますか？",
@@ -400,10 +457,10 @@ export const ja = {
       noPicture: "プロフィール画像なし",
       noneLabel: "なし",
       nameSaved: "プロフィール名を保存しました",
-      namePersistErrorTitle: "プロフィール名を永続化できませんでした",
+      namePersistErrorTitle: "プロフィール名を保存できませんでした",
       namePersistErrorDescription: "名前はこのセッション用に更新されましたが、再読み込み後に保持されない可能性があります。",
       photoUpdated: "プロフィール写真を更新しました",
-      photoPersistErrorTitle: "プロフィール写真を永続化できませんでした",
+      photoPersistErrorTitle: "プロフィール写真を保存できませんでした",
       photoPersistErrorDescription: "写真はこのセッション用に更新されましたが、再読み込み後に保持されない可能性があります。",
       photoUpdateErrorTitle: "プロフィール写真を更新できませんでした",
       imageUseError: "この画像は使用できませんでした。",
@@ -448,7 +505,7 @@ export const ja = {
         toolCalls: "ツール呼び出し",
         attachments: "添付ファイル",
         avgSpeed: "平均速度",
-        bestSpeed: "最速の応答",
+        bestSpeed: "最高生成速度",
         firstToken: "最初のトークンまでの平均時間",
         tokensPerSecond: "{value} tok/s",
         topModelsTitle: "よく使うモデル",
@@ -574,6 +631,14 @@ export const ja = {
         compactSidebar: "デフォルトでサイドバーを固定",
         compactSidebarDescription: "サイドバーをアイコンに折りたたまず、展開したままにします。",
       },
+      sidebarNav: {
+        title: "サイドバーナビゲーション",
+        description:
+          "サイドバーのタブを固定したり並べ替えたりします。固定していないタブは「その他」メニューにまとめられます。固定していないタブが 1 つだけの場合は、項目が 1 つのメニューを作らずにそのタブを非表示にします。「新規チャット」は固定されたままです。",
+        dragToReorder: "ドラッグして並べ替え",
+        pinToSidebar: "{name} をサイドバーに固定",
+        moreHolds: "その他 ({count})",
+      },
       sidebarMenu: {
         title: "サイドバーメニュー",
         description:
@@ -590,6 +655,13 @@ export const ja = {
       disableOverlay: "オーバーレイを無効化",
       liveMonitor: {
         title: "リアルタイムモニター",
+        apiTitle: "API モニター",
+        summary: "処理中のリクエスト、エラー、トークン使用量",
+        status: "処理中 {active} 件 · 最近 {recent} 件 · {model}",
+        noModelLoaded: "モデル未読み込み",
+        autoOpen: "フローティングモニターを自動表示",
+        autoOpenDescription:
+          "API トラフィックを受信すると小さなパネルを開きます。",
         cpu: "CPU",
         ram: "RAM",
         disk: "ディスク",
@@ -601,7 +673,10 @@ export const ja = {
       },
       gpu: {
         title: "GPU デバイス",
-        noGpu: "認識できる GPU が検出されませんでした。上には CPU のみのリソースが表示されています。",
+        ggufInference: "GGUF 推論",
+        unavailable: "利用不可",
+        noGpu:
+          "利用可能な GPU が検出されませんでした。CPU のみの環境向けのリソース情報は上に表示されています。",
         unknownDevice: "不明な GPU",
         deviceWithIndex: "GPU {index}",
         vramUtilization: "VRAM",
@@ -617,7 +692,8 @@ export const ja = {
         modelsFolder: "モデルフォルダ",
         modelsFolderKeywords:
           "モデル フォルダ ディレクトリ パス 保存先 場所 ダウンロード キャッシュ ストレージ ディスク ドライブ 移動 変更 models folder path hugging face",
-        modelsFolderDescription: "ダウンロードしたモデルの保存先。",
+        modelsFolderDescription:
+          "ダウンロードしたモデルの保存先です。変更すると、システムドライブ以外にモデルを保存できます。",
         openAction: "開く",
         copyAction: "パスをコピー",
         copied: "パスをコピーしました",
@@ -749,13 +825,36 @@ export const ja = {
     },
     chat: {
       title: "チャット",
-      description: "このデバイスに保存されているチャット履歴を管理します。",
+      description: "このデバイスでのチャットの動作をカスタマイズします。",
+      modelSelection: {
+        title: "モデル選択の設定",
+        expandQuantizations: "量子化オプションを展開",
+        expandQuantizationsDescription:
+          "オン: 「On Device」の GGUF モデルで量子化オプションをすぐに表示します。オフ: モデルをクリックすると、その量子化オプションを表示します。",
+        showAllQuantizations: "すべての量子化オプションを表示",
+        showAllQuantizationsDescription:
+          "オン: 「On Device」にあるすべての量子化オプションを、未ダウンロードのものも含めて一覧表示します。オフ: ダウンロード済みの量子化オプションのみを表示します。",
+      },
+      menu: {
+        title: "チャットメニュー",
+        description:
+          "項目をチャットの「+」サイドメニューに固定します。その他の項目は「More」に移動します。",
+        chatWithFiles: "ファイルとチャット (RAG)",
+        mcp: "MCP",
+        savedPrompts: "保存済みプロンプト",
+        compareChat: "チャットを比較",
+        exportChat: "チャットをエクスポート",
+      },
+      showResponseModel: "応答モデルを表示",
+      showResponseModelDescription:
+        "アシスタントの応答にモデルのメタデータを表示します。",
       modelDisclaimer: "モデルの免責事項を表示",
       modelDisclaimerDescription: 'チャットボックスの下に "LLMs can make mistakes" と表示します。',
       artifacts: {
         title: "Canvas",
         collapseHtmlBlocks: "HTMLブロックを折りたたむ",
-        collapseHtmlBlocksDescription: "CanvasモードではフルHTMLを自動的に折りたたみます。CanvasがオフのときにもフェンスされたHTMLドキュメントを折りたたむには、これをオンにします。",
+        collapseHtmlBlocksDescription:
+          "Canvas モードでは完全な HTML を自動的に折りたたみます。Canvas がオフのときも、コードフェンスで囲まれた HTML ドキュメントを折りたたむには、この設定をオンにします。",
         allowNetworkAccess: "Canvas のネットワークアクセスを許可",
         allowNetworkAccessDescription: "CanvasのプレビューがCDNからスクリプト、スタイル、フォント、メディア、ネットワークリソースを読み込むことを許可します。完全にオフラインでプレビューする場合はオフのままにしてください。",
       },
@@ -765,7 +864,8 @@ export const ja = {
       exportAction: "エクスポート",
       exportingAction: "エクスポート中...",
       exportConversations: "履歴とプロジェクトをエクスポート",
-      exportConversationsDescription: "履歴、または履歴とプロジェクトのチャットを、生の JSONL、CSV、または ShareGPT JSONL として、一括またはチャットごとにダウンロードします。",
+      exportConversationsDescription:
+        "履歴、または履歴とプロジェクトのチャットを、Raw JSONL、CSV、ShareGPT JSONL のいずれかで、一括またはチャットごとにダウンロードします。",
       exportConversationsAction: "エクスポート",
       exportScopeRecents: "履歴",
       exportScopeAll: "履歴 + プロジェクト",
@@ -807,6 +907,8 @@ export const ja = {
     },
     data: {
       title: "データ",
+      backToData: "データに戻る",
+      exportFailed: "チャットをエクスポートできませんでした",
       description:
         "このデバイスに保存されているチャット履歴とアップロード済みファイルを管理します。",
       archivedChats: "アーカイブ済みチャット",
@@ -863,9 +965,9 @@ export const ja = {
       title: "API",
       description: "OpenAI互換 API を介して Unsloth にアクセスします。",
       readDocs: "API ドキュメントを読む",
-      noAccess: "まだ API アクセス権がありません。",
+      noAccess: "アクセストークンはまだありません。",
       accessTokens: "アクセストークン",
-      loadError: "API アクセス権を読み込めませんでした。",
+      loadError: "アクセストークンを読み込めませんでした。",
       createError: "アクセストークンを作成できませんでした。",
       revokeError: "アクセストークンを失効させることができませんでした。",
       never: "なし",
@@ -901,13 +1003,8 @@ export const ja = {
       codingAgentsDetectedHint: "このマシンで検出されました: {agents}。",
       relativeNever: "なし",
       relativeJustNow: "たった今",
-      relativeHoursAgo: "{count}時間前",
-      relativeDaysAgo: "{count}日前",
-      relativeMonthsAgo: "{count}ヶ月前",
-      relativeYearsAgo: "{count}年前",
       expired: "期限切れ",
       today: "今日",
-      inDays: "{count}日後",
       created: "作成日時 {value}",
       used: "使用日時 {value}",
       expires: "有効期限 {value}",
@@ -926,6 +1023,8 @@ export const ja = {
       description: "ドキュメント、リリースノート、フィードバック、およびビルド情報。",
       studioVersion: "Unsloth バージョン",
       packageVersion: "パッケージバージョン",
+      desktopAppVersion: "デスクトップアプリのバージョン",
+      desktopAppVersionUnavailable: "利用できません",
       llamaCppVersion: "llama.cpp バージョン",
       hardware: "ハードウェア",
       gpu: "GPU",
@@ -954,7 +1053,7 @@ export const ja = {
       shutDown: "シャットダウン",
       update: {
         title: "Unsloth のアップデート",
-        commandText: "{label} テキスト",
+        commandText: "{label}のテキスト",
         copied: "コピーしました",
         copyCommand: "コマンドをコピー",
         commandCopied: "{label} をコピーしました",
@@ -968,12 +1067,39 @@ export const ja = {
         pullThenUpdate: "最新の変更をプルしてから、ローカルインストーラーを実行してください:",
         gitPullCommand: "git pull コマンド",
         localInstallerCommand: "ローカルインストーラーコマンド",
-        sourceInstallDetected: "ソース or VCS パッケージのインストールが検出されました。元のローカルパスまたは Git URL から再インストールしてください。",
+        sourceInstallDetected:
+          "ソースまたは VCS パッケージからのインストールが検出されました。元のローカルパスまたは Git URL から再インストールしてください。",
         repoCheckoutFallback: "リポジトリが手元に残っている場合は、そこからローカルインストーラーを実行してください:",
         restartAfterUpdate: "アップデート後に Unsloth を再起動してください。",
-        desktopManaged: "デスクトップアプリは同梱されているバックエンドを自動的に最新に保ち、新しいバージョンが利用可能になると通知します。",
+        desktopManaged:
+          "デスクトップアプリは新しいバージョンを自動的に確認します。ここからいつでも手動で確認またはアップデートできます。",
+        desktopReady: "デスクトップアプリのアップデート",
+        desktopReadyDescription:
+          "新しいバージョンのデスクトップアプリが利用可能か確認します。",
+        desktopChecking: "アップデートを確認中",
+        desktopCheckingDescription: "通常は数秒で完了します。",
+        desktopAvailable: "デスクトップアプリ {version} を利用できます",
+        desktopAvailableDescription:
+          "今すぐアップデートします。完了するとデスクトップアプリが再起動します。",
+        desktopExternalServer:
+          "サーバーを起動したターミナルで `unsloth studio update` を実行してください。",
+        desktopManualInstall:
+          "リリースページを開き、最新の Linux パッケージをインストールしてください。",
+        desktopCheckFailed: "アップデートを確認できませんでした",
+        desktopCheckFailedDescription:
+          "接続を確認して、もう一度お試しください。",
+        desktopCurrent: "デスクトップアプリは最新です",
+        desktopCurrentDescription:
+          "Unsloth は今後も自動的にアップデートを確認します。",
+        checkForUpdates: "アップデートを確認",
+        checkAgain: "もう一度確認",
+        retryCheck: "再試行",
+        checking: "確認中...",
+        updateNow: "今すぐアップデート",
+        openReleasePage: "リリースページを開く",
         unknownInstall: "Unsloth がどのようにインストールされたか検出できませんでした。インストーラーまたは PyPI インストールの場合は、上記のコマンドを使用してください。",
-        localCheckout: "ローカルインストールの場合は、そのリポジトリからローカルインストーラーを実行してください:",
+        localCheckout:
+          "ローカルチェックアウトからインストールした場合は、そのチェックアウトでローカルインストーラーを実行してください:",
         docs: "インストールガイド:",
         docsInstall: "インストール",
         docsUpdating: "アップデート方法",
@@ -983,8 +1109,197 @@ export const ja = {
     },
   },
   studio: {
+    imageTraining: "画像トレーニング",
+    goToImageTraining: "画像トレーニングへ移動",
     routeTitle: "トレーニング",
-    title: "Fine-tuning Studio",
+    wizard: {
+      modelTitle: "モデル",
+      modelDescription: "モデルとトレーニング方法を選択",
+      datasetTitle: "データセット",
+      datasetDescription: "トレーニングデータを選択またはアップロード",
+      paramsTitle: "パラメーター",
+      paramsDescription: "トレーニングパラメーターを設定",
+      configTitle: "構成",
+      configDescription: "構成を保存または読み込み",
+      modelLabel: "モデル",
+      methodLabel: "手法",
+      datasetLabel: "データセット",
+      modelTooltip: "ファインチューニングするベースモデルです。",
+      methodTooltip: "モデルの学習方法です。LoRA と QLoRA はすべての重みではなく小さなアダプターを更新します。",
+      datasetTooltip: "モデルのファインチューニングに使う学習データです。",
+      hfTokenLabel: "Hugging Face トークン",
+      hfTokenDescription:
+        "アクセス制限付きまたは非公開のモデルとデータセットに必要です。",
+      hfTokenGet: "トークンを取得",
+      hfTokenChecking: "トークンを確認中…",
+      modelPickerDescription:
+        "Hugging Face を検索するか、このデバイス上のトレーニング可能なモデルを選択します。",
+      trainingMethod: "トレーニング方法",
+      trainingMethodDescription: "{model} のファインチューニング方法を選択",
+      trainingMethodTooltip:
+        "QLoRA は 4 ビット量子化により VRAM 使用量を最小限に抑えます。LoRA は 16 ビットの重みを使用し、フルファインチューニングはすべての重みを更新します。",
+      datasetPickerDescription:
+        "Hugging Face を検索するか、このデバイス上のデータセットを選択します。",
+      uploadDataset: "データセットをアップロード",
+      uploadDatasetDescription:
+        "CSV、JSONL、JSON、Parquet に対応しています。",
+      chooseFile: "ファイルを選択",
+      format: "形式",
+      autoDetect: "自動検出",
+      uploadLocalLabel: "またはローカルファイルをアップロード",
+      sourceBrowse: "参照",
+      releaseToUpload: "ドロップしてアップロード",
+      loadYaml: "YAML を読み込む",
+      saveYaml: "YAML を保存",
+      resetDefaults: "デフォルトに戻す",
+      cachedModelGoneTitle: "キャッシュ済みモデルを利用できません",
+      cachedModelGoneDescription:
+        "モデルファイルがこのデバイス上に存在しないため、トレーニング時に再度ダウンロードします。",
+      cachedDatasetGoneTitle: "キャッシュ済みデータセットを利用できません",
+      cachedDatasetGoneDescription:
+        "データセットファイルがこのデバイス上に存在しないため、トレーニング時に再度ダウンロードします。",
+    },
+    preview: {
+      title: "実行プレビュー",
+      ready: "準備完了",
+      notReady: "準備未完了",
+      modelPending: "モデル未選択",
+      datasetPending: "データセット未選択",
+      method: "手法",
+      length: "長さ",
+      stepZero: "{count} ステップ",
+      step: "{count} ステップ",
+      stepTwo: "{count} ステップ",
+      stepFew: "{count} ステップ",
+      stepMany: "{count} ステップ",
+      steps: "{count} ステップ",
+      epochZero: "{count} エポック",
+      epoch: "{count} エポック",
+      epochTwo: "{count} エポック",
+      epochFew: "{count} エポック",
+      epochMany: "{count} エポック",
+      epochs: "{count} エポック",
+      batch: "バッチ",
+      context: "コンテキスト",
+      lr: "LR",
+      hardware: "ハードウェア",
+      noGpu: "GPU が検出されませんでした",
+      hfToken: "HF トークン",
+      saved: "保存済み",
+      notSet: "未設定",
+      files: "ファイル",
+      model: "モデル",
+      dataset: "データセット",
+      downloadsOnStart: "開始時にダウンロード",
+      continuesOnStart: "開始時にダウンロードを再開",
+      noticeModelDownload:
+        "このモデルはまだデバイス上にありません。トレーニング時に自動でダウンロードします。",
+      noticeModelPartial:
+        "トレーニングでは、モデルを読み込む前に未完了のダウンロードを完了します。",
+      noticeDatasetDownload:
+        "このデータセットはまだデバイス上にありません。トレーニング時に自動でダウンロードします。",
+      noticeDatasetPartial:
+        "トレーニングでは、データセットを読み込む前に未完了のダウンロードを完了します。",
+      advancedSettings: "詳細設定",
+      defaultAdvancedSettings: "デフォルト",
+      nonDefaultAdvancedSettings: "デフォルト以外の設定: {count} 件",
+    },
+    datasetPicker: {
+      noun: "データセット",
+      selectDataset: "データセットを選択",
+      hubPlaceholder: "Hugging Face データセットを検索...",
+      devicePlaceholder: "ローカルデータセットを検索...",
+      useAsHubDataset: "Hugging Face データセットとして使用",
+      hfCacheLabel: "HF キャッシュ",
+      sourceRecipe: "レシピ",
+      sourceUpload: "アップロード",
+      sourceLocal: "ローカル",
+      scanningLocal: "このデバイス上のデータセットをスキャン中…",
+      couldntScan: "ローカルデータセットをスキャンできませんでした",
+      someLocationsUnscanned:
+        "一部のデータセット保存場所をスキャンできませんでした。",
+      noLocalDatasets:
+        "このデバイスにはまだデータセットがありません。Hub からダウンロードするか、レシピで作成するか、ファイルをアップロードしてください。",
+      openDataRecipes: "データレシピを開く",
+      searchingHub: "Hugging Face を検索中…",
+      noDatasetsFound: "データセットが見つかりません。",
+      tokenRejectedTitle: "Hugging Face トークンが拒否されました",
+      tokenRejectedBody:
+        "「設定」→「一般」でトークンを更新してから、再試行してください。",
+      hubUnreachable: "Hugging Face に接続できませんでした",
+      cantUseDataset: "データセットを使用できません",
+      reasonInvalidHubId:
+        "有効な Hugging Face データセット ID を入力してください。形式は repo または owner/repo で、使用できる文字は英字、数字、.、_、- のみです（各部分は最大 96 文字）。",
+    },
+    modelPicker: {
+      noun: "モデル",
+      selectModel: "モデルを選択",
+      hubPlaceholder: "Hugging Face ID を検索または貼り付け...",
+      devicePlaceholder: "ローカルモデルを検索するか、フォルダパスを貼り付け...",
+      useAsHubModel: "Hugging Face モデルとして使用",
+      useAsLocalPath: "ローカルパスとして使用",
+      hfCacheLabel: "HF キャッシュ",
+      sourceModelsFolder: "モデルフォルダ",
+      sourceHfCache: "HF キャッシュ",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "カスタムフォルダ",
+      sourceLocalModel: "ローカルモデル",
+      scanningLocal: "ローカルモデルをスキャン中…",
+      couldntScan: "ローカルモデルをスキャンできませんでした",
+      someLocationsUnscanned:
+        "一部のローカル保存場所をスキャンできませんでした。",
+      noLocalModels: "ローカルモデルが見つかりません。",
+      noLocalModelsHint:
+        "上にフォルダパスを貼り付けるか、Hugging Face に切り替えてください。",
+      searchingHub: "Hugging Face を検索中…",
+      noModelsFound: "モデルが見つかりません。",
+      tokenRejectedTitle: "Hugging Face トークンが拒否されました",
+      tokenRejectedBody:
+        "「設定」→「一般」でトークンを更新してから、再試行してください。",
+      hubUnreachable: "Hugging Face に接続できませんでした",
+      cantUseModel: "このモデルはトレーニングに使用できません",
+      reasonTypeMismatch:
+        "このモデルは、前のステップで選択したトレーニングタイプと一致しません。",
+      reasonInvalidHubId:
+        "有効な Hugging Face モデル ID を入力してください。形式は repo または owner/repo で、使用できる文字は英字、数字、.、_、- のみです（各部分は最大 96 文字）。",
+      reasonEmptyId: "モデル ID またはローカルモデルのパスを入力してください。",
+      reasonGguf: "GGUF モデルはトレーニングに使用できません。",
+      reasonAdapter:
+        "アダプターの出力はベーストレーニングモデルとして使用できません。",
+      reasonNotTrainable:
+        "このデバイス上のモデルはトレーニングできません。",
+      reasonUnsupportedFormat:
+        "このモデル形式はトレーニングでサポートされていません。",
+      vramNeeds: "約 {est}GB VRAM が必要 (GPU: {total}GB)",
+      vramTight: "約 {est}GB VRAM (GPU {total}GB ではギリギリです)",
+      vramApprox: "約 {est}GB VRAM",
+      vramOomBadge: "OOM",
+      vramTightBadge: "ギリギリ",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "4-bit 量子化。VRAM 使用量が最も少なく、起動も最速です。",
+        note: "4-bit",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "16-bit アダプター。品質とメモリ使用量のバランスを取ります。",
+        note: "16-bit",
+      },
+      full: {
+        label: "フルファインチューニング",
+        hint:
+          "すべての重みをトレーニングします。最高品質ですが、最も多くの VRAM が必要です。",
+        note: "fp16",
+      },
+      cpt: {
+        label: "継続事前学習",
+        hint: "新しいドメインや言語向けに事前学習を継続します。",
+        note: "継続",
+      },
+    },
     subtitles: {
       configure: "設定とトレーニングの開始",
       trainingInProgress: "トレーニング進行中",
@@ -1015,60 +1330,29 @@ export const ja = {
       checkingDataset: "データセットを確認中...",
       trainingConfig: "トレーニング構成",
     },
-    model: {
-      title: "モデル",
-      description: "ベースモデルとトレーニング方法の選択",
-      fasterTrainingBadge: "トレーニング速度2倍",
-      baseModel: "ベースモデル",
-      localModel: "ローカルモデル",
-      localModelTooltip: "ローカルにダウンロードされたモデルのパス、またはカスタム HF リポジトリ。",
-      scanningLocalAndCachedModels: "ローカルおよびキャッシュされたモデルをスキャン中...",
-      scanning: "スキャン中...",
-      scanningLocalModels: "ローカルモデルをスキャン中...",
-      noLocalModelsFound: "ローカルモデルが見つかりません",
-      noLocalModelsFoundManual: "ローカルモデルが見つかりません。パスを手動で入力してください。",
-      failedToLoadLocalModels: "ローカルモデルの読み込みに失敗しました",
-      hfCache: "HF キャッシュ",
-      customFolders: "カスタムフォルダ",
-      localDir: "ローカルディレクトリ",
-      huggingFaceModel: "Hugging Face モデル",
-      huggingFaceModelTooltip: "Hugging Face モデルを検索するか、推奨リストから選択します。",
-      searchModels: "モデルを検索...",
-      searching: "検索中...",
-      noModelsFound: "モデルが見つかりません",
-      needsVram: "約 {vram}GB VRAM が必要 (GPU: {gpu}GB)",
-      tightVram: "約 {vram}GB VRAM (GPU {gpu}GB ではギリギリです)",
-      vramEstimate: "約 {vram}GB VRAM",
-      method: "手法",
-      methodTooltip: "QLoRA は 4-bit 量子化を使用して VRAM 使用量を最小限に抑えます。LoRA は 16-bit を使用します。Full はすべての重みを更新します。CPT (Continued Pretraining) は、チャット形式を適用せずに生のテキストでトレーニングし、モデルを新しいドメインに適応させます。",
-      readMore: "詳細を読む",
-      fullFineTune: "フルファインチューニング",
-      checkingToken: "トークンを確認中...",
-      getOrUpdateToken: "トークンの取得または更新",
-      huggingFaceTokenOptional: "Hugging Face トークン (オプション)",
-      continuedPretraining: "継続事前学習 (CPT)",
-      localModels: "ローカルモデル",
-      localModelsFound: "{count} 個のローカル/キャッシュされたモデルが見つかりました",
-      loadingLocalModels: "ローカルモデルを読み込み中...",
-    },
     dataset: {
-      title: "データセット",
-      description: "トレーニングデータの選択またはアップロード",
+      selectors: {
+        subset: "サブセット",
+        subsetTooltip: "使用するデータセットのサブセット（設定）を選択します。",
+        trainSplit: "学習用分割",
+        trainSplitTooltip: "学習に使用する分割を選択します。",
+        evaluationSplit: "評価用分割",
+        evaluationSplitTooltip:
+          "評価に使用する分割を選択します。「なし」を選ぶと学習中に評価を行いません。",
+        selectSubset: "サブセットを選択...",
+        selectSplit: "分割を選択...",
+        none: "なし",
+        loading: "データセットの設定と分割を読み込んでいます...",
+        manualTitle: "データセットのオプションを手動で入力",
+        manualDescription:
+          "使用する Hugging Face の設定名と分割名を正確に入力してください。",
+        manualSubsetPlaceholder: "設定名（任意）",
+        manualRequired: "学習用分割は必須です。",
+        manualTooLong: "128 文字以内で入力してください。",
+        manualInvalid: "この値には未対応の文字が含まれています。",
+      },
       source: "データセットのソース",
-      chooseDataset: "データセットを選択",
-      chooseDatasetTooltip: "ポップアップのタブを使って、Hugging Face とローカルのレシピ出力を切り替えます。",
-      localTab: "ローカル",
-      searchHuggingFaceDatasets: "Hugging Face データセットを検索...",
-      searchLocalDatasets: "ローカルデータセットを検索...",
-      searching: "検索中...",
-      noDatasetsFound: "データセットが見つかりません",
-      loadingLocalDatasets: "ローカルデータセットを読み込み中...",
-      failedToLoadLocalDatasets: "ローカルデータセットの読み込みに失敗しました。",
-      noLocalDatasetsYet: "ローカルデータセットがまだありません。",
-      noLocalDatasetsMatchSearch: "検索に一致するローカルデータセットがありません。",
-      openDataRecipes: "データレシピを開く",
-      browsingSource: "{browsing} を閲覧中。現在の選択は {current} のままです。",
-      localDatasets: "ローカルデータセット",
+      sourceAriaLabel: "データセットのソース",
       localDataset: "ローカルデータセット",
       localDatasetRows: " / {count} 行",
       huggingFaceDataset: "Hugging Face データセット",
@@ -1080,12 +1364,71 @@ export const ja = {
       updated: "更新日時",
       evalDataset: "評価データセット",
       uploading: "アップロード中...",
-      upload: "アップロード",
       uploadEvalFile: "評価ファイルをアップロード",
+      fileTooLarge: "ファイルが大きすぎます",
+      fileTooLargeDescription:
+        "{file} のサイズは {size} です。トレーニング用アップロードの上限は {limit} です。",
+      uploadLimitsHint:
+        "CSV、JSONL、JSON、Parquet · 上限 {limit}、PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "このファイルは先に変換する必要があります",
+        genericFile: "このファイル",
+        description:
+          "{file} は素材であり、そのままトレーニングできるデータセットではありません。Data Recipes で文書をデータセットに変換してから、ここに戻ってファインチューニングしてください。",
+        nextStepTitle: "おすすめの次のステップ",
+        nextStepDescription:
+          "Learning Recipes を開き、PDF grounded QA などの文書ベースのレシピから始めます。",
+        openAction: "Learning Recipes を開く",
+      },
       evalDatasetDescription: "オプション。提供されない場合は、トレーニングデータから一部が自動的に分割されます。",
       advanced: "高度な設定",
       targetFormat: "ターゲットフォーマット",
       targetFormatTooltip: "トレーニングデータのフォーマット。ほとんどのデータセットで自動検出が機能します。",
+      streamingInfoAriaLabel: "データセットストリーミングの情報",
+      streaming: {
+        label: "ストリーミングを有効化",
+        description:
+          "Hugging Face のテキストデータセットをダウンロードせずにストリーミングします。",
+        unavailable: "ストリーミングを利用できません。有効にするには:",
+        completionsUnavailable:
+          "データセットのストリーミングが有効な間は利用できません。",
+        blockers: {
+          source:
+            "Hugging Face データセットを使用してください（ローカルアップロードや S3 ソースは使用できません）。",
+          maxSteps:
+            "最大ステップ数を 0 より大きく設定してください。ストリーミングデータセットの長さは事前に分かりません。",
+          trainOnCompletions:
+            "「アシスタントの応答のみ学習」をオフにしてください。",
+          evalSplit:
+            "個別の評価用分割を選択してください。評価は有効ですが、トレーニング用とは別の評価用分割が設定されていません。",
+          visionModel: "ビジョンモデルはストリーミングをサポートしていません。",
+          audioModel: "オーディオモデルはストリーミングをサポートしていません。",
+          embeddingModel:
+            "埋め込みモデルはストリーミングをサポートしていません（トレーニングにはデータセット全体が必要です）。",
+          imageDataset:
+            "このデータセットには画像が含まれているように見えるため、ストリーミングできません。",
+          audioDataset:
+            "このデータセットには音声が含まれているように見えるため、ストリーミングできません。",
+          appleSilicon:
+            "Apple Silicon (MLX) ではストリーミングをまだサポートしていません。",
+        },
+        options: {
+          trainOnCompletions: "アシスタントの応答のみ学習",
+          evaluation: "評価（個別の評価用分割が必要）",
+        },
+        notifications: {
+          disabledForDetectedModality:
+            "画像または音声データセットは全体をダウンロードする必要があるため、ストリーミングをオフにしました。設定を確認してから、もう一度トレーニングを開始してください。",
+          turnedOffMaxSteps:
+            "ストリーミングをオフにしました。ストリーミングには 0 より大きい固定の最大ステップ数が必要です。",
+          adjusted:
+            "ストリーミング向けに設定を調整しました。互換性のないオプションを無効にしました: {options}。",
+          needsMaxSteps:
+            "ストリーミングには固定の最大ステップ数が必要です（ストリーミングデータセットの長さは事前に分かりません）。先に最大ステップ数を 0 より大きく設定してください。",
+          enabledAdjusted:
+            "ストリーミングを有効にしました。互換性のないオプションを無効にしました: {options}。",
+        },
+      },
       auto: "自動",
       rawText: "生テキスト",
       trainSplitStart: "トレーニング分割の開始行",
@@ -1095,6 +1438,8 @@ export const ja = {
       endPlaceholder: "終了行",
       clear: "クリア",
       dropFileOrClick: "ここにファイルをドロップするか、クリックしてアップロード",
+      uploadDetails: "アップロードの詳細",
+      uploadDetailsTooltip: "1ファイルあたり最大 {limit}。PDF、DOCX、TXT はそのままではトレーニング用データセットとして使用できないため、先にレシピで変換してください。",
       viewDataset: "データセットを表示",
       uploadFailed: "アップロードに失敗しました",
       unknownError: "不明なエラー",
@@ -1104,9 +1449,28 @@ export const ja = {
       evalDatasetUploaded: "評価データセットをアップロードしました",
       uploadOneFileAtATime: "一度に1つのファイルのみアップロードできます",
       uploadSingleFileDescription: "トレーニングデータセットのアップロードは単一のファイルのみ受け付けます。",
-      checkingToken: "トークンを確認中...",
-      getOrUpdateToken: "トークンの取得または更新",
       preview: "データセットのプレビュー",
+      previewLoadingHuggingFace:
+        "Hugging Face からデータセットのプレビューを取得しています...",
+      previewLoading: "プレビューを読み込んでいます...",
+      mappingRequirements: {
+        audioAndText: "音声とテキスト",
+        imageAndText: "画像とテキスト",
+        instructionAndOutput: "指示と出力",
+        humanAndGpt: "human と gpt",
+        userAndAssistant: "ユーザーとアシスタント",
+      },
+      mappingStatus: {
+        heuristicTitle: "ヒューリスティックで検出されたマッピング",
+        readyTitle: "マッピングの準備完了",
+        requiredTitle: "データセット列をマッピング",
+        heuristicDescription:
+          "ヒューリスティックを使用して、以下の列マッピングを自動検出しました。列ヘッダーのドロップダウンで確認・調整するか、AI アシストを使用してより適切にマッピングしてください。",
+        readyDescription:
+          "問題ありません。このデータセットは自動的に変換されます。",
+        requiredDescription:
+          "ヘッダーのドロップダウンを使用して列にロールを割り当ててください。少なくとも {required} を割り当てる必要があります。",
+      },
       split: "分割",
       subset: "サブセット",
       s3: {
@@ -1133,8 +1497,11 @@ export const ja = {
       },
     },
     params: {
-      title: "パラメーター",
-      description: "トレーニングのハイパーパラメーターを設定します",
+      mode: {
+        simple: "シンプル",
+        advanced: "詳細",
+        ariaLabel: "パラメーターモード",
+      },
       projectName: "プロジェクト名",
       optional: "オプション",
       projectNameDescription: "トレーニング出力フォルダ名、エクスポートのデフォルト値、および履歴で使用されます。",
@@ -1146,18 +1513,15 @@ export const ja = {
       useEpochs: "エポック数を使用",
       maxStepsTooltip: "オプティマイザーの総ステップ数を上書きします。",
       epochsTooltip: "データセット全体の完全な学習回数。",
-      epochsDescription: "各エポックは、データセットを丸ごと1回学習することを意味します。",
-      maxStepsDescription: "トレーニングを固定のオプティマイザーステップ数に制限します。",
       contextLength: "コンテキスト長",
       contextLengthTooltip: "トレーニングサンプルあたりの最大トークン数。",
       customContextLength: "カスタム値を入力",
-      contextLengthDescription: "トレーニングサンプルの最大シーケンス長",
       learningRate: "学習率",
       learningRateTooltip: "重み更新のステップサイズ。低い値ほど学習は遅くなりますが安定します。",
       learningRateDescription: "推奨値: LoRAは2e-4、CPTは5e-5、フルファインチューニングは2e-5",
       embeddingLearningRate: "埋め込み学習率",
-      embeddingLearningRateTooltip: "CPT が embed_tokens をトレーニングする場合にのみ使用されます。埋め込みは LoRA の重みよりも不安定になりやすいため、通常はより小さな学習率が必要です。空のままにすると lr/10 が使用されます。一般的な範囲はメインの学習率の2倍から10倍小さい値です。語彙やドメイン固有トークンの適応が遅すぎる場合にのみ増やしてください。",
-      embeddingLearningRateDescription: "空欄にすると lr/10 が使用されます（推奨）。一般的な範囲はメインの学習率の 2倍〜10倍小さい値です。",
+      embeddingLearningRateTooltip:
+        "CPT が embed_tokens をトレーニングする場合にのみ使用されます。埋め込みは LoRA の重みよりも不安定になりやすいため、通常はより小さな学習率が必要です。空のままにすると lr/10 が使用されます。一般的にはメインの学習率の 1/2～1/10 が目安です。語彙やドメイン固有トークンの適応が遅すぎる場合にのみ増やしてください。",
       rank: "Rank",
       rankTooltip: "低ランク行列の次元数。高いほど表現能力が向上します。",
       alpha: "Alpha",
@@ -1174,11 +1538,13 @@ export const ja = {
       stableRank: "Stable Rank",
       memoryEfficient: "メモリ効率化",
       weightDecomposed: "重み分解",
+      notSupportedAppleSilicon: "Apple Silicon ではサポートされていません",
       optimization: "最適化",
       schedule: "スケジュール",
       memory: "メモリ",
       optimizer: "オプティマイザー",
       optimizerTooltip: "最適化アルゴリズム。8-bit 版はメモリ使用量を削減します。ビジョンモデルには Fused が推奨されます。",
+      optimizerTooltipMlx: "最適化アルゴリズム。デフォルトは AdamW です。Lion はメモリ使用量を抑えられますが、通常はより低い学習率が必要です。",
       lrScheduler: "学習率スケジューラー",
       lrSchedulerTooltip: "トレーニング中に学習率をどのように変化させるか。Linear は一定の割合で減少させ、Cosine は緩やかな曲線を描いて減少させます。",
       optimizerOptions: {
@@ -1215,38 +1581,79 @@ export const ja = {
       enablePacking: "パッキングを有効化",
       assistantCompletionsOnly: "アシスタントの応答のみ学習",
       readMore: "詳細を読む",
-      optimizerTooltipMlx:
-        "最適化アルゴリズム。既定は AdamW です。Lion はメモリ使用量が少ない一方、通常はより低い学習率が必要です。",
     },
     training: {
-      title: "トレーニング",
-      description: "トレーニングの監視と制御",
-      chartNoDataTitle: "トレーニングデータがまだありません",
-      chartNoDataDescription: "トレーニングを開始すると、Loss の推移が表示されます",
       startTraining: "トレーニング開始",
       starting: "開始中...",
       loadingModel: "モデルを読み込み中...",
       checkingDataset: "データセットを確認中...",
-      configLabel: "トレーニング構成",
-      upload: "アップロード",
+      startFailed: "トレーニングの開始に失敗しました",
+      startUnconfirmed:
+        "トレーニングが開始されたか確認できませんでした。バックグラウンドで状態を確認しています。",
+      stopFailed: "トレーニングの停止に失敗しました",
+      trainingStillActiveTitle: "トレーニングはまだ実行中です",
+      stopBeforeConfig:
+        "先にトレーニングを停止してから、設定画面に戻ってください。",
+      resumeFailed: "トレーニングの再開に失敗しました",
+      resumeFailedTitle: "トレーニングを再開できませんでした",
+      resumeUnavailable:
+        "保存済みのチェックポイントがある、停止済みまたはエラー終了した実行のみ再開できます。",
+      chooseModel: "モデルを選択",
+      chooseDataset: "データセットを選択",
+      chooseModelAndDataset: "モデルとデータセットを選択",
+      modelUnverified:
+        "このモデルの設定を確認できませんでした。接続または Hugging Face トークンを確認してから、再試行してください。",
+      legacyDatasetScriptUnsupported:
+        "この Hub データセットは従来のカスタムスクリプトに依存しているため、このトレーニングフローではサポートされていません。",
+      hfModelAccessDenied:
+        "Hugging Face がこのモデルへのアクセスを拒否しました。リポジトリへのアクセス権を持つ有効な Hugging Face トークンを追加し、必要な利用条件に同意してから再試行してください。",
+      hfModelVerificationRateLimited:
+        "Hugging Face のモデル検証はレート制限されています。しばらくしてから再試行してください。",
+      hfModelVerificationFailed:
+        "Hugging Face モデルを検証できませんでした。リポジトリ ID とアクセストークンを確認してください。",
+      hfModelMetadataUnavailable:
+        "Hugging Face のモデルメタデータは一時的に利用できません。トレーニングを開始する前に再試行してください。",
+      datasetUnverified:
+        "データセットがこのモデルと互換性があるか確認できませんでした。接続または Hugging Face トークンを確認してください。トレーニング開始時にもう一度確認します。",
+      setupChanged:
+        "確認中にトレーニング設定が変更されました。設定を確認してから、トレーニングをもう一度開始してください。",
+      validation: {
+        s3MultimodalUnsupported:
+          "S3 データセットは、ビジョンまたはオーディオのトレーニングではまだサポートされていません。",
+        s3BucketRequired: "先に S3 バケット名を入力してください。",
+        s3CredentialsRequired:
+          "S3 アクセスキーを指定するか、IAM ロールを有効にしてください。",
+        modelRequired: "先にベースモデルを選択してください。",
+        learningRatePositive: "0 より大きい学習率を入力してください。",
+        embeddingLearningRateRange:
+          "0 より大きく 1 より小さい埋め込み学習率を入力してください。",
+        hfDatasetRequired:
+          "先に Hugging Face データセットを選択してください。",
+        hfDatasetSplitRequired:
+          "先に学習用分割を選択または入力してください。",
+        localDatasetRequired: "先にローカルデータセットを選択してください。",
+        unsupportedDatasetSource:
+          "サポートされていないデータセットソースです。",
+      },
       uploadConfigTooltip: "保存された YAML 構成を読み込みます",
-      save: "保存",
       saveConfigTooltip: "現在の構成を YAML としてダウンロードします",
-      reset: "リセット",
       resetConfigTooltip: "モデルのデフォルト値にリセットします",
       configLoaded: "構成を読み込みました",
       failedToLoadConfig: "構成の読み込みに失敗しました",
       invalidYamlFile: "無効な YAML ファイルです",
+      configTooLarge: "トレーニング構成ファイルが大きすぎます（最大 1 MiB）。",
       failedToReadFile: "ファイルの読み込みに失敗しました",
+      failedToSaveConfig: "構成の保存に失敗しました",
       parametersReset: "パラメーターをモデルのデフォルト値にリセットしました",
       audioIncompatible: "このモデルはオーディオをサポートしていません。オーディオ対応のモデルに切り替えるか、オーディオ以外のデータセットを選択してください。",
       visionIncompatible: "テキストモデルはマルチモーダルデータセットと互換性がありません。ビジョンモデルに切り替えるか、テキストのみのデータセットを選択してください。",
-      cancelTitle: "トレーニングを取り消し",
-      cancelDescription: "現在のトレーニング実行を取り消しますか？",
+      cancelTitle: "トレーニングをキャンセル",
+      cancelDescription: "現在のトレーニング実行をキャンセルしますか？",
       continueAction: "トレーニングを続行",
-      cancelAction: "トレーニングを取り消し",
+      cancelAction: "トレーニングをキャンセル",
       stopTitle: "トレーニングを停止",
-      stopDescription: "現在のトレーニング実行をどのように停止するか選択してください。",
+      stopDescription:
+        "現在のトレーニング実行をどのように停止するか選択してください。「停止して保存」では後で再開できるチェックポイントが保存されますが、保存せずに停止した場合は再開できません。",
       stopAction: "停止",
       stopping: "停止中...",
       stopAndSave: "停止して保存",
@@ -1258,6 +1665,20 @@ export const ja = {
     },
     history: {
       title: "履歴",
+      filesDeleted: "ファイルを削除しました",
+      deleteArtifactsLabel: "ディスク上のアダプターファイルも削除",
+      deleteArtifactsDescription:
+        "保存済みのアダプターやチェックポイントを含む、この実行の出力フォルダを削除します。",
+      deleteArtifactsSharedNote:
+        "別の実行がこの出力フォルダを共有しています。このフォルダを使用する最後の実行が削除されるまで、ファイルは保持されます。",
+      artifactsKeptShared:
+        "実行を削除しました。別の実行が同じフォルダを使用しているため、アダプターファイルは保持されました。",
+      deleteArtifactsActiveError:
+        "進行中のトレーニングがこれらのファイルを使用しています。ファイルを削除する前にトレーニングを停止してください。",
+      deleteArtifactsFailed:
+        "実行は削除されましたが、関連ファイルを削除できませんでした。",
+      deleteArtifactsRetainedError:
+        "アダプターファイルを削除できなかったため、トレーニング実行は履歴に保持されました。",
       emptyTitle: "トレーニング実行がまだありません",
       emptyDescription: "トレーニング実行がまだありません。「設定」タブで最初のトレーニングを開始してください。",
       loadError: "トレーニング実行の読み込みに失敗しました",
@@ -1279,9 +1700,6 @@ export const ja = {
       steps: "ステップ数",
       lossTrendSparkline: "Loss トレンドスパークライン",
       relativeJustNow: "たった今",
-      relativeMinutesAgo: "{count}分前",
-      relativeHoursAgo: "{count}時間前",
-      relativeDaysAgo: "{count}日前",
       status: {
         completed: "完了",
         stopped: "停止",
@@ -1384,6 +1802,7 @@ export const ja = {
         loadingDataset: "データセットを読み込み中",
         configuring: "構成中",
         training: "トレーニング中",
+        finalizing: "モデルを保存中",
         completed: "完了",
         error: "エラー",
         stopped: "停止",

@@ -154,13 +154,20 @@ def _install_windows_job() -> None:
 # ── Child binding ──
 
 
-def _pdeathsig_preexec() -> None:
-    # Runs in the forked child before exec. prctl is Linux-only; the getppid
-    # check closes the race where the parent died before this ran.
+def _pdeathsig_preexec(owner_pid: Optional[int] = None) -> None:
+    # Runs in the forked child before exec (PR_SET_PDEATHSIG does not survive the
+    # fork); the getppid check closes the race where the parent died first.
+    # owner_pid is the spawner's pid, read pre-fork. A bare `getppid() == 1` also
+    # matches a parent that legitimately IS pid 1, which is how Studio runs as a
+    # container entrypoint: it killed every llama-server before exec (#7886). It
+    # also misses reparenting to a subreaper, whose pid is not 1.
     try:
         import ctypes
+
         ctypes.CDLL("libc.so.6", use_errno = True).prctl(_PR_SET_PDEATHSIG, signal.SIGTERM)
-        if os.getppid() == 1:
+        parent_pid = os.getppid()
+        orphaned = parent_pid != owner_pid if owner_pid is not None else parent_pid == 1
+        if orphaned:
             os._exit(1)
     except Exception:
         pass
@@ -170,20 +177,44 @@ def bind_current_process_to_parent_lifetime() -> None:
     """Bind the CURRENT process to its parent's death (Linux). For multiprocessing
     children, which cannot take a preexec_fn, so the parent cannot set
     PR_SET_PDEATHSIG for them -- the child must do it itself at startup."""
-    if _is_linux():
-        _pdeathsig_preexec()
+    if not _is_linux():
+        return
+    parent = None
+    try:
+        import multiprocessing
+        parent = multiprocessing.parent_process()
+    except Exception:
+        pass
+    if parent is None:
+        # No creator to consult and nothing orphaned, so only arm PDEATHSIG: the
+        # bare getppid() == 1 test would kill a parent-is-pid-1 process (#7886).
+        _pdeathsig_preexec(os.getppid())
+        return
+    # PDEATHSIG binds to the kernel parent; "orphaned" comes from the creator's
+    # sentinel, not a pid compare, since under forkserver the kernel parent is the
+    # fork server and comparing would kill every healthy worker. The sentinel is
+    # exact under spawn and forkserver; under fork a sibling can inherit the
+    # creator's write end and read stale-alive, but PDEATHSIG covers fork. A
+    # forkserver creator dying later stays uncovered, as on main.
+    _pdeathsig_preexec(os.getppid())
+    try:
+        if not parent.is_alive():
+            os._exit(1)
+    except Exception:
+        pass
 
 
-def compose_preexec(existing: Optional[Callable[[], None]]) -> Optional[Callable[[], None]]:
+def compose_preexec(
+    existing: Optional[Callable[[], None]], owner_pid: Optional[int] = None
+) -> Optional[Callable[[], None]]:
     """Run the PDEATHSIG hook then any caller-supplied preexec (Linux only)."""
     if not _is_linux():
         return existing
-    if existing is None:
-        return _pdeathsig_preexec
 
     def _composed() -> None:
-        _pdeathsig_preexec()
-        existing()
+        _pdeathsig_preexec(owner_pid)
+        if existing is not None:
+            existing()
 
     return _composed
 
@@ -288,7 +319,9 @@ def child_popen_kwargs(preexec_fn: Optional[Callable[[], None]] = None) -> dict:
     ``**child_popen_kwargs()`` alongside the caller's existing kwargs.
     """
     if _is_linux():
-        return {"preexec_fn": compose_preexec(preexec_fn)}
+        # os.getpid() runs in the spawner, so the child tells real reparenting
+        # apart from a parent that is pid 1 (see _pdeathsig_preexec).
+        return {"preexec_fn": compose_preexec(preexec_fn, os.getpid())}
     return {}
 
 

@@ -125,15 +125,6 @@ pub async fn check_install_status() -> bool {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
-    // Match the same AppImage env clearing used in process.rs and install.rs,
-    // otherwise the probe can fail due to bundled libs even when the install is fine.
-    #[cfg(target_os = "linux")]
-    if std::env::var_os("APPIMAGE").is_some() {
-        cmd.env_remove("LD_LIBRARY_PATH");
-        cmd.env_remove("PYTHONHOME");
-        cmd.env_remove("PYTHONPATH");
-    }
-
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
     // probe subprocesses must follow the same isolation as process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
@@ -561,6 +552,21 @@ pub async fn start_managed_repair(
             );
         }
         Err(msg) => {
+            // A stop is the user quitting or cancelling, not a broken install. Running
+            // the installer here rewrites a working venv and leaves it half-built when
+            // the app exits underneath it.
+            if msg == update::UPDATE_STOPPED {
+                info!("Managed repair update stopped; skipping installer fallback");
+                // Only a user stop reaches this branch, and the support report prints
+                // final_status verbatim. Matches record_pending_elevation_canceled.
+                diagnostics::finish_repair_group(
+                    &diagnostics_state,
+                    &repair_group_id,
+                    "canceled",
+                    Some(msg.clone()),
+                );
+                return Err(msg);
+            }
             if msg.to_ascii_lowercase().contains("already running") {
                 error!("Managed repair update conflict: {}", msg);
                 diagnostics::finish_repair_group(
@@ -667,7 +673,7 @@ mod tests {
             String::new()
         };
         format!(
-            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.5.3","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{ROOT_ID}"{owner}}}"#
+            r#"{{"status":"healthy","service":"Unsloth UI Backend","version":"2026.8.4","desktop_protocol_version":1,"desktop_manageability_version":1,"supports_desktop_auth":true,"supports_desktop_backend_ownership":true,"studio_root_id":"{ROOT_ID}"{owner}}}"#
         )
     }
 
