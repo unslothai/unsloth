@@ -188,6 +188,30 @@ def compose_preexec(existing: Optional[Callable[[], None]]) -> Optional[Callable
     return _composed
 
 
+_fork_reset_installed = False
+
+
+def _reset_after_fork() -> None:
+    """A fork child inherits _spawner_lock in whatever state it was in and a
+    _spawner whose thread does not exist here. Start clean instead of deadlocking."""
+    global _spawner, _spawner_lock
+    _spawner_lock = threading.Lock()
+    _spawner = None
+
+
+def _adopt_fork_reset() -> None:
+    """Register the child-side reset once, lazily. Best-effort like the rest of
+    this module: os.register_at_fork is POSIX-only and absent on Windows."""
+    global _fork_reset_installed
+    if _fork_reset_installed:
+        return
+    _fork_reset_installed = True
+    try:
+        os.register_at_fork(after_in_child = _reset_after_fork)
+    except (AttributeError, RuntimeError):  # no fork support; nothing to guard
+        pass
+
+
 def spawn_on_lifetime_thread(spawn: Callable[[], object]) -> object:
     """Run *spawn* (a Popen call) on a thread that lives as long as the process.
 
@@ -199,6 +223,7 @@ def spawn_on_lifetime_thread(spawn: Callable[[], object]) -> object:
     if not _is_linux():
         return spawn()
     global _spawner
+    _adopt_fork_reset()
     with _spawner_lock:
         if _spawner is None or not _spawner.usable():
             candidate = _Spawner()

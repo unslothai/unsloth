@@ -467,3 +467,32 @@ def test_stop_does_not_wait_forever_on_a_start_that_never_claims_ownership(monke
         hold.set()
         foreign_start.join(timeout = 5)
         remote_access._open_remote_access_stop_response_admission()
+
+
+def test_streaming_is_not_advertised_while_a_quick_tunnel_carries_the_traffic(monkeypatch):
+    # Cloudflare documents that Quick Tunnels do not support Server-Sent Events,
+    # and Studio only ever opens Quick Tunnels. Measured against a real tunnel: an
+    # SSE endpoint answers 200 with text/event-stream but delivers zero events.
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+    monkeypatch.setattr(remote_access, "_stop_worker", None)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
+
+    def _status(url):
+        return {
+            "state": "online" if url else "off",
+            "url": url,
+            "error": None,
+            "managed_by": "settings" if url else None,
+            "stop_pending": False,
+        }
+
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_status", lambda: _status(None))
+    assert remote_access.remote_access_status(_state())["streaming_supported"] is True
+
+    monkeypatch.setattr(
+        cloudflare_tunnel, "get_studio_tunnel_status",
+        lambda: _status("https://live.trycloudflare.com"),
+    )
+    assert remote_access.remote_access_status(_state())["streaming_supported"] is False

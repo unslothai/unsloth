@@ -1164,6 +1164,13 @@ app.add_middleware(
     allow_credentials = True,
     allow_methods = ["*"],
     allow_headers = ["*"],
+    # is_allowed_origin closes the moment the tunnel URL clears, but a preflight
+    # already cached by the browser does not. Measured in WebKit: with Starlette's
+    # 600s default, a state-changing request still REACHED the server after remote
+    # access was stopped (Chromium/Firefox/Edge re-preflighted). Keep the stale
+    # window short so revocation is nearly as immediate as every other trust
+    # signal here.
+    max_age = 60,
 )
 
 from utils.remote_access_settings import RemoteAccessStopResponseMiddleware  # noqa: E402

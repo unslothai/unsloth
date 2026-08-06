@@ -304,3 +304,36 @@ def test_tauri_port_print_is_gated_in_source():
     # The TAURI_PORT line must depend on emit_tauri_port, not api_only alone.
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert "if api_only and emit_tauri_port:" in src
+
+
+def test_cors_preflight_cache_window_is_short():
+    # is_allowed_origin closes the instant the tunnel URL clears, but a preflight
+    # the browser already cached does not. Measured in WebKit: with Starlette's
+    # 600s default a state-changing request still reached the server after Stop.
+    from types import SimpleNamespace
+
+    from starlette.datastructures import Headers
+
+    from main import RemoteAccessCORSMiddleware
+
+    middleware = RemoteAccessCORSMiddleware(
+        lambda *_: None,
+        remote_access_state = SimpleNamespace(cloudflare_url = "https://x.trycloudflare.com"),
+        allow_origins = ["tauri://localhost"],
+        allow_credentials = True,
+        allow_methods = ["*"],
+        allow_headers = ["*"],
+        max_age = 60,
+    )
+    response = middleware.preflight_response(
+        Headers({
+            "origin": "https://browser-client.example",
+            "access-control-request-method": "POST",
+            "access-control-request-headers": "authorization",
+        })
+    )
+    assert response.status_code == 200
+    assert int(response.headers["access-control-max-age"]) <= 60
+
+    main_src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
+    assert "max_age = 60" in main_src, "the mounted middleware must pin max_age"
