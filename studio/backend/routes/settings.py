@@ -363,9 +363,7 @@ def update_helper_precache(
 
 
 @router.get("/model-memory", response_model = ModelMemoryResponse)
-def get_model_memory(
-    current_subject: str = Depends(get_current_subject),
-) -> ModelMemoryResponse:
+def get_model_memory(current_subject: str = Depends(get_current_subject)) -> ModelMemoryResponse:
     return _model_memory_response()
 
 

@@ -93,8 +93,7 @@ def get_model_memory_settings() -> tuple[bool, bool]:
 
 
 def set_model_memory_settings(
-    keep_resident: Any = None,
-    no_ram_reserve: Any = None,
+    keep_resident: Any = None, no_ram_reserve: Any = None
 ) -> tuple[bool, bool]:
     """One-transaction write; ``None`` leaves a stored value untouched."""
     updates: dict[str, bool] = {}
@@ -113,7 +112,6 @@ def set_model_memory_settings(
 
     if updates:
         from storage.studio_db import upsert_app_settings
-
         upsert_app_settings(updates)
         for key in updates:
             _invalidate(key)

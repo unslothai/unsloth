@@ -38,9 +38,7 @@ def policy(monkeypatch):
     def run(keep_resident: bool, no_ram_reserve: bool, extras):
         monkeypatch.setattr(mm, "get_keep_resident", lambda: keep_resident)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_ram_reserve)
-        monkeypatch.setattr(
-            mm, "should_mlock", lambda: keep_resident and not no_ram_reserve
-        )
+        monkeypatch.setattr(mm, "should_mlock", lambda: keep_resident and not no_ram_reserve)
         return apply_model_memory_policy(extras)
 
     return run
@@ -134,14 +132,21 @@ class TestPersistence:
     @pytest.mark.parametrize("value", ["banana", 2.5, object()])
     def test_rejects_non_boolean(self, value):
         import utils.model_memory_settings as mm
-
         with pytest.raises(ValueError):
             mm.set_model_memory_settings(keep_resident = value)
 
     @pytest.mark.parametrize(
         ("stored", "expected"),
-        [(True, True), ("true", True), ("on", True), (False, False), ("off", False), ("", False),
-         (None, False), ("nonsense", False)],
+        [
+            (True, True),
+            ("true", True),
+            ("on", True),
+            (False, False),
+            ("off", False),
+            ("", False),
+            (None, False),
+            ("nonsense", False),
+        ],
     )
     def test_coercion_defaults_to_off(self, monkeypatch, stored, expected):
         import utils.model_memory_settings as mm
