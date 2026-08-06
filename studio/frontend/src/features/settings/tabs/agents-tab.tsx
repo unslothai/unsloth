@@ -644,12 +644,6 @@ export function AgentsTab() {
   const setStoredVariant = useSettingsPanelPrefsStore(
     (s) => s.setAgentsVariant,
   );
-  const clearStoredVariant = useSettingsPanelPrefsStore(
-    (s) => s.clearAgentsVariant,
-  );
-  const storedVariantModel = useSettingsPanelPrefsStore(
-    (s) => s.agentsVariantModel,
-  );
   // read once: these seed the controls, which write back through the handlers.
   const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
   const [agents, setAgents] = useState<string[]>(
@@ -1073,7 +1067,11 @@ export function AgentsTab() {
     restoredModel.current = null;
     // modelKey both sides: discovery folds repo-id case, so an exact match
     // would retire a valid pick just for a different spelling.
+    // A path is never in discoveredKeys (the catalog drops path ids and a scan
+    // root may not cover it), but `unsloth start --model <path>` is valid, so
+    // absence there is not evidence.
     if (
+      looksLikePath(restored) ||
       discoveredKeys.has(modelKey(restored)) ||
       (active && modelKey(active.model) === modelKey(restored))
     ) {
@@ -1156,15 +1154,13 @@ export function AgentsTab() {
         );
         // Authoritative for this repo: drop a remembered quant it no longer
         // offers, or adoptActiveModel re-imposes it on the next poll.
+        // Stop adoptActiveModel re-imposing a quant this repo will not serve.
+        // In-memory only: `partial` here means "still downloading", and an
+        // offline reply lists just the cache, so neither is grounds to delete
+        // the user's saved quant. Dropping the ref re-runs this next mount.
         const remembered = rememberedVariant(selectedModel);
         if (remembered && !available.has(remembered)) {
           chosenVariant.current = null;
-          if (
-            storedVariantModel &&
-            modelKey(storedVariantModel) === modelKey(selectedModel)
-          ) {
-            clearStoredVariant();
-          }
         }
         const nextVariant =
           pickVariant(available, [
@@ -1203,12 +1199,8 @@ export function AgentsTab() {
     return () => {
       cancelled = true;
     };
-    // storedVariantModel is read inside but is not a dep: this effect changes
-    // it, and re-running would refetch the variants.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     cachedLoadId,
-    clearStoredVariant,
     hfToken,
     preferredVariant,
     rememberedVariant,
@@ -1410,7 +1402,8 @@ export function AgentsTab() {
                           onSelect={() => {
                             modelSelectionChanged.current = true;
                             restoredModel.current = null;
-                            const variant = knownVariants[model] ?? null;
+                            const variant =
+                              rememberedVariant(model) ?? knownVariants[model] ?? null;
                             setSelectedModel(model);
                             setSelectedVariant(variant);
                             // a native-grant label names no path to reuse.

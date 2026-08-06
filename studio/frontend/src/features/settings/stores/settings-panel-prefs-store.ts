@@ -21,9 +21,6 @@ export interface SettingsPanelPrefsState {
   setAgentsAgent: (agent: string | null) => void;
   setAgentsModel: (model: string | null, variant: string | null) => void;
   setAgentsVariant: (model: string, variant: string) => void;
-  // Drops the quant without touching the model, for the case where the repo
-  // stops offering a remembered quant but the model itself is still valid.
-  clearAgentsVariant: () => void;
 
   // null os means "follow the detected device type".
   apiExampleLang: string | null;
@@ -101,8 +98,6 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
         set({ agentsModel, agentsVariant, agentsVariantModel: agentsModel }),
       setAgentsVariant: (agentsVariantModel, agentsVariant) =>
         set({ agentsVariant, agentsVariantModel }),
-      clearAgentsVariant: () =>
-        set({ agentsVariant: null, agentsVariantModel: null }),
 
       apiExampleLang: null,
       apiExampleOs: null,

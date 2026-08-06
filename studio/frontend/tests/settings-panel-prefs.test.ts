@@ -56,14 +56,13 @@ test("picking a model carries its quant, and clearing it clears the quant", () =
   assert.equal(next.agentsVariantModel, null);
 });
 
-test("a quant can be dropped without disturbing the model", () => {
+test("a quant remembered for one model does not follow onto another", () => {
   const s = useSettingsPanelPrefsStore.getState();
-  s.setAgentsModel("unsloth/Baz-GGUF", "Q4_K_M");
-  useSettingsPanelPrefsStore.getState().clearAgentsVariant();
+  s.setAgentsVariant("unsloth/Baz-GGUF", "Q4_K_M");
   const next = useSettingsPanelPrefsStore.getState();
-  assert.equal(next.agentsModel, "unsloth/Baz-GGUF");
-  assert.equal(next.agentsVariant, null);
-  assert.equal(next.agentsVariantModel, null);
+  assert.equal(next.agentsVariant, "Q4_K_M");
+  assert.equal(next.agentsVariantModel, "unsloth/Baz-GGUF");
+  assert.equal(next.agentsModel, null, "a quant pick must not pin the model");
 });
 
 test("a setter write round-trips through localStorage", () => {
