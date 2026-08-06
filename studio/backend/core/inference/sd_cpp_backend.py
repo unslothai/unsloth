@@ -723,6 +723,30 @@ class SdCppDiffusionBackend:
                 # manifest, so the default name would neither verify access nor see the cache.
                 _assert_base_repo_accessible(repo, hf_token, names[0])
 
+    def preflight_base_access(
+        self,
+        repo_id: str,
+        fam: Optional[DiffusionFamily],
+        *,
+        gguf_filename: Optional[str] = None,
+        model_kind: Optional[str] = None,
+        base_repo: Optional[str] = None,
+        hf_token: Optional[str] = None,
+    ) -> None:
+        """The companion refusal ``_run_load`` makes, run by the route BEFORE it takes the GPU.
+
+        Same signature and reason as the diffusers backend's: ``_run_load`` runs on the load
+        thread, after a forced-native load on a GPU host already evicted chat, so a pick refused
+        only there unloads the resident model first. Nothing to check without a family or a
+        checkpoint name -- the asset list needs both, and the route already rejected those picks."""
+        if fam is None or not gguf_filename:
+            return
+        self._preflight_companion_repos(
+            self._assets_by_repo(self._asset_specs(repo_id, gguf_filename, fam)),
+            repo_id,
+            hf_token,
+        )
+
     @staticmethod
     def _plan_file_sizes(
         by_repo: dict[str, list[str]], hf_token: Optional[str]

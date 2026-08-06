@@ -65,6 +65,10 @@ class _FakeBackend:
             raise ValueError(f"Could not infer a diffusion family for '{model_path}'.")
         return fam
 
+    def preflight_base_access(self, model_path, fam, **kwargs):
+        # The real backends probe the Hub for a gated companion here; the fake clears every pick.
+        return None
+
     def begin_load(self, model_path, **kwargs):
         # The real backend loads on a thread; the fake completes instantly.
         self.loaded = True
@@ -626,6 +630,72 @@ def test_load_validation_failure_does_not_evict_chat(client, monkeypatch):
     assert resp.status_code == 400
     assert evicted == []  # chat backend was never evicted
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+
+
+def test_gated_base_load_returns_400_without_evicting_chat(client, monkeypatch):
+    # The images page falls back to /images/load whenever the download plan fails, so the plan's
+    # gated-base refusal alone is not enough: run here BEFORE acquire_for, or the pick the plan
+    # already rejected tears down the loaded chat model and only then reports the same message.
+    import types as _types
+
+    import core.inference.diffusion_device as devmod
+
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    evicted = []
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append(True))
+    # The arbiter is only taken for a non-CPU load, which is exactly where an eviction is at stake.
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: _types.SimpleNamespace(device = "cuda")
+    )
+    backend = diffusion_module.get_diffusion_backend()
+    detail = (
+        "'black-forest-labs/FLUX.1-dev' is gated on Hugging Face and this model cannot be "
+        "downloaded without it."
+    )
+
+    def _refuse(model_path, fam, **kwargs):
+        raise ValueError(detail)
+
+    monkeypatch.setattr(backend, "preflight_base_access", _refuse, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "q.gguf"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == detail
+    assert evicted == []  # chat backend was never evicted
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    assert backend.is_loaded is False  # and the refused load never started
+
+
+def test_cpu_load_skips_the_gated_preflight(client, monkeypatch):
+    # No arbiter handoff on a CPU host means no eviction to protect, so the route must not pay the
+    # preflight's Hub round-trips there: the loader's own copy still catches the gated base.
+    import types as _types
+
+    import core.inference.diffusion_device as devmod
+
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: _types.SimpleNamespace(device = "cpu")
+    )
+    backend = diffusion_module.get_diffusion_backend()
+    calls: list = []
+    monkeypatch.setattr(
+        backend,
+        "preflight_base_access",
+        lambda *a, **k: calls.append(a),
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "q.gguf"},
+    )
+
+    assert resp.status_code == 200
+    assert calls == []
 
 
 def test_load_refused_during_training_does_not_evict_chat(client, monkeypatch):

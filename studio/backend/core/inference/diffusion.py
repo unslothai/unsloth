@@ -835,18 +835,27 @@ class DiffusionBackend:
         # GGUF the prefetch just staged and re-pulls the whole multi-GB file inside the load lock,
         # after eviction, where unload cannot preempt it and progress already reported 100%.
         cache_dir = hub_cache_dir()
-        if not isinstance(try_to_load_from_cache(repo_id, gguf_filename, cache_dir = cache_dir), str):
-            # Same other-root reuse as the pre-quant checkpoint: re-fetching a copy that root
-            # already holds is the download this pins the root to avoid. Reached THROUGH that root
-            # rather than returned raw, so the ref still resolves and a republished GGUF is picked
-            # up; the blob is reused, and offline the cached pointer comes back anyway. Any failure
-            # falls back to the path already found, so this cannot break a working load.
-            elsewhere = try_to_load_from_cache(repo_id, gguf_filename, cache_dir = None)
-            if isinstance(elsewhere, str) and Path(elsewhere).is_file():
-                try:
-                    return hf_hub_download(repo_id, gguf_filename, token = hf_token, cache_dir = None)
-                except Exception:  # noqa: BLE001 — revalidation is a bonus, never a new failure
-                    return elsewhere
+        # Both probes are best-effort: a malformed or unreadable cache raises here, and letting
+        # that escape would abort a remote load that only had to download. Any failure falls
+        # through to the pinned download below.
+        try:
+            if not isinstance(
+                try_to_load_from_cache(repo_id, gguf_filename, cache_dir = cache_dir), str
+            ):
+                # Same other-root reuse as the pre-quant checkpoint: re-fetching a copy that root
+                # already holds is the download this pins the root to avoid. Reached THROUGH that
+                # root rather than returned raw, so the ref still resolves and a republished GGUF is
+                # picked up; the blob is reused, and offline the cached pointer comes back anyway.
+                elsewhere = try_to_load_from_cache(repo_id, gguf_filename, cache_dir = None)
+                if isinstance(elsewhere, str) and Path(elsewhere).is_file():
+                    try:
+                        return hf_hub_download(
+                            repo_id, gguf_filename, token = hf_token, cache_dir = None
+                        )
+                    except Exception:  # noqa: BLE001 — revalidation is a bonus, never a new failure
+                        return elsewhere
+        except Exception:  # noqa: BLE001 — an unreadable cache is not a verdict, just download
+            pass
         return hf_hub_download(repo_id, gguf_filename, token = hf_token, cache_dir = cache_dir)
 
     def _dense_quant_prefetch_needed(self, fam: DiffusionFamily, kwargs: dict) -> bool:
@@ -1103,6 +1112,37 @@ class DiffusionBackend:
                     f"and a .gguf filename, not as a full pipeline."
                 )
         return fam
+
+    def preflight_base_access(
+        self,
+        repo_id: str,
+        fam: Optional[DiffusionFamily],
+        *,
+        gguf_filename: Optional[str] = None,
+        model_kind: Optional[str] = None,
+        base_repo: Optional[str] = None,
+        hf_token: Optional[str] = None,
+    ) -> None:
+        """The gated/unreadable-base refusal, run by the route BEFORE it takes the GPU.
+
+        ``_run_load`` and ``download_plan`` already make it, but ``_run_load`` runs on the load
+        thread, after the route evicted chat, and the plan's 400 does not stop the load: the images
+        page falls back to /images/load on ANY plan failure. Without this, a pick refused only at
+        plan time still unloads the resident chat/video model and only then reports the message.
+        Resolves the base exactly as those two do, so all three agree.
+
+        The one deliberate network step on the pre-eviction path (``validate_load_request`` stays
+        network-free): two metadata calls for a remote pick, none for a local one, both already
+        made by ``_run_load`` moments later. It fails open on offline/transient, so it can refuse
+        a load but never block one that would have worked."""
+        kind = resolve_model_kind(gguf_filename, model_kind)
+        if kind == "pipeline":
+            base = repo_id  # the full pipeline IS the repo
+        else:
+            base = _resolve_base_repo(repo_id, base_repo, fam, hf_token)
+        # The excused-snapshot return is for the loader's pinned from_pretrained; only the raise
+        # matters here, and _run_load recomputes it.
+        _assert_base_repo_accessible(base, hf_token)
 
     # ── Background load + progress ─────────────────────────────────────────
 
@@ -1725,6 +1765,9 @@ class DiffusionBackend:
                     cpu_offload,
                     kind = kind,
                     repo_id = repo_id,
+                    # The base may be resolved off the OTHER cache root, which the plan's live-root
+                    # scans read as zero companions.
+                    base_local_dir = _base_local_dir,
                 )
 
                 # Dtype tri-state: unset/"auto" -> hardware ladder; "none"/"off" pins GGUF-as-is; an explicit scheme pins it.
@@ -1868,6 +1911,9 @@ class DiffusionBackend:
                                 kind = kind,
                                 repo_id = repo_id,
                                 transformer_resident_override_mib = dense_mib,
+                                # No companion_override here, so this one reads the cache: point it
+                                # at the snapshot the load will read, not the live root alone.
+                                base_local_dir = _base_local_dir,
                             )
                             if dense_plan.offload_policy != OFFLOAD_NONE:
                                 dense_fallback_allowed = False
@@ -2576,6 +2622,7 @@ class DiffusionBackend:
         repo_id: Optional[str] = None,
         transformer_resident_override_mib: Optional[int] = None,
         companion_override_mib: Optional[int] = None,
+        base_local_dir: Optional[str] = None,
     ):
         """Build the memory plan for this load: snapshot free device memory and
         estimate the model's resident footprint, then let the planner pick an
@@ -2593,14 +2640,26 @@ class DiffusionBackend:
         ``companion_override_mib`` likewise replaces the cached companion total on that
         re-plan, so the base repo's PREFETCHED transformer/ shards -- which land in the
         same blob cache _companion_cache_bytes sums -- are not counted as companions on
-        top of transformer_resident_override_mib (a double-count of the transformer)."""
+        top of transformer_resident_override_mib (a double-count of the transformer).
+
+        ``base_local_dir`` is the snapshot the load will actually read. Every size lookup here is
+        scoped to ``hub_cache_dir()`` (``_cache_bytes`` walks the live root's blobs,
+        ``_companion_cache_bytes`` its snapshots), so a base the prefetch/preflight resolved
+        through huggingface_hub's import-time root weighs in at zero and the plan budgets a bare
+        transformer -- an auto plan then stays resident and OOMs on the VAE + text encoders it
+        never counted. Size that snapshot instead when one was handed back."""
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full.
         device_memory = settled_snapshot_device_memory(target)
         if kind == "pipeline":
             # The whole repo is one cached download, so cached bytes are the resident estimate; a LOCAL path is not cached, so sum its on-disk weights.
             local_repo = Path(repo_id).expanduser() if repo_id else None
+            # A snapshot handed back by the prefetch/preflight can sit under the OTHER cache root,
+            # where _cache_bytes (live root only) reads zero; sum the tree from_pretrained will read.
+            staged_repo = Path(base_local_dir).expanduser() if base_local_dir else None
             if local_repo is not None and local_repo.is_dir():
                 cached = self._local_dir_weight_bytes(local_repo, exclude_transformer = False)
+            elif staged_repo is not None and staged_repo.is_dir():
+                cached = self._local_dir_weight_bytes(staged_repo, exclude_transformer = False)
             else:
                 cached = self._cache_bytes(repo_id) if repo_id else 0
             cached_mib = int(cached // (1024 * 1024)) if cached else None
@@ -2644,7 +2703,11 @@ class DiffusionBackend:
                 # Re-planning the dense candidate: the prefetched transformer/ shards land in the same cache, so use the estimate instead of double-counting.
                 companion_mib = companion_override_mib
             else:
-                companion = self._companion_cache_bytes(base)
+                # base_local_dir first: _companion_cache_bytes resolves a hub id under the LIVE
+                # root only, so a base served from the import-time root budgets as zero and the
+                # VAE + text encoders load unbudgeted. It takes a local dir as-is, so handing it
+                # the snapshot sizes the tree the load reads (transformer/ still excluded).
+                companion = self._companion_cache_bytes(base_local_dir or base)
                 companion_mib = int(companion // (1024 * 1024)) if companion else None
             model_dense_mib = None
             if transformer_resident is not None:

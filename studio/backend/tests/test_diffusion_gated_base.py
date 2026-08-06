@@ -254,6 +254,67 @@ def test_download_plan_refuses_a_gated_base_before_listing_files(monkeypatch):
     assert GATED_REPO in str(excinfo.value)
 
 
+def test_the_pre_eviction_preflight_refuses_the_same_gated_base(monkeypatch):
+    # The route calls this BEFORE acquire_for. _run_load makes the same check, but only after the
+    # GPU was taken from chat, and the images page falls back to /images/load on any plan failure.
+    _stub_hub(
+        monkeypatch,
+        info = _FakeInfo("auto", [_FakeSibling("model_index.json", 1000)]),
+        download_error = _gated_error(),
+    )
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: GATED_REPO)
+
+    with pytest.raises(ValueError) as excinfo:
+        DiffusionBackend().preflight_base_access(
+            "unsloth/FLUX.1-dev-GGUF",
+            types.SimpleNamespace(name = "flux.1", single_file_is_pipeline = False),
+            gguf_filename = "flux1-dev-Q4_K_M.gguf",
+            model_kind = "gguf",
+        )
+
+    assert GATED_REPO in str(excinfo.value)
+
+
+def test_the_pre_eviction_preflight_clears_an_open_base(monkeypatch):
+    # It must refuse a load, never block one: an open base costs one metadata call and no byte probe.
+    probed = _stub_hub(monkeypatch, info = _FakeInfo(False))
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: "unsloth/x")
+
+    DiffusionBackend().preflight_base_access(
+        "unsloth/Z-Image-Turbo-GGUF",
+        types.SimpleNamespace(name = "z-image", single_file_is_pipeline = False),
+        gguf_filename = "z.gguf",
+        model_kind = "gguf",
+    )
+
+    assert probed == []
+
+
+def test_the_native_pre_eviction_preflight_refuses_a_gated_companion(monkeypatch):
+    # A forced-native load on a GPU box takes the arbiter too, so sd.cpp needs the same entry point.
+    from core.inference.sd_cpp_backend import SdCppDiffusionBackend
+
+    _stub_hub(
+        monkeypatch,
+        info = _FakeInfo("auto", [_FakeSibling("ae.safetensors", 1000)]),
+        download_error = _gated_error(),
+    )
+    fam = types.SimpleNamespace(
+        name = "flux.1",
+        sd_cpp_vae = (GATED_REPO, "ae.safetensors"),
+    )
+    monkeypatch.setattr(
+        "core.inference.sd_cpp_backend.sd_cpp_text_encoders_for", lambda *a, **k: ()
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        SdCppDiffusionBackend().preflight_base_access(
+            "unsloth/FLUX.1-dev-GGUF", fam, gguf_filename = "flux1-dev-Q4_K_M.gguf"
+        )
+
+    assert GATED_REPO in str(excinfo.value)
+
+
 def test_run_load_stamps_the_gated_error_on_the_load(monkeypatch):
     # The load path takes the same preflight, so the failure reaches the UI as a load error.
     backend = DiffusionBackend()
@@ -837,6 +898,27 @@ def test_a_prefetch_wholly_in_one_root_still_hands_back_that_snapshot(monkeypatc
         )
         == root
     )
+
+
+def test_an_unreadable_gguf_cache_probe_still_downloads(tmp_path, monkeypatch):
+    """A malformed cache makes try_to_load_from_cache raise. That is not a verdict about the repo,
+    so it must not abort a remote GGUF load that only had to download."""
+    import huggingface_hub
+
+    def _boom(*a, **k):
+        raise OSError("unreadable cache")
+
+    monkeypatch.setattr(huggingface_hub, "try_to_load_from_cache", _boom)
+    monkeypatch.setattr(
+        huggingface_hub,
+        "hf_hub_download",
+        lambda repo_id, filename, **k: f"/downloaded/{filename}",
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion.hub_cache_dir", lambda: str(tmp_path / "live-hub")
+    )
+    path = DiffusionBackend()._resolve_gguf_path("unsloth/FLUX.1-dev-GGUF", "m.gguf", None)
+    assert path == "/downloaded/m.gguf"
 
 
 def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypatch, tmp_path):

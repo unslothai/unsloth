@@ -18982,6 +18982,23 @@ async def load_diffusion_model(
             return begin_load_on(engine, _start_engine_load)
 
         if needs_gpu:
+            # Last refusal before the GPU handoff: a gated/unreadable companion repo. The download
+            # plan makes the same check, but the images page falls back to THIS route whenever the
+            # plan call fails, and the loader's own copy runs on the load thread, after acquire_for
+            # already evicted chat. Without this, picking a gated model with no token unloads the
+            # resident chat/video model and only then reports the friendly message. Costs two
+            # metadata calls the load makes anyway, fails open on offline/transient, and only on
+            # the path where an eviction is actually at stake.
+            await asyncio.to_thread(
+                engine.preflight_base_access,
+                request.model_path,
+                fam,
+                gguf_filename = request.gguf_filename,
+                model_kind = kind,
+                base_repo = request.base_repo,
+                hf_token = request.hf_token,
+            )
+
             # Register the in-flight load UNDER the arbiter lock: otherwise a competing acquire in that gap evicts DIFFUSION before
             # the load is marked, finds nothing to cancel, and both allocate at once. The training admission wraps the same span.
             def _acquire_and_begin():

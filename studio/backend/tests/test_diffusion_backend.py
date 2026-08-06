@@ -1732,9 +1732,16 @@ def test_begin_load_rejects_concurrent(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend, "load_pipeline", lambda self, **k: __import__("time").sleep(0.2)
     )
+    before = set(threading.enumerate())
     backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")
     with pytest.raises(RuntimeError):
         backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")
+    # Drain the worker while the stubs above still make it exit in 0.2s. begin_load's thread is
+    # fire-and-forget, so left running it outlives this test, monkeypatch reverts load_pipeline
+    # under it, and it then runs the REAL one inside whatever test is current -- inheriting that
+    # test's class-level patches and landing in its assertions.
+    for thread in set(threading.enumerate()) - before:
+        thread.join(timeout = 5)
 
 
 def test_unload_cancels_in_flight_load(fake_runtime):
@@ -3686,6 +3693,111 @@ def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(m
     )
     # 12000 + 8000 + 4000 + 2048 overhead = 26048 MiB, fits the ~36 GiB budget. A double-count would have exceeded it and offloaded.
     assert plan.offload_policy == OFFLOAD_NONE
+
+
+def _other_root_base_snapshot(tmp_path, monkeypatch):
+    """A base repo cached ONLY under huggingface_hub's import-time root, with Studio's live root
+    empty: what a mid-session cache-folder change leaves behind, and what the per-file root reuse
+    hands the loader back as ``_base_local_dir``. Sparse files, so the sizes cost no disk."""
+    from core.inference import diffusion as dmod
+
+    live = tmp_path / "live-hub"
+    live.mkdir()
+    monkeypatch.setattr(dmod, "hub_cache_dir", lambda: str(live))
+    snapshot = tmp_path / "other-hub" / "models--bfl--base" / "snapshots" / ("a" * 40)
+    for rel, mib in (
+        ("text_encoder/model.safetensors", 150),
+        ("vae/diffusion_pytorch_model.safetensors", 50),
+        # Excluded from the companion total: on a GGUF load the single file supplies the transformer.
+        ("transformer/diffusion_pytorch_model.safetensors", 4096),
+    ):
+        path = snapshot / rel
+        path.parent.mkdir(parents = True, exist_ok = True)
+        with open(path, "wb") as fh:
+            fh.truncate(mib * 1024 * 1024)
+    return snapshot
+
+
+def _small_card(monkeypatch):
+    """A 5 GiB-free card + a fixed runtime headroom, so the plan's arithmetic is exact:
+    budget = 5000 - max(2048, 5120*0.10) = 2952 MiB, resident margin 0.85 * 2952 = 2509 MiB."""
+    from core.inference import diffusion as dmod
+    from core.inference.diffusion_memory import DeviceMemory
+
+    monkeypatch.setattr(
+        dmod,
+        "settled_snapshot_device_memory",
+        lambda t: DeviceMemory("cuda", "cuda", "discrete_vram", 5000, 5120),
+    )
+    monkeypatch.setattr(dmod, "estimate_image_runtime_mib", lambda **kw: 100)
+    return types.SimpleNamespace(
+        device = "cuda", backend = "cuda", supports_model_cpu_offload = True
+    )
+
+
+def test_plan_memory_budgets_companions_from_the_other_root_snapshot(monkeypatch, tmp_path):
+    # _companion_cache_bytes resolves a hub id under hub_cache_dir() ONLY, so a base the prefetch
+    # served from huggingface_hub's import-time root budgets as zero while from_pretrained loads it
+    # off that snapshot: an auto plan stays resident and OOMs on companions it never counted.
+    from core.inference.diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE
+
+    snapshot = _other_root_base_snapshot(tmp_path, monkeypatch)
+    target = _small_card(monkeypatch)
+    backend = DiffusionBackend()
+    fam = types.SimpleNamespace(name = "flux.1")
+
+    def _plan(**kw):
+        return backend._plan_memory(
+            target,
+            None,
+            "bfl/base",
+            fam,
+            None,
+            False,
+            kind = "gguf",
+            transformer_resident_override_mib = 300,
+            **kw,
+        )
+
+    # The live root holds none of it, so the hub-id scan is blind to 200 MiB of real companions.
+    assert DiffusionBackend._companion_cache_bytes("bfl/base") == 0
+    blind = _plan()
+    assert blind.estimates["companion_dense_mib"] is None
+    # 300 + 0 + 100 + 2048 = 2448 <= 2509: resident, and the 200 MiB of companions arrive unbudgeted.
+    assert blind.offload_policy == OFFLOAD_NONE
+
+    plan = _plan(base_local_dir = str(snapshot))
+    # transformer/ stays excluded; only the VAE + text encoder count.
+    assert plan.estimates["companion_dense_mib"] == 200
+    # 300 + 200 + 100 + 2048 = 2648 > 2509, and the 2348 MiB group floor fits: stream the transformer.
+    assert plan.offload_policy == OFFLOAD_GROUP
+
+
+def test_plan_memory_sizes_a_pipeline_load_from_the_other_root_snapshot(monkeypatch, tmp_path):
+    # Same hole on the full-pipeline branch, where the whole repo IS the base: _cache_bytes walks
+    # the live root's blobs, so a repo served from the other root sizes as unknown -> "staying
+    # resident" for a 4 GiB pipeline that does not fit.
+    from core.inference.diffusion_memory import OFFLOAD_MODEL, OFFLOAD_NONE
+
+    snapshot = _other_root_base_snapshot(tmp_path, monkeypatch)
+    target = _small_card(monkeypatch)
+    backend = DiffusionBackend()
+    # base_repo deliberately unequal to repo_id: the narrow-base size table is a different path.
+    fam = types.SimpleNamespace(name = "flux.1", base_repo = "unrelated/repo")
+
+    def _plan(**kw):
+        return backend._plan_memory(
+            target, None, "bfl/base", fam, None, False, kind = "pipeline", repo_id = "bfl/base", **kw
+        )
+
+    blind = _plan()
+    assert blind.estimates["model_dense_mib"] is None
+    assert blind.offload_policy == OFFLOAD_NONE
+
+    plan = _plan(base_local_dir = str(snapshot))
+    # A pipeline load keeps transformer/: 4096 + 150 + 50 = 4296 MiB, well past the 2509 MiB margin.
+    assert plan.estimates["model_dense_mib"] == 4296
+    assert plan.offload_policy == OFFLOAD_MODEL
 
 
 def test_reset_step_cache_helper_is_best_effort():
