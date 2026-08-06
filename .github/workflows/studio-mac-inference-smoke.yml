@@ -114,6 +114,7 @@ jobs:
         id: cache-hf
         uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         continue-on-error: true
+        timeout-minutes: 15
         with:
           path: hf-cache
           key: ${{ runner.os }}-hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v2
@@ -136,6 +137,7 @@ jobs:
       - name: Save HF_HOME for unsloth/gemma-3-270m-it-GGUF
         if: always() && steps.prime-hf.outcome != 'skipped' && hashFiles('hf-cache/**/*.gguf') != ''
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
+        timeout-minutes: 15
         with:
           path: hf-cache
           key: ${{ runner.os }}-hf-unsloth/gemma-3-270m-it-GGUF-UD-Q4_K_XL-v2
