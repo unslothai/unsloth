@@ -692,6 +692,29 @@ class TestResearchPortMiddleware:
 
 
 class TestFrontendAssets:
+    def test_desktop_frontend_is_available_only_through_live_tunnel(self, tmp_path, main_module):
+        (tmp_path / "index.html").write_text("<!doctype html><title>remote</title>")
+        assets = tmp_path / "assets"
+        assets.mkdir()
+        (assets / "app.js").write_text("export {};", encoding = "utf-8")
+        app = FastAPI()
+        app.state.cloudflare_url = None
+        assert main_module.setup_frontend(app, tmp_path, tunnel_only = True)
+        client = TestClient(app)
+        remote_client = TestClient(app, base_url = "https://remote.trycloudflare.com")
+        headers = {"CF-Connecting-IP": "198.51.100.7"}
+        assert client.get("/").status_code == 404
+        assert client.get("/assets/app.js").status_code == 404
+        assert remote_client.get("/", headers = headers).status_code == 404
+
+        app.state.cloudflare_url = "https://remote.trycloudflare.com"
+        assert remote_client.get("/", headers = headers).status_code == 200
+        assert remote_client.get("/settings/api", headers = headers).status_code == 200
+        assert remote_client.get("/assets/app.js", headers = headers).status_code == 200
+        assert client.get("/", headers = headers).status_code == 404
+        assert client.get("/settings/api", headers = headers).status_code == 404
+        assert client.get("/").status_code == 404
+
     def test_hashed_assets_are_compressed_and_cached(self, tmp_path, main_module):
         content = b"export const value = 'responsive';\n" * 200
         (tmp_path / "page-abc123.js").write_bytes(content)

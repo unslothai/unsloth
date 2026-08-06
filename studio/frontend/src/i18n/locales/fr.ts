@@ -328,6 +328,13 @@ export const fr = {
         title: "Changer le mot de passe",
         description:
           "Saisissez votre mot de passe actuel et choisissez-en un nouveau (au moins {minLength} caractères).",
+        setTrigger: "Définir le mot de passe distant",
+        setTitle: "Définir le mot de passe distant",
+        setDescription:
+          "Choisissez le mot de passe utilisé par les navigateurs distants pour se connecter avec l'identifiant unsloth (au moins {minLength} caractères). L'application de bureau Unsloth continue de se connecter automatiquement.",
+        setSubmit: "Définir le mot de passe",
+        setting: "Définition...",
+        setDone: "Mot de passe défini.",
         currentPassword: "Mot de passe actuel",
         newPassword: "Nouveau mot de passe",
         confirmPassword: "Confirmer le nouveau mot de passe",

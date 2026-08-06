@@ -299,11 +299,11 @@ def test_mtp_decode_probe_wired_under_tensor_parallel():
     guard = src[max(0, probe - 400) : probe]
     assert "self._tensor_parallel" in guard and "_spec_requested_mtp" in guard
     # A hard fault retries FA-off (keeps MTP) before flipping healthy so the
-    # shared MTP-drop fallback fires.
+    # shared drafter-drop fallback fires.
     after = src[probe : probe + 900]
     assert "_with_flash_attn_off" in after and "healthy = False" in after
-    fallback = src.find("if not healthy and _spec_requested_mtp")
-    assert 0 <= probe < fallback, "the probe must precede the MTP-drop fallback"
+    fallback = src.find("and (_spec_requested_mtp or _spec_requested_dspark)")
+    assert 0 <= probe < fallback, "the probe must precede the drafter-drop fallback"
 
 
 def test_probe_mtp_decode_returns_false_on_crash(monkeypatch):
