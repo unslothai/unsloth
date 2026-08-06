@@ -816,6 +816,50 @@ def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
     assert reached.get("hit") is True
 
 
+# ── DSpark sidecar fetch is gated on the binary that would launch it ──
+
+
+def _dspark_download_probe(monkeypatch, *, supports_dspark):
+    """Run _download_dspark against a stubbed capability probe; report whether the
+    ~11 GB fetch (and even the repo listing) was reached."""
+    from core.inference.llama_cpp import LlamaCppBackend
+
+    monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
+    monkeypatch.setattr(
+        LlamaCppBackend,
+        "probe_server_capabilities",
+        classmethod(lambda cls, binary = None: {"supports_dspark": supports_dspark}),
+    )
+    reached = {}
+
+    def _fake_companion(*, hf_repo, hf_token, pick, label, cancel_event = None, near_path = None):
+        reached["hit"] = True
+        return "/cache/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+
+    b = LlamaCppBackend()
+    b._download_companion_gguf = _fake_companion
+    got = b._download_dspark(
+        hf_repo = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        binary = "/fake/llama-server",
+    )
+    return got, reached.get("hit", False)
+
+
+def test_download_dspark_skips_the_fetch_when_the_binary_cannot_run_it(monkeypatch):
+    """The sidecar is ~11 GB and _build_speculative_flags drops DSpark outright on
+    a binary without --spec-type draft-dspark (every prebuilt in the known-broken
+    window included), so the capability must be checked BEFORE the download."""
+    got, reached = _dspark_download_probe(monkeypatch, supports_dspark = False)
+    assert got is None
+    assert reached is False
+
+
+def test_download_dspark_fetches_when_the_binary_supports_it(monkeypatch):
+    got, reached = _dspark_download_probe(monkeypatch, supports_dspark = True)
+    assert got == "/cache/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
+    assert reached is True
+
+
 def test_detect_mtp_file_returns_first_shard_of_split_subdir_drafter(tmp_path):
     """llama-server takes shard 1 as the model path, so a split MTP/ copy must
     not resolve to whichever shard happens to be smallest."""

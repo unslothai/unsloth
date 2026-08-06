@@ -1535,6 +1535,28 @@ def test_build_speculative_flags_dspark_missing_sidecar_falls_back(monkeypatch):
     assert backend.spec_fallback_reason == "drafter_not_found"
 
 
+def test_build_speculative_flags_dspark_blames_the_binary_not_the_missing_sidecar(monkeypatch):
+    """The sidecar fetch is gated on the same supports_dspark answer, so on a
+    binary that cannot run DSpark the sidecar is legitimately absent. Reporting
+    drafter_not_found would tell the user to place a file that is not the problem,
+    and would reload the server on every Apply via the drafter_not_found dedup."""
+    backend = _resolver_backend(monkeypatch)
+    caps = LlamaCppBackend.probe_server_capabilities()
+    caps["supports_dspark"] = False
+    flags = backend._build_speculative_flags(
+        speculative_type = "dspark",
+        spec_draft_n_max = None,
+        extra_args = None,
+        model_identifier = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+        model_path = None,
+        gpus = True,
+        binary = "/fake/llama-server",
+        dspark_draft_path = None,
+    )
+    assert flags == ["--spec-default"]
+    assert backend.spec_fallback_reason == "binary_no_mtp"
+
+
 def test_build_speculative_flags_dspark_declines_when_fit_is_required(monkeypatch, tmp_path):
     backend = _resolver_backend(monkeypatch)
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"

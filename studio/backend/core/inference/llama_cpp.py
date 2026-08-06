@@ -7449,8 +7449,25 @@ class LlamaCppBackend:
         hf_repo: str,
         hf_token: Optional[str] = None,
         near_path: Optional[str] = None,
+        binary: Optional[str] = None,
     ) -> Optional[str]:
-        """Download the published DSpark sidecar, preferring its Q8_0 copy."""
+        """Download the published DSpark sidecar, preferring its Q8_0 copy.
+
+        Gated on ``supports_dspark`` BEFORE the fetch: the sidecar is ~11 GB, and a
+        binary that cannot run ``draft-dspark`` (every prebuilt in the known-broken
+        window included) falls back, so the download would never be opened. A raised
+        probe still fetches, since launch re-probes and may yet engage.
+        """
+        try:
+            if not self.probe_server_capabilities(binary).get("supports_dspark"):
+                logger.warning(
+                    "Skipping the DSpark sidecar download: llama-server has no usable "
+                    "--spec-type draft-dspark, so this load falls back to no speculative "
+                    "decoding. Run `unsloth studio update`, then reload."
+                )
+                return None
+        except Exception as exc:
+            logger.debug("DSpark capability probe failed before the sidecar fetch: %s", exc)
 
         def _pick_dspark(candidates: list[str]) -> Optional[str]:
             from utils.models.model_config import dspark_preference_key
@@ -8665,6 +8682,7 @@ class LlamaCppBackend:
                             hf_repo = hf_repo,
                             hf_token = hf_token,
                             near_path = model_path,
+                            binary = binary,
                         )
             elif gguf_path:
                 if not Path(gguf_path).is_file():
@@ -11504,15 +11522,9 @@ class LlamaCppBackend:
             return 2 if gpus else 3
 
         if effective_mode == "dspark":
-            if not dspark_draft_path:
-                logger.warning(
-                    "DSpark requested but no matching dspark-*.gguf sidecar was found; "
-                    "loading without speculative decoding."
-                )
-                flags.append("--spec-default")
-                self._speculative_type = "default"
-                self._spec_fallback_reason = "drafter_not_found"
-                return flags
+            # Capability first: the fetch is gated on the same answer, so a missing
+            # sidecar here is usually the binary's fault. Blaming the file instead
+            # would tell the user to place one, and reload on every Apply.
             if not caps.get("supports_dspark"):
                 logger.warning(
                     "DSpark requested but llama-server lacks --spec-type "
@@ -11521,6 +11533,15 @@ class LlamaCppBackend:
                 flags.append("--spec-default")
                 self._speculative_type = "default"
                 self._spec_fallback_reason = "binary_no_mtp"
+                return flags
+            if not dspark_draft_path:
+                logger.warning(
+                    "DSpark requested but no matching dspark-*.gguf sidecar was found; "
+                    "loading without speculative decoding."
+                )
+                flags.append("--spec-default")
+                self._speculative_type = "default"
+                self._spec_fallback_reason = "drafter_not_found"
                 return flags
             if not dspark_fit_allowed:
                 logger.warning(
