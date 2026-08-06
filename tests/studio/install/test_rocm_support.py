@@ -3574,6 +3574,29 @@ class TestGfxArchNameFallback:
         assert arch is None
         assert out == ""
 
+    @pytest.mark.parametrize("code", ["22", "45", "43", "1"])
+    def test_sole_unhealthy_adapter_still_yields_its_arch(self, code):
+        # The error-code filter exists so a card Windows is not exposing cannot depose a
+        # live one. With only one adapter there is nothing to depose, and filtering it
+        # out is the only reason the host looks GPU-less -- that hands a working Radeon
+        # CPU torch. Code 45 ("not connected") is routine on muxless laptops.
+        arch, _ = self._wmi_arch([f"AMD Radeon RX 9060 XT|{code}"], {})
+        assert arch == "gfx1200"
+
+    def test_unhealthy_adapter_still_cannot_depose_a_healthy_one(self):
+        # Negative control: with a healthy iGPU present the disabled dGPU must stay out,
+        # so the shadowing skip cannot install wheels for a GPU Windows never exposes.
+        arch, _ = self._wmi_arch(
+            ["AMD Radeon(TM) 780M Graphics|0", "AMD Radeon RX 9060 XT|22"], {}
+        )
+        assert arch == "gfx1103"
+
+    def test_mask_out_of_range_is_reported_once(self):
+        # _dedup_pick resolves the same masks again over its own list, so without
+        # warn=False the WMI path prints every out-of-range warning twice.
+        _, out = self._wmi_arch(["AMD Radeon RX 9060 XT|0"], {"HIP_VISIBLE_DEVICES": "1"})
+        assert out.count("is out of range") == 1
+
     def test_wmi_probe_lists_only_amd_adapters(self):
         # The masks index AMD devices, so an Intel or NVIDIA adapter ahead of the Radeon
         # would shift every index away from the device HIP_VISIBLE_DEVICES names. Same

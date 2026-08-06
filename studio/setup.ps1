@@ -1575,8 +1575,13 @@ function Resolve-VisibleGpuIndex {
         $val = $visEnv.Trim()
         if ($val -eq "" -or $val -eq "-1") { return 0 }
         $first = ($val -split ',')[0].Trim()
-        if ($first -match '^\d+$' -and [int]$first -lt $Count) { return [int]$first }
-        if ($first -match '^\d+$') {
+        # TryParse, not [int]: '2147483648' overflows and .NET's \d also matches
+        # full-width digits, and either cast throws a TERMINATING error under the
+        # $ErrorActionPreference = "Stop" at the top of this script, aborting the
+        # install from the WMI name path where nothing catches it.
+        [int]$parsed = 0
+        if ([int]::TryParse($first, [ref]$parsed)) {
+            if ($parsed -ge 0 -and $parsed -lt $Count) { return $parsed }
             substep "[WARN] HIP/ROCR/CUDA_VISIBLE_DEVICES index $first is out of range ($Count GPU(s) detected); defaulting to GPU 0 for arch selection" "Yellow"
         }
         return 0

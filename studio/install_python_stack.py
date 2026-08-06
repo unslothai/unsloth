@@ -733,7 +733,9 @@ def _detect_windows_gfx_arch() -> str | None:
     if _override and _override.strip():
         return _override.strip().lower()
 
-    def _dedup_pick(tokens: list[str], mask_resolved: bool = False) -> "str | None":
+    def _dedup_pick(
+        tokens: list[str], mask_resolved: bool = False, warn: bool = True
+    ) -> "str | None":
         if not tokens:
             return None
         # Index into the full ordered list so HIP_VISIBLE_DEVICES addresses
@@ -745,7 +747,7 @@ def _detect_windows_gfx_arch() -> str | None:
         # CUDA_VISIBLE_DEVICES=1,0 read token 1 -- the iGPU -- on a host whose
         # mask put the dGPU first. amd-smi and WMI list every GPU regardless of
         # the masks, so those keep the explicit index.
-        _pick = tokens[0 if mask_resolved else _pick_visible_index(len(tokens))]
+        _pick = tokens[0 if mask_resolved else _pick_visible_index(len(tokens), warn = warn)]
         _distinct = list(dict.fromkeys(tokens))
         if len(_distinct) < 2 or _visible_devices_pinned():
             # A pin is honoured verbatim, but say so when it selected a card AMD
@@ -898,10 +900,9 @@ def _detect_windows_gfx_arch() -> str | None:
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "(Get-CimInstance Win32_VideoController | Where-Object { "
-                "$_.Name -match 'AMD|Radeon' -and ("
-                "($null -eq $_.ConfigManagerErrorCode) -or "
-                "($_.ConfigManagerErrorCode -eq 0)) }).Name",
+                "Get-CimInstance Win32_VideoController | Where-Object { "
+                "$_.Name -match 'AMD|Radeon' } | ForEach-Object { "
+                "\"$($_.Name)|$($_.ConfigManagerErrorCode)\" }",
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
@@ -909,12 +910,32 @@ def _detect_windows_gfx_arch() -> str | None:
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0),
         )
         if result.returncode == 0:
-            _names = [n.strip() for n in result.stdout.decode(errors = "replace").splitlines()]
-            # Re-apply the vendor filter here rather than trusting the one in the
-            # command string: everything below counts these entries as AMD devices, and
-            # an NVIDIA or Intel adapter slipping through would both shift the mask index
-            # and make this AMD-only path warn at a user who has no AMD GPU.
-            _names = [n for n in _names if n and re.search(r"AMD|Radeon", n, re.IGNORECASE)]
+            # Lines are "<name>|<ConfigManagerErrorCode>"; a bare name (older probe
+            # output, and the shape most tests use) counts as healthy.
+            _all_names, _healthy = [], []
+            for _line in result.stdout.decode(errors = "replace").splitlines():
+                _line = _line.strip()
+                if not _line:
+                    continue
+                _nm, _sep, _code = _line.rpartition("|")
+                if not _sep:
+                    _nm, _code = _line, "0"
+                _nm = _nm.strip()
+                # Re-apply the vendor filter here rather than trusting the one in the
+                # command string: everything below counts these entries as AMD devices,
+                # and an NVIDIA or Intel adapter slipping through would both shift the
+                # mask index and make this AMD-only path warn at a user with no AMD GPU.
+                if not _nm or not re.search(r"AMD|Radeon", _nm, re.IGNORECASE):
+                    continue
+                _all_names.append(_nm)
+                if _code.strip() in ("", "0"):
+                    _healthy.append(_nm)
+            # Drop adapters Windows flags as not working, so one cannot depose a live
+            # card. But if that leaves NOTHING, the filter is the only reason the host
+            # looks GPU-less and returning None hands it CPU torch: code 45 ("not
+            # connected") is routine on muxless laptops whose dGPU is parked. Fall back
+            # to the full list -- with no healthy peer there is nothing to depose.
+            _names = _healthy or _all_names
             _tokens = [_a for _a in map(_gfx_arch_from_gpu_name, _names) if _a]
             # Resolve the mask over the ADAPTER list: a name the table does not know
             # drops out of _tokens, and indexing that shortened list would name a
@@ -928,7 +949,11 @@ def _detect_windows_gfx_arch() -> str | None:
             # Only repick when every AMD adapter mapped. Otherwise an unknown name may
             # BE the discrete card, so skipping the iGPU could pick the wrong one, and
             # the advisory index would count arches rather than devices.
-            _pick = _dedup_pick(_tokens) if len(_tokens) == len(_names) else _named
+            # warn=False: the mask was already resolved (and reported) against the
+            # adapter list above, and _dedup_pick would report it a second time.
+            _pick = (
+                _dedup_pick(_tokens, warn = False) if len(_tokens) == len(_names) else _named
+            )
             if _pick:
                 print(f"   gfx arch inferred from GPU name (WMI): {_pick}")
                 return _pick
@@ -1125,7 +1150,9 @@ def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
 
 def _rocm_family_token(text: str) -> "str | None":
     """Family out of a 'rocm-sdk-libraries-<family>' name or requirement string."""
-    _m = re.search(r"rocm[-_]sdk[-_]libraries[-_]([A-Za-z0-9][A-Za-z0-9._-]*)", text)
+    _m = re.search(
+        r"rocm[-_]sdk[-_]libraries[-_]([A-Za-z0-9][A-Za-z0-9._-]*)", text, re.IGNORECASE
+    )
     if not _m:
         return None
     # Requirement strings carry a specifier and marker: "...-gfx120X-all==7.13.0; extra".
