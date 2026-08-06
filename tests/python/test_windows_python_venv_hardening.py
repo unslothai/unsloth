@@ -36,7 +36,9 @@ def _link_dir(link: Path, target: Path) -> None:
     if os.name == "nt":
         subprocess.run(
             ["cmd", "/c", "mklink", "/J", str(link), str(target)],
-            check = True, capture_output = True, text = True,
+            check = True,
+            capture_output = True,
+            text = True,
         )
     else:
         os.symlink(target, link, target_is_directory = True)
@@ -295,8 +297,7 @@ Write-Output ("active=" + $script:StudioVenvRollbackActive)
     out = _run_powershell(shell, script, env)
 
     restored = sorted(
-        str(p.relative_to(target)).replace("\\", "/")
-        for p in target.rglob("*") if p.is_file()
+        str(p.relative_to(target)).replace("\\", "/") for p in target.rglob("*") if p.is_file()
     )
     assert restored == [
         "Lib/other.py",
