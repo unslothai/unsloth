@@ -937,7 +937,13 @@ def test_the_manifest_probe_still_authenticates(monkeypatch):
     fetch shares the per-IP limit that 429s CI fleets."""
     seen = {}
 
-    def fake_download_bytes(url, timeout = None, attempts = None, headers = None, **kwargs):
+    def fake_download_bytes(
+        url,
+        timeout = None,
+        attempts = None,
+        headers = None,
+        **kwargs,
+    ):
         seen["headers"] = headers
         seen["attempts"] = attempts
         return b'{"ggml_tree": "abc"}'
@@ -946,9 +952,9 @@ def test_the_manifest_probe_still_authenticates(monkeypatch):
     monkeypatch.delenv("GITHUB_TOKEN", raising = False)
     monkeypatch.setattr(M, "download_bytes", fake_download_bytes)
 
-    assert _REAL_DOWNLOAD_HOST_JSON_ONCE(
-        "https://github.com/o/r/releases/download/t/m.json"
-    ) == {"ggml_tree": "abc"}
+    assert _REAL_DOWNLOAD_HOST_JSON_ONCE("https://github.com/o/r/releases/download/t/m.json") == {
+        "ggml_tree": "abc"
+    }
     assert seen["headers"].get("Authorization") == "Bearer gh-secret"
     # The single-attempt policy is the ONLY thing this wrapper overrides.
     assert seen["attempts"] == 1
