@@ -1632,12 +1632,16 @@ if ($env:LOCALAPPDATA) {
     $wvCleared = $false
     foreach ($wvSub in @("Cache", "Code Cache", "GPUCache", "Service Worker")) {
         $wvPath = Join-Path $wvDefault $wvSub
-        if (Test-Path -LiteralPath $wvPath) {
-            try {
-                Remove-Item -LiteralPath $wvPath -Recurse -Force -ErrorAction Stop
-                $wvCleared = $true
-            } catch { }
-        }
+        # Get-Item -Force, not Test-Path: the probe throws on an ACL denial under
+        # "Stop", and a reparse point here must be unlinked rather than recursed
+        # into, which Remove-Item -Recurse -Force would do on PowerShell 5.1.
+        $wvItem = Get-Item -LiteralPath $wvPath -Force -ErrorAction SilentlyContinue
+        if (-not $wvItem) { continue }
+        try {
+            if ($wvItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) { $wvItem.Delete() }
+            else { Remove-Item -LiteralPath $wvPath -Recurse -Force -ErrorAction Stop }
+            $wvCleared = $true
+        } catch { }
     }
     if ($wvCleared) { substep "cleared stale WebView caches (ai.unsloth.studio); settings and data kept" }
 }

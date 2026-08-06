@@ -25,19 +25,24 @@ trap 'rm -rf "$_TMP_ROOT"' EXIT
 assert_gone()    { _l="$1"; if [ -e "$2" ]; then echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); else echo "  PASS: $_l"; PASS=$((PASS+1)); fi; }
 assert_present() { _l="$1"; if [ -e "$2" ]; then echo "  PASS: $_l"; PASS=$((PASS+1)); else echo "  FAIL: $_l (missing: $2)"; FAIL=$((FAIL+1)); fi; }
 
+# Explicit mktemp templates: -p is GNU-only (BSD mktemp gained it in macOS 14),
+# and a bare mktemp -d implies -t and would land outside _TMP_ROOT on macOS.
+new_home() { mktemp -d "$_TMP_ROOT/home.XXXXXX"; }
+
 # Extract just the function definition (top-level, closes at column 0).
-FUNC_FILE=$(mktemp -p "$_TMP_ROOT")
+FUNC_FILE=$(mktemp "$_TMP_ROOT/fn.XXXXXX")
 sed -n '/^_clear_webview_caches() {/,/^}/p' "$SETUP_SH" > "$FUNC_FILE"
 # shellcheck disable=SC1090
 . "$FUNC_FILE"
 substep() { :; }  # stub the setup.sh logger
 
-# ── 1. macOS: cache paths removed, user-facing storage kept ──
-H=$(mktemp -d -p "$_TMP_ROOT")
-mkdir -p "$H/Library/Caches/$BID/WebKit/NetworkCache" \
-         "$H/Library/WebKit/$BID/WebsiteData/CacheStorage" \
-         "$H/Library/WebKit/$BID/WebsiteData/ServiceWorkers" \
-         "$H/Library/WebKit/$BID/WebsiteData/DiskCache" \
+# ── 1. macOS: the real WKWebView layout. Every cache-typed store hangs off
+# Library/Caches/<bid>/WebKit; Library/WebKit/<bid> holds only user storage. ──
+H=$(new_home)
+mkdir -p "$H/Library/Caches/$BID/WebKit/NetworkCache/Version 17" \
+         "$H/Library/Caches/$BID/WebKit/CacheStorage" \
+         "$H/Library/Caches/$BID/WebKit/ServiceWorkers" \
+         "$H/Library/WebKit/$BID/WebsiteData/Default" \
          "$H/Library/WebKit/$BID/WebsiteData/LocalStorage" \
          "$H/Library/WebKit/$BID/WebsiteData/IndexedDB" \
          "$H/Library/Application Support/$BID" \
@@ -45,45 +50,50 @@ mkdir -p "$H/Library/Caches/$BID/WebKit/NetworkCache" \
 uname() { echo Darwin; }
 HOME="$H" _clear_webview_caches
 assert_gone    "macOS: Caches/$BID removed"              "$H/Library/Caches/$BID"
-assert_gone    "macOS: WebsiteData/CacheStorage removed" "$H/Library/WebKit/$BID/WebsiteData/CacheStorage"
-assert_gone    "macOS: WebsiteData/ServiceWorkers removed" "$H/Library/WebKit/$BID/WebsiteData/ServiceWorkers"
-assert_gone    "macOS: WebsiteData/DiskCache removed"    "$H/Library/WebKit/$BID/WebsiteData/DiskCache"
+assert_present "macOS: origin-keyed storage kept"        "$H/Library/WebKit/$BID/WebsiteData/Default"
 assert_present "macOS: LocalStorage kept"                "$H/Library/WebKit/$BID/WebsiteData/LocalStorage"
 assert_present "macOS: IndexedDB kept"                   "$H/Library/WebKit/$BID/WebsiteData/IndexedDB"
 assert_present "macOS: Application Support kept"         "$H/Library/Application Support/$BID"
 assert_present "macOS: unrelated app cache kept"         "$H/Library/Caches/com.other.app"
 
-# ── 2. Linux: cache paths removed (XDG cache dir AND the cache subdirs wry
-# keys to the app data dir), user-facing storage kept ──
-H=$(mktemp -d -p "$_TMP_ROOT")
+# ── 2. Linux: wry points WebKitGTK's base-cache dir at the app data dir, so
+# the caches sit beside the user storage under ~/.local/share/<bid>. ──
+H=$(new_home)
 D="$H/.local/share/$BID"
-mkdir -p "$H/.cache/$BID" "$D/WebKitCache" "$D/CacheStorage" "$D/serviceworkers" \
-         "$D/localstorage" "$D/indexeddb" "$H/.config/$BID" "$H/.cache/other.app"
-: > "$D/cookies.sqlite"
+mkdir -p "$D/WebKitCache" "$D/CacheStorage" "$D/serviceworkers" \
+         "$D/localstorage" "$D/databases/indexeddb" "$H/.config/$BID" \
+         "$H/.local/share/${BID}2/WebKitCache" "$H/.cache/other.app"
+: > "$D/cookies"
 uname() { echo Linux; }
 HOME="$H" XDG_CACHE_HOME="" XDG_DATA_HOME="" _clear_webview_caches
-assert_gone    "linux: ~/.cache/$BID removed"          "$H/.cache/$BID"
 assert_gone    "linux: data-dir WebKitCache removed"   "$D/WebKitCache"
 assert_gone    "linux: data-dir CacheStorage removed"  "$D/CacheStorage"
 assert_gone    "linux: data-dir serviceworkers removed" "$D/serviceworkers"
 assert_present "linux: localstorage kept"              "$D/localstorage"
-assert_present "linux: indexeddb kept"                 "$D/indexeddb"
-assert_present "linux: cookies kept"                   "$D/cookies.sqlite"
+assert_present "linux: indexeddb kept"                 "$D/databases/indexeddb"
+assert_present "linux: cookies kept"                   "$D/cookies"
 assert_present "linux: ~/.config/$BID kept"            "$H/.config/$BID"
+assert_present "linux: prefix-decoy bundle id kept"    "$H/.local/share/${BID}2/WebKitCache"
 assert_present "linux: unrelated app cache kept"       "$H/.cache/other.app"
 
-# ── 3. Linux: XDG_CACHE_HOME / XDG_DATA_HOME overrides honored ──
-H=$(mktemp -d -p "$_TMP_ROOT")
-XDG=$(mktemp -d -p "$_TMP_ROOT")
-mkdir -p "$XDG/cache/$BID" "$XDG/data/$BID/WebKitCache" "$XDG/data/$BID/localstorage" "$H/.cache/$BID"
-HOME="$H" XDG_CACHE_HOME="$XDG/cache" XDG_DATA_HOME="$XDG/data" _clear_webview_caches
-assert_gone    "linux: XDG_CACHE_HOME/$BID removed"          "$XDG/cache/$BID"
+# ── 3. Linux: XDG_DATA_HOME override honored ──
+H=$(new_home)
+XDG=$(mktemp -d "$_TMP_ROOT/xdg.XXXXXX")
+mkdir -p "$XDG/data/$BID/WebKitCache" "$XDG/data/$BID/localstorage" "$H/.local/share/$BID/WebKitCache"
+HOME="$H" XDG_CACHE_HOME="" XDG_DATA_HOME="$XDG/data" _clear_webview_caches
 assert_gone    "linux: XDG_DATA_HOME WebKitCache removed"    "$XDG/data/$BID/WebKitCache"
 assert_present "linux: XDG_DATA_HOME localstorage kept"      "$XDG/data/$BID/localstorage"
-assert_present "linux: ~/.cache/$BID kept under override"    "$H/.cache/$BID"
+assert_present "linux: default data dir kept under override" "$H/.local/share/$BID/WebKitCache"
+
+# ── 3b. A dangling cache symlink still occupies the path, so it must go ──
+H=$(new_home)
+mkdir -p "$H/.local/share/$BID"
+ln -s "$_TMP_ROOT/does-not-exist" "$H/.local/share/$BID/WebKitCache"
+HOME="$H" XDG_CACHE_HOME="" XDG_DATA_HOME="" _clear_webview_caches
+assert_gone    "linux: dangling cache symlink removed"       "$H/.local/share/$BID/WebKitCache"
 
 # ── 4. Nothing to clear is a clean no-op ──
-H=$(mktemp -d -p "$_TMP_ROOT")
+H=$(new_home)
 uname() { echo Darwin; }
 if HOME="$H" _clear_webview_caches; then
     echo "  PASS: empty HOME -> no-op exit 0"; PASS=$((PASS+1))
@@ -92,11 +102,26 @@ else
 fi
 
 # ── 5. Unknown OS is a no-op ──
-H=$(mktemp -d -p "$_TMP_ROOT")
+H=$(new_home)
 mkdir -p "$H/Library/Caches/$BID"
 uname() { echo SunOS; }
 HOME="$H" _clear_webview_caches
 assert_present "unknown OS: nothing removed" "$H/Library/Caches/$BID"
+
+# ── 6. No HOME is a no-op, not a delete under /Library or /.cache ──
+uname() { echo Darwin; }
+if ( set -u; HOME="" _clear_webview_caches ); then
+    echo "  PASS: empty HOME -> no-op exit 0"; PASS=$((PASS+1))
+else
+    echo "  FAIL: empty HOME -> nonzero exit"; FAIL=$((FAIL+1))
+fi
+
+# ── 7. setup.sh still calls the function (the extract above cannot prove it) ──
+if grep -qE '^[[:space:]]*_clear_webview_caches[[:space:]]*$' "$SETUP_SH"; then
+    echo "  PASS: setup.sh invokes _clear_webview_caches"; PASS=$((PASS+1))
+else
+    echo "  FAIL: setup.sh never calls _clear_webview_caches"; FAIL=$((FAIL+1))
+fi
 
 echo ""
 echo "Results: $PASS passed, $FAIL failed"

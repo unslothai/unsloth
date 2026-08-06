@@ -800,62 +800,91 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-// Clear WebView caches before the webview initializes. An in-app update runs
-// setup.sh/setup.ps1 while the old WebView still holds these files (its clear
-// silently fails), so without this a relaunch can serve the previous frontend
-// from cache. Cache-only paths; LocalStorage, IndexedDB, cookies, and app
-// data are kept. Mirrors setup.sh _clear_webview_caches / setup.ps1.
-fn clear_webview_caches(bundle_id: &str) {
+// Root the WebView profile shares with the stamp file below. None when the
+// environment gives us nothing to derive it from.
+fn webview_profile_root(bundle_id: &str) -> Option<std::path::PathBuf> {
     use std::path::PathBuf;
-    let mut paths: Vec<PathBuf> = Vec::new();
+    let from_env = |key: &str| {
+        std::env::var(key)
+            .ok()
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+    };
     #[cfg(target_os = "windows")]
-    if let Ok(local) = std::env::var("LOCALAPPDATA") {
-        if !local.is_empty() {
-            let profile = PathBuf::from(local)
-                .join(bundle_id)
-                .join("EBWebView")
-                .join("Default");
-            for sub in ["Cache", "Code Cache", "GPUCache", "Service Worker"] {
-                paths.push(profile.join(sub));
-            }
+    {
+        from_env("LOCALAPPDATA").map(|d| d.join(bundle_id))
+    }
+    #[cfg(target_os = "macos")]
+    {
+        from_env("HOME").map(|h| h.join("Library/Application Support").join(bundle_id))
+    }
+    #[cfg(target_os = "linux")]
+    {
+        // Tauri points the WebView at LocalData/<bundle id>, and wry keys the
+        // WebKitGTK base-cache dir to that same dir.
+        from_env("XDG_DATA_HOME")
+            .or_else(|| from_env("HOME").map(|h| h.join(".local/share")))
+            .map(|d| d.join(bundle_id))
+    }
+    #[cfg(not(any(target_os = "windows", target_os = "macos", target_os = "linux")))]
+    {
+        let _ = (bundle_id, from_env);
+        None
+    }
+}
+
+// Clear WebView caches after an update, before the webview initializes. The
+// in-app update runs setup.sh/setup.ps1 while the old WebView still holds
+// these files, so its clear silently fails and a relaunch can serve the
+// previous frontend from cache.
+//
+// Gated on a version stamp for two reasons: an unconditional clear makes every
+// launch a cold-cache launch (the Windows profile keeps the compiled-JS cache),
+// and this runs before the single-instance plugin, so an ungated clear lets a
+// duplicate launch delete a live instance's profile out from under it.
+//
+// Cache-only paths; LocalStorage, IndexedDB, cookies and app data are kept.
+// Mirrors setup.sh _clear_webview_caches / setup.ps1.
+fn clear_webview_caches(bundle_id: &str, version: &str) {
+    let Some(root) = webview_profile_root(bundle_id) else {
+        return;
+    };
+    let stamp = root.join(".webview-cache-cleared");
+    if fs::read_to_string(&stamp).is_ok_and(|v| v.trim() == version) {
+        return;
+    }
+
+    let mut paths: Vec<std::path::PathBuf> = Vec::new();
+    #[cfg(target_os = "windows")]
+    {
+        let profile = root.join("EBWebView").join("Default");
+        for sub in ["Cache", "Code Cache", "GPUCache", "Service Worker"] {
+            paths.push(profile.join(sub));
         }
     }
     #[cfg(target_os = "macos")]
     if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            let home = PathBuf::from(home);
-            paths.push(home.join("Library/Caches").join(bundle_id));
-            let data = home.join("Library/WebKit").join(bundle_id).join("WebsiteData");
-            for sub in ["CacheStorage", "ServiceWorkers", "DiskCache"] {
-                paths.push(data.join(sub));
-            }
-        }
+        // WKWebView keeps every cache-typed store under Library/Caches/<bid>
+        // (WebKit/{NetworkCache,CacheStorage,ServiceWorkers}). LocalStorage and
+        // IndexedDB live under Library/WebKit/<bid> and are left alone.
+        paths.push(std::path::PathBuf::from(home).join("Library/Caches").join(bundle_id));
     }
     #[cfg(target_os = "linux")]
-    if let Ok(home) = std::env::var("HOME") {
-        if !home.is_empty() {
-            let home = PathBuf::from(home);
-            let cache = std::env::var("XDG_CACHE_HOME")
-                .ok()
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".cache"));
-            paths.push(cache.join(bundle_id));
-            // wry keys the WebKitGTK base-cache dir to the app data dir.
-            let data = std::env::var("XDG_DATA_HOME")
-                .ok()
-                .filter(|v| !v.is_empty())
-                .map(PathBuf::from)
-                .unwrap_or_else(|| home.join(".local/share"))
-                .join(bundle_id);
-            for sub in ["WebKitCache", "CacheStorage", "serviceworkers", "ServiceWorkers"] {
-                paths.push(data.join(sub));
+    for sub in ["WebKitCache", "CacheStorage", "serviceworkers"] {
+        paths.push(root.join(sub));
+    }
+
+    for p in &paths {
+        // Absent is the normal case; anything else is worth a line in the log,
+        // since a silent failure here is what the stale frontend looked like.
+        if let Err(e) = fs::remove_dir_all(p) {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                warn!("could not clear WebView cache {}: {e}", p.display());
             }
         }
     }
-    for p in paths {
-        let _ = fs::remove_dir_all(&p);
-    }
+    let _ = fs::create_dir_all(&root);
+    let _ = fs::write(&stamp, version);
 }
 
 fn main() {
@@ -875,7 +904,10 @@ fn main() {
     // Must run before the Builder: the config-defined window (and its
     // WebView, which locks these files) exists by the time setup hooks run.
     let context = tauri::generate_context!();
-    clear_webview_caches(&context.config().identifier);
+    clear_webview_caches(
+        &context.config().identifier,
+        context.package_info().version.to_string().as_str(),
+    );
 
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
