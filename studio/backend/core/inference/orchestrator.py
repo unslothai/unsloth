@@ -983,6 +983,15 @@ class InferenceOrchestrator:
         from utils.transformers_version import needs_transformers_5
 
         model_name = config.identifier
+        local_snapshot_path = (
+            getattr(config, "path", None)
+            if local_files_only and getattr(config, "path", None) != model_name
+            else None
+        )
+        # For a cache-only Hub load the selected snapshot is authoritative for
+        # architecture/tier/GPU metadata. Keep the Hub id only as the registry
+        # identity exposed to callers.
+        metadata_model_name = local_snapshot_path or model_name
         self.loading_models.add(model_name)
 
         try:
@@ -1003,7 +1012,7 @@ class InferenceOrchestrator:
                 return contextlib.nullcontext()
 
             with _preflight_offline():
-                needed_major = "5" if needs_transformers_5(model_name) else "4"
+                needed_major = "5" if needs_transformers_5(metadata_model_name) else "4"
 
             # Build config dict for subprocess
             sub_config = {
@@ -1019,13 +1028,10 @@ class InferenceOrchestrator:
                 "tensor_parallel": bool(tensor_parallel),
                 "mlx_distributed": bool(mlx_distributed),
                 "local_files_only": bool(local_files_only),
-                # Route-resolved local snapshot: the worker rebuilds its
-                # ModelConfig from model_name, which would lose the rewrite.
-                "local_snapshot_path": (
-                    getattr(config, "path", None)
-                    if local_files_only and getattr(config, "path", None) != model_name
-                    else None
-                ),
+                # Route-resolved local snapshot: the worker rebuilds load
+                # metadata from this path while retaining model_name as the
+                # registry identity.
+                "local_snapshot_path": local_snapshot_path,
                 "mlx_parallel_mode": ("tensor" if tensor_parallel else "pipeline")
                 if mlx_distributed
                 else None,
@@ -1033,7 +1039,7 @@ class InferenceOrchestrator:
             with _preflight_offline():
                 resolved_gpu_ids, gpu_selection = prepare_gpu_selection(
                     gpu_ids,
-                    model_name = model_name,
+                    model_name = metadata_model_name,
                     hf_token = hf_token,
                     load_in_4bit = load_in_4bit,
                 )

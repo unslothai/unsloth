@@ -703,6 +703,79 @@ class TestValidateRefusesDuringTraining(unittest.TestCase):
         self.assertEqual(captured[0]["load_in_4bit"], False)
         self.assertEqual(captured[0]["max_seq_length"], 4096)
 
+    def test_local_only_guard_sizes_selected_snapshot(self):
+        """HF_HUB_OFFLINE does not constrain the guard's model_info call, so a
+        cache-only validation must size the resolved snapshot path, never the
+        Hub id (which could fetch or describe an older refs/main revision)."""
+        import tempfile
+
+        from models.inference import ValidateModelRequest
+
+        request = ValidateModelRequest(
+            model_path = "org/newer-revision",
+            local_files_only = True,
+            max_seq_length = 4096,
+        )
+        cfg = SimpleNamespace(
+            identifier = "org/newer-revision",
+            display_name = "newer-revision",
+            is_gguf = False,
+            is_lora = False,
+            is_vision = False,
+            is_audio = False,
+            path = "org/newer-revision",
+            base_model = None,
+        )
+        captured = {}
+        with tempfile.TemporaryDirectory() as d:
+            snapshot = Path(d) / "snapshots" / ("b" * 40)
+            snapshot.mkdir(parents = True)
+            (snapshot / "config.json").write_text("{}")
+            with (
+                patch.object(
+                    self.route,
+                    "_resolve_model_identifier_for_request",
+                    return_value = ("org/newer-revision", "org/newer-revision", False),
+                ),
+                patch.object(self.route.ModelConfig, "from_identifier", return_value = cfg),
+                patch.object(self.route, "load_inference_config", return_value = {}),
+                patch(
+                    "hub.utils.local_snapshot.resolve_local_snapshot_path",
+                    return_value = str(snapshot),
+                ),
+                patch(
+                    "utils.hf_cache_settings.get_hf_cache_paths",
+                    return_value = SimpleNamespace(hub_cache = Path(d)),
+                ),
+                patch(
+                    "utils.transformers_latest.check_upgrade_for_model",
+                    return_value = None,
+                ),
+                patch(
+                    "utils.transformers_version.latest_tier_active_for",
+                    return_value = False,
+                ),
+                patch.object(
+                    self.route,
+                    "_requires_trust_remote_code_for_model",
+                    return_value = False,
+                ),
+                patch.object(
+                    self.route,
+                    "_requires_security_review_for_model",
+                    return_value = False,
+                ),
+                patch.object(
+                    self.route,
+                    "_guard_chat_load_against_training",
+                    lambda config, **kw: captured.update(kw),
+                ),
+            ):
+                asyncio.run(self.route.validate_model(request, current_subject = "test-user"))
+
+        self.assertEqual(cfg.path, str(snapshot))
+        self.assertEqual(captured["model_identifier"], str(snapshot))
+
     def test_validate_forwards_manual_gpu_memory_mode_to_guard(self):
         from models.inference import ValidateModelRequest
 

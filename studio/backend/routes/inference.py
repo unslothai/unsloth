@@ -5743,6 +5743,43 @@ async def validate_model(
                 detail = f"Invalid model identifier: {model_log_label}",
             )
 
+        # Resolve cache-only Hub candidates to the same live-cache snapshot
+        # /load will consume. The forced offline environment above does not
+        # constrain every metadata helper (notably the training guard's Hub
+        # model_info sizing), so pass the local snapshot through those probes
+        # rather than the repo id.
+        from utils.paths import is_local_path
+
+        if (
+            request.local_files_only
+            and not getattr(config, "is_gguf", False)
+            and not is_local_path(config.path)
+        ):
+            from hub.utils.local_snapshot import resolve_local_snapshot_path
+            from utils.hf_cache_settings import get_hf_cache_paths
+
+            local_snapshot = await asyncio.to_thread(
+                resolve_local_snapshot_path,
+                config.path,
+                request.hf_token,
+                str(get_hf_cache_paths().hub_cache),
+            )
+            if local_snapshot is None:
+                raise HTTPException(
+                    status_code = 409,
+                    detail = (
+                        f"Model '{model_log_label}' is not available on device; "
+                        "select it explicitly to download it."
+                    ),
+                )
+            config.path = local_snapshot
+
+        metadata_identifier = (
+            config.path
+            if request.local_files_only and not getattr(config, "is_gguf", False)
+            else config.identifier
+        )
+
         # Same audio gate as /load: non-GGUF audio models pull codec repos at
         # load time, so a local-only candidate is rejected here before the
         # frontend burns a load attempt on it.
@@ -5768,12 +5805,12 @@ async def validate_model(
 
         # Both checks cover the [adapter, base] set (matching the scan route and workers):
         # either repo can ship auto_map code or a poisoned pickle.
-        security_targets = [config.identifier]
+        security_targets = [metadata_identifier]
         try:
             from utils.models.model_config import get_base_model_from_lora_identifier
 
             # Resolve a LOCAL or REMOTE adapter's base so its code/weights are reviewed too.
-            _base = get_base_model_from_lora_identifier(model_identifier, request.hf_token)
+            _base = get_base_model_from_lora_identifier(metadata_identifier, request.hf_token)
             if _base:
                 security_targets.append(_base)
         except Exception:
@@ -5824,7 +5861,7 @@ async def validate_model(
                 and not requires_trust_remote_code
             )
             if _install_only_upgrade or await asyncio.to_thread(
-                latest_tier_active_for, config.identifier, request.hf_token
+                latest_tier_active_for, metadata_identifier, request.hf_token
             ):
                 effective_load_in_4bit = False
         # A metadata-only probe reads the GGUF header and allocates no VRAM, so the
@@ -5840,7 +5877,7 @@ async def validate_model(
             await asyncio.to_thread(
                 _guard_chat_load_against_training,
                 config,
-                model_identifier = model_identifier,
+                model_identifier = metadata_identifier,
                 hf_token = request.hf_token,
                 load_in_4bit = effective_load_in_4bit,
                 max_seq_length = request.max_seq_length,

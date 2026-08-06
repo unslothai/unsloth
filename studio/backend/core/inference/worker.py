@@ -123,19 +123,23 @@ def _build_model_config(config: dict):
     from utils.models import ModelConfig
 
     model_name = config["model_name"]
+    snapshot_override = config.get("local_snapshot_path")
     mc = ModelConfig.from_identifier(
-        model_id = model_name,
+        # Rebuild every metadata field from the exact snapshot selected by the
+        # inventory/load route. Resolving the Hub id here can follow refs/main
+        # to an older revision and pair stale architecture metadata with newer
+        # weights.
+        model_id = snapshot_override or model_name,
         hf_token = _clean_token(config.get("hf_token")),
         gguf_variant = config.get("gguf_variant"),
     )
     if not mc:
         raise ValueError(f"Invalid model identifier: {model_name}")
-    # The route resolves a cached repo id to its local snapshot for local-only
-    # loads; from_identifier here rebuilds path as the repo id, losing that
-    # rewrite across the process boundary, so re-apply it.
-    snapshot_override = config.get("local_snapshot_path")
+    # The Hub id remains the stable registry/UI identity; path, vision/audio,
+    # LoRA/base-model and all other load metadata remain snapshot-derived.
     if snapshot_override:
-        mc.path = snapshot_override
+        mc.identifier = model_name
+        mc.display_name = model_name.rstrip("/").rsplit("/", 1)[-1]
     return mc
 
 
@@ -359,7 +363,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
         # expert weights into unvalidated paths (e.g. grouped-MoE torch._grouped_mm).
         if load_in_4bit:
             from utils.transformers_version import latest_tier_active_for
-            if latest_tier_active_for(config["model_name"], hf_token):
+            if latest_tier_active_for(mc.path, hf_token):
                 load_in_4bit = False
                 logger.info(
                     "Latest-transformers sidecar active for %s - forcing a 16-bit "
@@ -376,7 +380,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
 
         # Authoritative gates over the model + the LoRA base resolved via mc. Must run before
         # the SSM install so a blocked model never triggers a native kernel build.
-        targets = [config["model_name"]]
+        targets = [mc.path]
         if mc.is_lora and getattr(mc, "base_model", None):
             targets.append(str(mc.base_model))
         if not _run_security_gates(
@@ -398,7 +402,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             _ssm_base = (
                 str(mc.base_model) if (mc.is_lora and getattr(mc, "base_model", None)) else None
             )
-            ssm_targets = [ssm_probe_identifier(config["model_name"], _ssm_base)]
+            ssm_targets = [ssm_probe_identifier(mc.path, _ssm_base)]
             if not _ensure_ssm_kernels(
                 ssm_targets,
                 resp_queue,
@@ -878,6 +882,7 @@ def run_inference_process(
     )
 
     model_name = config["model_name"]
+    metadata_model_name = config.get("local_snapshot_path") or model_name
 
     # ── 0. MLX fast-path — skip torch/transformers ──
     _ensure_backend_on_path()
@@ -889,7 +894,7 @@ def run_inference_process(
         # Non-fatal: fall through with the installed version, but log the cause
         # instead of swallowing it (issue #6103).
         try:
-            _activate_transformers_version(model_name, config.get("hf_token") or None)
+            _activate_transformers_version(metadata_model_name, config.get("hf_token") or None)
         except Exception as exc:
             logger.warning(
                 "Failed to activate transformers version for '%s' (MLX inference); "
@@ -1039,7 +1044,7 @@ def run_inference_process(
 
     _hf_token = _clean_token(config.get("hf_token"))
     _lora_base = None
-    _local_adapter_cfg = Path(model_name) / "adapter_config.json"
+    _local_adapter_cfg = Path(metadata_model_name) / "adapter_config.json"
     if _local_adapter_cfg.is_file():
         try:
             _lora_base = (
@@ -1051,14 +1056,16 @@ def run_inference_process(
         except Exception:
             _lora_base = None
     if not _lora_base:
-        _lora_base = _remote_lora_base(model_name, hf_token = _hf_token)
+        _lora_base = _remote_lora_base(metadata_model_name, hf_token = _hf_token)
     # Base for tier activation + the SSM-kernel heuristic: the LoRA base if any, else a full
     # fine-tune's recorded base from config.json (its name reveals the SSM/sidecar arch).
-    _base = _lora_base or _resolve_base_model(model_name)
+    _base = _lora_base or _resolve_base_model(metadata_model_name)
 
-    # ── 1. Activate transformers version (on the resolved base) BEFORE any ML imports ──
+    # ── 1. Activate transformers version BEFORE any ML imports ──
+    # Pass the selected snapshot so activation can combine its own config tier
+    # with any resolved LoRA/base-model tier instead of consulting stale refs.
     try:
-        _activate_transformers_version(_base, _hf_token)
+        _activate_transformers_version(metadata_model_name, _hf_token)
     except Exception as exc:
         _send_response(
             resp_queue,
@@ -1076,7 +1083,7 @@ def run_inference_process(
     # are metadata-only, so run them first and refuse a blocked model before any native build.
     # Gate only the model + a genuine LoRA base (matching _handle_load), never a full fine-tune's
     # unloaded base; _handle_load re-runs the authoritative gates with the mc base.
-    _gate_targets = [model_name]
+    _gate_targets = [metadata_model_name]
     if _lora_base:
         _gate_targets.append(_lora_base)
     _trust_remote_code = config.get("trust_remote_code", False) or _needs_nemotron_trust(
@@ -1096,7 +1103,7 @@ def run_inference_process(
     # (arbitrary names must not match the SSM substrings).
     from utils.ssm_runtime import ssm_probe_identifier
 
-    _ssm_targets = [ssm_probe_identifier(model_name, _base)]
+    _ssm_targets = [ssm_probe_identifier(metadata_model_name, _base)]
     if not _ensure_ssm_kernels(
         _ssm_targets,
         resp_queue,

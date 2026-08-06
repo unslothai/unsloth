@@ -98,6 +98,8 @@ _ENCODER_ONLY_MODEL_TYPES = frozenset(
         "albert",
         "bert",
         "camembert",
+        "chinese_clip",
+        "clip",
         "deberta",
         "deberta-v2",
         "distilbert",
@@ -116,7 +118,10 @@ _ENCODER_ONLY_MODEL_TYPES = frozenset(
         "rembert",
         "roberta",
         "roformer",
+        "siglip",
+        "siglip2",
         "squeezebert",
+        "vision-text-dual-encoder",
         "xlm-roberta",
     }
 )

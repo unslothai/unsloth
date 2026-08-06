@@ -1668,6 +1668,13 @@ const AUTO_LOAD_RESOLVE_GRACE_MS = 2500;
 // safetensors candidate can proceed.
 const AUTO_LOAD_VARIANT_SCAN_TIMEOUT_MS = 30_000;
 
+// The scan pool can contain many more jobs than workers. Per-request timeouts
+// bound each job, but not the time needed to drain every worker batch. Preserve
+// GGUF-first ordering for one scan window, then let an already-ready
+// safetensors candidate proceed instead of multiplying the timeout by the
+// number of batches.
+const AUTO_LOAD_GGUF_GATE_TIMEOUT_MS = AUTO_LOAD_VARIANT_SCAN_TIMEOUT_MS;
+
 // An HF cache snapshot dir: captures the cache repo ROOT before /snapshots/.
 const HF_SNAPSHOT_PATH_RE = /^(.*)[\\/]snapshots[\\/][^\\/]+[\\/]?$/;
 
@@ -2555,6 +2562,7 @@ export async function autoLoadOnDeviceModel(): Promise<{
     // successful early load does not leave background scans hammering the
     // backend while inference is already running. In-flight scans finish.
     let resolutionStopped = false;
+    let ggufGateExpired = false;
     let progressWaiters: Array<() => void> = [];
     const signalProgress = (): void => {
       const waiters = progressWaiters;
@@ -2596,6 +2604,13 @@ export async function autoLoadOnDeviceModel(): Promise<{
       );
     };
     const resolutionDone = runResolutionJobs();
+    const ggufGateTimer =
+      pendingJobs > 0
+        ? setTimeout(() => {
+            ggufGateExpired = true;
+            signalProgress();
+          }, AUTO_LOAD_GGUF_GATE_TIMEOUT_MS)
+        : null;
     if (pendingJobs > 0) {
       await new Promise<void>((resolve) => {
         const graceTimer = setTimeout(resolve, AUTO_LOAD_RESOLVE_GRACE_MS);
@@ -2620,16 +2635,23 @@ export async function autoLoadOnDeviceModel(): Promise<{
         // budget has been spent, consumption waits for resolution to
         // settle, so the remaining attempts follow the complete global
         // smallest-first order instead of exhausting the cap on larger
-        // candidates while smaller ones are still resolving.
-        if (pendingJobs > 0 && loadAttempts > 0) {
+        // candidates while smaller ones are still resolving. The overall
+        // gate deadline prevents many serial worker batches from multiplying
+        // the per-scan timeout.
+        if (pendingJobs > 0 && loadAttempts > 0 && !ggufGateExpired) {
           await nextProgress();
           continue;
         }
         // Every pending scan job can still yield a GGUF candidate (no-scan
         // rows were seeded upfront), and GGUF outranks safetensors in the
         // documented order, so the model-kind group stays gated until the
-        // scans settle; resolved GGUF entries keep flowing immediately.
-        if (isModelKindEntry(candidate) && pendingJobs > 0) {
+        // scans settle or the overall gate deadline expires; resolved GGUF
+        // entries keep flowing immediately.
+        if (
+          isModelKindEntry(candidate) &&
+          pendingJobs > 0 &&
+          !ggufGateExpired
+        ) {
           await nextProgress();
           continue;
         }
@@ -2766,6 +2788,9 @@ export async function autoLoadOnDeviceModel(): Promise<{
       // Runs on every exit (successful return, cap, drained pool, or a
       // thrown error) so no worker keeps scanning after the outcome is set.
       resolutionStopped = true;
+      if (ggufGateTimer !== null) {
+        clearTimeout(ggufGateTimer);
+      }
     }
 
     // No auto-loadable on-device model (or the attempt cap was hit). Never

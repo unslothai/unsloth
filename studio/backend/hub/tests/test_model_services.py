@@ -98,6 +98,8 @@ class TestExtractQuantToken:
     [
         ({"model_type": "bert", "architectures": ["BertModel"]}, None),
         ({"model_type": "bert", "architectures": ["BertForMaskedLM"]}, None),
+        ({"model_type": "clip", "architectures": ["CLIPModel"]}, None),
+        ({"model_type": "siglip", "architectures": ["SiglipModel"]}, None),
         (
             {"model_type": "llama", "architectures": ["LlamaForCausalLM"]},
             "modules.json",

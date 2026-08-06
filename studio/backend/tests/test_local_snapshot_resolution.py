@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -250,3 +251,49 @@ def test_resolution_never_uses_the_network(tmp_path, monkeypatch):
     _build_cached_repo(tmp_path, "org/offline-ok", {"config.json": "{}"})
     assert resolve_local_snapshot_path("org/offline-ok", cache_dir = str(tmp_path))
     assert resolve_local_snapshot_path("org/absent", cache_dir = str(tmp_path)) is None
+
+
+def test_worker_rebuilds_metadata_from_selected_snapshot(tmp_path, monkeypatch):
+    """The worker must not pair an older refs/main config with weights from the
+    newer snapshot selected by inventory. Only the external registry identity
+    is restored to the Hub repo id after local metadata resolution."""
+    from core.inference.worker import _build_model_config
+    from utils.models import ModelConfig
+
+    snapshot = tmp_path / "snapshots" / ("b" * 40)
+    snapshot.mkdir(parents = True)
+    seen = {}
+    snapshot_config = SimpleNamespace(
+        identifier = str(snapshot),
+        display_name = snapshot.name,
+        path = str(snapshot),
+        is_local = True,
+        is_cached = True,
+        is_vision = True,
+        is_lora = False,
+        is_gguf = False,
+        is_audio = True,
+        audio_type = "audio_vlm",
+        has_audio_input = True,
+        base_model = "org/new-base",
+    )
+
+    def _from_identifier(cls, **kwargs):
+        seen.update(kwargs)
+        return snapshot_config
+
+    monkeypatch.setattr(ModelConfig, "from_identifier", classmethod(_from_identifier))
+    result = _build_model_config(
+        {
+            "model_name": "org/model",
+            "local_snapshot_path": str(snapshot),
+            "hf_token": "",
+        }
+    )
+
+    assert seen["model_id"] == str(snapshot)
+    assert result.path == str(snapshot)
+    assert result.identifier == "org/model"
+    assert result.display_name == "model"
+    assert result.is_vision is True
+    assert result.base_model == "org/new-base"

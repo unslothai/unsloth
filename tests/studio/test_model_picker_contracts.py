@@ -933,11 +933,15 @@ def test_send_not_blocked_by_full_inventory_resolution():
 def test_pending_gguf_scans_gate_safetensors_candidates():
     """GGUF-first is the documented preference order, and incremental
     consumption must not let an instantly-resolved safetensors row claim a
-    load slot while a pending folder scan can still yield a GGUF candidate;
-    resolved GGUF entries are never gated."""
+    load slot during the bounded preference window while a pending folder scan
+    can still yield a GGUF candidate. After that overall deadline, serial
+    batches of timed-out scans must not keep an already-ready model gated."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
-    assert "if (isModelKindEntry(candidate) && pendingJobs > 0) {" in auto_load
+    assert "const AUTO_LOAD_GGUF_GATE_TIMEOUT_MS" in src
+    assert "ggufGateExpired = true;" in auto_load
+    assert "!ggufGateExpired" in auto_load
+    assert "clearTimeout(ggufGateTimer);" in auto_load
 
 
 def test_only_first_attempt_leapfrogs_pending_scans():
@@ -948,7 +952,7 @@ def test_only_first_attempt_leapfrogs_pending_scans():
     smallest-first order."""
     src = _read("features/chat/api/chat-adapter.ts")
     auto_load = src.split("async function autoLoadOnDeviceModel", 1)[1]
-    assert "if (pendingJobs > 0 && loadAttempts > 0) {" in auto_load
+    assert "if (pendingJobs > 0 && loadAttempts > 0 && !ggufGateExpired) {" in auto_load
 
 
 def test_hidden_matcher_fetch_never_blocks_send_unbounded():
@@ -1151,6 +1155,8 @@ def test_local_only_covers_every_load_and_validate_network_path():
         "_local_only_offline.enter_context(_hf_offline_if_dns_dead(force = True))" in validate_src
     )
     assert "_local_only_offline.close()" in validate_src
+    assert "metadata_identifier = (" in validate_src
+    assert "model_identifier = metadata_identifier," in validate_src
     # The non-GGUF load threads the flag into the subprocess backend.
     load_call = route.split("backend.load_model,\n            config = config,", 1)[1]
     load_call = load_call.split(")", 1)[0]
@@ -1159,15 +1165,20 @@ def test_local_only_covers_every_load_and_validate_network_path():
     orchestrator = _read_backend("core/inference/orchestrator.py")
     assert '"local_files_only": bool(local_files_only),' in orchestrator
     assert '"local_snapshot_path"' in orchestrator
+    assert "metadata_model_name = local_snapshot_path or model_name" in orchestrator
+    assert "needs_transformers_5(metadata_model_name)" in orchestrator
+    assert "model_name = metadata_model_name," in orchestrator
 
     worker = _read_backend("core/inference/worker.py")
     assert "def _local_only_offline_env(" in worker
     assert "_offline_guard.enter_context(" in worker
     assert "_offline_guard.close()" in worker
-    # The route's snapshot rewrite is re-applied after the worker rebuilds
-    # its ModelConfig from the identifier.
+    # The worker rebuilds metadata from the selected snapshot, then restores
+    # only the stable Hub registry identity.
     assert 'snapshot_override = config.get("local_snapshot_path")' in worker
-    assert "mc.path = snapshot_override" in worker
+    assert "model_id = snapshot_override or model_name" in worker
+    assert "mc.identifier = model_name" in worker
+    assert "_activate_transformers_version(metadata_model_name" in worker
     assert '"local_files_only": bool(config.get("local_files_only", False)),' in worker
 
     inference = _read_backend("core/inference/inference.py")
