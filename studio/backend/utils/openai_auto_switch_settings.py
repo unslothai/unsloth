@@ -279,8 +279,7 @@ VALID_SPECULATIVE_TYPES = frozenset(
 # Only these consume spec_draft_n_max (mirrors DRAFT_N_MAX_SPEC_TYPES in the UI).
 DRAFT_N_MAX_SPEC_TYPES = frozenset({"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark"})
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
-# Mirrors MLX_KV_BITS_CHOICES in core/inference/mlx_inference.py. A discrete set, not a
-# range: mx.quantize takes these widths and not, say, 7.
+# Mirrors MLX_KV_BITS_CHOICES in core/inference/mlx_inference.py; a set, not a range.
 VALID_MLX_KV_BITS = frozenset({8, 6, 5, 4, 3, 2})
 
 # Mirrors PARALLEL_MIN/MAX in llama_server_args.py. Mirrored not imported: that module owns

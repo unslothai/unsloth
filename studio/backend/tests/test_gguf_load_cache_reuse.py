@@ -811,8 +811,7 @@ class TestLoadHubDownloadExclusion:
             route._llama_runtime_fields(incomplete_backend)
 
     def test_real_backend_resolves_every_runtime_response_field(self):
-        # Check the shipped class, not a fake: an unresolved field turns every
-        # GGUF load and status poll into a 500.
+        # The shipped class, not a fake: an unresolved field 500s every load and poll.
         from core.inference.llama_cpp import LlamaCppBackend
         from models.inference import _InferenceRuntimeFields
 

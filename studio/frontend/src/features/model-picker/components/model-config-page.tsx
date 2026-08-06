@@ -886,9 +886,8 @@ export function ModelConfigPage({
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
-  // Compare against what the backend was asked for, not what it applied: a
-  // refusal applies nothing, and staging a new value must retire the verdict
-  // rather than leave it under a request it never answered.
+  // Compare against what the backend was asked for, not what it applied: staging a
+  // new value must retire a verdict that answered a different request.
   const chatTemplateOutcome =
     isActiveModel &&
     (configState.chatTemplateOverride ?? null) ===
@@ -898,8 +897,7 @@ export function ModelConfigPage({
   const mlxKvQuantOutcome =
     isActiveModel &&
     (configState.mlxKvBits ?? null) === (loadedMlxKvBitsRequested ?? null)
-      ? // Both, not either: a partial verdict on a vision model carries a reason
-        // and a note, and dropping the note promises savings before the offset
+      ? // Both, not either: dropping the note promises savings before the offset
         // where quantization actually starts.
         [mlxKvQuantReason, mlxKvQuantNote].filter(Boolean).join(". ") || null
       : null;
@@ -917,12 +915,11 @@ export function ModelConfigPage({
   // Until the switch is used anywhere, a model carrying non-default advanced values opens the
   // section itself. Frozen at mount so editing a field back to its default cannot close it.
   const [autoOpenAdvanced] = useState(() => hasNonDefaultAdvanced(configState));
-  // Frozen like the rest of the auto-open decision, so editing the width does
-  // not reopen the section the user just closed.
+  // Frozen like the rest of the auto-open decision, so editing the width does not
+  // reopen the section the user just closed.
   const [initialMlxKvBits] = useState(() => configState.mlxKvBits ?? null);
-  // Applicability stays live, unlike the snapshot above: MLX can become
-  // available after this page mounts, and a width that starts applying then has
-  // to surface rather than stay hidden until a remount.
+  // Applicability stays live, unlike the snapshot above: MLX can become available
+  // after mount, and a width that starts applying then has to surface.
   const autoOpenForMlxKvBits = servedByMlx && initialMlxKvBits != null;
   const showAdvanced =
     advancedPreference ?? (autoOpenAdvanced || autoOpenForMlxKvBits);

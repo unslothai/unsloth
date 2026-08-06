@@ -6845,12 +6845,12 @@ def test_two_spellings_of_one_cached_quant_do_not_delete_each_others_save(monkey
 
 
 def test_mlx_kv_bits_survives_the_whole_override_projection():
-    # Persisted in the browser but dropped here, an API auto-switch loaded a
-    # remembered MLX model at full precision while the picker honored the width.
+    # Dropped here, an API auto-switch would load a remembered MLX model at full
+    # precision while the picker honored the width.
     for bits in (8, 6, 5, 4, 3, 2):
         assert settings.normalize_model_override({"mlx_kv_bits": bits}) == {"mlx_kv_bits": bits}
 
-    # A discrete set, so a plausible in-range width is still not one mx.quantize takes.
+    # A discrete set, so an in-range width can still be one mx.quantize rejects.
     # bool is an int subclass, and a string width would reach LoadRequest untyped.
     for rejected in (7, 1, 0, 9, True, False, "4", 4.5, None):
         assert settings.normalize_model_override({"mlx_kv_bits": rejected}) == {}

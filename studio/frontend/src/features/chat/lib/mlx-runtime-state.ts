@@ -14,9 +14,8 @@ type MlxRuntimeResponse = Pick<
 
 /** MLX KV-quantization state a load response establishes.
  *
- *  A non-MLX response retires the verdict but omits mlxKvBits rather than
- *  nulling it: the width is dormant there, not wrong, and a preset carrying it
- *  must survive the round-trip.
+ *  A non-MLX response retires the verdict but omits mlxKvBits: the width is dormant
+ *  there, not wrong, and a preset carrying it must survive the round-trip.
  */
 export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
   mlxKvBits?: number | null;

@@ -176,8 +176,7 @@ class ModelOverridePayload(BaseModel):
     max_seq_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     custom_context_length: Optional[int] = Field(default = None, ge = 1, le = 1048576)
     kv_cache_dtype: Optional[str] = Field(default = None, max_length = 32)
-    # A discrete set rather than a range, so the normalizer's membership test decides;
-    # the bounds here only keep an absurd value out.
+    # A discrete set, enforced by the normalizer; these bounds only block absurd values.
     mlx_kv_bits: Optional[int] = Field(default = None, ge = 2, le = 8)
     speculative_type: Optional[str] = Field(default = None, max_length = 32)
     spec_draft_n_max: Optional[int] = Field(default = None, ge = 1, le = 16)

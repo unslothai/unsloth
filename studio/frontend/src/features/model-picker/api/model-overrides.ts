@@ -92,8 +92,8 @@ export function toApiOverride(config: PerModelConfig | null): ApiModelOverride {
   if (config.kvCacheDtype) {
     payload.kv_cache_dtype = config.kvCacheDtype;
   }
-  // Travels beside kv_cache_dtype: without it an API auto-switch loads a
-  // remembered MLX model at full precision.
+  // Travels beside kv_cache_dtype, or an API auto-switch loads a remembered MLX
+  // model at full precision.
   if (config.mlxKvBits != null) {
     payload.mlx_kv_bits = config.mlxKvBits;
   }

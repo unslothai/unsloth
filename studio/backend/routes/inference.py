@@ -3658,8 +3658,7 @@ def _llama_runtime_fields(llama_backend: LlamaCppBackend) -> dict:
         if hasattr(llama_backend, name) or hasattr(llama_backend, f"_{name}")
     }
     fields.update(
-        # A llama.cpp backend is definitionally not MLX, so it reports the MLX
-        # runtime fields as absent rather than defining them itself.
+        # Not MLX, so the MLX runtime fields report as absent.
         is_mlx = False,
         mlx_kv_bits = None,
         mlx_kv_bits_requested = None,
@@ -6369,8 +6368,8 @@ async def _load_model_impl(
                     mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
                     mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
                     mlx_kv_quant_note = _model_info.get("mlx_kv_quant_note"),
-                    # Requested, as /status reports it: a load that answers with the
-                    # reason but a null override reads as "using the default".
+                    # Requested, as /status reports it: a null override would read
+                    # as "using the default".
                     chat_template_override = _model_info.get("chat_template_override_requested"),
                     chat_template_override_reason = _model_info.get("chat_template_override_reason"),
                     inference = inference_config,
@@ -6863,8 +6862,8 @@ async def _load_model_impl(
             mlx_kv_quant_eligibility = _model_info.get("mlx_kv_quant_eligibility"),
             mlx_kv_quant_reason = _model_info.get("mlx_kv_quant_reason"),
             mlx_kv_quant_note = _model_info.get("mlx_kv_quant_note"),
-            # Requested, as /status reports it: a load that answers with the
-            # reason but a null override reads as "using the default".
+            # Requested, as /status reports it: a null override would read as
+            # "using the default".
             chat_template_override = _model_info.get("chat_template_override_requested"),
             chat_template_override_reason = _model_info.get("chat_template_override_reason"),
             inference = inference_config,

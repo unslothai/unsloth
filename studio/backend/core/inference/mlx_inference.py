@@ -319,14 +319,11 @@ def _build_generation_stats(
 
 PROMPT_CACHE_ENTRIES = 6
 
-# MLX takes a bit width, so this vocabulary is unrelated to llama.cpp's
-# cache_type_kv names. Every width mx.quantize supports; mlx-lm adds no domain.
+# Every bit width mx.quantize supports; unrelated to llama.cpp's cache_type_kv names.
 MLX_KV_BITS_CHOICES = (8, 6, 5, 4, 3, 2)
-# mlx-lm/mlx-vlm quantize the cache in groups of this many elements; a head
-# dimension that is not a multiple of it makes mx.quantize raise.
+# Quantization group size; a head dim that is not a multiple makes mx.quantize raise.
 MLX_KV_GROUP_SIZE = 64
-# Enabling quantization costs cross-turn prompt-cache reuse on some vision
-# models; surfaced with the resolved setting so an API client sees it too.
+# Surfaced with the resolved setting so an API client sees the reuse cost too.
 MLX_KV_QUANT_NO_REUSE = (
     "The installed mlx-lm cannot measure a quantized cache entry, so prompt-cache "
     "reuse across turns is disabled while this is on."
@@ -384,26 +381,21 @@ def _kv_quant_probe(language_model, entries, bits):
     """
     import mlx.core as mx
 
-    # The forward pass below runs the model's own layers, some of which draw
-    # random numbers even in eval; restore the stream so merely asking about a
-    # setting cannot change later sampled output.
     convertible = [entry for entry in entries if getattr(entry, "to_quantized", None) is not None]
     if not convertible:
-        # Nothing the quantizer would convert, so the forward pass below would
-        # cost a full model call to reach a verdict already known.
+        # Verdict already known, so skip the cost of a full model call.
         return 0, len(entries), None, True
     if any(
         getattr(entry, name, None) is not None
         for entry in convertible
         for name in ("max_size", "window_size")
     ):
-        # A bounded ring cannot be probed in its wrapped state, and once wrapped
-        # its conversion keeps an absolute offset past its physical storage.
-        # Knowable from the cache alone, so refuse before the forward pass.
+        # A bounded ring cannot be probed unwrapped, and wrapped its conversion
+        # keeps an absolute offset past its storage. Refuse before the forward pass.
         return 0, 0, "it uses a bounded sliding window", True
 
-    # mx.random.state is a list mutated in place, so it must be snapshotted and
-    # restored element-wise; rebinding the name restores nothing.
+    # The forward pass below draws random numbers, so keep sampled output stable.
+    # mx.random.state is mutated in place, so restore element-wise, not by rebinding.
     rng_state = list(mx.random.state)
     try:
         try:
@@ -425,9 +417,7 @@ def _kv_quant_probe(language_model, entries, bits):
                 converted += 1
             except Exception as exc:
                 return converted, skipped, f"MLX cannot quantize it ({type(exc).__name__})", True
-            # Through the same helper insertion uses: reading .nbytes directly
-            # would call a converted entry unmeasurable on an mlx-lm whose
-            # QuantizedKVCache.nbytes raises, and report a caveat that is false.
+            # Same helper insertion uses, so the caveat matches what insertion sees.
             if retainable and _kv_entry_nbytes(quantized) is None:
                 retainable = False
         return converted, skipped, None, retainable
@@ -463,8 +453,8 @@ def _kv_quant_eligibility(
         return "none", "this model builds no KV cache to quantize", True
 
     converted, skipped, failure, retainable = _kv_quant_probe(language_model, entries, bits)
-    # The probe caches are transient. Release them only here, where the probe's
-    # own locals are already gone, or their pages stay in the allocator.
+    # Released only here, once the probe's own locals are gone, or the pages stay
+    # in the allocator.
     import mlx.core as mx
 
     entries.clear()
@@ -488,7 +478,7 @@ def _vlm_quantized_kv_start():
         return 5000
 
 
-# An override replaces an existing template; it never creates one. Both render
+# An override replaces an existing template, never creates one: both render
 # selectors pick their target by whether a template is present, so creating one
 # would silently move the render to a different object.
 _TEMPLATE_NOT_CAPTURED = object()
@@ -585,27 +575,27 @@ def _template_override_status(override, tokenizer, processor):
     except Exception as exc:
         status["reason"] = MLX_TEMPLATE_NOT_SETTABLE.format(error = exc)
         return [], status
-    # Judge only the objects that render: refusing over an unreplaceable
-    # template on an object nothing reads would reject a working override.
+    # Judge only the objects that render: an unreplaceable template on an object
+    # nothing reads would reject a working override.
     blocked = [(c, getattr(c, "chat_template", None)) for c in rendering]
     if any(getattr(c, "_chat_template", None) is not None for c in rendering):
-        # mlx-lm can hold the template as a callable, which apply_chat_template
-        # prefers over the attribute, so an assignment would be inert.
+        # apply_chat_template prefers a callable template over the attribute, so
+        # an assignment would be inert.
         status["reason"] = MLX_TEMPLATE_CALLABLE
         return [], status
     if any(isinstance(value, (dict, list)) for _, value in blocked):
         status["reason"] = MLX_TEMPLATE_NAMED_SET
         return [], status
     if not any(_usable_template(value) for _, value in blocked):
-        # Nothing to replace. Honorable on a text model, which cannot chat at
-        # all without one. Not with a processor: creating a template takes the
-        # render from mlx-vlm's fallback, which is what places the markers.
+        # Nothing to replace. Honorable on a text model, which cannot chat without
+        # one. Not with a processor: creating one takes the render away from
+        # mlx-vlm's fallback, which is what places the markers.
         if processor is not None or not blocked:
             status["reason"] = MLX_TEMPLATE_NO_TARGET
             return [], status
         return [c for c, _ in blocked], status
-    # Install on every object holding a replaceable string, so both selectors
-    # keep choosing what they chose before.
+    # Install on every object holding a replaceable string, so both selectors keep
+    # choosing what they chose before.
     return [c for c, value in existing if _usable_template(value)], status
 
 
@@ -715,8 +705,8 @@ def _install_template_override(override, tokenizer, processor, probe):
     targets, status = _template_override_status(override, tokenizer, processor)
     if not targets:
         return status
-    # Restore only what was actually assigned: a target that refused the
-    # assignment would refuse the restore too, masking the real error.
+    # Restore only what was actually assigned: a target that refused the assignment
+    # would refuse the restore too, masking the real error.
     installed = []
     template = MLX_TEMPLATE_RENDER_FAILED
     try:
@@ -982,11 +972,10 @@ class MLXInferenceBackend:
         # Recorded for unload to release pinned memory back to the OS.
         self._memory_limits_applied = {}
 
-        # Load-time runtime knobs; every generation path reads them from here
-        # rather than from per-request kwargs.
+        # Load-time runtime knobs; every generation path reads them from here rather
+        # than from per-request kwargs. Bound now so a load that fails before
+        # installing leaves readers a dict rather than raising.
         self._kv_quant = _kv_quant_status(None, None, False)
-        # Bound here too, so a load that fails before installing leaves the
-        # entry writer and the reason log reading a dict rather than raising.
         self._template_override = _template_override_status(None, None, None)[1]
 
         self._prompt_cache_history = None
@@ -1194,9 +1183,9 @@ class MLXInferenceBackend:
             is_vision,
             config_audio_type = getattr(config, "audio_type", None),
         )
-        # Classify before the first generation: an ineligible cache would
-        # otherwise raise inside maybe_quantize_kv_cache mid-stream, after it
-        # had already converted the leading entries.
+        # Classify before the first generation: an ineligible cache would otherwise
+        # raise inside maybe_quantize_kv_cache mid-stream, after converting the
+        # leading entries.
         self._kv_quant = _kv_quant_status(_normalize_mlx_kv_bits(kv_bits), self._model, is_vision)
         if self._kv_quant["kv_bits"] is not None:
             logger.info(
@@ -1205,12 +1194,10 @@ class MLXInferenceBackend:
                 self._kv_quant["eligibility"],
             )
 
-        # Captured before installing: chat_template_info must keep reporting
-        # what the model shipped with, since the capability classification and
-        # the editor's "model default" both read it. From the render target, not
-        # the nested tokenizer: on a processor that owns its own template those
-        # are different objects, and saving the wrong default back would install
-        # the tokenizer's template over the processor.
+        # Captured before installing, so chat_template_info keeps reporting what the
+        # model shipped with. From the render target, not the nested tokenizer: on a
+        # processor owning its own template those differ, and saving the wrong
+        # default back would install the tokenizer's template over the processor.
         native_source = _native_template_source(self._tokenizer, self._processor)
         native_template = getattr(native_source, "chat_template", None)
         native_marks_audio = bool(
@@ -1227,19 +1214,16 @@ class MLXInferenceBackend:
         )
         if native_marks_audio:
             _revoke_override_that_drops_audio(self._template_override, self._processor, self._model)
-        # Unconditional for vision, unlike audio: a native template that places
-        # nothing itself still renders images through _generate_vlm's registered
-        # recovery, which _vlm_prompt_issue triggers. An override that renders
-        # plain text triggers nothing, so the image is dropped in silence, and
-        # gating this on the native template having marked images skipped
-        # exactly the models that need the check.
+        # Unconditional for vision, unlike audio: a native template that marks
+        # nothing still renders images through _generate_vlm's recovery, but an
+        # override rendering plain text drops the image in silence, so gating on
+        # the native template would skip exactly the models needing the check.
         if is_vision:
             _revoke_override_that_drops_image(
                 self._template_override, self._tokenizer, self._processor, image_placeholder
             )
-        # Released once the media checks are done: the pairs strongly reference
-        # the tokenizer and processor, and nothing reads them afterwards, so
-        # keeping them would outlive the unload that nulls both.
+        # Released once the media checks are done: the pairs reference the tokenizer
+        # and processor, so keeping them would outlive the unload that nulls both.
         self._template_override["restore"] = []
         if self._template_override["reason"]:
             logger.info(
@@ -1906,8 +1890,7 @@ class MLXInferenceBackend:
                     prompt,
                     audio = [audio_array],
                     max_tokens = max_new_tokens,
-                    # Sampling stays greedy; the runtime knobs below are load-time
-                    # state, not the caller's sampler kwargs.
+                    # Greedy; the knobs below are load-time state, not caller kwargs.
                     temperature = 0.0,
                     **self._kv_quant_generate_kwargs(),
                 ):

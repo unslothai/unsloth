@@ -139,8 +139,7 @@ def test_chat_settings_payload_accepts_preset_load_config():
 def test_chat_settings_payload_accepts_mlx_kv_bits():
     from pydantic import ValidationError
 
-    # extra="forbid" rejects the whole settings write on an undeclared key, so
-    # an MLX preset the UI can build must survive validation here.
+    # extra="forbid" rejects the whole settings write on an undeclared key.
     payload = chat_history.ChatSettingsPayload.model_validate(
         {
             "customPresets": [
@@ -157,7 +156,7 @@ def test_chat_settings_payload_accepts_mlx_kv_bits():
 
     for width in (4, None):
         chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": width})
-    # Only the widths MLX supports; 3 is not a quantization width it can apply.
+    # Only the widths MLX supports.
     with pytest.raises(ValidationError):
         chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": 7})
 

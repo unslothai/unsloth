@@ -1878,8 +1878,7 @@ def test_reload_comparison_and_response_carry_the_resolved_setting():
     from routes.inference import _mlx_runtime_settings_match
     from models.inference import LoadRequest, LoadResponse
 
-    # The real request model, not a stand-in: only it stays in step with what a
-    # load actually sends.
+    # The real request model, not a stand-in, so it stays in step with real loads.
     def req(**knobs):
         return LoadRequest(model = "m", model_path = "m", **knobs)
 
@@ -1893,8 +1892,7 @@ def test_reload_comparison_and_response_carry_the_resolved_setting():
         req(mlx_kv_bits = 8),
     )
 
-    # Compared against the REQUESTED value: a refused template must still match
-    # itself, or it reloads on every request.
+    # Compared against the REQUESTED value, or a refused template reloads every request.
     be.models["m"] = {
         "mlx_kv_bits_requested": None,
         "chat_template_override_requested": "{{ custom }}",
@@ -2011,10 +2009,9 @@ def test_chat_template_override_reports_each_way_it_cannot_apply():
         mlx_inference.MLX_TEMPLATE_NAMED_SET
     )
 
-    # ...but only on the object that RENDERS. Real models (aya-vision among
-    # them) keep a named set on a nested tokenizer nothing reads. A processor
-    # renders only if it can: without apply_chat_template chat_render_target
-    # hands the render to the nested tokenizer, and its set does veto.
+    # ...but only on the object that RENDERS. Real models (aya-vision) keep a named set
+    # on a nested tokenizer nothing reads. Without apply_chat_template the processor
+    # cannot render, so the nested tokenizer's set does veto.
     nested_set = SimpleNamespace(chat_template = {"default": "a"})
     renders_string = SimpleNamespace(
         chat_template = "native", apply_chat_template = lambda *a, **k: "", tokenizer = nested_set
@@ -2041,23 +2038,21 @@ def test_chat_template_override_reports_each_way_it_cannot_apply():
         is None
     )
 
-    # Nothing to replace, processor present: creating a template would take the
-    # render from mlx-vlm's fallback, which is what places the markers.
+    # Nothing to replace, processor present: creating one takes the render from
+    # mlx-vlm's fallback, which places the markers.
     bare = SimpleNamespace(chat_template = None)
     assert reason(bare, SimpleNamespace(chat_template = None, tokenizer = bare)) == (
         mlx_inference.MLX_TEMPLATE_NO_TARGET
     )
 
-    # A text model has one object and no selector to move, and cannot chat at
-    # all without a template -- supplying one is the point, not a refusal.
+    # A text model has no selector to move and cannot chat without a template.
     for empty in (None, "", "   "):
         blank = SimpleNamespace(chat_template = empty)
         targets, status = mlx_inference._template_override_status("custom", blank, None)
         assert status["reason"] is None, empty
         assert targets == [blank]
 
-    # Invalid Jinja installs cleanly and then throws on every generation; the
-    # probe turns that into one load-time reason, and restores the original.
+    # The probe turns invalid Jinja into one load-time reason, and restores the original.
     broken = SimpleNamespace(chat_template = "native")
     got = reason(broken, probe = lambda: (_ for _ in ()).throw(ValueError("bad tag")))
     assert "could not render" in got and "bad tag" in got
@@ -2080,15 +2075,13 @@ def test_chat_template_override_crosses_both_ipc_hops():
     orch = inspect.getsource(orchestrator.InferenceOrchestrator.load_model)
     assert '"chat_template_override": chat_template_override' in orch
 
-    # The applied value is deliberately not carried: nothing reads it, and
-    # /status and the reload decision both key on the requested one.
+    # The applied value is not carried: /status and the reload decision key on requested.
     reported = (
         "chat_template_override_requested",
         "chat_template_override_reason",
     )
     worker_source = inspect.getsource(worker)
-    # Whole statements, not name presence: every one of these names is a
-    # prefix of another in the same module.
+    # Whole statements, not name presence: each name is a prefix of another here.
     assert (
         'load_kwargs["chat_template_override"] = config.get(\n'
         '                    "chat_template_override"\n'
@@ -2120,8 +2113,7 @@ def test_template_probe_renders_through_the_path_generation_uses(monkeypatch):
         tpl = getattr(target, "chat_template", None)
         if tpl == "empty":
             return ""
-        # Whitespace only: the vision path treats this as an empty prompt too,
-        # so the probe has to agree with it.
+        # Whitespace only, which the vision path also treats as an empty prompt.
         return "  \n " if tpl == "blank" else "rendered"
 
     monkeypatch.setattr(
@@ -2196,8 +2188,7 @@ def test_the_audio_refusal_puts_the_native_template_back(monkeypatch):
     mlx_inference._revoke_override_that_drops_audio(keep, object(), object())
     assert keep["applied"] == "custom" and kept.chat_template == "custom"
 
-    # Nothing installed: no reason invented even when the marker is absent,
-    # which is the only state that reaches the guard rather than the check.
+    # Nothing installed: no reason invented even when the marker is absent.
     marks["audio"] = False
     unset = {"requested": None, "applied": None, "reason": None, "restore": []}
     mlx_inference._revoke_override_that_drops_audio(unset, object(), object())
@@ -2325,8 +2316,7 @@ def test_the_model_default_comes_from_the_object_that_renders():
     bare = SimpleNamespace(chat_template = None, tokenizer = nested)
     assert mlx_inference._native_template_source(nested, bare) is nested
 
-    # A named set renders but is not an editable default, so keep reporting the
-    # nested string rather than reporting none at all.
+    # A named set renders but is not an editable default, so report the nested string.
     named = SimpleNamespace(
         chat_template = {"default": "{{ a }}"},
         apply_chat_template = lambda *a, **k: "",
@@ -2542,8 +2532,7 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     monkeypatch.setattr(_DummyTokenizer, "chat_template", "{{ nested }}", raising = False)
 
     def render(target, messages, **kwargs):
-        # The native template serializes the content dict, so it only works
-        # through recovery; the override renders clean prose instead.
+        # The native template serializes the content dict, so it only works via recovery.
         content = messages[0]["content"]
         if isinstance(content, str):
             return content

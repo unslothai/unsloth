@@ -65,9 +65,8 @@ const NO_MLX_REASONS = new Set([
 
 /** Whether MLX will serve this model, and so whether MLX-only settings apply.
  *
- *  On a Mac with a working MLX stack every non-GGUF model loads through MLX,
- *  including plain safetensors repos, so `!isGguf` alone would show these
- *  controls to CUDA users.
+ *  Every non-GGUF model loads through MLX on a working Mac stack, including plain
+ *  safetensors repos, so `!isGguf` alone would show these controls to CUDA users.
  */
 export function isServedByMlx(
   isGguf: boolean,
@@ -106,8 +105,8 @@ export const KV_CACHE_DTYPES = [
   "f32",
 ] as const;
 
-// MLX quantizes by bit width, not a dtype name, hence separate from
-// KV_CACHE_DTYPES. Every width mx.quantize supports; mlx-lm adds no domain.
+// Every width mx.quantize supports. By bit width, not a dtype name, hence separate
+// from KV_CACHE_DTYPES.
 export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 

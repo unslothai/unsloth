@@ -355,8 +355,7 @@ export function applyActiveModelStatusToStore(
         loadedTensorParallel: status.tensor_parallel,
       }),
     // Hydration only, so a steady poll never rewrites settings the store owns.
-    // Width, verdict and the request it answers move together. Unfenced like
-    // every field here: a late reply can still overwrite a newer one.
+    // Width, verdict and request move together; a late reply can overwrite a newer one.
     ...(seedLoadParams &&
       hydratingExistingModel &&
       status.mlx_kv_bits !== undefined &&
@@ -376,8 +375,8 @@ export function applyActiveModelStatusToStore(
             chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
           })),
-    // Recovery for a hydration this tab never saw. Only when nothing is staged:
-    // re-seeding over an edit made before the load flag rose would discard it.
+    // Recovery for a hydration this tab never saw, and only when nothing is
+    // staged: re-seeding over an earlier edit would discard it.
     ...(seedLoadParams &&
       !hydratingExistingModel &&
       status.is_mlx === true &&

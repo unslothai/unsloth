@@ -779,8 +779,7 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nParallel ?? null)
               : useChatRuntimeStore.getState().nParallel;
-          // Same reason: the rollback echo carries the width the outgoing model
-          // loaded with, which would overwrite an edit staged against it.
+          // Same reason: the rollback echo would overwrite an edit staged against it.
           const previousMlxKvBits =
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.mlxKvBits ?? null)
@@ -857,16 +856,14 @@ export function useChatModelRuntime() {
           // (validation, the trust dialog, unload). When the picker staged a
           // config payload, prefer it over the store: React may not have
           // flushed NumericValueInput's blur commit into state yet.
-          // Per-model like the width below: a template is written against one
-          // model's tokens, so it cannot follow onto a different model.
+          // Per-model: a template is written against one model's tokens.
           let loadChatTemplateOverride =
             pendingLoadConfig?.chatTemplateOverride?.trim()
               ? pendingLoadConfig.chatTemplateOverride
               : stateBeforeUnload.chatTemplateOverride;
           const loadKvCacheDtype =
             pendingLoadConfig?.kvCacheDtype ?? stateBeforeUnload.kvCacheDtype;
-          // Per-model, not a standing preference: eligibility is decided per model,
-          // so a different model must not inherit this one's width.
+          // Per-model, not a standing preference: eligibility is decided per model.
           let loadMlxKvBits =
             pendingLoadConfig?.mlxKvBits ?? stateBeforeUnload.mlxKvBits;
           // gpuMemoryMode is a standing preference (kept across a model switch);
@@ -1098,8 +1095,7 @@ export function useChatModelRuntime() {
               loadSpecDraftNMax = pendingLoadConfig?.specDraftNMax ?? null;
               loadNParallel = pendingLoadConfig?.nParallel ?? null;
               // Both payload-only. The store keeps its values: a width is dormant
-              // preset state off MLX, and neither control has a rollback path that
-              // restores it, while a completed load rewrites both from the response.
+              // preset state off MLX, and a completed load rewrites both anyway.
               loadMlxKvBits = pendingLoadConfig?.mlxKvBits ?? null;
               loadChatTemplateOverride =
                 pendingLoadConfig?.chatTemplateOverride?.trim()
@@ -1484,8 +1480,8 @@ export function useChatModelRuntime() {
                     rollbackResponse.spec_draft_n_max ?? null,
                   loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
                   ...mlxRuntimeStateFrom(rollbackResponse),
-                  // After the spread: it seeds the control from the echo too,
-                  // and the control keeps its intent like nParallel above.
+                  // After the spread, which seeds the control from the echo; the
+                  // control keeps its intent, like nParallel above.
                   mlxKvBits: previousMlxKvBits,
                   loadedChatTemplateOverride:
                     stateBeforeUnload.loadedChatTemplateOverride,

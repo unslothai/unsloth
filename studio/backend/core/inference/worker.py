@@ -437,8 +437,7 @@ def _handle_load(backend, config: dict, resp_queue: Any) -> None:
             model_info.update(
                 {k: _entry[k] for k in ("is_audio", "audio_type", "has_audio_input") if k in _entry}
             )
-            # Resolved MLX runtime knobs: the backend decides what it could
-            # honor, so the parent has no way to derive these itself.
+            # Resolved MLX runtime knobs; only the backend knows what it honored.
             model_info.update(
                 {
                     k: _entry[k]
