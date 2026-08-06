@@ -6,14 +6,10 @@ import importlib
 
 
 def _missing_dependency(message):
-    """Skip under pytest, exit when run as a standalone script.
+    """Skip under pytest, exit as a standalone script.
 
-    These helpers are called at module import time, so under pytest the
-    `sys.exit(1)` below lands during collection. pytest turns a SystemExit
-    there into an INTERNALERROR and aborts the whole session, so one absent
-    optional package (xcodec2, snac, soundfile, ffmpeg) means the entire suite
-    runs zero tests rather than skipping four files. The files are also meant
-    to be runnable directly, hence the exit is kept for that path.
+    Callers run at import time, so a SystemExit during collection would become an
+    INTERNALERROR and abort the whole session instead of skipping one module.
     """
     if "pytest" in sys.modules:
         import pytest

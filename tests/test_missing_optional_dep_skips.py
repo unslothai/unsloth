@@ -1,11 +1,8 @@
 # SPDX-License-Identifier: AGPL-3.0-only
 """A missing optional dependency must skip one module, not kill the session.
 
-`require_package` / `require_python_package` are called at module import time by
-the four tests/saving/text_to_speech_models files. They used to `sys.exit(1)`
-when a package was absent, and under pytest that lands during collection: pytest
-turns SystemExit there into an INTERNALERROR and aborts the whole run. A host
-without xcodec2 therefore executed zero tests across the entire suite.
+`require_package` / `require_python_package` run at import time, so their old
+`sys.exit(1)` aborted the whole pytest run instead of skipping four files.
 """
 
 import subprocess
@@ -26,8 +23,7 @@ def _repo_root():
 
 
 def test_a_missing_package_skips_the_module_under_pytest():
-    # pytest.skip raises Skipped, which is what allows the rest of the session
-    # to carry on. Anything else here means the abort is back.
+    # Anything other than Skipped here means the session-wide abort is back.
     with pytest.raises(pytest.skip.Exception):
         require_python_package(_ABSENT)
 
@@ -37,9 +33,8 @@ def test_an_installed_package_is_a_no_op():
 
 
 def test_the_standalone_script_path_still_exits():
-    # These files are also meant to be runnable directly, so outside pytest the
-    # historical `sys.exit(1)` must survive. Run it in a subprocess with pytest
-    # genuinely absent from sys.modules rather than faking it.
+    # Direct runs must still exit(1), so use a subprocess with pytest genuinely
+    # absent from sys.modules rather than faking it.
     script = textwrap.dedent(f"""
         import sys
         sys.path.insert(0, {str(_repo_root())!r})
