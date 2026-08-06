@@ -1199,8 +1199,7 @@ with sync_playwright() as p:
         timeout = 60_000,
     )
     state = page.evaluate("() => window.__unslothRapid")
-    page.evaluate("() => { if (window.__unslothRapidRestore) "
-                  "window.__unslothRapidRestore(); }")
+    page.evaluate("() => { if (window.__unslothRapidRestore) window.__unslothRapidRestore(); }")
     if state["error"]:
         shoot("04-rapid-submit-no-composer")
         fail(f"could not send the follow-up: {state['error']}")
@@ -1209,8 +1208,10 @@ with sync_playwright() as p:
     # formed, whether or not the hold was needed. Only demand the interception
     # when it did not, so an unheld run cannot report a silent pass.
     if not state["queueSeen"] and not state["intercepted"]:
-        fail("the first turn's request was never seen, so it was never held, "
-             f"and no queue formed; saw {state['seen']}")
+        fail(
+            "the first turn's request was never seen, so it was never held, "
+            f"and no queue formed; saw {state['seen']}"
+        )
     # The follow-up went out after the first turn's request was issued and while
     # its response was still held, so that turn was necessarily running. A
     # missing queue control is therefore a real regression, not timing.
@@ -1993,7 +1994,7 @@ with sync_playwright() as p:
     try:
         refresh_status = int(refresh_proc.stdout.strip())
     except ValueError:
-        fail(f"curl refresh-token check returned invalid status: " f"{refresh_proc.stdout!r}")
+        fail(f"curl refresh-token check returned invalid status: {refresh_proc.stdout!r}")
     if refresh_status == 200:
         fail(f"/api/auth/refresh should fail after CLI rotation; got 200")
     info(
