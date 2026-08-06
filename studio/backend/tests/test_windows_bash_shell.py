@@ -862,6 +862,60 @@ def test_cmd_escapes_prefixes_and_control_words(monkeypatch, command, blocked, b
     assert bool(tools._find_blocked_commands(command)) is blocked
 
 
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # `call` reparses its target, so the word behind it is another command.
+        ('cmd //c call start "" powershell', True),
+        ('cmd //c call call start "" pwsh', True),
+        ('cmd //c echo call start "" powershell', False),
+    ],
+)
+def test_call_hands_the_command_along(monkeypatch, bash, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # MSYS re-quotes an argument holding whitespace when it builds cmd's
+        # command line, and quoting is what makes cmd's separators ordinary
+        # data, so the `&` inside one of those is not a separator at all.
+        ('cmd //c echo "x &start" "" powershell', False),
+        ('cmd //c echo "a & start" "" pwsh', False),
+        # ...while one in a word MSYS passes through bare still is.
+        (r'cmd //c echo ok\&start "" powershell', True),
+    ],
+)
+def test_a_separator_inside_a_requoted_argument_is_data(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: r"C:\Program Files\Git\bin\bash.exe")
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked", "platform"),
+    [
+        # Where a POSIX shell lexes, a group opener is its own token, so one
+        # still attached to a word survived quoting and belongs to it: these
+        # print their arguments and run none of them.
+        ("echo '(bash' -c rm", False, "linux"),
+        ("echo '(sh' -c curl", False, "linux"),
+        # A real nested shell behind a group is still read there.
+        ('x; (bash -c "rm -rf /")', True, "linux"),
+        # ...but the cmd lexer keeps the opener glued, where it really is one.
+        ('(cmd //c start "" pwsh -Command ls)', True, "win32"),
+    ],
+)
+def test_a_quoted_group_opener_belongs_to_the_word(monkeypatch, command, blocked, platform):
+    monkeypatch.setattr(sys, "platform", platform)
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
 @pytest.mark.parametrize(
     "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
 )

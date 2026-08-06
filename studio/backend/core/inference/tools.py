@@ -1653,7 +1653,11 @@ def _find_blocked_commands(command: str) -> set[str]:
             # `cmd //c >nul start "" powershell` really does launch.
             if _REDIR_PREFIX_RE.match(token):
                 continue
-            pieces = _cmd_split(token, _CMD_SEPARATORS)
+            # MSYS re-quotes an argument holding whitespace when it builds
+            # cmd's command line, and quoting is what makes cmd's separators
+            # ordinary data, so `cmd //c echo "x &start" "" pwsh` only prints.
+            requoted = lexed_posix and any(char.isspace() for char in token)
+            pieces = [token] if requoted else _cmd_split(token, _CMD_SEPARATORS)
             if len(pieces) > 1:
                 expect = True
                 control = False
@@ -1674,6 +1678,8 @@ def _find_blocked_commands(command: str) -> set[str]:
             if word == "start":
                 found.add(index)
                 expect = False
+            elif word == "call":
+                pass  # it reparses its target, so a command follows it
             elif word == "if":
                 skip = _cmd_condition_words(index + 1)
                 control = True
@@ -1925,9 +1931,11 @@ def _find_blocked_commands(command: str) -> set[str]:
                 continue  # skip Unix flags like --login, -l
             if is_win_c and prev.startswith("/") and len(prev) <= 3:
                 continue  # skip Windows flags like /s, /q (not /bin/bash)
-            # _token_basename, not os.path.basename: the cmd lexer keeps a glued
-            # opener, so `(cmd //c ...)` left prev as `(cmd` and matched no shell.
-            prev_base = _token_basename(prev)
+            # The cmd lexer keeps a glued opener, so `(cmd //c ...)` left prev
+            # as `(cmd` and matched no shell. Under bash the opener is its own
+            # token, so one still attached survived quoting and is part of the
+            # word: `echo '(bash' -c rm` prints three arguments and runs none.
+            prev_base = os.path.basename(prev).lower() if lexed_posix else _token_basename(prev)
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             elif is_win_c and prev_base in _SHELLS_WIN:
