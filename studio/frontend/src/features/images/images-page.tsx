@@ -2556,22 +2556,20 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             )}
           >
             {/* The sidebar submenu is the switcher, so name the active workflow over its controls. */}
-            {/* Icon centred on the heading and its line together. Same shape on
-                the Video page, so the two stay level. */}
-            <div className="mb-2 flex items-center gap-4">
-              {/* Same icon the sidebar submenu uses for this workflow. */}
-              <HugeiconsIcon
-                icon={activeWorkflowTab.icon}
-                className="size-[30px] shrink-0"
-              />
-              <div className="grid min-w-0 gap-0.5">
-                <h2 className="font-heading text-xl font-medium leading-none text-foreground">
-                  {activeWorkflowTab.heading ?? activeWorkflowTab.label}
-                </h2>
-                <p className="text-xs leading-snug text-muted-foreground">
-                  {activeWorkflowTab.hint}
-                </p>
-              </div>
+            {/* Icon rides the heading; the line below runs the full width.
+                Same shape on the Video page, so the two stay level. */}
+            <div className="mb-2 grid gap-1.5">
+              <h2 className="flex items-center gap-3 font-heading text-xl font-medium leading-none text-foreground">
+                {/* Same icon the sidebar submenu uses for this workflow. */}
+                <HugeiconsIcon
+                  icon={activeWorkflowTab.icon}
+                  className="size-[26px] shrink-0"
+                />
+                {activeWorkflowTab.heading ?? activeWorkflowTab.label}
+              </h2>
+              <p className="text-xs leading-snug text-muted-foreground">
+                {activeWorkflowTab.hint}
+              </p>
             </div>
 
             {workflow === "transform" && (
