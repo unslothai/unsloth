@@ -1109,6 +1109,8 @@ export const en = {
       currentRun: "Current Run",
       history: "History",
     },
+    imageTraining: "Image training",
+    goToImageTraining: "Go to image training",
     loadingRuntime: "Loading training runtime...",
     backToHistory: "Back to history",
     sections: {

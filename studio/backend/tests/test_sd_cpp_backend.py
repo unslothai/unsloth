@@ -267,6 +267,78 @@ def test_download_plan_skips_a_local_transformer_but_still_stages_the_assets(mon
     assert plan["total_bytes"] == 0
 
 
+def _no_cache(monkeypatch):
+    """Report every upstream as uncached, so a local cache cannot mask the mirror decision."""
+    monkeypatch.setattr(
+        "core.inference.diffusion_families._upstream_is_cached", lambda repo_id, files = None: False
+    )
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+
+def test_download_plan_stages_the_mirrored_asset_repo(monkeypatch):
+    """STAGED before the load runs, so a gated asset repo left here 401s an anonymous user and
+    _fetch_assets' swap is never reached. FLUX.1's VAE lives in the gated FLUX.1-schnell."""
+    _no_cache(monkeypatch)
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
+    )
+
+    plan = b.download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf", model_kind = "gguf"
+    )
+
+    staged = {e["repo_id"] for e in plan["entries"]}
+    assert "unsloth/FLUX.1-schnell" in staged
+    assert "black-forest-labs/FLUX.1-schnell" not in staged
+    # The GGUF entry is untouched and still the only one carrying the filename.
+    tr = [e for e in plan["entries"] if e["gguf_filename"]]
+    assert len(tr) == 1 and tr[0]["repo_id"] == "unsloth/FLUX.1-dev-GGUF"
+
+
+def test_download_plan_and_fetch_assets_pick_the_same_repo(monkeypatch):
+    """Staging one repo and then downloading from the other is the failure this feature removes,
+    so both sides take the decision from the same per-repo file list."""
+    _no_cache(monkeypatch)
+    b = SdCppDiffusionBackend(engine = _FakeEngine())
+    monkeypatch.setattr(
+        SdCppDiffusionBackend, "_plan_file_sizes", staticmethod(lambda by_repo, token: {})
+    )
+    pulled: list = []
+    monkeypatch.setattr(
+        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
+        lambda repo, fn, tok, **k: (pulled.append((repo, fn)), f"/cache/{fn}")[1],
+    )
+
+    fam = detect_family("flux.1")
+    specs = b._asset_specs("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", fam)
+    b._fetch_assets(specs, None)
+    plan = b.download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf", model_kind = "gguf"
+    )
+
+    assert {(e["repo_id"], f) for e in plan["entries"] for f in e["files"]} == set(pulled)
+
+
+def test_delete_guard_covers_the_mirrored_asset_repos(monkeypatch):
+    """The bytes land under whichever of the pair was fetched, so guarding only the upstream leaves
+    the mirror cache deletable under a one-shot sd-cli that re-reads it."""
+    b = _loaded_backend("flux.1")
+    ids = set(b.loaded_repo_ids())
+    assert "black-forest-labs/FLUX.1-schnell" in ids
+    assert "unsloth/FLUX.1-schnell" in ids
+
+    b._state = None
+    b._loading = bk._SdLoading(
+        repo_id = "unsloth/FLUX.1-dev-GGUF",
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        asset_repos = ("black-forest-labs/FLUX.1-schnell",),
+    )
+    loading = set(b.loading_repo_ids())
+    assert {"black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell"} <= loading
+    assert {"black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"} <= loading
+
+
 def test_download_plan_refuses_a_pick_native_cannot_serve():
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     with pytest.raises(ValueError, match = "gguf_filename is required"):

@@ -1075,6 +1075,8 @@ export const ja = {
     },
   },
   studio: {
+    imageTraining: "画像トレーニング",
+    goToImageTraining: "画像トレーニングへ移動",
     routeTitle: "トレーニング",
     title: "Fine-tuning Studio",
     subtitles: {

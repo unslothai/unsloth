@@ -19125,8 +19125,11 @@ async def load_diffusion_model(
     )
     from core.inference.diffusion_device import resolve_diffusion_device_target
     from core.inference.diffusion_engine_router import (
+        active_engine_name,
         annotate_status,
         begin_load_on,
+        engine_for,
+        predict_engine,
         select_and_activate_engine,
     )
     from core.inference.gpu_arbiter import acquire_for, release, DIFFUSION
@@ -19153,13 +19156,51 @@ async def load_diffusion_model(
         )
         # Refuse while training is running: a multi-GB pipeline would compete with the training subprocess for VRAM.
         _guard_diffusion_load_against_training()
+        # Take the GPU from chat only when the resolved device is non-CPU: gate on the device, not the engine name.
+        # A pure resolve, so it is read before selection, which the refusal below has to precede.
+        device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
+        needs_gpu = device != "cpu"
+
+        def _preflight(target):
+            # The gated/unreadable-companion refusal, asked of ONE engine (they check different repos).
+            return target.preflight_base_access(
+                request.model_path,
+                fam,
+                gguf_filename = request.gguf_filename,
+                model_kind = kind,
+                base_repo = request.base_repo,
+                hf_token = request.hf_token,
+            )
+
+        # Last refusal before anything is torn down: a gated/unreadable companion repo. The download
+        # plan makes the same check, but the images page falls back to THIS route whenever the plan
+        # call fails, and the loader's own copy runs on the load thread, after acquire_for already
+        # evicted chat. It also has to precede selection: activating the other engine unloads the
+        # current one, so a pick refused afterwards destroys the very model this preserves. Costs two
+        # metadata calls the load makes anyway, fails open on offline/transient, and runs only where
+        # something is at stake -- a GPU handoff, or an engine switch.
+        try:
+            pending_name = predict_engine(fam, model_kind = kind) if fam is not None else None
+        except Exception:  # noqa: BLE001 -- a probe failure must not refuse a loadable pick
+            pending_name = None
+        preflighted = None
+        if pending_name is not None and (needs_gpu or pending_name != active_engine_name()):
+            preflighted = engine_for(pending_name)
+            await asyncio.to_thread(_preflight, preflighted)
+
         # Pick the engine for this host (diffusers on GPU, native sd.cpp otherwise), installing sd-cli if needed, BEFORE evicting chat.
         engine = await asyncio.to_thread(
             select_and_activate_engine, fam, hf_token = request.hf_token, model_kind = kind
         )
-        # Take the GPU from chat only when the resolved device is non-CPU: gate on the device, not the engine name.
-        device = await asyncio.to_thread(lambda: resolve_diffusion_device_target().device)
-        needs_gpu = device != "cpu"
+        # predict_engine is the selection's read-only twin, not the selection: it never installs,
+        # so a host where the sd-cli install then fails lands on the OTHER engine. Ask the engine
+        # actually activated whenever the prediction missed, so neither the GPU handoff nor the
+        # load is made on an unread companion. Same call the (correct) prediction already made, so
+        # never paid twice. Runs on the CPU path too when a preflight was already owed there: the
+        # switch is what is at stake, and it happens whether or not a GPU is involved. Where none
+        # was owed, CPU still pays nothing.
+        if (needs_gpu or preflighted is not None) and engine is not preflighted:
+            await asyncio.to_thread(_preflight, engine)
 
         def _start_engine_load():
             # Kicks the slow load onto a background thread and returns at once (the client polls images/load-progress).

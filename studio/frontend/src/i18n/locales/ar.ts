@@ -1102,6 +1102,8 @@ export const ar = {
     },
   },
   studio: {
+    imageTraining: "تدريب الصور",
+    goToImageTraining: "الانتقال إلى تدريب الصور",
     routeTitle: "تدريب",
     title: "استوديو الضبط الدقيق",
     subtitles: {

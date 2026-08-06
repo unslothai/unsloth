@@ -12,8 +12,10 @@ import { GuidedTour, useGuidedTourController } from "@/features/tour";
 import { studioTourSteps, studioTrainingTourSteps } from "./tour";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft01Icon } from "@hugeicons/core-free-icons";
+import { ArrowLeft01Icon, Image03Icon } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
+import { MediaPageLink } from "@/components/media-page-link";
+import { useImageWorkflowStore } from "@/features/images/stores/image-workflow-store";
 import { type ReactElement, useCallback, useEffect, useMemo, useState } from "react";
 import { useSidebar } from "@/components/ui/sidebar";
 import { DatasetPreviewDialog } from "./sections/dataset-preview-dialog";
@@ -177,7 +179,9 @@ export function StudioPage(): ReactElement {
           </div>
         ) : (
           <Tabs value={activeTab} onValueChange={handleTabChange}>
-            <div className="flex items-center gap-3 pb-3">
+            {/* Wraps: TabsList is w-fit and the link is shrink-0, so a narrow
+                window would otherwise push the row past the viewport. */}
+            <div className="flex flex-wrap items-center gap-3 pb-3">
               {selectedHistoryRunId && activeTab === "history" && (
                 <Button
                   variant="ghost"
@@ -198,6 +202,19 @@ export function StudioPage(): ReactElement {
                 </TabsTrigger>
                 <TabsTrigger value="history">{t("studio.tabs.history")}</TabsTrigger>
               </TabsList>
+              {/* Image training is a mode of the Images page, so it sits out
+                  here rather than in the tab strip. */}
+              <div className="ml-auto flex items-center gap-2">
+                <MediaPageLink
+                  to="/images"
+                  label={t("studio.imageTraining")}
+                  tooltip={t("studio.goToImageTraining")}
+                  icon={Image03Icon}
+                  onNavigate={() =>
+                    useImageWorkflowStore.getState().setPageMode("train")
+                  }
+                />
+              </div>
             </div>
 
             <TabsContent value="configure">

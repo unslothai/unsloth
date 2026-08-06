@@ -3421,9 +3421,12 @@ export function HubModelPicker({
 
   const downloadedRowButtonClassName =
     "bg-transparent pr-1 hover:bg-transparent focus-visible:bg-transparent dark:bg-transparent dark:hover:bg-transparent dark:focus-visible:bg-transparent";
+  // Not focus-within: the dots menu returns focus to its trigger on close, so
+  // the row stayed lit after the pointer left. Keyboard focus and an open menu
+  // still light it.
   const downloadedRowShellClassName = (selected: boolean) =>
     cn(
-      "group flex items-center rounded-full transition-colors hover:bg-[#ececec] focus-within:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:focus-within:bg-[var(--sidebar-accent)]",
+      "group flex items-center rounded-full transition-colors hover:bg-[#ececec] has-[:focus-visible]:bg-[#ececec] has-[[data-state=open]]:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:has-[:focus-visible]:bg-[var(--sidebar-accent)] dark:has-[[data-state=open]]:bg-[var(--sidebar-accent)]",
       selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
     );
 

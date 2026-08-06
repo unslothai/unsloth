@@ -2558,17 +2558,18 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
             )}
           >
             {/* The sidebar submenu is the switcher, so name the active workflow over its controls. */}
-            <div className="grid gap-1">
-              {/* h-9 keeps this level with the Video page heading. */}
-              <h2 className="flex h-9 items-center gap-2 font-heading text-base font-medium text-foreground">
+            {/* Icon rides the heading; the line below runs the full width.
+                Same shape on the Video page, so the two stay level. */}
+            <div className="mb-2 grid gap-1.5">
+              <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
                 {/* Same icon the sidebar submenu uses for this workflow. */}
                 <HugeiconsIcon
                   icon={activeWorkflowTab.icon}
-                  className="size-4 shrink-0"
+                  className="size-[18px] shrink-0"
                 />
-                {activeWorkflowTab.label}
+                {activeWorkflowTab.heading ?? activeWorkflowTab.label}
               </h2>
-              <p className="text-ui-11p5 leading-snug text-muted-foreground">
+              <p className="text-xs leading-snug text-muted-foreground">
                 {activeWorkflowTab.hint}
               </p>
             </div>
