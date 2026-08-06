@@ -401,7 +401,12 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert navigation.count('aria-label="Go back"') == 1
     assert navigation.count('aria-label="Go forward"') == 1
 
-    assert "inline-flex size-[33px] shrink-0" in navigation
+    # Nav buttons share one class constant since #7970 gave them consistent hover boxes, which
+    # also took them 33px -> 30px (the arrow spacer moved with them). What the contract pins is
+    # the shape: a fixed-size, non-shrinking inline-flex box, so the arrows cannot collapse or
+    # drift out of line with the picker.
+    assert "inline-flex size-[30px] shrink-0" in navigation
+    assert 'className="size-[30px] shrink-0"' in navigation  # the matching spacer
 
     assert navigation.count("onDoubleClick={stopTitlebarDrag}") == 3
     assert "maximized" not in navigation
@@ -417,7 +422,9 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert '"--studio-collapsed-chat-controls-inset": "188px"' in APP_PROVIDER.read_text(
         encoding = "utf-8"
     )
-    assert 'className="!size-[33px] rounded-[10px] text-muted-foreground"' in chat_page
+    # Same 33px -> 30px pass as the titlebar above: the collapsed chat controls have to match the
+    # nav buttons, so they moved together and the two sizes must stay equal.
+    assert 'className="!size-[30px] rounded-[10px] text-muted-foreground"' in chat_page
     assert 'aria-label="New chat"' in chat_page
     new_chat_click = chat_page.index("onClick={handleDesktopNewChat}")
     assert new_chat_click < chat_page.index("<ModelSelector", new_chat_click)
