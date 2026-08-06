@@ -449,12 +449,16 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         })
         .catch(() => undefined);
     };
+    const handleResize = () => {
+      setNativeMacControlsHidden(false);
+      refresh();
+    };
     refresh();
-    window.addEventListener("resize", refresh);
+    window.addEventListener("resize", handleResize);
 
     return () => {
       active = false;
-      window.removeEventListener("resize", refresh);
+      window.removeEventListener("resize", handleResize);
     };
   }, [usesNativeMacTitlebar]);
 
