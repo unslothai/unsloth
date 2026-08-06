@@ -9,9 +9,15 @@ Attention is bandwidth-bound, so a better kernel is a real win orthogonal to wei
 (it speeds the QK/PV matmuls torchao never touches) and composes with torch.compile.
 
   auto  - the best *exact* backend for the device. On NVIDIA CUDA that is cuDNN fused attention
-          (``_native_cudnn``), ~1.18x end-to-end on B200, LPIPS ~0.004 (below the noise floor).
-          Elsewhere stays ``native``. Only upgrades when a speed profile is active, so
-          ``speed_mode=off`` stays bit-identical.
+          (``_native_cudnn``). Torch's SDPA dispatch is a HEURISTIC, not a guarantee, and that is
+          the reason to pin it: re-measured on torch 2.12 / B200 at Qwen-Image's 1024px shape
+          (B=1 H=24 N=4352 D=128 bf16) the default ALREADY lands on cuDNN, so pinning is
+          bitwise-identical and near free (compiled 1.599s -> 1.572s, 1.02x; eager 0.93x, the
+          per-call sdpa_kernel wrapper cost, which compile folds away) -- but FLASH and EFFICIENT
+          at that same shape run 3.9x and 9.0x slower. Pinning is insurance against the heuristic
+          picking one of those on another card, head_dim or torch build. Elsewhere stays
+          ``native``. Only upgrades when a speed profile is active, so ``speed_mode=off`` stays
+          bit-identical.
   native - force the default SDPA (bit-identical reference).
   cudnn  - cuDNN fused attention (exact; NVIDIA).
   flash / flash3 / flash4 - FlashAttention 2 / 3 (Hopper) / 4 (SM100); exact, kernel-gated.
@@ -403,13 +409,24 @@ def _warn(logger: Any, what: str, exc: Exception) -> None:
 # and step, materialises a dense [B,1,N,N] boolean mask so the video never attends to padded text.
 # But a dense bool attn_mask DISABLES every fused SDPA kernel (flash rejects it; cuDNN/efficient
 # fall back) and forces the slow math path: on a B200 at the production shape (N~=50k, 121 frames
-# 480p) the SAME attention is 421 ms WITH the dense mask vs 19 ms with attn_mask=None -- a ~22x tax
+# 480p) the SAME attention is 296 ms WITH the dense mask vs 15 ms with attn_mask=None -- a ~20x tax
+# (torch 2.12; scripts/sdpa_mask_backend_probe.py re-measures it, and also shows MATH OOMing on the
+# 75.5 GiB score matrix and FLASH refusing a dense mask outright). END TO END that is 10.4x: a full
+# 121-frame 832x480 10-step render goes 353.8s -> 33.9s, medians of 3, reproduced across two runs
 # purely to mask padding. And the text is ~99.5% padding: a t2v prompt fills only ~9 of ~1985 slots
 # (image 729 + byt5 256 + mllm 1000, almost all zero-padded).
 #
 # The fix is exact: the model already masks the padded text and DISCARDS its attention output (only
 # the video split feeds proj_out), so removing the padded tokens before attention changes nothing
-# for the video. Done in an eager forward pre-hook (outside the compiled blocks): drop the all-zero
+# for the video. "Exact" here means no information is discarded, NOT bit-reproducible: swapping
+# masked for fused SDPA perturbs each step at bf16 rounding scale (one DiT forward on identical
+# inputs differs by 6.6e-3 relative, cosine 0.99998) and 10 denoising steps amplify that
+# chaotically, so the finished video is visibly a different sample. That is intrinsic to the kernel
+# change, not to the trim: rendering the SAME dense-mask path under two different exact SDPA kernels
+# diverges MORE (LPIPS 0.303 vs the trim's 0.285, SSIM 0.744 vs 0.767, over 13 sampled frames).
+# Whole-video LPIPS cannot judge a kernel change at this step count; the single-forward relative
+# error is the metric that can.
+# Done in an eager forward pre-hook (outside the compiled blocks): drop the all-zero
 # image stream (t2v), trim the mllm/byt5 streams to their globally-valid columns, and -- when
 # nothing partially-padded remains (the common batch-1 / per-branch call) -- flag the DiT so the
 # processor skips the dense mask and runs the fused path. The only numeric change is the SDPA kernel
