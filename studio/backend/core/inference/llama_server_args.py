@@ -213,6 +213,13 @@ _LAYER_OFFLOAD_FLAGS: frozenset[str] = _GPU_LAYER_FLAGS | frozenset({"-fit", "--
 _MOE_OFFLOAD_FLAGS: frozenset[str] = frozenset({"-ncmoe", "--n-cpu-moe", "-cmoe", "--cpu-moe"})
 _OFFLOAD_SHADOWING_FLAGS: frozenset[str] = _LAYER_OFFLOAD_FLAGS | _MOE_OFFLOAD_FLAGS
 
+# Host-memory placement flags. Both are full-model RAM reservations (--mlock pins
+# it, --no-mmap mallocs a copy), so the Model Memory settings own them: stripped
+# only when a toggle vetoes them, never unconditionally.
+_MLOCK_FLAGS: frozenset[str] = frozenset({"--mlock", "-mlock"})
+_NO_MMAP_FLAGS: frozenset[str] = frozenset({"--no-mmap", "-no-mmap"})
+_MEMORY_PLACEMENT_FLAGS: frozenset[str] = _MLOCK_FLAGS | _NO_MMAP_FLAGS
+
 _SHADOWING_FLAGS: frozenset[str] = (
     _CONTEXT_FLAGS | _CACHE_FLAGS | _SPEC_FLAGS | _TEMPLATE_FLAGS | _SPLIT_SHADOWING_FLAGS
 )
@@ -225,6 +232,10 @@ _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
         "--no-jinja",
         "-cmoe",
         "--cpu-moe",
+        "--mlock",
+        "-mlock",
+        "--no-mmap",
+        "-no-mmap",
     }
 )
 
@@ -482,6 +493,8 @@ def strip_shadowing_flags(
     strip_tensor_split: bool = False,
     strip_offload: bool = False,
     strip_device: bool = False,
+    strip_mlock: bool = False,
+    strip_no_mmap: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
 
@@ -497,6 +510,10 @@ def strip_shadowing_flags(
     replace an inherited per-GPU ratio while leaving the user's ``--split-mode``
     row/none/layer choice intact. ``strip_device`` is enabled when ``gpu_ids``
     owns placement.
+
+    ``strip_mlock`` / ``strip_no_mmap`` are enabled by the Model Memory settings
+    so a RAM-reservation flag cannot survive a load the user asked to keep
+    RAM-free. Both are boolean, so only the token itself is dropped.
     """
     shadowing: set[str] = set()
     if strip_context:
@@ -515,6 +532,10 @@ def strip_shadowing_flags(
         shadowing |= _OFFLOAD_SHADOWING_FLAGS
     if strip_device:
         shadowing |= _DEVICE_FLAGS
+    if strip_mlock:
+        shadowing |= _MLOCK_FLAGS
+    if strip_no_mmap:
+        shadowing |= _NO_MMAP_FLAGS
 
     tokens = [str(a) for a in (args or [])]
     out: list[str] = []
@@ -552,3 +573,49 @@ def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
         strip_template = False,
         strip_split_mode = True,
     )
+
+
+def apply_model_memory_policy(extra_args: Optional[Iterable[str]]) -> tuple[list[str], list[str]]:
+    """Resolve the Model Memory settings into llama-server flags.
+
+    Returns ``(managed_flags, extras)``: what Unsloth emits itself, and the
+    user's extras with any vetoed flag removed.
+
+    "Keep model in GPU memory" emits ``--mlock``. "Don't reserve system RAM"
+    drops ``--mlock`` and ``--no-mmap``, leaving llama.cpp's default mmap path.
+    With both off nothing is stripped, so a hand-typed flag still applies.
+    """
+    try:
+        from utils.model_memory_settings import get_no_ram_reserve, should_mlock
+    except Exception:
+        # Settings unavailable (bare unit-test import): behave as before.
+        return [], list(extra_args or [])
+
+    no_ram_reserve = get_no_ram_reserve()
+    tokens = list(extra_args or [])
+    if no_ram_reserve:
+        tokens = strip_shadowing_flags(
+            tokens,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_mlock = True,
+            strip_no_mmap = True,
+        )
+
+    managed: list[str] = []
+    if should_mlock():
+        # Before the extras, like the rest of the managed block.
+        managed.append("--mlock")
+        tokens = strip_shadowing_flags(
+            tokens,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_mlock = True,
+        )
+    return managed, tokens

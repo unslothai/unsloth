@@ -663,6 +663,19 @@ export const ko = {
         free: "{value} 여유",
         total: "총 {value}",
       },
+      modelMemory: {
+        title: "모델 메모리",
+        keepResident: "모델을 GPU 메모리에 유지",
+        keepResidentDescription: "프롬프트 사이에도 VRAM에 상주합니다.",
+        keepResidentHint: "모델이 로드되어 있는 동안 가중치를 시스템 RAM으로 되돌리지 않습니다. 유휴 시 자동 언로드를 끄고 --mlock을 전달하여, 운영체제가 모델을 페이지 아웃했다가 다음 프롬프트에서 다시 업로드하지 않도록 합니다.",
+        noRamReserve: "모델을 위해 시스템 RAM을 예약하지 않음",
+        noRamReserveDescription: "RAM에 전체 사본을 두지 않습니다.",
+        noRamReserveHint: "RAM에 전체 사본을 두지 않고 가중치를 VRAM으로 전송합니다. llama.cpp의 메모리 매핑 로딩을 유지하고 --no-mmap과 --mlock을 제거합니다.",
+        mlockVetoed: "--mlock은 꺼진 상태로 유지됩니다. 모델을 고정하면 모델 전체 크기만큼 RAM을 예약하게 됩니다. 유휴 시 자동 언로드는 계속 비활성화됩니다.",
+        reloadRequired: "새 메모리 옵션을 적용하려면 모델을 다시 로드하세요.",
+        loadError: "모델 메모리 설정을 불러오지 못했습니다",
+        saveError: "모델 메모리 설정을 저장하지 못했습니다",
+      },
       storage: {
         title: "저장소",
         systemDisk: "시스템 디스크",
@@ -671,8 +684,8 @@ export const ko = {
         modelsFolder: "모델 폴더",
         modelsFolderKeywords:
           "모델 폴더 디렉터리 디렉토리 경로 위치 저장 다운로드 캐시 저장소 디스크 드라이브 이동 변경 models folder path hugging face",
-        modelsFolderDescription:
-          "다운로드한 모델이 저장되는 위치입니다. 시스템 드라이브에 모델을 저장하지 않으려면 위치를 변경하세요.",
+        modelsFolderDescription: "다운로드한 모델이 저장되는 위치입니다.",
+        modelsFolderHint: "다운로드한 모델이 저장되는 위치입니다. 시스템 드라이브를 차지하지 않도록 변경하세요. 새 다운로드에만 적용되며, 이미 받은 모델은 원래 위치에 그대로 남습니다.",
         openAction: "열기",
         copyAction: "경로 복사",
         copied: "경로가 복사되었습니다",

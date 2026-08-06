@@ -669,6 +669,19 @@ export const ptBR = {
         free: "{value} livres",
         total: "{value} total",
       },
+      modelMemory: {
+        title: "Memória do modelo",
+        keepResident: "Manter o modelo na memória da GPU",
+        keepResidentDescription: "Permanece na VRAM entre os prompts.",
+        keepResidentHint: "Não devolve os pesos à RAM do sistema enquanto o modelo continuar carregado. Desativa a descarga automática por inatividade e passa --mlock, para que o sistema operacional não pagine o modelo e o reenvie no próximo prompt.",
+        noRamReserve: "Não reservar RAM do sistema para o modelo",
+        noRamReserveDescription: "Não mantém uma cópia completa na RAM.",
+        noRamReserveHint: "Transfere os pesos para a VRAM em vez de manter uma cópia completa na RAM. Mantém o carregamento mapeado em memória do llama.cpp e remove --no-mmap e --mlock.",
+        mlockVetoed: "--mlock continua desativado: fixar o modelo reservaria RAM para todo ele. A descarga automática por inatividade continua desativada.",
+        reloadRequired: "Recarregue o modelo para aplicar as novas opções de memória.",
+        loadError: "Falha ao carregar as configurações de memória do modelo",
+        saveError: "Falha ao salvar as configurações de memória do modelo",
+      },
       storage: {
         title: "Armazenamento",
         systemDisk: "Disco do sistema",
@@ -677,8 +690,8 @@ export const ptBR = {
         modelsFolder: "Pasta de modelos",
         modelsFolderKeywords:
           "modelos pasta diretorio diretório caminho local localizacao localização downloads baixar cache armazenamento disco unidade mover alterar models folder path hugging face",
-        modelsFolderDescription:
-          "Onde os modelos baixados são armazenados. Altere o local para manter os modelos fora da unidade do sistema.",
+        modelsFolderDescription: "Onde os modelos baixados são armazenados.",
+        modelsFolderHint: "Onde os modelos baixados são armazenados. Altere para manter os modelos fora da sua unidade de sistema. Vale apenas para novos downloads. Os modelos que você já tem permanecem onde estão.",
         openAction: "Abrir",
         copyAction: "Copiar caminho",
         copied: "Caminho copiado",

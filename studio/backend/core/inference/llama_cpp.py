@@ -49,6 +49,7 @@ from core.inference.llama_server_args import (
     _effective_tensor_parallel,
     _flag_name,
     _tensor_parallel_matches_loaded,
+    apply_model_memory_policy,
     extra_args_disable_mmproj,
     parse_cache_override,
     parse_cache_override_per_axis,
@@ -3077,6 +3078,9 @@ class LlamaCppBackend:
         self._prompt_cache_disabled: bool = False
         self._swa_full: bool = False
         self._kv_cache_unified: bool = False
+        # Whether the running process was launched with --mlock, so a settings
+        # read can tell if it is stale.
+        self._mlock_enabled: bool = False
         self._n_ubatch: int = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled: bool = True
         self._effective_cache_types: tuple[str, str] = ("f16", "f16")
@@ -6785,6 +6789,7 @@ class LlamaCppBackend:
         self._cache_type_kv = None
         self._swa_full = False
         self._kv_cache_unified = False
+        self._mlock_enabled = False
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
@@ -10399,6 +10404,17 @@ class LlamaCppBackend:
                 if is_vulkan_backend and _vulkan_pin_ids is not None:
                     cmd += LlamaCppBackend._vulkan_pin_args(_vulkan_pin_ids)
 
+                # Model Memory settings. Resolved here so the managed flag lands
+                # before the user's extras and vetoed ones are gone from them.
+                _mem_managed, extra_args = apply_model_memory_policy(extra_args)
+                self._mlock_enabled = "--mlock" in _mem_managed
+                if _mem_managed:
+                    cmd.extend(_mem_managed)
+                    logger.info(
+                        "Model Memory: keeping weights pinned in place (%s)",
+                        " ".join(_mem_managed),
+                    )
+
                 # User pass-through args go last. Placement flags are removed
                 # below when the Studio picker owns the GPU selection.
                 if extra_args:
@@ -11659,6 +11675,7 @@ class LlamaCppBackend:
             self._prompt_cache_disabled = False
             self._swa_full = False
             self._kv_cache_unified = False
+            self._mlock_enabled = False
             self._n_ubatch = self._DEFAULT_N_UBATCH
             self._flash_attn_enabled = True
             self._effective_cache_types = ("f16", "f16")

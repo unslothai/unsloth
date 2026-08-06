@@ -684,6 +684,19 @@ export const fr = {
         free: "Disponible : {value}",
         total: "{value} au total",
       },
+      modelMemory: {
+        title: "Mémoire du modèle",
+        keepResident: "Conserver le modèle dans la mémoire du GPU",
+        keepResidentDescription: "Reste en VRAM entre les messages.",
+        keepResidentHint: "Ne rend pas les poids à la RAM système tant que le modèle reste chargé. Désactive le déchargement automatique en veille et passe --mlock, afin que le système ne décharge pas le modèle pour le retransférer au prochain message.",
+        noRamReserve: "Ne pas réserver de RAM système pour le modèle",
+        noRamReserveDescription: "Ne garde aucune copie complète en RAM.",
+        noRamReserveHint: "Transfère les poids vers la VRAM au lieu d'en garder une copie complète en RAM. Conserve le chargement mappé en mémoire de llama.cpp et supprime --no-mmap et --mlock.",
+        mlockVetoed: "--mlock reste désactivé : épingler le modèle réserverait de la RAM pour l'intégralité de celui-ci. Le déchargement automatique en veille reste désactivé.",
+        reloadRequired: "Rechargez le modèle pour appliquer les nouvelles options de mémoire.",
+        loadError: "Impossible de charger les paramètres de mémoire du modèle",
+        saveError: "Impossible d'enregistrer les paramètres de mémoire du modèle",
+      },
       storage: {
         title: "Stockage",
         systemDisk: "Disque système",
@@ -692,8 +705,8 @@ export const fr = {
         modelsFolder: "Dossier des modèles",
         modelsFolderKeywords:
           "modeles modèles dossier repertoire répertoire chemin emplacement telechargements téléchargements cache stockage disque lecteur deplacer déplacer changer models folder path hugging face",
-        modelsFolderDescription:
-          "Emplacement où sont stockés les modèles téléchargés. Modifiez-le pour ne pas stocker les modèles sur votre disque système.",
+        modelsFolderDescription: "Où sont stockés les modèles téléchargés.",
+        modelsFolderHint: "Où sont stockés les modèles téléchargés. Modifiez-le pour garder les modèles hors de votre disque système. S'applique uniquement aux nouveaux téléchargements. Les modèles que vous avez déjà restent où ils sont.",
         openAction: "Ouvrir",
         copyAction: "Copier le chemin",
         copied: "Chemin copié",

@@ -683,6 +683,19 @@ export const es = {
         free: "Libre: {value}",
         total: "{value} en total",
       },
+      modelMemory: {
+        title: "Memoria del modelo",
+        keepResident: "Mantener el modelo en la memoria de la GPU",
+        keepResidentDescription: "Permanece en la VRAM entre mensajes.",
+        keepResidentHint: "No devuelve los pesos a la RAM del sistema mientras el modelo siga cargado. Desactiva la descarga automática por inactividad y pasa --mlock, para que el sistema operativo no pagine el modelo ni lo vuelva a subir en tu siguiente mensaje.",
+        noRamReserve: "No reservar RAM del sistema para el modelo",
+        noRamReserveDescription: "No mantiene una copia completa en la RAM.",
+        noRamReserveHint: "Transfiere los pesos a la VRAM en lugar de mantener una copia completa en la RAM. Conserva la carga mapeada en memoria de llama.cpp y elimina --no-mmap y --mlock.",
+        mlockVetoed: "--mlock permanece desactivado: fijar el modelo reservaría RAM para todo él. La descarga automática por inactividad sigue desactivada.",
+        reloadRequired: "Vuelve a cargar el modelo para aplicar las nuevas opciones de memoria.",
+        loadError: "No se pudieron cargar los ajustes de memoria del modelo",
+        saveError: "No se pudieron guardar los ajustes de memoria del modelo",
+      },
       storage: {
         title: "Almacenamiento",
         systemDisk: "Disco del sistema",
@@ -691,8 +704,8 @@ export const es = {
         modelsFolder: "Carpeta de modelos",
         modelsFolderKeywords:
           "modelos carpeta directorio ruta ubicacion ubicación descargas descarga cache caché almacenamiento disco unidad mover cambiar models folder path hugging face",
-        modelsFolderDescription:
-          "Dónde se almacenan los modelos descargados. Cambia la ubicación para guardar los modelos fuera de la unidad del sistema.",
+        modelsFolderDescription: "Dónde se guardan los modelos descargados.",
+        modelsFolderHint: "Dónde se guardan los modelos descargados. Cámbialo para mantener los modelos fuera de tu unidad del sistema. Solo se aplica a las descargas nuevas: los modelos que ya tienes se quedan donde están.",
         openAction: "Abrir",
         copyAction: "Copiar ruta",
         copied: "Ruta copiada",

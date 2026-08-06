@@ -38,6 +38,13 @@ from utils.helper_precache_settings import (
 )
 from picker.schemas import MAX_CHAT_TEMPLATE_BYTES, chat_template_byte_length
 from utils.coding_agents import CODING_AGENTS, detect_installed_coding_agents
+from utils.model_memory_settings import (
+    DEFAULT_KEEP_RESIDENT,
+    DEFAULT_NO_RAM_RESERVE,
+    get_model_memory_settings,
+    set_model_memory_settings,
+    should_mlock,
+)
 from utils.openai_auto_switch_settings import (
     DEFAULT_AUTO_UNLOAD_KEEP_KV,
     DEFAULT_OPENAI_AUTO_DOWNLOAD_ENABLED,
@@ -99,6 +106,23 @@ class HelperPrecacheResponse(BaseModel):
     enabled: bool
     default_enabled: bool = DEFAULT_HELPER_PRECACHE_ENABLED
     disabled_by_env: bool
+
+
+class ModelMemoryPayload(BaseModel):
+    # None leaves the stored value untouched, so the switches save independently.
+    keep_resident: Optional[bool] = None
+    no_ram_reserve: Optional[bool] = None
+
+
+class ModelMemoryResponse(BaseModel):
+    keep_resident: bool
+    no_ram_reserve: bool
+    default_keep_resident: bool = DEFAULT_KEEP_RESIDENT
+    default_no_ram_reserve: bool = DEFAULT_NO_RAM_RESERVE
+    # Whether --mlock is passed on the next load. False when no_ram_reserve
+    # vetoes it; the UI surfaces that rather than failing silently.
+    mlock_active: bool
+    reload_required: bool
 
 
 class HuggingFaceCachePayload(BaseModel):
@@ -243,6 +267,31 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     )
 
 
+def _model_memory_reload_required(want_mlock: bool) -> bool:
+    """True when the loaded process was launched with a different --mlock state.
+
+    The idle-unload veto applies immediately (the loop re-reads each poll), so
+    only the launch flag can be stale.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+        backend = get_llama_cpp_backend()
+        return bool(backend.is_loaded) and bool(backend._mlock_enabled) != want_mlock
+    except Exception:
+        return False
+
+
+def _model_memory_response() -> ModelMemoryResponse:
+    keep_resident, no_ram_reserve = get_model_memory_settings()
+    want_mlock = should_mlock()
+    return ModelMemoryResponse(
+        keep_resident = keep_resident,
+        no_ram_reserve = no_ram_reserve,
+        mlock_active = want_mlock,
+        reload_required = _model_memory_reload_required(want_mlock),
+    )
+
+
 def _hugging_face_cache_response() -> HuggingFaceCacheResponse:
     return HuggingFaceCacheResponse(**cache_status(get_hf_cache_paths()))
 
@@ -311,6 +360,33 @@ def update_helper_precache(
             log = logger,
         ) from exc
     return _helper_precache_response(enabled)
+
+
+@router.get("/model-memory", response_model = ModelMemoryResponse)
+def get_model_memory(
+    current_subject: str = Depends(get_current_subject),
+) -> ModelMemoryResponse:
+    return _model_memory_response()
+
+
+@router.put("/model-memory", response_model = ModelMemoryResponse)
+def update_model_memory(
+    payload: ModelMemoryPayload, current_subject: str = Depends(get_current_subject)
+) -> ModelMemoryResponse:
+    try:
+        set_model_memory_settings(
+            keep_resident = payload.keep_resident,
+            no_ram_reserve = payload.no_ram_reserve,
+        )
+    except ValueError as exc:
+        raise log_and_http_error(
+            exc,
+            400,
+            safe_error_detail(exc, fallback = "Invalid model memory setting."),
+            event = "settings.update_model_memory_failed",
+            log = logger,
+        ) from exc
+    return _model_memory_response()
 
 
 class CodingAgentsResponse(BaseModel):

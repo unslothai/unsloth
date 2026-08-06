@@ -170,6 +170,14 @@ def get_stored_auto_unload_idle_seconds() -> int:
 
 def get_auto_unload_idle_seconds() -> int:
     """Effective idle TTL the idle loop runs on (0 = never unload)."""
+    # Model Memory residency vetoes the TTL. Effective reader only, so the stored
+    # reader keeps the number the user typed and it returns when they turn it off.
+    try:
+        from utils.model_memory_settings import get_keep_resident
+        if get_keep_resident():
+            return 0
+    except Exception:
+        pass
     stored = _stored_idle_seconds()
     if stored is not None:
         # An explicit UI/API value stays gated on auto-switch: off reports 0 so the
