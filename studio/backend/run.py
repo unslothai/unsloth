@@ -1498,14 +1498,20 @@ _CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
 
 def _consume_cloudflare_intent(cloudflare: "Optional[bool]", secure: bool) -> str:
-    """Resolve user intent without confusing a compatibility flag with opt-out."""
+    """Resolve user intent without confusing a compatibility flag with opt-out.
+
+    An explicit choice on THIS invocation wins: letting the inherited marker
+    override it would let a stale export, Docker ENV or systemd Environment=
+    re-enable a tunnel the user opted out of.
+    """
     inherited = os.environ.pop(_CLOUDFLARE_INTENT_ENV, None)
-    if inherited in {"unset", "enabled", "disabled"}:
-        return inherited
     if secure or cloudflare is True:
         return "enabled"
     if cloudflare is False:
-        return "disabled"
+        # Only "the parent omitted the option" softens this into unselected.
+        return "unset" if inherited == "unset" else "disabled"
+    if inherited in {"unset", "enabled", "disabled"}:
+        return inherited
     return "unset"
 
 

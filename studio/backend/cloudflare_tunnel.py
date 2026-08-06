@@ -91,6 +91,16 @@ def _lifetime_kwargs() -> dict:
         return {}
 
 
+def _spawn_child(spawn):
+    """Fork on a process-lifetime thread so the PDEATHSIG above means "die with
+    the parent process", not "die when the worker thread that forked me returns"."""
+    try:
+        from utils.process_lifetime import spawn_on_lifetime_thread
+    except Exception:
+        return spawn()
+    return spawn_on_lifetime_thread(spawn)
+
+
 def _asset_name() -> Optional[Tuple[str, bool]]:
     """(release asset filename, is_tgz) for this OS/arch, or None if unsupported."""
     system = platform.system().lower()
@@ -418,17 +428,21 @@ class CloudflareTunnel:
                 return
             _set_studio_tunnel_runtime_active(self, True)
             try:
-                proc = subprocess.Popen(
-                    cmd,
-                    stdout = subprocess.PIPE,
-                    stderr = subprocess.STDOUT,
-                    stdin = subprocess.DEVNULL,
-                    text = True,
-                    encoding = "utf-8",
-                    errors = "replace",
-                    bufsize = 1,
-                    **_windows_hidden_kwargs(),
-                    **_lifetime_kwargs(),
+                # PDEATHSIG binds to the forking thread, so spawning from the
+                # settings start worker would kill cloudflared when it returned.
+                proc = _spawn_child(
+                    lambda: subprocess.Popen(
+                        cmd,
+                        stdout = subprocess.PIPE,
+                        stderr = subprocess.STDOUT,
+                        stdin = subprocess.DEVNULL,
+                        text = True,
+                        encoding = "utf-8",
+                        errors = "replace",
+                        bufsize = 1,
+                        **_windows_hidden_kwargs(),
+                        **_lifetime_kwargs(),
+                    )
                 )
             except Exception:
                 _set_studio_tunnel_runtime_active(self, False)
@@ -813,14 +827,19 @@ def start_studio_tunnel(
                     tunnel.set_on_exit(_active_tunnel_exited)
                 else:
                     tunnel.on_exit = _active_tunnel_exited
+                aborted = False
                 with _active_lock:
                     if (
                         generation != _tunnel_generation
                         or _shutdown_requested
                         or _active_tunnel is not tunnel
                     ):
-                        was_active = _active_tunnel is tunnel
-                        if was_active:
+                        # Stop/shutdown landed while coming up. Detach AND tear
+                        # down: returning this URL would leave a live public
+                        # tunnel no later stop_studio_tunnel() can reach.
+                        aborted = True
+                        was_active = False
+                        if _active_tunnel is tunnel:
                             _active_tunnel = None
                     else:
                         if hasattr(tunnel, "_publish_if_running"):
@@ -836,7 +855,7 @@ def start_studio_tunnel(
                             _set_tunnel_url_locked(None)
                             _tunnel_error = tunnel.error or "cloudflared exited"
                             was_active = False
-                if not was_active:
+                if aborted or not was_active:
                     tunnel.stop()
                     return None
                 if hasattr(tunnel, "is_running") and not tunnel.is_running():
@@ -864,6 +883,11 @@ def start_studio_tunnel(
                 elif generation == _tunnel_generation and _active_tunnel is tunnel:
                     if stopped:
                         _active_tunnel = None
+                        # Attempt 1's teardown parked the state at "stopping".
+                        # Leaving it there for the http2 retry makes
+                        # stop_studio_tunnel() early-return and stop nothing.
+                        if _tunnel_state == "stopping" and protocol is None:
+                            _tunnel_state = "starting"
                     else:
                         _active_tunnel = tunnel
                         _tunnel_state = "error"
