@@ -110,11 +110,14 @@ def create_document(
     stored_path: str | None = None,
     document_id: str | None = None,
     embedding_model: str | None = None,
+    linked_folder_id: str | None = None,
+    linked_relative_path: str | None = None,
 ) -> str:
     document_id = document_id or str(uuid.uuid4())
     conn.execute(
         "INSERT INTO documents(id, scope, kb_id, thread_id, project_id, filename, sha256, "
-        "status, stored_path, created_at, embedding_model) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        "status, stored_path, created_at, embedding_model, linked_folder_id, "
+        "linked_relative_path) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             document_id,
             scope,
@@ -127,6 +130,8 @@ def create_document(
             stored_path,
             _now(),
             embedding_model,
+            linked_folder_id,
+            linked_relative_path,
         ),
     )
     conn.commit()
@@ -151,7 +156,7 @@ def set_document_status(
 def list_documents(conn: sqlite3.Connection, scope: str) -> list[dict]:
     rows = conn.execute(
         "SELECT id, scope, kb_id, thread_id, project_id, filename, sha256, status, error, "
-        "num_chunks, created_at "
+        "num_chunks, created_at, linked_folder_id "
         "FROM documents WHERE scope=? ORDER BY created_at DESC",
         (scope,),
     ).fetchall()
@@ -162,7 +167,7 @@ def list_all_documents(conn: sqlite3.Connection) -> list[dict]:
     """Every uploaded document across all scopes (KBs, threads, projects)."""
     rows = conn.execute(
         "SELECT id, scope, kb_id, thread_id, project_id, filename, sha256, status, error, "
-        "num_chunks, stored_path, created_at "
+        "num_chunks, stored_path, created_at, linked_folder_id "
         "FROM documents ORDER BY created_at DESC"
     ).fetchall()
     return [dict(r) for r in rows]
@@ -236,7 +241,7 @@ def add_chunks(
     conn.commit()
 
 
-def delete_document(conn: sqlite3.Connection, document_id: str) -> None:
+def delete_document(conn: sqlite3.Connection, document_id: str, *, commit: bool = True) -> None:
     """Remove a document and all its chunks (+ fts + vec rows)."""
     ids = [
         r["id"]
@@ -251,7 +256,8 @@ def delete_document(conn: sqlite3.Connection, document_id: str) -> None:
             conn.execute("DELETE FROM chunks_vec WHERE chunk_id=?", (chunk_id,))
     conn.execute("DELETE FROM chunks WHERE document_id=?", (document_id,))
     conn.execute("DELETE FROM documents WHERE id=?", (document_id,))
-    conn.commit()
+    if commit:
+        conn.commit()
 
 
 def search_lexical(conn: sqlite3.Connection, scope, query: str, k: int):

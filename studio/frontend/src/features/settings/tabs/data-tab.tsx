@@ -38,14 +38,15 @@ import {
   useChatRuntimeStore,
   useChatSidebarItems,
 } from "@/features/chat";
+import { LinkedFoldersManager } from "@/features/rag";
 import { useT } from "@/i18n";
 
 import { isTauri } from "@/lib/api-base";
-import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import {
   ChevronDownStandardIcon,
   ChevronRightStandardIcon,
 } from "@/lib/chevron-icons";
+import { isDownloadCancelled, pickNativeChatImport } from "@/lib/native-files";
 import { toast } from "@/lib/toast";
 import {
   Archive02Icon,
@@ -695,6 +696,9 @@ export function DataTab() {
             {t("settings.data.manageAction")}
           </Button>
         </SettingsRow>
+        <div className="py-3">
+          <LinkedFoldersManager />
+        </div>
       </SettingsSection>
 
       <Dialog open={archiveConfirmOpen} onOpenChange={setArchiveConfirmOpen}>

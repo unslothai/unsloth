@@ -197,7 +197,7 @@ export function useRagDocuments(
 
   const refresh = useCallback(
     async (opts?: { quiet?: boolean }) => {
-      if (!scope) return;
+      if (!scopeKey) return;
       if (!opts?.quiet) setLoading(true);
       try {
         // Merge server truth with local progress so a refresh mid-index keeps a
@@ -228,7 +228,7 @@ export function useRagDocuments(
         if (!opts?.quiet) setLoading(false);
       }
     },
-    [scope, lister],
+    [scopeKey, lister],
   );
 
   // A real switch (thread/KB swap) resets + reloads; first acquiring a scope just
@@ -389,6 +389,7 @@ export function useRagDocuments(
             id: tempId,
             filename: itemName(item),
             status: "pending" as const,
+            managed: false,
             progress: null,
           })),
         ]);

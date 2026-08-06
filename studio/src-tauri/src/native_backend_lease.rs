@@ -18,6 +18,7 @@ pub enum NativePathOperation {
     DatasetPreview,
     DatasetImport,
     Attach,
+    LinkDocuments,
     Reveal,
     Open,
 }
@@ -28,6 +29,7 @@ pub enum NativePathKind {
     Model,
     Dataset,
     Attachment,
+    DocumentFolder,
     Artifact,
 }
 
@@ -41,7 +43,7 @@ pub enum NativePathSourceKind {
     Artifact,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum NativePathType {
     File,
@@ -168,6 +170,11 @@ pub fn hex_bytes(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
 
+    fn decode_payload(lease: &str) -> serde_json::Value {
+        let payload = lease.split('.').next().unwrap();
+        serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).unwrap()).unwrap()
+    }
+
     #[test]
     fn token_hash_is_stable_hex_sha256() {
         assert_eq!(
@@ -195,5 +202,33 @@ mod tests {
         assert_eq!(parts.len(), 2);
         assert!(!parts[0].contains('='));
         assert!(!parts[1].contains('='));
+    }
+
+    #[test]
+    fn document_folder_lease_payload_has_backend_contract_values() {
+        let lease = sign_path_lease(
+            b"01234567890123456789012345678901",
+            NativePathOperation::LinkDocuments,
+            "/tmp/knowledge".to_string(),
+            NativePathKind::DocumentFolder,
+            NativePathType::Directory,
+            NativePathSourceKind::Dialog,
+            "path_token",
+            "knowledge".to_string(),
+            None,
+            Some(456),
+        )
+        .unwrap();
+        let payload = decode_payload(&lease.native_path_lease);
+
+        assert_eq!(payload["operation"], "link-documents");
+        assert_eq!(payload["path_kind"], "document-folder");
+        assert_eq!(payload["path_type"], "directory");
+        assert_eq!(payload["source_kind"], "dialog");
+        assert_eq!(payload["token_id_hash"], token_hash("path_token"));
+        let issued_at_ms = payload["issued_at_ms"].as_u64().unwrap();
+        let expires_at_ms = payload["expires_at_ms"].as_u64().unwrap();
+        assert!(expires_at_ms > issued_at_ms);
+        assert_eq!(expires_at_ms - issued_at_ms, 120_000);
     }
 }

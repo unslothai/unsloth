@@ -72,6 +72,20 @@ pub fn classify_native_attachment_path(path: &Path) -> Result<ClassifiedPath, St
     })
 }
 
+pub fn classify_native_document_folder(path: &Path) -> Result<ClassifiedPath, String> {
+    let classified = classify_existing_path(path)?;
+    if classified.path_type != NativePathType::Directory {
+        return Err("Only folders can be linked as document sources.".to_string());
+    }
+    reject_document_folder_root(&classified.canonical_path)?;
+    reject_sensitive_document_folder(&classified.canonical_path)?;
+    Ok(ClassifiedPath {
+        path_kind: NativePathKind::DocumentFolder,
+        allowed_operations: vec![NativePathOperation::LinkDocuments],
+        ..classified
+    })
+}
+
 pub fn classify_artifact_path(
     kind: NativeArtifactKind,
     path: &Path,
@@ -235,6 +249,105 @@ fn reject_sensitive_artifact(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+fn reject_document_folder_root(path: &Path) -> Result<(), String> {
+    if path.parent().is_none() {
+        Err("A filesystem root cannot be linked as a document folder.".to_string())
+    } else {
+        Ok(())
+    }
+}
+
+fn reject_sensitive_document_folder(path: &Path) -> Result<(), String> {
+    let mut sensitive_roots = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        if same_native_path(path, &home) {
+            return Err(
+                "The entire home folder cannot be linked as a document source.".to_string(),
+            );
+        }
+        for relative in [
+            ".unsloth", ".ssh", ".gnupg", ".aws", ".azure", ".kube", ".docker",
+        ] {
+            sensitive_roots.push(home.join(relative));
+        }
+    }
+    if let Some(config) = dirs::config_dir() {
+        sensitive_roots.push(config);
+    }
+    if let Some(data) = dirs::data_local_dir() {
+        sensitive_roots.push(data);
+    }
+
+    #[cfg(unix)]
+    sensitive_roots.extend(
+        [
+            "/boot", "/etc", "/root", "/run", "/usr", "/var/lib", "/var/run",
+        ]
+        .into_iter()
+        .map(PathBuf::from),
+    );
+    #[cfg(target_os = "macos")]
+    sensitive_roots.extend(
+        ["/Library", "/System", "/private"]
+            .into_iter()
+            .map(PathBuf::from),
+    );
+    #[cfg(windows)]
+    for variable in ["WINDIR", "ProgramFiles", "ProgramFiles(x86)", "ProgramData"] {
+        if let Some(value) = std::env::var_os(variable) {
+            sensitive_roots.push(PathBuf::from(value));
+        }
+    }
+
+    if sensitive_roots
+        .iter()
+        .any(|sensitive| same_path_or_descendant(path, sensitive))
+    {
+        Err(
+            "Sensitive system or application folders cannot be linked as document sources."
+                .to_string(),
+        )
+    } else {
+        Ok(())
+    }
+}
+
+fn same_native_path(left: &Path, right: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        return left
+            .to_string_lossy()
+            .replace('/', "\\")
+            .eq_ignore_ascii_case(&right.to_string_lossy().replace('/', "\\"));
+    }
+    #[cfg(not(windows))]
+    {
+        left == right
+    }
+}
+
+fn same_path_or_descendant(path: &Path, root: &Path) -> bool {
+    #[cfg(windows)]
+    {
+        let path = path
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        let root = root
+            .to_string_lossy()
+            .replace('/', "\\")
+            .to_ascii_lowercase();
+        return path == root
+            || path
+                .strip_prefix(&root)
+                .is_some_and(|rest| rest.starts_with('\\'));
+    }
+    #[cfg(not(windows))]
+    {
+        path == root || path.starts_with(root)
+    }
+}
+
 fn reject_network_or_device_path(path: &Path) -> Result<(), String> {
     let text = path.to_string_lossy();
     #[cfg(windows)]
@@ -338,5 +451,58 @@ mod tests {
         fs::write(&path, b"MZ").unwrap();
         assert!(classify_native_attachment_path(&path).is_err());
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn document_folder_is_directory_with_link_only_capability() {
+        let path = temp_path("documents");
+        fs::create_dir(&path).unwrap();
+        let classified = classify_native_document_folder(&path).unwrap();
+        assert_eq!(classified.path_kind, NativePathKind::DocumentFolder);
+        assert_eq!(classified.path_type, NativePathType::Directory);
+        assert_eq!(
+            classified.allowed_operations,
+            vec![NativePathOperation::LinkDocuments]
+        );
+        let _ = fs::remove_dir(path);
+    }
+
+    #[test]
+    fn document_folder_rejects_files_and_filesystem_root() {
+        let file = temp_path("documents-file");
+        fs::write(&file, b"not a folder").unwrap();
+        assert!(classify_native_document_folder(&file).is_err());
+        assert!(classify_native_document_folder(Path::new(std::path::MAIN_SEPARATOR_STR)).is_err());
+        let _ = fs::remove_file(file);
+    }
+
+    #[test]
+    fn document_folder_policy_allows_normal_home_subfolders_but_not_credentials() {
+        let Some(home) = dirs::home_dir() else { return };
+        assert!(reject_sensitive_document_folder(&home.join("Documents")).is_ok());
+        assert!(reject_sensitive_document_folder(&home.join(".ssh")).is_err());
+        assert!(reject_sensitive_document_folder(&home.join(".unsloth").join("studio")).is_err());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_unc_is_rejected_but_mapped_drive_spelling_is_allowed() {
+        assert!(reject_network_or_device_path(Path::new(r"\\server\share\documents")).is_err());
+        assert!(reject_network_or_device_path(Path::new(r"Z:\documents")).is_ok());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn document_folder_rejects_symlinks_and_sensitive_directories() {
+        use std::os::unix::fs::symlink;
+
+        let target = temp_path("documents-target");
+        let link = temp_path("documents-link");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, &link).unwrap();
+        assert!(classify_native_document_folder(&link).is_err());
+        assert!(classify_native_document_folder(Path::new("/etc")).is_err());
+        let _ = fs::remove_file(link);
+        let _ = fs::remove_dir(target);
     }
 }

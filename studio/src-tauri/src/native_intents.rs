@@ -3,8 +3,8 @@ use crate::native_backend_lease::{
     NativePathLeaseResponse, NativePathOperation, NativePathSourceKind, NativePathType,
 };
 use crate::native_path_policy::{
-    classify_artifact_path, classify_native_attachment_path, classify_native_model_path,
-    reveal_target, ClassifiedPath, NativeArtifactKind,
+    classify_artifact_path, classify_native_attachment_path, classify_native_document_folder,
+    classify_native_model_path, reveal_target, ClassifiedPath, NativeArtifactKind,
 };
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
@@ -80,6 +80,13 @@ pub struct NativeIntent {
     source_kind: NativePathSourceKind,
     path: NativePathRef,
     display_label: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeDocumentFolderSelection {
+    token: String,
+    display_name: String,
 }
 
 #[derive(Default)]
@@ -180,6 +187,30 @@ impl NativeIntakeState {
             NativePathValidationPolicy::Artifact(kind),
         )?;
         Ok(entry.to_ref())
+    }
+
+    fn sign_document_folder_path(
+        &self,
+        path: impl AsRef<Path>,
+    ) -> Result<NativeDocumentFolderSelection, String> {
+        let classified = classify_native_document_folder(path.as_ref())?;
+        let token = random_token("path_");
+        let lease = sign_path_lease(
+            &self.lease_secret,
+            NativePathOperation::LinkDocuments,
+            portable_path_string(&classified.canonical_path),
+            classified.path_kind,
+            classified.path_type,
+            NativePathSourceKind::Dialog,
+            &token,
+            classified.display_label,
+            classified.size_bytes,
+            classified.modified_ms,
+        )?;
+        Ok(NativeDocumentFolderSelection {
+            token: lease.native_path_lease,
+            display_name: lease.display_label,
+        })
     }
 
     fn register_classified_path(
@@ -422,6 +453,29 @@ pub async fn pick_hugging_face_cache_dir(
 }
 
 #[tauri::command]
+pub async fn pick_native_document_folder(
+    window: WebviewWindow,
+    app: AppHandle,
+    state: tauri::State<'_, NativeIntakeState>,
+) -> Result<Option<NativeDocumentFolderSelection>, String> {
+    ensure_main_window(&window)?;
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    app.dialog()
+        .file()
+        .set_title("Link a document folder")
+        .pick_folder(move |path| {
+            let _ = tx.send(path);
+        });
+    let Some(folder_path) = rx.await.map_err(|_| "Dialog closed".to_string())? else {
+        return Ok(None);
+    };
+    let path = folder_path
+        .into_path()
+        .map_err(|_| "Only local filesystem folders are supported.".to_string())?;
+    state.sign_document_folder_path(path).map(Some)
+}
+
+#[tauri::command]
 pub fn consume_native_path_token(
     window: WebviewWindow,
     state: tauri::State<'_, NativeIntakeState>,
@@ -613,6 +667,28 @@ mod tests {
             normalize_windows_verbatim_path(r"\\?\UNC\server\share\cache".to_string()),
             r"\\server\share\cache"
         );
+    }
+
+    #[test]
+    fn document_folder_picker_grant_is_not_a_reusable_path_token() {
+        let state = new_native_intake_state();
+        let path = temp_path("document-folder");
+        fs::create_dir(&path).unwrap();
+
+        let lease = state.sign_document_folder_path(&path).unwrap();
+        assert!(lease.token.contains('.'));
+        assert_eq!(
+            lease.display_name,
+            path.file_name().unwrap().to_string_lossy()
+        );
+        let response = serde_json::to_value(&lease).unwrap();
+        assert_eq!(response["token"], lease.token);
+        assert_eq!(response["displayName"], lease.display_name);
+        assert!(response.get("path").is_none());
+        assert!(state
+            .entry_for_operation("path_token", NativePathOperation::LinkDocuments)
+            .is_err());
+        let _ = fs::remove_dir(path);
     }
 
     #[cfg(unix)]

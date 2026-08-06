@@ -6,8 +6,10 @@ export { NativeModelDropOverlay } from "./components/native-model-drop-overlay";
 export {
   consumeNativePathToken,
   openModelsDir,
+  pickNativeDocumentFolder,
   pickHuggingFaceCacheDir,
 } from "./api";
+export type { NativeDocumentFolderSelection } from "./api";
 export {
   NativeAttachmentTargetContext,
   useNativeAttachmentTargetKey,

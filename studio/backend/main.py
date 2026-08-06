@@ -656,6 +656,12 @@ async def lifespan(app: FastAPI):
     except Exception as exc:
         _lifespan_log.warning("reconcile_orphaned_ingestion_jobs failed at startup: %s", exc)
 
+    try:
+        from core.rag.folder_sync import start_auto_sync
+        start_auto_sync()
+    except Exception as exc:
+        _lifespan_log.warning("linked-folder auto-sync failed at startup: %s", exc)
+
     # The RAG embedder warm moved to _post_warm_background_work: started here it raced
     # the warm for the GIL and the import locks.
     _start_helper_precache_if_enabled()
@@ -710,6 +716,12 @@ async def lifespan(app: FastAPI):
         (_time.perf_counter() - _lifespan_started) * 1000,
     )
     yield
+
+    try:
+        from core.rag.folder_sync import stop_auto_sync
+        stop_auto_sync()
+    except Exception as exc:
+        _lifespan_log.warning("linked-folder auto-sync failed at shutdown: %s", exc)
 
     # Before any shutdown await: a warm finishing during one would still read the lifespan as
     # current and start MLX autorepair or the RAG embedder.

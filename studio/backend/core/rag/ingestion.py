@@ -276,6 +276,9 @@ def start_ingestion(
     model_name: str | None = None,
     ocr: bool | None = None,
     caption: bool | None = None,
+    dedupe: bool = True,
+    linked_folder_id: str | None = None,
+    linked_relative_path: str | None = None,
 ) -> tuple[str, str]:
     """Create the document + job rows and spawn the worker, returning
     ``(document_id, job_id)``. A duplicate content hash in this scope returns the
@@ -295,7 +298,7 @@ def start_ingestion(
         # the worker only after the replacement completes, so a failed re-index
         # never destroys the still-searchable original.
         replaces: tuple[str, str | None] | None = None
-        existing = store.document_by_hash(conn, scope, sha)
+        existing = store.document_by_hash(conn, scope, sha) if dedupe else None
         if existing is not None:
             doc = store.get_document(conn, existing)
             empty_completed = (
@@ -342,6 +345,8 @@ def start_ingestion(
             status = "pending",
             stored_path = stored_path,
             embedding_model = effective_model,
+            linked_folder_id = linked_folder_id,
+            linked_relative_path = linked_relative_path,
         )
         job_id = _new_job(conn, document_id, scope)
     finally:
