@@ -417,9 +417,9 @@ def test_rollback_failure_reports_where_the_artifacts_are(monkeypatch, tmp_path)
 
     monkeypatch.setattr(training_history, "outputs_root", lambda: outputs)
     monkeypatch.setattr(training_history, "resolve_output_dir", lambda value: Path(value))
-    monkeypatch.setattr(training_history, "get_run", lambda run_id: _run_row(
-        output_dir = str(run_dir)
-    ))
+    monkeypatch.setattr(
+        training_history, "get_run", lambda run_id: _run_row(output_dir = str(run_dir))
+    )
     monkeypatch.setattr(training_history, "_active_training_output_dir", lambda: None)
     monkeypatch.setattr(training_history, "list_other_run_output_dirs", lambda run_id: [])
     monkeypatch.setattr(training_history, "_restore_staged_output_dir", lambda *args: False)
