@@ -67,9 +67,31 @@ _QWENIMAGE_INT8_EXCLUDES = (
     "to_add_out",
     "txt_mlp",
 )
+# HunyuanVideo-1.5's attention trim (this PR) shrinks the text / image streams from their padded
+# lengths to the VALID token counts, so every text-stream Linear runs at a tiny M the int8 dynamic
+# path cannot handle. Both failures measured on B200:
+#   - M = 0 (t2v byt5 / image streams trim to zero tokens): torchao returns the input UNPROJECTED
+#     (a quantized 1472 -> 2048 Linear maps [1, 0, 1472] to [1, 0, 1472]), so the 2048-wide
+#     cond-type add crashes -> context_embedder_2 / image_embedder;
+#   - M <= 16 (a short prompt, or the empty negative prompt's ~6 tokens): torch._int_mm requires
+#     M > 16 and raises -> the TokenRefiner and every block's context-stream projections.
+# These run at M = text tokens (tens) against the video stream's M ~ 32k+, so bf16 here costs
+# nothing measurable and the video-stream linears keep full int8 coverage. "context_embedder"
+# also matches "context_embedder_2" (substring check).
+_HUNYUAN15_INT8_EXCLUDES = (
+    "context_embedder",
+    "image_embedder",
+    "add_q_proj",
+    "add_k_proj",
+    "add_v_proj",
+    "to_add_out",
+    "ff_context",
+)
 _INT8_FAMILY_EXCLUDE_NAME_TOKENS: dict[str, tuple[str, ...]] = {
     "qwen-image": _QWENIMAGE_INT8_EXCLUDES,
     "qwen-image-edit": _QWENIMAGE_INT8_EXCLUDES,  # same DiT class + unpadded text stream
+    "hunyuanvideo-1.5": _HUNYUAN15_INT8_EXCLUDES,
+    "hunyuanvideo-1.5-720p": _HUNYUAN15_INT8_EXCLUDES,
 }
 
 

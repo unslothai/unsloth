@@ -596,3 +596,33 @@ def test_quantize_transformer_threads_family(monkeypatch):
     monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
     assert quantize_transformer(pipe, _target(), mode = "fp8", family = "qwen-image") is None
     assert called == {}
+
+
+def test_the_attention_trim_families_exclude_their_small_m_text_streams():
+    """The trim in this PR is what makes these excludes necessary, so they ship together.
+
+    It shrinks HunyuanVideo-1.5's text / image streams from padded length to valid tokens, and
+    quantize_transformer runs BEFORE the trim hook is installed, so those tiny-M activations flow
+    through already-int8 linears: M = 0 comes back unprojected (torchao passes the input through,
+    so the 2048-wide cond-type add crashes) and M <= 16 trips torch._int_mm's floor."""
+    from core.inference.diffusion_transformer_quant import TQ_INT8, exclude_tokens_for_scheme
+
+    for family in ("hunyuanvideo-1.5", "hunyuanvideo-1.5-720p"):
+        tokens = exclude_tokens_for_scheme(TQ_INT8, family)
+        for name in (
+            "context_embedder",  # also matches context_embedder_2, by substring
+            "image_embedder",
+            "add_q_proj",
+            "add_k_proj",
+            "add_v_proj",
+            "to_add_out",
+            "ff_context",
+        ):
+            assert name in tokens, f"{family} must exclude {name}"
+
+    # Only int8 has the M floor: the per-row scaled_mm schemes are unaffected, and an unrelated
+    # family keeps exactly the generic set.
+    from core.inference.diffusion_transformer_quant import _INT8_EXCLUDE_NAME_TOKENS
+
+    assert exclude_tokens_for_scheme("fp8", "hunyuanvideo-1.5") == ()
+    assert exclude_tokens_for_scheme(TQ_INT8, "ltx-2") == _INT8_EXCLUDE_NAME_TOKENS
