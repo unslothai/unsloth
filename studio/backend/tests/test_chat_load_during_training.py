@@ -1281,11 +1281,21 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
 
             # zeroed: this test pins the kv sizing, not the compute buffers
-            def _estimate_compute_buffer_bytes(self, *, n_ubatch = None, n_parallel = 1):
+            def _estimate_compute_buffer_bytes(
+                self,
+                *,
+                n_ubatch = None,
+                n_parallel = 1,
+            ):
                 seen["compute_n_ubatch"] = n_ubatch
                 return 0
 
-            def _compute_buffer_ctx_bytes(self, n_ctx, n_ubatch = None, cache_type_kv = None):
+            def _compute_buffer_ctx_bytes(
+                self,
+                n_ctx,
+                n_ubatch = None,
+                cache_type_kv = None,
+            ):
                 return 0
 
         with patch.object(self.route, "LlamaCppBackend", _FakeBackend):
