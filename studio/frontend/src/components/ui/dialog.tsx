@@ -98,7 +98,9 @@ function DialogContent({
             position === "fixed"
               // translate-none, not translate-x-0: a zero translate is still not `none`, so it
               // keeps making this a containing block and the close button below stops being fixed.
-              ? "fixed top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] max-sm:top-0 max-sm:left-0 max-sm:h-dvh max-sm:w-dvw max-sm:max-h-none max-sm:max-w-none max-sm:translate-none max-sm:rounded-none max-sm:ring-0"
+              // The phone branch starts below the chrome too, since a desktop window can reach
+              // this breakpoint in CSS px under Windows text scaling. On web the var is 0px.
+              ? "fixed top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] max-sm:top-[var(--studio-window-chrome-top,0px)] max-sm:left-0 max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:max-h-none max-sm:max-w-none max-sm:translate-none max-sm:rounded-none max-sm:ring-0"
               : "absolute",
             className,
           )}
