@@ -1233,9 +1233,11 @@ def test_cached_dspark_lookup_prefers_q8_and_excludes_dflash(tmp_path, monkeypat
     # `as_posix()`, because the lookup returns an OS-native path: on Windows it
     # comes back with backslashes and the literal below never matched, so this
     # was the one red in an otherwise green cross-platform run.
-    assert Path(
-        backend._cached_repo_dspark_drafter("some/repo")
-    ).as_posix().endswith("dspark/dspark-model-Q8_0.gguf")
+    assert (
+        Path(backend._cached_repo_dspark_drafter("some/repo"))
+        .as_posix()
+        .endswith("dspark/dspark-model-Q8_0.gguf")
+    )
 
 
 # ── Deletion: only auto-fetched companions are reclaimed ─────────────
