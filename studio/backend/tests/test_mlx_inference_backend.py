@@ -2524,3 +2524,51 @@ def test_the_load_response_declares_every_runtime_field_status_reports():
         chat_template_override_reason = "why",
     )
     assert loaded.model_dump()["chat_template_override"] == "{{ custom }}"
+
+
+def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery(monkeypatch):
+    """Gating the check on the native template skipped the models that need it.
+
+    A native template that places nothing still renders images, because
+    _generate_vlm falls back to the registered renderer once _vlm_prompt_issue
+    fires. An override rendering plain text fires nothing, so the image goes
+    unplaced with no error, and recovery is unavailable anyway once tools or
+    reasoning controls are set.
+    """
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    monkeypatch.setattr(_DummyProcessor, "chat_template", "{{ native }}", raising = False)
+    monkeypatch.setattr(
+        _DummyProcessor, "apply_chat_template", lambda *a, **k: "", raising = False
+    )
+    monkeypatch.setattr(_DummyTokenizer, "chat_template", "{{ nested }}", raising = False)
+
+    def render(target, messages, **kwargs):
+        # The native template serializes the content dict, so it only works
+        # through recovery; the override renders clean prose instead.
+        content = messages[0]["content"]
+        if isinstance(content, str):
+            return content
+        text = "".join(p["text"] for p in content if p["type"] == "text")
+        images = [p for p in content if p["type"] == "image"]
+        if getattr(target, "chat_template", None) == "{{ blind }}":
+            return text
+        return "".join(str(p) for p in images) + text
+
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation", render
+    )
+    from core.inference import mlx_inference
+
+    # The native template fails the check, which used to skip the override's.
+    assert (
+        mlx_inference._image_marker_survives(_DummyTokenizer(), _DummyProcessor(), None) is False
+    )
+
+    backend = mlx_inference.MLXInferenceBackend()
+    config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
+    assert backend.load_model(config, chat_template_override = "{{ blind }}")
+
+    assert backend._template_override["applied"] is None
+    assert backend._template_override["reason"] == mlx_inference.MLX_TEMPLATE_DROPS_IMAGE
+    assert backend._processor.chat_template == "{{ native }}"

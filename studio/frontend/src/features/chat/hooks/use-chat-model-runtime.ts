@@ -779,6 +779,12 @@ export function useChatModelRuntime() {
             typeof selection !== "string" && selection.previousConfig
               ? (selection.previousConfig.nParallel ?? null)
               : useChatRuntimeStore.getState().nParallel;
+          // Same reason: the rollback echo carries the width the outgoing model
+          // loaded with, which would overwrite an edit staged against it.
+          const previousMlxKvBits =
+            typeof selection !== "string" && selection.previousConfig
+              ? (selection.previousConfig.mlxKvBits ?? null)
+              : useChatRuntimeStore.getState().mlxKvBits;
           if (isGguf && isDiffusion === undefined) {
             // Prepare the token exactly as validateModel/loadModel do (and as
             // the compare path does): the Hub rejects an invalid Authorization
@@ -1478,6 +1484,9 @@ export function useChatModelRuntime() {
                     rollbackResponse.spec_draft_n_max ?? null,
                   loadedKvCacheDtype: rollbackResponse.cache_type_kv ?? null,
                   ...mlxRuntimeStateFrom(rollbackResponse),
+                  // After the spread: it seeds the control from the echo too,
+                  // and the control keeps its intent like nParallel above.
+                  mlxKvBits: previousMlxKvBits,
                   loadedChatTemplateOverride:
                     stateBeforeUnload.loadedChatTemplateOverride,
                   ...loadedGpuMemoryFields(rollbackResponse),

@@ -1219,11 +1219,6 @@ class MLXInferenceBackend:
             and _audio_marker_survives(self._processor, self._model)
         )
         image_placeholder = _image_placeholder(self._tokenizer, self._processor)
-        native_marks_image = bool(
-            chat_template_override
-            and is_vision
-            and _image_marker_survives(self._tokenizer, self._processor, image_placeholder)
-        )
         self._template_override = _install_template_override(
             chat_template_override,
             self._tokenizer,
@@ -1232,7 +1227,13 @@ class MLXInferenceBackend:
         )
         if native_marks_audio:
             _revoke_override_that_drops_audio(self._template_override, self._processor, self._model)
-        if native_marks_image:
+        # Unconditional for vision, unlike audio: a native template that places
+        # nothing itself still renders images through _generate_vlm's registered
+        # recovery, which _vlm_prompt_issue triggers. An override that renders
+        # plain text triggers nothing, so the image is dropped in silence, and
+        # gating this on the native template having marked images skipped
+        # exactly the models that need the check.
+        if is_vision:
             _revoke_override_that_drops_image(
                 self._template_override, self._tokenizer, self._processor, image_placeholder
             )
