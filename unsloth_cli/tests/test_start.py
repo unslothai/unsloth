@@ -6828,6 +6828,23 @@ def test_codex_attach_check_allows_short_shard_like_names(tmp_path, monkeypatch)
     start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(lone))
 
 
+def test_codex_attach_check_rejects_missing_direct_paths(tmp_path, monkeypatch, capsys):
+    # A mistyped or deleted path is still a GGUF load to the backend, so it
+    # would tear the resident model down and only then fail.
+    monkeypatch.setattr(
+        start,
+        "_http_json",
+        lambda *a, **k: pytest.fail("a visible missing file needs no probe"),
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(
+            BASE, "sk-test", os.fspath(tmp_path / "typo-Q4_K_M.gguf")
+        )
+    assert "does not exist" in capsys.readouterr().err
+    # A path under a directory this process cannot list stays unknowable.
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/nonexistent-root/dir/m-Q4_K_M.gguf")
+
+
 def test_codex_attach_check_rejects_broken_direct_symlinks(tmp_path, monkeypatch, capsys):
     # A broken symlink is visible to this process, and the extension alone
     # still classifies it as a GGUF load that fails after the teardown.

@@ -2084,6 +2084,22 @@ def _attach_gguf_check_for_codex(
                 except OSError:
                     is_gguf_dir = False
                 if not is_gguf_dir:
+                    # On loopback this process reads the server's filesystem,
+                    # so a name absent from a directory we can list is absent
+                    # for the load too -- and the .gguf suffix alone still
+                    # makes it a GGUF load that fails after the teardown. An
+                    # unreadable parent stays unknowable and defers as before.
+                    try:
+                        probe = Path(os.path.expanduser(repo))
+                        missing = (
+                            not probe.is_symlink() and probe.parent.is_dir() and not probe.exists()
+                        )
+                    except OSError:
+                        missing = False
+                    if missing:
+                        _fail(
+                            f"{repo} does not exist. Check the path before pointing Codex at it."
+                        )
                     if not _direct_gguf_file_is_ready(repo):
                         _fail(
                             f"{repo} is incomplete (zero bytes or a split missing shards); "
