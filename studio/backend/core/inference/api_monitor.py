@@ -80,7 +80,7 @@ class ApiMonitorEntry:
     shared: bool = False
     # 0-100 for a running download row; None when not applicable.
     progress: Optional[float] = None
-    # Monotonic stamp of the first reply text; engine timings override it in snapshot().
+    # Monotonic stamp of the first reply text; snapshot() prefers it over engine timings.
     first_token_monotonic: Optional[float] = None
     prompt_ms: Optional[float] = None
     tok_per_sec: Optional[float] = None
@@ -104,10 +104,14 @@ class ApiMonitorEntry:
         if self.total_tokens is not None and self.context_length:
             context_usage = min(1.0, max(0.0, self.total_tokens / self.context_length))
         ttft_ms = None
-        if self.prompt_ms is not None:
-            ttft_ms = max(0, int(self.prompt_ms))
-        elif self.first_token_monotonic is not None:
+        if self.first_token_monotonic is not None:
+            # Measured from the request arriving, so it includes the admission
+            # queue wait. The engine's prompt_ms covers prefill only and would
+            # report a sub-second first token for a request that queued for
+            # seconds, so it is only the fallback for rows that never stamped.
             ttft_ms = max(0, int((self.first_token_monotonic - self.started_monotonic) * 1000))
+        elif self.prompt_ms is not None:
+            ttft_ms = max(0, int(self.prompt_ms))
         tok_per_sec = self.tok_per_sec
         if (
             tok_per_sec is None

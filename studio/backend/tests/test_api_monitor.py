@@ -714,7 +714,9 @@ def test_set_perf_records_stats_and_snapshot_reports_them():
         model = "local-model",
         prompt = "user: hello",
     )
-    monitor.append_reply(entry_id, "hi")
+    # set_reply, not append_reply: a non-streaming row never stamps a first
+    # token, which is the case the engine prompt_ms fallback exists for.
+    monitor.set_reply(entry_id, "hi")
     monitor.set_perf(entry_id, tok_per_sec = 42.5, prompt_ms = 123.4, stop_reason = "length")
     monitor.finish(entry_id)
 
@@ -722,6 +724,27 @@ def test_set_perf_records_stats_and_snapshot_reports_them():
     assert entry["tok_per_sec"] == 42.5
     assert entry["ttft_ms"] == 123
     assert entry["stop_reason"] == "length"
+
+
+def test_measured_ttft_wins_over_engine_prefill():
+    # A request that waits for an admission slot has already spent that time
+    # before llama-server sees it, so prompt_ms (prefill only) would report a
+    # sub-second first token for a request that queued for seconds.
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    entry = next(e for e in monitor._entries if e.id == entry_id)
+    entry.started_monotonic -= 2.0
+    monitor.append_reply(entry_id, "hi")
+    monitor.set_perf(entry_id, tok_per_sec = 42.5, prompt_ms = 120.0)
+    monitor.finish(entry_id)
+
+    [snapshot] = monitor.snapshot()
+    assert snapshot["ttft_ms"] >= 2000
 
 
 def test_set_perf_rejects_non_finite_values():
