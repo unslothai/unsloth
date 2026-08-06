@@ -303,9 +303,28 @@ def _model_memory_reload_required() -> bool:
     return not memory_state_satisfies_settings(state, policy_active, mlock_applicable)
 
 
+def _model_memory_lock_is_gated_off() -> bool:
+    """True when the loaded model is one this policy deliberately does not pin.
+
+    mlock_active drives the locked-memory cap warning, so reporting it from the
+    toggle pair alone tells a discrete-GPU user to raise a limit that nothing
+    will ever consult. With nothing running there is no launch to read, so the
+    toggles' intent is what gets reported.
+    """
+    try:
+        from routes.inference import get_llama_cpp_backend
+
+        backend = get_llama_cpp_backend()
+        if not backend.is_active:
+            return False
+        return not bool(getattr(backend, "_memory_mlock_applicable", True))
+    except Exception:
+        return False
+
+
 def _model_memory_response() -> ModelMemoryResponse:
     keep_resident, no_ram_reserve = get_model_memory_settings()
-    want_mlock = should_mlock()
+    want_mlock = should_mlock() and not _model_memory_lock_is_gated_off()
     return ModelMemoryResponse(
         keep_resident = keep_resident,
         no_ram_reserve = no_ram_reserve,

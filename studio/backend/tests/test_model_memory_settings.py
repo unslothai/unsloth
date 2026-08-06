@@ -947,3 +947,57 @@ class TestEnvVarsAssignTheWholeMode:
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         state = resolve_effective_memory_state([], {"LLAMA_ARG_MLOCK": "1", "LLAMA_ARG_MMAP": "on"})
         assert memory_state_satisfies_settings(state, False) is False
+
+
+class TestMlockActiveReflectsWhatWillActuallyBePassed:
+    """mlock_active drives the ulimit -l warning in the UI. Reporting it from
+    the toggle pair alone tells a discrete-GPU user to raise a system limit that
+    nothing will ever consult, because the gate suppresses the lock there."""
+
+    @staticmethod
+    def _response(keep, no_res, backend, monkeypatch):
+        import routes.inference
+        import routes.settings as rs
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
+        # The route imports these by name at module scope, so patch them there.
+        monkeypatch.setattr(rs, "should_mlock", lambda: keep and not no_res)
+        monkeypatch.setattr(rs, "get_model_memory_settings", lambda: (keep, no_res))
+        monkeypatch.setattr(rs, "memlock_limit_bytes", lambda: 8 * 1024 * 1024)
+        return rs._model_memory_response()
+
+    @staticmethod
+    def _backend(loaded, mlock_applicable):
+        return type(
+            "_B",
+            (),
+            {
+                "is_loaded": loaded, "is_active": loaded,
+                "_memory_state": (False, False),
+                "_memory_policy_active": False,
+                "_memory_mlock_applicable": mlock_applicable,
+            },
+        )()
+
+    def test_a_gated_load_reports_no_active_lock_and_no_limit(self, monkeypatch):
+        resp = self._response(True, False, self._backend(True, False), monkeypatch)
+        assert resp.mlock_active is False
+        assert resp.memlock_limit_bytes is None
+
+    def test_a_host_resident_load_still_reports_the_limit(self, monkeypatch):
+        resp = self._response(True, False, self._backend(True, True), monkeypatch)
+        assert resp.mlock_active is True
+        assert resp.memlock_limit_bytes == 8 * 1024 * 1024
+
+    def test_with_nothing_loaded_the_intent_is_reported(self, monkeypatch):
+        # No launch to read, so fall back to what the toggles ask for.
+        resp = self._response(True, False, self._backend(False, False), monkeypatch)
+        assert resp.mlock_active is True
+
+    def test_no_ram_reserve_still_wins(self, monkeypatch):
+        resp = self._response(True, True, self._backend(True, True), monkeypatch)
+        assert resp.mlock_active is False
+        assert resp.memlock_limit_bytes is None
