@@ -3969,6 +3969,37 @@ def test_load_progress_ignores_a_revision_the_moved_root_has_superseded(tmp_path
     assert progress["fraction"] == 0.55
 
 
+def test_load_progress_counts_one_logical_file_across_roots_at_two_revisions(
+    tmp_path, monkeypatch
+):
+    # Each root serves its OWN refs/main, so after a republish the two roots can be scoped to
+    # different revisions. The same logical shard then has a different blob etag in each, so an
+    # etag key never collides and both copies are summed -- roughly doubling the count and
+    # reporting finalizing at about half the real progress. Only one of them is ever loaded.
+    from core.inference.diffusion import _LoadingState
+
+    live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
+    old_rev, new_rev = "a" * 40, "b" * 40
+    # The stale root still names revision A; the live root has moved to B.
+    _hub_blob(other, "org/pipe", "a1", 1000)
+    _hub_snapshot_file(other, "org/pipe", old_rev, "transformer/shard-1.safetensors", "a1")
+    _hub_ref(other, "org/pipe", old_rev)
+    _hub_blob(live, "org/pipe", "b1", 1000)
+    _hub_snapshot_file(live, "org/pipe", new_rev, "transformer/shard-1.safetensors", "b1")
+    _hub_ref(live, "org/pipe", new_rev)
+
+    # One shard at one logical path, so one count -- not 2000.
+    assert DiffusionBackend._cache_bytes("org/pipe") == 1000 * 1024 * 1024
+
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = "org/pipe", base_repo = None, expected_bytes = 2000 * 1024 * 1024
+    )
+    progress = backend.load_progress()
+    assert progress["phase"] == "downloading"  # not "finalizing" off a phantom second copy
+    assert progress["fraction"] == 0.5
+
+
 def test_companion_bytes_union_a_base_the_prefetch_split_across_roots(tmp_path, monkeypatch):
     # reuse_other_cache_root resolves EACH file through whichever root holds it, so a moved cache
     # can leave the text encoder in the old snapshot while the VAE downloads into the live one.

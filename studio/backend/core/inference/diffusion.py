@@ -1645,16 +1645,13 @@ class DiffusionBackend:
                 for f in snapshot.rglob("*"):
                     if not f.is_file():
                         continue
-                    # Dedupe on the etag, so a file mirrored in both roots counts once. A
-                    # no-symlink cache stores the file in the snapshot itself; key those on their
-                    # path instead, which never collides with a hash.
-                    real = os.path.realpath(f)
-                    key = (
-                        os.path.basename(real)
-                        if os.path.basename(os.path.dirname(real)) == "blobs"
-                        else f"path:{f.relative_to(snapshot).as_posix()}"
-                    )
-                    _add(key, f)
+                    # Dedupe on the path INSIDE the snapshot, so one logical file counts once
+                    # however many roots hold it. The etag would not: each root serves its own
+                    # revision, and a republished file has a different blob hash in each, so
+                    # keying on that summed both copies and could report finalizing at roughly
+                    # half the real progress. Works for a no-symlink cache too, which stores the
+                    # file in the snapshot rather than linking to blobs/.
+                    _add(f"path:{f.relative_to(snapshot).as_posix()}", f)
             except OSError:
                 pass  # the download is writing this tree under the walk; report what we counted
         return sum(sizes.values())
