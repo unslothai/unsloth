@@ -357,6 +357,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const windowLayoutGenerationRef = useRef(0);
   const [desktopAuthReady, setDesktopAuthReady] = useState(!isTauri);
   const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
+  const [nativeMacControlsHidden, setNativeMacControlsHidden] = useState(false);
+  const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
+  const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
+  const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -434,6 +438,33 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     void fetchDeviceType({ force: true }).catch(() => undefined);
   }, [status, desktopAuthReady]);
 
+  useEffect(() => {
+    if (!usesNativeMacTitlebar) return;
+    let disposed = false;
+    let unlistenResize: (() => void) | undefined;
+    let unlistenFocus: (() => void) | undefined;
+
+    void import("@tauri-apps/api/window")
+      .then(async ({ getCurrentWindow }) => {
+        const appWindow = getCurrentWindow();
+        const refresh = async () => {
+          const fullscreen = await appWindow.isFullscreen();
+          if (!disposed) setNativeMacControlsHidden(fullscreen);
+        };
+        await refresh();
+        if (disposed) return;
+        unlistenResize = await appWindow.onResized(() => void refresh());
+        unlistenFocus = await appWindow.onFocusChanged(() => void refresh());
+      })
+      .catch(() => undefined);
+
+    return () => {
+      disposed = true;
+      unlistenResize?.();
+      unlistenFocus?.();
+    };
+  }, [usesNativeMacTitlebar]);
+
   if (!isTauri) {
     return (
       <>
@@ -460,9 +491,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const showApp = status === "running" && desktopAuthReady;
   const startupStatus = status === "running" ? "starting" : status;
   const startupProgressDetail = progressDetail;
-  const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
-  const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
-  const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   const content = showApp ? (
     <TauriUpdateLayer
@@ -509,7 +537,14 @@ function TauriWrapper({ children }: { children: ReactNode }) {
               ? "relative h-dvh min-h-0 overflow-x-hidden overflow-y-auto bg-background"
               : "relative h-dvh min-h-0 overflow-hidden bg-background"
           }
-          style={MAC_NATIVE_CHROME_STYLE}
+          style={
+            nativeMacControlsHidden
+              ? {
+                  ...MAC_NATIVE_CHROME_STYLE,
+                  "--studio-mac-traffic-light-inset": "6px",
+                } as CSSProperties
+              : MAC_NATIVE_CHROME_STYLE
+          }
         >
           {!showApp || hidesTitlebarSidebar ? (
             <div
