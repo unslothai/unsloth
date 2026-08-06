@@ -3503,16 +3503,25 @@ def _monitor_queue_state() -> Optional[dict]:
         str(getattr(llama_backend, "base_url", "llama-server"))
     )
     if snapshot is not None:
-        active = min(snapshot.capacity, snapshot.active + direct)
+        busy = snapshot.active + direct
+        active = min(snapshot.capacity, busy)
         return {
             "capacity": snapshot.capacity,
             "active": active,
-            "queued": snapshot.queued,
+            # Direct calls hold no lease, so anything past capacity is waiting
+            # inside llama-server and belongs with the queued work, not clamped
+            # away into a readout that looks idle.
+            "queued": snapshot.queued + max(0, busy - snapshot.capacity),
             "free": max(0, snapshot.capacity - active),
         }
     capacity = _positive_int_or_none(getattr(llama_backend, "effective_parallel_slots", None)) or 1
     active = min(capacity, direct)
-    return {"capacity": capacity, "active": active, "queued": 0, "free": capacity - active}
+    return {
+        "capacity": capacity,
+        "active": active,
+        "queued": max(0, direct - capacity),
+        "free": capacity - active,
+    }
 
 
 def _monitor_active_model() -> Optional[str]:
@@ -10569,6 +10578,8 @@ async def openai_chat_completions(
 
                         if event["type"] in ("tool_start", "tool_end"):
                             if event["type"] == "tool_start":
+                                # The tool card is output the client sees, so a turn whose first action is a tool call is timed here, not from the answer after it.
+                                api_monitor.mark_first_token(monitor_id)
                                 for chunk in _flush_reasoning_extractor():
                                     yield chunk
                                 prev_text = ""
@@ -11972,6 +11983,8 @@ async def openai_chat_completions(
 
                     if event["type"] in ("tool_start", "tool_end"):
                         if event["type"] == "tool_start":
+                            # Same as the GGUF loop: the tool card is visible output.
+                            api_monitor.mark_first_token(monitor_id)
                             # Flush reasoning before tool_start so the thinking block closes ahead of the card.
                             for _c in _sf_flush_reasoning():
                                 yield _c
@@ -12119,7 +12132,14 @@ async def openai_chat_completions(
             api_monitor.set_reply(monitor_id, _visible_text)
             _stats = _sf_stats_holder.get("stats")
             if _stats:
-                _monitor_usage(monitor_id, _stats.get("usage"), timings = _stats.get("timings"))
+                # The response this returns carries finish_reason "stop"; the
+                # monitor records the same instead of leaving the field blank.
+                _monitor_usage(
+                    monitor_id,
+                    _stats.get("usage"),
+                    timings = _stats.get("timings"),
+                    stop_reason = "stop",
+                )
             api_monitor.finish(monitor_id, "cancelled" if cancel_event.is_set() else "completed")
             _sf_msg_kwargs = {"content": _visible_text}
             if _reasoning_text:

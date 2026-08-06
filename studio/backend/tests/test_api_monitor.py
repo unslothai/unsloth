@@ -829,3 +829,28 @@ def test_mark_first_token_stamps_ttft_for_reasoning_only_streams():
     first = monitor._find_locked(entry_id2).first_token_monotonic
     monitor.append_reply(entry_id2, "visible")
     assert monitor._find_locked(entry_id2).first_token_monotonic == first
+
+
+def test_queue_state_counts_direct_overflow_as_queued(monkeypatch):
+    # Direct /v1/completions and /v1/embeddings hold no admission lease, so a
+    # call past the slot count is waiting inside llama-server: clamping it out
+    # of active without queueing it made the readout look idle under load.
+    from types import SimpleNamespace
+
+    import routes.inference as inf
+
+    monkeypatch.setattr(
+        inf,
+        "get_llama_cpp_backend",
+        lambda: SimpleNamespace(
+            is_loaded = True,
+            is_diffusion = False,
+            base_url = "http://llama.test",
+            effective_parallel_slots = 1,
+        ),
+    )
+    monkeypatch.setattr(inf, "peek_llama_admission_snapshot", lambda _base: None)
+    monkeypatch.setattr(inf, "_direct_llama_inflight", 2)
+
+    state = inf._monitor_queue_state()
+    assert state == {"capacity": 1, "active": 1, "queued": 1, "free": 0}
