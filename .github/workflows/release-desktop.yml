@@ -234,7 +234,9 @@ jobs:
                   sys.exit(f'Could not download {filename} from PyPI ({last_error})')
           PY
 
-          if [ -f scripts/stamp_studio_release.py ]; then
+          if [ "$GITHUB_REPOSITORY" = "wasimysaid/unsloth" ]; then
+            echo "Fork-only updater A/B build: skipping the upstream PyPI-to-Studio release stamp check."
+          elif [ -f scripts/stamp_studio_release.py ]; then
             mapfile -t dists < <(find "$RUNNER_TEMP/pypi-unsloth-dist" -type f \( -name '*.whl' -o -name '*.tar.gz' \) | sort)
             if [ "${#dists[@]}" -eq 0 ]; then
               echo "No PyPI wheel/sdist artifacts downloaded for unsloth==$PYPI_VERSION" >&2
@@ -429,7 +431,7 @@ jobs:
           node <<'JS'
           const { readFileSync } = require('node:fs');
 
-          const expected = 'https://github.com/unslothai/unsloth/releases/download/desktop-latest/latest.json';
+          const expected = 'https://github.com/wasimysaid/unsloth/releases/download/desktop-latest/latest.json';
           const config = JSON.parse(readFileSync('studio/src-tauri/tauri.conf.json', 'utf8'));
           const endpoints = config.plugins?.updater?.endpoints;
           if (!Array.isArray(endpoints) || endpoints.length !== 1) {
@@ -1459,7 +1461,7 @@ jobs:
               'linux-x86_64': False,
               'windows-x86_64': False,
           }
-          expected_prefix = f'https://github.com/unslothai/unsloth/releases/download/{release_tag}/'
+          expected_prefix = f'https://github.com/wasimysaid/unsloth/releases/download/{release_tag}/'
           forbidden_fragments = ('/releases/latest/', '/releases/download/desktop-latest/')
 
           for platform, entry in platforms.items():
