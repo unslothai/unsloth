@@ -2,12 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Why this file exists (unslothai/unsloth#7897): the training bar sat at 100%
- * with no completion. `applyStatus` never touches `progressPercent`, so once the
- * SSE has reported step N/N the bar stays at 100 no matter what phase the status
- * poll then reports. Reaching 100% means the optimizer loop ended -- NOT that the
- * model save succeeded -- so completion must come from the phase, never the bar.
- */
+* Why this file exists (unslothai/unsloth#7897): the training bar sat at 100% with no
+* completion. `applyStatus` never touches `progressPercent`, so once the SSE has reported step
+* N/N the bar stays at 100 whatever phase the status poll reports. Reaching 100% means the
+* optimizer loop ended, NOT that the save succeeded, so completion must come from the phase.
+*/
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -25,6 +24,8 @@ function reset() {
     useTrainingRuntimeStore.getInitialState?.() ?? {},
     true,
   );
+  // applyProgress ignores payloads whose job_id does not match, so a run has to be adopted first.
+  useTrainingRuntimeStore.setState({ jobId: "job-1" } as never);
 }
 
 function status(partial: Record<string, unknown>) {
@@ -67,9 +68,9 @@ test("100% does not imply completion - the bar stays pinned while phase goes idl
   assert.equal(useTrainingRuntimeStore.getState().currentStep, 126);
 
   // The status poll settles the run without a `completed` phase.
-  useTrainingRuntimeStore.getState().applyStatus(
-    status({ phase: "idle", is_training_running: false }),
-  );
+  useTrainingRuntimeStore
+    .getState()
+    .applyStatus(status({ phase: "idle", is_training_running: false }));
 
   const after = useTrainingRuntimeStore.getState();
   assert.equal(after.phase, "idle");
@@ -131,7 +132,9 @@ test("a non-finite loss at a NEW step clears the display instead of going stale"
   assert.equal(useTrainingRuntimeStore.getState().currentLoss, 0.42);
 
   // Backend reports a non-finite loss as null at a later step.
-  useTrainingRuntimeStore.getState().applyProgress(progress({ step: 11, loss: null }), 11);
+  useTrainingRuntimeStore
+    .getState()
+    .applyProgress(progress({ step: 11, loss: null }), 11);
   assert.equal(useTrainingRuntimeStore.getState().currentLoss, null);
 });
 
@@ -139,6 +142,8 @@ test("a null loss at the SAME step keeps the last good value", () => {
   reset();
   const store = useTrainingRuntimeStore.getState();
   store.applyProgress(progress({ step: 10, loss: 0.42 }), 10);
-  useTrainingRuntimeStore.getState().applyProgress(progress({ step: 10, loss: null }), 10);
+  useTrainingRuntimeStore
+    .getState()
+    .applyProgress(progress({ step: 10, loss: null }), 10);
   assert.equal(useTrainingRuntimeStore.getState().currentLoss, 0.42);
 });

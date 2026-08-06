@@ -31,13 +31,16 @@ I/O contracts:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Iterator, Optional, Sequence
+from urllib.parse import unquote
 
 from loggers import get_logger
 
@@ -53,12 +56,18 @@ from hub.utils.state_dir import (
 logger = get_logger(__name__)
 
 
-_MANIFEST_VERSION = 1
+_MANIFEST_VERSION = 2
+_LEGACY_MANIFEST_VERSION = 1
+_SUPPORTED_MANIFEST_VERSIONS = frozenset({_LEGACY_MANIFEST_VERSION, _MANIFEST_VERSION})
 _MARKER_VERSION = 2
 _LEGACY_MARKER_VERSION = 1
+_DATASET_COMPLETION_VARIANT_PREFIX = "_studio-dataset-complete-"
+_MANIFEST_MIGRATION_MAX_FILES = 10_000
+_MANIFEST_MIGRATION_MAX_BYTES = 32 * 1024 * 1024
+_MANIFEST_MIGRATION_PREFIX_BYTES = 256
+_V2_MANIFEST_PREFIX = re.compile(rb'^\s*\{\s*"version"\s*:\s*2\s*,')
 
-# Verbatim phrase the worker emits on a degraded completion and the download
-# lifecycle escalates to a warning log. Shared so the emit and match stay coupled.
+# Verbatim phrase the worker emits on a degraded completion; shared so emit and match stay coupled.
 MANIFEST_DEGRADED_MARKER = "completed without a manifest so partial detection is degraded"
 
 
@@ -78,6 +87,9 @@ class Manifest:
     expected_files: tuple[ExpectedFile, ...]
     transport: Optional[str] = None
     hub_cache: Optional[str] = None
+    version: int = _LEGACY_MANIFEST_VERSION
+    commit_hash: Optional[str] = None
+    metadata_derived: bool = False
 
 
 @dataclass(frozen = True)
@@ -95,9 +107,10 @@ def _canonical_hub_cache(hub_cache: Optional[str | Path] = None) -> Optional[str
         except Exception:
             return None
     try:
-        return str(Path(hub_cache).expanduser().resolve(strict = False))
+        resolved = str(Path(hub_cache).expanduser().resolve(strict = False))
     except (OSError, RuntimeError, ValueError):
-        return str(hub_cache)
+        resolved = str(hub_cache)
+    return os.path.normcase(resolved)
 
 
 def _read_state_payload(path: Path) -> Optional[dict]:
@@ -160,8 +173,7 @@ def _state_read_path(
 
 
 def _atomic_write_json(path: Path, payload: dict) -> bool:
-    # Per-write uuid suffix so a concurrent caller or a stale tmp from a
-    # previous crash cannot collide with the in-flight write.
+    # Per-write uuid suffix so a concurrent caller or a stale tmp cannot collide.
     tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
     try:
         with tmp.open("w", encoding = "utf-8") as handle:
@@ -199,6 +211,9 @@ def write_manifest(
     transport: Optional[str] = None,
     *,
     hub_cache: Optional[str | Path] = None,
+    commit_hash: Optional[str] = None,
+    metadata_derived: bool = False,
+    _schema_version: int = _LEGACY_MANIFEST_VERSION,
 ) -> bool:
     """Write/overwrite the manifest for this triple. Best-effort.
 
@@ -215,8 +230,12 @@ def write_manifest(
     )
     if path is None:
         return False
+    normalized_commit = normalized_commit_hash(commit_hash)
+    metadata_attestation = bool(metadata_derived and normalized_commit)
+    if _schema_version not in _SUPPORTED_MANIFEST_VERSIONS:
+        return False
     payload = {
-        "version": _MANIFEST_VERSION,
+        "version": _schema_version,
         "repo_type": repo_type,
         "repo_id": repo_id,
         "variant": variant,
@@ -231,8 +250,25 @@ def write_manifest(
         ],
         "transport": transport,
         "hub_cache": recorded_hub_cache,
+        "commit_hash": normalized_commit if metadata_attestation else None,
+        "metadata_derived": metadata_attestation,
     }
     return _atomic_write_json(path, payload)
+
+
+def normalized_commit_hash(value: Optional[str]) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > 256
+        or normalized in {".", ".."}
+        or Path(normalized).name != normalized
+        or PureWindowsPath(normalized).name != normalized
+    ):
+        return None
+    return normalized
 
 
 def read_manifest(
@@ -249,11 +285,6 @@ def read_manifest(
     behavior on ``None`` so this never regresses legacy/imported repos
     that have no manifest.
 
-    Forward-compat: accepts only ``version == 1``; an unknown version is
-    treated as no manifest. A future v2 schema MUST either keep v1's
-    ``expected_files`` shape on the same filename (bump
-    ``_MANIFEST_VERSION`` and widen this check) or live under a different
-    filename, so an incompatible payload can never mis-classify rows.
     """
     path = _state_read_path(
         manifest_path,
@@ -267,13 +298,36 @@ def read_manifest(
     data = _read_state_payload(path)
     if data is None:
         return None
-    if data.get("version") != _MANIFEST_VERSION:
+    version = data.get("version")
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version not in _SUPPORTED_MANIFEST_VERSIONS
+    ):
         logger.debug(
             "Manifest %s has unknown version %r; ignoring.",
             path,
             data.get("version"),
         )
         return None
+    has_metadata_attestation = data.get("metadata_derived") is True
+    if version == _MANIFEST_VERSION or has_metadata_attestation:
+        recorded_repo_type = data.get("repo_type")
+        recorded_repo_id = data.get("repo_id")
+        recorded_variant = data.get("variant")
+        if (
+            recorded_repo_type != repo_type
+            or not isinstance(recorded_repo_id, str)
+            or recorded_repo_id.casefold() != repo_id.casefold()
+            or not (recorded_variant is None or isinstance(recorded_variant, str))
+            or (
+                recorded_variant.strip().casefold()
+                if isinstance(recorded_variant, str) and recorded_variant.strip()
+                else None
+            )
+            != (variant.strip().casefold() if variant and variant.strip() else None)
+        ):
+            return None
     raw_files = data.get("expected_files")
     if not isinstance(raw_files, list):
         return None
@@ -283,7 +337,12 @@ def read_manifest(
             return None
         file_path = item.get("path")
         size = item.get("size")
-        if not isinstance(file_path, str) or not isinstance(size, int):
+        if (
+            not isinstance(file_path, str)
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size < 0
+        ):
             return None
         sha256 = item.get("sha256")
         expected.append(
@@ -295,6 +354,8 @@ def read_manifest(
         )
     raw_variant = data.get("variant")
     transport = data.get("transport")
+    commit_hash = normalized_commit_hash(data.get("commit_hash"))
+    metadata_derived = bool(has_metadata_attestation and commit_hash is not None)
     return Manifest(
         repo_type = repo_type,
         repo_id = str(data.get("repo_id", repo_id)),
@@ -303,7 +364,227 @@ def read_manifest(
         expected_files = tuple(expected),
         transport = transport if transport in ("http", "xet") else None,
         hub_cache = data.get("hub_cache") if isinstance(data.get("hub_cache"), str) else None,
+        version = version,
+        commit_hash = commit_hash if metadata_derived else None,
+        metadata_derived = metadata_derived,
     )
+
+
+def _dataset_completion_variant(commit_hash: str) -> str:
+    digest = hashlib.sha256(commit_hash.encode("utf-8")).hexdigest()[:32]
+    return f"{_DATASET_COMPLETION_VARIANT_PREFIX}{digest}"
+
+
+def write_dataset_completion(
+    repo_id: str,
+    commit_hash: str,
+    expected_files: Sequence[ExpectedFile],
+    transport: Optional[str] = None,
+    *,
+    hub_cache: Optional[str | Path] = None,
+) -> bool:
+    normalized_commit = normalized_commit_hash(commit_hash)
+    recorded_hub_cache = _canonical_hub_cache(hub_cache)
+    if (
+        normalized_commit is None
+        or recorded_hub_cache is None
+        or not expected_files
+        or any(
+            not expected_path_is_safe(expected.path)
+            or not isinstance(expected.size, int)
+            or isinstance(expected.size, bool)
+            or expected.size < 0
+            for expected in expected_files
+        )
+    ):
+        return False
+    return write_manifest(
+        "dataset",
+        repo_id,
+        _dataset_completion_variant(normalized_commit),
+        expected_files,
+        transport,
+        hub_cache = recorded_hub_cache,
+        commit_hash = normalized_commit,
+        metadata_derived = True,
+        _schema_version = _MANIFEST_VERSION,
+    )
+
+
+def read_dataset_completion(
+    repo_id: str,
+    commit_hash: str,
+    *,
+    hub_cache: Optional[str | Path] = None,
+) -> Optional[Manifest]:
+    normalized_commit = normalized_commit_hash(commit_hash)
+    requested_hub_cache = _canonical_hub_cache(hub_cache)
+    if normalized_commit is None or requested_hub_cache is None:
+        return None
+    variant = _dataset_completion_variant(normalized_commit)
+    manifest = read_manifest(
+        "dataset",
+        repo_id,
+        variant,
+        hub_cache = requested_hub_cache,
+    )
+    if (
+        manifest is None
+        or manifest.version != _MANIFEST_VERSION
+        or manifest.repo_id.casefold() != repo_id.casefold()
+        or manifest.variant != variant
+        or manifest.commit_hash != normalized_commit
+        or not manifest.metadata_derived
+        or not isinstance(manifest.hub_cache, str)
+        or not manifest.hub_cache.strip()
+        or _canonical_hub_cache(manifest.hub_cache) != requested_hub_cache
+        or not manifest.expected_files
+        or any(
+            not expected_path_is_safe(expected.path)
+            or not isinstance(expected.size, int)
+            or isinstance(expected.size, bool)
+            or expected.size < 0
+            for expected in manifest.expected_files
+        )
+    ):
+        return None
+    return manifest
+
+
+def expected_path_is_safe(path_value: str) -> bool:
+    if (
+        not isinstance(path_value, str)
+        or not path_value
+        or len(path_value) > 4096
+        or "\x00" in path_value
+        or "\\" in path_value
+    ):
+        return False
+    decoded = unquote(path_value)
+    if not decoded or decoded in {".", ".."} or "\x00" in decoded or "\\" in decoded:
+        return False
+    posix = PurePosixPath(decoded)
+    windows = PureWindowsPath(decoded)
+    return (
+        not posix.is_absolute()
+        and not windows.is_absolute()
+        and not windows.drive
+        and all(":" not in part for part in posix.parts)
+        and ".." not in posix.parts
+        and ".." not in windows.parts
+    )
+
+
+def _is_reserved_dataset_completion_payload(data: dict) -> bool:
+    variant = data.get("variant")
+    return (
+        data.get("repo_type") == "dataset"
+        and isinstance(variant, str)
+        and variant.casefold().startswith(_DATASET_COMPLETION_VARIANT_PREFIX)
+    )
+
+
+def _read_migration_payload(path: Path) -> Optional[dict]:
+    try:
+        with path.open("rb") as handle:
+            prefix = handle.read(_MANIFEST_MIGRATION_PREFIX_BYTES)
+            if _V2_MANIFEST_PREFIX.match(prefix) is None:
+                return None
+            if len(prefix) > _MANIFEST_MIGRATION_MAX_BYTES:
+                return None
+            raw = prefix + handle.read(_MANIFEST_MIGRATION_MAX_BYTES - len(prefix) + 1)
+        if len(raw) > _MANIFEST_MIGRATION_MAX_BYTES:
+            return None
+        data = json.loads(raw)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _migration_manifest_paths(parent: Path) -> Iterator[Path]:
+    yield from parent.glob("*.json")
+    for scoped in parent.glob("cache-*"):
+        if scoped.is_symlink() or not scoped.is_dir():
+            continue
+        yield from scoped.glob("*.json")
+
+
+def migrate_ordinary_v2_manifests_for_downgrade() -> int:
+    parent = manifests_dir()
+    if parent is None:
+        return 0
+
+    migrated = 0
+    try:
+        candidates = _migration_manifest_paths(parent)
+        for index, path in enumerate(candidates):
+            if index >= _MANIFEST_MIGRATION_MAX_FILES:
+                logger.debug("Stopped Hub manifest migration at the file limit")
+                break
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                data = _read_migration_payload(path)
+                if data is None or data.get("version") != _MANIFEST_VERSION:
+                    continue
+                if _is_reserved_dataset_completion_payload(data):
+                    continue
+
+                repo_type = data.get("repo_type")
+                repo_id = data.get("repo_id")
+                variant = data.get("variant")
+                recorded_hub_cache = data.get("hub_cache")
+                if (
+                    repo_type not in ("model", "dataset")
+                    or not isinstance(repo_id, str)
+                    or not repo_id
+                    or not (variant is None or isinstance(variant, str))
+                    or not (
+                        recorded_hub_cache is None
+                        or (
+                            isinstance(recorded_hub_cache, str) and bool(recorded_hub_cache.strip())
+                        )
+                    )
+                ):
+                    continue
+
+                selected = _state_read_path(
+                    manifest_path,
+                    repo_type,
+                    repo_id,
+                    variant,
+                    recorded_hub_cache,
+                )
+                if selected != path:
+                    continue
+                manifest = read_manifest(
+                    repo_type,
+                    repo_id,
+                    variant,
+                    hub_cache = recorded_hub_cache,
+                )
+                if (
+                    manifest is None
+                    or manifest.version != _MANIFEST_VERSION
+                    or any(
+                        not expected_path_is_safe(expected.path)
+                        for expected in manifest.expected_files
+                    )
+                ):
+                    continue
+
+                current = _read_migration_payload(path)
+                if current != data:
+                    continue
+                migrated_payload = dict(current)
+                migrated_payload["version"] = _LEGACY_MANIFEST_VERSION
+                if _atomic_write_json(path, migrated_payload):
+                    migrated += 1
+            except Exception as exc:
+                logger.debug("Could not migrate Hub manifest %s: %s", path, exc)
+    except Exception as exc:
+        logger.debug("Could not enumerate Hub manifests for migration: %s", exc)
+    return migrated
 
 
 def verify_against_disk(manifest: Manifest, snapshot_dir: Path) -> VerifyResult:
@@ -321,14 +602,16 @@ def verify_against_disk(manifest: Manifest, snapshot_dir: Path) -> VerifyResult:
     missing: list[str] = []
     mismatched: list[str] = []
     for expected in manifest.expected_files:
+        if not expected_path_is_safe(expected.path):
+            missing.append(expected.path)
+            continue
         target = snapshot_dir / expected.path
         try:
             actual_size = target.stat().st_size
         except OSError:
             missing.append(expected.path)
             continue
-        # expected.size == 0 means HF metadata had no declared size: verify
-        # existence only rather than flagging every such file as mismatched.
+        # expected.size == 0 means HF metadata had no declared size: verify existence only.
         if expected.size > 0 and actual_size != expected.size:
             mismatched.append(expected.path)
     return VerifyResult(
@@ -583,10 +866,9 @@ def purge_state(
             manifest_path(repo_type, repo_id, variant, hub_cache = hub_cache),
             marker_path(repo_type, repo_id, variant, hub_cache = hub_cache),
         ]
-        # Legacy unscoped state is shared: an unowned file belongs to the active
-        # cache (per _legacy_state_applies), so only purge it when it belongs to
-        # the cache being deleted -- else deleting an inactive cache would erase
-        # the active cache's resume/cancel state.
+        # Legacy unscoped state is shared: an unowned file belongs to the active cache, so only purge
+        # it when it belongs to the cache being deleted, else deleting an inactive cache erases the
+        # active cache's resume/cancel state.
         for path_factory in (manifest_path, marker_path):
             legacy = path_factory(repo_type, repo_id, variant)
             if legacy is not None and _legacy_state_applies(legacy, requested):
@@ -625,8 +907,7 @@ def purge_all_state_for_repo(
     if hub_cache is None:
         search = [(p, True) for p in (manifests_dir(), cancelled_dir()) if p is not None]
     else:
-        # This cache's scoped dir (parent of its scoped path) plus the legacy
-        # unscoped base; glob (not rglob) so other caches' dirs are not swept.
+        # This cache's scoped dir plus the legacy unscoped base; glob (not rglob) so other caches are untouched.
         search = []
         for scoped, base in (
             (manifest_path(repo_type, repo_id, None, hub_cache = hub_cache), manifests_dir()),
@@ -647,7 +928,7 @@ def purge_all_state_for_repo(
             if not entry.is_file():
                 continue
             fallback = entry.stem[len(prefix) :]
-            variants.add(_variant_from_state_file(entry, fallback))
+            variants.add(fallback)
     for variant in variants:
         if purge_state(repo_type, repo_id, variant, hub_cache = hub_cache):
             removed += 1
