@@ -357,6 +357,10 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const windowLayoutGenerationRef = useRef(0);
   const [desktopAuthReady, setDesktopAuthReady] = useState(!isTauri);
   const [desktopAuthRetry, setDesktopAuthRetry] = useState(0);
+  const [nativeMacControlsHidden, setNativeMacControlsHidden] = useState(false);
+  const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
+  const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
+  const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   useEffect(() => {
     if (!isTauri) return;
@@ -434,6 +438,29 @@ function TauriWrapper({ children }: { children: ReactNode }) {
     void fetchDeviceType({ force: true }).catch(() => undefined);
   }, [status, desktopAuthReady]);
 
+  useEffect(() => {
+    if (!usesNativeMacTitlebar) return;
+    let active = true;
+    const refresh = () => {
+      void import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => getCurrentWindow().isFullscreen())
+        .then((fullscreen) => {
+          if (active) setNativeMacControlsHidden(fullscreen);
+        })
+        .catch(() => undefined);
+    };
+    const handleResize = () => {
+      refresh();
+    };
+    refresh();
+    window.addEventListener("resize", handleResize);
+
+    return () => {
+      active = false;
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [usesNativeMacTitlebar]);
+
   if (!isTauri) {
     return (
       <>
@@ -460,9 +487,6 @@ function TauriWrapper({ children }: { children: ReactNode }) {
   const showApp = status === "running" && desktopAuthReady;
   const startupStatus = status === "running" ? "starting" : status;
   const startupProgressDetail = progressDetail;
-  const usesCustomTitlebar = shouldUseCustomWindowTitlebar();
-  const usesNativeMacTitlebar = shouldUseNativeMacWindowTitlebar();
-  const hidesTitlebarSidebar = HIDDEN_TITLEBAR_SIDEBAR_ROUTES.has(pathname);
 
   const content = showApp ? (
     <TauriUpdateLayer
@@ -509,7 +533,14 @@ function TauriWrapper({ children }: { children: ReactNode }) {
               ? "relative h-dvh min-h-0 overflow-x-hidden overflow-y-auto bg-background"
               : "relative h-dvh min-h-0 overflow-hidden bg-background"
           }
-          style={MAC_NATIVE_CHROME_STYLE}
+          style={
+            nativeMacControlsHidden
+              ? {
+                  ...MAC_NATIVE_CHROME_STYLE,
+                  "--studio-mac-traffic-light-inset": "6px",
+                } as CSSProperties
+              : MAC_NATIVE_CHROME_STYLE
+          }
         >
           {!showApp || hidesTitlebarSidebar ? (
             <div
@@ -545,11 +576,19 @@ function TauriWrapper({ children }: { children: ReactNode }) {
  * whenever either the customization or the resolved theme changes.
  */
 function AppearanceCustomizationEffect() {
-  const { resolved } = useTheme();
+  const { theme, resolved } = useTheme();
   const customization = useAppearanceCustomStore((s) => s.customization);
   useEffect(() => {
     applyCustomizationToDocument(customization, resolved);
   }, [customization, resolved]);
+  useEffect(() => {
+    if (!isTauri) return;
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) =>
+        getCurrentWindow().setTheme(theme === "system" ? null : theme),
+      )
+      .catch(() => undefined);
+  }, [theme]);
   return null;
 }
 

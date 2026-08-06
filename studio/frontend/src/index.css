@@ -967,6 +967,16 @@ html[data-chat-font] .aui-root {
 		@apply h-full;
 	}
 
+	html.tauri {
+		overflow: hidden;
+		overscroll-behavior: none;
+	}
+
+	html.tauri body,
+	html.tauri #root {
+		overflow: hidden;
+	}
+
 	body[data-scroll-locked] {
 		margin-right: 0 !important;
 	}
