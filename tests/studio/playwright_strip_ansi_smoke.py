@@ -8,6 +8,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -41,15 +42,31 @@ def wait_for_vite(url: str, timeout_s: float = 120.0) -> None:
     raise RuntimeError(f"vite dev server did not become ready at {url}")
 
 
-def main() -> None:
-    ART.mkdir(parents = True, exist_ok = True)
-    info(f"starting vite dev server in {FRONTEND}")
-    vite = subprocess.Popen(
-        ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "8000", "--strictPort"],
-        cwd = FRONTEND,
+def drain_process_output(proc: subprocess.Popen[str]) -> None:
+    if proc.stdout is None:
+        return
+    for _ in proc.stdout:
+        pass
+
+
+def start_logged_process(args: list[str], *, cwd: Path) -> subprocess.Popen[str]:
+    proc = subprocess.Popen(
+        args,
+        cwd = cwd,
         stdout = subprocess.PIPE,
         stderr = subprocess.STDOUT,
         text = True,
+    )
+    threading.Thread(target = drain_process_output, args = (proc,), daemon = True).start()
+    return proc
+
+
+def main() -> None:
+    ART.mkdir(parents = True, exist_ok = True)
+    info(f"starting vite dev server in {FRONTEND}")
+    vite = start_logged_process(
+        ["npm", "run", "dev", "--", "--host", "127.0.0.1", "--port", "8000", "--strictPort"],
+        cwd = FRONTEND,
     )
     try:
         wait_for_vite(BASE)

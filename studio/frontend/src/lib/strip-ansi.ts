@@ -1,24 +1,81 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// CSI / Fe / OSC escape sequences as emitted by colourised CLI tools (ls,
-// grep, npm, cargo, pytest, …) and terminal hyperlinks. Built via fromCharCode
-// so the source stays free of a literal ESC that some editors / log scrapers
-// trip over.
-const ESC = String.fromCharCode(27);
-const BEL = String.fromCharCode(7);
-const ANSI_ESCAPE_PATTERN = new RegExp(
-  [
-    `${ESC}(?:[@-Z\\-_]|\\[[0-?]*[ -/]*[@-~])`,
-    `${ESC}\\([ -/]*[0-?]*[@-~]`,
-    `${ESC}\\](?:[\\s\\S]*?)(?:${BEL}|${ESC}\\\\)`,
-  ].join("|"),
-  "g",
-);
+const ESC = 27;
+const BEL = 7;
 
-/** Strip SGR / CSI / OSC sequences so tool output is readable in a plain <pre>. */
+function isCsiFinal(code: number): boolean {
+  return code >= 0x40 && code <= 0x7e;
+}
+
+function isScsFinal(code: number): boolean {
+  return (code >= 0x30 && code <= 0x3f) || isCsiFinal(code);
+}
+
+/** Strip SGR / CSI / SCS / OSC sequences in one linear pass. */
 export function stripAnsi(text: string): string {
-  return text.replace(ANSI_ESCAPE_PATTERN, "");
+  let out = "";
+  let index = 0;
+  while (index < text.length) {
+    const code = text.charCodeAt(index);
+    if (code !== ESC) {
+      out += text[index] ?? "";
+      index += 1;
+      continue;
+    }
+    if (index + 1 >= text.length) {
+      break;
+    }
+    const next = text.charCodeAt(index + 1);
+    if (next === 0x5b) {
+      index += 2;
+      while (index < text.length && !isCsiFinal(text.charCodeAt(index))) {
+        index += 1;
+      }
+      if (index < text.length) {
+        index += 1;
+      }
+      continue;
+    }
+    if (next === 0x5d) {
+      let j = index + 2;
+      let terminated = false;
+      while (j < text.length) {
+        const osc = text.charCodeAt(j);
+        if (osc === BEL) {
+          j += 1;
+          terminated = true;
+          break;
+        }
+        if (osc === ESC) {
+          if (j + 1 < text.length && text.charCodeAt(j + 1) === 0x5c) {
+            j += 2;
+            terminated = true;
+          }
+          break;
+        }
+        j += 1;
+      }
+      index = terminated ? j : index + 2;
+      continue;
+    }
+    if (next >= 0x40 && next <= 0x5f) {
+      index += 2;
+      continue;
+    }
+    if (next >= 0x20 && next <= 0x2f) {
+      index += 2;
+      while (index < text.length && !isScsFinal(text.charCodeAt(index))) {
+        index += 1;
+      }
+      if (index < text.length) {
+        index += 1;
+      }
+      continue;
+    }
+    index += 1;
+  }
+  return out;
 }
 
 /** Recursively strip ANSI from string leaves (objects / arrays from tool JSON). */

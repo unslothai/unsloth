@@ -55,6 +55,12 @@ test("strips SCS charset resets emitted by terminfo sgr0", () => {
   assert.equal(stripAnsi(reset), "ok");
 });
 
+test("strips many unterminated OSC introducers without quadratic work", () => {
+  const garbage = `${ESC}]`.repeat(500) + "ok";
+  const cleaned = stripAnsi(garbage);
+  assert.equal(cleaned, "ok");
+});
+
 test("stripAnsiDeep cleans nested tool object fields before JSON display", () => {
   const payload = {
     stdout: `${ESC}[32mfile.txt${ESC}[0m`,
