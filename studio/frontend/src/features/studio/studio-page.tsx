@@ -179,7 +179,9 @@ export function StudioPage(): ReactElement {
           </div>
         ) : (
           <Tabs value={activeTab} onValueChange={handleTabChange}>
-            <div className="flex items-center gap-3 pb-3">
+            {/* Wraps: TabsList is w-fit and the link is shrink-0, so a narrow
+                window would otherwise push the row past the viewport. */}
+            <div className="flex flex-wrap items-center gap-3 pb-3">
               {selectedHistoryRunId && activeTab === "history" && (
                 <Button
                   variant="ghost"

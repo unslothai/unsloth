@@ -1114,6 +1114,7 @@ export const ptBR = {
     },
   },
   studio: {
+    imageTraining: "Treinamento de imagens",
     routeTitle: "Treinar",
     title: "Estúdio de Fine-tuning",
     subtitles: {

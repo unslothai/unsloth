@@ -1100,6 +1100,7 @@ export const ko = {
     },
   },
   studio: {
+    imageTraining: "이미지 학습",
     routeTitle: "학습",
     title: "파인튜닝 스튜디오",
     subtitles: {

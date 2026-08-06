@@ -1133,6 +1133,7 @@ export const es = {
     },
   },
   studio: {
+    imageTraining: "Entrenamiento de imágenes",
     routeTitle: "Entrenar",
     title: "Studio de fine-tuning",
     subtitles: {
