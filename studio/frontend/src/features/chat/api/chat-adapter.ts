@@ -1749,6 +1749,12 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "chatTemplateOverride",
   "loadedChatTemplateOverride",
   "chatTemplateOverrideReason",
+  // The rest of the group mlxRuntimeStateFrom writes; without them a background
+  // autoload leaves its width and verdict on the restored model.
+  "mlxKvBits",
+  "loadedMlxKvBitsRequested",
+  "mlxKvQuantReason",
+  "mlxKvQuantNote",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
   "speculativeType",
