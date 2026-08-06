@@ -704,7 +704,6 @@ def test_the_staging_file_is_private_and_leaves_nothing_behind(tmp_path):
     assert [p.name for p in directory.iterdir()] == ["sitecustomize.py"]
     if hasattr(os, "getuid"):
         import stat as _stat
-
         assert oct(_stat.S_IMODE(os.lstat(target).st_mode)) == oct(0o600)
 
 
