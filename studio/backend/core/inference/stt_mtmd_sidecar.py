@@ -212,8 +212,36 @@ def _cached_model_paths(model_id: str) -> Optional[tuple[str, str]]:
     return model, mmproj
 
 
+# The status endpoint asks for every model and the panel polls it every 750ms.
+# Each answer is two hf_hub_download() calls, which resolve refs and stat the
+# snapshot even local-only, so memoise it briefly. Only the boolean: a load
+# resolves the real paths every time.
+_DOWNLOADED_PROBE_TTL_SECONDS = 2.0
+_downloaded_probe_lock = threading.Lock()
+_downloaded_probe: dict[str, tuple[float, bool]] = {}
+
+
+def _forget_downloaded_probe(model_id: Optional[str] = None) -> None:
+    """Drop memoised answers, for one model or all of them."""
+    with _downloaded_probe_lock:
+        if model_id is None:
+            _downloaded_probe.clear()
+        else:
+            _downloaded_probe.pop(model_id, None)
+
+
 def is_model_downloaded(model_id: str) -> bool:
-    return model_id in MTMD_STT_MODELS and _cached_model_paths(model_id) is not None
+    if model_id not in MTMD_STT_MODELS:
+        return False
+    now = time.monotonic()
+    with _downloaded_probe_lock:
+        cached = _downloaded_probe.get(model_id)
+        if cached is not None and now - cached[0] < _DOWNLOADED_PROBE_TTL_SECONDS:
+            return cached[1]
+    downloaded = _cached_model_paths(model_id) is not None
+    with _downloaded_probe_lock:
+        _downloaded_probe[model_id] = (now, downloaded)
+    return downloaded
 
 
 class _MtmdDownloadState:
@@ -231,14 +259,18 @@ class _MtmdDownloadState:
     def status(self) -> dict:
         with self._lock:
             downloading = self._thread is not None and self._thread.is_alive()
-            return {
+            model_id = self._model_id
+            snapshot = {
                 "downloading": downloading,
-                "model": self._model_id if downloading else None,
+                "model": model_id if downloading else None,
                 "error": self._error,
                 "cancelled": self._cancelled,
                 "bytes_total": self._total_bytes if downloading else None,
-                "bytes_done": self._cache_bytes() if downloading else None,
             }
+        # Outside the lock: _cache_bytes() walks the cache blobs, and a cancel
+        # should not queue behind that.
+        snapshot["bytes_done"] = self._cache_bytes(model_id) if downloading else None
+        return snapshot
 
     def cancel(self) -> bool:
         """Stop an in-flight download. False when none was running."""
@@ -251,12 +283,15 @@ class _MtmdDownloadState:
             process.terminate()
         return True
 
-    def _cache_bytes(self) -> Optional[int]:
-        """Best-effort progress: bytes in this repo's cache blobs."""
+    def _cache_bytes(self, model_id: Optional[str] = None) -> Optional[int]:
+        """Best-effort progress: bytes in this repo's cache blobs.
+
+        Takes the model id so status() can call it after dropping the lock.
+        """
         try:
             from core.inference.stt_sidecar import _repo_cache_dir
 
-            model_id = self._model_id
+            model_id = model_id or self._model_id
             if not model_id:
                 return None
             blobs = _repo_cache_dir(MTMD_STT_MODELS[model_id].repo) / "blobs"
@@ -342,6 +377,10 @@ class _MtmdDownloadState:
             logger.warning("mtmd STT download failed for %s: %s", model_id, exc)
             with self._lock:
                 self._error = f"Download failed for '{model_id}'."
+        finally:
+            # The memo is stale however this ended. Dropping it here is what
+            # lets the panel settle on its next poll, not a TTL later.
+            _forget_downloaded_probe(model_id)
 
 
 _download_state = _MtmdDownloadState()
@@ -387,16 +426,19 @@ class MtmdSttSidecar:
 
     @property
     def loaded_model(self) -> Optional[str]:
-        with self._lock:
-            return self._model_id if self._process_alive() else None
+        # Lock-free, like stt_ggml_sidecar.py: _lock is held across a reap and
+        # across a whole llama.cpp install, and the status route reads this on
+        # the event loop. _process_alive() snapshots _process before poll(), so
+        # a concurrent unload is safe.
+        return self._model_id if self._process_alive() else None
 
     @property
     def device(self) -> Optional[str]:
-        return "llama.cpp" if self.loaded_model else None
+        return "llama.cpp" if self._process_alive() else None
 
     def is_loading(self) -> bool:
-        with self._lock:
-            return self._loading
+        # Bare bool read, for the same reason as loaded_model.
+        return self._loading
 
     @property
     def keep_alive_seconds(self) -> float:
@@ -648,7 +690,10 @@ class MtmdSttSidecar:
                     if response.status == 200:
                         return True
             except Exception:
-                time.sleep(0.25)
+                pass
+            # Outside the except: a 2xx that is not 200 would spin this loop
+            # with no delay for the whole startup timeout.
+            time.sleep(0.25)
         return False
 
     def transcribe(

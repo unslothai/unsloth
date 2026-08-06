@@ -465,7 +465,7 @@ class _GgmlDownloadState:
                 pass
             # Out of process so cancel() can terminate it; a thread blocked in
             # hf_hub_download could not be interrupted.
-            from core.inference.stt_download_worker import spawn_download
+            from core.inference.stt_download_worker import reap_download, spawn_download
 
             process = spawn_download(
                 ["--repo-id", repo_id, "--filename", filename],
@@ -476,7 +476,10 @@ class _GgmlDownloadState:
                     # cancel() landed between start() and the spawn.
                     process.terminate()
                 self._process = process
-            _, stderr = process.communicate()
+            # reap_download(), not communicate(): only it drops the PID
+            # spawn_download() adopted, which could otherwise be reused and then
+            # signalled by terminate_all.
+            stderr = reap_download(process)
             if process.returncode == 0:
                 return
             with self._lock:
