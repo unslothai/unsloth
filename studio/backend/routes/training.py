@@ -32,6 +32,7 @@ try:
     from core.training.training import TrainingStatusIdentitySnapshot
     from core.training.resume import (
         can_resume_run,
+        has_resume_state,
         get_resume_checkpoint_path,
         normalize_resume_output_dir,
         training_run_config,
@@ -1165,10 +1166,15 @@ async def start_training(
             )
             if not resume_run or not await asyncio.to_thread(can_resume_run, resume_run):
                 detail = "Resume checkpoint must belong to a stopped or errored run with complete saved trainer state."
-                if resume_run:
-                    # The provenance gate refuses runs whose checkpoint is entirely
-                    # intact, so reporting the checkpoint blames the wrong thing. It
-                    # already knows why; say that instead when it is the actual cause.
+                # Only when the checkpoint itself is intact. can_resume_run refuses for
+                # several reasons and the blocker is computed independently of which one
+                # fired, so asking it unconditionally answers a provenance sentence even
+                # when the checkpoint is what is missing -- swapping one misdiagnosis for
+                # another, on the more common case. has_resume_state is the discriminator
+                # can_resume_run itself short-circuits on.
+                if resume_run and await asyncio.to_thread(
+                    has_resume_state, resume_run.get("output_dir")
+                ):
                     from core.training.provenance import (
                         resource_provenance_resume_blocker,
                     )

@@ -88,9 +88,14 @@ def _resume_blocked_reason(row: dict) -> Optional[str]:
     client's existing wording in place for that case.
     """
     from core.training.provenance import resource_provenance_resume_blocker
-    from core.training.resume import training_run_config
+    from core.training.resume import has_resume_state, training_run_config
 
     try:
+        # A row whose checkpoint is gone is refused for that reason, not provenance.
+        # Asking the gate anyway hands the client a provenance sentence for a missing
+        # checkpoint, which is the wrong diagnosis on the more common case.
+        if not has_resume_state(row.get("output_dir")):
+            return None
         return resource_provenance_resume_blocker(training_run_config(row))
     except Exception:
         return None

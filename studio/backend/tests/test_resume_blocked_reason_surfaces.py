@@ -54,6 +54,12 @@ def test_the_field_is_optional_so_old_clients_are_unaffected():
 
 
 def test_a_provenance_refusal_is_reported_on_the_summary(monkeypatch):
+    # An intact checkpoint is the precondition: with the trainer state missing the
+    # checkpoint is the real cause and the reason is deliberately None. See
+    # test_resume_reason_matches_cause.py.
+    from core.training import resume as resume_mod
+
+    monkeypatch.setattr(resume_mod, "has_resume_state", lambda output_dir: True)
     monkeypatch.setattr(training_history, "can_resume_run", lambda *a, **k: False)
     monkeypatch.setattr(training_history, "artifacts_present", lambda *a, **k: True)
     monkeypatch.setattr(
@@ -103,7 +109,17 @@ def test_a_missing_checkpoint_keeps_the_clients_own_wording(monkeypatch):
 
 
 def test_a_failure_computing_the_reason_is_not_fatal(monkeypatch):
-    """History must render even if the gate raises; the row simply carries no reason."""
+    """History must render even if the gate raises; the row simply carries no reason.
+
+    Narrower than it first appears: ``can_resume_run`` calls the same gate without a
+    guard one line earlier, so if the gate raises on a row that reaches it, History
+    fails there instead. What this ``except`` genuinely protects is the path where
+    ``can_resume_run`` short-circuits before touching the gate and
+    ``_resume_blocked_reason`` is its first caller.
+    """
+    from core.training import resume as resume_mod
+
+    monkeypatch.setattr(resume_mod, "has_resume_state", lambda output_dir: True)
     monkeypatch.setattr(training_history, "can_resume_run", lambda *a, **k: False)
     monkeypatch.setattr(training_history, "artifacts_present", lambda *a, **k: True)
     monkeypatch.setattr(
@@ -137,6 +153,6 @@ def test_the_client_prefers_the_server_reason():
 
     guard = source.split("if (!(detail.run.can_resume && outputDir))", 1)[1][:400]
     assert "detail.run.resume_blocked_reason" in guard
-    assert guard.index("resume_blocked_reason") < guard.index(
-        "RESUME_UNAVAILABLE_ERROR"
-    ), "the server's reason must take precedence over the generic string"
+    assert guard.index("resume_blocked_reason") < guard.index("RESUME_UNAVAILABLE_ERROR"), (
+        "the server's reason must take precedence over the generic string"
+    )
