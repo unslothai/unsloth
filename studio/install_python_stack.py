@@ -1151,7 +1151,6 @@ def _installed_rocm_wheel_family() -> str | None:
     """
     try:
         from importlib import metadata
-
         for _req in metadata.requires("rocm") or []:
             _fam = _rocm_family_token(_req)
             if _fam:
