@@ -586,10 +586,9 @@ class TestSandboxEnvIsolation:
 
         import core.inference.tools as tools_mod
 
-        # Make the API unavailable explicitly. Relying on ctypes.windll being
-        # absent only holds on a non-Windows host, so on Windows this asserted
-        # nothing and failed; the property it names has to be tested on the
-        # platform that has the API.
+        # Make the API unavailable explicitly: relying on ctypes.windll being
+        # absent only holds off Windows, where the API exists and this asserted
+        # nothing.
         class _NoKnownFolderApi:
             def __getattr__(self, name):
                 raise OSError("known-folder API unavailable")
