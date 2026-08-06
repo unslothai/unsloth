@@ -440,28 +440,21 @@ function TauriWrapper({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     if (!usesNativeMacTitlebar) return;
-    let disposed = false;
-    let unlistenResize: (() => void) | undefined;
-    let unlistenFocus: (() => void) | undefined;
-
-    void import("@tauri-apps/api/window")
-      .then(async ({ getCurrentWindow }) => {
-        const appWindow = getCurrentWindow();
-        const refresh = async () => {
-          const fullscreen = await appWindow.isFullscreen();
-          if (!disposed) setNativeMacControlsHidden(fullscreen);
-        };
-        await refresh();
-        if (disposed) return;
-        unlistenResize = await appWindow.onResized(() => void refresh());
-        unlistenFocus = await appWindow.onFocusChanged(() => void refresh());
-      })
-      .catch(() => undefined);
+    let active = true;
+    const refresh = () => {
+      void import("@tauri-apps/api/window")
+        .then(({ getCurrentWindow }) => getCurrentWindow().isFullscreen())
+        .then((fullscreen) => {
+          if (active) setNativeMacControlsHidden(fullscreen);
+        })
+        .catch(() => undefined);
+    };
+    refresh();
+    window.addEventListener("resize", refresh);
 
     return () => {
-      disposed = true;
-      unlistenResize?.();
-      unlistenFocus?.();
+      active = false;
+      window.removeEventListener("resize", refresh);
     };
   }, [usesNativeMacTitlebar]);
 
