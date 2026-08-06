@@ -354,6 +354,7 @@ export function applyActiveModelStatusToStore(
     loadedContextLength: currentLoadedContextLength,
     maxContextLength,
     nativeContextLength,
+    loadedIsGguf: status.is_gguf ?? false,
     ...(status.is_gguf
       ? {}
       : { activeNativePathToken: null, activeNativePathExpiresAtMs: null }),

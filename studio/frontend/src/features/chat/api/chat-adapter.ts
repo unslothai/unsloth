@@ -2002,6 +2002,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "loadedContextLength",
   "maxContextLength",
   "nativeContextLength",
+  "loadedIsGguf",
   "modelRequiresTrustRemoteCode",
   "supportsReasoning",
   "reasoningAlwaysOn",
@@ -3095,6 +3096,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           maxContextLength:
             loadResp.max_context_length ?? loadResp.context_length ?? 131072,
           nativeContextLength: loadResp.native_context_length ?? null,
+          loadedIsGguf: true,
           supportsReasoning: loadResp.supports_reasoning ?? false,
           reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
           reasoningEnabled: loadResp.supports_reasoning ?? false,
@@ -3171,10 +3173,20 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
           chatTemplateOverride: effectiveChatTemplateOverride,
           loadedChatTemplateOverride: effectiveChatTemplateOverride,
           customContextLength: null,
+          // Replace the whole of the previous model's llama.cpp state, not just the
+          // flag: a retained window would price the context bar for a model that is
+          // no longer loaded, and a retained lease token still reads as a GGUF pick.
+          loadedCustomContextLength: null,
+          loadedContextLength: null,
+          maxContextLength: null,
+          nativeContextLength: null,
+          activeNativePathToken: null,
+          activeNativePathExpiresAtMs: null,
           ...resolveLoadedSpeculativeSettings(loadResp),
           loadedIsMultimodal: isMultimodalResponse(loadResp),
           mmprojFallbackReason: loadResp.mmproj_fallback_reason ?? null,
           loadedIsDiffusion: loadResp.is_diffusion ?? false,
+          loadedIsGguf: false,
           activeModelIsLocal: loadResp.is_local_model ?? false,
         });
       }
@@ -3463,6 +3475,7 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
         loadedContextLength: loadResp.context_length ?? 131072,
         maxContextLength:
           loadResp.max_context_length ?? loadResp.context_length ?? 131072,
+        loadedIsGguf: true,
         supportsReasoning: loadResp.supports_reasoning ?? false,
         reasoningAlwaysOn: loadResp.reasoning_always_on ?? false,
         reasoningEnabled: loadResp.supports_reasoning ?? false,

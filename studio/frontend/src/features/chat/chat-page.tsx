@@ -2933,6 +2933,7 @@ export function ChatPage({
           loadedContextLength: null,
           maxContextLength: null,
           nativeContextLength: null,
+          loadedIsGguf: null,
           activeNativePathToken: null,
           activeNativePathExpiresAtMs: null,
           // Clear previous-model counters, else the relaxed external-provider render gate shows
