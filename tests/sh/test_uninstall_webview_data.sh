@@ -20,6 +20,17 @@ FAIL=0
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
+# The script deletes $XDG_RUNTIME_DIR/unsloth-studio-launcher-<uid>*.lock, so
+# without a fixture-owned runtime dir this test removes the real launcher's
+# locks (same pattern as test_uninstall_prebuilt_artifacts.sh).
+XDG_RUNTIME_DIR="$_TMP_ROOT/run"
+export XDG_RUNTIME_DIR
+mkdir -p "$XDG_RUNTIME_DIR"
+
+# Explicit mktemp template: -p is GNU-only (BSD mktemp gained it in macOS 14),
+# and a bare mktemp -d implies -t and would land outside _TMP_ROOT on macOS.
+new_home() { mktemp -d "$_TMP_ROOT/home.XXXXXX"; }
+
 assert_gone()    { _l="$1"; if [ -e "$2" ]; then echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); else echo "  PASS: $_l"; PASS=$((PASS+1)); fi; }
 assert_present() { _l="$1"; if [ -e "$2" ]; then echo "  PASS: $_l"; PASS=$((PASS+1)); else echo "  FAIL: $_l (missing: $2)"; FAIL=$((FAIL+1)); fi; }
 
@@ -65,7 +76,7 @@ run_uninstall() {
 }
 
 # ── 1. macOS: every bundle-id-keyed ~/Library path is removed ──
-H=$(mktemp -d -p "$_TMP_ROOT")
+H=$(new_home)
 mkdir -p "$H/Library/Caches/$BID/WebKit/NetworkCache" \
          "$H/Library/WebKit/$BID/WebsiteData/CacheStorage" \
          "$H/Library/Application Support/$BID" \
@@ -91,10 +102,14 @@ assert_gone "macOS: Preferences/$BID.plist removed"          "$H/Library/Prefere
 assert_present "macOS: unrelated app cache kept"             "$H/Library/Caches/com.other.app/keepme"
 
 # ── 2. Linux: bundle-id-keyed XDG default paths are removed ──
-H=$(mktemp -d -p "$_TMP_ROOT")
+H=$(new_home)
 mkdir -p "$H/.cache/$BID" "$H/.local/share/$BID" "$H/.config/$BID" \
          "$H/.local/state/$BID" "$H/.cache/other.app"
+: > "$XDG_RUNTIME_DIR/unsloth-studio-launcher-$(id -u).lock"
 run_uninstall "$H" Linux
+# Proves the launcher-lock sweep landed in the fixture runtime dir, not the real one.
+assert_gone "linux: fixture launcher lock removed" \
+    "$XDG_RUNTIME_DIR/unsloth-studio-launcher-$(id -u).lock"
 assert_gone "linux: ~/.cache/$BID removed"       "$H/.cache/$BID"
 assert_gone "linux: ~/.local/share/$BID removed" "$H/.local/share/$BID"
 assert_gone "linux: ~/.config/$BID removed"      "$H/.config/$BID"
@@ -102,8 +117,8 @@ assert_gone "linux: ~/.local/state/$BID removed" "$H/.local/state/$BID"
 assert_present "linux: unrelated app cache kept" "$H/.cache/other.app"
 
 # ── 3. Linux: XDG_*_HOME overrides are honored ──
-H=$(mktemp -d -p "$_TMP_ROOT")
-XDG=$(mktemp -d -p "$_TMP_ROOT")
+H=$(new_home)
+XDG=$(mktemp -d "$_TMP_ROOT/xdg.XXXXXX")
 mkdir -p "$XDG/cache/$BID" "$XDG/data/$BID" "$XDG/config/$BID" "$XDG/state/$BID"
 printf '#!/bin/sh\necho Linux\n' > "$STUB_BIN/uname"
 chmod +x "$STUB_BIN/uname"
@@ -117,7 +132,7 @@ assert_gone "linux: XDG_CONFIG_HOME override honored" "$XDG/config/$BID"
 assert_gone "linux: XDG_STATE_HOME override honored"  "$XDG/state/$BID"
 
 # ── 4. Nothing to remove is a clean no-op (fresh HOME, exit 0) ──
-H=$(mktemp -d -p "$_TMP_ROOT")
+H=$(new_home)
 if run_uninstall "$H" Darwin; then
     echo "  PASS: empty HOME -> no-op exit 0"; PASS=$((PASS+1))
 else
