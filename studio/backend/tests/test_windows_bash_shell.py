@@ -353,7 +353,9 @@ def _screen_on_windows(monkeypatch, bash, command):
         'cmd //c env start "" powershell',
     ],
 )
-def test_windows_shellouts_are_screened_on_either_shell(monkeypatch, bash, command, _windows_blocklist):
+def test_windows_shellouts_are_screened_on_either_shell(
+    monkeypatch, bash, command, _windows_blocklist
+):
     assert _screen_on_windows(monkeypatch, bash, command)
 
 
