@@ -36,6 +36,30 @@ on:
   schedule:
     - cron: '37 7 * * 1'
   workflow_dispatch:
+  # This workflow's cache saves are gated to refs/heads/main, and unlike the
+  # other ten workflows in that change it had no main-ref trigger at all, so
+  # main's copy of the 4.6GB GGUF could only ever be written by the Monday
+  # cron. That is a poor match for a 7-day unused-cache retention on a repo
+  # that is over the 10GB budget: once LRU evicts main's copy, every PR
+  # re-downloads until the next cron repairs it. Seed it on merge instead,
+  # behind the same paths filter as the pull_request trigger below so this
+  # only runs when the guarded sources actually change.
+  push:
+    branches: [main]
+    paths:
+      - 'unsloth_cli/**'
+      - 'studio/backend/routes/**'
+      - 'studio/backend/main.py'
+      - 'studio/backend/core/inference/llama_cpp.py'
+      - 'studio/backend/models/**'
+      - 'install.sh'
+      - '.github/workflows/local-agent-guides-ci.yml'
+      - '.github/scripts/serve-unsloth-run.sh'
+      - '.github/scripts/assert-prompt-cache.sh'
+      - '.github/scripts/agent-guides-install.sh'
+      - '.github/scripts/agent-guides-drive.sh'
+      - '.github/scripts/ci-connect-prompt.txt'
+      - '.github/scripts/ci-min-system-prompt.txt'
   pull_request:
     paths:
       - 'unsloth_cli/**'
