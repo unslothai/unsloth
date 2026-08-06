@@ -6582,10 +6582,9 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
 
     if sys.platform == "win32":
         sysroot = os.environ.get("SystemRoot", r"C:\Windows")
-        # AHEAD of System32, which ships DOS twins of POSIX names: behind it a
-        # bare `find . -name '*.py'` resolves to FIND.EXE, not GNU find. Still
-        # behind the interpreter dirs above, so a Git-shipped python.exe cannot
-        # shadow the environment this server runs in.
+        # Ahead of System32 and its DOS twins (bare `find` would hit FIND.EXE,
+        # not GNU find), behind the interpreter dirs so a Git-shipped
+        # python.exe cannot shadow the environment this server runs in.
         path_entries.extend(_windows_bash_userland_dirs())
         path_entries.extend([os.path.join(sysroot, "System32"), sysroot])
     else:
@@ -6626,9 +6625,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
     # Windows needs SystemRoot for Python/subprocess to work.
     if sys.platform == "win32":
         env["SystemRoot"] = os.environ.get("SystemRoot", r"C:\Windows")
-        # Windows tempfile / native SDKs honour TEMP/TMP, not TMPDIR, so without
-        # these a program launched from the sandbox falls back to GetTempPath and
-        # writes outside the workdir. _build_bypass_env already sets all three.
+        # Windows tempfile / native SDKs honour TEMP/TMP, not TMPDIR; without
+        # these a child falls back to GetTempPath and writes outside the workdir.
         env["TEMP"] = workdir
         env["TMP"] = workdir
         # Restrict PATHEXT so cwd .BAT/.CMD cannot hijack bare names (#7317).
@@ -6994,9 +6992,9 @@ def _windows_bash_userland_dirs() -> list[str]:
 
     ``bash -c`` is non-login, so /etc/profile never runs and Git for Windows'
     ``usr\\bin`` stays off PATH, leaving ls / cat / grep "command not found".
-    bash.exe ships under ``Git\\bin`` and ``Git\\usr\\bin``, so both parents are
-    probed. Every candidate clears the same Program Files trust boundary as the
-    git entry (#7317) and is canonicalised against junctions. Fails closed: no
+    bash.exe ships under ``Git\\bin`` or ``Git\\usr\\bin``, so both parents are
+    probed. Candidates clear the same Program Files trust boundary as the git
+    entry (#7317) and are canonicalised against junctions. Fails closed: no
     trusted bash, no entries, PATH unchanged.
     """
     bash = _windows_bash()

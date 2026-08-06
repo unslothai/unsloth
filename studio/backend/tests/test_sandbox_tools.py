@@ -301,7 +301,7 @@ class TestSandboxEnvIsolation:
             "PATHEXT",  # Windows only; minimal list so cwd scripts cannot hijack
             "NoDefaultCurrentDirectoryInExePath",  # Windows only; no cwd-first lookup
             "TEMP",  # Windows only; native programs honour these, not TMPDIR
-            "TMP",  # Windows only; native programs honour these, not TMPDIR
+            "TMP",
         }
         extras = set(env.keys()) - allowed
         assert not extras, f"sandbox env added unexpected keys: {extras}"
@@ -333,9 +333,8 @@ class TestSandboxEnvIsolation:
         return prog, bin_dir
 
     def test_bash_userland_dirs_precede_system32(self, monkeypatch, tmp_path):
-        # `bash -c` is non-login, so /etc/profile never adds Git's usr\bin and
-        # `ls`/`cat`/`grep` are "command not found". They must also sort AHEAD of
-        # System32, which ships DOS twins (FIND.EXE, SORT.EXE) of POSIX names.
+        # `bash -c` is non-login, so Git's usr\bin never joins PATH (ls/cat/grep
+        # missing) and must sort ahead of System32's DOS twins (FIND.EXE).
         from core.inference.tools import _build_safe_env
 
         prog, bin_dir = self._trusted_git_bash(monkeypatch, tmp_path)
@@ -347,8 +346,7 @@ class TestSandboxEnvIsolation:
         system32 = [p for p in parts if p.lower().endswith("system32")]
         assert system32, parts
         assert parts.index(os.path.realpath(str(usr_bin))) < parts.index(system32[0])
-        # Still behind the interpreter dir, so a Git python.exe cannot shadow
-        # the environment this server runs in.
+        # Still behind the interpreter dir, so a Git python.exe cannot shadow it.
         assert parts.index(os.path.realpath(str(bin_dir))) > 0
 
     def test_untrusted_bash_contributes_no_userland(self, monkeypatch, tmp_path):
@@ -381,8 +379,8 @@ class TestSandboxEnvIsolation:
         assert _build_safe_env(str(tmp_path))["PATH"] == before
 
     def test_temp_and_tmp_point_at_the_workdir_on_windows(self, monkeypatch, tmp_path):
-        # Windows tempfile / native SDKs read TEMP/TMP, not TMPDIR, so without
-        # these a child writes outside the sandbox workdir.
+        # Windows reads TEMP/TMP, not TMPDIR; without them a child writes
+        # outside the sandbox workdir.
         from core.inference.tools import _build_safe_env
 
         self._trusted_git_bash(monkeypatch, tmp_path)
