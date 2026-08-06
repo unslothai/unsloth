@@ -11,8 +11,6 @@ import {
   AudioWave01Icon,
   Delete02Icon,
   Download01Icon,
-  FlimSlateIcon,
-  Image03Icon,
   Mic01Icon,
   SparklesIcon,
   StopIcon,
@@ -24,7 +22,6 @@ import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { AdvancedDisclosure } from "@/components/advanced-disclosure";
-import { MediaPageLink } from "@/components/media-page-link";
 import { useScrollFades } from "@/hooks/use-scroll-fades";
 import { ModelSelector } from "@/features/model-picker/components/model-selector";
 import { AUDIO_GEN_TASKS } from "@/features/model-picker/components/model-selector/pickers";
@@ -650,10 +647,6 @@ export function AudioPage({ active = true }: { active?: boolean }) {
             ]}
           />
         </div>
-        <div className="flex items-center gap-2">
-          <MediaPageLink to="/images" label="Images" icon={Image03Icon} />
-          <MediaPageLink to="/video" label="Video" icon={FlimSlateIcon} />
-        </div>
       </div>
       <div className="flex min-h-0 w-full min-w-0 flex-1 overflow-hidden pl-2 pr-5 pt-9 sm:pr-8">
           <div className="relative flex w-[408px] shrink-0 flex-col overflow-hidden border-r border-border/60 pl-8">
@@ -665,16 +658,18 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                 settingsFadeClass,
               )}
             >
-              <div className="grid gap-1">
-                <h2 className="flex h-9 items-center gap-2 font-heading text-base font-medium text-foreground">
+              {/* Same heading treatment as the Images and Video Create panes, so
+                  the media panes stay level (#7986). */}
+              <div className="mb-2 grid gap-1.5">
+                <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none text-foreground">
                   <HugeiconsIcon
                     icon={mode === "speak" ? AudioWave01Icon : Mic01Icon}
-                    className="size-4 shrink-0"
+                    className="size-[18px] shrink-0"
                   />
                   {mode === "speak" ? "Generate audio" : "Transcribe"}
                 </h2>
                 {/* The always-on capability line: which task the selected model actually does. */}
-                <p className="text-ui-11p5 leading-snug text-muted-foreground">
+                <p className="text-xs leading-snug text-muted-foreground">
                   {capabilityLine}
                 </p>
               </div>
