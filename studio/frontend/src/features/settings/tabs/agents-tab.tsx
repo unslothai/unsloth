@@ -644,6 +644,12 @@ export function AgentsTab() {
   const setStoredVariant = useSettingsPanelPrefsStore(
     (s) => s.setAgentsVariant,
   );
+  const clearStoredVariant = useSettingsPanelPrefsStore(
+    (s) => s.clearAgentsVariant,
+  );
+  const storedVariantModel = useSettingsPanelPrefsStore(
+    (s) => s.agentsVariantModel,
+  );
   // read once: these seed the controls, which write back through the handlers.
   const [storedPrefs] = useState(() => useSettingsPanelPrefsStore.getState());
   const [agents, setAgents] = useState<string[]>(
@@ -860,10 +866,17 @@ export function AgentsTab() {
 
   useEffect(() => {
     let cancelled = false;
+    // An endpoint that could not answer has not proved a model absent, and the
+    // retire treats discoveredKeys as exactly that proof.
+    let discoveryComplete = true;
+    const note = <T,>(fallback: T) => (): T => {
+      discoveryComplete = false;
+      return fallback;
+    };
     Promise.all([
-      listModels().catch(() => null),
-      listCachedGguf().catch(() => []),
-      listLocalModels().catch(() => null),
+      listModels().catch(note(null)),
+      listCachedGguf().catch(note([])),
+      listLocalModels().catch(note(null)),
     ])
       .then(([info, cachedGgufs, local]) => {
         if (cancelled) {
@@ -890,7 +903,10 @@ export function AgentsTab() {
             labels[entry.id] = entry.label;
           }
         }
-        setDiscoveredKeys(new Set(discovered.models.map(modelKey)));
+        // Left null when a source failed; null already means "cannot retire".
+        if (discoveryComplete) {
+          setDiscoveredKeys(new Set(discovered.models.map(modelKey)));
+        }
         // Status is applied on its own schedule now, so keep whatever model it has
         // already adopted rather than dropping it when this slower scan lands.
         setModels(() => {
@@ -1023,13 +1039,14 @@ export function AgentsTab() {
         .then((status) => {
           if (!cancelled && seq === statusSeq.current) {
             applyStatus(status);
+            // Only a current, answered poll is evidence: settling a superseded
+            // one would let the retire run with activeModelRef unset.
+            setStatusSettled(true);
           }
         })
         .catch(() => {
-          // A failed poll just leaves the last known selection in place.
-        })
-        .finally(() => {
-          if (!cancelled) setStatusSettled(true);
+          // Not settled: a request that never answered proves nothing about
+          // what is resident, so the retire below must keep waiting.
         });
     };
     sync();
@@ -1047,7 +1064,12 @@ export function AgentsTab() {
     if (!(restored && discoveredKeys && statusSettled)) return;
     const active = activeModelRef.current;
     restoredModel.current = null;
-    if (discoveredKeys.has(modelKey(restored)) || active?.model === restored) {
+    // modelKey both sides: discovery folds repo-id case, so an exact match
+    // would retire a valid pick just for a different spelling.
+    if (
+      discoveredKeys.has(modelKey(restored)) ||
+      (active && modelKey(active.model) === modelKey(restored))
+    ) {
       return;
     }
     // an uncached pick would pin the builder to a model the CLI cannot load.
@@ -1125,6 +1147,17 @@ export function AgentsTab() {
         const available = new Set(
           uniqueVariants.map((variant) => variant.quant),
         );
+        // Authoritative for this repo: drop a remembered quant it no longer
+        // offers, or adoptActiveModel re-imposes it on the next poll.
+        if (
+          chosenVariant.current?.model === selectedModel &&
+          !available.has(chosenVariant.current.variant)
+        ) {
+          chosenVariant.current = null;
+          if (storedVariantModel === selectedModel) {
+            clearStoredVariant();
+          }
+        }
         const nextVariant =
           pickVariant(available, [
             chosenVariant.current?.model === selectedModel
@@ -1164,7 +1197,16 @@ export function AgentsTab() {
     return () => {
       cancelled = true;
     };
-  }, [cachedLoadId, hfToken, preferredVariant, selectedModel]);
+    // storedVariantModel is read inside but is not a dep: this effect changes
+    // it, and re-running would refetch the variants.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    cachedLoadId,
+    clearStoredVariant,
+    hfToken,
+    preferredVariant,
+    selectedModel,
+  ]);
 
   // No GGUF warning for `codex` (unsloth_cli's _require_gguf_for_codex): the
   // picker only ever offers GGUF models.

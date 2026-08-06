@@ -64,6 +64,7 @@ import { SettingsRow } from "../components/settings-row";
 import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
+import { SETTINGS_PANEL_PREFS_STORAGE_KEY } from "../stores/settings-panel-prefs-store";
 
 // Keys cleared by "Reset all local preferences".
 // NEVER include auth/session keys here — clearing them would log the user out
@@ -82,6 +83,7 @@ const PREFS_KEYS: string[] = [
   "chat_settings_width",
   "unsloth_sidebar_navigate_open",
   "unsloth_settings_active_tab",
+  SETTINGS_PANEL_PREFS_STORAGE_KEY,
   // Chat runtime prefs
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
