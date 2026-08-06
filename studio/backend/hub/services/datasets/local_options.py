@@ -37,7 +37,10 @@ _SPLIT_RE = re.compile(r"[A-Za-z0-9_\-\[\]:%.+ ]+")
 
 
 def _valid_option(
-    value: Any, pattern: re.Pattern[str], *, reject_dotdot: bool = False
+    value: Any,
+    pattern: re.Pattern[str],
+    *,
+    reject_dotdot: bool = False,
 ) -> Optional[str]:
     if not isinstance(value, str):
         return None
