@@ -756,3 +756,27 @@ def test_full_response_reply_does_not_stamp_ttft():
     [entry] = monitor.snapshot()
     assert entry["ttft_ms"] is None
     assert entry["tok_per_sec"] is None
+
+
+def test_set_usage_rejects_malformed_token_counts():
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.append_reply(entry_id, "hi")
+    monitor.set_usage(
+        entry_id,
+        prompt_tokens = -3,
+        completion_tokens = "bogus",
+        total_tokens = 12,
+    )
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["prompt_tokens"] is None
+    assert entry["completion_tokens"] is None
+    assert entry["total_tokens"] == 12
+    assert entry["tok_per_sec"] is None

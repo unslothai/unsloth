@@ -29,6 +29,14 @@ def _api_monitor_disabled() -> bool:
     return os.environ.get(_DISABLE_ENV, "").strip().lower() in _TRUE_VALUES
 
 
+def _token_count_or_none(value: Any) -> Optional[int]:
+    try:
+        count = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return count if count >= 0 else None
+
+
 def _trim(text: Optional[str], limit: int) -> str:
     if not text:
         return ""
@@ -357,6 +365,12 @@ class ApiMonitor:
     ) -> None:
         if not entry_id:
             return
+        # Coerce before storing: these arrive from arbitrary provider payloads,
+        # and snapshot() does arithmetic on them.
+        prompt_tokens = _token_count_or_none(prompt_tokens)
+        completion_tokens = _token_count_or_none(completion_tokens)
+        total_tokens = _token_count_or_none(total_tokens)
+        context_length = _token_count_or_none(context_length)
         with self._lock:
             entry = self._find_locked(entry_id)
             if entry is None:
