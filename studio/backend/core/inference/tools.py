@@ -186,8 +186,10 @@ _COMMAND_PREFIXES = frozenset(
 # Unconsumed, the value is mistaken for the wrapped command: `env -u FOO rm -rf x`
 # reads as command `FOO`. Shared by the auto gate and the blocklist walk.
 _WRAPPER_VALUE_FLAGS_BY_CMD = {
-    # env -i/--ignore-environment is VALUELESS; only -u/--unset takes a name.
-    "env": frozenset({"-u", "--unset"}),
+    # env -i/--ignore-environment is VALUELESS. -u/--unset takes a name and
+    # -C/--chdir a directory, and reading that directory as the child left the
+    # shell behind it (`env -C /tmp bash -c ...`) unscreened.
+    "env": frozenset({"-u", "--unset", "-C", "--chdir"}),
     "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
     "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
     "nice": frozenset({"-n", "--adjustment"}),
@@ -1364,6 +1366,9 @@ _CMD_IF_COMPARISONS = frozenset({"equ", "neq", "lss", "leq", "gtr", "geq"})
 
 # Tells one quoted executable path apart from an argument list mentioning one.
 _EXECUTABLE_PATH_RE = re.compile(r"\.(?:exe|com|bat|cmd)(?=\s|$)", re.IGNORECASE)
+# A drive root or a rooted path: where a SECOND one of these begins, the string
+# is an argument list, not one program path carrying spaces.
+_STARTS_A_NEW_PATH_RE = re.compile(r"(?:[a-zA-Z]:[/\\]|[/\\])")
 
 # `cmd /c ""C:\Program Files\...\prog.exe" args"`: cmd removes the first and
 # last quote of the payload and runs what is left. Anchored to the flag so it
@@ -1474,8 +1479,17 @@ def _find_blocked_commands(command: str) -> set[str]:
             (".exe", ".com", ".bat", ".cmd")
         ):
             return found
-        if not any(char in payload.split()[0] for char in ":/\\"):
+        words = payload.split()
+        if not any(char in words[0] for char in ":/\\"):
             return found  # starts on a command word (`echo C:/tools/curl.exe`)
+        # One path split on ITS OWN spaces continues the same chain, so a later
+        # word starting a fresh absolute path means these are separate operands:
+        # `C:/Windows/System32/findstr curl C:/logs/curl.exe` greps a file whose
+        # name happens to be a blocked one, and reading the LAST word as the
+        # program hard-refused it. The first word is the command there, and the
+        # re-lex above has already screened it.
+        if any(_STARTS_A_NEW_PATH_RE.match(word) for word in words[1:]):
+            return found
         base = _token_basename(payload)
         return found | ({base} if base in _BLOCKED_COMMANDS else _blocked_matching_glob(base))
 
@@ -1533,8 +1547,6 @@ def _find_blocked_commands(command: str) -> set[str]:
     command_positions: "set[int]" = set()  # command-position words, for the start scan
     win_c_payloads: "set[int]" = set()  # the word a `cmd /c` hands over, same
     start_children: set[int] = set()  # what a `start` launches
-    seen_nested: set[int] = set()  # -c/\c flags already resolved to a shell
-    seen_start: set[int] = set()  # `start` words whose child is already known
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     xargs_index = -1  # an xargs awaiting the command it wraps
     for token_index, token in enumerate(tokens):
@@ -1788,159 +1800,153 @@ def _find_blocked_commands(command: str) -> set[str]:
     # recursively scan the nested command string.
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
     _SHELLS_WIN = {"cmd", "cmd.exe"}
-    def _nested_shell_pass() -> None:
+    def _nested_shell_at(i: int) -> None:
         nonlocal blocked
-        for i, token in enumerate(tokens):
-            if i in seen_nested:
-                continue
-            tok_lower = _cmd_unquote(token).lower()
-            # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)
-            is_unix_c = tok_lower == "-c" or (
-                tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
-            )
-            # Git Bash mangles a lone /c into a path, so models write //c and MSYS
-            # hands cmd back a single slash; /k runs the payload the same way.
-            is_win_c = _win_switch(tok_lower) in ("/c", "/k")
-            if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
-                continue
-            # Look back past flags for the shell binary. Windows flags and absolute
-            # paths both start with /, so only skip short /X flags (not /bin/bash).
-            for j in range(i - 1, -1, -1):
-                # A shell name only invokes a shell where the shell would run it:
-                # `echo "cmd" /c powershell` merely prints it, and reading that as
-                # an invocation hard blocked the payload behind it.
-                prev_runs = _runnable_index(j)
-                prev = _cmd_unquote(tokens[j]) if prev_runs else tokens[j]
-                if prev.startswith("-"):
-                    continue  # skip Unix flags like --login, -l
-                if is_win_c and prev.startswith("/") and len(prev) <= 3:
-                    continue  # skip Windows flags like /s, /q (not /bin/bash)
-                prev_base = os.path.basename(prev).lower()
-                # Same for the payload: the cmd lexer makes `cmd /c "rm -rf x"` one
-                # quoted token, which re-lexes to no command while still quoted.
-                if is_unix_c and prev_runs and prev_base in _SHELLS:
-                    seen_nested.add(i)
-                    blocked |= _find_blocked_commands(_cmd_unquote(tokens[i + 1]))
-                elif is_win_c and prev_runs and prev_base in _SHELLS_WIN:
-                    seen_nested.add(i)
-                    # Tell the start scan below where cmd hands control over, and
-                    # screen those words here: the walk above reads the payload with
-                    # bash grammar, so a program cmd runs from its own control flow
-                    # (`cmd /c if exist FILE powershell`) sat in argument position
-                    # and no pass ever looked at it.
-                    payload_commands = _cmd_payload_commands(i + 1)
-                    win_c_payloads.update(payload_commands)
-                    for payload_index in payload_commands:
-                        payload_word = _cmd_unquote(tokens[payload_index])
-                        if any(char in payload_word for char in " \t"):
-                            # A whole command line in one quoted token, which
-                            # _scan_cmd_payload already reads with its own rules;
-                            # a basename here would read `type C:/logs/curl` as curl.
-                            continue
-                        payload_base = _token_basename(payload_word)
-                        if payload_base in _BLOCKED_COMMANDS:
-                            blocked.add(payload_base)
+        token = tokens[i]
+        tok_lower = _cmd_unquote(token).lower()
+        # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)
+        is_unix_c = tok_lower == "-c" or (
+            tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
+        )
+        # Git Bash mangles a lone /c into a path, so models write //c and MSYS
+        # hands cmd back a single slash; /k runs the payload the same way.
+        is_win_c = _win_switch(tok_lower) in ("/c", "/k")
+        if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
+            return
+        # Look back past flags for the shell binary. Windows flags and absolute
+        # paths both start with /, so only skip short /X flags (not /bin/bash).
+        for j in range(i - 1, -1, -1):
+            # A shell name only invokes a shell where the shell would run it:
+            # `echo "cmd" /c powershell` merely prints it, and reading that as
+            # an invocation hard blocked the payload behind it.
+            prev_runs = _runnable_index(j)
+            prev = _cmd_unquote(tokens[j]) if prev_runs else tokens[j]
+            if prev.startswith("-"):
+                continue  # skip Unix flags like --login, -l
+            if is_win_c and prev.startswith("/") and len(prev) <= 3:
+                continue  # skip Windows flags like /s, /q (not /bin/bash)
+            prev_base = os.path.basename(prev).lower()
+            # Same for the payload: the cmd lexer makes `cmd /c "rm -rf x"` one
+            # quoted token, which re-lexes to no command while still quoted.
+            if is_unix_c and prev_runs and prev_base in _SHELLS:
+                blocked |= _find_blocked_commands(_cmd_unquote(tokens[i + 1]))
+            elif is_win_c and prev_runs and prev_base in _SHELLS_WIN:
+                # Tell the start scan below where cmd hands control over, and
+                # screen those words here: the walk above reads the payload with
+                # bash grammar, so a program cmd runs from its own control flow
+                # (`cmd /c if exist FILE powershell`) sat in argument position
+                # and no pass ever looked at it.
+                payload_commands = _cmd_payload_commands(i + 1)
+                win_c_payloads.update(payload_commands)
+                for payload_index in payload_commands:
+                    payload_word = _cmd_unquote(tokens[payload_index])
+                    if any(char in payload_word for char in " \t"):
+                        # A whole command line in one quoted token, which
+                        # _scan_cmd_payload already reads with its own rules;
+                        # a basename here would read `type C:/logs/curl` as curl.
+                        continue
+                    payload_base = _token_basename(payload_word)
+                    if payload_base in _BLOCKED_COMMANDS:
+                        blocked.add(payload_base)
+                    else:
+                        blocked |= _blocked_matching_glob(payload_base)
+                blocked |= _scan_cmd_payload(_cmd_unquote(tokens[i + 1]))
+                if not _cmd_unquote(tokens[i + 1]):
+                    # `cmd /c ""prog" args"` is the documented way to quote a
+                    # program path holding spaces: cmd strips the OUTER pair and
+                    # runs the rest as one string. The cmd lexer ends the first
+                    # token at the doubled quote, so the payload read as EMPTY.
+                    # Rebuild it from the raw command rather than from the
+                    # tokens, which have lost both the adjacency and the inner
+                    # quotes that hold a spaced path together.
+                    payload = _cmd_outer_quoted_payload(command)
+                    blocked |= _find_blocked_commands(payload)
+                    program = _cmd_quoted_program(payload)
+                    if program:
+                        program_base = _token_basename(program)
+                        if program_base in _BLOCKED_COMMANDS:
+                            blocked.add(program_base)
                         else:
-                            blocked |= _blocked_matching_glob(payload_base)
-                    blocked |= _scan_cmd_payload(_cmd_unquote(tokens[i + 1]))
-                    if not _cmd_unquote(tokens[i + 1]):
-                        # `cmd /c ""prog" args"` is the documented way to quote a
-                        # program path holding spaces: cmd strips the OUTER pair and
-                        # runs the rest as one string. The cmd lexer ends the first
-                        # token at the doubled quote, so the payload read as EMPTY.
-                        # Rebuild it from the raw command rather than from the
-                        # tokens, which have lost both the adjacency and the inner
-                        # quotes that hold a spaced path together.
-                        payload = _cmd_outer_quoted_payload(command)
-                        blocked |= _find_blocked_commands(payload)
-                        program = _cmd_quoted_program(payload)
-                        if program:
-                            program_base = _token_basename(program)
-                            if program_base in _BLOCKED_COMMANDS:
-                                blocked.add(program_base)
-                            else:
-                                blocked |= _blocked_matching_glob(program_base)
-                break  # stop at first non-flag token
+                            blocked |= _blocked_matching_glob(program_base)
+            break  # stop at first non-flag token
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
     # sees only as an argument, so screen what start actually launches.
-    def _start_pass() -> None:
+    def _start_at(i: int) -> None:
         nonlocal blocked
-        for i, token in enumerate(tokens):
-            if i in seen_start:
-                continue
-            if os.path.basename(_cmd_unquote(token)).lower() not in ("start", "start.exe"):
-                continue
-            j = i + 1
-            while j < len(tokens):
-                switch = _win_switch(_cmd_unquote(tokens[j]).lower())
+        token = tokens[i]
+        if os.path.basename(_cmd_unquote(token)).lower() not in ("start", "start.exe"):
+            return
+        j = i + 1
+        while j < len(tokens):
+            switch = _win_switch(_cmd_unquote(tokens[j]).lower())
+            if switch not in _START_SWITCHES:
+                break
+            # /d C:\dir and friends carry their value in the next token.
+            j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
+        if j >= len(tokens):
+            return
+        # `start ["title"] prog`: cmd reads the first argument as a window title
+        # ONLY when it arrives DOUBLE quoted, so an unquoted token here is the
+        # program and the next one merely its argument; screening both blocked
+        # `start explorer .` on the `.` source builtin.
+        head = tokens[j]
+        if not lexed_posix:
+            titled = head.startswith('"')  # the cmd lexer keeps the quote marks
+        else:
+            # The posix lexer drops them, and bash strips the quoting before
+            # exec anyway, so what arrives quoted is decided by CONTENT: the
+            # MSYS runtime re-quotes for CreateProcess only an empty argument
+            # or one holding a space/tab/newline/quote (cygwin winf.cc,
+            # linebuf::fromargv). `start "explorer" .` therefore reaches cmd
+            # bare, explorer being the program and `.` only its argument, while
+            # `start 'My Window' prog` still reads as a title.
+            titled = head == "" or any(char in head for char in ' \t\n\r"')
+        # The head is screened WHATEVER `titled` says: it is a heuristic, and a
+        # false positive must cost an over-block, never an under-block.
+        # `echo "powershell" && cmd //c start powershell -Command ls` reads as
+        # titled from the echo, so skipping the head would let it through.
+        blocked |= _scan_cmd_payload(_cmd_unquote(head))
+        # Stepping PAST the head only makes sense where the shell really runs
+        # this start: `echo start "title" powershell` launches nothing and was
+        # hard-refused. _runnable_index follows an -exec through its prefix, so
+        # `find . -exec env start "" powershell \;` still resolves to start
+        # where testing the word right after the flag read `env` and stopped.
+        runnable = _runnable_index(i)
+        if runnable:
+            k = j + 1 if titled else j
+            # Switches may also FOLLOW the title: the documented shape is
+            # `START ["title"] [switches] command`, so `start "" /b powershell`
+            # put /b where the program was expected and the scan stopped there.
+            while k < len(tokens):
+                switch = _win_switch(_cmd_unquote(tokens[k]).lower())
                 if switch not in _START_SWITCHES:
                     break
-                # /d C:\dir and friends carry their value in the next token.
-                j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
-            if j >= len(tokens):
-                continue
-            # `start ["title"] prog`: cmd reads the first argument as a window title
-            # ONLY when it arrives DOUBLE quoted, so an unquoted token here is the
-            # program and the next one merely its argument; screening both blocked
-            # `start explorer .` on the `.` source builtin.
-            head = tokens[j]
-            if not lexed_posix:
-                titled = head.startswith('"')  # the cmd lexer keeps the quote marks
-            else:
-                # The posix lexer drops them, and bash strips the quoting before
-                # exec anyway, so what arrives quoted is decided by CONTENT: the
-                # MSYS runtime re-quotes for CreateProcess only an empty argument
-                # or one holding a space/tab/newline/quote (cygwin winf.cc,
-                # linebuf::fromargv). `start "explorer" .` therefore reaches cmd
-                # bare, explorer being the program and `.` only its argument, while
-                # `start 'My Window' prog` still reads as a title.
-                titled = head == "" or any(char in head for char in ' \t\n\r"')
-            # The head is screened WHATEVER `titled` says: it is a heuristic, and a
-            # false positive must cost an over-block, never an under-block.
-            # `echo "powershell" && cmd //c start powershell -Command ls` reads as
-            # titled from the echo, so skipping the head would let it through.
-            blocked |= _scan_cmd_payload(_cmd_unquote(head))
-            # Stepping PAST the head only makes sense where the shell really runs
-            # this start: `echo start "title" powershell` launches nothing and was
-            # hard-refused. _runnable_index follows an -exec through its prefix, so
-            # `find . -exec env start "" powershell \;` still resolves to start
-            # where testing the word right after the flag read `env` and stopped.
-            runnable = _runnable_index(i)
-            if runnable:
-                k = j + 1 if titled else j
-                # Switches may also FOLLOW the title: the documented shape is
-                # `START ["title"] [switches] command`, so `start "" /b powershell`
-                # put /b where the program was expected and the scan stopped there.
-                while k < len(tokens):
-                    switch = _win_switch(_cmd_unquote(tokens[k]).lower())
-                    if switch not in _START_SWITCHES:
-                        break
-                    k += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
-                if k < len(tokens):
-                    blocked |= _scan_cmd_payload(_cmd_unquote(tokens[k]))
-                    # start launches a COMMAND LINE, not just a program, so the
-                    # child may be a shell of its own: `start cmd /c powershell`
-                    # reaches powershell through a nested cmd. Marking the child
-                    # RUNNABLE and running the nested pass again screens that,
-                    # where re-scanning the joined remainder made the whole scan
-                    # QUADRATIC in the input: a few kB stalled the request, and
-                    # _bash_exec runs this synchronously before the timeout.
-                    # It runs untitled too: only the FIRST operand is a title.
-                    start_children.add(k)
-                    seen_start.add(i)
+                k += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
+            if k < len(tokens):
+                blocked |= _scan_cmd_payload(_cmd_unquote(tokens[k]))
+                # start launches a COMMAND LINE, not just a program, so the
+                # child may be a shell of its own: `start cmd /c powershell`
+                # reaches powershell through a nested cmd. Marking the child
+                # RUNNABLE and running the nested pass again screens that,
+                # where re-scanning the joined remainder made the whole scan
+                # QUADRATIC in the input: a few kB stalled the request, and
+                # _bash_exec runs this synchronously before the timeout.
+                # It runs untitled too: only the FIRST operand is a title.
+                start_children.add(k)
 
 
-    # start can launch a shell and a shell can run a start, so the two passes
-    # feed each other. Alternating them to a fixed point resolves that nesting;
-    # each word is handled once, which keeps the whole scan linear. The cap is
-    # a backstop -- every extra level needs another literal `cmd /c start ""`.
-    for _ in range(4):
-        discovered = (len(win_c_payloads), len(start_children))
-        _nested_shell_pass()
-        _start_pass()
-        if (len(win_c_payloads), len(start_children)) == discovered:
-            break
+    # start can launch a shell and a shell can run a start, so the two feed each
+    # other. Every dependency points BACKWARD (a -c flag reads the shell name
+    # before it, a start reads its own position) and every discovery points
+    # FORWARD (the payload and the launched child both follow), so one sweep in
+    # index order resolves a chain of ANY depth: by the time a word is reached,
+    # what it depends on is final. Alternating whole passes instead needed one
+    # round per layer, and a bounded number of rounds left the deeper ones
+    # unscreened.
+    for index in range(len(tokens)):
+        _nested_shell_at(index)
+        _start_at(index)
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The
@@ -5878,6 +5884,11 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                 if current_command == "setpriv" and flag in _SETPRIV_PRIVILEGE_FLAGS:
                     # Ahead of the wrapper-value skip below, which would otherwise
                     # swallow `--reuid 0` before it is judged.
+                    return True
+                if current_command == "env" and flag in ("-C", "--chdir"):
+                    # Also ahead of the skip: -C now carries a separate value,
+                    # so the skip would swallow it before the branch below,
+                    # which asks because the chdir enables a relative read.
                     return True
                 # A wrapper option taking a SEPARATE value (env -u NAME): the next
                 # token is that value, not the wrapped command.

@@ -880,3 +880,42 @@ def test_a_start_cmd_really_runs_is_still_screened(monkeypatch, command, bash):
 def test_a_cmd_control_flow_body_is_screened(monkeypatch, command, bash):
     _fake_windows_screening(monkeypatch, bash = bash)
     assert tools._find_blocked_commands(command)
+
+@pytest.mark.parametrize("depth", [1, 2, 5, 8])
+def test_a_launcher_chain_is_screened_at_any_depth(monkeypatch, depth):
+    # Alternating whole passes needed one round per layer, so a bounded number
+    # of rounds left the deeper chains unscreened. Every dependency points
+    # backward and every discovery forward, so one sweep resolves them all.
+    _fake_windows_screening(monkeypatch, bash = None)
+    command = "cmd //c " + 'start "" cmd /c ' * depth + "powershell -Command ls"
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+def test_a_wrapper_option_value_is_not_read_as_its_child(monkeypatch):
+    # POSIX too: `env -C DIR` takes a separate operand, and reading DIR as the
+    # child made the shell behind it fail the runnable check.
+    monkeypatch.setattr(sys, "platform", "linux")
+    for command in (
+        "env -C /tmp bash -c 'rm -rf victim'",
+        "env --chdir=/tmp bash -c 'rm -rf victim'",
+        "env -u FOO bash -c 'rm -rf victim'",
+    ):
+        assert "rm" in tools._find_blocked_commands(command), command
+    assert not tools._find_blocked_commands("env -C /tmp ls -la")
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+def test_inspecting_a_file_named_after_a_blocked_command_is_allowed(monkeypatch, bash):
+    # One path split on its own spaces continues the same chain; a later word
+    # starting a fresh absolute path means these are separate operands. Reading
+    # the LAST word as the program refused a plain grep over a log file.
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(
+        'cmd /c "C:/Windows/System32/findstr curl C:/logs/curl.exe"'
+    )
+    assert not tools._find_blocked_commands('cmd /c "C:/tools/findstr rm C:/logs/rm.exe"')
+    # ...but a real program path with spaces, and a real command, still resolve.
+    assert "pwsh" in tools._find_blocked_commands(
+        'cmd /c "C:/Program Files/PowerShell/7/pwsh.exe" -c ls'
+    )
+    assert "rm" in tools._find_blocked_commands('cmd /c "C:/tools/rm C:/logs/x.exe"')
