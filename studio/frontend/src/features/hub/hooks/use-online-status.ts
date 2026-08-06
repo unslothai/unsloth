@@ -5,13 +5,12 @@ import {
   getBrowserOfflineRetryDelayMs,
   getHubPhase,
   getLastHubFailure,
-  isDirectHubOffline,
   type HubFailure,
   type HubPhase,
   isHuggingFaceOffline,
   subscribeNetworkStatus,
 } from "@/features/hub/lib/network";
-import { useCallback, useSyncExternalStore } from "react";
+import { useSyncExternalStore } from "react";
 
 function getOnlineSnapshot(): boolean {
   return !isHuggingFaceOffline();
@@ -58,30 +57,6 @@ export function useOnlineStatus(): boolean {
   return useSyncExternalStore(
     subscribeOnlineStatus,
     getOnlineSnapshot,
-    getServerOnlineSnapshot,
-  );
-}
-
-function getDirectOnlineSnapshot(): boolean {
-  return !isDirectHubOffline();
-}
-
-/**
- * For components that fetch repo assets from the Hub themselves: cards, owner
- * avatars, dataset sizes. A blocked catalog listing must not stop them, since a
- * block can be per-path, and their own failures are what suppress them, which
- * is also what lets their own success bring them back.
- */
-export function useDirectHubOnline(origin?: string): boolean {
-  // Pass the origin the caller actually fetches: a client gated on a window its
-  // own failures never arm can neither back off nor recover.
-  const getSnapshot = useCallback(
-    () => (origin === undefined ? getDirectOnlineSnapshot() : !isDirectHubOffline(origin)),
-    [origin],
-  );
-  return useSyncExternalStore(
-    subscribeOnlineStatus,
-    getSnapshot,
     getServerOnlineSnapshot,
   );
 }

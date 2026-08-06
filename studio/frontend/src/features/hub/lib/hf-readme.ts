@@ -60,10 +60,6 @@ async function fetchReadmeOnce(
           headers,
         },
         README_FETCH_TIMEOUT_MS,
-        // Not the catalog's feed: a filter can block /raw alone, and without
-        // this the card's failure would name the panel and its success would
-        // retire a still-live listing diagnosis.
-        { service: "other" },
       );
       if (res.ok) {
         return { markdown: await res.text(), branch };

@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { useDirectHubOnline } from "@/features/hub/hooks/use-online-status";
-import { DATASETS_SERVER_ORIGIN } from "@/features/hub/lib/network";
+import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { useEffect, useState } from "react";
 import {
@@ -14,9 +13,7 @@ export function useDatasetSize(
   repoId: string | null | undefined,
   options: { enabled?: boolean; token?: string | null } = {},
 ): DatasetSizeInfo | null {
-  // Its size lookup goes to datasets-server, not the Hub, so that is the
-  // origin whose window it arms and the one it must read.
-  const online = useDirectHubOnline(DATASETS_SERVER_ORIGIN);
+  const online = useOnlineStatus();
   const enabled = options.enabled ?? true;
   const token = options.token || undefined;
   const repoKey = repoId ?? "";

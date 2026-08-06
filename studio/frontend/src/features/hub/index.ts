@@ -20,7 +20,7 @@ export {
 } from "./hooks/use-hub-model-search";
 export { useHubInfiniteScroll } from "./hooks/use-hub-infinite-scroll";
 export { useLatestRef } from "./hooks/use-latest-ref";
-export { useHubAvailability, useOnlineStatus } from "./hooks/use-online-status";
+export { useOnlineStatus } from "./hooks/use-online-status";
 export {
   INVENTORY_HINT_KIND,
   INVENTORY_HINT_KINDS,

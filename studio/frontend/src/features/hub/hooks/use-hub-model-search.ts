@@ -120,18 +120,12 @@ function withGgufExpand(input: Parameters<typeof fetch>[0]): string {
   return url.toString();
 }
 
-// Only cachedModelInfo uses this, and a repo lookup is neither the listing nor
-// an asset client. It runs in parallel with the listing, so on the feed's key
-// its answer (a 404 included) would retire the listing's diagnosis; on the asset
-// clients' key its failure would suppress cards and avatars for 30s. Nobody
-// waits on it either way: mergedModelIterator catches its rejection.
 function makeHfFetch(signal?: AbortSignal): typeof fetch {
   return (input, init) =>
     fetchWithTimeout(
       withGgufExpand(input),
       signal ? { ...init, signal } : init,
       HF_SEARCH_TIMEOUT_MS,
-      { service: "info" },
     );
 }
 

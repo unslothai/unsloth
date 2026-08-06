@@ -25,7 +25,6 @@ export interface DiscoverSearch {
   isLoadingMore: boolean;
   hasMore: boolean;
   fetchMore: () => boolean;
-  fetchMoreManual: () => boolean;
   searchError: string | null;
   /** Classified cause of the last failure, for a diagnosable error panel. */
   searchFailure: HubFailure | null;
@@ -147,33 +146,13 @@ export function useDiscoverSearch({
   // Already sanitized in useHubPaginatedSearch, where every consumer reads it.
   const rawSearchError = isDatasetMode ? datasetSearch.error : modelSearch.error;
   const retrySearch = isDatasetMode ? datasetSearch.retry : modelSearch.retry;
-  const needsRestart = isDatasetMode
-    ? datasetSearch.needsRestart
-    : modelSearch.needsRestart;
   // Surfaced regardless of availability: the failure IS the thing worth showing.
   const searchError = isDiscoverTab ? rawSearchError : null;
   const searchFailure = isDiscoverTab ? failure : null;
-  // Allowed while probing: gating on `online` left Load more a permanent no-op.
-  // The backoff still blocks the `unavailable` window.
-  const canProbe = online || phase === "probing";
   const fetchMore = useCallback(() => {
-    if (!canProbe || !hasMore) return false;
+    if (!online || !hasMore) return false;
     return rawFetchMore();
-  }, [canProbe, hasMore, rawFetchMore]);
-  // The click path, on the same contract as Retry: the footer renders on
-  // hasMore and so outlives the failed page, and a visible button that silently
-  // does nothing for the whole backoff window is worse than a failed probe.
-  const fetchMoreManual = useCallback(() => {
-    if (!hasMore) return false;
-    clearRemoteBackoff();
-    // A page that failed took the iterator with it, so resuming would resolve
-    // done and quietly end pagination. Restarting is the only way to continue.
-    if (needsRestart()) {
-      retrySearch();
-      return true;
-    }
-    return rawFetchMore();
-  }, [hasMore, needsRestart, rawFetchMore, retrySearch]);
+  }, [online, hasMore, rawFetchMore]);
 
   const handleRetrySearch = useCallback(() => {
     // Always re-probe: refusing during the backoff left users unable to test a
@@ -248,7 +227,6 @@ export function useDiscoverSearch({
     isLoadingMore,
     hasMore,
     fetchMore,
-    fetchMoreManual,
     searchError,
     searchFailure,
     handleRetrySearch,

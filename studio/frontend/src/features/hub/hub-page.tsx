@@ -733,7 +733,6 @@ export function ModelsPage() {
     isLoadingMore,
     hasMore,
     fetchMore,
-    fetchMoreManual: fetchMoreDiscoverManual,
     searchError,
     searchFailure,
     handleRetrySearch,
@@ -1081,8 +1080,6 @@ export function ModelsPage() {
       enabled: online && isDiscoverTab && hasMore,
       // No phase gate: the footer renders on hasMore and so outlives the failed
       // page, and fetchMoreDiscoverManual clears the backoff itself.
-      manualEnabled: isDiscoverTab && hasMore,
-      manualFetchMore: fetchMoreDiscoverManual,
       isFetching: isLoading || isLoadingMore,
       resultCount: filteredDiscoverRows.length,
       maxAutoFillFetches: 5,

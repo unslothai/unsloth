@@ -28,12 +28,6 @@ function describeFailure(
         body: `Reconnect to the internet to browse ${resourceLabel} from Hugging Face.`,
         offlineLike: true,
       };
-    case "csp-blocked":
-      return {
-        title: "Blocked by security policy",
-        body: failure.message,
-        offlineLike: false,
-      };
     case "timeout":
       return {
         title: "Hugging Face timed out",

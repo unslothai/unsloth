@@ -2,9 +2,9 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { Spinner } from "@/components/ui/spinner";
-import { useDirectHubOnline } from "@/features/hub/hooks/use-online-status";
+import { useOnlineStatus } from "@/features/hub/hooks/use-online-status";
 import { LruMap } from "@/features/hub/lib/lru-map";
-import { isDirectHubOffline } from "@/features/hub/lib/network";
+import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
 import { cn } from "@/lib/utils";
 import { confirmExternalLink } from "../stores/external-link-confirm";
@@ -386,7 +386,7 @@ export function ModelReadme({
   subject?: ReadmeSubject;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
-  const online = useDirectHubOnline();
+  const online = useOnlineStatus();
   const tokenFingerprint = useMemo(() => fingerprintToken(hfToken), [hfToken]);
   const stateKey = useMemo(
     () => `${kind}::${repoId}::${tokenFingerprint}`,
@@ -399,7 +399,7 @@ export function ModelReadme({
       key: stateKey,
       body: null,
       baseUrl: null,
-      loading: !isDirectHubOffline(),
+      loading: !isHuggingFaceOffline(),
       error: null,
       plugins: null,
     };

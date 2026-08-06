@@ -3,6 +3,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 
 import {
   classifyFetchFailure,
@@ -11,9 +12,7 @@ import {
   getHubPhase,
   getBrowserOfflineRetryDelayMs,
   getLastHubFailure,
-  isDirectHubOffline,
   isHuggingFaceOffline,
-  DATASETS_SERVER_ORIGIN,
   isHubFetchError,
   isRemoteNetworkOffline,
   markRemoteNetworkOffline,
@@ -75,16 +74,16 @@ test("a lapsed backoff window means probing, never proven-available", async () =
 test("only a success clears the recorded failure", async () => {
   reset();
   markRemoteNetworkOffline(HF, 10, {
-    kind: "csp-blocked",
-    message: "blocked by CSP",
+    kind: "timeout",
+    message: "timed out",
     origin: HF,
-    retryable: false,
+    retryable: true,
   });
   await sleep(30);
 
   assert.equal(
     getLastHubFailure(HF)?.kind,
-    "csp-blocked",
+    "timeout",
     "the cause must outlive the backoff window or the panel goes generic",
   );
 
@@ -255,199 +254,6 @@ test("sanitizing leaves a message with no trailer alone", () => {
   assert.equal(sanitizeHubErrorMessage(""), "");
 });
 
-test("an avatar success does not erase the discovery diagnosis", async () => {
-  reset();
-  markRemoteNetworkOffline(
-    HF,
-    30_000,
-    { kind: "csp-blocked", message: "blocked", origin: HF, retryable: true },
-    "discovery",
-  );
-  const original = globalThis.fetch;
-  // The owner-avatar probe 404s for a user account, and any resolved response
-  // counted as reachability, so this is the everyday case.
-  globalThis.fetch = (async () =>
-    new Response("", { status: 404 })) as typeof fetch;
-  try {
-    await fetchWithTimeout(`${HF}/api/organizations/acme/overview`, {}, 1_000, {
-      service: "other",
-    });
-  } finally {
-    globalThis.fetch = original;
-  }
-  assert.equal(
-    getLastHubFailure(HF)?.kind,
-    "csp-blocked",
-    "a different endpoint on the same origin must not clear the cause on screen",
-  );
-  assert.notEqual(
-    getHubPhase(HF),
-    "available",
-    "reverting to available here restores the generic panel this change removes",
-  );
-});
-
-test("a discovery success does clear the discovery diagnosis", async () => {
-  reset();
-  markRemoteNetworkOffline(
-    HF,
-    30_000,
-    { kind: "network-opaque", message: "boom", origin: HF, retryable: true },
-    "discovery",
-  );
-  const original = globalThis.fetch;
-  globalThis.fetch = (async () => new Response("[]", { status: 200 })) as typeof fetch;
-  try {
-    await fetchWithTimeout(`${HF}/api/models`, {}, 1_000, {
-      service: "discovery",
-    });
-  } finally {
-    globalThis.fetch = original;
-  }
-  assert.equal(getLastHubFailure(HF), null);
-  assert.equal(getHubPhase(HF), "available");
-});
-
-test("a blocked avatar path never pins the catalog at probing", async () => {
-  reset();
-  // An auxiliary endpoint fails on its own; discovery has never failed.
-  markRemoteNetworkOffline(
-    HF,
-    30_000,
-    { kind: "timeout", message: "slow", origin: HF, retryable: true },
-    "other",
-  );
-  assert.equal(
-    getHubPhase(HF),
-    "available",
-    "an avatar outage must not make the model list claim the Hub is down",
-  );
-
-  const original = globalThis.fetch;
-  globalThis.fetch = (async () => new Response("[]", { status: 200 })) as typeof fetch;
-  try {
-    await fetchWithTimeout(`${HF}/api/models`, {}, 1_000, {
-      service: "discovery",
-    });
-  } finally {
-    globalThis.fetch = original;
-  }
-  assert.equal(
-    getHubPhase(HF),
-    "available",
-    "a successful empty search must render the empty state, not a stale error",
-  );
-  assert.equal(getLastHubFailure(HF), null);
-});
-
-test("an auxiliary success does not retire the feed's backoff", async () => {
-  markRemoteNetworkOnline();
-  const feedFailure = {
-    kind: "network-opaque" as const,
-    message: "boom",
-    origin: HF,
-    retryable: true,
-  };
-  markRemoteNetworkOffline(HF, 30_000, feedFailure, "discovery");
-  assert.equal(getHubPhase(HF, "discovery"), "unavailable");
-
-  // A block can be per-path: an avatar or dataset-size request can succeed
-  // while /api/models stays blocked, and that is service "other". An
-  // origin-wide window let it retire the feed's backoff, so Load more resumed
-  // probing a feed whose own failure was still recorded.
-  markRemoteNetworkOnline(HF, "other");
-  assert.equal(
-    getHubPhase(HF, "discovery"),
-    "unavailable",
-    "the feed's own window is the one that gates the feed",
-  );
-  assert.equal(getLastHubFailure(HF, "discovery")?.kind, "network-opaque");
-  markRemoteNetworkOnline();
-});
-
-test("Retry clears every feed's window on the origin", async () => {
-  markRemoteNetworkOnline();
-  const failure = {
-    kind: "network-opaque" as const,
-    message: "boom",
-    origin: HF,
-    retryable: true,
-  };
-  markRemoteNetworkOffline(HF, 30_000, failure, "discovery");
-  markRemoteNetworkOffline(HF, 30_000, failure, "other");
-  assert.equal(isRemoteNetworkOffline(HF), true);
-
-  clearRemoteBackoff(HF);
-  // An explicit click means "test the network now", for every client.
-  assert.equal(isRemoteNetworkOffline(HF), false);
-  assert.equal(isRemoteNetworkOffline(HF, "discovery"), false);
-  assert.equal(isRemoteNetworkOffline(HF, "other"), false);
-  markRemoteNetworkOnline();
-});
-
-test("a blocked catalog does not suppress the direct asset clients", async () => {
-  markRemoteNetworkOnline();
-  const feedFailure = {
-    kind: "network-opaque" as const,
-    message: "boom",
-    origin: HF,
-    retryable: true,
-  };
-  // A per-path block: /api/models is dead, avatars and raw files answer. The
-  // quant list is deliberately not on this predicate: it is served by our own
-  // backend, whose reachability a browser-side block says nothing about, and it
-  // arms no window here, so it stays on the origin-wide flag.
-  markRemoteNetworkOffline(HF, 30_000, feedFailure, "discovery");
-  assert.equal(getHubPhase(HF, "discovery"), "unavailable");
-  assert.equal(
-    isDirectHubOffline(),
-    false,
-    "the repo card must not go local-only over a dead listing",
-  );
-
-  // Their own failure is what suppresses them, and their own success releases it.
-  markRemoteNetworkOffline(HF, 30_000, feedFailure, "other");
-  assert.equal(isDirectHubOffline(), true);
-  markRemoteNetworkOnline(HF, "other");
-  assert.equal(isDirectHubOffline(), false);
-  markRemoteNetworkOnline();
-});
-
-test("the retry timer wakes on the soonest window, not the longest", async () => {
-  markRemoteNetworkOnline();
-  const failure = {
-    kind: "network-opaque" as const,
-    message: "boom",
-    origin: HF,
-    retryable: true,
-  };
-  markRemoteNetworkOffline(HF, 5_000, failure, "discovery");
-  markRemoteNetworkOffline(HF, 60_000, failure, "other");
-  const delay = getBrowserOfflineRetryDelayMs();
-  // Waking only at 60s would leave the Discover panel rendering "unavailable"
-  // for 55s after its own phase had already moved to "probing".
-  assert.ok(delay <= 5_000, `expected the 5s window, got ${delay}`);
-  markRemoteNetworkOnline();
-});
-
-test("a Hub-only block does not reach the datasets-server gate", async () => {
-  markRemoteNetworkOnline();
-  const failure = {
-    kind: "network-opaque" as const,
-    message: "boom",
-    origin: HF,
-    retryable: true,
-  };
-  markRemoteNetworkOffline(HF, 30_000, failure, "other");
-  assert.equal(isDirectHubOffline(), true);
-  assert.equal(
-    isDirectHubOffline(DATASETS_SERVER_ORIGIN),
-    false,
-    "a different host's outage is not this one's",
-  );
-  markRemoteNetworkOnline();
-});
-
 test("the cause on screen describes the window that is in force", async () => {
   markRemoteNetworkOnline();
   const live = {
@@ -456,7 +262,7 @@ test("the cause on screen describes the window that is in force", async () => {
     origin: HF,
     retryable: true,
   };
-  markRemoteNetworkOffline(HF, 30_000, live, "discovery");
+  markRemoteNetworkOffline(HF, 30_000, live);
 
   // A concurrent request records a second cause with no window of its own.
   // Taking that cause while keeping the longer window left the panel naming a
@@ -465,49 +271,49 @@ test("the cause on screen describes the window that is in force", async () => {
     HF,
     0,
     { kind: "timeout", message: "timed out", origin: HF, retryable: true },
-    "discovery",
   );
-  assert.equal(getHubPhase(HF, "discovery"), "unavailable");
+  assert.equal(getHubPhase(HF), "unavailable");
   assert.equal(
-    getLastHubFailure(HF, "discovery")?.kind,
+    getLastHubFailure(HF)?.kind,
     "network-opaque",
     "the older answer must not explain a newer failure's backoff",
   );
   markRemoteNetworkOnline();
 });
 
-test("a repo lookup nobody waited on does not take the Hub down", async () => {
-  markRemoteNetworkOnline();
-  const failure = {
-    kind: "timeout" as const,
-    message: "timed out",
-    origin: HF,
-    retryable: true,
-  };
-  // The pinned-publisher lookup runs beside the listing and its rejection is
-  // caught, so its 15s timeout is evidence for nobody. On a gating key it took
-  // the catalog panel, the cards, the avatars and the quant list with it.
-  markRemoteNetworkOffline(HF, 30_000, failure, "info");
-  assert.equal(isHuggingFaceOffline(), false, "no client waits on this");
-  assert.equal(isDirectHubOffline(), false, "cards and avatars keep fetching");
-  assert.equal(getHubPhase(HF), "available", "and the panel stays quiet");
-  markRemoteNetworkOnline();
-});
 
-test("Retry still clears the lookup's window with the rest", async () => {
-  markRemoteNetworkOnline();
-  const failure = {
-    kind: "timeout" as const,
-    message: "timed out",
-    origin: HF,
-    retryable: true,
-  };
-  markRemoteNetworkOffline(HF, 30_000, failure, "info");
-  assert.equal(isRemoteNetworkOffline(HF, "info"), true);
-  // Excluded from the reachability sweep, not from the explicit reset: an
-  // untouchable window would sit there for its full TTL after a user asked to
-  // re-probe, and would go on delaying the retry timer.
-  clearRemoteBackoff(HF);
-  assert.equal(isRemoteNetworkOffline(HF, "info"), false);
-  markRemoteNetworkOnline();
+test("a generator that threw is not pulled again", async () => {
+  // @huggingface/hub awaits the fetch inside the generator body, so a failed
+  // page finishes the generator and every later next() resolves done. The
+  // auto-fill then cleared the error with it, which undoes the whole point of
+  // keeping the failure on screen.
+  let requests = 0;
+  async function* listing() {
+    for (const page of [1, 2]) {
+      requests += 1;
+      if (page === 2) throw new Error("Failed to fetch");
+      yield page;
+    }
+  }
+  const iter = listing();
+  assert.deepEqual(await iter.next(), { value: 1, done: false });
+  await assert.rejects(iter.next());
+  assert.equal((await iter.next()).done, true, "it is finished once it throws");
+  assert.equal(requests, 2, "reusing it issues no request, so done is a lie");
+
+  const src = await readFile(
+    new URL("../src/features/hub/hooks/use-hub-paginated-search.ts", import.meta.url),
+    "utf8",
+  );
+  // Set on the failure path, cleared only where a new generator is built.
+  assert.match(src, /iterDeadRef\.current = true;/);
+  assert.match(src, /iterRef\.current = iter;\s*\n\s*iterDeadRef\.current = false;/);
+  const at = src.indexOf("const fetchMore = useCallback");
+  assert.notEqual(at, -1);
+  const guard = src.slice(at, src.indexOf("const iter = iterRef.current;", at));
+  assert.match(guard, /if \(iterDeadRef\.current\) \{/);
+  assert.ok(
+    guard.slice(guard.indexOf("if (iterDeadRef.current) {")).includes("return false;"),
+    "a dead feed starts nothing, so its error survives",
+  );
 });

@@ -7,11 +7,7 @@ export function isBrowserOffline(): boolean {
 
 const NETWORK_STATUS_EVENT = "unsloth-network-status";
 const REMOTE_OFFLINE_TTL_MS = 30_000;
-// Discovery and repository pages are served by the main Hugging Face origin.
-// Keep optional services such as datasets-server separate so an outage there
-// cannot make the whole Hub appear offline.
 const HUGGING_FACE_ORIGIN = "https://huggingface.co";
-export const DATASETS_SERVER_ORIGIN = "https://datasets-server.huggingface.co";
 const noopUnsubscribe = () => undefined;
 
 type RemoteNetworkScope = string | readonly string[];
@@ -24,7 +20,6 @@ type RemoteNetworkScope = string | readonly string[];
 export type HubFailureKind =
   | "aborted"
   | "timeout"
-  | "csp-blocked"
   | "browser-offline"
   | "network-opaque"
   | "unknown";
@@ -36,7 +31,6 @@ export interface HubFailure {
   /** Origin only, never the full request URL (which carries the search query). */
   origin: string | null;
   status?: number;
-  effectiveDirective?: string;
   retryable: boolean;
 }
 
@@ -55,34 +49,11 @@ export function isHubFetchError(error: unknown): error is HubFetchError {
   return error instanceof HubFetchError;
 }
 
-// Keyed like the failures, not by origin alone. A block can be per-path, so an
-// avatar succeeding does not prove the listing works: an origin-wide window let
-// that success retire the feed's backoff and resume probing a still-dead feed.
-const remoteOfflineUntilByKey = new Map<string, number>();
+const remoteOfflineUntilByOrigin = new Map<string, number>();
 // The TTL controls when we retry; this controls what we tell the user. Cleared
-// only by a success, so the cause outlives the backoff window.
-const lastFailureByKey = new Map<string, HubFailure>();
-
-/**
- * Which feed a request belongs to. A block can be per-path, so the catalog panel
- * reads discovery's own history: an avatar result, good or bad, cannot move it.
- *
- * "info" is the repo-path lookup the listing runs alongside itself. Its failure
- * is swallowed by its caller, so nothing gates on it; on either of the other
- * keys it would instead retire the catalog's diagnosis or, worse, suppress
- * every asset client for 30s over a lookup that nobody was waiting on.
- */
-export type HubService = "discovery" | "other" | "info";
-
-const HUB_SERVICES: readonly HubService[] = ["discovery", "other", "info"];
-// What the origin-wide reachability question reads. "info" is swept by Retry,
-// which clears everything on the origin, but must not answer "can this browser
-// reach the Hub" for the clients that do wait on an answer.
-const GATING_SERVICES: readonly HubService[] = ["discovery", "other"];
-
-function failureKey(origin: string, service: HubService): string {
-  return `${service}|${origin}`;
-}
+// only by a success, so the cause outlives the backoff window and the panel can
+// still say why after the window has lapsed.
+const lastFailureByOrigin = new Map<string, HubFailure>();
 
 function isNavigatorOffline(): boolean {
   return typeof navigator !== "undefined" && navigator.onLine === false;
@@ -110,42 +81,30 @@ function normalizeScope(scope: RemoteNetworkScope): readonly string[] {
   return typeof scope === "string" ? [scope] : scope;
 }
 
-function offlineUntil(origin: string, service: HubService): number {
-  const key = failureKey(origin, service);
-  const value = remoteOfflineUntilByKey.get(key) ?? 0;
+function offlineUntil(origin: string): number {
+  const value = remoteOfflineUntilByOrigin.get(origin) ?? 0;
   if (value <= Date.now()) {
-    remoteOfflineUntilByKey.delete(key);
+    remoteOfflineUntilByOrigin.delete(origin);
     return 0;
   }
   return value;
 }
 
-function getRemoteOfflineUntil(
-  scope: RemoteNetworkScope,
-  service?: HubService,
-): number {
-  const services = service ? [service] : GATING_SERVICES;
+function getRemoteOfflineUntil(scope: RemoteNetworkScope): number {
   let until = 0;
   for (const origin of normalizeScope(scope)) {
-    for (const s of services) {
-      until = Math.max(until, offlineUntil(origin, s));
-    }
+    until = Math.max(until, offlineUntil(origin));
   }
   return until;
 }
 
-/**
- * The soonest live window anywhere, or 0 when nothing is backing off. Every
- * origin, not just the Hub's: a client gated on another one (dataset sizes read
- * datasets-server) would otherwise back off with nothing scheduled to wake it,
- * and its own gate is shut, so no request could report the recovery either.
- */
+/** The soonest live window anywhere, or 0 when nothing is backing off. */
 function getEarliestRemoteOfflineUntil(): number {
   const now = Date.now();
   let until = 0;
-  for (const [key, value] of remoteOfflineUntilByKey) {
+  for (const [origin, value] of remoteOfflineUntilByOrigin) {
     if (value <= now) {
-      remoteOfflineUntilByKey.delete(key);
+      remoteOfflineUntilByOrigin.delete(origin);
       continue;
     }
     if (until === 0 || value < until) {
@@ -155,25 +114,10 @@ function getEarliestRemoteOfflineUntil(): number {
   return until;
 }
 
-/** Omit `service` to ask whether anything is backing off this origin. */
 export function isRemoteNetworkOffline(
   scope: RemoteNetworkScope = HUGGING_FACE_ORIGIN,
-  service?: HubService,
 ): boolean {
-  return getRemoteOfflineUntil(scope, service) > Date.now();
-}
-
-/**
- * For the clients that fetch repo assets directly (repo cards, owner avatars,
- * quant listings). They ask whether this browser can reach the Hub for *their*
- * requests, so a blocked catalog must not suppress them: under a per-path block
- * the listing can be dead while everything else answers, and their own success
- * is what clears this.
- */
-export function isDirectHubOffline(
-  origin: string = HUGGING_FACE_ORIGIN,
-): boolean {
-  return isRemoteNetworkOffline(origin, "other");
+  return getRemoteOfflineUntil(scope) > Date.now();
 }
 
 export function isHuggingFaceOffline(): boolean {
@@ -190,41 +134,35 @@ export function isHuggingFaceOffline(): boolean {
  */
 export type HubPhase = "available" | "probing" | "unavailable";
 
-export function getHubPhase(
-  origin: string = HUGGING_FACE_ORIGIN,
-  service: HubService = "discovery",
-): HubPhase {
-  if (!lastFailureByKey.has(failureKey(origin, service))) {
+export function getHubPhase(origin: string = HUGGING_FACE_ORIGIN): HubPhase {
+  if (!lastFailureByOrigin.has(origin)) {
     return "available";
   }
-  return isRemoteNetworkOffline(origin, service) ? "unavailable" : "probing";
+  return isRemoteNetworkOffline(origin) ? "unavailable" : "probing";
 }
 
 export function getLastHubFailure(
   origin: string = HUGGING_FACE_ORIGIN,
-  service: HubService = "discovery",
 ): HubFailure | null {
-  return lastFailureByKey.get(failureKey(origin, service)) ?? null;
+  return lastFailureByOrigin.get(origin) ?? null;
 }
 
-export function markRemoteNetworkOnline(
-  origin?: string,
-  service: HubService = "discovery",
-): void {
+export function markRemoteNetworkOnline(origin?: string): void {
   if (origin === undefined) {
-    if (remoteOfflineUntilByKey.size === 0 && lastFailureByKey.size === 0) {
+    if (
+      remoteOfflineUntilByOrigin.size === 0 &&
+      lastFailureByOrigin.size === 0
+    ) {
       return;
     }
-    remoteOfflineUntilByKey.clear();
-    lastFailureByKey.clear();
+    remoteOfflineUntilByOrigin.clear();
+    lastFailureByOrigin.clear();
     emitNetworkStatusChange();
     return;
   }
-  // Both the window and the cause are per feed, so a success retires only its
-  // own: under a per-path block one feed recovering says nothing about another.
-  const key = failureKey(origin, service);
-  const hadWindow = remoteOfflineUntilByKey.delete(key);
-  const hadFailure = lastFailureByKey.delete(key);
+  // The cause goes with the window: a success is what proves the block lifted.
+  const hadWindow = remoteOfflineUntilByOrigin.delete(origin);
+  const hadFailure = lastFailureByOrigin.delete(origin);
   if (!hadWindow && !hadFailure) {
     return;
   }
@@ -235,27 +173,23 @@ export function markRemoteNetworkOffline(
   originOrTtl: string | number = HUGGING_FACE_ORIGIN,
   ttlMs = REMOTE_OFFLINE_TTL_MS,
   failure?: HubFailure,
-  service: HubService = "discovery",
 ): void {
   const origin =
-    typeof originOrTtl === "string"
-      ? originOrTtl
-      : HUGGING_FACE_ORIGIN;
+    typeof originOrTtl === "string" ? originOrTtl : HUGGING_FACE_ORIGIN;
   const ttl = typeof originOrTtl === "number" ? originOrTtl : ttlMs;
   const nextUntil = Date.now() + ttl;
-  const key = failureKey(origin, service);
-  const previousUntil = remoteOfflineUntilByKey.get(key) ?? 0;
-  // The cause has to describe the window that is in force. Recording a newer
-  // cause while keeping a longer window left the panel naming an older
-  // response while a different, still-live failure was what held it
-  // unavailable. A first cause is always taken, so nothing goes unexplained.
+  const previousUntil = remoteOfflineUntilByOrigin.get(origin) ?? 0;
+  // The cause has to describe the window in force: recording a newer cause while
+  // keeping a longer window left the panel naming a spent failure while a
+  // different, still-live one held it unavailable. A first cause is always
+  // taken, so nothing the user sees goes unexplained.
   const takesWindow = nextUntil > previousUntil;
   const records =
-    failure !== undefined && (takesWindow || !lastFailureByKey.has(key));
+    failure !== undefined && (takesWindow || !lastFailureByOrigin.has(origin));
   const failureChanged =
-    records && lastFailureByKey.get(key)?.kind !== failure?.kind;
+    records && lastFailureByOrigin.get(origin)?.kind !== failure?.kind;
   if (records && failure !== undefined) {
-    lastFailureByKey.set(key, failure);
+    lastFailureByOrigin.set(origin, failure);
   }
   if (!takesWindow) {
     if (failureChanged) {
@@ -263,7 +197,7 @@ export function markRemoteNetworkOffline(
     }
     return;
   }
-  remoteOfflineUntilByKey.set(key, nextUntil);
+  remoteOfflineUntilByOrigin.set(origin, nextUntil);
   emitNetworkStatusChange();
 }
 
@@ -271,12 +205,7 @@ export function markRemoteNetworkOffline(
 export function clearRemoteBackoff(
   origin: string = HUGGING_FACE_ORIGIN,
 ): void {
-  // An explicit Retry tests the network now, so every feed's window goes.
-  let cleared = false;
-  for (const service of HUB_SERVICES) {
-    cleared = remoteOfflineUntilByKey.delete(failureKey(origin, service)) || cleared;
-  }
-  if (!cleared) {
+  if (!remoteOfflineUntilByOrigin.delete(origin)) {
     return;
   }
   emitNetworkStatusChange();
@@ -336,69 +265,6 @@ function hostLabel(origin: string | null): string {
   }
 }
 
-// ---------------------------------------------------------------------------
-// CSP correlation
-// ---------------------------------------------------------------------------
-
-// Violations fire on the document, not the rejected promise, so attribution
-// means remembering them briefly and matching by origin.
-const CSP_VIOLATION_TTL_MS = 3_000;
-const cspViolationsByOrigin = new Map<
-  string,
-  { at: number; effectiveDirective: string }
->();
-let cspListenerInstalled = false;
-
-function recordCspViolation(event: SecurityPolicyViolationEvent): void {
-  const directive = event.effectiveDirective || event.violatedDirective || "";
-  // Only connect-src can explain a failed fetch.
-  if (!directive.startsWith("connect-src")) {
-    return;
-  }
-  const origin = originFromFetchInput(event.blockedURI);
-  if (!origin) {
-    return;
-  }
-  cspViolationsByOrigin.set(origin, {
-    at: Date.now(),
-    effectiveDirective: directive,
-  });
-}
-
-export function installCspViolationListener(): () => void {
-  if (typeof document === "undefined" || cspListenerInstalled) {
-    return noopUnsubscribe;
-  }
-  cspListenerInstalled = true;
-  document.addEventListener("securitypolicyviolation", recordCspViolation);
-  return () => {
-    document.removeEventListener("securitypolicyviolation", recordCspViolation);
-    cspListenerInstalled = false;
-  };
-}
-
-function takeCspViolation(
-  origin: string | null,
-  since: number,
-): { effectiveDirective: string } | null {
-  if (!origin) {
-    return null;
-  }
-  const hit = cspViolationsByOrigin.get(origin);
-  if (!hit) {
-    return null;
-  }
-  const now = Date.now();
-  if (now - hit.at > CSP_VIOLATION_TTL_MS || hit.at < since) {
-    cspViolationsByOrigin.delete(origin);
-    return null;
-  }
-  // Kept for the rest of its TTL rather than consumed. Concurrent requests to
-  // one origin fail under one policy, so consuming it let the second be
-  // classified network-opaque and overwrite the more actionable diagnosis.
-  return { effectiveDirective: hit.effectiveDirective };
-}
-
 /**
  * Build a renderable failure. Drops the request URL: it carries the search query
  * and can carry an internal hostname. Only the origin's host survives.
@@ -406,7 +272,7 @@ function takeCspViolation(
 export function classifyFetchFailure(
   error: unknown,
   origin: string | null,
-  options: { timedOut?: boolean; startedAt?: number } = {},
+  options: { timedOut?: boolean } = {},
 ): HubFailure {
   const host = hostLabel(origin);
   if (options.timedOut) {
@@ -423,16 +289,6 @@ export function classifyFetchFailure(
       message: "The request was cancelled.",
       origin,
       retryable: true,
-    };
-  }
-  const csp = takeCspViolation(origin, options.startedAt ?? 0);
-  if (csp) {
-    return {
-      kind: "csp-blocked",
-      message: `The browser blocked the connection to ${host} under Content Security Policy (${csp.effectiveDirective}).`,
-      origin,
-      effectiveDirective: csp.effectiveDirective,
-      retryable: false,
     };
   }
   if (isNetworkFetchError(error)) {
@@ -474,11 +330,7 @@ export async function fetchWithTimeout(
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1] = {},
   timeoutMs = 15_000,
-  options: { service?: HubService } = {},
 ): Promise<Response> {
-  // Defaults to the feed with a panel: an unmarked caller's failure is one the
-  // user should see. Auxiliary clients pass "other".
-  const service = options.service ?? "discovery";
   const parentSignal = init.signal;
   const controller = new AbortController();
   let timedOut = false;
@@ -495,12 +347,11 @@ export async function fetchWithTimeout(
   }
 
   const origin = originFromFetchInput(input);
-  const startedAt = Date.now();
 
   try {
     const response = await fetch(input, { ...init, signal: controller.signal });
     if (origin) {
-      markRemoteNetworkOnline(origin, service);
+      markRemoteNetworkOnline(origin);
     }
     return response;
   } catch (error) {
@@ -508,9 +359,9 @@ export async function fetchWithTimeout(
     if (parentSignal?.aborted && !timedOut) {
       throw error;
     }
-    const failure = classifyFetchFailure(error, origin, { timedOut, startedAt });
+    const failure = classifyFetchFailure(error, origin, { timedOut });
     if (origin && (timedOut || isNetworkFetchError(error))) {
-      markRemoteNetworkOffline(origin, REMOTE_OFFLINE_TTL_MS, failure, service);
+      markRemoteNetworkOffline(origin, REMOTE_OFFLINE_TTL_MS, failure);
     }
     throw new HubFetchError(failure, { cause: error });
   } finally {

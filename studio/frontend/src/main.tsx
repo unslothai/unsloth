@@ -7,7 +7,6 @@ import { createRoot } from "react-dom/client";
 import "./index.css";
 import { App } from "./app/app";
 import { fetchDeviceType } from "./config/env";
-import { installCspViolationListener } from "./features/hub/lib/network";
 import { initializeLocale } from "./i18n";
 
 const globalCrypto = globalThis.crypto as Crypto | undefined;
@@ -51,7 +50,3 @@ createRoot(rootElement).render(
 );
 
 fetchDeviceType().catch(() => undefined);
-
-// A blocked fetch is an opaque TypeError; this event is the only signal naming
-// CSP, so listen before any Hub request runs.
-installCspViolationListener();

@@ -209,8 +209,6 @@ export function fetchDatasetSize(
   tokenOrSignal?: string | AbortSignal,
   signal?: AbortSignal,
 ): Promise<DatasetSizeInfo | null> {
-  // Hardcoded public endpoints: with a mirror, the token and repo name would go
-  // to the wrong host.
   const resolvedToken =
     typeof tokenOrSignal === "string" ? tokenOrSignal : undefined;
   const resolvedSignal =
@@ -230,7 +228,6 @@ export function fetchDatasetSize(
             : undefined,
         },
         FETCH_TIMEOUT_MS,
-        { service: "other" },
       );
       if (!res.ok) {
         // datasets-server 404 often means "not processed yet", not "never".
@@ -328,7 +325,6 @@ export function fetchModelSize(
           headers: token ? { Authorization: `Bearer ${token}` } : undefined,
         },
         FETCH_TIMEOUT_MS,
-        { service: "other" },
       );
       if (!res.ok) {
         return { miss: res.status === 404 ? "permanent" : "transient" };

@@ -85,11 +85,7 @@ export function useHubPaginatedSearch<T>(
   createIter: (signal: AbortSignal) => AsyncGenerator<unknown>,
   mapItem: (raw: unknown) => T | null,
   options?: { enabled?: boolean },
-): HfPaginatedState<T> & {
-  fetchMore: () => boolean;
-  retry: () => void;
-  needsRestart: () => boolean;
-} {
+): HfPaginatedState<T> & { fetchMore: () => boolean; retry: () => void } {
   const enabled = options?.enabled ?? true;
   const [retryNonce, setRetryNonce] = useState(0);
   // An async generator that throws is closed: the next next() resolves done
@@ -269,8 +265,6 @@ export function useHubPaginatedSearch<T>(
     setRetryNonce((n) => n + 1);
   }, []);
 
-  const needsRestart = useCallback(() => iterDeadRef.current, []);
-
   const fetchMore = useCallback(function fetchMoreInner(): boolean {
     if (!enabled) {
       queuedAfterBusyRef.current = false;
@@ -423,6 +417,5 @@ export function useHubPaginatedSearch<T>(
     error: visibleState.error,
     fetchMore,
     retry,
-    needsRestart,
   };
 }
