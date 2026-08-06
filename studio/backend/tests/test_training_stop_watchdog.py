@@ -1285,7 +1285,7 @@ def test_terminal_error_releases_an_in_flight_stop_watchdog(monkeypatch):
     calls = _record_force_terminate(monkeypatch, b)
 
     b._should_stop = True
-    b._start_stop_watchdog(cancel = False)      # the stop's own watchdog, now in flight
+    b._start_stop_watchdog(cancel = False)  # the stop's own watchdog, now in flight
     first = b._stop_watchdog
     assert first is not None and first.is_alive()
 
