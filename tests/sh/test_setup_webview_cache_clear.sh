@@ -85,6 +85,17 @@ assert_gone    "linux: XDG_DATA_HOME WebKitCache removed"    "$XDG/data/$BID/Web
 assert_present "linux: XDG_DATA_HOME localstorage kept"      "$XDG/data/$BID/localstorage"
 assert_present "linux: default data dir kept under override" "$H/.local/share/$BID/WebKitCache"
 
+# ── 3a. A relative XDG_DATA_HOME is invalid per the XDG spec, so dirs (and so
+# Tauri) ignores it. Following it would rm -rf under the installer's own cwd and
+# leave the cache Tauri actually uses in place ──
+H=$(new_home)
+W=$(mktemp -d "$_TMP_ROOT/work.XXXXXX")
+mkdir -p "$W/reldata/$BID/WebKitCache" "$H/.local/share/$BID/WebKitCache"
+uname() { echo Linux; }
+( cd "$W" && HOME="$H" XDG_CACHE_HOME="" XDG_DATA_HOME="reldata" _clear_webview_caches )
+assert_present "linux: relative XDG_DATA_HOME not followed under cwd" "$W/reldata/$BID/WebKitCache"
+assert_gone    "linux: relative XDG_DATA_HOME uses the default"       "$H/.local/share/$BID/WebKitCache"
+
 # ── 3b. A dangling cache symlink still occupies the path, so it must go ──
 H=$(new_home)
 mkdir -p "$H/.local/share/$BID"
@@ -108,12 +119,17 @@ uname() { echo SunOS; }
 HOME="$H" _clear_webview_caches
 assert_present "unknown OS: nothing removed" "$H/Library/Caches/$BID"
 
-# ── 6. No HOME is a no-op, not a delete under /Library or /.cache ──
+# ── 6. No HOME is a no-op, not a delete under /Library or /.cache. Unset, not
+# empty: `set -u` fires on unset only, and the empty case alone passes even with
+# the guard deleted, since the paths just miss. ──
 uname() { echo Darwin; }
-if ( set -u; HOME="" _clear_webview_caches ); then
-    echo "  PASS: empty HOME -> no-op exit 0"; PASS=$((PASS+1))
+_wvc_rc=0
+# `|| _wvc_rc=$?` keeps the abort we are testing for off `set -e`'s exit path.
+_wvc_out=$( set -u; unset HOME; _clear_webview_caches 2>&1 ) || _wvc_rc=$?
+if [ "$_wvc_rc" = 0 ] && [ -z "$_wvc_out" ]; then
+    echo "  PASS: unset HOME -> silent no-op"; PASS=$((PASS+1))
 else
-    echo "  FAIL: empty HOME -> nonzero exit"; FAIL=$((FAIL+1))
+    echo "  FAIL: unset HOME -> rc=$_wvc_rc out=$_wvc_out"; FAIL=$((FAIL+1))
 fi
 
 # ── 7. setup.sh still calls it (the sed extract above cannot prove that) ──

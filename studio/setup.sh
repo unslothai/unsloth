@@ -552,7 +552,12 @@ _clear_webview_caches() {
         Linux)
             # wry points WebKitGTK's base-cache dir at the app data dir, so the
             # caches sit beside localstorage/, databases/ and cookies, which stay.
-            _wvc_data="${XDG_DATA_HOME:-$HOME/.local/share}/$_wvc_bid"
+            # A relative XDG_DATA_HOME is invalid per the XDG spec and is dropped
+            # by dirs, so Tauri uses the default; match that rather than rm -rf a
+            # relative path under whatever directory the installer runs from.
+            _wvc_data="${XDG_DATA_HOME:-$HOME/.local/share}"
+            case "$_wvc_data" in /*) ;; *) _wvc_data="$HOME/.local/share" ;; esac
+            _wvc_data="$_wvc_data/$_wvc_bid"
             _wvc_paths=(
                 "$_wvc_data/WebKitCache"
                 "$_wvc_data/CacheStorage"
