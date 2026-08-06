@@ -1,9 +1,9 @@
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
-use super::phase_log::{collect_phase_groups, path_has_symlink};
+use super::phase_log::{collect_phase_groups, path_has_symlink, PhaseGroup};
 use super::redaction::{redact_text, RedactionReport};
 use super::state::{AttemptSummary, CappedStrings, DiagnosticsSnapshot, FrontendSupportSnapshot};
 use super::{
@@ -364,6 +364,8 @@ fn append_log_sections(
     }
 
     let phase_groups = collect_phase_groups(snapshot, warnings);
+    append_backend_session_log_section(out, &phase_groups, &backend_session_log_dir(), warnings);
+
     if phase_groups.is_empty() {
         out.push_str("phase_logs=unavailable\n");
     }
@@ -408,17 +410,172 @@ fn append_tail_section(
             }
             out.push_str("```\n");
         }
-        Err(error) => {
-            out.push_str(&format!(
-                "file={} label={} source={} unavailable={}\n",
-                path.display(),
-                label,
-                source,
-                error
-            ));
-            warnings.push(format!("{} unavailable: {}", path.display(), error));
+        Err(error) => append_unavailable_section(
+            out,
+            &path.display().to_string(),
+            label,
+            source,
+            &error,
+            warnings,
+        ),
+    }
+}
+
+fn append_unavailable_section(
+    out: &mut String,
+    location: &str,
+    label: &str,
+    source: &str,
+    reason: &str,
+    warnings: &mut Vec<String>,
+) {
+    out.push_str(&format!(
+        "file={location} label={label} source={source} unavailable={reason}\n"
+    ));
+    warnings.push(format!("{location} unavailable: {reason}"));
+}
+
+/// `faulthandler` in the backend writes native-crash stacks to the per-session
+/// disk log, so it is the only artifact that names the faulting library after an
+/// access violation in a GPU runtime.
+const BACKEND_SESSION_LOG_LABEL: &str = "backend-session-log";
+
+fn backend_session_log_dir() -> PathBuf {
+    logs_dir().join("server")
+}
+
+fn append_backend_session_log_section(
+    out: &mut String,
+    groups: &[PhaseGroup],
+    dir: &Path,
+    warnings: &mut Vec<String>,
+) {
+    match resolve_backend_session_log(groups, dir, warnings) {
+        Ok((path, source)) => {
+            append_tail_section(out, &path, BACKEND_SESSION_LOG_LABEL, source, warnings)
+        }
+        Err(reason) => append_unavailable_section(
+            out,
+            &dir.display().to_string(),
+            BACKEND_SESSION_LOG_LABEL,
+            "disk-newest",
+            &reason,
+            warnings,
+        ),
+    }
+}
+
+fn resolve_backend_session_log(
+    groups: &[PhaseGroup],
+    dir: &Path,
+    warnings: &mut Vec<String>,
+) -> Result<(PathBuf, &'static str), String> {
+    // The backend prints `Session log: <path>` on stdout and the backend phase log
+    // captures it. Prefer that: an overridden studio home puts the file outside the
+    // directory we would otherwise scan.
+    if let Some(path) = session_log_from_phase_logs(groups) {
+        return Ok((path, "backend-phase-log"));
+    }
+    newest_session_log(dir, warnings).map(|path| (path, "disk-newest"))
+}
+
+fn session_log_from_phase_logs(groups: &[PhaseGroup]) -> Option<PathBuf> {
+    for group in groups.iter().filter(|g| g.label.starts_with("backend:")) {
+        for path in group.paths.iter().rev() {
+            let Ok(tail) = read_tail(path, TAIL_MAX_LINES, TAIL_MAX_BYTES) else {
+                continue;
+            };
+            if let Some(candidate) = parse_session_log_path(&tail.text) {
+                return Some(candidate);
+            }
         }
     }
+    None
+}
+
+// Parsed out of captured process stdout, so a stray "Session log:" in that
+// output must not aim the collector at an arbitrary file: only accept an
+// existing `<...>/server/server-*.log`.
+fn parse_session_log_path(text: &str) -> Option<PathBuf> {
+    let mut found = None;
+    for line in text.lines() {
+        let Some((_, rest)) = line.split_once("Session log: ") else {
+            continue;
+        };
+        let candidate = PathBuf::from(rest.trim());
+        if is_session_log_path(&candidate) && candidate.is_file() {
+            found = Some(candidate);
+        }
+    }
+    found
+}
+
+fn is_session_log_path(path: &Path) -> bool {
+    let named = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(is_session_log_name)
+        .unwrap_or(false);
+    let in_server_dir = path
+        .parent()
+        .and_then(|parent| parent.file_name())
+        .and_then(|name| name.to_str())
+        == Some("server");
+    named && in_server_dir
+}
+
+fn is_session_log_name(name: &str) -> bool {
+    name.starts_with("server-") && name.ends_with(".log")
+}
+
+fn newest_session_log(dir: &Path, warnings: &mut Vec<String>) -> Result<PathBuf, String> {
+    let entries = fs::read_dir(dir).map_err(|error| error.to_string())?;
+    let mut newest: Option<(u64, String, PathBuf)> = None;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let Some(name) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(str::to_string)
+        else {
+            continue;
+        };
+        if !is_session_log_name(&name) {
+            continue;
+        }
+        if path_has_symlink(&path) {
+            warnings.push(format!(
+                "ignored backend session log symlink: {}",
+                path.display()
+            ));
+            continue;
+        }
+        let Ok(metadata) = fs::metadata(&path) else {
+            continue;
+        };
+        if !metadata.is_file() {
+            continue;
+        }
+        let mtime = metadata
+            .modified()
+            .ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0);
+        // Names carry the session timestamp, so they break mtime ties in order.
+        let better = match &newest {
+            Some((best_mtime, best_name, _)) => {
+                (mtime, name.as_str()) > (*best_mtime, best_name.as_str())
+            }
+            None => true,
+        };
+        if better {
+            newest = Some((mtime, name, path));
+        }
+    }
+    newest
+        .map(|(_, _, path)| path)
+        .ok_or_else(|| "no server-*.log found".to_string())
 }
 
 #[derive(Debug)]
@@ -591,6 +748,152 @@ mod tests {
         let studio = studio_dir().display().to_string();
         assert!(!report.contains(&studio));
         assert!(report.contains("<studio_home>"));
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("unsloth-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn backend_group(paths: Vec<PathBuf>) -> PhaseGroup {
+        PhaseGroup {
+            label: "backend:session-1".to_string(),
+            source: "live-state".to_string(),
+            paths,
+            note: None,
+        }
+    }
+
+    #[test]
+    fn backend_session_log_section_includes_tail() {
+        let root = temp_dir("session-log-tail");
+        let dir = root.join("server");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("server-20260805-195847-pid17724.log");
+        fs::write(
+            &path,
+            "Hardware detected: ROCm (HIP)\nWindows fatal exception: access violation\n",
+        )
+        .unwrap();
+
+        let mut out = String::new();
+        let mut warnings = Vec::new();
+        append_backend_session_log_section(&mut out, &[], &dir, &mut warnings);
+
+        assert!(out.contains("label=backend-session-log source=disk-newest"));
+        assert!(out.contains("server-20260805-195847-pid17724.log"));
+        assert!(out.contains("Windows fatal exception: access violation"));
+        assert!(warnings.is_empty());
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backend_session_log_picks_newest_of_several() {
+        let root = temp_dir("session-log-newest");
+        let dir = root.join("server");
+        fs::create_dir_all(&dir).unwrap();
+        for (name, body) in [
+            ("server-20260804-101010-pid1.log", "oldest\n"),
+            ("server-20260805-101010-pid2.log", "middle\n"),
+            ("server-20260806-101010-pid3.log", "newest\n"),
+        ] {
+            fs::write(dir.join(name), body).unwrap();
+        }
+
+        let mut out = String::new();
+        let mut warnings = Vec::new();
+        append_backend_session_log_section(&mut out, &[], &dir, &mut warnings);
+
+        assert!(out.contains("server-20260806-101010-pid3.log"));
+        assert!(!out.contains("server-20260804-101010-pid1.log"));
+        assert!(!out.contains("server-20260805-101010-pid2.log"));
+        assert!(out.contains("newest"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backend_session_log_missing_is_graceful() {
+        let root = temp_dir("session-log-missing");
+
+        // Directory exists but holds no session log.
+        let empty = root.join("server");
+        fs::create_dir_all(&empty).unwrap();
+        fs::write(empty.join("notes.txt"), "not a session log\n").unwrap();
+        let mut out = String::new();
+        let mut warnings = Vec::new();
+        append_backend_session_log_section(&mut out, &[], &empty, &mut warnings);
+        assert!(out.contains(
+            "label=backend-session-log source=disk-newest unavailable=no server-*.log found"
+        ));
+        assert_eq!(warnings.len(), 1);
+
+        // Directory does not exist at all.
+        let absent = root.join("gone").join("server");
+        let mut out = String::new();
+        let mut warnings = Vec::new();
+        append_backend_session_log_section(&mut out, &[], &absent, &mut warnings);
+        assert!(out.contains("label=backend-session-log source=disk-newest unavailable="));
+        assert!(!out.contains("```"));
+        assert_eq!(warnings.len(), 1);
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn backend_session_log_prefers_printed_path_over_newest_file() {
+        let root = temp_dir("session-log-printed");
+        let scanned = root.join("scanned").join("server");
+        let printed_dir = root.join("elsewhere").join("server");
+        fs::create_dir_all(&scanned).unwrap();
+        fs::create_dir_all(&printed_dir).unwrap();
+
+        let fallback = scanned.join("server-20260807-101010-pid9.log");
+        fs::write(&fallback, "fallback body\n").unwrap();
+        let printed = printed_dir.join("server-20260805-195847-pid17724.log");
+        fs::write(&printed, "printed body\n").unwrap();
+
+        let phase_log = root.join("backend-session-1-s01.log");
+        fs::write(
+            &phase_log,
+            format!("[1][stdout] Session log: {}\n", printed.display()),
+        )
+        .unwrap();
+
+        let mut out = String::new();
+        let mut warnings = Vec::new();
+        append_backend_session_log_section(
+            &mut out,
+            &[backend_group(vec![phase_log])],
+            &scanned,
+            &mut warnings,
+        );
+
+        assert!(out.contains("source=backend-phase-log"));
+        assert!(out.contains("printed body"));
+        assert!(!out.contains("fallback body"));
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn printed_session_log_path_rejects_unrelated_files() {
+        let root = temp_dir("session-log-reject");
+        let secret = root.join("id_rsa");
+        fs::write(&secret, "key\n").unwrap();
+        assert_eq!(
+            parse_session_log_path(&format!("Session log: {}\n", secret.display())),
+            None
+        );
+
+        // Right name, but not inside a `server/` directory.
+        let stray = root.join("server-20260805-195847-pid1.log");
+        fs::write(&stray, "body\n").unwrap();
+        assert_eq!(
+            parse_session_log_path(&format!("Session log: {}\n", stray.display())),
+            None
+        );
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
