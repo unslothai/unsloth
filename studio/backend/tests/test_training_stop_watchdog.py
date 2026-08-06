@@ -1245,9 +1245,9 @@ def test_terminal_stall_arms_the_exit_watchdog(monkeypatch):
     b._handle_event({"type": "stall", "message": "no progress"})
 
     assert b.is_run_finished() is True
-    assert _wait_until(lambda: calls == ["force", "final"]), (
-        "a wedged worker on the terminal stall path must still be reaped"
-    )
+    assert _wait_until(
+        lambda: calls == ["force", "final"]
+    ), "a wedged worker on the terminal stall path must still be reaped"
     if b._stop_watchdog:
         b._stop_watchdog.join(timeout = 5)
 
