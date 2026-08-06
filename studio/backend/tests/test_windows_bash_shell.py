@@ -374,10 +374,6 @@ def test_windows_shellouts_are_screened_on_either_shell(
         "echo start notepad powershell",
         "grep start README powershell",
         'echo start "My Title" powershell',
-        "echo cmd /v:on /c powershell",
-        # main refuses these two; the command-position gate fixes them too.
-        'echo "cmd" /c powershell',
-        'printf "%s" "cmd" /c powershell',
     ],
 )
 def test_ordinary_windows_commands_stay_runnable(monkeypatch, bash, command, _windows_blocklist):
@@ -399,6 +395,28 @@ def test_a_single_word_start_title_is_screened_under_the_cmd_lexer(
     monkeypatch, command, _windows_blocklist
 ):
     assert _screen_on_windows(monkeypatch, None, command)
+
+
+@pytest.mark.parametrize("bash", _WINDOWS_SHELLS)
+@pytest.mark.parametrize(
+    "command",
+    [
+        # An assignment prefixes a command the shell still runs, and a shell
+        # handed to another shell is still run. Deciding "is this token executed"
+        # from the token before it missed all of these, which is a bypass and
+        # strictly worse than the echo-data over-blocks it was meant to fix.
+        'FOO=1 bash -c "rm -rf x"',
+        'env FOO=1 bash -c "rm -rf x"',
+        'FOO=1 start "" powershell',
+        "cmd //c start \"\" cmd /c powershell",
+    ],
+)
+def test_a_prefixed_shell_is_still_screened(monkeypatch, bash, command, _windows_blocklist):
+    # Only the bash lexer sees the first three: an assignment is cmd syntax for
+    # nothing, so cmd runs a program literally named `FOO=1`.
+    if bash is None and not command.startswith("cmd "):
+        pytest.skip("assignment prefixes are not cmd syntax")
+    assert _screen_on_windows(monkeypatch, bash, command)
 
 
 def test_a_program_path_is_not_read_as_a_cmd_switch(monkeypatch, _windows_blocklist):
