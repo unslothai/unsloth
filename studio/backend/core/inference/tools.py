@@ -360,6 +360,10 @@ _SUBSTITUTION_SPAN_STEP = 64
 # `sed "s/\$(CC)/gcc/" Makefile` opens no command substitution.
 _ESCAPED_CHAR_STATE = "\\"
 _WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
+# cmd's IF also takes a comparison, either glued (`if 1==1 cmd`) or spelled with
+# one of these operators (`if %a% equ 1 cmd`). The body behind it is a command
+# cmd runs, so the operands have to be stepped over to reach it.
+_WIN_COMPARE_OPERATORS = frozenset({"equ", "neq", "lss", "leq", "gtr", "geq"})
 _FIND_EXEC_FLAGS = frozenset({"-exec", "-execdir", "-ok", "-okdir"})
 # A find action is COMPLETE at its terminator: words after it are find's next
 # predicate, not CMD's. Reading past it took a following `-exec grep -e safe {} +`
@@ -1145,6 +1149,21 @@ def _is_document_target(target: str) -> bool:
     return bool(suffix) and suffix not in _WINDOWS_EXE_SUFFIXES
 
 
+def _is_win_comparison(tokens: "list[str]", index: int) -> bool:
+    """Whether ``tokens[index]`` opens a cmd IF comparison rather than a command.
+
+    Either spelling: the glued `1==1`, or an operand whose NEXT word is one of
+    cmd's comparison operators. A leading `==` is not one, so `==x` stays the
+    ordinary word it is.
+    """
+    token = tokens[index]
+    if "==" in token and not token.startswith("=="):
+        return True
+    return (
+        index + 1 < len(tokens) and tokens[index + 1].lower() in _WIN_COMPARE_OPERATORS
+    )
+
+
 def _live_operator_tail(token: str, lexed_posix: bool) -> str:
     """What ``token`` starts a new command with, or ``""`` if it does not.
 
@@ -1169,7 +1188,11 @@ def _live_operator_tail(token: str, lexed_posix: bool) -> str:
         if char == '"':
             quotes += 1
         elif char in "&|(" and quotes % 2 == 0 and carets % 2 == 0:
-            last = position
+            # Same distinction `_ends_with_cmd_operator` draws: a `(` glued
+            # behind a plain word opens no group. `echo(text` and `rem(text` are
+            # the no-space forms of those commands and only print.
+            if char != "(" or position == 0 or token[position - 1] in "&|()^":
+                last = position
         carets = 0
     return token[last + 1 :] if last >= 0 else ""
 
@@ -2083,6 +2106,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
     prefix_pending = False  # last cmd-position token was a wrapper (env/time/xargs/...)
     prefix_command = ""  # which wrapper that was, for its own value-taking options
     skip_operand = False  # consume a wrapper/conditional operand, not the command
+    skip_two = False  # a spelled cmd comparison consumes its operator and operand
     sed_indexes: "list[int]" = []  # command-position sed words, for the `e` scan below
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     xargs_index = -1  # an xargs awaiting the command it wraps
@@ -2093,6 +2117,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             # it as whitespace, so it is recovered from the raw text instead.
             expect_command = True
             skip_operand = False
+            skip_two = False
             prefix_pending = False
             prefix_command = ""
             win_shell_pending = False
@@ -2103,7 +2128,8 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         if skip_operand:
             # `exec -a NAME cmd` and `if exist FILE cmd` both put an operand
             # where the command word would otherwise be.
-            skip_operand = False
+            skip_operand = skip_two
+            skip_two = False
             continue
         if not expect_command and win_shell_pending and _win_switch(token.lower()) in ("/c", "/k"):
             # cmd runs the word after its own switch, a real command position the
@@ -2119,6 +2145,13 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             continue
         if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
             skip_operand = token.lower() != "not"
+            continue
+        if expect_command and _is_win_comparison(tokens, token_index):
+            # `if 1==1 cmd /c powershell` runs that shell when the condition
+            # holds. Reading the comparison as the command word left the body in
+            # argument position and its payload unscreened.
+            skip_operand = tokens[token_index + 1].lower() in _WIN_COMPARE_OPERATORS
+            skip_two = skip_operand
             continue
         if prefix_pending and token == "-a":
             skip_operand = True
@@ -2174,14 +2207,17 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 blocked.add(tail_base)
             else:
                 blocked |= _blocked_matching_glob(tail_base)
-            expect_command = False
-            prefix_pending = False
-            prefix_command = ""
             payload_pending = False
             in_cmd_payload = False
             active_prefixes = command_prefixes
             xargs_index = -1
             win_shell_pending = tail_base == "cmd"
+            # The tail is a command word like any other, so a wrapper spelled
+            # there still forwards to the word behind it: cmd reparses the
+            # `call call powershell` of `echo&call call powershell`.
+            prefix_pending = tail_base in (command_prefixes | _CMD_ONLY_PREFIXES)
+            prefix_command = tail_base if prefix_pending else ""
+            expect_command = prefix_pending
             continue
         if not expect_command:
             continue
@@ -2443,9 +2479,15 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             ):
                 # The operator in front of it is the command boundary, so what
                 # CALL forwards to is a command position: cmd runs
-                # `echo hi&call powershell`.
-                command_indexes.add(i + 1)
-                call_child_indexes.add(i + 1)
+                # `echo hi&call powershell`. CALL may forward to another CALL,
+                # so the chain is followed rather than one link of it.
+                child = i + 1
+                while child < len(tokens):
+                    command_indexes.add(child)
+                    call_child_indexes.add(child)
+                    if _token_basename(_unwrap_quotes(tokens[child])) not in _CMD_ONLY_PREFIXES:
+                        break
+                    child += 1
             elif (
                 not tail
                 # CALL is cmd's builtin, so this boundary only forwards where
@@ -2461,8 +2503,13 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 # sitting inside it: `cmd /c echo hi& call powershell` runs
                 # PowerShell exactly as the glued spelling does.
                 command_indexes.add(i + 1)
-                command_indexes.add(i + 2)
-                call_child_indexes.add(i + 2)
+                child = i + 2
+                while child < len(tokens):
+                    command_indexes.add(child)
+                    call_child_indexes.add(child)
+                    if _token_basename(_unwrap_quotes(tokens[child])) not in _CMD_ONLY_PREFIXES:
+                        break
+                    child += 1
             if _is_start_word(token) and _start_is_run(i):
                 target, _title_at = _start_target(i)
                 if target < len(tokens):

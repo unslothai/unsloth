@@ -1761,3 +1761,53 @@ def test_a_call_boundary_still_forwards_inside_a_quoted_payload():
             tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
         )
         assert "powershell" in tools._find_blocked_commands('cmd //c "echo hi& call powershell"')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c echo&call call powershell",
+        "cmd /c echo & call call powershell",
+        "cmd /c echo&call powershell",
+    ],
+)
+def test_a_prefix_handed_over_by_an_operator_still_forwards(windows_cmd_only, command):
+    # A wrapper spelled behind a glued operator is a command word like any
+    # other, so it forwards to the word behind it, and CALL may forward to
+    # another CALL. Screening the tail but dropping the prefix state left
+    # PowerShell unread even though cmd reparses and runs it.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("command", ['cmd /c echo(start "" powershell', 'cmd /c rem(start "" powershell'])
+def test_a_glued_parenthesis_after_a_word_opens_no_group(windows_cmd_only, command):
+    # `echo(` and `rem(` are the no-space forms of those commands and print what
+    # follows. Only a `(` of its own, or one behind another operator, opens a
+    # group, which is the distinction `_ends_with_cmd_operator` already drew.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_a_real_group_still_opens_a_command(windows_cmd_only):
+    # The other half: a `(` that is not glued behind a word does open one.
+    assert "powershell" in tools._find_blocked_commands('cmd /c (start "" powershell')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c if 1==1 cmd /c powershell",
+        "cmd /c if not 1==1 cmd /c powershell",
+        "cmd /c if %a% equ 1 cmd /c powershell",
+        "cmd /c if not %a% neq 1 cmd /c powershell",
+    ],
+)
+def test_a_cmd_comparison_still_leaves_a_command_behind_it(windows_terminal, command):
+    # cmd's IF takes a comparison glued (`1==1`) or spelled with an operator
+    # (`%a% equ 1`), and runs the body when it holds. Reading the comparison as
+    # the command word left that body in argument position.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+def test_a_comparison_in_argument_position_is_not_a_condition(windows_terminal):
+    # And only where a command may begin: `echo a==b rm` prints its arguments.
+    assert not tools._find_blocked_commands("echo a==b rm")
