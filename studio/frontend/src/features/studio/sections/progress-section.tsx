@@ -147,8 +147,7 @@ export function ProgressSection({
     await navigate({ to: "/chat" });
   };
 
-  // A finished run can be exported to GGUF: deep-link to the Export page with
-  // this run preselected (its output-dir basename is the export model name).
+  // A finished run can be exported to GGUF: deep-link to Export with this run preselected.
   const exportRunName = data.outputDir
     ? (data.outputDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || null)
     : null;
@@ -176,8 +175,7 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  // Prefer the run's saved snapshot when present (#6853). Live falls back to the
-  // editable form store until it loads; History shows blanks, never live form values.
+  // Prefer the run's saved snapshot when present (#6853); History shows blanks, never form values.
   const cfg = configOverride ?? (isHistorical ? undefined : config);
   const cfgEpochs = cfg?.epochs;
   const cfgBatchSize = cfg?.batchSize;
@@ -191,8 +189,7 @@ export function ProgressSection({
   const cfgLoraDropout = cfg?.loraDropout;
   const cfgLoraVariant = cfg?.loraVariant;
 
-  // Mirror the training form: on Mac the MLX backend runs CUDA optimizers as
-  // AdamW, so label them AdamW here too.
+  // Mirror the training form: on Mac the MLX backend runs CUDA optimizers as AdamW.
   const effectiveOptimizer =
     platformDeviceType === "mac" &&
     OPTIMIZER_OPTIONS.some((o) => o.value === cfgOptimizerType)

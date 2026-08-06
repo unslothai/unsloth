@@ -92,9 +92,8 @@ def _resume_blocked_reason(row: dict) -> Optional[str]:
     from core.training.resume import has_resume_state, training_run_config
 
     try:
-        # A row whose checkpoint is gone is refused for that reason, not provenance.
-        # Asking the gate anyway hands the client a provenance sentence for a missing
-        # checkpoint, which is the wrong diagnosis on the more common case.
+        # A row whose checkpoint is gone is refused for that reason, not provenance: asking the gate
+        # anyway hands the client a provenance sentence for a missing checkpoint.
         if not has_resume_state(row.get("output_dir")):
             return None
         return resource_provenance_resume_blocker(training_run_config(row))
@@ -154,10 +153,9 @@ def _delete_run_output_dir(run_id: str, output_dir: str) -> Union[Path, bool]:
 
     staged = resolved.with_name(f".{resolved.name}.deleting-{uuid.uuid4().hex}")
     try:
-        # A same-parent rename, not an rmtree: the run is logically gone immediately but
-        # the bytes survive until the database row is committed, so a failed row delete
-        # can roll the whole operation back instead of stranding a row whose artifacts
-        # are silently missing. _purge_staged_output_dir does the destructive half.
+        # A same-parent rename, not an rmtree: the run is logically gone immediately but the bytes
+        # survive until the database row is committed, so a failed row delete can roll the whole
+        # operation back. _purge_staged_output_dir does the destructive half.
         resolved.rename(staged)
         return staged
     except OSError:
@@ -399,9 +397,8 @@ async def delete_training_run(
     try:
         delete_run(run_id)
     except Exception:
-        # The artifacts are only staged, so the whole operation rolls back and the run
-        # is exactly as it was. Destroying them first would leave a row whose artifacts
-        # are silently gone, looking just like a deliberate "kept history" outcome.
+        # The artifacts are only staged, so the whole operation rolls back. Destroying them first would
+        # leave a row whose artifacts are silently gone, looking like a deliberate "kept history".
         if staged_original is not None and staged_path is not None:
             await asyncio.to_thread(_restore_staged_output_dir, staged_original, staged_path)
         raise

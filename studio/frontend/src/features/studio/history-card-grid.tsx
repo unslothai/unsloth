@@ -253,8 +253,8 @@ export function HistoryCardGrid({
   const [manualFetchInFlight, setManualFetchInFlight] = useState(false);
   const { resumeTrainingRunFromHistory, startBlocked, stopRequested } =
     useTrainingActions();
-  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel
-  // registers shortly after startup, so poll (bounded) until it shows.
+  // Copy-link base: Cloudflare tunnel > LAN host:port > origin. The tunnel registers shortly
+  // after startup, so poll (bounded) until it shows.
   const cloudflareUrl = usePlatformStore((s) => s.cloudflareUrl);
   const serverUrl = usePlatformStore((s) => s.serverUrl);
   useEffect(() => {
@@ -476,8 +476,7 @@ export function HistoryCardGrid({
             run.project_name && title !== run.project_name
               ? run.project_name
               : null;
-          // Backend /p ref + its capability token. Both are required: the link
-          // is useless (404s) without the signature, so don't offer to copy it.
+          // Backend /p ref + its capability token. Both are required: the link 404s without the signature.
           const canCopyPreview = !!run.preview_ref && !!run.preview_sig;
           return (
             <div

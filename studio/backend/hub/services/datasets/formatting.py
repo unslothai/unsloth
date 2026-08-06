@@ -293,8 +293,7 @@ def check_format_response(
         try:
             dataset_path = resolve_dataset_path(request.dataset_name)
         except ValueError as e:
-            # Malformed path (null bytes, '..', outside roots) is a client error:
-            # surface 400 rather than the generic 500 below.
+            # Malformed path (null bytes, '..', outside roots) is a client error: surface 400, not 500.
             raise HTTPException(status_code = 400, detail = str(e)) from e
         total_rows = None
 
@@ -411,8 +410,7 @@ def check_format_response(
         preview_samples = None
         if not result["requires_manual_mapping"]:
             if result.get("suggested_mapping"):
-                # Heuristic-detected: show raw data so columns match the response;
-                # column stripping happens at training time, not preview.
+                # Heuristic-detected: show raw data so columns match the response (stripping happens at training).
                 preview_samples = _serialize_preview_rows(preview_slice)
             else:
                 try:
@@ -424,7 +422,6 @@ def check_format_response(
         else:
             preview_samples = _serialize_preview_rows(preview_slice)
 
-        # Collect warnings: from check_dataset_format + URL-based image detection
         warning = result.get("warning")
         image_col = result.get("detected_image_column")
         if image_col and image_col in (result.get("columns") or []):

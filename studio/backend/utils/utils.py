@@ -19,8 +19,7 @@ logger = get_logger(__name__)
 
 
 # ── Offline / HF-cache helpers ──────────────────────────────────
-# An offline load must never touch the network (a DNS-dead session hangs on hub retries);
-# these read the local HF cache the load itself uses.
+# An offline load must never touch the network (a DNS-dead session hangs on hub retries); these read the local HF cache.
 
 _HF_OFFLINE_TRUE_VALUES = frozenset({"1", "true", "yes", "on"})
 
@@ -204,10 +203,9 @@ def hf_dns_dead(timeout: float = 2.0) -> bool:
     return dns_host_dead(hf_endpoint_host(), timeout)
 
 
-# One load makes many hub calls, so the verdict is shared briefly to avoid re-probing on
-# each. Kept short in BOTH directions: a stale "reachable" misses the plug being pulled
-# (the case this whole path exists for), and a stale "unreachable" sends a load to the
-# cache after the user reconnected, failing it if the model is not cached.
+# One load makes many hub calls, so the verdict is shared briefly. Kept short in BOTH directions:
+# a stale "reachable" misses the plug being pulled, and a stale "unreachable" sends a load to
+# the cache after the user reconnected.
 _HF_REACHABILITY_TTL_S = 5.0
 _hf_reachability: Optional[tuple] = None
 _hf_reachability_lock = threading.Lock()
@@ -270,10 +268,9 @@ def hf_unreachable(timeout: int = 3) -> bool:
         try:
             from utils.transformers_version import hf_endpoint_unreachable
 
-            # Both flags off for the same reason: an ambiguous answer must not force
-            # offline. Through a proxy a clean timeout only means slow, and the hub
-            # client's longer request may well succeed, so an uncached load must not
-            # be turned cache-only here. Matches the worker's call.
+            # Both flags off for the same reason: an ambiguous answer must not force offline. Through a proxy
+            # a clean timeout only means slow and the hub client's longer request may succeed, so an uncached
+            # load must not be turned cache-only here. Matches the worker's call.
             unreachable = hf_endpoint_unreachable(
                 timeout,
                 gateway_errors_offline = False,
@@ -301,8 +298,7 @@ def _reset_hf_sessions() -> None:
         pass
 
 
-# Process-global, so nested/concurrent loads refcount rather than restore out from under
-# each other.
+# Process-global, so nested/concurrent loads refcount rather than restore out from under each other.
 _force_offline_depth = 0
 _force_offline_saved: list = []
 _force_offline_saved_env: dict = {}
@@ -405,8 +401,7 @@ def force_hf_offline():
         if _force_offline_depth == 0:
             saved: list = []
             saved_env: dict = {}
-            # Snapshot constants BEFORE forcing the env, else a module first imported
-            # inside the window reads the "1" and we would restore it as offline.
+            # Snapshot constants BEFORE forcing the env, else a module imported inside the window reads the "1".
             for mod_name, attrs in _OFFLINE_CONSTANTS:
                 try:
                     mod = importlib.import_module(mod_name)
@@ -527,15 +522,13 @@ def hf_cache_snapshot_dir(model_name: str) -> Optional[Path]:
                 snapshot = repo_dir / "snapshots" / commit
                 if snapshot.is_dir():
                     return snapshot
-            # UnicodeDecodeError is a ValueError, not an OSError: a torn refs
-            # file must keep meaning "not cached here", not fail the offline check.
+            # UnicodeDecodeError is a ValueError, not an OSError: a torn refs file must keep meaning "not cached here".
             except (OSError, UnicodeDecodeError):
                 continue
     return None
 
 
-# A weight file plus a config distinguishes a real cached model from a metadata-only
-# partial cache that resolves refs/main but would fail at load time.
+# A weight file plus a config distinguishes a real cached model from a metadata-only partial cache.
 _LOADABLE_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".gguf", ".pt", ".pth", ".ckpt"})
 
 
@@ -630,7 +623,6 @@ def without_hf_auth():
     saved_disable = os.environ.get("HF_HUB_DISABLE_IMPLICIT_TOKEN")
     os.environ["HF_HUB_DISABLE_IMPLICIT_TOKEN"] = "1"
 
-    # Move token files aside temporarily
     token_files = []
     token_locations = [
         Path.home() / ".cache" / "huggingface" / "token",
@@ -647,7 +639,6 @@ def without_hf_auth():
     try:
         yield
     finally:
-        # Restore tokens
         for original, temp in token_files:
             try:
                 original.parent.mkdir(parents = True, exist_ok = True)
@@ -655,7 +646,6 @@ def without_hf_auth():
             except Exception as e:
                 logger.error(f"Failed to restore token {original}: {e}")
 
-        # Restore env
         for var, value in saved_env.items():
             os.environ[var] = value
 
@@ -722,9 +712,7 @@ def format_error_message(error: Exception, model_name: str) -> str:
         or isinstance(error, MemoryError)
         or ("mlx" in error_str and ("memory" in error_str or "allocate" in error_str))
     ):
-        # Resolve get_device() at call time (not import time) so tests that
-        # monkey-patch utils.hardware.get_device after this module is loaded
-        # still see the patched backend.
+        # Resolve get_device() at call time so tests that monkey-patch it after import see the patch.
         from utils.hardware import get_device
 
         device = get_device()

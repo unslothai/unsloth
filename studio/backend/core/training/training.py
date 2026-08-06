@@ -50,15 +50,13 @@ def _env_int(name: str, default: int) -> int:
         return default
 
 
-# Stop-watchdog escalation timeouts. Primary trigger: a short grace once "complete"
-# (save done). Absolute cap is a backstop: long for save=True so a slow save is never
-# killed mid-write, shorter for a cancel that has nothing to save.
+# Stop-watchdog escalation timeouts. Primary trigger: a short grace once "complete" (save
+# done). The absolute cap is a backstop: long for save=True, shorter for a cancel.
 _STOP_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_GRACE_S", 15)
 _STOP_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_STOP_TIMEOUT_S", 600)
 _CANCEL_TIMEOUT_S = _env_int("UNSLOTH_STUDIO_TRAINING_CANCEL_TIMEOUT_S", 120)
 
-# Watchdog DB finalize: a few short retries so a transient SQLite lock doesn't lose the
-# terminal state, since the watchdog is the sole finalizer once _proc is dropped.
+# A few short retries so a transient SQLite lock doesn't lose the terminal state.
 _DB_FINALIZE_RETRIES = 3
 _DB_FINALIZE_RETRY_S = 0.5
 _MAX_TRACKED_START_REQUESTS = 64
@@ -258,8 +256,7 @@ def _build_training_worker_config(values: dict[str, Any]) -> dict[str, Any]:
             config[key] = values.get(key)
     if config["training_type"] == "Full Finetuning":
         config["load_in_4bit"] = False
-    # The parent's detected backend: the worker's apply_gpu_ids() targets the
-    # right visibility env var from this, without probing torch pre-mask.
+    # The parent's detected backend: the worker's apply_gpu_ids() uses it without probing torch.
     config["device_backend"] = get_device().value
     return config
 
@@ -268,8 +265,7 @@ _HF_TMP_CHECKPOINT_RE = re.compile(r"^tmp-checkpoint-\d+$")
 
 
 def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
-    # ``subject`` (the run owner's username / API-key id) is worker-only metadata; never
-    # persist it to config_json, which run-history GET returns to any authenticated user.
+    # ``subject`` is worker-only metadata; never persist it to config_json, which run-history returns.
     db_config = {
         k: v
         for k, v in config.items()
@@ -302,11 +298,9 @@ def _sanitize_db_config(config: dict[str, Any]) -> dict[str, Any]:
 
 
 _MODEL_SNAPSHOT_METADATA = ("config.json", "adapter_config.json")
-# refs/main can point at a revision that only ever fetched metadata, so prefer a
-# snapshot that actually carries weights before falling back to a metadata match.
-# Keep this in step with _MODEL_WEIGHT_CANDIDATES in routes/training.py plus the
-# adapter names that route handles on its own branch: selecting a snapshot the
-# start route then rejects reproduces the very 400 this ordering exists to avoid.
+# refs/main can point at a revision that only ever fetched metadata, so prefer a snapshot
+# that actually carries weights. Keep in step with _MODEL_WEIGHT_CANDIDATES in
+# routes/training.py: selecting a snapshot the start route rejects reproduces the 400.
 _MODEL_SNAPSHOT_WEIGHTS = (
     "model.safetensors",
     "model.safetensors.index.json",
@@ -339,10 +333,8 @@ def _resolve_model_snapshot(model_name: str, local_path: Optional[str]) -> Optio
     repo_id = canonical_model_repo_id(model_name)
     metadata_names = _with_load_subdirs(model_name, _MODEL_SNAPSHOT_METADATA)
     weight_names = _with_load_subdirs(model_name, _MODEL_SNAPSHOT_WEIGHTS)
-    # Pass 1 demands metadata AND weights, so neither a metadata-only refs/main
-    # revision nor a newer weights-only fetch can displace a complete sibling.
-    # Pass 2 keeps the old metadata-only behaviour for caches that never held
-    # weights, so nothing that resolved before stops resolving now.
+    # Pass 1 demands metadata AND weights, so neither a metadata-only refs/main nor a
+    # weights-only fetch displaces a complete sibling. Pass 2 keeps the old metadata-only path.
     passes: tuple[dict[str, Any], ...] = (
         {"required_groups": (metadata_names, weight_names)},
         {"metadata_filenames": metadata_names},
@@ -598,7 +590,6 @@ def _cleanup_cancelled_checkpoints(output_dir: Union[str, os.PathLike]) -> None:
 
 _CTX = mp.get_context("spawn")
 
-# Plot styling constants
 PLOT_WIDTH = 8
 PLOT_HEIGHT = 3.5
 
@@ -1072,25 +1063,21 @@ class TrainingBackend:
     FLUSH_THRESHOLD: int = 10
 
     def __init__(self):
-        # Subprocess state
         self._proc: Optional[mp.Process] = None
-        # True from the sidecar-swap handshake until the worker is recorded, so
-        # installs and STT loads treat the startup window as active.
+        # True from the sidecar-swap handshake until the worker is recorded (startup counts as active).
         self._spawn_in_progress: bool = False
         self._new_job_spawn_id: Optional[str] = None
         self._event_queue: Any = None
         self._stop_queue: Any = None
         self._pump_thread: Optional[threading.Thread] = None
-        # True while a pump thread should be running; cleared on intended exits.
-        # Left True after an abnormal death so _ensure_pump_alive spots a crash.
+        # True while a pump thread should run; left True after an abnormal death so a crash is spotted.
         self._pump_running: bool = False
         self._lock = threading.Lock()
         self._provenance_lock = threading.Lock()
         self._run_intent_lock = threading.RLock()
 
-        # Stop watchdog: after a stop is requested, escalates to force_terminate()
-        # if the worker does not exit on its own within a bounded time. The watched
-        # proc is tracked so a new run always gets its own watcher.
+        # Stop watchdog: escalates to force_terminate() if the worker doesn't exit in time. The
+        # watched proc is tracked so a new run always gets its own watcher.
         self._stop_watchdog: Optional[threading.Thread] = None
         self._stop_watchdog_proc: Optional[mp.Process] = None
         self._complete_seen = threading.Event()
@@ -1116,7 +1103,6 @@ class TrainingBackend:
         self.eval_enabled: bool = False
         self.current_theme: str = "light"
 
-        # Job metadata
         self.current_job_id: Optional[str] = None
         self.current_start_request_id: Optional[str] = None
         self._start_requests: dict[str, TrainingStartRequestRecord] = {}
@@ -1126,7 +1112,6 @@ class TrainingBackend:
         self._resume_source_run_id: Optional[str] = None
         self._terminal_finalize_payload: Optional[dict] = None
 
-        # DB persistence
         self._metric_buffer: list[dict] = []
         self._run_finalized: bool = False
         self._db_run_created: bool = False
@@ -1143,9 +1128,7 @@ class TrainingBackend:
 
         logger.info("TrainingBackend initialized (subprocess mode)")
 
-    # ------------------------------------------------------------------
-    # Public API (called by routes/training.py)
-    # ------------------------------------------------------------------
+    # --- Public API (called by routes/training.py) ---
 
     def reserve_start_request(
         self, start_request_id: str, job_id: str
@@ -1287,10 +1270,8 @@ class TrainingBackend:
         start_request_id: Optional[str] = None,
         **kwargs,
     ) -> bool:
-        # Reserve before lifecycle locking and synchronous validation. Routes call
-        # start_training from worker threads, so this compare-and-set window makes a
-        # start active immediately and prevents two requests from reaching the late
-        # subprocess assignment together.
+        # Reserve before lifecycle locking and synchronous validation: routes call start_training
+        # from worker threads, so this compare-and-set stops two requests reaching the spawn.
         with self._new_job_spawn_reservation(job_id) as spawn_reserved:
             if not spawn_reserved:
                 logger.warning("Training subprocess already running")
@@ -1353,8 +1334,7 @@ class TrainingBackend:
                 logger.warning("Previous pump thread did not exit within 5s — refusing to start")
                 return False
         self._pump_thread = None
-        # Clear a stale crash flag from a prior died pump so the watchdog can't
-        # treat this fresh setup as a recoverable death.
+        # Clear a stale crash flag so the watchdog can't treat this fresh setup as a death.
         self._pump_running = False
 
         config = _build_training_worker_config(kwargs)
@@ -1365,12 +1345,10 @@ class TrainingBackend:
         initialize_resource_provenance(config)
 
         # Split GPU validation from placement around the VRAM hook:
-        #   * Explicit gpu_ids are validated here (raises -> the route returns 400
-        #     before any teardown) and their placement is VRAM-independent, so it
-        #     stays correct after the hook frees memory.
-        #   * Auto-selection ranks GPUs by *free* VRAM, so it is deferred until
-        #     after the hook frees export/chat -- otherwise it could pin training
-        #     onto a GPU the hook is about to clear (and onto a kept chat model).
+        #   * Explicit gpu_ids are validated here (raises -> the route 400s before any teardown)
+        #     and their placement is VRAM-independent, so it survives the hook freeing memory.
+        #   * Auto-selection ranks GPUs by *free* VRAM, so it is deferred until after the hook,
+        #     else it could pin training onto a GPU the hook is about to clear.
         from utils.hardware import hardware as _hw
 
         gpu_ids = kwargs.get("gpu_ids")
@@ -1398,9 +1376,8 @@ class TrainingBackend:
         else:
             defer_auto_selection = True
 
-        # Handshake with the sidecar install route: mark the spawn in progress BEFORE rechecking
-        # the reservation, so either this recheck aborts, or the install's is_training_active()
-        # sees this flag (or the recorded proc) and refuses.
+        # Handshake with the sidecar install route: mark the spawn in progress BEFORE rechecking the
+        # reservation, so either this recheck aborts or the install sees the flag and refuses.
         from utils.transformers_version import sidecar_swap_in_progress
 
         spawn_reservation = (
@@ -1427,9 +1404,8 @@ class TrainingBackend:
                     config.get("model_snapshot_path") or config["model_name"],
                     config.get("hf_token") or None,
                 )
-            # Synchronous validation passed -> free VRAM (export + chat) now, before
-            # auto-selection and the spawn, so placement sees the freed memory. Runs AFTER the handshake
-            # so a lost race to an install can't tear down chat/export for a training run that never spawns.
+            # Synchronous validation passed -> free VRAM (export + chat) before auto-selection and the
+            # spawn. After the handshake, so a lost race can't tear down chat for a run that never spawns.
             if before_spawn is not None:
                 try:
                     before_spawn()
@@ -1475,7 +1451,6 @@ class TrainingBackend:
 
             logger.info("Training subprocess started (pid=%s)", proc.pid)
 
-            # Reset state (old pump thread dead, proc.start() succeeded).
             self.current_job_id = job_id
             self.current_start_request_id = start_request_id
             self._should_stop = False
@@ -1485,8 +1460,7 @@ class TrainingBackend:
             self._progress = TrainingProgress(
                 is_training = True, status_message = "Initializing training..."
             )
-            # Reset the progress-log throttle so the new run always logs its first step,
-            # even if it starts within 30s of a prior run whose last logged step matches.
+            # Reset the throttle so the new run logs its first step even within 30s of a prior run.
             self._last_progress_log_ts = 0.0
             self._last_progress_log_step = -1
             self.loss_history.clear()
@@ -1515,9 +1489,8 @@ class TrainingBackend:
             self._xet_fallback_used = False
             self._needs_xet_respawn = False
 
-            # Create the DB run row before the pump can consume events, so it appears
-            # in history during model loading and a fast terminal worker can't race the
-            # pump into a duplicate create/finalize. From here the pump only finalizes.
+            # Create the DB run row before the pump consumes events, so it appears in history during
+            # model loading and a fast terminal worker can't race the pump. From here the pump finalizes.
             self._ensure_db_run_created()
             if resume_source_run_id and not self._db_run_created:
                 if proc.is_alive():
@@ -1530,8 +1503,7 @@ class TrainingBackend:
                 self._progress.error = "Resume checkpoint is no longer available."
                 return False
 
-            # Assign handles and start the pump together under the lock so a concurrent
-            # poll can't see a live _proc with no pump and spawn a duplicate.
+            # Assign handles and start the pump under the lock, else a poll sees a live _proc with no pump.
             new_pump = threading.Thread(target = self._pump_loop, daemon = True)
             with self._lock:
                 self._pump_running = False
@@ -1723,8 +1695,7 @@ class TrainingBackend:
         while True:
             with self._lock:
                 superseded = self._proc is not target_proc
-                # A later cancel has nothing to save, so tighten an in-flight save
-                # watchdog to the shorter cancel cap.
+                # A later cancel has nothing to save, so tighten an in-flight save watchdog to the cancel cap.
                 cancelling = cancel or self._cancel_requested
             if superseded or not target_proc.is_alive():
                 return
@@ -1803,8 +1774,7 @@ class TrainingBackend:
             self._progress.status_message = error_message or "Training stopped."
             if error_message:
                 self._progress.error = error_message
-        # Create the row if a start-time create failed (no-op otherwise; skips when the pump
-        # is mid-create, in which case its create-then-finalize records the run instead).
+        # Create the row if a start-time create failed; skipped while the pump is mid-create.
         self._ensure_db_run_created()
         with self._provenance_lock:
             with self._lock:
@@ -2067,8 +2037,7 @@ class TrainingBackend:
             with self._lock:
                 self._last_full_config = config
 
-            # Reset the handshake flag on any unexpected failure past this point, so a
-            # crashed respawn cannot wedge is_training_active until restart.
+            # Reset the handshake flag on any failure past this point, else is_training_active wedges.
             try:
                 try:
                     with (
@@ -2095,8 +2064,7 @@ class TrainingBackend:
                     logger.error("Failed to respawn training subprocess", exc_info = True)
                     self._spawn_in_progress = False
                     with self._lock:
-                        # No replacement pump will run; clear the flag so a later run can't
-                        # inherit a stale _pump_running=True and spawn a duplicate.
+                        # No replacement pump will run; clear the flag so a later run can't inherit it.
                         self._pump_running = False
                         self._progress.is_training = False
                         self._progress.error = "Failed to recover stalled model download"
@@ -2118,8 +2086,7 @@ class TrainingBackend:
                     self._proc = new_proc
                     self._spawn_in_progress = False
                     self._pump_thread = new_pump
-                    # Start under the lock so _ensure_pump_alive can never observe the
-                    # new pump as a not-yet-started (dead) thread and spawn a duplicate.
+                    # Start under the lock so _ensure_pump_alive can't see the new pump as dead and duplicate it.
                     new_pump.start()
                 return True
             except Exception:
@@ -2138,8 +2105,7 @@ class TrainingBackend:
         with self._lock:
             if not self._pump_running:
                 return False
-            # A restarted pump needs the worker handle and queue to drain/finalize;
-            # their absence means nothing is left to recover.
+            # A restarted pump needs the worker handle and queue; their absence means nothing to recover.
             if self._proc is None or self._event_queue is None:
                 return False
             if self._pump_thread is not None and self._pump_thread.is_alive():
@@ -2150,21 +2116,18 @@ class TrainingBackend:
             )
             new_pump = threading.Thread(target = self._pump_loop, daemon = True)
             self._pump_thread = new_pump
-            # Start under the lock so a concurrent _ensure_pump_alive can't see
-            # this thread as not-yet-started and spawn yet another pump.
+            # Start under the lock so a concurrent _ensure_pump_alive can't spawn yet another pump.
             new_pump.start()
         return True
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
-        # A spawn past its sidecar-swap recheck counts as active even before _proc is recorded,
-        # so an install cannot slip in mid-spawn.
+        # A spawn past its sidecar-swap recheck counts as active even before _proc is recorded.
         if getattr(self, "_new_job_spawn_id", None) is not None or getattr(
             self, "_spawn_in_progress", False
         ):
             return True
-        # Self-heal a crashed pump first: a dead pump must never leave the worker
-        # training invisibly behind a frozen UI. Cheap enough for per-second polls.
+        # Self-heal a crashed pump first: a dead pump would leave the worker training invisibly.
         self._ensure_pump_alive()
         with self._lock:
             if self._proc is not None and self._proc.is_alive():
@@ -2243,9 +2206,7 @@ class TrainingBackend:
             return self._create_loss_plot(progress, self.current_theme)
         return None
 
-    # ------------------------------------------------------------------
-    # Compatibility shims — routes/training.py accesses these
-    # ------------------------------------------------------------------
+    # --- Compatibility shims: routes/training.py accesses these ---
 
     class _TrainerShim:
         """Minimal shim so routes that access backend.trainer.* still work."""
@@ -2276,9 +2237,7 @@ class TrainingBackend:
         """Compatibility shim for routes that access backend.trainer.*"""
         return self._TrainerShim(self)
 
-    # ------------------------------------------------------------------
-    # Event pump (background thread)
-    # ------------------------------------------------------------------
+    # --- Event pump (background thread) ---
 
     def _safe_handle_event(self, event: dict) -> None:
         """Apply one event, swallowing any handler error.
@@ -2310,8 +2269,7 @@ class TrainingBackend:
             try:
                 event = self._read_queue(self._event_queue, timeout_sec = 0.25)
             except Exception:
-                # If a read keeps raising after the worker died, fall through to
-                # finalize instead of spinning; only retry while the worker lives.
+                # If a read keeps raising after the worker died, finalize instead of spinning.
                 logger.exception("Training event pump: queue read failed; continuing")
                 if self._proc is not None and self._proc.is_alive():
                     time.sleep(0.1)
@@ -2325,15 +2283,13 @@ class TrainingBackend:
             if self._proc.is_alive():
                 continue
 
-            # Worker exited. Drain the backlog and finalize, guarded so a slow or
-            # failing DB write can't strand the thread; we return either way.
+            # Worker exited. Drain the backlog and finalize, guarded so a failing DB write can't strand.
             try:
                 for e in self._drain_queue(self._event_queue):
                     self._safe_handle_event(e)
 
-                # Model-load stall: respawn over HTTP instead of finalizing as failure.
-                # Starts a fresh pump on this thread (no self-join); it takes over
-                # _pump_running, so this exit leaves the flag set.
+                # Model-load stall: respawn over HTTP instead of finalizing as failure. Starts a fresh pump
+                # on this thread (no self-join); it takes over _pump_running, so this exit leaves it set.
                 with self._lock:
                     needs_xet_respawn = self._needs_xet_respawn
                     self._needs_xet_respawn = False
@@ -2491,9 +2447,8 @@ class TrainingBackend:
                     _safe_loss = None
                 _loss_is_nonfinite = _safe_loss is not None and not math.isfinite(_safe_loss)
                 if _loss_is_nonfinite:
-                    # Drop the value rather than laundering it back to the last
-                    # finite loss; clients see loss=None at this step so the NaN
-                    # is not hidden behind a stale value. Training continues.
+                    # Drop the value rather than laundering it back to the last finite loss; clients see
+                    # loss=None at this step so the NaN is not hidden. Training continues.
                     _safe_loss = None
                     if not getattr(self._progress, "_nonfinite_loss_warned", False):
                         self._progress._nonfinite_loss_warned = True
@@ -2512,8 +2467,7 @@ class TrainingBackend:
                 if _safe_loss is not None:
                     self._progress.loss = _safe_loss
                 elif _loss_is_nonfinite:
-                    # Clear stale finite loss so the API doesn't keep
-                    # reporting the last good value while NaN is happening.
+                    # Clear stale finite loss so the API doesn't keep reporting the last good value during NaN.
                     self._progress.loss = None
                 if _safe_lr is not None:
                     self._progress.learning_rate = _safe_lr
@@ -2534,7 +2488,6 @@ class TrainingBackend:
                 if status:
                     self._progress.status_message = status
 
-                # Update metric histories using sanitized values.
                 step = event.get("step", 0)
                 loss = _safe_loss
                 lr = _safe_lr
@@ -2570,7 +2523,6 @@ class TrainingBackend:
                     else:
                         eval_loss = None
 
-                # Buffer metric for DB flush.
                 self._metric_buffer.append(
                     {
                         "step": step,
@@ -2820,10 +2772,9 @@ class TrainingBackend:
             logger.warning("Failed to create DB run record for early failure", exc_info = True)
         finally:
             with self._lock:
-                # Publish the flags only if this is still the current run. A killed worker
-                # lets a new /start proceed mid-create, and these flags are backend-wide, so
-                # a stale create for the captured job must not satisfy the new run's DB state
-                # (the row was still created by id; the new run owns/creates its own row).
+                # Publish the flags only if this is still the current run. A killed worker lets a new /start
+                # proceed mid-create, and these flags are backend-wide, so a stale create must not satisfy
+                # the new run's DB state (the row was created by id; the new run creates its own).
                 if self.current_job_id == job_id:
                     if created:
                         self._db_run_created = True  # publish only after the insert commits
@@ -2939,8 +2890,7 @@ class TrainingBackend:
         except queue.Empty:
             return None
         except (EOFError, OSError, ValueError):
-            # A closed/broken queue reads as "no event"; any other error is left to
-            # _pump_loop's guarded block, which logs and backs off.
+            # A closed/broken queue reads as "no event"; other errors go to _pump_loop's guarded block.
             return None
 
     @staticmethod
@@ -2952,16 +2902,13 @@ class TrainingBackend:
             except queue.Empty:
                 return events
             except Exception:
-                # A drain error must not abort finalization: return what we have so
-                # the run finalizes rather than wedging "active" behind a dead worker.
+                # A drain error must not abort finalization: return what we have so the run finalizes.
                 logger.exception(
                     "Training event pump: queue drain failed; finalizing with drained events"
                 )
                 return events
 
-    # ------------------------------------------------------------------
-    # Plot generation
-    # ------------------------------------------------------------------
+    # --- Plot generation ---
 
     def _create_loss_plot(
         self,

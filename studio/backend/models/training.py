@@ -14,8 +14,7 @@ from hub.schemas.inventory import ModelFormat
 from utils.training_runs import normalize_project_name
 
 
-# ASCII integer, optional single sign. Rejects "++512" and Unicode digits
-# ("５１２") that slip through str.isdigit() + int().
+# ASCII integer, optional single sign. Rejects "++512" and Unicode digits that pass str.isdigit().
 _INT_RE = re.compile(r"[+-]?[0-9]+")
 _HF_DATASET_ID_SEGMENT_RE = re.compile(r"[A-Za-z0-9_](?:[A-Za-z0-9._-]*[A-Za-z0-9_])?")
 
@@ -32,9 +31,8 @@ _MAX_LORA_ALPHA = 32_768
 _MIN_VISION_IMAGE_SIZE = 256
 # 2048 is the highest most llms stay stable at
 _MAX_VISION_IMAGE_SIZE = 2048
-# Upper bound for dataset slice indices. Caps `.skip(n)` on streaming datasets so
-# an absurd index can't make the loader iterate effectively forever (DoS guard).
-# 1e9 is far beyond any realistic fine-tuning dataset row count.
+# Upper bound for dataset slice indices, capping `.skip(n)` on streaming datasets so an absurd
+# index can't iterate effectively forever. 1e9 is far beyond any realistic dataset row count.
 _MAX_DATASET_SLICE_INDEX = 1_000_000_000
 
 
@@ -65,8 +63,7 @@ class S3Config(BaseModel):
 
     @model_validator(mode = "after")
     def _check_credentials(self) -> "S3Config":
-        # Require either IAM role auth or a full key pair so credentials are
-        # never half-configured.
+        # Require either IAM role auth or a full key pair so credentials are never half-configured.
         if not self.use_iam_role and not (self.access_key_id and self.secret_access_key):
             raise ValueError(
                 "s3_config requires either use_iam_role=True or both "
@@ -97,7 +94,6 @@ def _parse_lr(v: Any) -> float:
 class TrainingStartRequest(BaseModel):
     """Request schema for starting training"""
 
-    # Model parameters
     model_name: str = Field(
         ..., description = "Model identifier (e.g., 'unsloth/llama-3-8b-bnb-4bit')"
     )
@@ -149,7 +145,6 @@ class TrainingStartRequest(BaseModel):
         description = "Server-verified model snapshot directory pinned for this run",
     )
 
-    # Dataset parameters
     hf_dataset: Optional[str] = Field(None, description = "HuggingFace dataset identifier")
     dataset_known_cached: bool = Field(
         False,
@@ -204,13 +199,11 @@ class TrainingStartRequest(BaseModel):
     def _normalize_project_name(cls, value: Optional[str]) -> Optional[str]:
         return normalize_project_name(value)
 
-    # NOTE: pydantic runs all `mode="after"` validators in definition order. A
-    # second one, `_check_steps_or_epochs`, is defined lower in this class; keep
-    # these cross-field checks order-independent so the two stay decoupled.
+    # NOTE: pydantic runs all `mode="after"` validators in definition order, and
+    # `_check_steps_or_epochs` is lower in this class; keep these checks order-independent.
     @model_validator(mode = "after")
     def _validate_dataset_slice(self) -> "TrainingStartRequest":
-        # start == end is intentionally allowed (deliberate single-row slice,
-        # e.g. for debugging); the trainer logs a warning for that 1-row case.
+        # start == end is intentionally allowed (a deliberate single-row slice); the trainer warns.
         if (
             self.dataset_slice_start is not None
             and self.dataset_slice_end is not None
@@ -272,8 +265,7 @@ class TrainingStartRequest(BaseModel):
     @field_validator("train_split", "eval_split")
     @classmethod
     def _check_split_name(cls, v: Optional[str]) -> Optional[str]:
-        # Split names feed HF slice syntax (e.g. "train[:80%]"), so allow that
-        # charset but cap length and block path-traversal / NUL bytes.
+        # Split names feed HF slice syntax, so allow that charset but cap length and block traversal / NUL.
         if v is None:
             return v
         if len(v) > 128:
@@ -455,7 +447,6 @@ class TrainingStartRequest(BaseModel):
             "__assistant_template, __label_mapping metadata keys."
         ),
     )
-    # Training parameters
     num_epochs: int = Field(1, description = "Number of training epochs")
     learning_rate: str = Field("2e-4", description = "Learning rate")
     batch_size: int = Field(1, description = "Batch size")
@@ -512,7 +503,6 @@ class TrainingStartRequest(BaseModel):
         "Must be in (0, 1). Should be 2-10x smaller than the main learning rate.",
     )
 
-    # LoRA parameters
     use_lora: bool = Field(True, description = "Use LoRA (derived from training_type)")
     lora_r: int = Field(16, description = "LoRA rank")
     lora_alpha: int = Field(16, description = "LoRA alpha")
@@ -535,7 +525,6 @@ class TrainingStartRequest(BaseModel):
         False, description = "Whether model is an embedding/sentence-transformer model"
     )
 
-    # Logging parameters
     enable_wandb: bool = Field(False, description = "Enable Weights & Biases logging")
     wandb_token: Optional[str] = Field(None, description = "W&B token")
     wandb_project: Optional[str] = Field(None, description = "W&B project name")
@@ -545,7 +534,6 @@ class TrainingStartRequest(BaseModel):
         None, description = "Saved training output directory to resume from"
     )
 
-    # GPU selection
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
@@ -559,7 +547,6 @@ class TrainingStartRequest(BaseModel):
         ),
     )
 
-    # S3 dataset source configuration
     s3_config: Optional[S3Config] = Field(
         None,
         description = "S3 bucket configuration for loading datasets from AWS S3. Requires boto3 to be installed.",
@@ -568,15 +555,13 @@ class TrainingStartRequest(BaseModel):
     @field_validator("target_modules", mode = "before")
     @classmethod
     def _normalize_target_modules(cls, value: Any) -> Any:
-        # Sanitized non-LoRA history stores the unused value as null; treat it as a
-        # fresh request's omitted/default empty list on resume.
+        # Sanitized non-LoRA history stores the unused value as null; treat it as an omitted list.
         return [] if value is None else value
 
     @model_validator(mode = "after")
     def _validate_streaming_splits(self) -> "TrainingStartRequest":
-        # Streaming load_dataset does not accept HF slice syntax (e.g. "train[:50%]"
-        # or "train[:20]"). Probe-confirmed: raises ValueError: Bad split. Reject
-        # early with a clear message so the user knows to use a plain split name.
+        # Streaming load_dataset does not accept HF slice syntax (probe-confirmed: ValueError: Bad
+        # split). Reject early with a clear message so the user knows to use a plain split name.
         if self.dataset_streaming:
             for field_name, split_val in (
                 ("train_split", self.train_split),
@@ -599,11 +584,9 @@ class TrainingStartRequest(BaseModel):
 
     @model_validator(mode = "after")
     def _validate_lora_variant_flags(self) -> "TrainingStartRequest":
-        # The frontend only ever sends one of these and never under Full
-        # Finetuning, but a direct API/YAML/CLI caller can bypass that. Nothing
-        # downstream breaks (full finetune ignores them, MLX rejects use_dora/
-        # use_loftq outright), but reject early here for a clear error instead
-        # of a silently-ignored flag.
+        # The frontend only ever sends one of these and never under Full Finetuning, but a direct
+        # API/YAML/CLI caller can bypass that. Nothing downstream breaks, but reject early for a
+        # clear error instead of a silently-ignored flag.
         active = [
             name
             for name, enabled in (
@@ -618,9 +601,8 @@ class TrainingStartRequest(BaseModel):
                 f"Only one LoRA variant may be enabled at a time; got {active}. "
                 "use_rslora, use_loftq, and use_dora are mutually exclusive."
             )
-        # getattr, not self.training_type: model_construct() (used by tests that
-        # validate a single field in isolation) leaves required fields unset, and
-        # this is a mode="after" validator so it still runs on that partial instance.
+        # getattr, not self.training_type: model_construct() (used by single-field tests) leaves
+        # required fields unset, and this mode="after" validator still runs on that partial instance.
         if getattr(self, "training_type", None) == "Full Finetuning" and active:
             raise ValueError(
                 f"{active[0]} requires an adapter method (LoRA/QLoRA or "
@@ -732,16 +714,14 @@ class TrainingRunSummary(BaseModel):
     error_message: Optional[str] = None
     loss_sparkline: Optional[List[float]] = None
     can_resume: bool = False
-    # Why resume is unavailable, when the reason is the recorded resource provenance
-    # rather than the checkpoint. None when the run is resumable or when the checkpoint
-    # itself is the problem, so the client keeps its existing wording for that case.
+    # Why resume is unavailable when the reason is the recorded resource provenance rather than
+    # the checkpoint. None when resumable or when the checkpoint itself is the problem.
     resume_blocked_reason: Optional[str] = None
     resumed_later: bool = False
     artifacts_available: bool = False
     has_preview_model: bool = False
     preview_ref: Optional[str] = None
-    # HMAC capability token for the `/p/{preview_ref}` share link; None when not
-    # previewable. The frontend appends it as `?k=` so a guessed ref can't be used.
+    # HMAC capability token for the `/p/{preview_ref}` share link, appended as `?k=`; None when not previewable.
     preview_sig: Optional[str] = None
 
 

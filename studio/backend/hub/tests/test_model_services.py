@@ -39,15 +39,11 @@ from hub.workers import hf_download
 
 @pytest.fixture(autouse = True)
 def _denylist_inert(monkeypatch):
-    # The browse tests here exercise allowlist containment, symlink safety and
-    # the sensitive-name filter, not the system-directory denylist (which has
-    # its own suite in tests/test_browse_denylist.py). On macOS tmp_path
-    # resolves under /private/var, a denied prefix, so _resolve_browse_target
-    # would 403 the fixture dirs before that logic runs. Keep the denylist inert
-    # so these assertions hold on every platform. folder_browser binds
-    # is_denied_system_path at import, so patch it on that module, not on
-    # scan_folders. The "rejects" cases still 403 via the allowlist/sensitive
-    # checks, and the non-browse tests never call it.
+    # These browse tests exercise allowlist containment, symlink safety and the sensitive-name
+    # filter, not the system-directory denylist (its own suite is tests/test_browse_denylist.py).
+    # On macOS tmp_path resolves under /private/var, a denied prefix, so keep the denylist inert
+    # for cross-platform parity. folder_browser binds is_denied_system_path at import, so patch it
+    # there. The "rejects" cases still 403 via the allowlist/sensitive checks.
     monkeypatch.setattr(folder_browser, "is_denied_system_path", lambda _p: False)
 
 
@@ -154,8 +150,7 @@ def test_custom_inventory_filters_mtp_companions_at_registered_root(tmp_path, mo
 
 
 def test_custom_inventory_filters_dspark_companions_at_registered_root(tmp_path):
-    # Registering dspark/ as the scan root strips it from every relative path,
-    # so the dspark- basename prefix has to carry the exclusion.
+    # Registering dspark/ as the scan root strips it from every relative path, so the basename prefix carries the exclusion.
     root = tmp_path / "dspark"
     root.mkdir()
     for name in (
@@ -685,8 +680,7 @@ def test_browse_allowlist_includes_linux_run_media_mounts(monkeypatch, tmp_path)
 
 
 def test_get_models_folder_response_creates_and_returns_dir(monkeypatch, tmp_path):
-    # The endpoint creates the cache dir on demand so the desktop "Open folder"
-    # action works even before the first download.
+    # The endpoint creates the cache dir on demand so "Open folder" works before the first download.
     target = tmp_path / "hub"
     monkeypatch.setattr(local_inventory, "_resolve_hf_cache_dir", lambda: target)
 
@@ -985,7 +979,7 @@ def _diffusion_scan(monkeypatch, tmp_path, repo_id: str, files: list, *, task: s
         cache_inventory, "all_hf_cache_scans", lambda: [SimpleNamespace(repos = [repo])]
     )
     # The real signature takes snapshot_dir; a double that omits it raises TypeError, which the
-    # per-repo except swallows into an empty row list and every assertion below stops running.
+    # per-repo except swallows into an empty row list, silently skipping every assertion below.
     monkeypatch.setattr(
         cache_inventory.hf_cache_scan,
         "is_snapshot_partial",
@@ -1181,10 +1175,8 @@ def test_cached_scans_hide_embedders_configured_by_snapshot_path(monkeypatch, tm
 def test_cached_models_scan_keeps_unrelated_repo_with_custom_generic_embedder(
     monkeypatch, tmp_path
 ):
-    # A custom embedder with a generic basename ("org/model") must be hidden by
-    # EXACT repo-id match only. An unrelated cached chat model whose id merely
-    # contains "model" (e.g. "user/model-chat") must stay on device: substring
-    # basename matching used to drop real chat models from the inventory.
+    # A custom embedder with a generic basename ("org/model") must be hidden by EXACT repo-id
+    # match only: substring basename matching used to drop real chat models from the inventory.
     from core.rag import config as rag_config
 
     monkeypatch.setattr(rag_config, "effective_embedding_model", lambda: "org/model")
@@ -2127,8 +2119,7 @@ def test_gguf_progress_subtracts_new_job_completed_baseline(monkeypatch, tmp_pat
 
 
 def test_gguf_progress_shows_main_when_companion_left_the_count(monkeypatch, tmp_path):
-    # The mmproj companion that seeded the baseline is gone, so completed_bytes
-    # is main-only and below the baseline; it must not be subtracted to 0.
+    # The mmproj companion that seeded the baseline is gone, so completed_bytes is main-only and below it.
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)
@@ -2199,10 +2190,8 @@ def test_gguf_progress_shows_main_when_companion_left_the_count(monkeypatch, tmp
 
 
 def test_gguf_progress_complete_on_disk_ignores_full_baseline(monkeypatch, tmp_path):
-    # A variant already complete on disk carries a baseline equal to its full
-    # size; subtracting it would report 0/0 for a finished variant (frontend
-    # evicts it as gone). Once complete_on_disk is verified, the full figures
-    # must survive.
+    # A variant already complete on disk carries a baseline equal to its full size; subtracting it
+    # would report 0/0 for a finished variant, which the frontend evicts as gone.
     entry = tmp_path / "models--Org--Model-GGUF"
     snap = entry / "snapshots" / "rev0"
     blobs = entry / "blobs"
@@ -2298,10 +2287,8 @@ def test_gguf_progress_complete_on_disk_ignores_full_baseline(monkeypatch, tmp_p
 
 
 def test_gguf_progress_scoped_hashes_exclude_sibling_quant(monkeypatch, tmp_path):
-    # The "instant ~900 MB" bug: a sibling quant is fully cached when a different
-    # variant starts. With this variant's hashes resolved, progress counts ONLY
-    # its in-progress blob, never the sibling's finalized bytes in the shared
-    # blobs/ dir.
+    # The "instant ~900 MB" bug: with this variant's hashes resolved, progress counts ONLY its
+    # in-progress blob, never a sibling quant's finalized bytes in the shared blobs/ dir.
     entry = tmp_path / "models--Org--Model-GGUF"
     blobs = entry / "blobs"
     blobs.mkdir(parents = True)

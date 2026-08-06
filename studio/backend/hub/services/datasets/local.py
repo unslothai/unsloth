@@ -21,9 +21,8 @@ from hub.schemas.datasets import (
 from hub.utils.paths import dataset_uploads_root, ensure_dir, recipe_datasets_root
 from utils.upload_limits import get_upload_limit_mb, upload_limit_bytes, upload_limit_label
 
-# Tabular formats are preferred over archives for Tier 1 preview: archives
-# (e.g. images.zip) load as ImageFolder with synthetic columns that don't
-# match the real schema.
+# Tabular formats are preferred over archives for Tier 1 preview: archives (e.g. images.zip)
+# load as ImageFolder with synthetic columns that don't match the real schema.
 _TABULAR_EXTS = (".parquet", ".json", ".jsonl", ".csv", ".tsv", ".arrow")
 _ARCHIVE_EXTS = (".tar", ".tar.gz", ".tgz", ".gz", ".zst", ".zip", ".txt")
 DATA_EXTS = _TABULAR_EXTS + _ARCHIVE_EXTS
@@ -256,8 +255,7 @@ def _load_local_preview_slice(*, dataset_path: Path, train_split: str, preview_s
         dataset_path = candidate_files[0]
 
     suffix = dataset_path.suffix.lower()
-    # Parquet/Arrow give a cheap exact total_rows via len()+select; JSON/CSV
-    # carry no such metadata, so stream them and report total_rows=None.
+    # Parquet/Arrow give a cheap exact total_rows; JSON/CSV carry none, so stream and report None.
     if suffix == ".parquet":
         dataset = load_dataset("parquet", data_files = str(dataset_path), split = train_split)
         total_rows = len(dataset)

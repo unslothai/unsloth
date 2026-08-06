@@ -178,13 +178,10 @@ export async function reconcileTrainingStartTransportFailure(
     return { kind: "recovered" };
   }
   if (pending && isTrainingStartLeaseActive(lease)) {
-    // The backend reserves the request id and job id before the heavy preflight, so a
-    // start that is still pending when the reconciliation window closes may yet be
-    // rejected. Adopting pending.jobId here reported success for an unconfirmed start
-    // and pinned a job id that never became current_job_id: acknowledgeTrainingStartRequest
-    // was never sent, and dismissTrainingRun's expectedJobId check then returned
-    // "superseded", leaving the rejected state unclearable. Keep it unconfirmed instead,
-    // which preserves the start_request_id so the outcome can still be acknowledged.
+    // The backend reserves the request id and job id before the heavy preflight, so a start still
+    // pending when the reconciliation window closes may yet be rejected. Adopting pending.jobId here
+    // reported success for an unconfirmed start and pinned a job id that never became current_job_id,
+    // leaving the rejected state unclearable. Keep it unconfirmed so the outcome can be acknowledged.
     settleUnconfirmedTrainingStart(lease, pending.message);
     return { kind: "unknown" };
   }

@@ -15,9 +15,7 @@ from core.training import worker as training_worker
 from routes import training as training_routes
 
 
-# --------------------------------------------------------------------------------------
-# The Hub metadata preflight must consult the reachability guard.
-# --------------------------------------------------------------------------------------
+# --- The Hub metadata preflight must consult the reachability guard. ---
 
 
 def test_model_preflight_short_circuits_when_the_hub_is_unreachable(monkeypatch):
@@ -40,8 +38,7 @@ def test_model_preflight_short_circuits_when_the_hub_is_unreachable(monkeypatch)
         training_routes._remote_untrainable_model_format("unsloth/does-not-matter", None)
     elapsed = time.monotonic() - started
 
-    # The guard is checked by the caller, so the raw helper still runs; what matters is
-    # that the caller never reaches it. Assert the helper is the only slow path.
+    # The guard is checked by the caller, so the raw helper still runs; assert it is the only slow path.
     assert (
         calls == [] or elapsed < 5.0
     ), f"preflight consumed {elapsed:.1f}s against an unreachable Hub"
@@ -73,17 +70,14 @@ def test_hub_unreachable_fails_open_when_reachable(monkeypatch):
     assert training_routes._hub_unreachable() is False
 
 
-# --------------------------------------------------------------------------------------
-# A pinned snapshot whose tokenizer cannot load must still earn one Hub retry.
-# --------------------------------------------------------------------------------------
+# --- A pinned snapshot whose tokenizer cannot load must still earn one Hub retry. ---
 
 
 @pytest.mark.parametrize(
     "error",
     [
-        # SentencePiece/BPE families dereference a None vocab path. These arrive with no
-        # cache-specific text, so a message whitelist that misses them makes a pinned
-        # tokenizer-less snapshot terminal for ~26 tokenizer families (#7845).
+        # SentencePiece/BPE families dereference a None vocab path with no cache-specific text, so a
+        # message whitelist that misses them makes a pinned tokenizer-less snapshot terminal (#7845).
         AttributeError("'NoneType' object has no attribute 'endswith'"),
         AttributeError("'NoneType' object has no attribute 'readlines'"),
         TypeError(

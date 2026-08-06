@@ -1,14 +1,11 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// Parity check between en.ts and every non-English locale.
+// Parity check between en.ts and every non-English locale:
 // - Locale files may be partial; required release surfaces must be translated.
 // - All non-English keys must exist in en (no extras).
 // - Placeholder set must match per leaf between en and the overlay.
-//
-// --strict also fails on missing keys, naming them. See studio-frontend-ci.yml
-// for why CI needs that on top of the runtime fallback.
-//
+// --strict also fails on missing keys, naming them (see studio-frontend-ci.yml).
 // Run: npm run i18n:check   (or: npx tsx src/i18n/check-parity.ts [--strict])
 
 import { ar } from "./locales/ar.ts";

@@ -23,7 +23,7 @@ interface ConfirmArgs {
 }
 
 /** Gate a load that may need trust_remote_code: scan, show the consent dialog, and on
- *  approval call onApprove with the pinning fingerprint. Returns false if declined. */
+*  approval call onApprove with the pinning fingerprint. Returns false if declined. */
 export async function confirmRemoteCodeIfNeeded({
   modelName,
   hfToken,
@@ -63,8 +63,8 @@ export async function confirmRemoteCodeIfNeeded({
     };
   }
 
-  // No custom code and nothing unsafe: proceed without trust_remote_code. Models needing
-  // it ship auto_map and hit the dialog below, so the flag is only enabled via approval.
+  // No custom code and nothing unsafe: proceed without trust_remote_code. Models needing it ship
+  // auto_map and hit the dialog below, so the flag is only ever enabled via approval.
   if (!scan.requiresTrustRemoteCode && scan.unsafeFiles.length === 0) {
     return true;
   }
@@ -83,8 +83,8 @@ export async function confirmRemoteCodeIfNeeded({
     .getState()
     .requestConsent(scan);
   if (!confirmed) {
-    // Declined: purge every repo our scan first downloaded (a LoRA scan pulls adapter +
-    // base) so untrusted code is not left on disk. Fall back to the primary flag for an older backend.
+    // Declined: purge every repo our scan first downloaded (a LoRA scan pulls adapter + base).
+    // Fall back to the primary flag for an older backend.
     const toPurge =
       scan.scanCreatedRepos.length > 0
         ? scan.scanCreatedRepos

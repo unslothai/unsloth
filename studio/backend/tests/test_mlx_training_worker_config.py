@@ -105,9 +105,8 @@ def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
 
 
 def test_mlx_wandb_run_config_excludes_subject_and_secrets():
-    # The MLX W&B run config uploads the whole config minus a sensitive set. The owner's
-    # subject (authenticated username / API-key id) must be filtered alongside the secrets,
-    # otherwise it lands in W&B run config even though DB history already strips it.
+    # The MLX W&B run config uploads everything minus a sensitive set. The owner's subject must be
+    # filtered alongside the secrets, or it lands in W&B even though DB history strips it.
     source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
         encoding = "utf-8"
     )

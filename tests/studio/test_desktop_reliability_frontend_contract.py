@@ -59,8 +59,7 @@ def test_desktop_update_offer_remains_actionable_from_settings():
     assert "{appContent}" in provider[context_start:context_end]
     assert "appContent={" in provider
     assert "useContext(TauriUpdateContext)" in context
-    # Scope these: bare substrings also match setTimeout(checkForUpdate, 5000)
-    # and the installUpdate() reset.
+    # Scope these: bare substrings also match setTimeout(checkForUpdate, 5000) and installUpdate().
     assert "checkForUpdate," in hook.split("  return {", 1)[1]
     manual = hook.split("async function checkForUpdate()", 1)[1]
     assert "checkedRef.current = true;" in manual.split("try {", 1)[0]
@@ -124,8 +123,7 @@ def test_desktop_update_check_failures_are_retryable():
     assert "setCheckError(String(e));" in hook
     assert "update.checkError !== null" in settings
     assert 't("settings.about.update.retryCheck")' in settings
-    # The reason must reach the user without guessing that every failure is
-    # caused by their network connection.
+    # The reason must reach the user without guessing that every failure is a network problem.
     assert "description = update.checkError ?? label;" in settings
     assert 't("settings.about.update.desktopCheckFailedDescription")' not in settings
     assert "server returned HTTP {status}" in policy
@@ -363,8 +361,7 @@ def test_expanded_titlebar_button_and_corner_match_sidebar_edge():
     assert "<DesktopTitlebarNavigation" in source
     assert "const contentBorderLeft = pinned" in source
     assert ': "0px";' in source
-    # The curved transition and sidebar-colored backing are expanded-only;
-    # collapsed content is square and its divider spans the sidebar too.
+    # The curved transition and sidebar-colored backing are expanded-only.
     assert source.count("{showSidebarSurface && pinned && (") == 2
     assert (
         'className="pointer-events-none absolute top-full size-3 -translate-x-px bg-sidebar"'

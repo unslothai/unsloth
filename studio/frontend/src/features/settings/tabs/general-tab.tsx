@@ -68,11 +68,9 @@ import { SettingsSection } from "../components/settings-section";
 import { StudioVersionSection } from "../components/studio-version-section";
 import { useSettingsDialogStore } from "../stores/settings-dialog-store";
 
-// Keys cleared by "Reset all local preferences".
-// NEVER include auth/session keys here — clearing them would log the user out
-// or force re-onboarding. Explicitly excluded: unsloth_auth_token,
-// unsloth_auth_refresh_token, unsloth_auth_must_change_password,
-// unsloth_onboarding_done.
+// Keys cleared by "Reset all local preferences". NEVER include auth/session keys here -- that
+// would log the user out or force re-onboarding (unsloth_auth_token, unsloth_auth_refresh_token,
+// unsloth_auth_must_change_password, unsloth_onboarding_done are excluded).
 const PREFS_KEYS: string[] = [
   // Appearance
   "theme",
@@ -88,8 +86,7 @@ const PREFS_KEYS: string[] = [
   // Chat runtime prefs
   "unsloth_chat_auto_title",
   "unsloth_chat_permission_mode",
-  // Legacy confirm key: loadPermissionMode falls back to it, so clear both or
-  // a reset would restore the old level instead of the fresh default.
+  // Legacy confirm key: loadPermissionMode falls back to it, so clear both or a reset restores it.
   "unsloth_chat_confirm_tool_calls",
   "unsloth_hf_token",
   "unsloth_auto_heal_tool_calls",
@@ -129,8 +126,7 @@ const PREFS_KEYS: string[] = [
   "unsloth_voice_settings",
 ];
 
-// Set by resetAllPrefs so the unmount-commit effect skips writing back the
-// in-memory draft, else cleanup would re-persist the just-cleared HF token.
+// Set by resetAllPrefs so the unmount-commit effect skips writing back the in-memory draft.
 let resetInProgress = false;
 
 function resetAllPrefs() {
@@ -207,8 +203,7 @@ export function GeneralTab() {
     draftRef.current = draftToken;
   }, [draftToken]);
 
-  // Commit on unmount (dialog close / tab switch). Skip during reset-prefs
-  // flow so we don't re-persist the draft after localStorage was cleared.
+  // Commit on unmount (dialog close / tab switch), skipped during the reset-prefs flow.
   useEffect(() => {
     return () => {
       if (resetInProgress) return;
@@ -232,9 +227,8 @@ export function GeneralTab() {
     setHfToken("");
   };
 
-  // Only show the success tick for the currently displayed token after the
-  // authenticated validation endpoint has confirmed it. A saved token alone
-  // may still be malformed, expired, or revoked.
+  // Only show the success tick after the authenticated validation endpoint confirms this token:
+  // a saved token alone may still be malformed, expired, or revoked.
   const tokenIsCurrent =
     draftToken.trim().length > 0 && draftToken.trim() === (hfToken ?? "");
   const tokenValidation = useHfTokenValidation(hfToken ?? "");
@@ -347,8 +341,7 @@ export function GeneralTab() {
     try {
       const settings = await updatePreviewSharing(enabled);
       setPreviewSharing(settings);
-      // Toggling sharing changes whether /api/train/runs returns preview_sig, so
-      // refresh the history grid (hide/show the Copy preview link buttons).
+      // Toggling sharing changes whether /api/train/runs returns preview_sig, so refresh the grid.
       emitTrainingRunsChanged();
     } catch (error) {
       setPreviewSharingError(
@@ -365,8 +358,7 @@ export function GeneralTab() {
     setIsRevokingPreview(true);
     try {
       await rotatePreviewLinks();
-      // The secret rotated, so any preview_sig the history grid still holds is
-      // now stale. Refresh so copied links use freshly minted signatures.
+      // The secret rotated, so any preview_sig the history grid holds is stale.
       emitTrainingRunsChanged();
       setRevokePreviewOpen(false);
       toast.success(t("settings.general.previewSharing.revoked"));
@@ -506,8 +498,7 @@ export function GeneralTab() {
                   )}
                 />
                 {tokenValidated ? (
-                  // Decorative: pointer-events-none lets clicks reach the input
-                  // underneath so the field still focuses anywhere.
+                  // Decorative: pointer-events-none lets clicks reach the input underneath.
                   <span
                     className="pointer-events-none absolute right-7 top-1/2 flex size-5 -translate-y-1/2 items-center justify-center text-emerald-600 duration-150 animate-in fade-in zoom-in dark:text-emerald-500"
                     role="img"

@@ -195,8 +195,7 @@ def test_hf_dataset_preflight_accepts_usable_selected_cache(tmp_path):
 
 
 def test_hf_dataset_preflight_verifies_an_unpinned_repo_with_a_stray_cache(tmp_path):
-    # Without a cache pin the start still downloads, so an unrelated cached copy of the
-    # repo must not buy the request a pass on Hub verification.
+    # Without a cache pin the start still downloads, so an unrelated cached copy buys no pass.
     route = _load_route_module("training_route_unpinned_dataset_verifies")
     calls: list[str] = []
 
@@ -1016,8 +1015,8 @@ def test_remote_format_probe_preserves_root_level_repo_id():
 
 
 def test_remote_format_probe_resolves_the_bicodec_alias():
-    # "Spark-TTS-0.5B/LLM" is a registry alias, not a repo. Probing it literally 404s and
-    # rejects a supported model, so preflight has to probe what the trainer downloads.
+    # "Spark-TTS-0.5B/LLM" is a registry alias, not a repo: probing it literally 404s, so preflight
+    # has to probe what the trainer downloads.
     route = _load_route_module("training_route_remote_bicodec_alias")
     info = SimpleNamespace(
         siblings = [
@@ -1474,8 +1473,7 @@ def test_runtime_4bit_resume_reaches_worker_with_source_resource_pins(tmp_path):
     assert response.status == "queued"
     assert captured["model_snapshot_path"] == str(old_model)
     assert captured["dataset_snapshot_path"] == str(old_dataset)
-    # The route posix-normalizes this field (utils/paths/path_utils.py), so compare
-    # against the same shape rather than the platform-native string.
+    # The route posix-normalizes this field, so compare against the same shape.
     assert captured["model_local_path"] == model_root.as_posix()
     assert captured["dataset_local_path"] == str(dataset_root)
     assert captured["load_in_4bit"] is True
@@ -1899,8 +1897,7 @@ def test_resolve_model_snapshot_keeps_selected_cache_path_strict(monkeypatch):
         lambda *_args: iter([fallback_path]),
     )
 
-    # Each path is probed once per metadata set (weights first, then bare metadata),
-    # so assert which paths were consulted rather than how many probes ran.
+    # Each path is probed once per metadata set, so assert which paths were consulted, not how many.
     assert _resolve_model_snapshot("unsloth/test", selected_path) is None
     assert set(resolved_paths) == {selected_path}
 

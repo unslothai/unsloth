@@ -9,16 +9,14 @@ import {
 } from "./hub-infinite-scroll-policy";
 
 /**
- * IntersectionObserver sentinel for infinite scroll, plus a ResizeObserver
- * fallback that rechecks a sentinel which remains inside the prefetch range.
- * Fallback firings are coalesced to one frame; concurrency is gated at the
- * data-source layer.
- *
- * `signal` is a progress marker so the fit check re-runs after a fetch even
- * when the page filter rejected every new row and the DOM didn't change.
- * `DEFAULT_MAX_AUTO_FILL_FETCHES` caps consecutive automatic pages which add
- * no visible results; callers with a manual continuation UI can lower it.
- */
+* IntersectionObserver sentinel for infinite scroll, plus a ResizeObserver fallback that
+* rechecks a sentinel still inside the prefetch range. Fallback firings are coalesced to one
+* frame; concurrency is gated at the data-source layer.
+*
+* `signal` is a progress marker so the fit check re-runs after a fetch even when the page
+* filter rejected every new row and the DOM didn't change. `DEFAULT_MAX_AUTO_FILL_FETCHES`
+* caps consecutive automatic pages that add no visible results.
+*/
 const DEFAULT_MAX_AUTO_FILL_FETCHES = 40;
 const PREFETCH_MARGIN_PX = 200;
 

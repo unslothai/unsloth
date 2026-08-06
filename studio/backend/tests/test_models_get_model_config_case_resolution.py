@@ -8,8 +8,7 @@ import types
 
 import pytest
 
-# Keep this test runnable in lightweight environments where optional logging
-# deps are not installed.
+# Keep this test runnable where optional logging deps are not installed.
 if "structlog" not in sys.modules:
 
     class _DummyLogger:
@@ -282,9 +281,8 @@ def test_get_model_config_rejects_invalid_selected_cache_path(path_kind, tmp_pat
 
 
 def test_repo_in_any_hf_cache_matches_case_variant_in_legacy_cache(tmp_path, monkeypatch):
-    # A case-variant in a legacy/default cache must read as present (case resolution only
-    # covers the active cache; discard deletes case-insensitively, so detection must too,
-    # else a decline deletes a pre-existing user repo).
+    # A case-variant in a legacy/default cache must read as present: case resolution only covers the
+    # active cache, but discard deletes case-insensitively, so detection must too.
     import utils.paths as paths_pkg
     import hub.utils.paths as hub_paths
 

@@ -2,12 +2,11 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Why this file exists (unslothai/unsloth#7897): the training bar sat at 100%
- * with no completion. `applyStatus` never touches `progressPercent`, so once the
- * SSE has reported step N/N the bar stays at 100 no matter what phase the status
- * poll then reports. Reaching 100% means the optimizer loop ended -- NOT that the
- * model save succeeded -- so completion must come from the phase, never the bar.
- */
+* Why this file exists (unslothai/unsloth#7897): the training bar sat at 100% with no
+* completion. `applyStatus` never touches `progressPercent`, so once the SSE has reported step
+* N/N the bar stays at 100 whatever phase the status poll reports. Reaching 100% means the
+* optimizer loop ended, NOT that the save succeeded, so completion must come from the phase.
+*/
 
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -25,8 +24,7 @@ function reset() {
     useTrainingRuntimeStore.getInitialState?.() ?? {},
     true,
   );
-  // applyProgress ignores payloads whose job_id does not match the store, so a run
-  // has to be adopted before progress lands. Every fixture below is job-1.
+  // applyProgress ignores payloads whose job_id does not match, so a run has to be adopted first.
   useTrainingRuntimeStore.setState({ jobId: "job-1" } as never);
 }
 

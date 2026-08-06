@@ -67,7 +67,6 @@ from .data_recipe import (
 )
 
 __all__ = [
-    # Training schemas
     "TrainingStartRequest",
     "TrainingStartRequestStatus",
     "TrainingJobResponse",
@@ -79,19 +78,16 @@ __all__ = [
     "TrainingRunDetailResponse",
     "TrainingRunDeleteResponse",
     "TrainingRunUpdateRequest",
-    # Model management schemas
     "ModelDetails",
     "LocalModelInfo",
     "LocalModelListResponse",
     "LoRAInfo",
     "LoRAScanResponse",
     "ModelListResponse",
-    # Auth schemas
     "AuthLoginRequest",
     "RefreshTokenRequest",
     "AuthStatusResponse",
     "ChangePasswordRequest",
-    # Export schemas
     "CheckpointInfo",
     "ModelCheckpoints",
     "CheckpointListResponse",
@@ -103,20 +99,17 @@ __all__ = [
     "ExportGGUFRequest",
     "ExportLoRAAdapterRequest",
     "Token",
-    # Inference schemas
     "LoadRequest",
     "UnloadRequest",
     "GenerateRequest",
     "LoadResponse",
     "UnloadResponse",
     "InferenceStatusResponse",
-    # Response schemas
     "TrainingStopResponse",
     "TrainingMetricsResponse",
     "LoRABaseModelResponse",
     "VisionCheckResponse",
     "EmbeddingCheckResponse",
-    # Data recipe
     "RecipePayload",
     "PreviewResponse",
     "ValidateError",

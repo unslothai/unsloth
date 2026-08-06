@@ -77,8 +77,7 @@ let _datasetCheckController: AbortController | null = null;
 // AbortController for in-flight model default loads.
 let _modelConfigController: AbortController | null = null;
 
-// Has the user manually toggled trainOnCompletions since the last auto-set
-// (model load or dataset change)?
+// Has the user manually toggled trainOnCompletions since the last auto-set?
 let _trainOnCompletionsManuallySet = false;
 
 let _trainingMethodEditGeneration = 0;
@@ -95,9 +94,8 @@ function canReapplyModelDefaults(modelName: string): boolean {
   );
 }
 
-// streamingCompatiblePatch can silently flip streaming-coupled fields. Surface a
-// toast when it does, so the indirect setters (split / eval-split / max-steps /
-// eval-steps) match setDatasetStreaming's "tell the user what changed" behavior.
+// streamingCompatiblePatch can silently flip streaming-coupled fields, so toast when it does,
+// matching setDatasetStreaming's "tell the user what changed" behavior.
 function notifyStreamingCompat(patch: Partial<TrainingConfigState>): void {
   if (patch.datasetStreaming === false) {
     toast.info(
@@ -239,15 +237,13 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
             );
             const patch = shouldApplyTrainingDefaults ? modelDefaultsPatch : {};
 
-            // Treat a model-config LR as authoritative so async auto-select
-            // won't overwrite it.
+            // Treat a model-config LR as authoritative so async auto-select won't overwrite it.
             const modelConfigHasLR =
               modelDefaultsPatch.learningRate !== undefined;
             const modelAdapterLearningRate =
               modelDefaultsPatch.learningRate ?? null;
 
-            // YAML LRs are tuned for adapters (LoRA/QLoRA); on full fine-tune,
-            // use the full-finetune default instead of the YAML adapter LR.
+            // YAML LRs are tuned for adapters (LoRA/QLoRA); full fine-tune uses its own default.
             if (modelConfigHasLR && !isAdapterMethod(get().trainingMethod)) {
               modelDefaultsPatch.learningRate = LR_DEFAULT_FULL;
             }
@@ -288,8 +284,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   )
                 : null;
 
-            // Preserve CPT hyperparams: YAML adapter defaults (r/alpha/targets/LR)
-            // are tuned for standard LoRA and would clobber CPT settings.
+            // Preserve CPT hyperparams: YAML adapter defaults are tuned for standard LoRA.
             const cptOverrides =
               shouldApplyTrainingDefaults && get().trainingMethod === "cpt"
                 ? getCptModelDefaultsPatch()
@@ -562,8 +557,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
                   });
                   return;
                 }
-                // Retry budget spent: stop trusting the cache for this selection and
-                // resolve it remotely rather than spinning on a churning inventory.
+                // Retry budget spent: resolve remotely rather than spin on a churning inventory cache.
                 set({
                   datasetKnownCached: false,
                   datasetLocalPath: null,
@@ -1270,8 +1264,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         setWarmupSteps: (warmupSteps) => setUserEdit({ warmupSteps }),
         setMaxSteps: (maxSteps) => {
           const state = get();
-          // streamingCompatiblePatch already turns streaming off when maxSteps<=0,
-          // so no separate datasetStreaming reset is needed here.
+          // streamingCompatiblePatch already turns streaming off when maxSteps<=0.
           const streamingPatch = streamingCompatiblePatch({
             ...state,
             maxSteps,
@@ -1374,9 +1367,8 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           ...sourcePatch,
         };
         if (Object.keys(patch).length > 0) {
-          // Sync localStorage hydration runs inside create(), before
-          // useTrainingConfigStore is assigned (TDZ). Defer to a microtask so the
-          // store exists when we reconcile the persisted streaming combo.
+          // Sync localStorage hydration runs inside create(), before useTrainingConfigStore is assigned
+          // (TDZ). Defer to a microtask so the store exists when the persisted combo is reconciled.
           queueMicrotask(() => useTrainingConfigStore.setState(patch));
         }
       },

@@ -149,9 +149,8 @@ class TestConsentGate:
         assert {"severity", "file", "check"} <= set(f0)
 
     def test_high_first_party_requires_approval(self):
-        # First-party is no longer a blanket bypass: HIGH code from a first-party repo
-        # requires per-version approval like any other (approvable, unlike CRITICAL).
-        # Real first-party models scan clean; this uses a synthetic HIGH payload.
+        # First-party is no longer a blanket bypass: HIGH code from a first-party repo needs
+        # per-version approval like any other (approvable, unlike CRITICAL). Synthetic payload.
         a, b = _with_auto_map(_HIGH)
         with a, b:
             d = evaluate_remote_code_consent(
@@ -243,8 +242,7 @@ class TestConsentGate:
         assert d.blocked is True
 
     def test_combined_targets_one_fingerprint_approves_adapter_and_base(self):
-        # A LoRA adapter and base that both ship auto_map code are scanned as one unit and
-        # pinned by a single fingerprint over the union, so one approval unblocks the load.
+        # A LoRA adapter and base that both ship auto_map code are scanned and pinned as one unit.
         adapter_files = {"tokenization_adapter.py": "import subprocess\nsubprocess.Popen(['id'])\n"}
         base_files = {"modeling_base.py": "import subprocess\nsubprocess.Popen(['id'])\n"}
 
@@ -272,9 +270,8 @@ class TestConsentGate:
         assert base_only.fingerprint != d1.fingerprint
 
     def test_fingerprint_is_casing_invariant_for_hub_repos(self):
-        # The scan endpoint canonicalizes casing but workers pass raw input. The fingerprint
-        # pins code bytes, not the repo-id spelling, so casing must not change it (else the
-        # worker rejects the scan's approval as a mismatch).
+        # The scan endpoint canonicalizes casing but workers pass raw input. The fingerprint pins
+        # code bytes, not the repo-id spelling, so casing must not change it.
         a, b = _with_auto_map(_HIGH)
         with a, b:
             d1 = evaluate_remote_code_consent_for_targets(["Org/Model"], trust_remote_code = True)
@@ -364,9 +361,8 @@ class TestConsentGate:
         assert d.approvable is False
 
     def test_medium_severity_blocks_pending_approval(self):
-        # A MEDIUM finding is approvable but blocks until the fingerprint is pinned, so
-        # trust_remote_code=True alone cannot run flagged code; a match then unblocks.
-        # MEDIUM is rarely emitted, so the scan result is mocked to exercise the policy.
+        # A MEDIUM finding is approvable but blocks until pinned, so trust_remote_code=True alone
+        # cannot run flagged code. MEDIUM is rarely emitted, so the scan result is mocked.
         from utils.security.remote_code_scan import MEDIUM
 
         class _MediumResult:
@@ -416,9 +412,8 @@ class TestConsentGate:
         assert d1.fingerprint != d2.fingerprint  # pinned approval would re-prompt
 
     def test_unscannable_auto_map_blocked_fail_closed(self):
-        # Code is shipped but could not be fetched/listed (gated/offline/transient):
-        # repo_remote_code_files raises RemoteCodeUnscannable. Code we cannot see cannot
-        # be verified or fingerprinted, so fail closed (hard, non-approvable block).
+        # Code is shipped but could not be fetched/listed (gated/offline/transient), so
+        # repo_remote_code_files raises RemoteCodeUnscannable: fail closed, non-approvable.
         with (
             patch.object(consent, "_config_has_auto_map", return_value = True),
             patch.object(
@@ -434,9 +429,8 @@ class TestConsentGate:
         assert "could not be scanned" in d.reason
 
     def test_auto_map_with_no_executable_code_is_a_noop(self):
-        # auto_map declared but the repo ships no executable .py (listing succeeded,
-        # returns {}) -- e.g. a GGUF repo with a vestigial auto_map. Nothing to run, so
-        # trust_remote_code is a no-op and the load is allowed, not blocked.
+        # auto_map declared but the repo ships no executable .py (e.g. a GGUF repo with a vestigial
+        # auto_map). Nothing to run, so the load is allowed, not blocked.
         with (
             patch.object(consent, "_config_has_auto_map", return_value = True),
             patch.object(consent, "repo_remote_code_files", return_value = {}),
@@ -467,8 +461,7 @@ class TestWorkersWireTheGate:
         assert ".blocked" in src
 
     def test_mlx_training_path_gates_before_load(self):
-        # The Apple-Silicon path returns before run_training_process's gate, so it must
-        # scan before FastMLXModel.from_pretrained runs repo code.
+        # The Apple-Silicon path returns before run_training_process's gate, so it must scan first.
         src = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
         head = src[: src.index("FastMLXModel.from_pretrained(")]
         assert "evaluate_remote_code_consent" in head
@@ -481,9 +474,8 @@ class TestWorkersWireTheGate:
             assert "get_base_model_from_lora" in src or "mc.base_model" in src
 
     def test_remote_lora_base_is_resolved_in_gate_paths(self):
-        # validate / scan / training / export must resolve a remote adapter's base (not
-        # just a local dir) so it is scanned, not silently trusted. (Inference gets the
-        # resolved base from ModelConfig.base_model.)
+        # validate / scan / training / export must resolve a remote adapter's base so it is scanned.
+        # (Inference gets the resolved base from ModelConfig.base_model.)
         for rel in (
             "routes/inference.py",
             "routes/models.py",
@@ -494,8 +486,7 @@ class TestWorkersWireTheGate:
             assert "get_base_model_from_lora_identifier" in src, rel
 
     def test_cache_fallback_gates_the_hub_target(self):
-        # Dropping the cache pin swaps in the Hub repo, so the scan has to run on the
-        # new target. Scanning before the swap only re-scans the snapshot already gated.
+        # Dropping the cache pin swaps in the Hub repo, so the scan has to run on the new target.
         src = (_BACKEND / "core/training/worker.py").read_text(encoding = "utf-8")
         drops = [
             index
@@ -543,8 +534,7 @@ class TestCanonicalScannerSource:
         assert hasattr(canon, "check_py_file")
 
     def test_gate_uses_canonical_combination_heuristics(self):
-        # Combination heuristics are unique to the canonical scanner: a reverse shell is
-        # CRITICAL there, proving the flat fallback is not in effect.
+        # A reverse shell is CRITICAL only in the canonical scanner, proving the flat fallback is off.
         from utils.security.remote_code_scan import scan_remote_code_files
         r = scan_remote_code_files(_CRITICAL)
         assert r.max_severity == "CRITICAL"
@@ -956,8 +946,7 @@ class TestStructuredFindingsForDialog:
         assert "subject" in src
 
 
-# Trusted-org auto-enable: is_trusted_org_repo decides whether a repo may auto-enable
-# remote code without a prompt; it rejects local-path / spoofed names and fails closed.
+# is_trusted_org_repo decides auto-enable; it rejects local-path / spoofed names, fails closed.
 
 
 def _fake_hfapi(resolved_id, author = "unsloth"):
@@ -1076,9 +1065,8 @@ class TestNemotronGateUsesTrustCheck:
         assert gate("unsloth/llama-3-8b") is False  # not nemotron
 
 
-# Raw scanner behaviour + coverage: scan_remote_code_files flags dangerous patterns
-# and agrees with the CI auditor; repo_remote_code_files must scan every .py the
-# loader could execute and fail closed on a partial remote snapshot.
+# Raw scanner behaviour + coverage: scan_remote_code_files flags dangerous patterns and
+# agrees with the CI auditor; repo_remote_code_files scans every .py the loader could run.
 
 _SCAN_MALICIOUS = (
     "import os, subprocess, urllib.request, base64\n"
@@ -1181,8 +1169,7 @@ class TestScannerCoversAllExecutableCode:
         assert str(Path("helpers") / "sub.py") in files
 
     def test_remote_partial_download_is_unscannable(self):
-        # config.json fetches but a referenced .py 404s: a partial set would fingerprint
-        # "clean" while transformers later runs the missing file, so fail closed.
+        # config.json fetches but a referenced .py 404s: a partial set would fingerprint "clean".
         def _dl(
             repo,
             fn,
@@ -1208,8 +1195,7 @@ class TestScannerCoversAllExecutableCode:
                 repo_remote_code_files("third/party")
 
     def test_external_auto_map_repo_is_scanned(self):
-        # auto_map can point at code in another repo (owner/name--module.Class) that
-        # transformers fetches + runs, so the scanner must download it from that repo.
+        # auto_map can point at code in another repo, which transformers fetches and runs.
         def _dl(
             repo,
             fn,
@@ -1241,9 +1227,8 @@ class TestScannerCoversAllExecutableCode:
         assert not scan_remote_code_files(files).clean  # the external code is flagged
 
     def test_external_auto_map_helper_imports_are_scanned(self):
-        # transformers fetches the external entry AND its relative imports, so the scanner
-        # must download the whole external .py closure -- a benign entry importing a
-        # dangerous helper.py must still be flagged.
+        # transformers fetches the external entry AND its relative imports, so a benign entry
+        # importing a dangerous helper.py must still be flagged.
         def _dl(
             repo,
             fn,
@@ -1282,9 +1267,8 @@ class TestScannerCoversAllExecutableCode:
         assert not scan_remote_code_files(files).clean  # helper's os.system is flagged
 
     def test_stale_own_repo_auto_map_ref_is_ignored_not_failed_closed(self):
-        # A config names an own-repo .py the repo no longer ships (a stale ref, e.g.
-        # PaddleOCR-VL names processing_ppocrvl.py but ships processing_paddleocr_vl.py).
-        # The absent file cannot run, so ignore it and scan the present .py, not fail closed.
+        # A config naming an own-repo .py the repo no longer ships (stale ref, e.g. PaddleOCR-VL).
+        # The absent file cannot run, so ignore it and scan the present .py rather than fail closed.
         def _dl(
             repo,
             fn,
@@ -1320,8 +1304,7 @@ class TestScannerCoversAllExecutableCode:
         assert "processing_ppocrvl.py" not in files  # stale ref ignored, never fetched
 
     def test_present_referenced_py_fetch_failure_still_fails_closed(self):
-        # The stale-ref relaxation must not weaken the present-file guarantee: a listed .py
-        # that cannot be fetched (transient) still fails closed, since transformers would run it.
+        # The stale-ref relaxation must not weaken the guarantee: a present-but-unfetchable .py fails closed.
         def _dl(
             repo,
             fn,
@@ -1349,9 +1332,8 @@ class TestScannerCoversAllExecutableCode:
                 repo_remote_code_files("third/party")
 
     def test_external_tokenizer_auto_map_list_is_scanned(self):
-        # transformers encodes a tokenizer auto_map as a [slow, fast] list, e.g.
-        # {"AutoTokenizer": ["owner/repo--tokenization_x.Slow", null]}; the external code
-        # in the list must be fetched + scanned, not skipped for being a list.
+        # transformers encodes a tokenizer auto_map as a [slow, fast] list; the external code in
+        # the list must still be fetched and scanned.
         def _dl(
             repo,
             fn,
@@ -1422,9 +1404,8 @@ class TestScannerCoversAllExecutableCode:
                 repo_remote_code_files("victim/model")
 
     def test_unrelated_local_py_is_still_scanned(self, tmp_path):
-        # Deliberate broad scan (not narrowed to the import closure): a .py the entry does
-        # not statically import is still scanned, since the entry can reach it via
-        # importlib / exec / absolute import. Closure-only scanning would be a bypass.
+        # Deliberate broad scan (not narrowed to the import closure): the entry can reach a .py via
+        # importlib / exec / absolute import, so closure-only scanning would be a bypass.
         (tmp_path / "config.json").write_text('{"auto_map": {"AutoModel": "modeling_ok.M"}}')
         (tmp_path / "modeling_ok.py").write_text("import torch\n")  # benign entry, imports nothing
         (tmp_path / "unrelated.py").write_text("import os\nos.system('id')\n")  # never imported
@@ -1433,10 +1414,9 @@ class TestScannerCoversAllExecutableCode:
         assert not scan_remote_code_files(files).clean  # its os.system is flagged
 
     def test_external_mis_derived_dotted_ref_dropped_when_real_present(self):
-        # A subpackage ref "evilorg/evilrepo--pkg.modeling_evil.M" derives
-        # "pkg.modeling_evil.py", but the real file is "pkg/modeling_evil.py" (present).
-        # The mis-derived name must be dropped (not fetched and failed closed) while the
-        # present file is scanned, like the own-repo stale-ref guard.
+        # A subpackage ref "evilorg/evilrepo--pkg.modeling_evil.M" derives "pkg.modeling_evil.py",
+        # but the real file is "pkg/modeling_evil.py". Drop the mis-derived name (don't fetch and
+        # fail closed) while scanning the present file, like the own-repo stale-ref guard.
         def _dl(
             repo,
             fn,
@@ -1476,8 +1456,7 @@ class TestScannerCoversAllExecutableCode:
         assert not scan_remote_code_files(files).clean  # os.system flagged
 
     def test_external_auto_map_repos_enumerated_for_cleanup(self, tmp_path):
-        # Decline cleanup needs the external auto_map repo ids so their code is not left
-        # cached; external_auto_map_repos lists the repos a config references.
+        # Decline cleanup needs the external auto_map repo ids so their code is not left cached.
         from utils.security.remote_code_scan import external_auto_map_repos
 
         (tmp_path / "config.json").write_text(
@@ -1497,9 +1476,8 @@ class TestScannerCoversAllExecutableCode:
         assert external_auto_map_repos(str(tmp_path / "plain")) == set()
 
     def test_gguf_repo_vestigial_auto_map_no_py_is_no_code(self):
-        # A GGUF repo whose config.json has a vestigial auto_map but ships no .py: the
-        # listing succeeds with nothing to run, so the result is an empty dict, not a
-        # raise (which would false-block). Real shape of a Nemotron-Ultra GGUF.
+        # A GGUF repo with a vestigial auto_map but no .py: the listing succeeds with nothing to
+        # run, so the result is an empty dict, not a raise. Real shape of a Nemotron-Ultra GGUF.
         def _dl(
             repo,
             fn,
@@ -1528,8 +1506,7 @@ class TestScannerCoversAllExecutableCode:
         assert files == {}  # no executable code -> empty (no raise)
 
     def test_tokenizer_only_auto_map_is_gated(self, tmp_path):
-        # config.json is plain but tokenizer_config.json declares auto_map: an
-        # AutoTokenizer(trust_remote_code=True) load runs that code, so scan + block it.
+        # config.json is plain but tokenizer_config.json declares auto_map, which a load would run.
         from utils.security import preflight_remote_code_consent
 
         (tmp_path / "config.json").write_text('{"model_type": "llama"}')
@@ -1545,10 +1522,9 @@ class TestScannerCoversAllExecutableCode:
         assert d.fingerprint
 
     def test_config_file_list_covers_transformers_auto_map_sources(self):
-        # transformers reads auto_map only from a fixed set of config files (filename
-        # constants). Pin our scanned set to those exact constants from the installed
-        # transformers, so an upgrade that adds/renames an auto_map config trips here
-        # instead of silently leaving its code unscanned.
+        # transformers reads auto_map only from a fixed set of config files. Pin our scanned set to
+        # those exact constants from the installed transformers, so an upgrade that adds or renames
+        # an auto_map config trips here instead of leaving its code unscanned.
         from transformers.tokenization_utils_base import TOKENIZER_CONFIG_FILE
         from transformers.utils import (
             CONFIG_NAME,
@@ -1573,9 +1549,8 @@ class TestScannerCoversAllExecutableCode:
         )
 
     def test_load_configs_returns_empty_list_when_all_404(self):
-        # A remote repo shipping none of the auto_map configs (every fetch 404s) returns
-        # [] ("no config-based auto_map"), not None ("unknown"): [] -> no-op, while None
-        # would force a scan and, for a code-less repo, a false unscannable block.
+        # A remote repo shipping none of the auto_map configs (every fetch 404s) returns [] ("no
+        # config-based auto_map"), not None ("unknown"): None would force a false unscannable block.
         with patch("huggingface_hub.hf_hub_download", side_effect = EntryNotFoundError("404")):
             configs = consent._load_remote_code_configs("some/plain-repo")
         assert configs == []
@@ -1585,8 +1560,7 @@ class TestScannerCoversAllExecutableCode:
         assert configs is None
 
     def test_gguf_repo_auto_map_is_scanned_for_non_file_load_paths(self, tmp_path):
-        # A GGUF-only repo id still hits export paths that run auto_map; only a direct
-        # .gguf file is inert.
+        # A GGUF-only repo id still hits export paths that run auto_map; only a direct .gguf is inert.
         def _dl(
             repo_id = None,
             filename = None,
@@ -1689,8 +1663,8 @@ class TestScannerCoversAllExecutableCode:
             assert consent._config_has_auto_map("org/repo/model.gguf") is False
 
     def test_remote_repo_named_gguf_is_not_suffix_skipped(self):
-        # A two-segment repo id whose name ends in ".gguf" is not a direct file reference:
-        # it can still ship safetensors + auto_map Python, so it must be scanned.
+        # A two-segment repo id whose name ends in ".gguf" is not a direct file reference: it can
+        # still ship safetensors + auto_map Python, so it must be scanned.
         def _dl(
             repo_id = None,
             filename = None,
@@ -1717,8 +1691,8 @@ class TestScannerCoversAllExecutableCode:
             assert consent._config_has_auto_map("evil/model.gguf") is True
 
     def test_mixed_gguf_and_safetensors_repo_is_still_gated(self):
-        # A repo with both .gguf and .safetensors is not treated as GGUF: the safetensors
-        # could load via transformers where auto_map runs, so the gate must still apply.
+        # A repo with both .gguf and .safetensors is not treated as GGUF: the safetensors could
+        # load via transformers where auto_map runs.
         def _dl(
             repo_id = None,
             filename = None,
@@ -1744,9 +1718,8 @@ class TestScannerCoversAllExecutableCode:
             assert consent._config_has_auto_map("org/Mixed-Repo") is True
 
     def test_mixed_gguf_and_bin_repo_is_still_gated(self):
-        # A repo with .gguf + a non-safetensors transformers weight (.bin/.pt/.pth/.h5/
-        # .msgpack/.onnx/.ckpt) is not GGUF-only: transformers can load it and run
-        # auto_map, so the gate still applies even with no .safetensors present.
+        # A repo with .gguf + a non-safetensors transformers weight (.bin/.pt/.h5/.onnx/...) is not
+        # GGUF-only: transformers can load it and run auto_map, so the gate still applies.
         def _dl(
             repo_id = None,
             filename = None,
@@ -1781,8 +1754,8 @@ class TestScannerCoversAllExecutableCode:
                 assert consent._config_has_auto_map("org/Mixed-Bin-GGUF") is True, weight
 
 
-# POST /discard-remote-code: purge what the scan downloaded on decline, but never a
-# model the user already had (weights), a loaded model, or a local path.
+# POST /discard-remote-code: purge what the scan downloaded on decline, but never a model
+# the user already had (weights), a loaded model, or a local path.
 
 
 class TestDiscardRemoteCodeDownload:

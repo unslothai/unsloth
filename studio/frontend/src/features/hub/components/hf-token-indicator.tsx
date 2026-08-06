@@ -25,8 +25,7 @@ function maskHfToken(token: string): string {
   return trimmed.length < 8 ? "••••" : `••••${trimmed.slice(-4)}`;
 }
 
-// Compact "set / not set" indicator for the app-wide HF token; click opens
-// Settings -> General. Shared by the Hub header and Train wizard (same store).
+// Compact "set / not set" indicator for the app-wide HF token; click opens Settings -> General.
 export function HfTokenIndicator({
   showLabel = false,
   onOpenSettings,
@@ -111,8 +110,7 @@ export function HfTokenIndicator({
           onClick={onOpenSettings}
           aria-label={ariaLabel}
           className={cn(
-            // Solid circle reads optically larger than the flat HTTP/Xet box, so
-            // keep it 22px to sit within the row rather than bulging above it.
+            // Solid circle reads optically larger than the flat HTTP/Xet box, so keep it 22px.
             "inline-flex h-[22px] w-[22px] items-center justify-center rounded-full text-ui-11p5 transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             hasToken
               ? "hub-tag-soft text-muted-foreground hover:text-foreground/80"

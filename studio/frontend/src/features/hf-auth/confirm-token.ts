@@ -1,8 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// These stores are used outside React and are not part of their features'
-// React-facing public barrels.
+// These stores are used outside React and are not part of their features' public barrels.
 // eslint-disable-next-line no-restricted-imports
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
 // eslint-disable-next-line no-restricted-imports
@@ -19,9 +18,8 @@ interface PrepareHfTokenOptions {
   allowAnonymous?: boolean;
 }
 
-// A caller can retain the pre-dialog payload while the shared store is cleared.
-// Remember that one-session choice so a follow-up /load does not prompt again
-// after its preceding /validate already continued anonymously.
+// A caller can retain the pre-dialog payload while the shared store is cleared. Remember that
+// one-session choice so a follow-up /load does not prompt again after an anonymous /validate.
 const anonymousForSession = new Set<string>();
 
 export async function prepareHfTokenForUse(
@@ -45,8 +43,7 @@ export async function prepareHfTokenForUse(
     return { proceed: true, token: normalized };
   }
   if (validation.status !== "invalid") {
-    // A connectivity failure or rate limit cannot prove that a token is bad.
-    // Let the real operation proceed and retain its repository-specific error.
+    // A connectivity failure or rate limit cannot prove a token is bad; let the real operation run.
     return { proceed: true, token: normalized };
   }
 

@@ -22,10 +22,9 @@ const TooltipTriggerElementCtx = createContext<(element: HTMLElement | null) => 
   () => undefined,
 );
 
-// Radix sets body pointer-events to none while a modal layer is up. That is also
-// when a hovered trigger stops receiving pointerleave, so a tooltip already on
-// screen hangs over the dialog with nothing able to close it. One observer
-// serves every tooltip.
+// Radix sets body pointer-events to none while a modal layer is up. That is also when a hovered
+// trigger stops receiving pointerleave, so a tooltip already on screen hangs over the dialog
+// with nothing able to close it. One observer serves every tooltip.
 let modalLayerUp = false;
 const modalLayerListeners = new Set<() => void>();
 let modalLayerObserver: MutationObserver | null = null;
@@ -96,8 +95,7 @@ function createModalBlockStore(): ModalBlockStore {
   const listeners = new Set<() => void>();
 
   const update = () => {
-    // No trigger to ask (a child that drops the ref) falls back to the whole
-    // modal: leaving it shut beats leaving it stranded over the dialog.
+    // No trigger to ask (a child that drops the ref) falls back to the whole modal.
     const next =
       getModalLayer() &&
       (triggerElement === null || isBlockedByActiveModal(triggerElement));
@@ -134,10 +132,9 @@ function getServerModalBlock(): boolean {
   return false;
 }
 
-/** Tap-to-pin is for touch, which has no hover. The click's own pointerType is
- * the only thing that answers for the pointer actually used: the media query
- * reports the primary device, so on a hybrid it mislabels every event from the
- * other one. Keyboard activation reports "", which correctly does not pin. */
+/** Tap-to-pin is for touch, which has no hover. The click's own pointerType is the only thing
+* that answers for the pointer actually used: the media query reports the primary device, so on
+* a hybrid it mislabels every event. Keyboard activation reports "", which correctly does not pin. */
 function isTouchClick(event: React.MouseEvent): boolean {
   const pointerType = (event.nativeEvent as Partial<PointerEvent>).pointerType;
   if (typeof pointerType === "string") return pointerType === "touch";
@@ -149,10 +146,8 @@ function isTouchClick(event: React.MouseEvent): boolean {
   );
 }
 
-// Default to instant open (no hover delay). Most tooltips in the app —
-// chat-area icon labels, sidebar nav labels, the context/token
-// calculators — should feel snappy. Consumers that want a delay still
-// pass an explicit `delayDuration` prop.
+// Default to instant open (no hover delay): icon labels, nav labels and the token calculators
+// should feel snappy. Consumers that want a delay pass an explicit `delayDuration`.
 function TooltipProvider({
   delayDuration = 0,
   ...props
@@ -172,15 +167,13 @@ function Tooltip({
   ...props
 }: React.ComponentProps<typeof TooltipPrimitive.Root>) {
   const isControlled = controlledOpen !== undefined;
-  // Radix's own open state is never handed back once a modal forces the
-  // tooltip shut, so hover is tracked here and `open` is always supplied.
-  // Falling back to `undefined` would re-expose a `true` from before the
-  // dialog, with the pointer somewhere else entirely.
+  // Radix's own open state is never handed back once a modal forces the tooltip shut, so hover is
+  // tracked here and `open` is always supplied. Falling back to `undefined` would re-expose a
+  // `true` from before the dialog, with the pointer somewhere else entirely.
   const [hoverOpen, setHoverOpen] = useState(false);
   const [clickOpen, setClickOpen] = useState(false);
-  // A controlled tooltip's owner cannot be reset from here, and it never saw
-  // the pointerleave a modal swallowed, so its `open` is still true when the
-  // modal closes. Stay shut until the owner says false at least once.
+  // A controlled tooltip's owner cannot be reset from here, and it never saw the pointerleave a
+  // modal swallowed, so stay shut until the owner says false at least once.
   const [dismissedUntilOwnerResets, setDismissedUntilOwnerResets] =
     useState(false);
   const [modalBlockStore] = useState(createModalBlockStore);

@@ -89,8 +89,8 @@ def test_start_route_offloads_blocking_start(monkeypatch):
 
 
 def test_backend_start_guard_blocks_overlapping_starts():
-    # With the route offloaded to worker threads, two overlapping /train/start requests can reach start_training concurrently,
-    # so the compare-and-set spawn reservation must let exactly one of them proceed.
+    # With the route offloaded to worker threads, two overlapping /train/start requests can reach
+    # start_training concurrently, so the compare-and-set reservation must let exactly one proceed.
     from core.training.training import TrainingBackend
 
     backend = TrainingBackend()

@@ -81,11 +81,10 @@ def restore_hf_cache_repo_identity(
         "_name_or_path",
         repo_id,
     )
-    # PreTrainedModel.__init__ copies config.name_or_path onto the instance, so
-    # updating the config alone leaves this stale. PEFT reads exactly this slot
-    # (mapping_func.py: model.__dict__.get("name_or_path")) and overwrites
-    # base_model_name_or_path with it, which is how a pinned snapshot path ends up
-    # in adapter_config.json, the checkpoints, the run card and every export.
+    # PreTrainedModel.__init__ copies config.name_or_path onto the instance, so updating the config
+    # alone leaves this stale. PEFT reads exactly this slot (mapping_func.py) and overwrites
+    # base_model_name_or_path with it, which is how a pinned snapshot path ends up in
+    # adapter_config.json, the checkpoints, the run card and every export.
     changed = _set_standard_identity(model, "name_or_path", repo_id) or changed
     changed = _set_standard_identity(model, "_hf_repo", repo_id) or changed
 

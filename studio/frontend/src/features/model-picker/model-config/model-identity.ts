@@ -101,9 +101,8 @@ function ggufStem(filename: string): string {
 }
 
 /**
- * Mirrors extract_quant_label in gguf.py, for a bare filename. The parent-directory pass
- * cannot fire on a basename, so this is the stem's quant token or the stem itself.
- */
+* Mirrors extract_quant_label in gguf.py, for a bare filename. The parent-directory pass
+* cannot fire on a basename, so this is the stem's quant token or the stem itself. */
 function ggufQuantLabel(filename: string): string {
   const stem = ggufStem(filename);
   let fallback: RegExpExecArray | null = null;
@@ -121,10 +120,8 @@ function ggufQuantLabel(filename: string): string {
 }
 
 /**
- * `[head, quant]` for a `head:QUANT` key, or null when the colon is not one. The suffix must
- * look like a real quant, so an ordinary colon in a POSIX filename and a drive letter are left
- * alone.
- */
+* `[head, quant]` for a `head:QUANT` key, or null when the colon is not one. The suffix must
+* look like a real quant, so an ordinary colon in a POSIX filename and a drive letter are left alone. */
 export function splitQuantSuffix(value: string): [string, string] | null {
   const separator = value.lastIndexOf(":");
   if (separator <= 0 || separator === value.length - 1) {
@@ -145,8 +142,8 @@ export function splitQuantSuffix(value: string): [string, string] | null {
   if (!head.toLowerCase().endsWith(".gguf")) {
     return null;
   }
-  // Exactly that label, as the backend requires: a colon is legal in a POSIX filename,
-  // so reading the suffix as a variant folds two real files onto one lowercased key.
+  // Exactly that label, as the backend requires: a colon is legal in a POSIX filename, so
+  // reading the suffix as a variant folds two real files onto one lowercased key.
   const filename = head.replace(BACKSLASHES, "/").split("/").pop() ?? head;
   return tail.toLowerCase() === ggufQuantLabel(filename).toLowerCase()
     ? [head, tail]

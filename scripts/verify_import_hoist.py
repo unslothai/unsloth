@@ -565,29 +565,23 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
             )
 
     # 2. HOISTED-IMPORT-UNUSED  (core botched-hoist / wrong-rename signal)
-    #    A module-level import in AFTER that NO load resolves to, that was either
-    #    newly added by this change OR actually used before. Excludes relocation
-    #    (import removed) and stable pre-existing re-exports.
+    #    A module-level import in AFTER that NO load resolves to, that was either newly added
+    #    by this change OR actually used before. Excludes relocation and stable re-exports.
     for n, tids in b["module_import_targets"].items():
         if tids & after_used:
             continue  # resolved -> fine
-        # `from __future__ import ...` is a compiler directive, not a runtime
-        # binding: the name (`annotations`, ...) is never loaded, so it can never
-        # "resolve" to a use. Skip it so a legitimately-added future import
-        # (e.g. `annotations` for lazy PEP 604 `X | None` on py3.9) is not flagged.
+        # `from __future__ import ...` is a compiler directive, not a runtime binding: the name is
+        # never loaded, so it can never "resolve" to a use. Skip it so a legitimately-added future
+        # import (e.g. `annotations` for lazy PEP 604 on py3.9) is not flagged.
         if all(t.startswith("from:__future__:") for t in tids):
             continue
-        # A name listed in __all__ in a package __init__ is an intentional public
-        # re-export: it is loaded by importers, not by this module, so "no load
-        # resolves to it here" is expected rather than a botched hoist. Without this,
-        # adding any new re-export is an automatic blocker.
+        # A name listed in __all__ in a package __init__ is an intentional public re-export: it is
+        # loaded by importers, not by this module, so "no load resolves to it here" is expected.
+        # Without this, adding any new re-export is an automatic blocker.
         #
-        # Scoped to __init__.py deliberately. Applied to every module that defines
-        # __all__ it exempts 224 names across 27 non-package modules and, worse,
-        # disables rename-clash detection for any name listed there -- one of the two
-        # bugs lint-ci.yml says this tool exists to catch because ruff and pyflakes
-        # miss it. That would make adding a name to __all__ a one-line, reviewer-
-        # invisible way to switch the check off.
+        # Scoped to __init__.py deliberately: applied to every module defining __all__ it exempts
+        # 224 names across 27 non-package modules and disables rename-clash detection for them --
+        # one of the two bugs this tool exists to catch, and a reviewer-invisible way to switch it off.
         if n in after_exported and _is_package_init(path):
             continue
         newly_added = bool(tids - before_module_targets)
@@ -607,21 +601,15 @@ def compare(before_src: str, after_src: str, path: str) -> list[tuple[str, str]]
             )
 
     # 3. TARGET-CHANGED (same scope+name resolves to a different import target)
-    #    Only a *swap* is dangerous: a BEFORE target that is no longer reachable in
-    #    AFTER means a reference was silently re-pointed. A pure superset growth
-    #    (tbefore <= tafter) is the benign `import pkg.subA` + `import pkg.subB`
-    #    case: both statements bind the same top-level name `pkg` to the same
-    #    package object and only *add* submodule attributes (e.g. adding
-    #    `import urllib.error` next to `import urllib.request`). Nothing the name
-    #    resolved to before is lost, so no reference is re-pointed -- skip it.
+    #    Only a *swap* is dangerous: a BEFORE target no longer reachable in AFTER means a
+    #    reference was silently re-pointed. A pure superset growth (tbefore <= tafter) is the
+    #    benign `import pkg.subA` + `import pkg.subB` case: both bind the same top-level name
+    #    and only add submodule attributes, so nothing is lost -- skip it.
     #
-    #    A deliberate *relocation* is also benign and must not block: when a name
-    #    keeps its spelling but its import source is moved A -> B in THIS diff (the
-    #    old `from A import x` is removed at module level and a new `from B import x`
-    #    is added), the swap is intentional, not a silent re-point to a pre-existing
-    #    different object. This mirrors the relocation tolerance already applied to
-    #    TARGET-MISSING. The dangerous case -- the name now resolving to a target
-    #    that already existed before (shadow/clash) -- is NOT exempted.
+    #    A deliberate *relocation* is also benign: when a name keeps its spelling but its import
+    #    source moves A -> B in THIS diff, the swap is intentional, not a silent re-point. This
+    #    mirrors the relocation tolerance already applied to TARGET-MISSING. The dangerous case
+    #    -- resolving to a target that already existed before (shadow/clash) -- is NOT exempted.
     removed_module_targets = before_module_targets - after_module_targets
     for key, tafter in b["target_by_use"].items():
         tbefore = a["target_by_use"].get(key)
@@ -751,8 +739,7 @@ _SELF_TESTS = {
 def _self_test() -> int:
     ok = True
     for name, case in _SELF_TESTS.items():
-        # A case may supply its own path; the __all__ skip is scoped to package
-        # __init__.py, so it cannot be exercised through the "<name>" placeholder.
+        # A case may supply its own path; the __all__ skip is scoped to package __init__.py.
         before, after, expect = case[0], case[1], case[2]
         path = case[3] if len(case) > 3 else f"<{name}>"
         findings = compare(before, after, path)

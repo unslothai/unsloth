@@ -1,10 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-/**
- * Light mode uses a soft border, dark mode uses background fill only.
- * The border stays transparent so box size matches across themes.
- */
+/** Light mode uses a soft border, dark mode background fill only. The border stays
+* transparent so box size matches across themes. */
 export function selectableOptionStateClassName(selected: boolean): string {
   return selected
     ? "border-ring-strong/50 bg-primary/5 dark:border-transparent dark:bg-emerald-200/10"

@@ -20,10 +20,8 @@ export interface PerModelConfig {
   nParallel: number | null;
   tensorParallel: boolean;
   chatTemplateOverride: string | null;
-  // GPU Memory controls (per-model, GGUF-only), optional so older blobs still
-  // parse. null or absent selectedGpuIds means automatic placement; an array is
-  // an explicit candidate pool. The --tensor-split ratio is deliberately not
-  // remembered because it is bound to the exact GPU set and order.
+  // GPU Memory controls (per-model, GGUF-only), optional so older blobs still parse. null/absent
+  // selectedGpuIds means automatic. --tensor-split is not remembered: it is bound to the GPU set.
   gpuMemoryMode?: "auto" | "manual";
   gpuLayers?: number;
   nCpuMoe?: number;
@@ -42,17 +40,15 @@ export const DEFAULT_PER_MODEL_CONFIG: PerModelConfig = {
   chatTemplateOverride: null,
 };
 
-// Mirrors llama_server_args.py PARALLEL_MIN/MAX (LoadRequest.n_parallel
-// bounds). null = follow the server-wide default.
+// Mirrors llama_server_args.py PARALLEL_MIN/MAX; null = follow the server-wide default.
 export const N_PARALLEL_MIN = 1;
 export const N_PARALLEL_MAX = 64;
 
 export const MAX_SEQ_LENGTH_MIN = 128;
 export const MAX_SEQ_LENGTH_MAX = 1048576;
 export const MAX_SEQ_LENGTH_STEP = 128;
-// App-default max sequence length when a non-GGUF model has no override. Both
-// paths fall back to this rather than an active model's runtime value, so an
-// unconfigured pane never inherits another model's larger context and OOMs.
+// App-default max sequence length when a non-GGUF model has no override. Both paths fall back
+// here rather than an active model's runtime value, so an unconfigured pane never OOMs.
 export const DEFAULT_MAX_SEQ_LENGTH = 4096;
 export const CONTEXT_LENGTH_MIN = 128;
 
@@ -126,8 +122,7 @@ function normalizeGpuFields(partial: RawConfig): {
     selectedGpuIds?: number[] | null;
     selectedGpuIndexKind?: GpuIndexKind | null;
   } = {};
-  // Only "manual" is a real override; persisting "auto" would pin the model and
-  // stop it following later changes to the global GPU Memory preference.
+  // Only "manual" is a real override; persisting "auto" would stop the model following the global.
   if (partial.gpuMemoryMode === "manual") {
     out.gpuMemoryMode = "manual";
   }
@@ -169,8 +164,7 @@ function canonicalizeSpeculativeType(value: string): string | null {
   if (!s) {
     return null;
   }
-  // "auto"/"default" is the follow-global sentinel; store as null so it is never
-  // persisted as an override and global speculative-decoding changes keep applying.
+  // "auto"/"default" is the follow-global sentinel; store as null so it is never an override.
   if (s === "auto" || s === "default") {
     return null;
   }
@@ -209,9 +203,8 @@ function canUseStorage(): boolean {
   return typeof window !== "undefined";
 }
 
-// Whether Run Settings shows its advanced section is a standing preference,
-// not a per-model one: opening it once keeps it open for every model and
-// quant. Closed until asked for.
+// Whether Run Settings shows its advanced section is a standing preference, not per-model:
+// opening it once keeps it open for every model and quant. Closed until asked for.
 export const ADVANCED_SETTINGS_OPEN_KEY = "unsloth_model_advanced_settings";
 
 function loadAdvancedSettingsOpen(): boolean | null {
@@ -226,27 +219,23 @@ function loadAdvancedSettingsOpen(): boolean | null {
   }
 }
 
-// Set only when a write is refused, so the switch keeps working in a browser
-// with storage disabled, sandboxed or full. Cleared by the next write that
-// sticks, which puts storage back in charge. `stored` is what storage held at
+// Set only when a write is refused, so the switch keeps working in a browser with storage
+// disabled or full. Cleared by the next write that sticks. `stored` is what storage held at
 // the time, the one signal that tells a later write by someone else apart.
 let unpersisted: { open: boolean; stored: boolean | null } | null = null;
 const advancedOpenListeners = new Set<() => void>();
 
 /** null until the switch is used, so an untouched panel is free to open the
- *  section for a model that carries non-default advanced values.
- *
- *  Read straight from storage rather than cached: a write from another tab
- *  while every panel was unmounted has no listener to catch it, and its
- *  storage event is not replayed on the next mount. */
+*  section for a model that carries non-default advanced values.
+*  Read straight from storage rather than cached: a write from another tab while every panel
+*  was unmounted has no listener to catch it, and its storage event is not replayed on mount. */
 export function readAdvancedSettingsOpen(): boolean | null {
   const stored = loadAdvancedSettingsOpen();
   if (!unpersisted) {
     return stored;
   }
-  // Storage moved since the refused write, so someone made a newer choice and
-  // it outranks the fallback. Checked on read, not on the storage event, so it
-  // still holds for an event that landed while nothing was mounted.
+  // Storage moved since the refused write, so a newer choice outranks the fallback. Checked on
+  // read, not on the storage event, so it still holds for an event that landed while unmounted.
   if (stored !== unpersisted.stored) {
     unpersisted = null;
     return stored;
@@ -271,9 +260,8 @@ export function saveAdvancedSettingsOpen(open: boolean): void {
   unpersisted = writeAdvancedSettingsOpen(open)
     ? null
     : { open, stored: loadAdvancedSettingsOpen() };
-  // Run Settings is mounted on several surfaces at once, and the sidebar copy
-  // stays mounted while collapsed, so tell them all rather than let them keep
-  // a snapshot taken at mount.
+  // Run Settings is mounted on several surfaces at once, and the sidebar copy stays mounted
+  // while collapsed, so tell them all rather than let them keep a snapshot taken at mount.
   for (const listener of [...advancedOpenListeners]) {
     listener();
   }
@@ -474,8 +462,7 @@ function migrateLegacyLoadSettingsOnce(): void {
       return;
     }
     const map = readMapRaw();
-    // Snapshot existing entries so eviction can protect them: importing old load
-    // settings must never discard a newer per-model config the user already has.
+    // Snapshot existing entries so eviction protects them: importing old load settings must never discard a newer config.
     const existingKeys = new Set(Object.keys(map));
     const migratedKeys = mergeLegacyEntries(
       map,
@@ -485,8 +472,7 @@ function migrateLegacyLoadSettingsOnce(): void {
       localStorage.setItem(LEGACY_MIGRATION_FLAG, "1");
       return;
     }
-    // Protect pre-existing entries so only just-migrated legacy entries are
-    // dropped when over budget.
+    // Protect pre-existing entries so only just-migrated legacy entries are dropped over budget.
     if (!enforceStorageBudget(map, existingKeys)) {
       return;
     }
@@ -604,9 +590,8 @@ function normalizeV1(partial: RawConfig): PerModelConfig {
 }
 
 /**
- * A config in the exact shape storage keeps it in: the UI carries sentinels storage does not
- * (Speculative Decoding "auto" canonicalizes to null), which would read as non-default.
- */
+* A config in the exact shape storage keeps it in: the UI carries sentinels storage does not
+* (Speculative Decoding "auto" canonicalizes to null), which would read as non-default. */
 export function normalizePerModelConfig(raw: unknown): PerModelConfig {
   return normalize(raw);
 }
@@ -744,8 +729,7 @@ export function isDefaultConfig(config: PerModelConfig): boolean {
   );
 }
 
-// GPU knobs are "default" when mode is Auto with no explicit choice: mode
-// auto/absent, gpuLayers < 0/absent, nCpuMoe 0/absent, selectedGpuIds null/absent.
+// GPU knobs are "default" when mode is Auto with no explicit choice: gpuLayers < 0/absent, nCpuMoe 0/absent, selectedGpuIds null/absent.
 function gpuFieldsAtDefault(config: PerModelConfig): boolean {
   return (
     (config.gpuMemoryMode ?? "auto") === "auto" &&
@@ -760,10 +744,9 @@ export function savePerModelConfig(
   ggufVariant: string | null | undefined,
   config: PerModelConfig,
   /**
-   * Receives models dropped to stay inside the storage budget. Eviction is silent and
-   * still reports success, so without this their server overrides would keep applying
-   * with nothing in the UI able to forget them.
-   */
+  * Receives models dropped to stay inside the storage budget. Eviction is silent and still
+  * reports success, so without this their server overrides would keep applying with nothing
+  * in the UI able to forget them. */
   evicted?: { modelId: string; ggufVariant: string | null }[],
 ): boolean {
   if (
@@ -822,8 +805,7 @@ export function listPerModelConfigs(): {
     if (!modelId) {
       continue;
     }
-    // Never report a future-schema record: loadPerModelConfig refuses to apply one, so
-    // the backfill would persist this client's partial reading of it.
+    // Never report a future-schema record: loadPerModelConfig refuses to apply one anyway.
     if (storedConfigVersion(raw) > STORAGE_SCHEMA_VERSION) {
       continue;
     }
@@ -853,19 +835,16 @@ export function deletePerModelConfig(
 }
 
 /**
- * Move a saved config from an id an older release keyed it by onto the current one.
- *
- * A repo cached outside the active HF cache is now keyed by its repo id, because that is
- * what the picker and the auto-switch index use; it used to be keyed by the snapshot
- * path it loads from. Nothing else migrates that: the server backfill only mirrors what
- * is already stored, so without this the model reads as never remembered and comes up on
- * defaults after an upgrade.
- *
- * The key is renamed in one write rather than saved and then deleted: holding both copies at once
- * puts an already-full map over its budget, and the save then evicts the oldest unrelated model
- * silently, with no eviction list to hand back, so that model's server override outlives anything
- * the UI could forget. A rename cannot grow the entry count.
- */
+* Move a saved config from an id an older release keyed it by onto the current one.
+*
+* A repo cached outside the active HF cache is now keyed by its repo id (what the picker and
+* auto-switch index use); it used to be keyed by the snapshot path it loads from. Nothing else
+* migrates that, so without this the model reads as never remembered after an upgrade.
+*
+* The key is renamed in one write rather than saved then deleted: holding both copies puts an
+* already-full map over budget, and the save then silently evicts an unrelated model whose
+* server override outlives anything the UI could forget. A rename cannot grow the entry count.
+*/
 export function adoptLegacyConfigKey(
   modelId: string,
   legacyModelId: string,
@@ -883,8 +862,7 @@ export function adoptLegacyConfigKey(
   if (!legacyKey) {
     return false;
   }
-  // Never interpret, move or destroy a record a newer client wrote, on either id: the same
-  // guard loadPerModelConfig, savePerModelConfig and deletePerModelConfig each apply.
+  // Never interpret, move or destroy a record a newer client wrote, on either id.
   if (
     storedConfigVersion(map[legacyKey]) > STORAGE_SCHEMA_VERSION ||
     hasFutureConfigForModelVariant(map, legacyModelId, ggufVariant) ||
@@ -903,9 +881,8 @@ export function adoptLegacyConfigKey(
     const [key] = storageKeysForModelVariant(modelId, ggufVariant);
     map[key] = toStoredConfig(legacy);
   }
-  // Only the key strings change length, and a repo id is normally shorter than the snapshot
-  // path it replaces. If it is not, and that tips the map past its byte cap, leave storage as
-  // it was: the stale record is still readable, where an eviction would not be undoable.
+  // Only the key strings change length, and a repo id is normally shorter than the snapshot path.
+  // If it is not and that tips the map past its byte cap, leave storage as it was: eviction is not undoable.
   const bytesAfter = serializedMapSize(map);
   if (
     bytesAfter > bytesBefore &&
@@ -928,17 +905,14 @@ export function resolveInitialConfig(
 }
 
 /**
- * Remembered settings for the identifier ``/api/inference/status`` reports as loaded.
- *
- * An API auto-switch hands the loader the concrete snapshot path (the resolver index only holds
- * paths), so ``model_identifier`` names that path while this model's settings are keyed by its
- * repo id -- what ``modelConfigIdentity`` writes for a cached repo, and what the backend's
- * override lookup already tries alongside the path. Reading the raw identifier alone reports the
- * resident model as unremembered, blanking a control it is running with, which the next save then
- * writes back over the saved record. Only a namespaced collapse is adopted, the rule
- * ``residentModelIdMatches`` applies: an HF snapshot collapses onto a repo id naming exactly one
- * model, while every other path collapses onto a stem two models can share.
- */
+* Remembered settings for the identifier ``/api/inference/status`` reports as loaded.
+*
+* An API auto-switch hands the loader the concrete snapshot path (the resolver index only holds
+* paths), so ``model_identifier`` names that path while this model's settings are keyed by its
+* repo id. Reading the raw identifier alone reports the resident model as unremembered, blanking
+* a control it is running with, which the next save writes back over the saved record. Only a
+* namespaced collapse is adopted, per ``residentModelIdMatches``: an HF snapshot collapses onto
+* a repo id naming exactly one model, while other paths collapse onto a shareable stem. */
 export function resolveResidentInitialConfig(
   modelId: string,
   ggufVariant?: string | null,

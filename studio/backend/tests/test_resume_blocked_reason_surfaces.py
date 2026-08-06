@@ -51,9 +51,8 @@ def test_the_field_is_optional_so_old_clients_are_unaffected():
 
 
 def test_a_provenance_refusal_is_reported_on_the_summary(monkeypatch):
-    # An intact checkpoint is the precondition: with the trainer state missing the
-    # checkpoint is the real cause and the reason is deliberately None. See
-    # test_resume_reason_matches_cause.py.
+    # An intact checkpoint is the precondition: with the trainer state missing the checkpoint is
+    # the real cause and the reason is deliberately None. See test_resume_reason_matches_cause.py.
     from core.training import resume as resume_mod
 
     monkeypatch.setattr(resume_mod, "has_resume_state", lambda output_dir: True)

@@ -27,8 +27,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub the heavy module-level imports of core/training/training.py so it imports
-# under CPU-only/no-network, then restore them (see the restore loop below).
+# Stub the heavy module-level imports of core/training/training.py so it imports under
+# CPU-only/no-network, then restore them (see the restore loop below).
 _SAVED: dict = {}
 
 
@@ -60,8 +60,7 @@ _pth.is_local_path = lambda *a, **k: False
 _pth.outputs_root = lambda *a, **k: "/tmp/outputs"
 _stub("utils.paths", _pth)
 
-# Whether core.training.training was already imported before this file ran; only
-# evict it below if we were the one to create the (stub-bound) module instance.
+# Was core.training.training already imported? Only evict it below if we created it.
 _TRAINING_PRE_IMPORTED = "core.training.training" in sys.modules
 
 from core.training.training import TrainingBackend
@@ -86,8 +85,8 @@ if not _TRAINING_PRE_IMPORTED:
     sys.modules.pop("core.training.training", None)
     sys.modules.pop("core.training", None)
 
-# The module globals hold the escalation timeouts and are the watchdog's own
-# namespace; patch them here so tests run in well under a second.
+# The module globals hold the escalation timeouts and are the watchdog's own namespace;
+# patch them here so tests run in well under a second.
 _G = TrainingBackend._stop_watchdog_loop.__globals__
 
 
@@ -134,9 +133,7 @@ def _record_force_terminate(monkeypatch, b):
     return calls
 
 
-# ----------------------------------------------------------------------------
 # (a) Escalate a short grace after "complete" (save done) if still alive.
-# ----------------------------------------------------------------------------
 
 
 def test_watchdog_escalates_after_grace_once_complete_seen(monkeypatch):
@@ -156,14 +153,11 @@ def test_watchdog_escalates_after_grace_once_complete_seen(monkeypatch):
     b._stop_watchdog.join(timeout = 5)
 
 
-# ----------------------------------------------------------------------------
 # (b) The absolute cap is a last-resort backstop, not a save killer.
-# ----------------------------------------------------------------------------
 
 
 def test_watchdog_does_not_kill_save_still_saving_within_window(monkeypatch):
-    # save=True, no "complete" yet: a slow save in progress must not be force-killed
-    # inside the (long) absolute window.
+    # save=True, no "complete" yet: a slow save must not be force-killed inside the window.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = TrainingBackend()
@@ -197,8 +191,7 @@ def test_watchdog_backstop_fires_for_save_after_absolute_timeout(monkeypatch):
 
 
 def test_cancel_uses_shorter_absolute_timeout(monkeypatch):
-    # A cancel has nothing to save, so it escalates on the shorter cancel cap even before
-    # the long save cap elapses.
+    # A cancel has nothing to save, so it escalates on the shorter cancel cap.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 100.0)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)  # save cap would not fire
     monkeypatch.setitem(_G, "_CANCEL_TIMEOUT_S", 0.05)
@@ -213,9 +206,7 @@ def test_cancel_uses_shorter_absolute_timeout(monkeypatch):
     b._stop_watchdog.join(timeout = 5)
 
 
-# ----------------------------------------------------------------------------
 # (c) No force-kill when the worker exits cleanly and promptly.
-# ----------------------------------------------------------------------------
 
 
 def test_watchdog_no_op_on_clean_quick_exit(monkeypatch):
@@ -239,8 +230,7 @@ def test_watchdog_no_op_on_clean_quick_exit(monkeypatch):
 
 
 def test_watchdog_no_op_when_worker_superseded(monkeypatch):
-    # A stale watchdog from a prior run must never kill a new run's worker: once
-    # self._proc is replaced, it exits silently.
+    # A stale watchdog from a prior run must never kill a new run's worker: once _proc is replaced it exits.
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 0.05)
     b = TrainingBackend()
@@ -259,8 +249,7 @@ def test_watchdog_no_op_when_worker_superseded(monkeypatch):
 
 
 def test_new_run_gets_its_own_watchdog(monkeypatch):
-    # A stale watchdog sleeping on an old proc must not stop a new run's stop from
-    # creating its own watcher.
+    # A stale watchdog sleeping on an old proc must not stop a new run from creating its own watcher.
     b = TrainingBackend()
     started = []
     release = threading.Event()
@@ -271,8 +260,8 @@ def test_new_run_gets_its_own_watchdog(monkeypatch):
         watched_job_id = None,
     ):
         started.append(target_proc)
-        # No timeout: the finally always releases this, so a superseded watchdog stays
-        # alive through the assertions regardless of load; as a daemon it can't hang exit.
+        # No timeout: the finally always releases this, so a superseded watchdog stays alive
+        # through the assertions; as a daemon it can't hang exit.
         release.wait()
 
     monkeypatch.setattr(b, "_stop_watchdog_loop", _blocked_watchdog)
@@ -283,8 +272,7 @@ def test_new_run_gets_its_own_watchdog(monkeypatch):
     first_wd = b._stop_watchdog
     assert _wait_until(lambda: started == [old_proc])
 
-    # New run: fresh worker replaces the handle; its stop must get a new watcher
-    # even though the old (superseded) watchdog is still alive.
+    # New run: a fresh worker replaces the handle, so its stop gets a new watcher.
     new_proc = _FakeProc(alive = True)
     b._proc = new_proc
     b._start_stop_watchdog(cancel = False)
@@ -318,14 +306,12 @@ def test_force_terminate_targets_only_captured_proc():
     assert p.terminated is True
 
 
-# ----------------------------------------------------------------------------
 # Post-escalation finalize leaves the parent ready for a new run.
-# ----------------------------------------------------------------------------
 
 
 def test_finalize_runs_even_if_force_terminate_raises(monkeypatch):
-    # A wedged child can make force_terminate() raise; finalize must still run so the
-    # run does not stay stuck in "Stopping...".
+    # A wedged child can make force_terminate() raise; finalize must still run so the run
+    # does not stay stuck in "Stopping...".
     monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = TrainingBackend()
@@ -352,8 +338,7 @@ def test_finalize_runs_even_if_force_terminate_raises(monkeypatch):
 
 
 def test_finalize_after_escalation_clears_state(monkeypatch):
-    # Even if the OS never reaps the wedged worker, the parent must report the run
-    # stopped so the UI leaves "Stopping..." and a new run can start.
+    # Even if the OS never reaps the wedged worker, the parent must report the run stopped.
     b = TrainingBackend()
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append(a))
@@ -374,8 +359,8 @@ def test_finalize_after_escalation_clears_state(monkeypatch):
 
 
 def test_finalize_after_escalation_preserves_output_dir(monkeypatch):
-    # A save-stop that already emitted "complete" has the checkpoint dir; run history
-    # must record it even if the watchdog wins the finalize race against the pump.
+    # A save-stop that already emitted "complete" has the checkpoint dir; run history must
+    # record it even if the watchdog wins the finalize race against the pump.
     b = TrainingBackend()
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append(a))
@@ -394,8 +379,7 @@ def test_finalize_after_escalation_preserves_output_dir(monkeypatch):
 
 
 def test_finalize_after_escalation_clears_output_dir_on_cancel(monkeypatch):
-    # Stop-without-saving promises no resume: a cancel that escalates through the
-    # watchdog clears the persisted output_dir, not a checkpoint path.
+    # Stop-without-saving promises no resume: an escalated cancel clears the persisted output_dir.
     b = TrainingBackend()
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append((a, k)))
@@ -497,15 +481,12 @@ def test_scoped_stop_identity_check_is_serialized_with_new_start():
     assert b._stop_queue.empty()
 
 
-# ----------------------------------------------------------------------------
 # (d) A stale watchdog must never clobber a run that replaced its worker.
-# ----------------------------------------------------------------------------
 
 
 def test_finalize_after_escalation_no_ops_when_superseded(monkeypatch):
-    # A /start can slip in while the watchdog force-terminates the old worker
-    # (is_training_active() is False once _should_stop is set and the old proc is dead).
-    # The escalation finalize must then leave the NEW run untouched, not drop its handle.
+    # A /start can slip in while the watchdog force-terminates the old worker (is_training_active()
+    # is False once _should_stop is set and the old proc is dead), so finalize must leave the NEW run alone.
     b = TrainingBackend()
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append(a))
@@ -525,8 +506,7 @@ def test_finalize_after_escalation_no_ops_when_superseded(monkeypatch):
 
 
 def test_finalize_after_escalation_runs_for_its_own_worker(monkeypatch):
-    # Common case: the watched worker is still current, so finalize proceeds and
-    # finalizes the captured run by id.
+    # Common case: the watched worker is still current, so finalize proceeds by captured id.
     b = TrainingBackend()
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append(a))
@@ -545,9 +525,8 @@ def test_finalize_after_escalation_runs_for_its_own_worker(monkeypatch):
 
 
 def test_finalize_after_escalation_no_ops_on_job_change_during_startup(monkeypatch):
-    # start_training updates current_job_id BEFORE it installs the new _proc, so a stale
-    # watchdog can enter while _proc is still the old (dead) handle. The job-id guard must
-    # catch this even though the proc-only guard would not.
+    # start_training updates current_job_id BEFORE it installs the new _proc, so a stale watchdog
+    # can enter while _proc is still the old (dead) handle; the job-id guard catches what the proc guard misses.
     b = TrainingBackend()
     finstop: list = []
     monkeypatch.setattr(b, "_finish_stopped_run", lambda *a, **k: finstop.append(a))
@@ -565,9 +544,7 @@ def test_finalize_after_escalation_no_ops_on_job_change_during_startup(monkeypat
     assert finstop == [], "must not finalize while a new run is starting up"
 
 
-# ----------------------------------------------------------------------------
 # (e) A later cancel (save=False) tightens an in-flight save watchdog.
-# ----------------------------------------------------------------------------
 
 
 def test_later_cancel_tightens_watchdog_timeout(monkeypatch):
@@ -590,9 +567,7 @@ def test_later_cancel_tightens_watchdog_timeout(monkeypatch):
     b._stop_watchdog.join(timeout = 5)
 
 
-# ----------------------------------------------------------------------------
 # (f) DB finalize/flush are safe when the watchdog and pump race (see Item 4).
-# ----------------------------------------------------------------------------
 
 
 def _install_fake_db(monkeypatch):
@@ -697,8 +672,7 @@ def test_finalize_run_in_db_no_ops_on_job_mismatch(monkeypatch):
 
 
 def test_concurrent_flush_claims_each_metric_once(monkeypatch):
-    # Concurrent flushes (pump periodic flush vs watchdog finalize flush) must not
-    # double-remove or drop buffered metrics.
+    # Concurrent flushes (pump periodic vs watchdog finalize) must not double-remove or drop metrics.
     recs = _install_fake_db(monkeypatch)
     b = TrainingBackend()
     b.current_job_id = "job_y"
@@ -725,8 +699,7 @@ def test_concurrent_flush_claims_each_metric_once(monkeypatch):
 
 
 def test_flush_pins_to_passed_run_id(monkeypatch):
-    # A finalizer flushes to the run it captured, even if a new /start has already
-    # changed current_job_id.
+    # A finalizer flushes to the run it captured, even after a new /start changed current_job_id.
     recs = _install_fake_db(monkeypatch)
     b = TrainingBackend()
     b.current_job_id = "job_new"  # a new run is already live

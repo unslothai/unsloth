@@ -102,9 +102,8 @@ export function getHfToken(): string {
   return useHfTokenStore.getState().token;
 }
 
-// Keep a plain zustand store's `hfToken` field in sync with the shared token:
-// seed the current value, then mirror later edits. Returns the unsubscribe so
-// callers can wire it to HMR disposal.
+// Keep a plain zustand store's `hfToken` in sync with the shared token: seed the current
+// value, then mirror later edits. Returns the unsubscribe so callers can wire it to HMR.
 export function mirrorHfTokenInto<T extends { hfToken: string }>(store: {
   getState: () => T;
   setState: (partial: Partial<T>) => void;

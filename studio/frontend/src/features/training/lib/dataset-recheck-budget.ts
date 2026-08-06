@@ -2,16 +2,14 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 /**
- * Retry budget for the cached dataset format re-check.
- *
- * When a format check finishes against a cache generation that has since advanced, the
- * answer may be stale and the store re-runs it. The rejection tracker advances that
- * generation on any inventory-fingerprint change, and the fingerprint includes
- * sizeBytes, so a dataset that is still downloading invalidates every in-flight check.
- * Unbounded, that pair never converges (unslothai/unsloth#7853).
- *
- * The budget is keyed on the selection so picking a different one starts fresh.
- */
+* Retry budget for the cached dataset format re-check.
+*
+* When a format check finishes against a cache generation that has since advanced, the answer
+* may be stale and the store re-runs it. The rejection tracker advances that generation on any
+* inventory-fingerprint change, and the fingerprint includes sizeBytes, so a dataset that is
+* still downloading invalidates every in-flight check. Unbounded, that pair never converges
+* (unslothai/unsloth#7853). The budget is keyed on the selection so a new one starts fresh.
+*/
 
 export const DATASET_CACHE_RECHECK_LIMIT = 3;
 
@@ -19,15 +17,14 @@ let currentKey: string | null = null;
 let attempts = 0;
 
 /**
- * Identity of a dataset *selection*, mirroring the four user-chosen dimensions of
- * DatasetCacheUsabilityIdentity. Keying on fewer fields makes a genuinely different
- * selection inherit an exhausted budget and lose its local-cache preference.
- *
- * cachePath is deliberately excluded even though the usability identity carries it: it
- * is derived state that moves as a download populates the cache, so keying on it would
- * hand a churning inventory a fresh budget on every change and re-arm the very
- * non-terminating loop this module exists to bound (unslothai/unsloth#7853).
- */
+* Identity of a dataset *selection*, mirroring the four user-chosen dimensions of
+* DatasetCacheUsabilityIdentity. Keying on fewer fields makes a genuinely different selection
+* inherit an exhausted budget and lose its local-cache preference.
+*
+* cachePath is deliberately excluded even though the usability identity carries it: it is
+* derived state that moves as a download populates the cache, so keying on it would re-arm the
+* non-terminating loop this module exists to bound (unslothai/unsloth#7853).
+*/
 export interface DatasetRecheckSelection {
   dataset: string;
   subset: string | null;

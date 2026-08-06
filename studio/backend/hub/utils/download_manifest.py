@@ -62,8 +62,7 @@ _MARKER_VERSION = 2
 _LEGACY_MARKER_VERSION = 1
 _DATASET_COMPLETION_VARIANT_PREFIX = "_studio-dataset-complete-"
 
-# Verbatim phrase the worker emits on a degraded completion and the download
-# lifecycle escalates to a warning log. Shared so the emit and match stay coupled.
+# Verbatim phrase the worker emits on a degraded completion; shared so emit and match stay coupled.
 MANIFEST_DEGRADED_MARKER = "completed without a manifest so partial detection is degraded"
 
 
@@ -169,8 +168,7 @@ def _state_read_path(
 
 
 def _atomic_write_json(path: Path, payload: dict) -> bool:
-    # Per-write uuid suffix so a concurrent caller or a stale tmp from a
-    # previous crash cannot collide with the in-flight write.
+    # Per-write uuid suffix so a concurrent caller or a stale tmp cannot collide.
     tmp = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex[:8]}")
     try:
         with tmp.open("w", encoding = "utf-8") as handle:
@@ -497,8 +495,7 @@ def verify_against_disk(manifest: Manifest, snapshot_dir: Path) -> VerifyResult:
         except OSError:
             missing.append(expected.path)
             continue
-        # expected.size == 0 means HF metadata had no declared size: verify
-        # existence only rather than flagging every such file as mismatched.
+        # expected.size == 0 means HF metadata had no declared size: verify existence only.
         if expected.size > 0 and actual_size != expected.size:
             mismatched.append(expected.path)
     return VerifyResult(
@@ -753,10 +750,9 @@ def purge_state(
             manifest_path(repo_type, repo_id, variant, hub_cache = hub_cache),
             marker_path(repo_type, repo_id, variant, hub_cache = hub_cache),
         ]
-        # Legacy unscoped state is shared: an unowned file belongs to the active
-        # cache (per _legacy_state_applies), so only purge it when it belongs to
-        # the cache being deleted -- else deleting an inactive cache would erase
-        # the active cache's resume/cancel state.
+        # Legacy unscoped state is shared: an unowned file belongs to the active cache, so only purge
+        # it when it belongs to the cache being deleted, else deleting an inactive cache erases the
+        # active cache's resume/cancel state.
         for path_factory in (manifest_path, marker_path):
             legacy = path_factory(repo_type, repo_id, variant)
             if legacy is not None and _legacy_state_applies(legacy, requested):
@@ -795,8 +791,7 @@ def purge_all_state_for_repo(
     if hub_cache is None:
         search = [(p, True) for p in (manifests_dir(), cancelled_dir()) if p is not None]
     else:
-        # This cache's scoped dir (parent of its scoped path) plus the legacy
-        # unscoped base; glob (not rglob) so other caches' dirs are not swept.
+        # This cache's scoped dir plus the legacy unscoped base; glob (not rglob) so other caches are untouched.
         search = []
         for scoped, base in (
             (manifest_path(repo_type, repo_id, None, hub_cache = hub_cache), manifests_dir()),

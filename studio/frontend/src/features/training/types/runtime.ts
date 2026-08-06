@@ -116,8 +116,7 @@ export interface TrainingRuntimeState {
   resetGeneration: number;
   stopRequested: boolean;
   selectedHistoryRunId: string | null;
-  // True while the studio "Current Run" tab is the active view, so the sidebar
-  // can highlight which run row the current run refers to (the active job).
+  // True while the studio "Current Run" tab is the active view, so the sidebar can highlight it.
   currentRunViewActive: boolean;
 }
 
@@ -154,7 +153,6 @@ export type TrainingRuntimeStore = TrainingRuntimeState &
   TrainingRuntimeActions;
 
 export interface TrainingViewData {
-  // Current metrics (for ProgressSection)
   phase: TrainingPhase;
   currentStep: number;
   totalSteps: number;
@@ -164,8 +162,7 @@ export interface TrainingViewData {
   currentEpoch: number | null;
   currentNumTokens: number | null;
   outputDir: string | null;
-  // True when a newer run reused this run's output_dir (resume), so its
-  // on-disk contents no longer match this (older) run's metrics.
+  // True when a newer run reused this run's output_dir (resume), so its on-disk contents differ.
   resumedLater?: boolean;
   progressPercent: number;
   elapsedSeconds: number | null;
@@ -176,12 +173,10 @@ export interface TrainingViewData {
   warnings: string[];
   isTrainingRunning: boolean;
 
-  // Config summary
   modelName: string;
   projectName: string | null;
   trainingMethod: string;
 
-  // Time-series (for ChartsSection)
   lossHistory: TrainingSeriesPoint[];
   lrHistory: TrainingSeriesPoint[];
   gradNormHistory: TrainingSeriesPoint[];

@@ -135,8 +135,7 @@ def _scan_hub_dataset_cache_dirs() -> list[dict]:
                 "repo_id": repo_id,
                 "size_bytes": size_bytes,
                 "cache_path": str(entry.resolve()),
-                # snapshot_count == 0 catches blobs-but-no-snapshot;
-                # is_snapshot_partial adds active-row state checks.
+                # snapshot_count == 0 catches blobs-but-no-snapshot; is_snapshot_partial adds row-state checks.
                 "partial": snapshot_partial,
                 "partial_transport": (
                     hf_cache_scan.partial_transport_for(
@@ -326,8 +325,7 @@ def _scan_hf_dataset_caches() -> list[dict]:
             seen_lower[key] = row
         else:
             existing["size_bytes"] = max(existing["size_bytes"], row["size_bytes"])
-            # Preserve the raw path for scoped deletion and expose the processed
-            # Arrow path separately for loading.
+            # Preserve the raw path for scoped deletion and expose the processed Arrow path separately.
             if row.get("processed_cache"):
                 existing["processed_cache"] = True
                 existing["load_cache_path"] = row.get("cache_path")
@@ -391,8 +389,7 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
     scans, _seen_roots = _collect_hf_cache_scans()
     app_entry = app_processed_dataset_cache_from_path(repo_id, cache_path) if cache_path else None
 
-    # Group this dataset's copies by owning cache root, then target exactly one
-    # cache so a delete never removes copies in other, previously selected caches.
+    # Group this dataset's copies by owning cache root, then target exactly one cache.
     owners: dict = {}
     for hf_cache in scans:
         for repo_info in hf_cache.repos:
@@ -407,10 +404,8 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
             owners.setdefault(owner, []).append((hf_cache, repo_info))
 
     target_root = resolve_delete_target_root("dataset", repo_id, cache_path, owners.keys())
-    # A processed-only dataset row sends its Arrow cache path (<owner>___<repo>
-    # under HF_DATASETS_CACHE), which is not a Hub datasets-- dir, so
-    # resolve_delete_target_root returns None. Accept it and fall through to the
-    # processed-cache delete rather than rejecting a legitimate row.
+    # A processed-only dataset row sends its Arrow cache path, which is not a Hub datasets-- dir, so
+    # resolve_delete_target_root returns None. Accept it and fall through to the processed delete.
     if target_root is None and not (
         cache_path
         and (_is_processed_dataset_cache_path(repo_id, cache_path) or app_entry is not None)
@@ -442,10 +437,9 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
                 exc_info = True,
             )
 
-    # Restrict the processed Arrow-cache delete to the selected cache's datasets
-    # root so it never removes copies under other cache homes. A processed
-    # cache_path scopes to its own root; a Hub target scopes to the datasets root
-    # sharing its cache home; an unspecified cache_path stays global (legacy).
+    # Restrict the processed Arrow-cache delete to the selected cache's datasets root. A processed
+    # cache_path scopes to its own root; a Hub target to the datasets root sharing its cache home;
+    # an unspecified cache_path stays global (legacy).
     processed_roots: Optional[set[Path]]
     if not cache_path:
         processed_roots = None
@@ -483,9 +477,8 @@ def _delete_cached_dataset_blocking(repo_id: str, cache_path: Optional[str] = No
             ),
         )
 
-    # ``scan_cache_dir()`` skips blob-only/corrupt repos the revision delete
-    # can't touch, yet the fallback scanner shows them; purge the whole dir.
-    # Only for a Hub cache target; a processed-only path has no Hub dir/state.
+    # ``scan_cache_dir()`` skips blob-only/corrupt repos the revision delete can't touch, yet the
+    # fallback scanner shows them, so purge the whole dir. Hub cache targets only.
     cache_purged = partial_purged = state_purged = False
     if target_root is not None:
         cache_purged = purge_repo_cache_dirs("dataset", repo_id, root = target_root)
@@ -516,8 +509,7 @@ def _delete_processed_dataset_cache(
     deleted = False
     failures: list[str] = []
     for root in _hf_datasets_cache_roots():
-        # Scope to the selected cache's datasets root(s): a delete must not remove
-        # processed copies living under other, previously selected cache homes.
+        # Scope to the selected cache's datasets root(s) so copies under other cache homes survive.
         if only_roots is not None and root.resolve(strict = False) not in only_roots:
             continue
         try:

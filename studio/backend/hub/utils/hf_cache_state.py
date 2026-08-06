@@ -265,9 +265,8 @@ def latest_snapshot_from_cache_path(
     try:
 
         def has_metadata(path: Path) -> bool:
-            # required_groups is an AND of ORs: the snapshot must carry at least one
-            # file from every group. That is what "loadable" means for a model, where
-            # metadata alone or weights alone is not enough.
+            # required_groups is an AND of ORs: the snapshot must carry at least one file from every
+            # group. That is what "loadable" means: metadata alone or weights alone is not enough.
             for group in required_groups:
                 if not any((path / name).is_file() for name in group):
                     return False
@@ -560,11 +559,9 @@ def with_load_subdirs(model_name: str, names: tuple[str, ...]) -> tuple[str, ...
         from utils.security import security_load_subdirs
         subdirs = security_load_subdirs(model_name, local_files_only = True)
     except Exception:
-        # Degrading to root-only is fail-closed at every caller -- provenance refuses the
-        # resume, preflight reports no trainable weights, the worker drops the pin -- so
-        # nothing is wrongly accepted. But a real cache permission or corruption fault
-        # then reaches the user as "your cached model isn't cached" with no clue why, and
-        # four sites now share this handler.
+        # Degrading to root-only is fail-closed at every caller, so nothing is wrongly accepted. But a
+        # real cache permission or corruption fault then reaches the user as "your cached model isn't
+        # cached" with no clue why, and four sites now share this handler.
         from loggers import get_logger
         get_logger(__name__).debug(
             "Load-subdir detection failed for %s; using root only.",

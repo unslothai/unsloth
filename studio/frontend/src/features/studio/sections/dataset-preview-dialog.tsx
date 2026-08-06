@@ -400,11 +400,10 @@ export function DatasetPreviewDialog({
     };
   }, [previewRequest]);
 
-  // Pre-fill mapping from suggested_mapping when data arrives
+  // Pre-fill mapping from suggested_mapping when data arrives (never overwriting existing entries).
   useEffect(() => {
     if (!open || !datasetName) return;
     if (!data?.requires_manual_mapping && !data?.suggested_mapping) return;
-    // Don't overwrite if mapping already has entries
     if (Object.keys(manualMapping).length > 0) return;
     const derived = deriveDefaultMapping(
       data,
@@ -733,7 +732,6 @@ export function DatasetPreviewDialog({
   );
 }
 
-// Metadata row
 function MetaRow({
   label,
   value,

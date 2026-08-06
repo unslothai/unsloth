@@ -85,8 +85,7 @@ test("publicModelId mirrors what /status reports for a path-loaded model", () =>
 });
 
 test("a resident path-loaded model is matched by the id /status reports", () => {
-  // A loose .gguf: the row is keyed by path and the Hub records the loadable
-  // identifier, so the literal pass answers.
+  // A loose .gguf: the row is keyed by path and the Hub records the loadable identifier.
   assert.equal(
     modelIdsMatch("Qwen3-8B-Q4_K_M", "/srv/models/Qwen3-8B-Q4_K_M.gguf"),
     false,
@@ -196,8 +195,7 @@ test("a standalone gguf keeps one settings identity across surfaces", () => {
     // What hub/services/models/common.py emits for a single scanned file.
     formatVariant: "Q4_K_M",
   } as LocalInventoryRow;
-  // The Chat picker opens the same file with no variant, so adopting the filename
-  // label would leave the two editing different configs.
+  // The Chat picker opens the same file with no variant, so adopting the filename label would split the config.
   assert.equal(settingsGgufVariantForRow(loose), null);
 
   // A GGUF directory still has a variant slot for the quant lookup to fill.
@@ -219,11 +217,9 @@ test("a standalone gguf keeps one settings identity across surfaces", () => {
   assert.equal(settingsGgufVariantForRow(cached), null);
 });
 
-// The backfill matches on the folded identity, which is only unambiguous because storage
-// holds one record per model. These pin that rule rather than the backfill.
+// The backfill matches on the folded identity, unambiguous only because storage holds one record per model.
 test("importing the legacy load settings never doubles up a model", () => {
-  // The legacy casing names the model the v2 record already holds, so the import must
-  // leave it alone rather than add a second record.
+  // The legacy casing names the model the v2 record already holds, so the import must leave it alone.
   assert.deepEqual(listPerModelConfigs().length, 1);
   assert.deepEqual(storedKeys(), [REPO_KEY]);
   assert.equal(
@@ -275,15 +271,14 @@ test("a POSIX path is case sensitive, so its two spellings stay separate", () =>
   );
 });
 
-// Every answer below is the one the backend's split_quant_suffix gives. The backfill folds a
-// stored key with this before comparing, so a disagreement collapses two models onto one key.
+// Every answer below is the backend's split_quant_suffix. The backfill folds a stored key with
+// this before comparing, so a disagreement collapses two models onto one key.
 const CASES: [string, [string, string] | null][] = [
   // A known quant label, with and without the optional bpw modifier.
   ["org/Repo-GGUF:Q4_K_M", ["org/Repo-GGUF", "Q4_K_M"]],
   ["org/Repo-GGUF:IQ4_XS-3.53bpw", ["org/Repo-GGUF", "IQ4_XS-3.53bpw"]],
   ["org/Repo-GGUF:UD-Q4_K_XL", ["org/Repo-GGUF", "UD-Q4_K_XL"]],
-  // A .gguf with no quant token is labelled by its stem, lowercased in storage while
-  // the scanner keeps the filename's casing.
+  // A .gguf with no quant token is labelled by its stem, lowercased in storage.
   ["/models/CustomModel.gguf:custommodel", ["/models/CustomModel.gguf", "custommodel"]],
   ["/models/CustomModel.gguf:CustomModel", ["/models/CustomModel.gguf", "CustomModel"]],
   ["C:\\models\\CustomModel.gguf:custommodel", ["C:\\models\\CustomModel.gguf", "custommodel"]],
@@ -329,8 +324,8 @@ test("splitQuantSuffix answers exactly as the backend's split_quant_suffix", () 
 });
 
 test("a .gguf filename carrying a colon is not folded into a variant", () => {
-  // Two real, distinct files: POSIX allows a colon and is case sensitive. The variant
-  // half of a key is stored lowercased, so folding these strands one file's settings.
+  // Two real, distinct files: POSIX allows a colon and is case sensitive. The variant half of a
+  // key is stored lowercased, so folding these strands one file's settings.
   const upper = "/models/llama.gguf:Bar.gguf";
   const lower = "/models/llama.gguf:bar.gguf";
   assert.equal(splitQuantSuffix(upper), null);
@@ -338,8 +333,8 @@ test("a .gguf filename carrying a colon is not folded into a variant", () => {
   assert.notEqual(modelStorageKey(upper, null), modelStorageKey(lower, null));
 });
 
-// Repo ids ending in .gguf are real on the Hub, an iMat repo among them, and those hold every
-// quant. Reading one as a single file drops the variant, so Q4 and Q8 save under one key.
+// Repo ids ending in .gguf are real on the Hub (an iMat repo among them) and hold every quant,
+// so reading one as a single file would save Q4 and Q8 under one key.
 const STANDALONE_GGUF_CASES: [string, boolean][] = [
   ["/models/llama.gguf", true],
   ["/mnt/c/models/llama.gguf", true],

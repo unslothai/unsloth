@@ -168,9 +168,8 @@ def test_skips_local_path():
 
 
 def test_scans_inactive_hf_cache_snapshot_path(tmp_path):
-    # An inactive HF cache loads by snapshot path; the gate must recover the repo id +
-    # commit from models--org--repo/snapshots/<rev> and scan that exact commit, not exempt
-    # it and not fall back to the default branch (an older commit may hold a dropped pickle).
+    # An inactive HF cache loads by snapshot path; the gate must recover the repo id + commit from
+    # models--org--repo/snapshots/<rev> and scan that exact commit, not the default branch.
     snapshot = tmp_path / "models--evil--repo" / "snapshots" / "deadbeef"
     snapshot.mkdir(parents = True)
     status = {
@@ -311,8 +310,7 @@ def test_online_exact_scan_blocks_sentence_transformer_module_weight(tmp_path):
 
 
 def test_remote_gguf_named_repo_is_still_scanned():
-    # Only LOCAL paths skip the Hub scan, so a remote .gguf repo is still scanned and a
-    # poisoned pickle smuggled into it is blocked.
+    # Only LOCAL paths skip the Hub scan, so a poisoned pickle in a remote .gguf repo is blocked.
     status = {
         "scansDone": True,
         "filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}],
@@ -366,8 +364,7 @@ def test_response_payload_shape():
 
 
 def test_flagged_safetensors_does_not_block():
-    # safetensors is tensor-only and cannot execute code, so a flag on one (often
-    # picklescan tripping on a sibling pickle) is not an RCE vector and must not block.
+    # safetensors is tensor-only and cannot execute code, so a flag on one is not an RCE vector.
     status = {
         "scansDone": False,
         "filesWithIssues": [{"path": "model-00001-of-00004.safetensors", "level": "unsafe"}],
@@ -379,8 +376,7 @@ def test_flagged_safetensors_does_not_block():
 
 
 def test_flagged_subdirectory_pickle_does_not_block():
-    # from_pretrained reads only root weights; a flagged subdir pickle no root index
-    # references (e.g. a NeMo checkpoint) is never loaded, so it must not block.
+    # from_pretrained reads only root weights; a flagged subdir pickle no root index references is never loaded.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -395,8 +391,7 @@ def test_flagged_subdirectory_pickle_does_not_block():
 
 
 def test_nemotron_h_shaped_status_loads():
-    # Real Nemotron-H-8B-Base-8K shape: flagged root safetensors + unreferenced nemo/
-    # pickles. None is a load-path vector, so it must load.
+    # Real Nemotron-H-8B-Base-8K shape: flagged root safetensors + unreferenced nemo/ pickles.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -459,8 +454,7 @@ def test_inconclusive_index_lookup_blocks_subdir_pickle():
 
 
 def test_partial_index_read_with_transient_failure_blocks_subdir_pickle():
-    # The bin index (which would list the flagged shard) fails transiently; a partial
-    # path set is not definitive, so fail closed.
+    # The bin index (which would list the flagged shard) fails transiently; a partial path set is not definitive.
     status = {
         "scansDone": False,
         "filesWithIssues": [
@@ -587,8 +581,7 @@ def test_indexed_shard_under_load_subdir_blocks():
 
 
 def test_flagged_root_python_helper_does_not_block():
-    # A root .py is never deserialized; repo code runs only via auto_map under the consent
-    # gate, so flagging it here would false-block.
+    # A root .py is never deserialized; repo code runs only via auto_map under the consent gate.
     status = {
         "scansDone": True,
         "filesWithIssues": [
@@ -631,8 +624,7 @@ def _patch_status_capture(status):
 
 
 def test_spark_tts_llm_alias_scans_real_repo():
-    # "Spark-TTS-0.5B/LLM" loads as unsloth/Spark-TTS-0.5B with LLM as load root; scanning
-    # the literal alias 404s and fails open, missing a flagged LLM/ pickle.
+    # "Spark-TTS-0.5B/LLM" loads as unsloth/Spark-TTS-0.5B with LLM as load root; the literal alias 404s.
     status = {"filesWithIssues": [{"path": "LLM/pytorch_model.bin", "level": "unsafe"}]}
     cap, seen = _patch_status_capture(status)
     with cap, patch("utils.paths.is_local_path", return_value = False), _patch_no_index():
@@ -654,8 +646,7 @@ def test_non_llm_alias_is_not_rewritten():
 
 
 def test_generic_slash_llm_repo_is_scanned_as_itself():
-    # A third-party repo merely ending in "/LLM" is not a bicodec alias, so it must be
-    # scanned as itself; rewriting to unsloth/<parent> would scan the wrong repo.
+    # A third-party repo merely ending in "/LLM" is not a bicodec alias, so scan it as itself.
     status = {"filesWithIssues": [{"path": "pytorch_model.bin", "level": "unsafe"}]}
     cap, seen = _patch_status_capture(status)
     with cap, patch("utils.paths.is_local_path", return_value = False):

@@ -97,8 +97,8 @@ export const OPTIMIZER_OPTIONS: ReadonlyArray<{
   { value: "adamw_torch_fused", label: "AdamW (PyTorch Fused)" },
 ];
 
-// MLX trainer optimizers (Apple Silicon); must match SUPPORTED_MLX_OPTIMIZERS in
-// unsloth-zoo's mlx/trainer.py. The CUDA/torch names above are remapped to AdamW on MLX.
+// MLX trainer optimizers (Apple Silicon); must match SUPPORTED_MLX_OPTIMIZERS in unsloth-zoo's
+// mlx/trainer.py. The CUDA/torch names above are remapped to AdamW on MLX.
 export const MLX_OPTIMIZER_OPTIONS: ReadonlyArray<{
   value: string;
   label: string;
@@ -119,10 +119,8 @@ export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{
   { value: "cosine", label: "Cosine" },
 ];
 
-/**
- * Method-aware learning rate defaults.
- * Backend mirrors these in the YAML configs under studio/backend/assets/configs/.
- */
+/** Method-aware learning rate defaults; the backend mirrors these in
+* studio/backend/assets/configs/. */
 export const LR_DEFAULT_LORA = 2e-4;
 export const LR_DEFAULT_FULL = 2e-5;
 export const LR_DEFAULT_CPT = 5e-5;

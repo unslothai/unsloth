@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Optional, Tuple, List
 
 # unsloth imports torch on non-MLX hosts, so a --no-torch install raises here. Stay importable
-# (null the classes) so exports return a clean "PyTorch is not installed" error, not an import crash.
+# (null the classes) so exports return a clean "PyTorch is not installed" error.
 try:
     from unsloth import FastLanguageModel, FastVisionModel, _IS_MLX
     _UNSLOTH_IMPORT_ERROR = None
@@ -39,8 +39,7 @@ from utils.paths import (
 )
 from core.inference import get_inference_backend
 
-# GPU/PyTorch-only imports, skipped on MLX and on a --no-torch install so the module stays
-# importable; export then degrades to a clear "PyTorch is not installed" error.
+# GPU/PyTorch-only imports, skipped on MLX and --no-torch installs so the module stays importable.
 torch = None
 _TORCH_IMPORT_ERROR: Optional[BaseException] = None
 if not _IS_MLX:
@@ -99,8 +98,7 @@ def _multi_gpu_device_map_kwargs() -> dict:
         if len(visible) > 1:
             device_map = get_device_map(visible)
         elif not visible:
-            # UUID/MIG masks resolve to no numeric ids; get_device_map(None) falls back
-            # to the visible-GPU count, so a multi-GPU UUID/MIG host still shards.
+            # UUID/MIG masks resolve to no numeric ids; get_device_map(None) falls back to the visible count.
             device_map = get_device_map(None)
         else:
             return {}
@@ -294,7 +292,6 @@ def _apply_wsl_sudo_patch():
         logger.warning(f"Could not apply WSL sudo patch: {e}")
 
 
-# Model card template
 MODEL_CARD = """---
 base_model: {base_model}
 tags:
@@ -406,8 +403,7 @@ class ExportBackend:
             # Skip the Hub when offline so a no-internet export uses the local cache.
             local_files_only = _hf_offline()
 
-            # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on
-            # single-GPU/CPU/MLX. _device_map_override is the single-device retry below.
+            # Shard across every visible GPU instead of stacking on GPU0 (#7053); {} on single-GPU/CPU/MLX.
             _device_map_kw = (
                 _multi_gpu_device_map_kwargs()
                 if _device_map_override is None

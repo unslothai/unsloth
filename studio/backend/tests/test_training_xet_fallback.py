@@ -22,8 +22,8 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-# Stub the heavy module-level imports of core/training/training.py so it imports
-# under CPU-only/no-network, then restore them (see the restore loop below).
+# Stub the heavy module-level imports of core/training/training.py so it imports under
+# CPU-only/no-network, then restore them (see the restore loop below).
 _SAVED: dict = {}
 
 
@@ -58,9 +58,8 @@ _stub("utils.paths", _pth)
 import core.training.training as training_mod
 from core.training.training import TrainingBackend
 
-# Restore every stubbed module so this file never pollutes the shared session: a
-# leaked bare ``structlog`` (no ``get_logger``) would break every later module
-# that logs at import. training_mod already bound the stubs it needs at runtime.
+# Restore every stubbed module so this file never pollutes the shared session: a leaked bare
+# ``structlog`` (no ``get_logger``) would break every later module that logs at import.
 for _name in (
     "loggers",
     "structlog",

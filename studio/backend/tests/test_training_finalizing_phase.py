@@ -110,8 +110,7 @@ def test_every_emitted_phase_is_in_the_response_literal():
     """A phase missing from the Literal makes /api/train/status 500, not degrade."""
     src = _ROUTES_TRAINING.read_text(encoding = "utf-8")
     tree = ast.parse(src)
-    # The phase derivation was extracted into _build_training_status, which
-    # get_training_status now calls, so scan both rather than assume it is inline.
+    # The phase derivation moved into _build_training_status, so scan both, not just inline.
     fns = [
         n
         for n in ast.walk(tree)
@@ -140,8 +139,7 @@ def test_finalizing_is_declared():
 def test_completion_still_comes_only_from_is_completed():
     """100% must not be promoted to a terminal state."""
     src = _ROUTES_TRAINING.read_text(encoding = "utf-8")
-    # Follow the phase derivation wherever it lives: it moved out of
-    # get_training_status into the _build_training_status helper.
+    # Follow the phase derivation wherever it lives: it moved into _build_training_status.
     fn_src = next(
         seg
         for seg in (

@@ -40,7 +40,6 @@ from utils.models.model_config import (
 )
 
 
-# Helpers
 
 
 @pytest.fixture(autouse = True)
@@ -131,8 +130,7 @@ class TestVisionCacheSubprocessPath:
     def test_raw_config_primary_skips_subprocess(
         self, mock_needs_t5, mock_subprocess, mock_raw_config
     ):
-        # The raw config.json read is the primary path; a definitive answer there never
-        # reaches the transformers-5.x subprocess or needs_transformers_5 routing.
+        # The raw config.json read is the primary path; a definitive answer there never reaches the subprocess.
         assert is_vision_model("unsloth/gemma-4-E4B-it") is True
         assert is_vision_model("unsloth/gemma-4-E4B-it") is True
 
@@ -142,9 +140,7 @@ class TestVisionCacheSubprocessPath:
         mock_subprocess.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Local GGUF capability path
-# ---------------------------------------------------------------------------
+# --- Local GGUF capability path ---
 
 
 class TestLocalGgufVisionDetection:
@@ -238,8 +234,7 @@ class TestLocalGgufVisionDetection:
         mock_subprocess.assert_not_called()
 
 
-# ---------------------------------------------------------------------------
-# Exception handling — cache the False fallback
+# --- Exception handling: cache the False fallback ---
 
 
 class TestVisionCacheOnException:
@@ -567,9 +562,7 @@ class TestVisionCacheLocalOnly:
         mc._vision_detection_cache.clear()
 
 
-# ---------------------------------------------------------------------------
-# Direct unit tests for _raw_config_has_vision_config
-# ---------------------------------------------------------------------------
+# --- Direct unit tests for _raw_config_has_vision_config ---
 
 
 import json as _json
@@ -634,9 +627,7 @@ class TestRawConfigVlmDetection:
         assert _raw_config_has_vision_config(str(tmp_path)) is None
 
 
-# ---------------------------------------------------------------------------
-# Self-contained subprocess script (no parent backend imports)
-# ---------------------------------------------------------------------------
+# --- Self-contained subprocess script (no parent backend imports) ---
 
 
 class TestSubprocessScript:
@@ -669,9 +660,7 @@ class TestSubprocessScript:
         assert inline_is_vlm(_C(model_type = "llama", architectures = ["LlamaForCausalLM"])) is False
 
 
-# ---------------------------------------------------------------------------
-# Audio-only model exclusion must apply across every detection path
-# ---------------------------------------------------------------------------
+# --- Audio-only model exclusion must apply across every detection path ---
 
 
 class TestVlmAudioExclusion:

@@ -54,8 +54,7 @@ def _iterable_dataset(rows):
     return datasets.IterableDataset.from_generator(lambda: iter(rows))
 
 
-# --- Streaming keeps dataset.map() lazy: eager-only kwargs (num_proc/desc) are
-#     omitted for IterableDatasets, which reject them. One per module. ---
+# --- Streaming keeps dataset.map() lazy: eager-only kwargs (num_proc/desc) are omitted for IterableDatasets ---
 
 
 def test_chat_template_mapping_omits_eager_kwargs_for_streaming(monkeypatch):
@@ -142,8 +141,7 @@ def test_is_streaming_dataset_false_for_plain_list():
     assert is_streaming_dataset([{"a": 1}]) is False
 
 
-# --- Raw-text / CPT streaming: keep the lazy filter, skip the len()-based
-#     counting that would TypeError on an IterableDataset (the BLOCKER fix). ---
+# --- Raw-text / CPT streaming: keep the lazy filter, skip the len()-based counting (the BLOCKER fix) ---
 
 
 def test_drop_invalid_text_rows_streaming_keeps_filter_skips_len():
@@ -336,9 +334,8 @@ def test_streaming_start_rejects_missing_max_steps():
 
 
 def test_streaming_start_rejects_embedding_models():
-    # The embedding training path loads the full dataset (no streaming) and uses
-    # len/select, so the route must reject streaming for embedding runs even on a
-    # direct API call (the UI blocker doesn't cover that).
+    # The embedding training path loads the full dataset (no streaming) and uses len/select, so the
+    # route must reject streaming for embedding runs even on a direct API call.
     training_route = _load_route_module(
         "training_route_module_for_streaming_embedding_test",
         "routes/training.py",
@@ -375,8 +372,7 @@ def test_streaming_start_rejects_embedding_models():
     ],
 )
 def test_streaming_start_accepts_raw_text_and_cpt(training_type, format_type):
-    # Streaming + raw-text / CPT is supported: _drop_invalid_text_rows skips its
-    # len()-based checks for IterableDatasets, so the start route must NOT reject.
+    # Streaming + raw-text / CPT is supported (_drop_invalid_text_rows skips its len() checks).
     training_route = _load_route_module(
         "training_route_module_for_streaming_raw_cpt_accept_test",
         "routes/training.py",
@@ -537,8 +533,7 @@ def test_training_status_exposes_the_current_start_request_id():
     ],
 )
 def test_streaming_rejects_bracketed_split_syntax(field, value):
-    # The model_validator _validate_streaming_splits raises ValidationError when
-    # dataset_streaming=True and a split contains "[" (HF slice syntax).
+    # _validate_streaming_splits raises when dataset_streaming=True and a split contains "[".
     kwargs = {
         "model_name": "unsloth/test",
         "training_type": "LoRA/QLoRA",
@@ -592,9 +587,8 @@ def test_streaming_start_rejects_local_datasets():
 
 
 def test_drop_invalid_text_rows_from_generator_none_column_names():
-    # from_generator IterableDatasets have column_names=None; resolve_column_names
-    # must fall back to first-row probe. _drop_invalid_text_rows must not raise
-    # TypeError and must filter correctly.
+    # from_generator IterableDatasets have column_names=None, so resolve_column_names must fall back
+    # to a first-row probe and _drop_invalid_text_rows must filter without raising TypeError.
     from utils.datasets.raw_text import _drop_invalid_text_rows
 
     def _gen():
@@ -622,8 +616,7 @@ def test_drop_invalid_text_rows_from_generator_none_column_names():
 
 
 def test_preflight_first_batch_returns_error_on_empty_stream():
-    # StopIteration from an empty dataloader must return a clear
-    # error string (not None). Test via a minimal stub, no real model needed.
+    # StopIteration from an empty dataloader must return a clear error string, not None.
     import types
     import sys
 
@@ -640,8 +633,7 @@ def test_preflight_first_batch_returns_error_on_empty_stream():
     trainer_path = _BACKEND_ROOT / "core" / "training" / "trainer.py"
     spec = importlib.util.spec_from_file_location("trainer_module", trainer_path)
     trainer_mod = importlib.util.module_from_spec(spec)
-    # Provide a minimal sys.modules shim so top-level imports in trainer.py don't
-    # crash when optional heavy deps (torch, unsloth) are absent.
+    # Minimal sys.modules shim so trainer.py's top-level imports survive without heavy deps.
     _orig_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
 
     try:
@@ -653,9 +645,8 @@ def test_preflight_first_batch_returns_error_on_empty_stream():
     # If we successfully loaded the module, find the trainer class.
     trainer_cls = None
     for name, obj in vars(trainer_mod).items() if "trainer_mod" in dir() else []:
-        # Only real classes — when heavy deps are stubbed with MagicMock,
-        # hasattr() is always True on a mock, so guard on isinstance(obj, type)
-        # to avoid picking a mock instance (object.__new__ would then reject it).
+        # Only real classes: with heavy deps stubbed as MagicMock, hasattr() is always True, so guard
+        # on isinstance(obj, type) to avoid picking a mock instance.
         if isinstance(obj, type) and hasattr(obj, "_preflight_first_batch"):
             trainer_cls = obj
             break

@@ -204,9 +204,8 @@ async function loadResumePayload(
 
   const outputDir = detail.run.output_dir;
   if (!(detail.run.can_resume && outputDir)) {
-    // The server explains a provenance refusal precisely; blaming the checkpoint here
-    // would contradict it, and this guard fires before any request is sent, so its
-    // wording is the only thing the user ever sees.
+    // The server explains a provenance refusal precisely; blaming the checkpoint here would
+    // contradict it, and this guard fires before any request, so its wording is all the user sees.
     throw new Error(
       detail.run.resume_blocked_reason || translate(RESUME_UNAVAILABLE_ERROR),
     );

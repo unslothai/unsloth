@@ -92,8 +92,8 @@ async function redirectToAuth(): Promise<void> {
 }
 
 function asTransportFailure(err: unknown): unknown {
-  // fetch TypeError = offline | backend down | CORS/DNS. Tauri is always backend-down; the web
-  // build distinguishes offline. Tagged so callers tell "never reached" from "rejected".
+  // fetch TypeError = offline | backend down | CORS/DNS. Tagged so callers tell "never reached"
+  // from "rejected"; Tauri is always backend-down, the web build distinguishes offline.
   if (!(err instanceof TypeError)) return err;
   if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
     return Object.assign(
@@ -117,8 +117,7 @@ async function retryWithCurrentToken(
   const retryHeaders = new Headers(init?.headers);
   const token = getAuthToken();
   if (token) retryHeaders.set("Authorization", `Bearer ${token}`);
-  // Retries are tagged like the first attempt; an untagged TypeError reads as a rejection and
-  // lets auto-load fall through to the default download.
+  // Retries are tagged like the first attempt; an untagged TypeError reads as a rejection.
   try {
     return await fetchWithTauriNetworkRetry(
       input,
@@ -281,9 +280,9 @@ async function postLogout(accessToken: string | null): Promise<Response | null> 
 }
 
 export async function logout(): Promise<void> {
-  // Server-side revoke. If the access token is expired, the 401 fires before
-  // revoke runs; rotate via the refresh token and retry so the refresh family
-  // is revoked. The finally generation bump invalidates in-flight refreshes.
+  // Server-side revoke. If the access token is expired the 401 fires before revoke runs, so
+  // rotate via the refresh token and retry to revoke the family. The finally generation bump
+  // invalidates in-flight refreshes.
   try {
     let response = await postLogout(getAuthToken());
     if (response && response.status === 401 && getRefreshToken()) {
