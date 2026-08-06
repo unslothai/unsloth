@@ -386,12 +386,15 @@ export function applyActiveModelStatusToStore(
             mlxKvBits: status.mlx_kv_bits_requested ?? null,
             loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
             mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
+            chatTemplateOverrideReason:
+              status.chat_template_override_reason ?? null,
             mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
           }
         : {
             // The verdict retires; the editable width is dormant, not wrong.
             loadedMlxKvBitsRequested: null,
             mlxKvQuantReason: null,
+            chatTemplateOverrideReason: null,
             mlxKvQuantNote: null,
           })),
     // Recovery for a hydration this tab never saw. Only when nothing is staged:
@@ -402,10 +405,12 @@ export function applyActiveModelStatusToStore(
       status.mlx_kv_bits !== undefined &&
       prevState.mlxKvBits === null &&
       prevState.loadedMlxKvBitsRequested === null &&
-      prevState.mlxKvQuantReason === null && {
+      prevState.mlxKvQuantReason === null &&
+      prevState.chatTemplateOverrideReason === null && {
         mlxKvBits: status.mlx_kv_bits_requested ?? null,
         loadedMlxKvBitsRequested: status.mlx_kv_bits_requested ?? null,
         mlxKvQuantReason: status.mlx_kv_quant_reason ?? null,
+        chatTemplateOverrideReason: status.chat_template_override_reason ?? null,
         mlxKvQuantNote: status.mlx_kv_quant_note ?? null,
       }),
     // Baseline only, never the control: the echo is the RESOLVED count and would

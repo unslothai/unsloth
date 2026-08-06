@@ -1036,6 +1036,7 @@ type ChatRuntimeStore = {
   /** Width the backend was last asked for; the verdict belongs beside it. */
   loadedMlxKvBitsRequested: number | null;
   mlxKvQuantReason: string | null;
+  chatTemplateOverrideReason: string | null;
   mlxKvQuantNote: string | null;
   loadedKvCacheDtype: string | null;
   speculativeType: string | null;
@@ -1595,6 +1596,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   mlxKvBits: null,
   loadedMlxKvBitsRequested: null,
   mlxKvQuantReason: null,
+  chatTemplateOverrideReason: null,
   mlxKvQuantNote: null,
   loadedKvCacheDtype: null,
   speculativeType: readPersistedSpeculativeType(),
@@ -2049,6 +2051,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       mlxKvBits: null,
       loadedMlxKvBitsRequested: null,
       mlxKvQuantReason: null,
+      chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,
       loadedKvCacheDtype: null,
       speculativeType: readPersistedSpeculativeType(),

@@ -205,6 +205,7 @@ export interface LoadModelResponse {
   mlx_kv_bits_requested?: number | null;
   mlx_kv_quant_eligibility?: string | null;
   mlx_kv_quant_reason?: string | null;
+  chat_template_override_reason?: string | null;
   mlx_kv_quant_note?: string | null;
   chat_template?: string | null;
   /** Canonical UI-facing mode the load request resolved to. See LoadModelRequest. */
@@ -283,6 +284,7 @@ export interface InferenceStatusResponse {
   mlx_kv_bits_requested?: number | null;
   mlx_kv_quant_eligibility?: string | null;
   mlx_kv_quant_reason?: string | null;
+  chat_template_override_reason?: string | null;
   mlx_kv_quant_note?: string | null;
   chat_template_override?: string | null;
   /** Canonical UI-facing mode currently active. See LoadModelRequest. */

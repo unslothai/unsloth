@@ -1748,6 +1748,7 @@ const VISIBLE_MODEL_RUNTIME_KEYS = [
   "defaultChatTemplate",
   "chatTemplateOverride",
   "loadedChatTemplateOverride",
+  "chatTemplateOverrideReason",
   "loadedIsMultimodal",
   "loadedIsDiffusion",
   "speculativeType",

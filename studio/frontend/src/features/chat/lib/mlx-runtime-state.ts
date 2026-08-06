@@ -8,6 +8,7 @@ type MlxRuntimeResponse = Pick<
   | "is_mlx"
   | "mlx_kv_bits_requested"
   | "mlx_kv_quant_reason"
+  | "chat_template_override_reason"
   | "mlx_kv_quant_note"
 >;
 
@@ -21,12 +22,14 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
   mlxKvBits?: number | null;
   loadedMlxKvBitsRequested: number | null;
   mlxKvQuantReason: string | null;
+  chatTemplateOverrideReason: string | null;
   mlxKvQuantNote: string | null;
 } {
   if (resp.is_mlx !== true) {
     return {
       loadedMlxKvBitsRequested: null,
       mlxKvQuantReason: null,
+      chatTemplateOverrideReason: null,
       mlxKvQuantNote: null,
     };
   }
@@ -35,6 +38,7 @@ export function mlxRuntimeStateFrom(resp: MlxRuntimeResponse): {
     mlxKvBits: resp.mlx_kv_bits_requested ?? null,
     loadedMlxKvBitsRequested: resp.mlx_kv_bits_requested ?? null,
     mlxKvQuantReason: resp.mlx_kv_quant_reason ?? null,
+    chatTemplateOverrideReason: resp.chat_template_override_reason ?? null,
     mlxKvQuantNote: resp.mlx_kv_quant_note ?? null,
   };
 }

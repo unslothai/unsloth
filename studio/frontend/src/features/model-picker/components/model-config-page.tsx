@@ -193,7 +193,7 @@ function ChatTemplateSetting({
         <span className={LABEL_CLASS}>Chat Template</span>
         <InfoHint>
           {readOnly
-            ? "Preview the model's chat template. Custom overrides apply to GGUF models for now."
+            ? "Preview the model's chat template. This model's backend cannot take a custom one."
             : "Override the model's chat template with custom Jinja. Applies when the model loads."}
         </InfoHint>
       </div>
@@ -534,6 +534,7 @@ function MlxAdvancedSettings({
   outcome,
   servedByMlx,
   onEditTemplate,
+  templateOutcome,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
@@ -542,6 +543,8 @@ function MlxAdvancedSettings({
   /** KV quantization is MLX-only; a CUDA safetensors model has no such control. */
   servedByMlx: boolean;
   onEditTemplate: () => void;
+  /** Why the loaded model could not take the override it was given. */
+  templateOutcome: string | null;
 }) {
   return (
     <div className="flex flex-col gap-1">
@@ -590,8 +593,13 @@ function MlxAdvancedSettings({
       <ChatTemplateSetting
         config={config}
         onEditTemplate={onEditTemplate}
-        readOnly={true}
+        readOnly={!servedByMlx}
       />
+      {templateOutcome ? (
+        <p className="text-[11px] leading-snug text-muted-foreground">
+          {templateOutcome}
+        </p>
+      ) : null}
     </div>
   );
 }
@@ -828,6 +836,12 @@ export function ModelConfigPage({
   const platformDeviceType = usePlatformStore((s) => s.deviceType);
   const platformChatOnlyReason = usePlatformStore((s) => s.chatOnlyReason);
   const mlxKvQuantReason = useChatRuntimeStore((s) => s.mlxKvQuantReason);
+  const chatTemplateOverrideReason = useChatRuntimeStore(
+    (s) => s.chatTemplateOverrideReason,
+  );
+  const loadedChatTemplateOverride = useChatRuntimeStore(
+    (s) => s.loadedChatTemplateOverride,
+  );
   const mlxKvQuantNote = useChatRuntimeStore((s) => s.mlxKvQuantNote);
   const loadedMlxKvBitsRequested = useChatRuntimeStore(
     (s) => s.loadedMlxKvBitsRequested,
@@ -870,14 +884,14 @@ export function ModelConfigPage({
   const [savedRemember, setSavedRemember] = useState(() => initial.remembered);
   const [speculativeFallback] = useState(readPersistedSpeculativeType);
   const [templateOpen, setTemplateOpen] = useState(false);
-  // MLX-only controls key on the backend that will serve the model, not on the
-  // repo name: on Apple Silicon a plain safetensors repo loads through MLX too.
-  // A reason explains a refusal or a partial application, so it outranks the
-  // caveat; both only describe the setting the loaded model actually ran with.
-  // Compare against the width the backend was REQUESTED to apply, not the one
-  // it applied and not the editable value: a refusal applies no width at all,
-  // and staging a different width must retire the old verdict rather than
-  // display it beside a request it never answered.
+  // Compare against what the backend was asked for, not what it applied: a
+  // refusal applies nothing, and staging a new value must retire the verdict
+  // rather than leave it under a request it never answered.
+  const chatTemplateOutcome =
+    isActiveModel &&
+    (config.chatTemplateOverride ?? null) === (loadedChatTemplateOverride ?? null)
+      ? chatTemplateOverrideReason
+      : null;
   const mlxKvQuantOutcome =
     isActiveModel &&
     (config.mlxKvBits ?? null) === (loadedMlxKvBitsRequested ?? null)
@@ -1373,6 +1387,7 @@ export function ModelConfigPage({
                 outcome={mlxKvQuantOutcome}
                 servedByMlx={servedByMlx}
                 onEditTemplate={() => setTemplateOpen(true)}
+                templateOutcome={chatTemplateOutcome}
               />
             )}
             <AdvancedSettingsToggle
@@ -1441,7 +1456,7 @@ export function ModelConfigPage({
         value={config.chatTemplateOverride}
         defaultTemplate={resolvedDefaultTemplate}
         defaultLoading={resolvedDefaultLoading}
-        readOnly={!target.isGguf}
+        readOnly={!target.isGguf && !servedByMlx}
         onSave={(override) => update({ chatTemplateOverride: override })}
       />
     </div>
