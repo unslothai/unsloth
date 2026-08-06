@@ -48,6 +48,10 @@ STRICT = os.environ.get("STUDIO_UI_STRICT", "0") == "1"
 # Per-turn assistant-bubble wait. The free macos-14 runner is ~3-5x
 # slower at gemma-3-270m CPU inference; this lets it bump the timeout.
 TURN_TIMEOUT_MS = int(os.environ.get("STUDIO_UI_TURN_TIMEOUT_MS", "180000"))
+# How long the rapid-submit step holds the first turn's response. Only needs to
+# outlast the 100 ms follow-up wait; kept well clear of it so a loaded runner
+# cannot close the gap, and paid once per run.
+RAPID_FIRST_TURN_HOLD_S = 3.0
 
 # Wall-clock cap for the whole script (healthy run is 5-9 min).
 WALL_TIMEOUT_S = float(os.environ.get("STUDIO_UI_WALL_TIMEOUT_S", "720"))
@@ -1060,28 +1064,39 @@ with sync_playwright() as p:
     step("rapid submit: 100 ms follow-up queues behind the first turn")
     rapid_bubbles_before = _bubble_count()
     composer_form = page.locator('form:has(textarea[aria-label="Message input"])').first
-    # Long on purpose: the queue check below needs this turn to still be running
-    # 100 ms from now. A short reply can complete first on a fast runner.
-    composer.fill("Count from 1 to 200. Put each number on its own line.")
-    composer_form.evaluate("form => form.requestSubmit()")
-    page.wait_for_timeout(100)
-    composer.fill("Reply with exactly: rapid-second")
-    composer_form.evaluate("form => form.requestSubmit()")
+    # Hold the first turn open for a fixed interval instead of hoping it is slow.
+    # The queue control below exists only while that turn is running, and how
+    # long a reply takes is not ours to decide: sampling settings, the model
+    # behind GGUF_REPO and an early EOS all move it, and a five-token answer can
+    # land inside the 100 ms wait on a fast runner. Delaying the response keeps
+    # the thread running from submit until we let it through, which makes the
+    # window deterministic and independent of anything the model does.
+    held_first_turn = {"done": False}
 
-    # The follow-up must materialize as queued work instead of a second direct
-    # append. This control exists only while the first turn is still running,
-    # so the assertion below silently depends on that turn outlasting the 100 ms
-    # wait. The first prompt above is deliberately long-running for that reason:
-    # a five-token reply from gemma-3-270m can land inside the window, exactly
-    # as the Stop button a few lines up is already documented to do, and then
-    # there is nothing to queue behind and this times out for no real fault.
-    # Asserted unconditionally: with a first turn that cannot finish that fast,
-    # a missing queue control is a genuine regression.
-    page.wait_for_selector(
-        'button[aria-label="Remove queued prompt 1"]',
-        state = "attached",
-        timeout = 10_000,
-    )
+    def _hold_first_turn(route):
+        if not held_first_turn["done"]:
+            held_first_turn["done"] = True
+            time.sleep(RAPID_FIRST_TURN_HOLD_S)
+        route.continue_()
+
+    page.route("**/chat/completions*", _hold_first_turn)
+    try:
+        composer.fill("Reply with exactly: rapid-first")
+        composer_form.evaluate("form => form.requestSubmit()")
+        page.wait_for_timeout(100)
+        composer.fill("Reply with exactly: rapid-second")
+        composer_form.evaluate("form => form.requestSubmit()")
+
+        # The follow-up must materialize as queued work instead of a second
+        # direct append. The hold above guarantees the first turn is still
+        # running here, so a missing control is a real regression, not timing.
+        page.wait_for_selector(
+            'button[aria-label="Remove queued prompt 1"]',
+            state = "attached",
+            timeout = 10_000,
+        )
+    finally:
+        page.unroute("**/chat/completions*", _hold_first_turn)
     page.wait_for_function(
         """(want) => {
             const replies = Array.from(
