@@ -9,12 +9,13 @@ import {
   dequeueNativeAttachments,
   enqueueNativeAttachments,
 } from "../src/features/native-intents/attachment-queue.ts";
-import { classifyDropPaths } from "../src/features/native-intents/drop-paths.ts";
+import { classifyDropPaths, CHAT_IMAGE_DROP_ACCEPT, SUPPORTED_DROP_HINT } from "../src/features/native-intents/drop-paths.ts";
 import type { NativeIntent } from "../src/features/native-intents/types.ts";
 import { RAG_UPLOAD_ACCEPT } from "../src/features/rag/types/rag.ts";
 
 const BACKEND_UPLOAD_EXTS_RE = /UPLOAD_EXTS\s*=\s*\{([^}]+)\}/s;
 const RUST_ATTACHMENT_EXTS_RE = /ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
+const RUST_IMAGE_ATTACHMENT_EXTS_RE = /IMAGE_ATTACHMENT_EXTS[^=]*=\s*&\[([^\]]+)\]/s;
 const DOTTED_EXTENSION_RE = /"(\.[^"]+)"/g;
 const RUST_EXTENSION_RE = /"([^"]+)"/g;
 
@@ -53,6 +54,22 @@ test("documents are an attachment drop, one or many", () => {
   assert.equal(dropped.kind === "docs" ? dropped.paths.length : 0, 3);
 });
 
+test("images are an attachment drop, one or many", () => {
+  const dropped = classifyDropPaths([
+    "/photos/cat.PNG",
+    "/photos/dog.jpeg",
+    "/photos/icon.webp",
+  ]);
+  assert.equal(dropped.kind, "docs");
+  assert.equal(dropped.kind === "docs" ? dropped.paths.length : 0, 3);
+});
+
+test("documents and images can be dropped together", () => {
+  const dropped = classifyDropPaths(["/docs/a.pdf", "/photos/cat.png"]);
+  assert.equal(dropped.kind, "docs");
+  assert.equal(dropped.kind === "docs" ? dropped.paths.length : 0, 2);
+});
+
 test("a mixed or unsupported drop is rejected", () => {
   // The regression in #7661: these used to be reported as "GGUF models only".
   assert.equal(
@@ -72,6 +89,11 @@ test("a mixed or unsupported drop is rejected", () => {
 
 test("an empty payload is not a drop target", () => {
   assert.equal(classifyDropPaths([]).kind, "none");
+});
+
+test("the rejection hint mentions images without widening RAG upload accept", () => {
+  assert.match(SUPPORTED_DROP_HINT, /\.png/);
+  assert.doesNotMatch(RAG_UPLOAD_ACCEPT, /\.png/);
 });
 
 test("attachment batches stay bound to the chat that received the drop", () => {
@@ -123,5 +145,24 @@ test("frontend, backend, and Rust accept the same document extensions", () => {
     .sort();
 
   assert.deepEqual(backend, frontend);
+  assert.deepEqual(rust, frontend);
+});
+
+test("frontend and Rust accept the same chat image extensions", () => {
+  const frontend = CHAT_IMAGE_DROP_ACCEPT.split(",")
+    .map((ext) => ext.trim().toLowerCase())
+    .sort();
+  const rustSource = readFileSync(
+    new URL("../../src-tauri/src/native_path_policy.rs", import.meta.url),
+    "utf8",
+  );
+  const rust = [
+    ...(rustSource
+      .match(RUST_IMAGE_ATTACHMENT_EXTS_RE)?.[1]
+      .matchAll(RUST_EXTENSION_RE) ?? []),
+  ]
+    .map((match) => `.${match[1]}`)
+    .sort();
+
   assert.deepEqual(rust, frontend);
 });
