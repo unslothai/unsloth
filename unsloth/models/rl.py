@@ -1246,6 +1246,21 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             #     collator is handed max_length=None under padding-free. Turn
             #     padding-free off instead and keep `max_length`, so TRL's own
             #     collator truncates.
+            # The copy into `max_seq_length` is unconditional, and has to be. No TRL
+            # from 0.22.2 to 1.9.2 declares `max_seq_length` on SFTConfig -- only
+            # Unsloth's own generated UnslothSFTConfig adds the field back -- so a
+            # hasattr() gate here would skip the copy for every caller who hands us a
+            # pristine `trl.SFTConfig` (anyone who did `from trl import SFTConfig`
+            # before `import unsloth`), and clearing `max_length` right after would
+            # drop the cap on the floor. `args` is a plain dataclass instance, so the
+            # assignment just creates the attribute, and `to_dict()` iterates declared
+            # fields, so nothing downstream sees an extra key.
+            #
+            # `max_length` has to go out as None specifically. TRL's guard reads
+            # `args.max_length is not None`, so 0 -- the value the Zoo's fall-through
+            # chain treats as unset -- still raises the very ValueError this block
+            # exists to avoid. None it is, and rl_replacements.py normalises that None
+            # to 0 inside the Zoo so the chain reaches `max_seq_length`.
             # The schema is read off the first yielded row, exactly like the Zoo's
             # sft_prepare_dataset does, and only falls back to `column_names`: a
             # `with_transform` / `set_transform` dataset still reports its backing
@@ -1277,8 +1292,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "    except Exception:\n"
                     "        pass\n"
                     "    if _unsloth_prep_truncates:\n"
-                    "        if hasattr(args, 'max_seq_length'):\n"
-                    "            args.max_seq_length = args.max_length\n"
+                    "        args.max_seq_length = args.max_length\n"
                     "        args.max_length = None\n"
                     "        max_length = None\n"
                     "    else:\n"

@@ -284,19 +284,19 @@ def test_unprepared_datasets_keep_their_length_cap(
     trainer = _build(tmp_path, dataset = dataset, **config_kwargs)
     args = trainer.args
 
-    assert (
-        args.max_length == _MODEL_MAX_SEQ_LENGTH
-    ), f"{name}: the length cap must not be cleared for an unprepared dataset"
+    assert args.max_length == _MODEL_MAX_SEQ_LENGTH, (
+        f"{name}: the length cap must not be cleared for an unprepared dataset"
+    )
     if trl_has_guard:
-        assert (
-            args.padding_free is False
-        ), f"{name}: padding-free must be dropped, since it disables truncation"
+        assert args.padding_free is False, (
+            f"{name}: padding-free must be dropped, since it disables truncation"
+        )
     # The rows themselves stay long: enforcement lives in the collator.
     assert _longest(trainer) > _MODEL_MAX_SEQ_LENGTH
     if getattr(trainer.data_collator, "max_length", None) is not None:
-        assert (
-            _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH
-        ), f"{name}: overlength rows reached the model"
+        assert _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH, (
+            f"{name}: overlength rows reached the model"
+        )
 
 
 def _transformed_dataset(tok):
@@ -333,9 +333,108 @@ def test_transformed_datasets_keep_their_length_cap(tmp_path, trl_has_guard):
         assert args.padding_free is False, "padding-free must be dropped, it disables truncation"
     assert max(len(r["input_ids"]) for r in rows) > _MODEL_MAX_SEQ_LENGTH
     if getattr(trainer.data_collator, "max_length", None) is not None:
-        assert (
-            _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH
-        ), "overlength rows reached the model"
+        assert _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH, (
+            "overlength rows reached the model"
+        )
+
+
+def _pristine_sft_config_cls():
+    """TRL's own SFTConfig, not Unsloth's generated subclass of it.
+
+    `PatchFastRL` rebinds `trl.SFTConfig` (and the `trl.trainer.*` aliases) to
+    `UnslothSFTConfig`, which re-adds a `max_seq_length` field that no TRL from
+    0.22.2 to 1.9.2 declares itself. A caller who did `from trl import SFTConfig`
+    before `import unsloth` still holds the pristine class, and passes an
+    instance of it as `args`. That instance has `max_length` and no
+    `max_seq_length`, which is the case this file pins below.
+    """
+    from trl import SFTConfig
+    return SFTConfig.__bases__[0] if SFTConfig.__name__.startswith("Unsloth") else SFTConfig
+
+
+def test_pristine_trl_config_without_max_seq_length_still_truncates(tmp_path, trl_has_guard):
+    """A config with `max_length` and no `max_seq_length` must keep its cap.
+
+    The padding-free branch parks the resolved length in `max_seq_length` before
+    handing TRL the `max_length=None` it demands. Gating that copy on
+    `hasattr(args, 'max_seq_length')` skipped it for every pristine
+    `trl.SFTConfig` -- no TRL version declares the field -- so the cap was
+    cleared and never stored, and raw-text SFT lost its truncation.
+    """
+    from datasets import Dataset
+
+    config_cls = _pristine_sft_config_cls()
+    assert not hasattr(config_cls(output_dir = str(tmp_path)), "max_seq_length"), (
+        "this TRL declares max_seq_length, so the regression cannot be reproduced here"
+    )
+
+    model, tok = _load_plain()
+    text = "The quick brown fox. " * 200
+    untruncated = len(tok(text)["input_ids"])
+    assert untruncated > _MODEL_MAX_SEQ_LENGTH, "row must be overlength to be interesting"
+
+    cfg = config_cls(
+        output_dir = str(tmp_path),
+        per_device_train_batch_size = 2,
+        max_steps = 1,
+        report_to = "none",
+        save_strategy = "no",
+        use_cpu = True,
+        dataset_text_field = "text",
+        fp16 = False,
+        bf16 = False,
+        optim = "adamw_torch",
+        max_length = _MODEL_MAX_SEQ_LENGTH,
+        padding_free = True,
+    )
+    from trl import SFTTrainer
+
+    trainer = SFTTrainer(
+        model = model,
+        processing_class = tok,
+        args = cfg,
+        train_dataset = Dataset.from_list([{"text": text}] * 4),
+    )
+
+    # The cap has to land somewhere the Zoo's sft_prepare_dataset reads it.
+    if trl_has_guard:
+        assert trainer.args.max_length is None
+        assert trainer.args.max_seq_length == _MODEL_MAX_SEQ_LENGTH
+        assert trainer.args.padding_free is True
+    else:
+        # No guard, so the swap is not emitted at all and `max_length` carries it.
+        assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH
+
+    # What actually matters: the rows, and the batch the model would see.
+    assert _longest(trainer) == _MODEL_MAX_SEQ_LENGTH, "dataset prep stopped truncating"
+    assert _collated_width(trainer) <= 2 * _MODEL_MAX_SEQ_LENGTH, (
+        "overlength rows reached the model: padding-free flattens the batch, so an "
+        f"untruncated pair collates to {2 * untruncated} tokens"
+    )
+
+
+def _padding_free_codegen_block():
+    """The emitted padding-free branch, sliced out of rl.py's generator."""
+    from unsloth.models import rl
+
+    source = inspect.getsource(rl)
+    start = source.index("if getattr(args, 'padding_free', False) is True")
+    return source[start : source.index("extra_args += max_length_check", start)]
+
+
+def test_generator_copies_the_cap_without_a_hasattr_gate():
+    """The copy into `max_seq_length` must not be conditional.
+
+    `hasattr(args, 'max_seq_length')` is False for every pristine TRL SFTConfig
+    on every supported version, so a gate there is not a safety check, it is an
+    unconditional skip.
+    """
+    block = _padding_free_codegen_block()
+
+    assert "args.max_seq_length = args.max_length" in block
+    assert "hasattr(args, 'max_seq_length')" not in block
+    # TRL's guard is `args.max_length is not None`, so 0 would still raise.
+    assert "args.max_length = None" in block
 
 
 def test_padding_free_off_keeps_max_length(tmp_path):
