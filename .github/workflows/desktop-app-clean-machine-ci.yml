@@ -217,7 +217,13 @@ jobs:
             echo "app still running after 90s (pid $APP_PID)"
             kill -TERM "$APP_PID" 2>/dev/null || true
           else
-            wait "$APP_PID" 2>/dev/null; rc=$?
+            # `|| rc=$?`, not a bare `wait`: the step runs under `bash -e`, so a
+            # non-zero `wait` aborted the step right here and the two diagnostic lines
+            # below never printed. The failure showed up as a bare "Process completed
+            # with exit code 1" with no annotation and no app output -- which is exactly
+            # the information this branch exists to produce.
+            rc=0
+            wait "$APP_PID" 2>/dev/null || rc=$?
             echo "::error::desktop app exited early with rc=$rc"
             tail -50 logs/app-stdout.log || true
             exit 1
@@ -414,7 +420,13 @@ jobs:
             echo "app still running after 90s"
             kill -TERM "$APP_PID" 2>/dev/null || true
           else
-            wait "$APP_PID" 2>/dev/null; rc=$?
+            # `|| rc=$?`, not a bare `wait`: the step runs under `bash -e`, so a
+            # non-zero `wait` aborted the step right here and the two diagnostic lines
+            # below never printed. The failure showed up as a bare "Process completed
+            # with exit code 1" with no annotation and no app output -- which is exactly
+            # the information this branch exists to produce.
+            rc=0
+            wait "$APP_PID" 2>/dev/null || rc=$?
             echo "::error::desktop app exited early with rc=$rc"
             tail -60 logs/app-stdout.log || true
             exit 1
