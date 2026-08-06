@@ -8,6 +8,8 @@ mod desktop_update_policy;
 mod desktop_updater;
 mod diagnostics;
 mod install;
+#[cfg(target_os = "linux")]
+mod linux_webkit;
 mod loopback_http;
 mod native_backend_lease;
 mod native_clipboard;
@@ -463,6 +465,11 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
+    // WebKitGTK's hardware dmabuf path can violate Wayland explicit-sync
+    // protocol on current NVIDIA/Mesa stacks. Select its supported shared-
+    // memory transport before any GTK/WebKit object can be initialized.
+    #[cfg(target_os = "linux")]
+    let forced_shared_memory = linux_webkit::configure_wayland_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -470,6 +477,11 @@ fn main() {
 
     setup_logging();
     info!("Unsloth desktop app starting");
+
+    #[cfg(target_os = "linux")]
+    if forced_shared_memory {
+        info!("Wayland detected; using WebKitGTK shared-memory buffer transport");
+    }
     windows_job::initialize();
 
     tauri::Builder::default()
