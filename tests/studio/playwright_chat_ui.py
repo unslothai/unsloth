@@ -1064,13 +1064,49 @@ with sync_playwright() as p:
     step("rapid submit: 100 ms follow-up queues behind the first turn")
     rapid_bubbles_before = _bubble_count()
     composer_form = page.locator('form:has(textarea[aria-label="Message input"])').first
-    # Hold the first turn open for a fixed interval instead of hoping it is slow.
-    # The queue control below exists only while that turn is running, and how
-    # long a reply takes is not ours to decide: sampling settings, the model
-    # behind GGUF_REPO and an early EOS all move it, and a five-token answer can
-    # land inside the 100 ms wait on a fast runner. Delaying the response keeps
-    # the thread running from submit until we let it through, which makes the
-    # window deterministic and independent of anything the model does.
+    # How long a reply takes is not ours to decide: sampling settings, whatever
+    # GGUF_REPO points at and an early EOS all move it, and a short answer can
+    # finish inside the follow-up delay on a fast runner, leaving nothing to
+    # queue behind. So hold the first turn's response open rather than hope it
+    # is slow.
+    #
+    # The follow-up and the observation both run in the page, not here. The sync
+    # Playwright route handler runs on this thread, so a wait inside it blocks
+    # the test: the handler would fire during a wait_for_timeout, finish, and
+    # release the request before a Python-side second submit could happen, which
+    # puts the hold entirely before the follow-up instead of across it. Page
+    # timers keep running while this thread is parked in the handler.
+    page.evaluate(
+        """(secondPrompt) => {
+            window.__unslothRapid = { submitted: false, queueSeen: false };
+            const composer = document.querySelector(
+                'textarea[aria-label="Message input"]'
+            );
+            setTimeout(() => {
+                // React tracks the value on the node, so a plain assignment is
+                // reverted on the next render. Go through the native setter and
+                // announce it the way a keystroke would.
+                const setValue = Object.getOwnPropertyDescriptor(
+                    window.HTMLTextAreaElement.prototype, "value"
+                ).set;
+                setValue.call(composer, secondPrompt);
+                composer.dispatchEvent(new Event("input", { bubbles: true }));
+                composer.form.requestSubmit();
+                window.__unslothRapid.submitted = true;
+            }, 100);
+            const poll = setInterval(() => {
+                if (document.querySelector(
+                    'button[aria-label="Remove queued prompt 1"]'
+                )) {
+                    window.__unslothRapid.queueSeen = true;
+                    clearInterval(poll);
+                }
+            }, 50);
+            setTimeout(() => clearInterval(poll), 15000);
+        }""",
+        "Reply with exactly: rapid-second",
+    )
+
     held_first_turn = {"done": False}
 
     def _hold_first_turn(route):
@@ -1083,20 +1119,24 @@ with sync_playwright() as p:
     try:
         composer.fill("Reply with exactly: rapid-first")
         composer_form.evaluate("form => form.requestSubmit()")
-        page.wait_for_timeout(100)
-        composer.fill("Reply with exactly: rapid-second")
-        composer_form.evaluate("form => form.requestSubmit()")
-
-        # The follow-up must materialize as queued work instead of a second
-        # direct append. The hold above guarantees the first turn is still
-        # running here, so a missing control is a real regression, not timing.
-        page.wait_for_selector(
-            'button[aria-label="Remove queued prompt 1"]',
-            state = "attached",
-            timeout = 10_000,
+        # Returns once the handler has slept and released the request, by which
+        # point the page timer above has submitted the follow-up and recorded
+        # whether it queued.
+        page.wait_for_function(
+            "() => window.__unslothRapid && window.__unslothRapid.submitted",
+            timeout = 30_000,
         )
     finally:
         page.unroute("**/chat/completions*", _hold_first_turn)
+
+    if not held_first_turn["done"]:
+        fail("the first turn's request was never intercepted, so it was not held")
+    # The follow-up must materialize as queued work instead of a second direct
+    # append. It was submitted while the response was still held, so the first
+    # turn was necessarily running and a missing control is a real regression.
+    if not page.evaluate("() => window.__unslothRapid.queueSeen"):
+        shoot("04-rapid-submit-no-queue")
+        fail("follow-up sent during a held first turn did not appear as queued work")
     page.wait_for_function(
         """(want) => {
             const replies = Array.from(
