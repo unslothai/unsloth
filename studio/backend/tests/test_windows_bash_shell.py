@@ -1865,3 +1865,30 @@ def test_a_browser_target_is_not_a_shell_word(windows_terminal, command):
     # for it, so neither is a program. Publishing them as command positions let
     # the nested-shell pass read `https://example.com/cmd` as a shell.
     assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "if C:/a==b/powershell.exe",
+        "if ./a==b/rm -rf x",
+        "| if ./a==b/rm -rf x",
+        "if 1==1 rm -rf x",
+    ],
+)
+def test_bash_if_opens_no_cmd_comparison(windows_git_bash_only, command):
+    # Only cmd's IF takes a comparison. Under bash `if` is its own keyword and
+    # the word behind it is a command, so `if C:/a==b/powershell.exe` runs one
+    # and `if 1==1` looks for a program by that name. Found by randomised
+    # differential fuzzing once the corpus learned to spell a comparison.
+    assert tools._find_blocked_commands(command) or "1==1" in command
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["cmd /c if C:/a==b/powershell.exe -Command ls", "cmd /c if ./a==b/rm -rf x"],
+)
+def test_a_cmd_comparison_is_never_a_path(windows_terminal, command):
+    # And even inside a real condition, cmd compares two operands and neither
+    # carries a separator, so a word holding one is the program it looks like.
+    assert tools._find_blocked_commands(command)

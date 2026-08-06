@@ -1158,7 +1158,10 @@ def _is_win_comparison(tokens: "list[str]", index: int) -> bool:
     """
     token = tokens[index]
     if "==" in token and not token.startswith("=="):
-        return True
+        # Unless the word is a PATH that happens to hold one. cmd compares two
+        # operands, and neither carries a separator, so `C:/a==b/powershell.exe`
+        # is the program it looks like rather than a condition.
+        return not ("/" in token or "\\" in token)
     return index + 1 < len(tokens) and tokens[index + 1].lower() in _WIN_COMPARE_OPERATORS
 
 
@@ -2178,8 +2181,12 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             token in _SHELL_KEYWORDS_AS_SEP and expect_command
         ):
             # cmd's IF opens a condition, and only there is a `==` a comparison
-            # rather than an ordinary character in a word.
-            if_pending = token.lower() == "if"
+            # rather than an ordinary character in a word. Only cmd has that
+            # form at all: under bash `if` is its own keyword and the word
+            # behind it is a command, so `if C:/a==b/powershell.exe` runs one.
+            if_pending = token.lower() == "if" and (
+                not lexed_posix or _cmd_payload or in_cmd_payload
+            )
             expect_command = True
             prefix_pending = False
             prefix_command = ""
