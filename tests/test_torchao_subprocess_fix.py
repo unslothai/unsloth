@@ -554,3 +554,165 @@ def test_a_placeholder_does_not_count_as_a_real_torch_symbol():
         IF._torch_really_has(type("_F", (), {"ScalingType": placeholder}), "ScalingType") is False
     )
     assert IF._torch_really_has(type("_F", (), {}), "ScalingType") is False
+
+
+# ---- a hook file planted before the directory was tightened ---------------
+
+
+def _plant(directory, kind, source):
+    """A `sitecustomize.py` of the given shape, as it could survive a
+    directory that used to be group- or world-writable."""
+    target = directory / "sitecustomize.py"
+    if kind == "symlink":
+        elsewhere = directory.parent / "planted_elsewhere.py"
+        elsewhere.write_text(source, encoding = "utf-8")
+        os.symlink(elsewhere, target)
+        return elsewhere
+    target.write_text(source, encoding = "utf-8")
+    if kind == "group_writable":
+        os.chmod(target, 0o666)
+    return target
+
+
+@pytest.mark.parametrize("kind", ["symlink", "group_writable"])
+def test_a_planted_hook_is_not_trusted(tmp_path, kind):
+    """Contents equal to ours are what an attacker arranges so the rewrite is
+    skipped; only a private regular file of ours makes them evidence."""
+    if not hasattr(os, "getuid"):
+        pytest.skip("POSIX ownership/permissions only")
+    directory = tmp_path / "dir"
+    directory.mkdir()
+    _plant(directory, kind, IF._subprocess_sitecustomize_source())
+    assert IF._existing_hook_is_trustworthy(str(directory / "sitecustomize.py")) is False
+
+
+def test_a_foreign_owned_hook_is_not_trusted(tmp_path, monkeypatch):
+    """Anyone could create the file while the directory was world-writable,
+    and it stays theirs to rewrite after the directory is tightened."""
+    if not hasattr(os, "getuid"):
+        pytest.skip("POSIX ownership only")
+    target = tmp_path / "sitecustomize.py"
+    target.write_text("x = 1\n", encoding = "utf-8")
+    real_lstat = os.lstat
+    theirs = os.stat_result(
+        tuple(real_lstat(str(target)))[:4] + (os.getuid() + 1,) + tuple(real_lstat(str(target)))[5:]
+    )
+    monkeypatch.setattr(os, "lstat", lambda p: theirs if str(p) == str(target) else real_lstat(p))
+    assert IF._existing_hook_is_trustworthy(str(target)) is False
+
+
+def test_our_own_hook_file_is_trusted(tmp_path):
+    """The fast path must survive: a rewrite on every import would make
+    concurrent runs fight over the file."""
+    target = tmp_path / "sitecustomize.py"
+    target.write_text(IF._subprocess_sitecustomize_source(), encoding = "utf-8")
+    os.chmod(target, 0o600)
+    assert IF._existing_hook_is_trustworthy(str(target)) is True
+    assert IF._existing_hook_is_trustworthy(str(tmp_path / "absent.py")) is True
+
+
+@pytest.mark.parametrize("kind", ["symlink", "group_writable"])
+def test_a_planted_hook_is_replaced_even_when_it_matches(monkeypatch, tmp_path, kind):
+    """End to end: the directory used to be world-writable and already holds a
+    hook whose contents match ours. Tightening the directory does not revoke
+    write access to that file, so leaving it in place is code execution in
+    every Python subprocess started after `import unsloth`."""
+    if not hasattr(os, "getuid"):
+        pytest.skip("POSIX ownership/permissions only")
+    import torch.nn.functional as F
+
+    for name in IF._TORCHAO_TORCH_SYMBOLS:
+        if getattr(getattr(F, name, None), "__unsloth_placeholder__", False):
+            delattr(F, name)
+    if all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS):
+        pytest.skip("this torch provides every symbol; nothing to stage")
+
+    monkeypatch.setattr(
+        IF, "importlib_version", lambda name: "0.18.0" if name == "torchao" else "0"
+    )
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    monkeypatch.delenv("PYTHONPATH", raising = False)
+
+    loose = tmp_path / ("unsloth_subprocess_import_fix-%d" % os.getuid())
+    loose.mkdir()
+    os.chmod(loose, 0o777)
+    planted = _plant(loose, kind, IF._subprocess_sitecustomize_source())
+
+    try:
+        directory = IF.propagate_torchao_fix_to_subprocesses()
+        assert directory == str(loose)
+        target = loose / "sitecustomize.py"
+        info = os.lstat(target)
+        import stat as _stat
+
+        assert _stat.S_ISREG(info.st_mode), "still a symlink to a file we do not own"
+        assert not _stat.S_IMODE(info.st_mode) & 0o022, oct(info.st_mode)
+        assert target.read_text(encoding = "utf-8") == IF._subprocess_sitecustomize_source()
+        if kind == "symlink":
+            # Rewriting the planted file must no longer reach any child.
+            planted.write_text("raise SystemExit('hijacked')\n", encoding = "utf-8")
+            assert target.read_text(encoding = "utf-8") != planted.read_text(encoding = "utf-8")
+    finally:
+        for name in IF._TORCHAO_TORCH_SYMBOLS:
+            if getattr(getattr(F, name, None), "__unsloth_placeholder__", False):
+                delattr(F, name)
+
+
+# ---- the chained sitecustomize keeps its own name -------------------------
+
+
+def test_a_chained_package_stays_importable(staged, tmp_path):
+    """Restoring our module under `sitecustomize` after running the real one
+    hides it from `import sitecustomize`, and breaks the relative imports its
+    own callbacks perform after startup."""
+    site, fake = staged
+    other = tmp_path / "other"
+    (other / "sitecustomize").mkdir(parents = True)
+    (other / "sitecustomize" / "__init__.py").write_text(
+        textwrap.dedent(
+            """
+            import atexit
+            NAME = 'the_real_package'
+            def _later():
+                from . import extra          # delayed, as installed hooks do
+                print('LATER OK', extra.NAME)
+            atexit.register(_later)
+            """
+        ),
+        encoding = "utf-8",
+    )
+    (other / "sitecustomize" / "extra.py").write_text("NAME = 'submodule'\n", encoding = "utf-8")
+    p = _child(
+        """
+        import sitecustomize, torchao
+        print('NAME', getattr(sitecustomize, 'NAME', '<<shadowed by ours>>'))
+        print('PACKAGE', hasattr(sitecustomize, '__path__'))
+        """,
+        [site, other, fake],
+    )
+    assert "NAME the_real_package" in p.stdout, p.stdout + p.stderr
+    assert "PACKAGE True" in p.stdout, p.stdout + p.stderr
+    assert "LATER OK submodule" in p.stdout, p.stdout + p.stderr
+    assert "Exception ignored in atexit" not in p.stderr, p.stderr
+
+
+def test_a_broken_chained_module_does_not_keep_our_name(staged, tmp_path):
+    """The handover only happens on success: a sitecustomize that raised
+    half-way through must not be left behind as `sitecustomize`."""
+    site, fake = staged
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "sitecustomize.py").write_text(
+        "MARK = 'half-initialised'\nraise RuntimeError('boom')\n", encoding = "utf-8"
+    )
+    p = _child(
+        """
+        import sys, torchao
+        print('IN MODULES', 'sitecustomize' in sys.modules)
+        print('MARK', getattr(sys.modules.get('sitecustomize'), 'MARK', '<<none>>'))
+        print('STILL OK')
+        """,
+        [site, other, fake],
+    )
+    assert "STILL OK" in p.stdout, p.stdout + p.stderr
+    assert "MARK <<none>>" in p.stdout, p.stdout + p.stderr

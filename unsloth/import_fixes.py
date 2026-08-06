@@ -3606,16 +3606,22 @@ def _chain_to_the_real_sitecustomize():
         try:
             mod = importlib.util.module_from_spec(spec)
             # A package needs its own name in sys.modules for `from . import`
-            # to resolve; put ours back afterwards.
+            # to resolve, and it needs it AFTER initialization too: a callback
+            # it registers (atexit, a hook) does its relative imports later,
+            # and would find our non-package module under `sitecustomize` and
+            # fail. So leave the real one there on success -- which is also
+            # what `import sitecustomize` returns when we are not installed --
+            # and only put the previous entry back if it failed to load.
             previous = sys.modules.get("sitecustomize")
             sys.modules["sitecustomize"] = mod
             try:
                 spec.loader.exec_module(mod)
-            finally:
+            except BaseException:
                 if previous is None:
                     sys.modules.pop("sitecustomize", None)
                 else:
                     sys.modules["sitecustomize"] = previous
+                raise
             break
         except Exception:
             # A broken sitecustomize elsewhere must not stop us, and must not
@@ -3729,6 +3735,9 @@ class _TorchaoImportHook:
         return None  # let the normal finders import torchao
 
 
+# Chaining gives our name away to the real sitecustomize, so keep our own
+# module object alive here: the finder below outlives this file's execution.
+_SELF = sys.modules.get(__name__)
 _chain_to_the_real_sitecustomize()
 try:
     sys.meta_path.insert(0, _TorchaoImportHook())
@@ -3737,6 +3746,33 @@ except Exception:
     # subprocess, which is far worse than the import error it fixes.
     pass
 '''
+
+
+def _existing_hook_is_trustworthy(target):
+    """Can the file already at `target` only have been written by us?
+
+    Tightening the directory does not revoke access to what is already inside
+    it: a `sitecustomize.py` planted while the directory was group- or
+    world-writable stays a foreign-owned file, or a symlink whose target lives
+    somewhere still writable. Since this file is executed by every Python
+    descendant, anything but a private regular file of ours has to be replaced
+    outright -- including when its current contents match, which is exactly
+    what an attacker would arrange to keep the write below from happening.
+    """
+    import stat
+
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return True  # nothing there yet; the write creates it
+    except Exception:
+        return False
+    if not stat.S_ISREG(info.st_mode):  # symlink, directory, fifo, device
+        return False
+    if hasattr(os, "getuid") and info.st_uid != os.getuid():
+        return False
+    # Writable by anyone else means its contents are not evidence of anything.
+    return not stat.S_IMODE(info.st_mode) & 0o022
 
 
 def _torch_really_has(F, name):
@@ -3807,15 +3843,25 @@ def propagate_torchao_fix_to_subprocesses():
         target = os.path.join(directory, "sitecustomize.py")
         source = _subprocess_sitecustomize_source()
         # Rewrite only when it differs, so concurrent runs do not fight and a
-        # reader never sees a truncated file.
-        try:
-            existing = open(target, "r", encoding = "utf-8").read()
-        except Exception:
+        # reader never sees a truncated file. Matching contents are only
+        # evidence when the file itself is ours: see the helper. A directory
+        # left in the way makes os.replace raise, which the handler below turns
+        # into "no subprocess fix" rather than into a hook we do not trust.
+        if _existing_hook_is_trustworthy(target):
+            try:
+                existing = open(target, "r", encoding = "utf-8").read()
+            except Exception:
+                existing = None
+        else:
             existing = None
         if existing != source:
             tmp = target + ".%d.tmp" % os.getpid()
             with open(tmp, "w", encoding = "utf-8") as handle:
                 handle.write(source)
+            try:
+                os.chmod(tmp, 0o600)  # nobody else may rewrite it later
+            except Exception:
+                pass
             os.replace(tmp, target)  # atomic
     except Exception as exception:
         logger.warning(
