@@ -416,7 +416,6 @@ def _cached_row_companion(repo_id: str) -> bool:
     """
     try:
         from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
-
         return (repo_id or "").strip().lower() in sd_cpp_companion_only_repo_ids()
     except Exception:  # noqa: BLE001 -- a classification failure never hides a row
         return False

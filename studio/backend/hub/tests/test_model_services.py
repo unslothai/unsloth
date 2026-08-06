@@ -1112,9 +1112,7 @@ def test_the_real_companion_shape_never_reaches_a_row_at_all(monkeypatch, tmp_pa
         repo_id = "unsloth/Z-Image-Turbo-ComfyUI",
         repo_type = "model",
         repo_path = tmp_path,
-        revisions = [
-            SimpleNamespace(files = files, snapshot_path = snapshot, commit_hash = _SNAPSHOT_SHA)
-        ],
+        revisions = [SimpleNamespace(files = files, snapshot_path = snapshot, commit_hash = _SNAPSHOT_SHA)],
     )
     payload = cache_inventory._repo_non_gguf_model_payload(repo)
 
