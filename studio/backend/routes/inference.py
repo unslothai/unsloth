@@ -12020,7 +12020,14 @@ async def openai_chat_completions(
                     )
                     if usage_line is not None:
                         yield usage_line
-                    _monitor_usage(monitor_id, _stats.get("usage"), timings = _stats.get("timings"))
+                    # This path always closes the client stream with "stop", so the
+                    # monitor records the same terminal reason instead of a blank.
+                    _monitor_usage(
+                        monitor_id,
+                        _stats.get("usage"),
+                        timings = _stats.get("timings"),
+                        stop_reason = "stop",
+                    )
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
                 )
@@ -12634,7 +12641,12 @@ async def openai_chat_completions(
             api_monitor.set_reply(monitor_id, _monitor_reply)
             _stats = stats_holder.get("stats")
             if _stats:
-                _monitor_usage(monitor_id, _stats.get("usage"), timings = _stats.get("timings"))
+                _monitor_usage(
+                    monitor_id,
+                    _stats.get("usage"),
+                    timings = _stats.get("timings"),
+                    stop_reason = _finish,
+                )
             api_monitor.finish(monitor_id)
             return _model_json_response(response)
 
@@ -14790,6 +14802,10 @@ async def _responses_stream(
                         },
                     )
 
+                if delta.get("tool_calls"):
+                    # A tool call is output the client has already received, so
+                    # a turn that opens with one is timed from here too.
+                    api_monitor.mark_first_token(monitor_id)
                 for tc in delta.get("tool_calls") or []:
                     if (
                         payload.parallel_tool_calls is False
