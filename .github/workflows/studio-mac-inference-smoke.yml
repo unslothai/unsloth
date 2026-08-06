@@ -40,6 +40,9 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/workflows/studio-mac-inference-smoke.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
   push:
     branches: [main, pip]
   # Manual trigger for pre-warming model caches on main, or re-running
@@ -164,14 +167,11 @@ jobs:
         id: install
         if: ${{ !cancelled() }}
         timeout-minutes: 20
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       # Last step of the shared preamble. Phases 2 and 3 gate on its outcome:
       # once checkout, install and this check have passed, a failure inside one

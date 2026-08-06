@@ -35,6 +35,9 @@ on:
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
       # The absorbed update phase round-trips scripts/uninstall.sh, which none
       # of the entries above cover.
       - 'scripts/uninstall.sh'
@@ -129,20 +132,12 @@ jobs:
 
       - name: Install Unsloth (--local, --no-torch)
         id: install_unsloth
-        # The install is the shared bootstrap for every phase below, and only
-        # the Playwright phases need the primed GGUF. Detaching it from the
-        # implicit success() keeps the update and uninstall phases reachable
-        # when priming times out, which is the one case where they would still
-        # have produced a real result.
         if: ${{ !cancelled() }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Assert llama.cpp loads on this macOS
         id: assert_llama
