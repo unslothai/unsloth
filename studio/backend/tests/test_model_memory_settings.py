@@ -470,3 +470,62 @@ class TestCapabilityProbeFallback:
         monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         assert rs._model_memory_reload_required() is False
+
+
+class TestCacheInvalidationRace:
+    """A read that began before a write must not refill the memo cache with the
+    value it already fetched: the new setting would appear to revert for the
+    rest of the TTL, and a load could launch flags contradicting it."""
+
+    def test_stale_fill_is_dropped(self, monkeypatch):
+        import threading
+
+        import utils.model_memory_settings as mm
+
+        mm._cache.clear()
+        store = {mm.KEEP_RESIDENT_SETTING_KEY: False}
+        gate = threading.Event()
+        reading = threading.Event()
+        slow = {}
+
+        def get_app_setting(key, fallback = None):
+            # SELECT first, then stall, so the reader holds the OLD value.
+            value = store.get(key, fallback)
+            if slow.get("ident") == threading.get_ident():
+                reading.set()
+                gate.wait(2)
+            return value
+
+        monkeypatch.setattr("storage.studio_db.get_app_setting", get_app_setting)
+        monkeypatch.setattr(
+            "storage.studio_db.upsert_app_settings", lambda updates: store.update(updates)
+        )
+
+        def reader():
+            slow["ident"] = threading.get_ident()
+            mm.get_keep_resident()
+
+        thread = threading.Thread(target = reader)
+        thread.start()
+        assert reading.wait(5), "reader never reached the DB"
+        mm.set_model_memory_settings(keep_resident = True)
+        gate.set()
+        thread.join(5)
+        assert not thread.is_alive()
+
+        assert mm.get_keep_resident() is True
+
+    def test_an_uncontended_read_still_caches(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        mm._cache.clear()
+        calls = []
+
+        def get_app_setting(key, fallback = None):
+            calls.append(key)
+            return True
+
+        monkeypatch.setattr("storage.studio_db.get_app_setting", get_app_setting)
+        assert mm.get_keep_resident() is True
+        assert mm.get_keep_resident() is True
+        assert len(calls) == 1, "the guard must not disable caching"

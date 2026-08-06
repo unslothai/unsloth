@@ -57,8 +57,15 @@ async function fetchOpenAIAutoSwitchSettings(): Promise<OpenAIAutoSwitchSettings
   return fromApi(await res.json());
 }
 
-function cacheSettings(settings: OpenAIAutoSwitchSettings) {
-  cachedSettings = settings;
+// Bumped on every invalidation. A response that was already in flight when the
+// cache was cleared must not refill it, or the pre-toggle value would be served
+// indefinitely.
+let cacheGeneration = 0;
+
+function cacheSettings(settings: OpenAIAutoSwitchSettings, generation: number) {
+  if (generation === cacheGeneration) {
+    cachedSettings = settings;
+  }
   return settings;
 }
 
@@ -69,14 +76,16 @@ function cacheSettings(settings: OpenAIAutoSwitchSettings) {
  */
 export function invalidateOpenAIAutoSwitchSettings() {
   cachedSettings = null;
+  cacheGeneration += 1;
 }
 
 export async function loadOpenAIAutoSwitchSettings() {
   if (cachedSettings) {
     return cachedSettings;
   }
+  const generation = cacheGeneration;
   inFlightSettings ??= fetchOpenAIAutoSwitchSettings()
-    .then(cacheSettings)
+    .then((settings) => cacheSettings(settings, generation))
     .finally(() => {
       inFlightSettings = null;
     });
@@ -117,5 +126,6 @@ export async function updateOpenAIAutoSwitchSettings(
       ),
     );
   }
-  return cacheSettings(fromApi(await res.json()));
+  // A write's own response is the freshest there is, so it always caches.
+  return cacheSettings(fromApi(await res.json()), cacheGeneration);
 }

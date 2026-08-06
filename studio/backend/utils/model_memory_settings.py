@@ -30,6 +30,10 @@ DEFAULT_NO_RAM_RESERVE = False
 _CACHE_TTL_S = 2.0
 _cache_lock = threading.Lock()
 _cache: dict[str, tuple[float, Any]] = {}
+# Bumped on every write. A read that began before a write must not fill the
+# cache with the value it already fetched, or the new setting would appear to
+# revert for the rest of the TTL and a load could launch contradicting it.
+_generation: dict[str, int] = {}
 
 
 def _coerce_bool(value: Any) -> Optional[bool]:
@@ -45,11 +49,11 @@ def _coerce_bool(value: Any) -> Optional[bool]:
 
 
 def _cached_setting(key: str) -> Any:
-    now = time.monotonic()
     with _cache_lock:
         hit = _cache.get(key)
-        if hit is not None and now - hit[0] < _CACHE_TTL_S:
+        if hit is not None and time.monotonic() - hit[0] < _CACHE_TTL_S:
             return hit[1]
+        generation = _generation.get(key, 0)
     try:
         from storage.studio_db import get_app_setting
         stored = get_app_setting(key, None)
@@ -57,13 +61,17 @@ def _cached_setting(key: str) -> Any:
         # An unreadable DB must not fail a load; fall back to the default.
         stored = None
     with _cache_lock:
-        _cache[key] = (now, stored)
+        # Drop the fill if a write landed while this read was in flight. The
+        # caller still gets what it read, which is all it could ever have had.
+        if _generation.get(key, 0) == generation:
+            _cache[key] = (time.monotonic(), stored)
     return stored
 
 
 def _invalidate(key: str) -> None:
     with _cache_lock:
         _cache.pop(key, None)
+        _generation[key] = _generation.get(key, 0) + 1
 
 
 def get_keep_resident() -> bool:
