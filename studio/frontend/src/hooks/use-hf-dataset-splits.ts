@@ -2,7 +2,6 @@
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
 import { useCallback, useEffect, useState } from "react";
-import { hubProxyFirst } from "@/features/hub/lib/hub-endpoint";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,14 +38,7 @@ export interface HfDatasetSplitsResult {
 
 const HF_SPLITS_API = "https://datasets-server.huggingface.co/splits";
 
-// Matched verbatim below, so the message survives normalisation unchanged.
-const MIRROR_SPLITS_UNAVAILABLE =
-  "Subset and split options come from the public Hugging Face datasets-server, which is not used when a custom Hugging Face endpoint is configured.";
-
 function normalizeDatasetSplitsError(message: string): string {
-  if (message === MIRROR_SPLITS_UNAVAILABLE) {
-    return message;
-  }
   const normalized = message.toLowerCase();
 
   // datasets-server returns technical script/runtime details for legacy datasets.
@@ -109,11 +101,6 @@ export function useHfDatasetSplits(
 
   const fetchSplits = useCallback(
     async (dataset: string, signal: AbortSignal) => {
-      // Hardcoded public service: with a mirror configured this would send the
-      // dataset id and the mirror token to the wrong host. Reported rather than
-      // returned empty, because an empty list renders nothing at all: no
-      // dropdowns and no explanation, and there is no other way to set these.
-      if (hubProxyFirst()) throw new Error(MIRROR_SPLITS_UNAVAILABLE);
       const url = `${HF_SPLITS_API}?dataset=${encodeURIComponent(dataset)}`;
       const headers: Record<string, string> = {};
       if (accessToken) {

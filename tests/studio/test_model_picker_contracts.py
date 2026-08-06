@@ -538,10 +538,7 @@ def test_chat_autoload_scopes_variant_lookup_to_cached_repo_path():
     chat_api = _read("features/chat/api/chat-api.ts")
     variants_fn = chat_api.split("export async function listGgufVariants", 1)[1]
     variants_fn = variants_fn.split("export interface KvCacheEstimate", 1)[0]
-    # #7829: the predicate changed but the contract did not. What decides this is
-    # the server's reach, not the browser's, since the request goes to our own
-    # backend, and a proxy already serving discovery proves the server has one.
-    assert "ggufVariantsQuery(repoId, options, shouldPreferLocalCache())" in variants_fn
+    assert "ggufVariantsQuery(repoId, options, isHuggingFaceOffline())" in variants_fn
 
     query_src = _read("features/chat/api/gguf-variants-request.ts")
     query_fn = query_src.split("export function ggufVariantsQuery", 1)[1]

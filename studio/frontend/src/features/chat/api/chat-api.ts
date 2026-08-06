@@ -8,7 +8,7 @@ import { prepareHfTokenForUse } from "@/features/hf-auth";
 // eslint-disable-next-line no-restricted-imports
 import { hubTokenHeader } from "@/features/hub/lib/hub-token-header";
 // eslint-disable-next-line no-restricted-imports
-import { shouldPreferLocalCache } from "@/features/hub/lib/network";
+import { isHuggingFaceOffline } from "@/features/hub/lib/network";
 // eslint-disable-next-line no-restricted-imports
 import { consumeNativePathToken } from "@/features/native-intents/api";
 import { formatFastApiDetail } from "@/lib/format-fastapi-error";
@@ -1080,7 +1080,7 @@ export async function listGgufVariants(
   hfToken?: string,
   options?: GgufVariantsRequestOptions,
 ): Promise<GgufVariantsResponse> {
-  const params = ggufVariantsQuery(repoId, options, shouldPreferLocalCache());
+  const params = ggufVariantsQuery(repoId, options, isHuggingFaceOffline());
   return runBoundedVariantsRequest(options?.signal, async (signal) => {
     const response = await authFetch(`/api/models/gguf-variants?${params}`, {
       headers: hubTokenHeader(hfToken),

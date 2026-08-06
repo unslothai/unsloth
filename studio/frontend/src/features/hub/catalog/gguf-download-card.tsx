@@ -53,7 +53,7 @@ import {
   useDownloadManagerStore,
   useRepoDownload,
 } from "../download-manager";
-import { useBackendHubOnline } from "../hooks/use-online-status";
+import { useOnlineStatus } from "../hooks/use-online-status";
 import { type GgufVariantDetail, deleteCachedModel } from "../inventory";
 import { formatBytes } from "../lib/format";
 import { type GgufFitClass, classifyGgufFit } from "../lib/gguf-fit";
@@ -572,7 +572,7 @@ export function GgufDownloadCard({
   onChange?: () => void;
 }) {
   const hfToken = useHfTokenStore((s) => s.token);
-  const online = useBackendHubOnline();
+  const online = useOnlineStatus();
   const localVariantPath = cachePath?.trim() || null;
   const { variants, loading, error, refreshError, refresh } =
     useGgufVariantFetchState({

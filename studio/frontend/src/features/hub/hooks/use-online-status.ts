@@ -6,8 +6,6 @@ import {
   getHubPhase,
   getLastHubFailure,
   isDirectHubOffline,
-  shouldPreferLocalCache,
-  isHubProxyServing,
   type HubFailure,
   type HubPhase,
   isHuggingFaceOffline,
@@ -88,29 +86,9 @@ export function useDirectHubOnline(origin?: string): boolean {
   );
 }
 
-function getBackendOnlineSnapshot(): boolean {
-  return !shouldPreferLocalCache();
-}
-
-/**
- * For actions the backend carries out: GGUF variant lookups and updates. What
- * decides those is the server's reach, not this browser's, and a proxy serving
- * discovery is proof it has one. Gating them on browser reachability hid the
- * update action exactly when the server could have applied it.
- */
-export function useBackendHubOnline(): boolean {
-  return useSyncExternalStore(
-    subscribeOnlineStatus,
-    getBackendOnlineSnapshot,
-    getServerOnlineSnapshot,
-  );
-}
-
 export interface HubAvailability {
   phase: HubPhase;
   failure: HubFailure | null;
-  /** True when availability comes from the backend, not this browser. */
-  proxyServing: boolean;
 }
 
 function getPhaseSnapshot(): HubPhase {
@@ -119,10 +97,6 @@ function getPhaseSnapshot(): HubPhase {
 
 function getServerPhaseSnapshot(): HubPhase {
   return "available";
-}
-
-function getServerProxySnapshot(): boolean {
-  return false;
 }
 
 function getFailureSnapshot(): HubFailure | null {
@@ -148,10 +122,5 @@ export function useHubAvailability(): HubAvailability {
     getFailureSnapshot,
     getServerFailureSnapshot,
   );
-  const proxyServing = useSyncExternalStore(
-    subscribeOnlineStatus,
-    isHubProxyServing,
-    getServerProxySnapshot,
-  );
-  return { phase, failure, proxyServing };
+  return { phase, failure };
 }

@@ -764,7 +764,6 @@ export function ModelsPage() {
     direction: effectiveDirection,
     channel: listChannel,
     ownerScope,
-    online,
   });
 
   const cachedListEntry = useHubFeedStore((state) =>

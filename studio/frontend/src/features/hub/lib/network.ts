@@ -27,7 +27,6 @@ export type HubFailureKind =
   | "csp-blocked"
   | "browser-offline"
   | "network-opaque"
-  | "http"
   | "unknown";
 
 export interface HubFailure {
@@ -60,15 +59,6 @@ export function isHubFetchError(error: unknown): error is HubFetchError {
 // avatar succeeding does not prove the listing works: an origin-wide window let
 // that success retire the feed's backoff and resume probing a still-dead feed.
 const remoteOfflineUntilByKey = new Map<string, number>();
-// Set when the backend serves Hub content this browser could not fetch. Kept
-// apart from the origin state: clearing that would tell the direct clients
-// (README, avatars) the origin is reachable, and their failure would re-mark it.
-let hubProxyServing = false;
-// A direct Hub request this browser could not make but the backend could. Kept
-// separate from hubProxyServing because a repo lookup proves only that, not that
-// the catalog feed is being served: reusing the feed's flag would blank the
-// panel and report the feed available off an unrelated detail-pane success.
-let directHubBlocked = false;
 // The TTL controls when we retry; this controls what we tell the user. Cleared
 // only by a success, so the cause outlives the backoff window.
 const lastFailureByKey = new Map<string, HubFailure>();
@@ -171,43 +161,13 @@ export function isRemoteNetworkOffline(
  * the listing can be dead while everything else answers, and their own success
  * is what clears this.
  */
-/**
- * Whether to ask our own backend for cache-only results. It is the server that
- * fetches there, so a proxy currently serving discovery is proof the Hub is
- * reachable from it: telling it to work offline then returns 404 for every
- * uncached repo, and the quant list a user is trying to download disappears.
- */
-export function shouldPreferLocalCache(): boolean {
-  if (hubProxyServing) {
-    return false;
-  }
-  return isHuggingFaceOffline();
-}
-
 export function isDirectHubOffline(
   origin: string = HUGGING_FACE_ORIGIN,
 ): boolean {
-  // Deliberately not hubProxyServing: that says the catalog listing was blocked
-  // and the backend served it, which under a per-path filter says nothing about
-  // /raw or an avatar. Inheriting it here would suppress every asset client for
-  // as long as the feed is proxied, defeating the per-service windows below.
-  // directHubBlocked is kept, but only for the Hub's own origin, since what it
-  // records is a repo lookup there failing.
-  if (origin === HUGGING_FACE_ORIGIN && directHubBlocked) {
-    return true;
-  }
   return isRemoteNetworkOffline(origin, "other");
 }
 
 export function isHuggingFaceOffline(): boolean {
-  // A serving proxy is itself proof this browser could not fetch the origin, and
-  // the direct fetch deliberately records nothing, so without this the README,
-  // avatar, size and download clients keep hitting the blocked origin and drop
-  // the selected row's metadata. The catalog is unaffected: getHubPhase reports
-  // "available" off the same flag.
-  if (hubProxyServing || directHubBlocked) {
-    return true;
-  }
   // navigator.onLine is advisory only (false-reports offline on WSL2 / some
   // WebKitGTK/Tauri webviews). The authoritative signal is the empirical
   // remote-offline TTL, set when a real fetch fails and cleared on next success;
@@ -225,53 +185,16 @@ export function getHubPhase(
   origin: string = HUGGING_FACE_ORIGIN,
   service: HubService = "discovery",
 ): HubPhase {
-  if (hubProxyServing && origin === HUGGING_FACE_ORIGIN) {
-    return "available";
-  }
   if (!lastFailureByKey.has(failureKey(origin, service))) {
     return "available";
   }
   return isRemoteNetworkOffline(origin, service) ? "unavailable" : "probing";
 }
 
-export function isHubProxyServing(): boolean {
-  return hubProxyServing;
-}
-
-export function isDirectHubBlocked(): boolean {
-  return directHubBlocked;
-}
-
-/**
- * Record that a direct Hub request failed here but the backend served it. Only
- * suppresses the direct clients (README, avatars, size); it says nothing about
- * the catalog feed, so the phase and the panel are left alone. Cleared by any
- * direct success, which is the proof the block has lifted.
- */
-export function setDirectHubBlocked(blocked: boolean): void {
-  if (directHubBlocked === blocked) {
-    return;
-  }
-  directHubBlocked = blocked;
-  emitNetworkStatusChange();
-}
-
-/** Record whether the backend is currently serving Hub content for us. */
-export function setHubProxyServing(serving: boolean): void {
-  if (hubProxyServing === serving) {
-    return;
-  }
-  hubProxyServing = serving;
-  emitNetworkStatusChange();
-}
-
 export function getLastHubFailure(
   origin: string = HUGGING_FACE_ORIGIN,
   service: HubService = "discovery",
 ): HubFailure | null {
-  if (hubProxyServing && origin === HUGGING_FACE_ORIGIN) {
-    return null;
-  }
   return lastFailureByKey.get(failureKey(origin, service)) ?? null;
 }
 
@@ -280,18 +203,11 @@ export function markRemoteNetworkOnline(
   service: HubService = "discovery",
 ): void {
   if (origin === undefined) {
-    if (
-      remoteOfflineUntilByKey.size === 0 &&
-      lastFailureByKey.size === 0 &&
-      !hubProxyServing &&
-      !directHubBlocked
-    ) {
+    if (remoteOfflineUntilByKey.size === 0 && lastFailureByKey.size === 0) {
       return;
     }
     remoteOfflineUntilByKey.clear();
     lastFailureByKey.clear();
-    hubProxyServing = false;
-    directHubBlocked = false;
     emitNetworkStatusChange();
     return;
   }
@@ -549,9 +465,7 @@ export async function fetchWithTimeout(
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1] = {},
   timeoutMs = 15_000,
-  // The Hub transport defers recordFailure: marking the origin offline here
-  // re-renders consumers, which aborts the very fallback about to run.
-  options: { recordFailure?: boolean; service?: HubService } = {},
+  options: { service?: HubService } = {},
 ): Promise<Response> {
   // Defaults to the feed with a panel: an unmarked caller's failure is one the
   // user should see. Auxiliary clients pass "other".
@@ -586,11 +500,7 @@ export async function fetchWithTimeout(
       throw error;
     }
     const failure = classifyFetchFailure(error, origin, { timedOut, startedAt });
-    if (
-      origin &&
-      options.recordFailure !== false &&
-      (timedOut || isNetworkFetchError(error))
-    ) {
+    if (origin && (timedOut || isNetworkFetchError(error))) {
       markRemoteNetworkOffline(origin, REMOTE_OFFLINE_TTL_MS, failure, service);
     }
     throw new HubFetchError(failure, { cause: error });

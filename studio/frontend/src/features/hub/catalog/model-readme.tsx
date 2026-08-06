@@ -26,7 +26,6 @@ import {
   createReadmeUrlTransform,
   fetchReadme,
   readmeBaseUrl,
-  readmeViaBackend,
   stripChromeHeadings,
   stripFrontmatter,
 } from "../lib/hf-readme";
@@ -389,14 +388,9 @@ export function ModelReadme({
   const hfToken = useHfTokenStore((s) => s.token);
   const online = useDirectHubOnline();
   const tokenFingerprint = useMemo(() => fingerprintToken(hfToken), [hfToken]);
-  // This cache holds the in-flight promise, so without the route a direct
-  // attempt still running when the browser turns out to be blocked is handed
-  // straight back and the backend route is never reached. Recomputed off
-  // `online`, which is what changes when that becomes true.
-  const via = online && !readmeViaBackend() ? "direct" : "backend";
   const stateKey = useMemo(
-    () => `${kind}::${repoId}::${tokenFingerprint}::${via}`,
-    [kind, repoId, tokenFingerprint, via],
+    () => `${kind}::${repoId}::${tokenFingerprint}`,
+    [kind, repoId, tokenFingerprint],
   );
   const [state, setState] = useState<ReadmeState>(() => {
     const cached = readResolvedReadmeCache(stateKey);
@@ -445,10 +439,7 @@ export function ModelReadme({
 
   useEffect(() => {
     let canceled = false;
-    // "Offline" here means this browser cannot reach the Hub, which is exactly
-    // when the backend route can: skipping it would leave a mirror or a blocked
-    // browser showing the unavailable card over a card we can fetch.
-    if (!online && !readmeViaBackend()) return;
+    if (!online) return;
     void loadReadmeFromCache({
       cacheKey: stateKey,
       repoId,

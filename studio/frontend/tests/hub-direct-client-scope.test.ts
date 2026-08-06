@@ -16,8 +16,6 @@ function read(path: string): Promise<string> {
   return readFile(new URL(path, import.meta.url), "utf8");
 }
 
-// gate file -> the module that issues its fetch, and the origin that fetch
-// targets. Both halves have to line up or the window is unreachable.
 // gate file -> the exported function that issues its fetch, and the origin that
 // fetch targets. Both halves have to line up or the window is unreachable.
 const DIRECT_CLIENTS = [
@@ -95,53 +93,5 @@ test("the datasets-server constant is the host that client actually calls", asyn
   assert.ok(
     bodyOf(sizes, "export function fetchDatasetSize").includes(`${decl[1]}/`),
     `fetchDatasetSize does not call ${decl[1]}`,
-  );
-});
-
-test("clients that only read ask whether the SERVER should go cache-only", async () => {
-  // These call our own backend, so what matters is the server's reach, not this
-  // browser's. A proxy currently serving discovery is positive proof the server
-  // can reach the Hub, so telling it to work offline there returned 404 for
-  // every uncached repo and emptied the quant list the user came to download.
-  for (const path of [
-    "../src/features/chat/api/chat-api.ts",
-    "../src/features/hub/inventory/api.ts",
-  ]) {
-    const src = await read(path);
-    assert.ok(src.includes("shouldPreferLocalCache"), path);
-    assert.ok(!/\bisDirectHubOffline\b/.test(src), path);
-    assert.ok(!/\bisHuggingFaceOffline\b/.test(src), path);
-  }
-
-  const network = await read("../src/features/hub/lib/network.ts");
-  const at = network.indexOf("export function shouldPreferLocalCache");
-  assert.notEqual(at, -1);
-  const body = network.slice(at, network.indexOf("\n}", at));
-  assert.ok(
-    body.includes("hubProxyServing"),
-    "a serving proxy has to veto the cache-only request",
-  );
-});
-
-test("actions the backend performs are gated on the backend's reach", async () => {
-  // These trigger listGgufVariants and an update through our own API. Gating
-  // them on browser reachability hid the update action in exactly the case the
-  // server could have applied it: a proxy already serving discovery.
-  for (const path of [
-    "../src/features/hub/catalog/gguf-download-card.tsx",
-    "../src/features/hub/catalog/local-on-device-card.tsx",
-  ]) {
-    const src = await read(path);
-    assert.ok(src.includes("useBackendHubOnline"), path);
-    assert.ok(!/\buseOnlineStatus\b/.test(src), path);
-    assert.ok(!/\buseDirectHubOnline\b/.test(src), path);
-  }
-
-  const hook = await read("../src/features/hub/hooks/use-online-status.ts");
-  const at = hook.indexOf("function getBackendOnlineSnapshot");
-  assert.notEqual(at, -1);
-  assert.ok(
-    hook.slice(at, hook.indexOf("\n}", at)).includes("shouldPreferLocalCache"),
-    "it must ask the same question the request itself asks",
   );
 });
