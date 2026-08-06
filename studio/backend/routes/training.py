@@ -32,8 +32,8 @@ try:
     from core.training.training import TrainingStatusIdentitySnapshot
     from core.training.resume import (
         can_resume_run,
-        has_resume_state,
         get_resume_checkpoint_path,
+        has_resume_state,
         normalize_resume_output_dir,
         training_run_config,
     )
@@ -50,6 +50,7 @@ except ImportError:
     from core.training.resume import (
         can_resume_run,
         get_resume_checkpoint_path,
+        has_resume_state,
         normalize_resume_output_dir,
         training_run_config,
     )
