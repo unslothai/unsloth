@@ -2105,6 +2105,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
     prefix_command = ""  # which wrapper that was, for its own value-taking options
     skip_operand = False  # consume a wrapper/conditional operand, not the command
     skip_two = False  # a spelled cmd comparison consumes its operator and operand
+    if_pending = False  # a cmd IF opened a condition still awaiting its body
     sed_indexes: "list[int]" = []  # command-position sed words, for the `e` scan below
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     xargs_index = -1  # an xargs awaiting the command it wraps
@@ -2116,6 +2117,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             expect_command = True
             skip_operand = False
             skip_two = False
+            if_pending = False
             prefix_pending = False
             prefix_command = ""
             win_shell_pending = False
@@ -2143,13 +2145,20 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             continue
         if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
             skip_operand = token.lower() != "not"
+            if_pending = token.lower() == "not" and if_pending
             continue
-        if expect_command and _is_win_comparison(tokens, token_index):
+        if expect_command and if_pending and _is_win_comparison(tokens, token_index):
             # `if 1==1 cmd /c powershell` runs that shell when the condition
             # holds. Reading the comparison as the command word left the body in
             # argument position and its payload unscreened.
-            skip_operand = tokens[token_index + 1].lower() in _WIN_COMPARE_OPERATORS
+            #
+            # Only inside a condition an IF really opened. A `==` may sit in a
+            # path (`C:/a==b/powershell.exe`), and skipping that word passed
+            # over the program it names.
+            next_token = tokens[token_index + 1].lower() if token_index + 1 < len(tokens) else ""
+            skip_operand = next_token in _WIN_COMPARE_OPERATORS
             skip_two = skip_operand
+            if_pending = False
             continue
         if prefix_pending and token == "-a":
             skip_operand = True
@@ -2168,6 +2177,9 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         if (_looks_like_separator(token) and token_index not in quoted_separators) or (
             token in _SHELL_KEYWORDS_AS_SEP and expect_command
         ):
+            # cmd's IF opens a condition, and only there is a `==` a comparison
+            # rather than an ordinary character in a word.
+            if_pending = token.lower() == "if"
             expect_command = True
             prefix_pending = False
             prefix_command = ""
@@ -2510,7 +2522,15 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                     child += 1
             if _is_start_word(token) and _start_is_run(i):
                 target, _title_at = _start_target(i)
-                if target < len(tokens):
+                if target < len(tokens) and not (
+                    _URL_SCHEME_RE.match(_unquote(tokens[target]))
+                    or _is_document_target(_unquote(tokens[target]))
+                ):
+                    # A URL opens in the browser and a document in whatever is
+                    # registered for it, so neither is a shell word. Publishing
+                    # them anyway let the nested-shell pass read the basename of
+                    # `https://example.com/cmd` as a shell and screen the `/c`
+                    # behind it, which the START scan below already refuses to do.
                     command_indexes.add(target)
                     forwarded, _overflowed = _exec_child_index(target)
                     if forwarded not in (-1, target):

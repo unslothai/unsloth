@@ -1813,3 +1813,55 @@ def test_a_cmd_comparison_still_leaves_a_command_behind_it(windows_terminal, com
 def test_a_comparison_in_argument_position_is_not_a_condition(windows_terminal):
     # And only where a command may begin: `echo a==b rm` prints its arguments.
     assert not tools._find_blocked_commands("echo a==b rm")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "1==1",
+        "cmd /c if 1==1",
+        'cmd //c "if 1==1 echo ok"',
+        "if",
+        "cmd /c if not",
+        "cmd /c if %a% equ",
+    ],
+)
+def test_a_comparison_at_the_end_of_the_line_does_not_raise(windows_terminal, command):
+    # The screen answers a yes or no; an exception is neither, and whatever the
+    # caller does with one it is not a refusal. A comparison with nothing behind
+    # it read past the end of the token list.
+    assert isinstance(tools._find_blocked_commands(command), set)
+
+
+def test_a_quoted_cmd_payload_with_a_comparison_is_still_screened(windows_terminal):
+    # And the payload behind it is still read.
+    assert "rm" in tools._find_blocked_commands('cmd //c "if 1==1 rm -rf x"')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "C:/a==b/powershell.exe -Command ls",
+        "./a==b/rm -rf x",
+        "cmd /c C:/a==b/powershell.exe -Command ls",
+    ],
+)
+def test_an_equals_in_a_path_is_not_a_comparison(windows_terminal, command):
+    # `==` reads as cmd's comparison only inside a condition an IF opened. A
+    # path may hold one, and skipping that word passed over the program it
+    # names while the regex backstop could not match it either.
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'start "" https://example.com/cmd /c powershell',
+        'start "" report.docx /c powershell',
+    ],
+)
+def test_a_browser_target_is_not_a_shell_word(windows_terminal, command):
+    # START hands a URL to the browser and a document to whatever is registered
+    # for it, so neither is a program. Publishing them as command positions let
+    # the nested-shell pass read `https://example.com/cmd` as a shell.
+    assert not tools._find_blocked_commands(command)
