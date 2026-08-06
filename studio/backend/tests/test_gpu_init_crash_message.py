@@ -23,12 +23,21 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
+
 # Allow importing the module in a lightweight environment without fastapi.
+class _LoggerStub:
+    def bind(self, *args, **kwargs):
+        return self
+
+    def __getattr__(self, _name):
+        return lambda *args, **kwargs: None
+
+
 _loggers_stub = _types.ModuleType("loggers")
-_loggers_stub.get_logger = lambda name: __import__("logging").getLogger(name)
+_loggers_stub.get_logger = lambda name: _LoggerStub()
 sys.modules.setdefault("loggers", _loggers_stub)
 _structlog_stub = _types.ModuleType("structlog")
-_structlog_stub.get_logger = lambda *a, **k: __import__("logging").getLogger("structlog")
+_structlog_stub.get_logger = lambda *a, **k: _LoggerStub()
 sys.modules.setdefault("structlog", _structlog_stub)
 if not hasattr(sys.modules["structlog"], "get_logger"):
     sys.modules["structlog"].get_logger = _structlog_stub.get_logger
@@ -109,6 +118,7 @@ class TestGpuInitCrashMessage:
             message = self._message(monkeypatch, backend)
             assert "GPU driver/runtime initialization crash" in message
 
+
 class TestAutoVulkanCpuFallbackGate:
     def _managed_marker(self, monkeypatch, tmp_path, **values):
         marker = {
@@ -129,6 +139,18 @@ class TestAutoVulkanCpuFallbackGate:
         intent = GgufLoadIntent(model_identifier = "owner/model")
         assert LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
             "/managed/llama-server", intent, None, {}
+        )
+
+    def test_automatic_windows_amd_marker_is_eligible(self, monkeypatch, tmp_path):
+        self._managed_marker(monkeypatch, tmp_path, llama_backend = "auto")
+        monkeypatch.setattr(
+            LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
+        )
+        assert LlamaCppBackend._auto_vulkan_cpu_fallback_eligible(
+            "/managed/llama-server",
+            GgufLoadIntent(model_identifier = "m"),
+            None,
+            {},
         )
 
     @pytest.mark.parametrize(
@@ -259,6 +281,34 @@ class TestAutoVulkanCpuFallbackGate:
 
 
 class TestCpuIsolatedReplay:
+    @pytest.mark.parametrize(
+        "platform,loader_path",
+        [("linux", "LD_LIBRARY_PATH"), ("win32", "PATH")],
+    )
+    def test_prepared_launch_retargets_the_native_library_path(
+        self, monkeypatch, platform, loader_path
+    ):
+        backend = LlamaCppBackend()
+        monkeypatch.setattr(llama_cpp.sys, "platform", platform)
+        monkeypatch.setattr(
+            backend,
+            "_cpu_isolated_replay",
+            lambda _cmd, _env, _caps: ["original", "--device", "none"],
+        )
+        monkeypatch.setattr(backend, "_cpu_isolated_binary", lambda _binary: "/staged/server")
+        monkeypatch.setattr(
+            backend,
+            "_llama_server_env_for_binary",
+            lambda _binary: {loader_path: "/staged/libs"},
+        )
+        env = {"PATH": "/original/bin", "LD_LIBRARY_PATH": "/original/lib", "KEEP": "1"}
+
+        prepared = backend._prepare_cpu_fallback_launch("/original/server", ["original"], env, {})
+
+        assert prepared == (["/staged/server", "--device", "none"], "/staged")
+        assert env[loader_path] == "/staged/libs"
+        assert env["KEEP"] == "1"
+
     def test_text_launch_removes_every_gpu_placement(self):
         env = {
             "LLAMA_ARG_N_GPU_LAYERS": "99",
@@ -342,9 +392,7 @@ class TestCpuIsolatedReplay:
         backend._cleanup_cpu_fallback_runtime()
         assert not staged_dir.exists()
 
-    def test_terminal_cpu_replay_failure_removes_staged_runtime(
-        self, monkeypatch, tmp_path
-    ):
+    def test_terminal_cpu_replay_failure_removes_staged_runtime(self, monkeypatch, tmp_path):
         binary = _managed_runtime(monkeypatch, tmp_path)
         backend = LlamaCppBackend()
         staged = backend._cpu_isolated_binary(str(binary))
@@ -398,6 +446,7 @@ class TestCpuIsolatedReplay:
         assert completed.stdout == "healthy\n"
         backend._cleanup_cpu_fallback_runtime()
         assert not staged_dir.exists()
+
 
 @pytest.mark.parametrize(
     "placement_env,extra_args",
@@ -646,7 +695,7 @@ def test_empty_probe_cpu_recovery_releases_chat_ownership(monkeypatch):
     assert owner[0] is None
 
 
-def test_duplicate_auto_request_matches_recovered_cpu_server(monkeypatch, tmp_path):
+def test_duplicate_auto_request_matches_recovered_cpu_server(tmp_path):
     class _LiveProcess:
         def poll(self):
             return None
@@ -664,9 +713,6 @@ def test_duplicate_auto_request_matches_recovered_cpu_server(monkeypatch, tmp_pa
     backend._gpu_memory_mode = "manual"
     backend._gpu_layers = 0
     backend._cpu_fallback_reason = "vulkan_startup_crash"
-    monkeypatch.setattr(
-        backend, "_cpu_fallback_request_eligible", lambda *_args, **_kwargs: True
-    )
     assert backend.adopt_load_intent_if_matched(
         GgufLoadIntent(
             model_identifier = "owner/model",
@@ -675,6 +721,29 @@ def test_duplicate_auto_request_matches_recovered_cpu_server(monkeypatch, tmp_pa
             gpu_memory_mode = "auto",
         )
     )
+
+    preserved = backend._preserve_cpu_fallback_intent(
+        GgufLoadIntent(
+            model_identifier = "owner/model",
+            gguf_path = str(gguf),
+            n_ctx = 8192,
+            gpu_memory_mode = "manual",
+            gpu_layers = 0,
+        )
+    )
+    assert preserved.n_ctx == 8192
+    assert preserved.cpu_fallback is True
+
+    explicit_gpu = backend._preserve_cpu_fallback_intent(
+        GgufLoadIntent(
+            model_identifier = "owner/model",
+            gguf_path = str(gguf),
+            n_ctx = 8192,
+            gpu_memory_mode = "manual",
+            gpu_layers = 1,
+        )
+    )
+    assert explicit_gpu.cpu_fallback is False
 
 
 @pytest.mark.parametrize("model_cls", [LoadResponse, InferenceStatusResponse])

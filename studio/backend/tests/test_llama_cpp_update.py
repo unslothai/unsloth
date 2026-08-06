@@ -84,6 +84,7 @@ def _write_install(
     asset: str | None = None,
     release_tag: str | None = None,
     force_cpu: bool | None = None,
+    llama_backend: str | None = None,
 ) -> str:
     """Create a fake prebuilt install and return the llama-server path."""
     bin_dir = dir_ / "build" / "bin"
@@ -102,6 +103,8 @@ def _write_install(
         marker["asset"] = asset
     if force_cpu is not None:
         marker["force_cpu"] = force_cpu
+    if llama_backend is not None:
+        marker["llama_backend"] = llama_backend
     (dir_ / MARKER).write_text(json.dumps(marker))
     return str(binary)
 
@@ -457,16 +460,24 @@ def test_start_update_happy_path(monkeypatch, tmp_path):
     assert popen_kwargs["env"]["UNSLOTH_PROGRESS_PERCENT_STEP"] == "5"
 
 
-def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
-    # A Vulkan install (marker asset carries 'vulkan') must re-assert
-    # UNSLOTH_FORCE_VULKAN on update, or detect_host on a GPU box re-routes to
-    # CUDA/ROCm and silently replaces the Vulkan build.
+@pytest.mark.parametrize(
+    "llama_backend,expect_forced",
+    [(None, True), ("vulkan", True), ("auto", False)],
+)
+def test_start_update_preserves_vulkan_selection(
+    monkeypatch, tmp_path, llama_backend, expect_forced
+):
+    # Legacy and explicit Vulkan installs stay forced. Automatic Windows AMD
+    # installs rerun hardware detection so the marker remains automatic.
+    monkeypatch.delenv("UNSLOTH_FORCE_VULKAN", raising = False)
+    monkeypatch.delenv("UNSLOTH_LLAMA_CPP_BACKEND", raising = False)
     install_dir = tmp_path / "llama.cpp"
     binary = _write_install(
         install_dir,
         "b9493",
         repo = "ggml-org/llama.cpp",
         asset = "llama-b9493-bin-ubuntu-vulkan-x64.tar.gz",
+        llama_backend = llama_backend,
     )
     monkeypatch.setattr(upd, "_find_binary", lambda: binary)
     monkeypatch.setattr(upd, "_installer_script", lambda: tmp_path / "install_llama_prebuilt.py")
@@ -479,6 +490,7 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
             "b9518",
             repo = "ggml-org/llama.cpp",
             asset = "llama-b9518-bin-ubuntu-vulkan-x64.tar.gz",
+            llama_backend = llama_backend,
         )
 
     captured: dict = {}
@@ -498,9 +510,14 @@ def test_start_update_preserves_vulkan_via_env(monkeypatch, tmp_path):
             break
         time.sleep(0.05)
     assert job["state"] == "success", job
-    assert popen_kwargs["env"]["UNSLOTH_FORCE_VULKAN"] == "1"
-    assert popen_kwargs["env"]["UNSLOTH_LLAMA_CPP_BACKEND"] == "vulkan"
-    assert "--llama-backend" in captured["cmd"] and "vulkan" in captured["cmd"]
+    if expect_forced:
+        assert popen_kwargs["env"]["UNSLOTH_FORCE_VULKAN"] == "1"
+        assert popen_kwargs["env"]["UNSLOTH_LLAMA_CPP_BACKEND"] == "vulkan"
+        assert "--llama-backend" in captured["cmd"] and "vulkan" in captured["cmd"]
+    else:
+        assert "UNSLOTH_FORCE_VULKAN" not in popen_kwargs["env"]
+        assert "UNSLOTH_LLAMA_CPP_BACKEND" not in popen_kwargs["env"]
+        assert "--llama-backend" not in captured["cmd"]
 
 
 @pytest.mark.parametrize(

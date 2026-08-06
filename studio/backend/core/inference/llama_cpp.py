@@ -4318,11 +4318,7 @@ class LlamaCppBackend:
             return frozenset()
         backends = set()
         for backend in ("base", "cpu", "cuda", "hip", "vulkan"):
-            stem = (
-                f"ggml-{backend}.dll"
-                if sys.platform == "win32"
-                else f"libggml-{backend}.so"
-            )
+            stem = f"ggml-{backend}.dll" if sys.platform == "win32" else f"libggml-{backend}.so"
             if any(name == stem or name.startswith(stem + ".") for name in files):
                 backends.add(backend)
         return frozenset(backends)
@@ -8415,6 +8411,8 @@ class LlamaCppBackend:
         intent: GgufLoadIntent,
         extra_args: Optional[Iterable[str]],
         env: Optional[Mapping[str, str]] = None,
+        *,
+        allow_manual_cpu: bool = False,
     ) -> bool:
         """Whether CPU recovery may replace the requested placement."""
         args = [str(arg) for arg in (extra_args or ())]
@@ -8431,8 +8429,11 @@ class LlamaCppBackend:
             "--no-mmproj-offload",
         }
         child_env = os.environ if env is None else env
+        placement_eligible = intent.gpu_memory_mode == "auto" or (
+            allow_manual_cpu and intent.gpu_memory_mode == "manual" and intent.gpu_layers == 0
+        )
         return bool(
-            intent.gpu_memory_mode == "auto"
+            placement_eligible
             and not intent.gpu_ids
             and not intent.tensor_parallel
             and not intent.tensor_split
@@ -8478,12 +8479,27 @@ class LlamaCppBackend:
             cpu_fallback = True,
         )
 
-    def _apply_cpu_fallback_state(
+    def _preserve_cpu_fallback_intent(
         self,
         intent: GgufLoadIntent,
         *,
-        is_vision: bool,
-        mmproj_has_audio: bool,
+        source_matches: bool = False,
+    ) -> GgufLoadIntent:
+        if not self._cpu_fallback_reason:
+            return intent
+        if not source_matches and not self.matches_load_source(intent):
+            return intent
+        extras = list(intent.extra_args) if intent.extra_args is not None else None
+        if not self._cpu_fallback_request_eligible(
+            intent,
+            extras,
+            allow_manual_cpu = True,
+        ):
+            return intent
+        return self._as_cpu_fallback_intent(intent)
+
+    def _apply_cpu_fallback_state(
+        self, intent: GgufLoadIntent, *, is_vision: bool, mmproj_has_audio: bool
     ) -> GgufLoadIntent:
         intent = self._as_cpu_fallback_intent(intent)
         self._gpu_memory_mode = intent.gpu_memory_mode
@@ -8541,6 +8557,9 @@ class LlamaCppBackend:
         cpu_binary = self._cpu_isolated_binary(binary)
         if cpu_binary is None:
             return None
+        loader_env = self._llama_server_env_for_binary(cpu_binary)
+        loader_path = "PATH" if sys.platform == "win32" else "LD_LIBRARY_PATH"
+        env[loader_path] = loader_env[loader_path]
         replay[0] = cpu_binary
         return replay, str(Path(cpu_binary).parent)
 
@@ -8761,6 +8780,14 @@ class LlamaCppBackend:
             # so any in-flight load has drained) instead of using a half-swapped one.
             if getattr(self, "_llama_update_in_progress", False):
                 raise RuntimeError("llama.cpp is updating; try again in a moment.")
+
+            intent = self._preserve_cpu_fallback_intent(intent)
+            tensor_parallel = intent.tensor_parallel
+            gpu_memory_mode = intent.gpu_memory_mode
+            gpu_layers = intent.gpu_layers
+            n_cpu_moe = intent.n_cpu_moe
+            tensor_split = list(intent.tensor_split) if intent.tensor_split is not None else None
+            gpu_ids = list(intent.gpu_ids) if intent.gpu_ids is not None else None
 
             # A virtualised Apple GPU corrupts every offloaded layer, so pin GGUF
             # inference to CPU there; physical Apple Silicon is untouched. Settled
@@ -11318,8 +11345,7 @@ class LlamaCppBackend:
                     raise RuntimeError(detail)
 
                 def _try_auto_vulkan_cpu_fallback(
-                    failed_cmd: list[str],
-                    failed_rc: Optional[int],
+                    failed_cmd: list[str], failed_rc: Optional[int]
                 ) -> bool:
                     """Replay an eligible signal crash without devices."""
                     nonlocal intent, gpu_memory_mode, gpu_layers, n_cpu_moe
@@ -12236,12 +12262,7 @@ class LlamaCppBackend:
         """Match live state and adopt the caller's compatible GPU placement."""
         if not self.matches_load_source(intent):
             return False
-        # Match repeated Auto requests against the recovered resident CPU state.
-        if self._cpu_fallback_reason and self._cpu_fallback_request_eligible(
-            intent,
-            list(intent.extra_args) if intent.extra_args is not None else None,
-        ):
-            intent = self._as_cpu_fallback_intent(intent)
+        intent = self._preserve_cpu_fallback_intent(intent, source_matches = True)
         # The stored state is what LAUNCHED, and on a virtualised Metal device that is
         # the CPU-pinned rewrite, not the request. Apply the same rewrite here
         # (idempotent, so load_model's own call is a no-op) or a client that keeps

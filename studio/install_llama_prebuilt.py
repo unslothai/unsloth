@@ -5764,8 +5764,8 @@ def write_prebuilt_metadata(
         # so a forced CPU install is not re-routed to a GPU bundle (#7213). An automatic
         # --cpu-fallback (e.g. arm64 GPU-build recovery) stays False so it can heal to GPU.
         "force_cpu": force_cpu,
-        # Deliberate or auto-selected Vulkan backend (#7357); the updater re-asserts it so
-        # AMD hosts are not swapped back to HIP. Dropped if the winning attempt was not Vulkan.
+        # Explicit Vulkan is recorded as "vulkan"; automatic Windows AMD routing is
+        # recorded as "auto" so runtime recovery can distinguish them.
         "llama_backend": persisted_llama_backend(llama_backend, choice),
         "asset_sha256": choice.expected_sha256,
         "source": choice.source_label,
@@ -6737,7 +6737,7 @@ def _route_to_vulkan_prebuilt(
             f"({active}); installing the Vulkan llama.cpp prebuilt instead"
         )
         host = _vulkan_only_host(host)
-        persist_backend = "vulkan"
+        persist_backend = "auto"
     elif forced:
         log(
             "Vulkan llama.cpp backend requested; installing the Vulkan "

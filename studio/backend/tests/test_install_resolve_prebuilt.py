@@ -1218,7 +1218,7 @@ def test_route_to_vulkan_prebuilt_auto_fallback_for_legacy_amd_gfx():
     host = _windows_amd_host(rocm_gfx_target = "gfx803", rocm_gfx_targets = ["gfx803"])
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == FORK
-    assert persist == "vulkan"
+    assert persist == "auto"
     assert routed.has_intel_gpu is True
     assert routed.has_rocm is False
 
@@ -1257,7 +1257,7 @@ def test_route_to_vulkan_prebuilt_auto_fallback_when_no_amd_gpu_reaches_floor():
     )
     routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == FORK
-    assert persist == "vulkan"
+    assert persist == "auto"
     assert routed.has_rocm is False
 
 
@@ -1456,7 +1456,7 @@ def test_direct_upstream_windows_amd_legacy_gfx_routes_to_vulkan():
         ],
     )
     plan = ilp.direct_upstream_release_plan(rel, routed, repo, "latest")
-    assert persist == "vulkan"
+    assert persist == "auto"
     assert plan.attempts[0].install_kind == "windows-vulkan"
 
 
@@ -1676,7 +1676,7 @@ def test_forwarded_gfx_on_unprobed_host_still_auto_vulkans(monkeypatch):
     assert ilp._should_auto_vulkan_for_amd_windows(host, FORK) is True
     _routed, repo, _tag, persist = ilp._route_to_vulkan_prebuilt(host, FORK, "pin", force_cpu = False)
     assert repo == FORK
-    assert persist == "vulkan"
+    assert persist == "auto"
 
 
 def test_forwarded_gfx_still_fills_an_unprobed_arch(monkeypatch):
@@ -1816,6 +1816,10 @@ def test_persisted_llama_backend_drops_vulkan_for_a_non_vulkan_bundle(kind):
 
 def test_persisted_llama_backend_passes_none_through():
     assert ilp.persisted_llama_backend(None, _choice("windows-vulkan")) is None
+
+
+def test_persisted_llama_backend_keeps_automatic_vulkan_distinct():
+    assert ilp.persisted_llama_backend("auto", _choice("windows-vulkan")) == "auto"
 
 
 def test_marker_records_no_backend_when_vulkan_fell_back_to_cpu(tmp_path):

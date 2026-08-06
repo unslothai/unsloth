@@ -474,8 +474,10 @@ def _run_llama_phase(
         logger.info("llama update: installing", cmd = " ".join(cmd))
         env = dict(os.environ, UNSLOTH_PROGRESS_PERCENT_STEP = "5")
         # Preserve a Vulkan install across updates: detect_host on a CUDA/ROCm box would
-        # otherwise re-route and silently replace it. Re-assert via setup's env/CLI flags.
-        if llama_backend == "vulkan" or (asset and "vulkan" in asset.lower()):
+        # otherwise replace it. An "auto" marker reruns hardware detection instead.
+        if llama_backend == "vulkan" or (
+            llama_backend != "auto" and asset and "vulkan" in asset.lower()
+        ):
             env["UNSLOTH_FORCE_VULKAN"] = "1"
             env["UNSLOTH_LLAMA_CPP_BACKEND"] = "vulkan"
         _flow.stream_installer(
@@ -611,7 +613,9 @@ def _plan_llama_phase() -> dict:
         asset = marker.get("asset")
         force_cpu = bool(marker.get("force_cpu"))
         llama_backend = marker.get("llama_backend")
-        if llama_backend == "vulkan" or (asset and "vulkan" in str(asset).lower()):
+        if llama_backend == "vulkan" or (
+            llama_backend != "auto" and asset and "vulkan" in str(asset).lower()
+        ):
             llama_backend = "vulkan"
         # Install exactly the release the banner offered: the installer's own
         # "latest" is commit-date ordered and can lag the published_at pick
