@@ -73,7 +73,7 @@ test("rows on screen do not hide that the feed failed", async () => {
   // A cached feed substituted after a failed refresh renders rows with
   // hasMore false, which skipped the footer and the panel alike: once the toast
   // went there was nothing on screen saying so and nothing left to click.
-  assert.match(lists, /\{\(hasMore \|\| searchError\) && \(/);
+  assert.match(lists, /\{\(hasMore \|\| searchError \|\| !online\) && \(/);
   const footer = body(lists, "<DiscoverFetchMoreFooter", "/>");
   assert.ok(footer.includes("failed={Boolean(searchError)"));
   assert.ok(footer.includes("onRetry={onRetry}"));
@@ -126,5 +126,33 @@ test("a footer retained over an outage can still act", async () => {
   assert.ok(
     footer.includes("failed={Boolean(searchError) || !online}"),
     "unreachable is as good a reason to offer a re-probe as a failed page",
+  );
+  // And the same condition has to reach the render, or the prop is decorative:
+  // with pagination exhausted, hasMore is false and no searchError is recorded,
+  // so on `(hasMore || searchError)` the footer never appeared at all.
+  assert.ok(
+    lists.includes("{(hasMore || searchError || !online) && ("),
+    "an exhausted listing still has to show the outage",
+  );
+});
+
+test("the retained footer names the cause, not just the staleness", async () => {
+  const lists = await read("../src/features/hub/catalog/models-catalog-lists.tsx");
+  const footer = body(lists, "<DiscoverFetchMoreFooter", "/>");
+  // This footer outlives the toast, so it is where the diagnosis has to live.
+  // Reducing it to "out of date" threw away the thing this change exists for.
+  assert.ok(
+    footer.includes("failureText={searchFailure?.message ?? searchError ?? \"\"}"),
+    "the classified cause has to reach the one control that persists",
+  );
+  const states = await read("../src/features/hub/catalog/catalog-states.tsx");
+  const fn = body(
+    states,
+    "export function DiscoverFetchMoreFooter",
+    "\nexport function InventoryErrorState",
+  );
+  assert.ok(
+    fn.includes('{failureText || "These results may be out of date."}'),
+    "shown when there is one, with the generic line only as a fallback",
   );
 });

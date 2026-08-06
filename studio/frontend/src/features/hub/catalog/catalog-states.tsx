@@ -180,6 +180,7 @@ export function DiscoverFetchMoreFooter({
   isLoadingMore,
   onFetchMore,
   failed = false,
+  failureText,
   onRetry,
 }: {
   hasActiveFilters: boolean;
@@ -187,6 +188,9 @@ export function DiscoverFetchMoreFooter({
   onFetchMore: () => void;
   /** The last attempt failed, so this is the only recovery left on screen. */
   failed?: boolean;
+  /** The classified, already sanitized cause. Shown here because this footer
+   *  outlives the toast that would otherwise be the only place it appeared. */
+  failureText?: string;
   onRetry?: () => void;
 }) {
   return (
@@ -198,10 +202,12 @@ export function DiscoverFetchMoreFooter({
         </p>
       )}
       {/* Rows stay on screen when the feed fails, so without this the outage is
-          invisible and there is nothing left to click once the toast goes. */}
+          invisible and there is nothing left to click once the toast goes. The
+          cause goes here too: naming it is the whole point, and the toast is
+          transient, so reducing this to "out of date" threw it away again. */}
       {failed && (
-        <p className="text-ui-11p5 leading-4 text-muted-foreground">
-          These results may be out of date.
+        <p className="max-w-md text-ui-11p5 leading-4 text-muted-foreground">
+          {failureText || "These results may be out of date."}
         </p>
       )}
       <button

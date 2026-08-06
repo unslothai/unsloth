@@ -191,7 +191,10 @@ export function DiscoverList({
                 )
               }
             />
-            {(hasMore || searchError) && (
+            {/* !online too: with one window per origin, a failed avatar or card
+                takes the feed's gate down without the listing ever failing, so
+                on hasMore alone the outage had no notice and no control. */}
+            {(hasMore || searchError || !online) && (
               <DiscoverFetchMoreFooter
                 hasActiveFilters={hasActiveFilters}
                 isLoadingMore={isLoadingMore}
@@ -201,6 +204,7 @@ export function DiscoverList({
                 // origin), and useHubInfiniteScroll is gated on it, so the
                 // button was visible and inert for the whole window.
                 failed={Boolean(searchError) || !online}
+                failureText={searchFailure?.message ?? searchError ?? ""}
                 onRetry={onRetry}
               />
             )}
