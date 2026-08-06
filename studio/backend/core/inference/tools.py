@@ -193,6 +193,9 @@ _WRAPPER_VALUE_FLAGS_BY_CMD = {
     "stdbuf": frozenset({"-i", "--input", "-o", "--output", "-e", "--error"}),
     "timeout": frozenset({"-s", "--signal", "-k", "--kill-after"}),
     "nice": frozenset({"-n", "--adjustment"}),
+    # GNU time -f/--format takes a FORMAT and -o/--output a file, and reading
+    # either as the wrapped command hid the shell behind it.
+    "time": frozenset({"-f", "--format", "-o", "--output"}),
     "ionice": frozenset({"-c", "--class", "-n", "--classdata", "-p", "--pid"}),
     "xargs": frozenset(
         {"-I", "-L", "-P", "-d", "--delimiter", "-a", "--arg-file", "-n", "-s", "-E"}
@@ -1570,7 +1573,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                     break
         return found
 
-    def _scan_cmd_payload(payload: str) -> "set[str]":
+    def _scan_cmd_payload(payload: str, program_position: bool = True) -> "set[str]":
         """A cmd payload, read as a command line AND as one quoted program path.
 
         cmd keeps the quotes when the string after /c names an executable file
@@ -1591,6 +1594,16 @@ def _find_blocked_commands(command: str) -> set[str]:
         words = payload.split()
         if not any(char in words[0] for char in ":/\\"):
             return found  # starts on a command word (`echo C:/tools/curl.exe`)
+        if not program_position:
+            # Two path-like words are ambiguous at the string level:
+            # `C:/Program Files/PowerShell/7/pwsh.exe` is one spaced path, and
+            # `C:/Windows/System32/findstr logs/powershell.exe` is a command
+            # with an operand, and nothing in the text separates them. cmd's
+            # launcher spelling puts the arguments OUTSIDE the quotes, so the
+            # caller passes program_position only where a program is what it
+            # is reading. `cmd /c "PATH"` alone is left to the re-lex rather
+            # than refusing an ordinary file inspection.
+            return found
         # One path split on ITS OWN spaces continues the same chain, so a later
         # word starting a fresh absolute path means these are separate operands:
         # `C:/Windows/System32/findstr curl C:/logs/curl.exe` greps a file whose
@@ -1927,9 +1940,17 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # `for /f %i in ('CMD') do ...` RUNS the quoted set as a child
                 # command, so the first word inside that group is a command
                 # position rather than iterable data.
+                head_window = range(k, min(k + 4, len(tokens)))
+                # `for /f %i in (set)`: the set is a COMMAND only with the
+                # command delimiter -- single quotes, or backticks under
+                # usebackq. Unquoted it names a FILE whose contents are parsed,
+                # so `for /f %i in (powershell) do ...` launches nothing.
+                usebackq = any(
+                    "usebackq" in _cmd_unquote(tokens[j]).lower() for j in head_window
+                )
+                delimiters = "`" if usebackq else "'"
                 substitutes = any(
-                    _win_switch(_cmd_unquote(tokens[j]).lower()) == "/f"
-                    for j in range(k, min(k + 3, len(tokens)))
+                    _win_switch(_cmd_unquote(tokens[j]).lower()) == "/f" for j in head_window
                 )
                 opened = False
                 while k < len(tokens) and tokens[k] not in _SHELL_SEPARATORS:
@@ -1938,7 +1959,13 @@ def _find_blocked_commands(command: str) -> set[str]:
                     # value. Only the one AFTER the group closes is the body.
                     was_outside = depth <= 0
                     depth += word.count("(") - word.count(")")
-                    if substitutes and was_outside and depth > 0:
+                    opener_body = word[word.find("(") + 1 :] if "(" in word else ""
+                    quoted_set = opener_body.startswith(tuple(delimiters)) or (
+                        not opener_body
+                        and k + 1 < len(tokens)
+                        and tokens[k + 1].startswith(tuple(delimiters))
+                    )
+                    if substitutes and quoted_set and was_outside and depth > 0:
                         # The group just opened. Its command word is either glued
                         # to the opener (`('cmd`) or the token after it.
                         stripped = word.lstrip("(").lstrip("'\"`")
@@ -2059,7 +2086,9 @@ def _find_blocked_commands(command: str) -> set[str]:
                         blocked.add(payload_base)
                     else:
                         blocked |= _blocked_matching_glob(payload_base)
-                blocked |= _scan_cmd_payload(_cmd_unquote(tokens[i + 1]))
+                blocked |= _scan_cmd_payload(
+                    _cmd_unquote(tokens[i + 1]), program_position = i + 2 < len(tokens)
+                )
                 if not _cmd_unquote(tokens[i + 1]):
                     # `cmd /c ""prog" args"` is the documented way to quote a
                     # program path holding spaces: cmd strips the OUTER pair and

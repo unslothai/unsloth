@@ -1235,3 +1235,69 @@ def test_nested_cmd_prefixes_stay_linear(monkeypatch):
         elapsed.append(time.perf_counter() - began)
     assert elapsed[1] < 8 * elapsed[0] + 0.5, elapsed  # linear, not quadratic
     assert elapsed[1] < 2.0, elapsed
+
+
+def test_only_a_quoted_for_f_set_is_a_command(monkeypatch):
+    # `for /f %i in (set)` runs the set only with the command delimiter. An
+    # unquoted set names a FILE whose contents are parsed, so nothing launches.
+    _fake_windows_screening(monkeypatch, bash = None)
+    assert tools._find_blocked_commands("for /f %i in ('powershell -Command ls') do echo %i")
+    assert tools._find_blocked_commands(
+        'for /f "usebackq" %i in (`powershell -Command ls`) do echo %i'
+    )
+    assert not tools._find_blocked_commands("for /f %i in (file.txt) do echo %i")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # GNU time -f takes a FORMAT, so reading it as the wrapped command hid
+        # the shell behind it.
+        "env time -f '%E' bash -c 'rm -rf victim'",
+        "time -f '%E' bash -c 'rm -rf x'",
+        "time --format '%E' bash -c 'rm -rf x'",
+        "time -o out.txt bash -c 'rm -rf x'",
+    ],
+)
+def test_a_time_format_operand_is_not_the_wrapped_command(monkeypatch, command):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert "rm" in tools._find_blocked_commands(command)
+
+
+def test_a_time_wrapper_over_a_safe_command_is_clean(monkeypatch):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert not tools._find_blocked_commands("time -f '%E' ls -la")
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Two path-like words are ambiguous: one spaced program path, or a
+        # command with an operand. cmd's launcher spelling puts the arguments
+        # OUTSIDE the quotes, so a bare quoted payload is read as a command
+        # line rather than refusing an ordinary file inspection.
+        'cmd /c "C:/Windows/System32/findstr logs/powershell.exe"',
+        'cmd /c "C:/Windows/System32/findstr curl C:/logs/curl.exe"',
+        'cmd /c "C:/tools/findstr rm build/rm.exe"',
+    ],
+)
+def test_a_bare_quoted_cmd_payload_is_read_as_a_command_line(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # ...while every spelling that really launches a spaced path still does.
+        'cmd //c "C:/Program Files/PowerShell/7/pwsh.exe" -Command ls',
+        'cmd /c "C:/Program Files/PowerShell/7/pwsh.exe" -c ls',
+        'cmd //c start "" "C:/Program Files/PowerShell/7/pwsh.exe"',
+        'cmd //c start "My Window" "C:/Program Files/PowerShell/7/pwsh.exe"',
+    ],
+)
+def test_a_spaced_program_path_still_resolves(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert "pwsh" in tools._find_blocked_commands(command)
