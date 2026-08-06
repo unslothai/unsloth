@@ -224,12 +224,8 @@ _NO_MMAP_FLAGS: frozenset[str] = frozenset({"--no-mmap", "-no-mmap"})
 # trailing the managed flag resets the WHOLE mode and drops the mlock, in both
 # polarities ("--mmap" and "--no-direct-io" do it too). Harmless on their own, so
 # stripped only when a managed flag is emitted, never by no-reserve.
-_DIO_FLAGS: frozenset[str] = frozenset(
-    {"--direct-io", "-dio", "--no-direct-io", "-ndio"}
-)
-_LOAD_MODE_ALIAS_FLAGS: frozenset[str] = (
-    _NO_MMAP_FLAGS | frozenset({"--mmap"}) | _DIO_FLAGS
-)
+_DIO_FLAGS: frozenset[str] = frozenset({"--direct-io", "-dio", "--no-direct-io", "-ndio"})
+_LOAD_MODE_ALIAS_FLAGS: frozenset[str] = _NO_MMAP_FLAGS | frozenset({"--mmap"}) | _DIO_FLAGS
 _MEMORY_PLACEMENT_FLAGS: frozenset[str] = _MLOCK_FLAGS | _NO_MMAP_FLAGS
 # llama.cpp reads these before argv, so an inherited value survives stripping the
 # equivalent tokens. Scrubbed whenever a toggle is on, like the spec/placement
@@ -753,9 +749,7 @@ def resolve_effective_memory_state(
     return mlock, reserves_ram
 
 
-def memory_state_satisfies_settings(
-    state: tuple[bool, bool], managed: bool = False
-) -> bool:
+def memory_state_satisfies_settings(state: tuple[bool, bool], managed: bool = False) -> bool:
     """True when a launched ``(mlock, reserves_ram)`` matches the settings.
 
     Shared by the duplicate-load comparator (so toggling a setting forces a real

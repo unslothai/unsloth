@@ -283,7 +283,7 @@ class TestEffectiveMemoryState:
             (["--no-mmap"], {}, (False, True)),
             (["--load-mode", "mmap+mlock"], {}, (True, False)),
             (["--load-mode=mmap+mlock"], {}, (True, False)),
-            (["-lm", "mlock"], {}, (True, True)),   # mlock without mmap
+            (["-lm", "mlock"], {}, (True, True)),  # mlock without mmap
             (["--load-mode", "dio"], {}, (False, False)),  # DirectIO streams
             (["--load-mode", "none"], {}, (False, True)),
             ([], {"LLAMA_ARG_MLOCK": "1"}, (True, False)),
@@ -359,11 +359,21 @@ class TestManagedFlagIsNotReset:
     @pytest.mark.parametrize("load_mode", [True, False])
     @pytest.mark.parametrize(
         "preset",
-        [["--no-mmap"], ["--mmap"], ["-no-mmap"], ["-lm", "none"],
-         ["--load-mode", "mmap"], ["--load-mode=none"], ["--mlock"],
-         # Deprecated load-mode selectors: measured to reset the mode in BOTH
-         # polarities, so all four spellings must go.
-         ["--direct-io"], ["-dio"], ["--no-direct-io"], ["-ndio"]],
+        [
+            ["--no-mmap"],
+            ["--mmap"],
+            ["-no-mmap"],
+            ["-lm", "none"],
+            ["--load-mode", "mmap"],
+            ["--load-mode=none"],
+            ["--mlock"],
+            # Deprecated load-mode selectors: measured to reset the mode in BOTH
+            # polarities, so all four spellings must go.
+            ["--direct-io"],
+            ["-dio"],
+            ["--no-direct-io"],
+            ["-ndio"],
+        ],
     )
     def test_nothing_after_the_managed_flag_can_reset_it(self, policy, load_mode, preset):
         managed, extras = policy(
@@ -390,10 +400,10 @@ class TestDuplicateLoadComparator:
         ("launched", "managed", "keep", "no_res", "satisfied"),
         [
             ((False, False), False, True, False, False),  # turn residency on
-            ((True, False), True, False, True, False),    # no-reserve on, mlocked
-            ((False, True), False, False, True, False),   # no-reserve on, no-mmap
-            ((True, False), True, True, False, True),     # already pinned
-            ((False, False), False, False, True, True),   # already clean
+            ((True, False), True, False, True, False),  # no-reserve on, mlocked
+            ((False, True), False, False, True, False),  # no-reserve on, no-mmap
+            ((True, False), True, True, False, True),  # already pinned
+            ((False, False), False, False, True, True),  # already clean
             # Both off: OUR flag must come off, a user's own must not be fought.
             ((True, False), True, False, False, False),
             ((True, False), False, False, False, True),
