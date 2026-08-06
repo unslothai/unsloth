@@ -129,7 +129,15 @@ async function fetchReadmeOnce(
     }
   }
   if (transient) {
-    throw new Error(`Failed to fetch README for ${repoId}`);
+    // A filter can block just /raw, so the listing working proves nothing about
+    // this path and neither proxy flag will be set. Take the same backend route
+    // the listing and model-info paths fall back to, rather than leaving the
+    // card permanently unavailable.
+    try {
+      return await fetchReadmeViaBackend(repoId, kind, token);
+    } catch {
+      throw new Error(`Failed to fetch README for ${repoId}`);
+    }
   }
   return null;
 }

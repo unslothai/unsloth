@@ -174,9 +174,13 @@ export function isRemoteNetworkOffline(
 export function isDirectHubOffline(
   origin: string = HUGGING_FACE_ORIGIN,
 ): boolean {
-  // The flags are about this browser reaching the Hub at all, which is the same
-  // block class that would stop datasets-server, so they apply to any origin.
-  if (hubProxyServing || directHubBlocked) {
+  // Deliberately not hubProxyServing: that says the catalog listing was blocked
+  // and the backend served it, which under a per-path filter says nothing about
+  // /raw or an avatar. Inheriting it here would suppress every asset client for
+  // as long as the feed is proxied, defeating the per-service windows below.
+  // directHubBlocked is kept, but only for the Hub's own origin, since what it
+  // records is a repo lookup there failing.
+  if (origin === HUGGING_FACE_ORIGIN && directHubBlocked) {
     return true;
   }
   return isRemoteNetworkOffline(origin, "other");
@@ -303,14 +307,19 @@ export function markRemoteNetworkOffline(
   const nextUntil = Date.now() + ttl;
   const key = failureKey(origin, service);
   const previousUntil = remoteOfflineUntilByKey.get(key) ?? 0;
-  // Always record the newest cause even when the existing backoff window is
-  // longer, otherwise the panel keeps describing a stale first failure.
+  // The cause has to describe the window that is in force. Recording a newer
+  // cause while keeping a longer window left the panel naming an older
+  // response while a different, still-live failure was what held it
+  // unavailable. A first cause is always taken, so nothing goes unexplained.
+  const takesWindow = nextUntil > previousUntil;
+  const records =
+    failure !== undefined && (takesWindow || !lastFailureByKey.has(key));
   const failureChanged =
-    failure !== undefined && lastFailureByKey.get(key)?.kind !== failure.kind;
-  if (failure !== undefined) {
+    records && lastFailureByKey.get(key)?.kind !== failure?.kind;
+  if (records && failure !== undefined) {
     lastFailureByKey.set(key, failure);
   }
-  if (nextUntil <= previousUntil) {
+  if (!takesWindow) {
     if (failureChanged) {
       emitNetworkStatusChange();
     }

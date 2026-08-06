@@ -85,3 +85,18 @@ test("a subpath mirror keeps its prefix in the asset base", async () => {
   assert.ok(!body.includes(".origin"), "the path is part of the endpoint");
   assert.ok(body.includes(".href"));
 });
+
+test("a direct card failure falls back to the backend on its own", async () => {
+  const src = await read("../src/features/hub/lib/hf-readme.ts");
+  const at = src.indexOf("async function fetchReadmeOnce");
+  assert.notEqual(at, -1);
+  const body = src.slice(at, src.indexOf("\nexport function fetchReadme(", at));
+  // Neither proxy flag is set by a /raw block, so without this the card is
+  // permanently unavailable whenever only that path is filtered.
+  const transientAt = body.indexOf("if (transient)");
+  assert.notEqual(transientAt, -1);
+  assert.ok(
+    body.slice(transientAt).includes("fetchReadmeViaBackend("),
+    "the transient path must try the same route the listing falls back to",
+  );
+});

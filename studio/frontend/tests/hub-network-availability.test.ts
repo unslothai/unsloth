@@ -12,6 +12,10 @@ import {
   getBrowserOfflineRetryDelayMs,
   getLastHubFailure,
   isDirectHubOffline,
+  isHuggingFaceOffline,
+  setDirectHubBlocked,
+  setHubProxyServing,
+  DATASETS_SERVER_ORIGIN,
   isHubFetchError,
   isRemoteNetworkOffline,
   markRemoteNetworkOffline,
@@ -458,5 +462,73 @@ test("the retry timer wakes on the soonest window, not the longest", async () =>
   // Waking only at 60s would leave the Discover panel rendering "unavailable"
   // for 55s after its own phase had already moved to "probing".
   assert.ok(delay <= 5_000, `expected the 5s window, got ${delay}`);
+  markRemoteNetworkOnline();
+});
+
+test("a proxied catalog does not suppress the asset clients", async () => {
+  markRemoteNetworkOnline();
+  // The listing was blocked and the backend serves it. Under a per-path filter
+  // /raw and the avatar endpoint can still answer, so inheriting the feed's
+  // state here would strand metadata for as long as the catalog is proxied.
+  setHubProxyServing(true);
+  assert.equal(isHuggingFaceOffline(), true, "the feed's own view is unchanged");
+  assert.equal(
+    isDirectHubOffline(),
+    false,
+    "a blocked listing is not evidence about an asset path",
+  );
+  markRemoteNetworkOnline();
+});
+
+test("a Hub-only block does not reach the datasets-server gate", async () => {
+  markRemoteNetworkOnline();
+  const failure = {
+    kind: "network-opaque" as const,
+    message: "boom",
+    origin: HF,
+    retryable: true,
+  };
+  markRemoteNetworkOffline(HF, 30_000, failure, "other");
+  assert.equal(isDirectHubOffline(), true);
+  assert.equal(
+    isDirectHubOffline(DATASETS_SERVER_ORIGIN),
+    false,
+    "a different host's outage is not this one's",
+  );
+  markRemoteNetworkOnline();
+
+  // Same for the flag: it records a repo lookup on the Hub failing, which is
+  // not evidence about datasets-server.
+  setDirectHubBlocked(true);
+  assert.equal(isDirectHubOffline(), true);
+  assert.equal(isDirectHubOffline(DATASETS_SERVER_ORIGIN), false);
+  markRemoteNetworkOnline();
+});
+
+test("the cause on screen describes the window that is in force", async () => {
+  markRemoteNetworkOnline();
+  const live = {
+    kind: "network-opaque" as const,
+    message: "boom",
+    origin: HF,
+    retryable: true,
+  };
+  markRemoteNetworkOffline(HF, 30_000, live, "discovery");
+
+  // A concurrent request that already answered records its status with no
+  // window. Taking its cause while keeping the longer window left the panel
+  // naming an answered request while a live failure held it unavailable.
+  markRemoteNetworkOffline(
+    HF,
+    0,
+    { kind: "http", message: "404", origin: HF, status: 404, retryable: true },
+    "discovery",
+  );
+  assert.equal(getHubPhase(HF, "discovery"), "unavailable");
+  assert.equal(
+    getLastHubFailure(HF, "discovery")?.kind,
+    "network-opaque",
+    "the older answer must not explain a newer failure's backoff",
+  );
   markRemoteNetworkOnline();
 });
