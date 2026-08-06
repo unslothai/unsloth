@@ -133,6 +133,8 @@ function withoutUnsupportedDiffusionSettings(
     config.gpuLayers == null &&
     config.nCpuMoe == null &&
     !config.tensorParallel &&
+    config.nBatch == null &&
+    config.nUbatch == null &&
     !hasUnsupportedGpuPick
   ) {
     return config;
@@ -143,6 +145,9 @@ function withoutUnsupportedDiffusionSettings(
     gpuLayers: undefined,
     nCpuMoe: undefined,
     tensorParallel: false,
+    // the diffusion runner ignores the llama-server batch flags
+    nBatch: null,
+    nUbatch: null,
     ...(hasUnsupportedGpuPick
       ? {
           selectedGpuIds: undefined,
@@ -670,6 +675,7 @@ function GgufAdvancedSettings({
         />
       </div>
 
+      {!isDiffusion && (
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Batch Size</span>
@@ -703,7 +709,9 @@ function GgufAdvancedSettings({
           className={NUMBER_INPUT_CLASS}
         />
       </div>
+      )}
 
+      {!isDiffusion && (
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={LABEL_CLASS}>Micro-batch Size</span>
@@ -738,6 +746,7 @@ function GgufAdvancedSettings({
           className={NUMBER_INPUT_CLASS}
         />
       </div>
+      )}
 
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">

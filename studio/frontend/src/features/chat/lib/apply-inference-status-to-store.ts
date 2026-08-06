@@ -416,15 +416,15 @@ export function applyActiveModelStatusToStore(
       rememberedNParallel === status.requested_parallel_slots && {
         nParallel: rememberedNParallel,
       }),
-    // batch-size pair: same baseline / control / remembered rules as the slots
+    // batch-size pair: slot rules, plus the baseline advances whenever the echo differs (same-model reload elsewhere) while the control keeps pending edits
     ...(seedLoadParams &&
       status.requested_n_batch != null &&
-      (prevState.loadedNBatch === null || hydratingExistingModel) && {
+      prevState.loadedNBatch !== status.requested_n_batch && {
         loadedNBatch: status.requested_n_batch,
       }),
     ...(seedLoadParams &&
       status.requested_n_ubatch != null &&
-      (prevState.loadedNUbatch === null || hydratingExistingModel) && {
+      prevState.loadedNUbatch !== status.requested_n_ubatch && {
         loadedNUbatch: status.requested_n_ubatch,
       }),
     ...(seedLoadParams &&

@@ -129,6 +129,31 @@ def test_override_store_round_trip():
     assert "n_batch" not in model_override_load_kwargs(entry, is_gguf = False)
 
 
+def test_fast_path_intent_strips_inherited_batch_flags_when_field_set():
+    # the already-loaded dedupe must see the same override the slow path launches
+    from routes.inference import _active_gguf_intent
+
+    backend = _loaded_backend()
+    backend._extra_args = ["-b", "512", "--top-k", "20"]
+    backend._extra_args_source = ("owner/repo", "Q4_K_M")
+
+    kwargs = dict(
+        model_identifier = "owner/repo",
+        chat_template_override = None,
+        n_parallel = 1,
+        native_grant_backed = False,
+    )
+    overriding = _active_gguf_intent(
+        LoadRequest(model_path = "owner/repo", n_batch = 4096), backend, **kwargs
+    )
+    assert overriding.extra_args == ("--top-k", "20")
+    assert overriding.extra_args_inherited is False
+
+    inheriting = _active_gguf_intent(LoadRequest(model_path = "owner/repo"), backend, **kwargs)
+    assert inheriting.extra_args == ("-b", "512", "--top-k", "20")
+    assert inheriting.extra_args_inherited is True
+
+
 def test_override_strips_shadowing_batch_flags():
     kwargs = model_override_load_kwargs(
         {"n_batch": 4096, "llama_extra_args": ["-b", "512", "--top-k", "20"]},

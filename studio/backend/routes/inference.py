@@ -3668,16 +3668,32 @@ def _active_gguf_intent(
     native_grant_backed: bool,
 ) -> GgufLoadIntent:
     backend_extra = list(llama_backend.extra_args or ())
-    effective_extra = (
-        request.llama_extra_args
-        if request.llama_extra_args is not None
-        else strip_shadowing_flags(
+    request_fields_set = getattr(request, "model_fields_set", set())
+    inherits_extras = request.llama_extra_args is None
+    if inherits_extras:
+        effective_extra = strip_shadowing_flags(
             backend_extra,
             strip_split_mode = _should_strip_split_mode(request, backend_extra),
             strip_tensor_split = _should_strip_tensor_split(request),
             strip_offload = request.gpu_memory_mode == "manual",
         )
-    )
+        # mirror _resolve_inherited_extra_args, or the fast path deems a stale inherited -b / -ub equal to the freshly set field
+        batch_stripped_extra = strip_shadowing_flags(
+            effective_extra,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = False,
+            strip_batch = "n_batch" in request_fields_set,
+            strip_ubatch = "n_ubatch" in request_fields_set,
+        )
+        # a strip that changed the list is an override, not an inherit: the dedupe must compare the stripped list, not the launched one
+        batch_overrides_inherit = batch_stripped_extra != effective_extra
+        effective_extra = batch_stripped_extra
+    else:
+        effective_extra = request.llama_extra_args
+        batch_overrides_inherit = False
     source = llama_backend.last_load_intent or GgufLoadIntent(
         model_identifier = model_identifier,
         gguf_path = None if llama_backend.hf_repo else llama_backend.gguf_path,
@@ -3702,7 +3718,7 @@ def _active_gguf_intent(
         ),
         mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         compare_mtp_draft = True,
-        extra_args_inherited = request.llama_extra_args is None,
+        extra_args_inherited = inherits_extras and not batch_overrides_inherit,
     )
 
 
