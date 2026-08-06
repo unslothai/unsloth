@@ -177,19 +177,35 @@ def _pip_requirement(backend: str, package: str) -> str:
     return package
 
 
+# The huggingface_hub floor the current `kernels` wheels declare (kernels >= 0.14.1 requires
+# huggingface-hub >= 1.10.0). A (major, minor) pair, compared against the resident hub below.
+_KERNELS_HUB_FLOOR = (1, 10)
+
+
 def _kernels_hub_compatible() -> bool:
     """Whether installing the ``kernels`` package is SAFE next to the resident huggingface_hub.
 
-    Current ``kernels`` releases declare ``huggingface_hub >= 1.0`` and build their dependency
+    Current ``kernels`` wheels declare ``huggingface_hub >= 1.10`` and build their dependency
     tables against that API, and with an older hub the breakage is NOT contained to the requested
     backend: ``import kernels`` raises at module scope, and diffusers imports ``kernels`` whenever
     it is installed, so EVERY later pipeline import in every process fails until the package is
-    uninstalled. A stack pinned to hub < 1.0 therefore must not auto-install it; the requested hub
-    backend falls back to native instead. An undeterminable hub version allows the install, which
-    keeps the previous behaviour."""
+    uninstalled. Measured with kernels 0.16.0: hub 1.0.0-1.2.4 raise
+    ``StrictDataclassFieldValidationError`` on ``import kernels`` (the strict dataclasses only
+    learned ``str | None`` unions in hub 1.3.0), and 1.3-1.9 merely happen to work today, below
+    the floor kernels supports. The whole 1.x range under 1.10 is therefore refused rather than
+    trusted, since the install is unpinned and a future kernels may use any 1.10 API. The
+    requested hub backend falls back to native instead. An undeterminable hub version allows the
+    install, which keeps the previous behaviour.
+
+    A ``--no-deps`` install cannot self-correct here: pip writes the wheel without ever reading
+    its ``Requires-Dist``, so this predicate is the only thing enforcing that floor."""
     try:
+        import re
         from importlib.metadata import version
-        return int(version("huggingface_hub").split(".", 1)[0]) >= 1
+        m = re.match(r"\s*(\d+)(?:\.(\d+))?", version("huggingface_hub"))
+        if m is None:
+            return True
+        return (int(m.group(1)), int(m.group(2) or 0)) >= _KERNELS_HUB_FLOOR
     except Exception:  # noqa: BLE001 — unknown hub -> keep the previous permissive behaviour
         return True
 
@@ -218,9 +234,10 @@ def _ensure_attention_backend_installed(backend: str, logger: Any = None) -> Non
         if logger is not None:
             logger.warning(
                 "diffusion.attention: not installing 'kernels' for backend=%s — the resident "
-                "huggingface_hub is < 1.0 and a kernels install would break every later "
+                "huggingface_hub is below %d.%d and a kernels install would break every later "
                 "diffusers pipeline import; using the default backend",
                 backend,
+                *_KERNELS_HUB_FLOOR,
             )
         return
     try:

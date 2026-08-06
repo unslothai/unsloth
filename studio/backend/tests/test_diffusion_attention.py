@@ -446,8 +446,8 @@ def test_install_failure_falls_back_to_native(monkeypatch):
 # ── kernels-package install gate (huggingface_hub compatibility) ─────────────────
 
 
-def test_kernels_install_skipped_on_pre_1x_hub(monkeypatch):
-    # Current `kernels` releases require huggingface_hub >= 1.0, and with an older hub the damage
+def test_kernels_install_skipped_on_old_hub(monkeypatch):
+    # Current `kernels` wheels require huggingface_hub >= 1.10, and with an older hub the damage
     # is NOT contained to the requested backend: `import kernels` raises at module scope and
     # diffusers imports kernels whenever it is installed, so a single auto-install would break
     # every later pipeline import on the box. The installer must refuse.
@@ -465,7 +465,7 @@ def test_kernels_install_skipped_on_pre_1x_hub(monkeypatch):
     assert "kernels" not in att._INSTALL_ATTEMPTED
 
 
-def test_kernels_install_allowed_on_hub_1x(monkeypatch):
+def test_kernels_install_allowed_on_supported_hub(monkeypatch):
     monkeypatch.setenv("UNSLOTH_DIFFUSION_ATTENTION_INSTALL", "auto")
     import importlib.util
 
@@ -494,10 +494,16 @@ def test_kernels_gate_only_applies_to_kernels_package(monkeypatch):
 def test_kernels_hub_compatible_reads_hub_version(monkeypatch):
     import importlib.metadata
 
-    monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.36.2")
-    assert att._kernels_hub_compatible() is False
-    monkeypatch.setattr(importlib.metadata, "version", lambda name: "1.23.0")
-    assert att._kernels_hub_compatible() is True
+    # The gate is (major, minor) >= 1.10, the floor the kernels wheels declare -- a major-only
+    # check would pass every 1.x. Measured with kernels 0.16.0: hub 1.0.0-1.2.4 fail
+    # `import kernels` outright (strict dataclasses gained `str | None` in hub 1.3.0), and
+    # 1.3-1.9 sit below the supported floor, so the whole sub-1.10 range is refused.
+    for bad in ("0.36.2", "1.0.0", "1.2.4", "1.3.5", "1.9.2", "1.9"):
+        monkeypatch.setattr(importlib.metadata, "version", lambda name, v = bad: v)
+        assert att._kernels_hub_compatible() is False, bad
+    for good in ("1.10.0", "1.10.0rc0", "1.23.0", "2.0.0"):
+        monkeypatch.setattr(importlib.metadata, "version", lambda name, v = good: v)
+        assert att._kernels_hub_compatible() is True, good
 
     def _boom(name):
         raise importlib.metadata.PackageNotFoundError(name)
