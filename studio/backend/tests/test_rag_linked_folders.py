@@ -729,6 +729,36 @@ def test_reconcile_errors_do_not_persist_native_paths(rag_home, monkeypatch):
     assert "<native_path>" in result["error"]
 
 
+@requires_sqlite_vec
+def test_shutdown_requeues_a_scan_before_it_mutates_mappings(rag_home, monkeypatch):
+    source, folder = _folder(rag_home)
+    (source / "notes.txt").write_text("pending shutdown", encoding = "utf-8")
+    original_scan = folder_sync._scan
+
+    def stop_after_scan(*args, **kwargs):
+        result = original_scan(*args, **kwargs)
+        folder_sync._stop.set()
+        return result
+
+    monkeypatch.setattr(folder_sync, "_scan", stop_after_scan)
+    try:
+        job_id = folder_sync.request_sync(folder["id"])
+        folder_sync.reconcile_folder(job_id)
+        result = folder_sync.get_job(job_id)
+    finally:
+        folder_sync._stop.clear()
+
+    assert result["status"] == "pending"
+    assert result["stage"] == "queued"
+    conn = rag_db.get_connection()
+    try:
+        assert conn.execute(
+            "SELECT 1 FROM linked_folder_files WHERE folder_id=?", (folder["id"],)
+        ).fetchone() is None
+    finally:
+        conn.close()
+
+
 def test_project_rag_cleanup_runs_off_the_event_loop(monkeypatch):
     from routes import chat_history
 

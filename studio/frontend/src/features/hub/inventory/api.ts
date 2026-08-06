@@ -117,6 +117,7 @@ export interface CachedDatasetRepo {
   repo_id: string;
   size_bytes: number;
   cache_path?: string;
+  load_cache_path?: string;
   partial?: boolean;
   partial_transport?: string | null;
 }
@@ -289,8 +290,7 @@ export async function deleteCachedModel(
   if (variant) {
     payload.variant = variant;
   }
-  // Scope the delete to the exact cache this row represents so copies in other,
-  // previously selected caches are not removed.
+  // Scope the delete to this row's cache so copies in other caches survive.
   if (cachePath) {
     payload.cache_path = cachePath;
   }

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-import { toast } from "@/lib/toast";
 import { consumeNativePathToken } from "@/features/native-intents";
+import { toast } from "@/lib/toast";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   deleteDocument,
@@ -322,7 +322,9 @@ export function useRagDocuments(
         sigByDocId.current.set(result.documentId, itemSignature(item));
         if (seenIds.has(result.documentId)) {
           setDocuments((rows) => rows.filter((row) => row.id !== tempId));
-          toast.info(`${result.filename || name} is already indexed - skipping`);
+          toast.info(
+            `${result.filename || name} is already indexed - skipping`,
+          );
           return;
         }
         seenIds.add(result.documentId);

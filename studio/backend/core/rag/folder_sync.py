@@ -31,6 +31,10 @@ _sync_lock = threading.RLock()
 _TERMINAL = {"completed", "failed"}
 
 
+class _SyncStopped(Exception):
+    pass
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -518,6 +522,11 @@ def _wait_ingestion(job_id: str) -> dict:
         time.sleep(0.05)
 
 
+def _check_running() -> None:
+    if _stop.is_set():
+        raise _SyncStopped
+
+
 def _set_job(job_id: str, **values) -> None:
     if not values:
         return
@@ -677,6 +686,7 @@ def _rename_mapping(folder_id: str, old_rel: str, new_rel: str) -> None:
 
 def _reconcile_folder(job_id: str) -> None:
     """Run one complete reconciliation; called serially by the coordinator."""
+    _check_running()
     conn = rag_db.get_connection()
     try:
         conn.execute("BEGIN IMMEDIATE")
@@ -718,11 +728,15 @@ def _reconcile_folder(job_id: str) -> None:
     finally:
         conn.close()
     try:
+        _check_running()
         expected_identity = None
         if folder.get("root_device") is not None and folder.get("root_inode") is not None:
             expected_identity = (folder["root_device"], folder["root_inode"])
         current, scanned_identity = _scan(folder["path"], expected_identity)
+        _check_running()
         _establish_root_identity(folder["id"], scanned_identity)
+    except _SyncStopped:
+        raise
     except Exception as exc:
         # A partial/unavailable scan is never authoritative for deletion.
         error = _error_text(exc, folder["path"])
@@ -761,6 +775,7 @@ def _reconcile_folder(job_id: str) -> None:
         key = (old["device"], old["inode"], old["size_bytes"], old["mtime_ns"])
         by_identity.setdefault(key, []).append(rel)
     for rel in sorted(list(new)):
+        _check_running()
         meta = current[rel]
         key = (meta["device"], meta["inode"], meta["size_bytes"], meta["mtime_ns"])
         candidates = by_identity.get(key, [])
@@ -777,6 +792,7 @@ def _reconcile_folder(job_id: str) -> None:
                     same_content = _hash_file(snapshot) == known[rel]["content_hash"]
                 finally:
                     _remove_snapshot(snapshot)
+            _check_running()
             if same_content:
                 _rename_mapping(folder["id"], old_rel, rel)
                 renamed += 1
@@ -801,9 +817,11 @@ def _reconcile_folder(job_id: str) -> None:
         snapshot = None
         document_id = None
         try:
+            _check_running()
             metadata = current[rel]
             snapshot = _snapshot(folder["path"], metadata)
             content_hash = _hash_file(snapshot)
+            _check_running()
             if (
                 not rebuild
                 and rel not in extension_renames
@@ -829,6 +847,7 @@ def _reconcile_folder(job_id: str) -> None:
             result = _wait_ingestion(ingestion_job)
             if result["status"] != "completed":
                 raise RuntimeError(result.get("error") or "Ingestion failed")
+            _check_running()
             _install_mapping(
                 folder,
                 rel,
@@ -841,6 +860,12 @@ def _reconcile_folder(job_id: str) -> None:
                 added += 1
             else:
                 changed_count += 1
+        except _SyncStopped:
+            if document_id:
+                _discard_document(document_id)
+            else:
+                _remove_snapshot(snapshot)
+            raise
         except Exception:
             failed += 1
             logger.warning("linked-folder ingestion failed for %s", rel, exc_info = True)
@@ -858,6 +883,7 @@ def _reconcile_folder(job_id: str) -> None:
 
     deleted = 0
     for rel in sorted(missing):
+        _check_running()
         _delete_mapping(folder["id"], rel)
         deleted += 1
         _set_job(
@@ -866,6 +892,7 @@ def _reconcile_folder(job_id: str) -> None:
             progress = (len(work) + deleted) / max(total, 1),
         )
 
+    _check_running()
     status = "completed" if failed == 0 else "failed"
     error = (
         None if failed == 0 else f"{failed} file(s) could not be indexed; prior versions retained"
@@ -905,6 +932,22 @@ def _fail_job(job_id: str, exc: Exception) -> None:
         )
         conn.commit()
         _prune_terminal_jobs(conn)
+    finally:
+        conn.close()
+
+
+def _pause_job(job_id: str) -> None:
+    job = get_job(job_id)
+    if job is None:
+        return
+    _set_job(job_id, status = "pending", stage = "queued", started_at = None)
+    conn = rag_db.get_connection()
+    try:
+        conn.execute(
+            "UPDATE linked_folders SET status='ready', updated_at=? WHERE id=?",
+            (_now(), job["folder_id"]),
+        )
+        conn.commit()
     finally:
         conn.close()
 
@@ -959,6 +1002,8 @@ def reconcile_folder(job_id: str) -> None:
     """Reconcile and persist a terminal folder state for every unexpected failure."""
     try:
         _reconcile_folder(job_id)
+    except _SyncStopped:
+        _pause_job(job_id)
     except Exception as exc:
         logger.exception("linked-folder job %s failed unexpectedly", job_id)
         _fail_job(job_id, exc)
@@ -1022,37 +1067,54 @@ def _worker() -> None:
                 _thread = None
 
 
-def start_auto_sync() -> bool:
+def start_auto_sync(*, admission_lock = None, admit = None) -> bool:
     global _thread
     if not rag_db.RAG_AVAILABLE:
         return False
     with _thread_lock:
-        if _thread is not None and _thread.is_alive():
+        retired = _thread if _thread is not None and _thread.is_alive() else None
+        if retired is not None and not _stop.is_set():
             return False
-        _stop.clear()
-        conn = rag_db.get_connection()
-        try:
-            conn.execute(
-                "UPDATE linked_folder_sync_jobs SET status='pending', stage='queued', "
-                "error=NULL WHERE status='running'"
-            )
-            # A crash between successful ingestion and mapping installation can leave
-            # a folder-owned document unreferenced. It is safe to remove at startup.
-            orphans = conn.execute(
-                "SELECT d.id, d.stored_path FROM documents d WHERE d.linked_folder_id IS NOT NULL "
-                "AND NOT EXISTS (SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)"
-            ).fetchall()
+    if retired is not None:
+        retired.join()
+
+    def launch() -> bool:
+        global _thread
+        with _thread_lock:
+            if _thread is not None and _thread.is_alive():
+                return False
+            _stop.clear()
+            conn = rag_db.get_connection()
+            try:
+                conn.execute(
+                    "UPDATE linked_folder_sync_jobs SET status='pending', stage='queued', "
+                    "error=NULL WHERE status='running'"
+                )
+                # A crash between successful ingestion and mapping installation can leave
+                # a folder-owned document unreferenced. It is safe to remove at startup.
+                orphans = conn.execute(
+                    "SELECT d.id, d.stored_path FROM documents d "
+                    "WHERE d.linked_folder_id IS NOT NULL AND NOT EXISTS "
+                    "(SELECT 1 FROM linked_folder_files ff WHERE ff.document_id=d.id)"
+                ).fetchall()
+                for orphan in orphans:
+                    store.delete_document(conn, orphan["id"], commit = False)
+                conn.commit()
+            finally:
+                conn.close()
             for orphan in orphans:
-                store.delete_document(conn, orphan["id"], commit = False)
-            conn.commit()
-        finally:
-            conn.close()
-        for orphan in orphans:
-            _remove_snapshot(orphan["stored_path"])
-        _enqueue_periodic()
-        _thread = threading.Thread(target = _worker, daemon = True, name = "rag-folder-sync")
-        _thread.start()
-        return True
+                _remove_snapshot(orphan["stored_path"])
+            _enqueue_periodic()
+            _thread = threading.Thread(target = _worker, daemon = True, name = "rag-folder-sync")
+            _thread.start()
+            return True
+
+    if admission_lock is None:
+        return launch()
+    with admission_lock:
+        if admit is not None and not admit():
+            return False
+        return launch()
 
 
 def stop_auto_sync(timeout: float = 2.0) -> None:

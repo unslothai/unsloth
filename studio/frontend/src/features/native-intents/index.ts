@@ -8,6 +8,7 @@ export {
   openModelsDir,
   pickNativeDocumentFolder,
   pickHuggingFaceCacheDir,
+  registerNativeDatasetPath,
 } from "./api";
 export type { NativeDocumentFolderSelection } from "./api";
 export {

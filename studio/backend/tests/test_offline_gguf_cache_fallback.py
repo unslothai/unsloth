@@ -2095,6 +2095,21 @@ class TestListLocalGgufVariantsSubdir:
         assert config is not None
         assert config.gguf_file == str(target.resolve())
 
+    def test_model_config_direct_split_gguf_keeps_file_when_variant_is_echoed(self, tmp_path):
+        """A settings reload sends status.gguf_variant with the direct file path."""
+        from utils.models.model_config import ModelConfig
+
+        first = tmp_path / "Model-UD-Q3_K_M-00001-of-00002.gguf"
+        second = tmp_path / "Model-UD-Q3_K_M-00002-of-00002.gguf"
+        first.write_bytes(b"a")
+        second.write_bytes(b"b")
+
+        config = ModelConfig.from_identifier(str(first), gguf_variant = "UD-Q3_K_M")
+
+        assert config is not None
+        assert config.is_gguf is True
+        assert config.gguf_file == str(first.resolve())
+
     def test_local_variant_listing_keeps_subdir_be_model_name_token(self, tmp_path):
         from utils.models.model_config import list_local_gguf_variants
 

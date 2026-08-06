@@ -2,13 +2,13 @@
 # Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
 
 # Mac counterpart to studio-ui-smoke.yml. Same Playwright + Chromium
-# end-to-end chat UI flow, but on macos-14 (M1) so we catch
+# end-to-end chat UI flow, but on macos-15 (M1) so we catch
 # Mac-specific frontend / backend wiring regressions that the Linux
 # job would miss (e.g. the Mac Tauri shell loading the same React
 # bundle, or the Mac llama.cpp prebuilt's HTTP layer behaving
 # differently from the Linux build).
 #
-# Also carries two phases that used to be their own macos-14 jobs:
+# Also carries two phases that used to be their own macOS jobs:
 # studio-mac-api-smoke.yml (API + auth) and studio-mac-update-smoke.yml
 # (update idempotency + uninstall). All three shared a byte-identical
 # `install.sh --local --no-torch` plus assert-llama-loads.sh bootstrap, so a
@@ -35,6 +35,12 @@ on:
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
       # The absorbed update phase round-trips scripts/uninstall.sh, which none
       # of the entries above cover.
       - 'scripts/uninstall.sh'
@@ -55,7 +61,7 @@ permissions:
 jobs:
   ui-smoke:
     name: Chat UI, API and Update Tests
-    runs-on: macos-14
+    runs-on: macos-15
     # 35 covered the UI phases alone. The absorbed API and update phases each
     # add a server boot plus their own checks, but both reuse this job's single
     # install rather than doing their own, so they cost minutes rather than the
@@ -129,20 +135,12 @@ jobs:
 
       - name: Install Unsloth (--local, --no-torch)
         id: install_unsloth
-        # The install is the shared bootstrap for every phase below, and only
-        # the Playwright phases need the primed GGUF. Detaching it from the
-        # implicit success() keeps the update and uninstall phases reachable
-        # when priming times out, which is the one case where they would still
-        # have produced a real result.
         if: ${{ !cancelled() }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Assert llama.cpp loads on this macOS
         id: assert_llama
@@ -153,10 +151,10 @@ jobs:
 
       - name: Install Playwright browsers
         # No --with-deps on Mac: that flag installs Linux apt packages.
-        # GitHub-hosted macos-14 ships the system frameworks Chromium
+        # GitHub-hosted macos-15 ships the system frameworks Chromium
         # needs already.
         # Pinned <1.58 because all 1.55-1.58 drivers ship Node 24 on
-        # macos-14 and intermittently hit 'SyntaxError: Unexpected end
+        # macOS and intermittently hit 'SyntaxError: Unexpected end
         # of JSON input' in pipeTransport.js. Run 25491698868 showed
         # the crash hitting 100% of three retry attempts -- not a
         # rare race but a hard reproduction. Belt-and-suspenders fix:
@@ -201,11 +199,7 @@ jobs:
       - name: Reset auth + boot Unsloth
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         run: |
@@ -234,11 +228,11 @@ jobs:
           BASE_URL: http://127.0.0.1:18896
           PW_ART_DIR: logs/playwright
           STUDIO_UI_STRICT: '1'
-          # macos-14 free runner is 3 vCPU / 7 GB / no Metal-accel
+          # macos-15 free runner is 3 vCPU / 7 GB / no Metal-accel
           # available to llama.cpp from CI; gemma-3-270m turn latency
           # has been observed to crowd the 180s default. Triple it.
           STUDIO_UI_TURN_TIMEOUT_MS: '540000'
-        # Retry up to 3 times to absorb known macos-14 free-runner
+        # Retry up to 3 times to absorb known macOS free-runner
         # flakes: (1) Playwright Node 24 pipeTransport.js 'Unexpected
         # end of JSON input' crash when the Chromium browser process
         # dies mid-test, (2) Chromium net::ERR_NO_BUFFER_SPACE when the
@@ -306,11 +300,8 @@ jobs:
 
       - name: Reset auth + boot Unsloth for extra UI tests (port 18897)
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18897 \
-            > logs/studio_extra.log 2>&1 &
-          echo "STUDIO_EXTRA_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18897 --log logs/studio_extra.log --pid-var STUDIO_EXTRA_PID
 
       - name: Wait for /api/health on 18897
         run: |
@@ -405,11 +396,8 @@ jobs:
       - name: Reset auth + boot Unsloth (API-only, port 18894)
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18894 \
-            > logs/studio_api.log 2>&1 &
-          echo "STUDIO_API_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port 18894 --log logs/studio_api.log --pid-var STUDIO_API_PID
 
       - name: Wait for /api/health on 18894
         run: |
@@ -447,7 +435,7 @@ jobs:
 
       # ---------------------------------------------------------------
       # Update + uninstall phase, absorbed from studio-mac-update-smoke.yml.
-      # Same install, same assert-llama-loads.sh, so it was a third macos-14
+      # Same install, same assert-llama-loads.sh, so it was a third macOS
       # runner doing the same bootstrap to check that `update` is a no-op.
       #
       # Runs last on purpose: it ends by uninstalling and asserting the machine

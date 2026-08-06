@@ -2010,10 +2010,9 @@ def test_begin_load_rejects_concurrent(monkeypatch):
     backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")
     with pytest.raises(RuntimeError):
         backend.begin_load("unsloth/Z-Image-Turbo-GGUF", gguf_filename = "z-image-turbo-Q4_K_S.gguf")
-    # Drain the worker while the stubs above still make it exit in 0.2s. begin_load's thread is
-    # fire-and-forget, so left running it outlives this test, monkeypatch reverts load_pipeline
-    # under it, and it then runs the REAL one inside whatever test is current -- inheriting that
-    # test's class-level patches and landing in its assertions.
+    # Drain the worker while the stubs above still make it exit in 0.2s: begin_load's thread is
+    # fire-and-forget, so left running it outlives this test and then runs the REAL load_pipeline
+    # inside whatever test is current, under that test's patches.
     for thread in set(threading.enumerate()) - before:
         thread.join(timeout = 5)
 
@@ -3153,9 +3152,8 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
         transformer_resident_override_mib = None,
         **k,
     ):
-        # Scoped to this backend: begin_load runs on a daemon thread, so an earlier test's load
-        # can still be in flight here, and _plan_memory is patched on the CLASS. Counting every
-        # instance lets that stray thread land in this assertion.
+        # Scoped to this backend: begin_load runs on a daemon thread and _plan_memory is patched
+        # on the CLASS, so counting every instance lets a stray load land in this assertion.
         if transformer_resident_override_mib is not None and self is backend:
             dense_refit_ran.append(True)
             # GGUF budget fits (real plan -> none); the dense-transformer preflight does not.
@@ -3619,9 +3617,8 @@ def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_p
         transformer_resident_override_mib = None,
         **k,
     ):
-        # Scoped to this backend: begin_load runs on a daemon thread, so an earlier test's load
-        # can still be in flight here, and _plan_memory is patched on the CLASS. Counting every
-        # instance is what made this assert [True, True] on the slower CI runners.
+        # Scoped to this backend: begin_load runs on a daemon thread and _plan_memory is patched
+        # on the CLASS, so counting every instance asserted [True, True] on slower CI runners.
         if transformer_resident_override_mib is not None and self is backend:
             dense_refit_ran.append(True)
         return orig_plan(self, *a, **k)
@@ -3964,9 +3961,8 @@ def test_a_baked_lora_load_is_unaffected_by_the_prequant_cache(fake_runtime, tmp
 def test_the_dense_builder_skips_the_prequant_only_for_a_real_bake(
     lora_specs, consults_prequant, fake_runtime, monkeypatch
 ):
-    # The decline let the auto path continue, but this builder's own gate read the raw list as
-    # truthy and built the dense transformer for adapters that apply nothing. The rule holds here
-    # too, not just at the decline.
+    # This builder's own gate read the raw list as truthy and built the dense transformer for
+    # adapters that apply nothing: the rule holds here too, not just at the decline.
     import contextlib
 
     from core.inference import diffusion as dmod
@@ -4000,9 +3996,8 @@ def test_the_dense_builder_skips_the_prequant_only_for_a_real_bake(
 
 
 def test_the_plan_does_not_force_a_dense_bake_for_disabled_adapters(fake_runtime, monkeypatch):
-    # The gate above stopped calling it a bake, but the candidate sizing below still passed
-    # force_dense on the raw list, staging base transformer/ shards while the load ran the cached
-    # prequant. Both must read the same rule.
+    # The candidate sizing passed force_dense on the raw list, staging base transformer/ shards
+    # while the load ran the cached prequant. Both must read the same rule.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -4024,9 +4019,9 @@ def test_the_plan_does_not_force_a_dense_bake_for_disabled_adapters(fake_runtime
 
 
 def test_the_plan_reads_pydantic_lora_specs_as_the_load_reads_tuples(fake_runtime, monkeypatch):
-    # /images/load sends (id, weight) tuples but /images/download-plan passes LoraSpec models, and
-    # unpacking a pydantic model yields (field, value) pairs, so a plain (_lid, w) unpack binds w
-    # to ("weight", 0.0) and reads a disabled adapter as an active bake.
+    # /images/load sends (id, weight) tuples but /images/download-plan passes LoraSpec models,
+    # whose unpacking yields (field, value) pairs, so a plain (_lid, w) unpack binds w to
+    # ("weight", 0.0) and reads a disabled adapter as an active bake.
     from core.inference import diffusion as dmod
     from models.inference import LoraSpec
 
@@ -4054,8 +4049,8 @@ def test_the_plan_reads_pydantic_lora_specs_as_the_load_reads_tuples(fake_runtim
 
 def test_the_plan_reads_zero_weight_loras_exactly_as_the_load_does(fake_runtime, monkeypatch):
     # The plan and the load must agree on what a bake is: gating the prefetch on the raw list
-    # stages base transformer/ shards for a load that will run the GGUF. The return value alone
-    # does not show it, so this asserts the decline happened on the cache verdict, BEFORE sizing.
+    # stages transformer/ shards for a load that runs the GGUF. The return value alone does not
+    # show it, so this asserts the decline happened on the cache verdict, BEFORE sizing.
     from core.inference import diffusion as dmod
 
     backend = DiffusionBackend()
@@ -4174,12 +4169,10 @@ def _split_cache_roots(
     register_root = False,
 ):
     """Studio's live cache root and a second one holding what a mid-session cache-folder change
-    left behind. Returns ``(live, other)``, both empty.
-
-    ``register_root`` makes the second dir huggingface_hub's import-time constant, i.e. the root
-    ``cache_dir = None`` resolves to and the one the loader's per-file reuse reads from. Without it
-    the constant is pointed at a third empty dir, so ``other`` is reachable only as an explicit
-    staged snapshot -- and either way the test never sees the developer's real cache."""
+    left behind, both empty. ``register_root`` makes the second dir huggingface_hub's import-time
+    constant, the root ``cache_dir = None`` resolves to; without it the constant points at a third
+    empty dir, so ``other`` is reachable only as an explicit staged snapshot. Either way the test
+    never sees the developer's real cache."""
     from huggingface_hub import constants as hf_constants
 
     from core.inference import diffusion as dmod
@@ -4251,9 +4244,8 @@ def _other_root_base_snapshot(
     *,
     register_root = False,
 ):
-    """A base repo cached ONLY under the other cache root, with Studio's live root empty: what a
-    mid-session cache-folder change leaves behind, and what the per-file root reuse hands the
-    loader back as ``_base_local_dir``. Sparse files, so the sizes cost no disk."""
+    """A base repo cached ONLY under the other cache root, with Studio's live root empty: what
+    a mid-session cache-folder change leaves behind, handed back as ``_base_local_dir``. Sparse."""
     _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = register_root)
     snapshot = other / "models--bfl--base" / "snapshots" / ("a" * 40)
     for rel, mib in (
@@ -4285,9 +4277,9 @@ def _small_card(monkeypatch):
 
 
 def test_plan_memory_budgets_companions_from_the_other_root_snapshot(monkeypatch, tmp_path):
-    # _companion_cache_bytes resolves a hub id under hub_cache_dir() ONLY, so a base the prefetch
-    # served from huggingface_hub's import-time root budgets as zero while from_pretrained loads it
-    # off that snapshot: an auto plan stays resident and OOMs on companions it never counted.
+    # _companion_cache_bytes resolves a hub id under hub_cache_dir() ONLY, so a base served from
+    # the import-time root budgets as zero while from_pretrained loads it off that snapshot: the
+    # auto plan stays resident and OOMs on companions it never counted.
     from core.inference.diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE
 
     snapshot = _other_root_base_snapshot(tmp_path, monkeypatch)
@@ -4324,8 +4316,8 @@ def test_plan_memory_budgets_companions_from_the_other_root_snapshot(monkeypatch
 
 def test_plan_memory_sizes_a_pipeline_load_from_the_other_root_snapshot(monkeypatch, tmp_path):
     # Same hole on the full-pipeline branch, where the whole repo IS the base: _cache_bytes walks
-    # the live root's blobs, so a repo served from the other root sizes as unknown -> "staying
-    # resident" for a 4 GiB pipeline that does not fit.
+    # the live root's blobs, so a repo served from the other root sizes as unknown and a 4 GiB
+    # pipeline that does not fit stays resident.
     from core.inference.diffusion_memory import OFFLOAD_MODEL, OFFLOAD_NONE
 
     snapshot = _other_root_base_snapshot(tmp_path, monkeypatch)
@@ -4350,9 +4342,8 @@ def test_plan_memory_sizes_a_pipeline_load_from_the_other_root_snapshot(monkeypa
 
 
 def test_plan_memory_keeps_companions_a_partial_staged_snapshot_omits(monkeypatch, tmp_path):
-    # Same floor rule for the companion total. The snapshot the preflight carries can hold the
-    # manifest alone, so preferring it over the hub-id scan budgets 0 for the VAE + text encoders
-    # the cache root does hold, and the auto plan stays resident and OOMs on them.
+    # Same floor rule for the companion total: the preflight's snapshot can hold the manifest
+    # alone, so preferring it over the hub-id scan budgets 0 for the companions a root does hold.
     from core.inference.diffusion_memory import OFFLOAD_GROUP
 
     snapshot = _other_root_base_snapshot(tmp_path, monkeypatch, register_root = True)
@@ -4382,10 +4373,9 @@ def test_plan_memory_keeps_companions_a_partial_staged_snapshot_omits(monkeypatc
 def test_load_progress_counts_a_checkpoint_the_other_cache_root_already_holds(
     tmp_path, monkeypatch
 ):
-    # After a cache-folder change the multi-GB checkpoint can be satisfied entirely from
+    # After a cache-folder change the multi-GB checkpoint can be served entirely from
     # huggingface_hub's import-time root. Counting only the live root leaves `downloaded` at 0
-    # against a nonzero estimate, so the UI reports a healthy multi-minute load as stalled near
-    # 0% for the whole of pipeline construction and never reaches "finalizing".
+    # against a nonzero estimate, so the UI shows a healthy load stalled near 0% throughout.
     from core.inference.diffusion import _LoadingState
 
     live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
@@ -4407,11 +4397,9 @@ def test_load_progress_counts_a_checkpoint_the_other_cache_root_already_holds(
 
 
 def test_load_progress_ignores_a_revision_the_moved_root_has_superseded(tmp_path, monkeypatch):
-    # blobs/ is append-only: a republished repo leaves the superseded revision's blobs there
-    # forever, under different etags from the ones now downloading, so nothing dedupes them.
-    # Summing the whole dir counts that stale full copy on top of the live partial one, and
-    # load_progress reports "finalizing" for the rest of a multi-GB pull -- the UI calls a download
-    # finished while it is barely half through.
+    # blobs/ is append-only: a republished repo keeps the superseded revision's blobs forever under
+    # different etags, so summing the whole dir counts that stale full copy on top of the live
+    # partial one and load_progress reports "finalizing" for the rest of a multi-GB pull.
     from core.inference.diffusion import _LoadingState
 
     _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
@@ -4442,10 +4430,9 @@ def test_load_progress_ignores_a_revision_the_moved_root_has_superseded(tmp_path
 
 
 def test_load_progress_counts_one_logical_file_across_roots_at_two_revisions(tmp_path, monkeypatch):
-    # Each root serves its OWN refs/main, so after a republish the two roots can be scoped to
-    # different revisions. The same logical shard then has a different blob etag in each, so an
-    # etag key never collides and both copies are summed -- roughly doubling the count and
-    # reporting finalizing at about half the real progress. Only one of them is ever loaded.
+    # Each root serves its OWN refs/main, so after a republish the same logical shard has a
+    # different blob etag in each: an etag key never collides and both copies are summed, roughly
+    # doubling the count, though only one of them is ever loaded.
     from core.inference.diffusion import _LoadingState
 
     live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
@@ -4472,9 +4459,8 @@ def test_load_progress_counts_one_logical_file_across_roots_at_two_revisions(tmp
 
 def test_companion_bytes_union_a_base_the_prefetch_split_across_roots(tmp_path, monkeypatch):
     # reuse_other_cache_root resolves EACH file through whichever root holds it, so a moved cache
-    # can leave the text encoder in the old snapshot while the VAE downloads into the live one.
-    # Those two snapshots are disjoint PARTS of one revision, not copies of it, so sizing off the
-    # larger one budgets a fraction of the companions the load goes on to make resident.
+    # can leave the text encoder in the old snapshot while the VAE lands in the live one. Those
+    # snapshots are disjoint PARTS of one revision, so sizing off the larger one under-budgets.
     from core.inference.diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE
 
     live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
@@ -4504,9 +4490,8 @@ def test_companion_bytes_union_a_base_the_prefetch_split_across_roots(tmp_path, 
 
 
 def test_companion_bytes_skip_a_superseded_revision_in_the_same_root(tmp_path, monkeypatch):
-    # The merge is per FILE, so a repo that repacked its shards between revisions would have both
-    # namings counted and budget roughly twice the companions it loads -- enough to force offload
-    # on a base that fits resident. Only the revision refs/main names is the one this load reads.
+    # The merge is per FILE, so a repo that repacked its shards between revisions would count both
+    # namings and force offload on a base that fits. Only refs/main's revision is read.
     live, _other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
     old_rev, new_rev = "a" * 40, "b" * 40
     for shard in ("model-00001-of-00002.safetensors", "model-00002-of-00002.safetensors"):
@@ -4519,10 +4504,9 @@ def test_companion_bytes_skip_a_superseded_revision_in_the_same_root(tmp_path, m
 
 
 def test_plan_memory_sizes_a_pipeline_split_across_both_cache_roots(monkeypatch, tmp_path):
-    # A prefetch that landed part of the repo in each root hands back NO snapshot (a snapshot dir
-    # the rest of the files are not in would fail the load), so the plan falls back to the cache
-    # scan. Scoped to the live root that reads a fraction of the repo, and the pinned
-    # from_pretrained then loads shards the plan never budgeted.
+    # A prefetch split across roots hands back NO snapshot (one missing the rest of the files would
+    # fail the load), so the plan falls back to the cache scan. Scoped to the live root that reads a
+    # fraction of the repo, and from_pretrained then loads shards the plan never budgeted.
     from core.inference.diffusion_memory import OFFLOAD_MODEL
 
     live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
@@ -4546,9 +4530,8 @@ def test_plan_memory_sizes_a_pipeline_split_across_both_cache_roots(monkeypatch,
     assert plan.estimates["model_dense_mib"] == 4300
     assert plan.offload_policy == OFFLOAD_MODEL
 
-    # The gated preflight excuses a base off ONE probe file, so the snapshot it carries can hold
-    # the manifest and nothing else. Preferring a staged dir outright would size this 4.2 GiB
-    # pipeline at 0; it is a floor here too, and the cache scan still wins.
+    # The gated preflight excuses a base off ONE probe file, so its snapshot can hold the manifest
+    # alone: preferring a staged dir outright would size this 4.2 GiB pipeline at 0.
     manifest_only = other / "models--bfl--base" / "snapshots" / ("c" * 40)
     manifest_only.mkdir(parents = True)
     (manifest_only / "model_index.json").write_bytes(b"{}")
@@ -4558,9 +4541,9 @@ def test_plan_memory_sizes_a_pipeline_split_across_both_cache_roots(monkeypatch,
 def test_dense_transformer_bytes_read_the_other_root_and_treat_the_snapshot_as_a_floor(
     tmp_path, monkeypatch
 ):
-    # The dense-quant preflight sizes the bf16 transformer to decide whether to re-check the fit.
-    # A base a moved cache holds only under the import-time root reads 0 on the live root, and a 0
-    # skips the check entirely, so the dense build lands under a plan sized for the GGUF.
+    # The dense-quant preflight sizes the bf16 transformer to decide whether to re-check the fit. A
+    # base held only under the import-time root reads 0 on the live one, and a 0 skips the check, so
+    # the dense build lands under a plan sized for the GGUF.
     _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
     snapshot = other / "models--bfl--base" / "snapshots" / ("a" * 40)
     _safetensors_with_params(
@@ -4572,9 +4555,8 @@ def test_dense_transformer_bytes_read_the_other_root_and_treat_the_snapshot_as_a
     assert (
         DiffusionBackend._dense_transformer_resident_bytes("bfl/base", str(snapshot)) == 2_000_000
     )
-    # The staged snapshot is a floor, never a replacement: the prefetch only stages transformer/
-    # when the dense path is in play, and a preflight-excused snapshot can carry companions alone.
-    # Letting one of those erase the shards a root does hold would skip the fit check again.
+    # The staged snapshot is a floor, never a replacement: it can carry companions alone, and
+    # letting that erase the shards a root does hold would skip the fit check again.
     bare = tmp_path / "companions-only-snapshot"
     bare.mkdir()
     assert DiffusionBackend._dense_transformer_resident_bytes("bfl/base", str(bare)) == 2_000_000
@@ -4592,10 +4574,10 @@ def test_dense_fit_check_runs_for_a_base_the_live_cache_root_does_not_hold(
     fake_runtime, tmp_path, monkeypatch, staged
 ):
     # End of the same hole, at the load: with no usable prequant the loader materialises the dense
-    # bf16 transformer, so the fit re-check has to run. It only runs when the size lookup finds the
-    # shards, and for a moved cache they are either under the import-time root (staged=False) or
-    # only in the snapshot the prefetch already resolved, which a second move strands outside both
-    # roots (staged=True). The live root reads 0 for either, and a 0 skips the check.
+    # bf16 transformer, so the fit re-check has to run, and it only runs when the size lookup finds
+    # the shards. For a moved cache they sit under the import-time root (staged=False) or in the
+    # already-resolved snapshot a second move strands outside both roots (staged=True), and the
+    # live root reads 0 for either.
     from core.inference import diffusion as dmod
 
     _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
@@ -4647,11 +4629,10 @@ def test_the_dense_builder_reads_transformer_from_the_hub_id_not_the_staged_snap
     fake_runtime, tmp_path, monkeypatch
 ):
     # Sizing reads the staged snapshot; the LOAD deliberately does not. diffusers treats a local
-    # directory as terminal -- _get_model_file raises "Error no file named ..." instead of falling
-    # back to the hub (utils/hub_utils.py), and a sharded load raises FileNotFoundError per missing
-    # shard -- so a snapshot holding transformer/config.json, or 2 of 3 shards (what a cancelled
-    # prefetch leaves), would turn a working load into a hard failure. The hub id costs a
-    # re-download instead, or 401s into the GGUF fallback, which is what main does today.
+    # directory as terminal (_get_model_file raises instead of falling back to the hub) and a
+    # sharded load raises per missing shard, so a partial snapshot -- what a cancelled prefetch
+    # leaves -- would turn a working load into a hard failure. The hub id costs a re-download
+    # instead, or 401s into the GGUF fallback, which is what main does today.
     import contextlib
 
     from core.inference import diffusion as dmod
