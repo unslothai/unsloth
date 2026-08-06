@@ -2343,8 +2343,13 @@ _PEFT_CONVERSION_SYMBOLS = {
         "get_model_conversion_mapping",
     ),
     "transformers.core_model_loading": (
-        "Concatenate", "ConversionOps", "MergeModulelist", "Transpose",
-        "WeightConverter", "WeightRenaming", "dot_natural_key",
+        "Concatenate",
+        "ConversionOps",
+        "MergeModulelist",
+        "Transpose",
+        "WeightConverter",
+        "WeightRenaming",
+        "dot_natural_key",
         "rename_source_key",
     ),
 }
@@ -2357,10 +2362,8 @@ def _backfill_missing_conversion_symbols():
     so this is a no-op on every release that still exports them.
     """
     builders = {
-        "transformers.conversion_mapping":
-            _install_transformers_conversion_mapping_stub,
-        "transformers.core_model_loading":
-            _install_transformers_core_model_loading_stub,
+        "transformers.conversion_mapping": _install_transformers_conversion_mapping_stub,
+        "transformers.core_model_loading": _install_transformers_core_model_loading_stub,
     }
     added = []
     for name, symbols in _PEFT_CONVERSION_SYMBOLS.items():
@@ -2371,7 +2374,7 @@ def _backfill_missing_conversion_symbols():
             except Exception:
                 continue
         if getattr(real, _UNSLOTH_STUB_SENTINEL, False):
-            continue                      # ours already, and complete
+            continue  # ours already, and complete
         missing = [s for s in symbols if not hasattr(real, s)]
         if not missing:
             continue
@@ -2393,7 +2396,8 @@ def _backfill_missing_conversion_symbols():
         logger.info(
             "Unsloth: backfilled %s so peft.utils."
             "transformers_weight_conversion imports on this transformers.",
-            ", ".join(added))
+            ", ".join(added),
+        )
     return bool(added)
 
 
