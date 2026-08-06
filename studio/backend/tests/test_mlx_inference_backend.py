@@ -2538,9 +2538,7 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     _install_fake_mlx(monkeypatch)
     _install_fake_fast_mlx(monkeypatch, [])
     monkeypatch.setattr(_DummyProcessor, "chat_template", "{{ native }}", raising = False)
-    monkeypatch.setattr(
-        _DummyProcessor, "apply_chat_template", lambda *a, **k: "", raising = False
-    )
+    monkeypatch.setattr(_DummyProcessor, "apply_chat_template", lambda *a, **k: "", raising = False)
     monkeypatch.setattr(_DummyTokenizer, "chat_template", "{{ nested }}", raising = False)
 
     def render(target, messages, **kwargs):
@@ -2561,9 +2559,7 @@ def test_a_vision_override_is_checked_even_when_the_native_render_needs_recovery
     from core.inference import mlx_inference
 
     # The native template fails the check, which used to skip the override's.
-    assert (
-        mlx_inference._image_marker_survives(_DummyTokenizer(), _DummyProcessor(), None) is False
-    )
+    assert mlx_inference._image_marker_survives(_DummyTokenizer(), _DummyProcessor(), None) is False
 
     backend = mlx_inference.MLXInferenceBackend()
     config = SimpleNamespace(identifier = "fake/vlm", is_vision = True, is_lora = False)
