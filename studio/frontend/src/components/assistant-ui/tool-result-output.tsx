@@ -3,6 +3,7 @@
 
 "use client";
 
+import { stripAnsi } from "@/lib/strip-ansi";
 import { useMemo, useState } from "react";
 
 /** Tail-line cap so a huge output never mounts a megabyte <pre> block. */
@@ -39,7 +40,10 @@ export function tailText(text: string): Tail {
  */
 export function ToolResultOutput({ text }: { text: string }) {
   const [showAll, setShowAll] = useState(false);
-  const tail = useMemo(() => tailText(text), [text]);
+  // Strip SGR before tailing so colour codes neither inflate the char budget
+  // nor leak into the DOM as literal escape text (#7962).
+  const cleaned = useMemo(() => stripAnsi(text), [text]);
+  const tail = useMemo(() => tailText(cleaned), [cleaned]);
   const truncated = !showAll && (tail.hiddenLines > 0 || tail.hiddenChars > 0);
 
   return (
@@ -56,7 +60,7 @@ export function ToolResultOutput({ text }: { text: string }) {
         </button>
       )}
       <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words font-mono text-xs">
-        {showAll ? text : tail.visible}
+        {showAll ? cleaned : tail.visible}
       </pre>
     </>
   );

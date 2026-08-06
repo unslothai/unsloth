@@ -5,6 +5,7 @@
 
 import { useChatRuntimeStore } from "@/features/chat/stores/chat-runtime-store";
 import { useToolOutputFor, useToolPaneScope } from "@/features/chat";
+import { stripAnsi } from "@/lib/strip-ansi";
 import { useEffect, useMemo, useRef } from "react";
 import { tailText } from "./tool-result-output";
 
@@ -27,7 +28,11 @@ export function ToolLiveOutput({ toolCallId }: { toolCallId: string }) {
   const pinnedToBottom = useRef(true);
 
   // The stream can reach hundreds of KB; render only the tail while live.
-  const visible = useMemo(() => tailText(output).visible, [output]);
+  // Strip ANSI so colourised CLIs stay readable mid-stream (#7962).
+  const visible = useMemo(
+    () => tailText(stripAnsi(output)).visible,
+    [output],
+  );
 
   const handleScroll = () => {
     const el = scrollRef.current;

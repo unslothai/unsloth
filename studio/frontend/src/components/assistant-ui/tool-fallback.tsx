@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/collapsible";
 import { Spinner } from "@/components/ui/spinner";
 import { useCollapseScrollLock } from "@/hooks/use-collapse-scroll-lock";
+import { stripAnsi } from "@/lib/strip-ansi";
 import { cn } from "@/lib/utils";
 import {
   type ToolCallMessagePartComponent,
@@ -296,6 +297,14 @@ function ToolFallbackResult({
   }
 
   const imageResult = isMcpImageResult(result) ? result : null;
+  // Colourised CLIs (ls --color, grep --color, npm, cargo, pytest) emit SGR
+  // escapes that a plain <pre> cannot style; strip them so the pane stays
+  // readable (#7962).
+  const resultText = imageResult
+    ? null
+    : stripAnsi(
+        typeof result === "string" ? result : JSON.stringify(result, null, 2),
+      );
 
   return (
     <div
@@ -308,7 +317,7 @@ function ToolFallbackResult({
         <>
           {imageResult.text && (
             <pre className="aui-tool-fallback-result-content whitespace-pre-wrap">
-              {imageResult.text}
+              {stripAnsi(imageResult.text)}
             </pre>
           )}
           <div className="mt-2 flex flex-col gap-2">
@@ -325,7 +334,7 @@ function ToolFallbackResult({
         </>
       ) : (
         <pre className="aui-tool-fallback-result-content whitespace-pre-wrap">
-          {typeof result === "string" ? result : JSON.stringify(result, null, 2)}
+          {resultText}
         </pre>
       )}
     </div>
