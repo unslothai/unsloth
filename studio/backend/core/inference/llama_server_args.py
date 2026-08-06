@@ -766,7 +766,9 @@ def resolve_effective_memory_state(
 
 
 def memory_state_satisfies_settings(
-    state: Optional[tuple[bool, bool]], policy_active: bool = False
+    state: Optional[tuple[bool, bool]],
+    policy_active: bool = False,
+    mlock_applicable: bool = True,
 ) -> bool:
     """True when a launched ``(mlock, reserves_ram)`` matches the settings.
 
@@ -783,6 +785,12 @@ def memory_state_satisfies_settings(
     scrubbed. With both toggles off the policy no longer applies, so any of
     those has to be undone on the next launch, while a launch it never touched
     is left alone.
+
+    ``mlock_applicable`` is False when the launch is fully offloaded to a
+    discrete GPU, where page-locking host RAM buys nothing and is deliberately
+    not emitted. Residency there is the idle-unload veto, which needs no
+    relaunch, so demanding mlock would ask for a reload that can never satisfy
+    the check.
     """
     if state is None:
         return True
@@ -794,5 +802,5 @@ def memory_state_satisfies_settings(
     if get_no_ram_reserve():
         return not (mlock or reserves_ram)
     if get_keep_resident():
-        return mlock
+        return mlock or not mlock_applicable
     return not policy_active

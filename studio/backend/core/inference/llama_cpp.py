@@ -46,6 +46,7 @@ import httpx
 
 from core.inference.llama_server_args import (
     _LAYER_OFFLOAD_FLAGS,
+    _MOE_OFFLOAD_FLAGS,
     _effective_tensor_parallel,
     _flag_name,
     _tensor_parallel_matches_loaded,
@@ -1885,6 +1886,9 @@ def _extra_args_set_spec_type(extra_args: Optional[Iterable[str]]) -> bool:
 # also strips these (plus the MoE flags) from inherited extras; sharing the layer
 # set keeps detection and stripping from drifting.
 _GPU_OFFLOAD_OVERRIDE_FLAGS = _LAYER_OFFLOAD_FLAGS
+# Extras that keep weights on the CPU regardless of the layer count, so a
+# full offload cannot be inferred from -ngl alone.
+_CPU_PLACEMENT_FLAGS = _MOE_OFFLOAD_FLAGS | frozenset({"-ot", "--override-tensor"})
 _THREAD_OVERRIDE_FLAGS = frozenset({"-t", "--threads"})
 # common_params defaults in the bundled llama.cpp runtime.
 _DEFAULT_LLAMA_N_BATCH = 2048
@@ -3087,6 +3091,9 @@ class LlamaCppBackend:
         # from an unmanaged one, so disabling the toggles can undo it.
         self._memory_state: Optional[tuple[bool, bool]] = None
         self._memory_policy_active: bool = False
+        # False when a launch is fully offloaded to a discrete GPU, where
+        # page-locking host RAM is skipped on purpose.
+        self._memory_mlock_applicable: bool = True
         self._mlock_enabled: bool = False
         self._n_ubatch: int = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled: bool = True
@@ -4386,6 +4393,44 @@ class LlamaCppBackend:
         LlamaCppBackend._emit_child_gpu_visibility(
             env, ",".join(str(i) for i in order), prefer_rocr = prefer_rocr
         )
+
+    def _offloads_every_layer(
+        self,
+        *,
+        gpu_memory_mode: Optional[str],
+        gpu_layers: Optional[int],
+        extra_args: Optional[Iterable[str]],
+    ) -> bool:
+        """True when every layer lands on the GPU by a route ``fully_gpu_offloaded``
+        does not cover: manual mode at its full-offload maximum, or a user -ngl.
+
+        Only the Model Memory gate uses this, and only to SKIP page-locking, so
+        every unknown answers False and keeps the pre-existing behaviour: an
+        unreadable block count, CPU-side experts, a tensor override that places
+        weights by name, or an unparseable -ngl.
+        """
+        n_layers = self.n_layers
+        if not n_layers:
+            return False
+        if self._n_cpu_moe:
+            return False
+        if _extra_args_set_any_flag(extra_args, _CPU_PLACEMENT_FLAGS):
+            return False
+        requested: Optional[int] = None
+        if gpu_memory_mode == "manual" and gpu_layers is not None and gpu_layers >= 0:
+            # Manual owns offload and strips -ngl from the extras, so the field
+            # is what the child gets. The picker's maximum is n_layers + 1.
+            requested = gpu_layers
+        else:
+            try:
+                requested = parse_gpu_layers_override(extra_args)
+            except ValueError:
+                return False
+        if requested is None:
+            return False
+        # -1 is "all layers"; llama.cpp needs a count ABOVE the block count to
+        # cover the output layer too, which is what the picker's maximum sends.
+        return requested == -1 or requested > n_layers
 
     @staticmethod
     def _amd_apu_wants_unified_memory(gpu_indices = None) -> bool:
@@ -6805,6 +6850,7 @@ class LlamaCppBackend:
         self._mlock_enabled = False
         self._memory_state = None
         self._memory_policy_active = False
+        self._memory_mlock_applicable = True
         self._n_ubatch = self._DEFAULT_N_UBATCH
         self._flash_attn_enabled = True
         self._effective_cache_types = ("f16", "f16")
@@ -10432,8 +10478,16 @@ class LlamaCppBackend:
                 from utils.hardware import is_apple_silicon
                 from utils.model_memory_settings import should_mlock
 
+                # fully_gpu_offloaded is only set by the auto branch. Manual mode
+                # and a user -ngl reach the same placement by their own routes,
+                # so derive those too or they would still be pinned.
+                _mem_all_on_gpu = fully_gpu_offloaded or self._offloads_every_layer(
+                    gpu_memory_mode = gpu_memory_mode,
+                    gpu_layers = gpu_layers,
+                    extra_args = extra_args,
+                )
                 _mem_host_resident = (
-                    not fully_gpu_offloaded
+                    not _mem_all_on_gpu
                     or is_apple_silicon()
                     or self._amd_apu_wants_unified_memory(gpu_indices)
                 )
@@ -10442,6 +10496,10 @@ class LlamaCppBackend:
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
                     weights_in_host_memory = _mem_host_resident,
                 )
+                # Remembered so the reload hint and the duplicate-load
+                # comparator don't demand an mlock this launch deliberately
+                # skipped, which no relaunch could ever satisfy.
+                self._memory_mlock_applicable = _mem_host_resident
                 if should_mlock() and not _mem_host_resident:
                     logger.info(
                         "Model Memory: skipping page-lock, the weights are fully "
@@ -11594,7 +11652,11 @@ class LlamaCppBackend:
         # A Model Memory toggle changes only the launch flags, so the intent is
         # unchanged and this would otherwise report already-loaded and leave the
         # running process on the old placement.
-        if not memory_state_satisfies_settings(self._memory_state, self._memory_policy_active):
+        if not memory_state_satisfies_settings(
+            self._memory_state,
+            self._memory_policy_active,
+            self._memory_mlock_applicable,
+        ):
             logger.info("Model Memory policy changed since launch; forcing a reload")
             return False
         if not self._runtime_matches_intent(intent, candidate_extra_args):
@@ -11749,6 +11811,7 @@ class LlamaCppBackend:
             self._mlock_enabled = False
             self._memory_state = None
             self._memory_policy_active = False
+            self._memory_mlock_applicable = True
             self._n_ubatch = self._DEFAULT_N_UBATCH
             self._flash_attn_enabled = True
             self._effective_cache_types = ("f16", "f16")

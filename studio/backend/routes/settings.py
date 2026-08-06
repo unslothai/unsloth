@@ -279,15 +279,20 @@ def _model_memory_reload_required() -> bool:
     last-wins argv, so a user-supplied --mlock / --no-mmap counts -- against
     what the current settings would produce. The idle-unload veto applies
     immediately (the loop re-reads each poll), so only placement can be stale.
+
+    Keyed on is_active, not is_loaded: a save that lands while a load is still
+    passing its health check would otherwise report no reload while the child
+    is already committed to the pre-save flags.
     """
     try:
         from routes.inference import get_llama_cpp_backend
 
         backend = get_llama_cpp_backend()
-        if not backend.is_loaded:
+        if not backend.is_active:
             return False
         state = getattr(backend, "_memory_state", None)
         policy_active = bool(getattr(backend, "_memory_policy_active", False))
+        mlock_applicable = bool(getattr(backend, "_memory_mlock_applicable", True))
     except Exception:
         return False
 
@@ -295,7 +300,7 @@ def _model_memory_reload_required() -> bool:
     # the reload path can never disagree.
     from core.inference.llama_server_args import memory_state_satisfies_settings
 
-    return not memory_state_satisfies_settings(state, policy_active)
+    return not memory_state_satisfies_settings(state, policy_active, mlock_applicable)
 
 
 def _model_memory_response() -> ModelMemoryResponse:

@@ -79,17 +79,29 @@ export function invalidateOpenAIAutoSwitchSettings() {
   cacheGeneration += 1;
 }
 
+// An invalidation racing a read is rare, so a couple of retries always
+// converges. The bound only exists so a write storm cannot spin here.
+const MAX_REREADS = 3;
+
 export async function loadOpenAIAutoSwitchSettings() {
-  if (cachedSettings) {
-    return cachedSettings;
-  }
-  const generation = cacheGeneration;
-  inFlightSettings ??= fetchOpenAIAutoSwitchSettings()
-    .then((settings) => cacheSettings(settings, generation))
-    .finally(() => {
+  let settings: OpenAIAutoSwitchSettings | null = null;
+  for (let attempt = 0; attempt < MAX_REREADS; attempt += 1) {
+    if (cachedSettings) {
+      return cachedSettings;
+    }
+    const generation = cacheGeneration;
+    inFlightSettings ??= fetchOpenAIAutoSwitchSettings().finally(() => {
       inFlightSettings = null;
     });
-  return inFlightSettings;
+    settings = await inFlightSettings;
+    if (generation === cacheGeneration) {
+      return cacheSettings(settings, generation);
+    }
+    // The request was already in flight when the cache was dropped, so this
+    // response predates the write. Callers put it straight into idleUnloadArmed,
+    // so refetch against the new generation rather than returning it.
+  }
+  return settings as OpenAIAutoSwitchSettings;
 }
 
 export async function updateOpenAIAutoSwitchSettings(

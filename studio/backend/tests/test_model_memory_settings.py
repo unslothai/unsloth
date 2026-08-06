@@ -320,13 +320,21 @@ class TestReloadRequired:
     emitted, so a user-supplied --mlock / --no-mmap counts too."""
 
     @staticmethod
-    def _required(keep, no_res, state, monkeypatch):
+    def _required(keep, no_res, state, monkeypatch, *, is_loaded = True, is_active = True):
         import routes.inference
         import routes.settings as rs
         import utils.model_memory_settings as mm
 
         backend = type(
-            "_B", (), {"is_loaded": True, "_memory_state": state, "_memory_policy_active": True}
+            "_B",
+            (),
+            {
+                "is_loaded": is_loaded,
+                "is_active": is_active,
+                "_memory_state": state,
+                "_memory_policy_active": True,
+                "_memory_mlock_applicable": True,
+            },
         )()
         monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
         monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
@@ -352,15 +360,43 @@ class TestReloadRequired:
         assert self._required(keep, no_res, state, monkeypatch) is expected
 
     def test_no_model_loaded_never_asks_for_a_reload(self, monkeypatch):
+        assert (
+            self._required(
+                False, True, (False, True), monkeypatch, is_loaded = False, is_active = False
+            )
+            is False
+        )
+
+    def test_a_save_during_startup_still_asks_for_a_reload(self, monkeypatch):
+        """The child is spawned and committed to its flags well before the
+        health check flips is_loaded; keying on that reported no reload while
+        the process was already coming up on the pre-save placement."""
+        assert (
+            self._required(
+                False, True, (True, False), monkeypatch, is_loaded = False, is_active = True
+            )
+            is True
+        )
+
+    def test_a_skipped_mlock_is_not_a_permanent_reload_prompt(self, monkeypatch):
         import routes.inference
         import routes.settings as rs
+        import utils.model_memory_settings as mm
 
         backend = type(
             "_B",
             (),
-            {"is_loaded": False, "_memory_state": (False, True), "_memory_policy_active": True},
+            {
+                "is_loaded": True,
+                "is_active": True,
+                "_memory_state": (False, False),
+                "_memory_policy_active": True,
+                "_memory_mlock_applicable": False,
+            },
         )()
         monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
         assert rs._model_memory_reload_required() is False
 
 
@@ -659,3 +695,159 @@ class TestRacingReadReturnsTheNewValue:
         assert mm.get_keep_resident() is mm.DEFAULT_KEEP_RESIDENT
         assert mm.get_no_ram_reserve() is mm.DEFAULT_NO_RAM_RESERVE
         assert mm.should_mlock() is False
+
+
+class TestMlockApplicability:
+    """A launch that deliberately skips mlock (full offload to a discrete GPU)
+    still satisfies residency. Demanding the flag would ask for a reload no
+    relaunch could satisfy, and would reject every duplicate load forever."""
+
+    def test_a_skipped_mlock_satisfies_keep_resident(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        state = resolve_effective_memory_state([], {})
+        assert state == (False, False)
+        # The regression: without the applicability flag this reads as unsatisfied.
+        assert memory_state_satisfies_settings(state, True, True) is False
+        assert memory_state_satisfies_settings(state, True, False) is True
+
+    def test_page_lockable_launches_are_unchanged(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        unpinned = resolve_effective_memory_state([], {})
+        pinned = resolve_effective_memory_state(["--load-mode", "mmap+mlock"], {})
+        assert memory_state_satisfies_settings(unpinned, True) is False
+        assert memory_state_satisfies_settings(pinned, True) is True
+
+    def test_applicability_does_not_override_no_ram_reserve(self, monkeypatch):
+        """no-reserve still wins: a pinned process must be relaunched even where
+        mlock would not have been applicable."""
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: True)
+        state = resolve_effective_memory_state(["--mlock"], {})
+        assert memory_state_satisfies_settings(state, True, False) is False
+
+    def test_applicability_is_ignored_with_both_toggles_off(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: False)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        state = resolve_effective_memory_state([], {})
+        assert memory_state_satisfies_settings(state, False, False) is True
+        assert memory_state_satisfies_settings(state, True, False) is False
+
+    def test_an_ungoverned_process_still_always_matches(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        assert memory_state_satisfies_settings(None, True, False) is True
+
+    def test_the_default_keeps_the_old_meaning(self, monkeypatch):
+        """Callers that never pass the flag behave exactly as before."""
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: True)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: False)
+        assert memory_state_satisfies_settings((False, False), True) is False
+        assert memory_state_satisfies_settings((True, False), True) is True
+
+
+class TestFullOffloadDetection:
+    """``fully_gpu_offloaded`` is set only by the auto branch, so the mlock gate
+    has to derive manual mode and a user -ngl for itself."""
+
+    @staticmethod
+    def _backend(n_layers, n_cpu_moe = 0):
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        return type(
+            "_B",
+            (),
+            {
+                "n_layers": n_layers,
+                "_n_cpu_moe": n_cpu_moe,
+                "_offloads_every_layer": LlamaCppBackend._offloads_every_layer,
+            },
+        )()
+
+    def _check(self, n_layers, mode, layers, extras = None, n_cpu_moe = 0):
+        backend = self._backend(n_layers, n_cpu_moe)
+        return backend._offloads_every_layer(
+            gpu_memory_mode = mode, gpu_layers = layers, extra_args = extras
+        )
+
+    def test_manual_at_the_pickers_maximum_is_a_full_offload(self):
+        # The slider's maximum is block_count + 1.
+        assert self._check(32, "manual", 33) is True
+
+    def test_manual_short_of_the_maximum_leaves_layers_on_the_host(self):
+        assert self._check(32, "manual", 32) is False
+        assert self._check(32, "manual", 31) is False
+        assert self._check(32, "manual", 0) is False
+
+    def test_manual_with_cpu_experts_is_not_a_full_offload(self):
+        assert self._check(32, "manual", 33, n_cpu_moe = 4) is False
+
+    def test_a_user_ngl_override_counts_in_auto_mode(self):
+        assert self._check(32, "auto", None, ["-ngl", "99"]) is True
+        assert self._check(32, "auto", None, ["--gpu-layers", "33"]) is True
+        assert self._check(32, "auto", None, ["-ngl", "-1"]) is True
+        assert self._check(32, "auto", None, ["-ngl", "16"]) is False
+
+    def test_a_tensor_override_keeps_weights_on_the_host(self):
+        for flag in ("-ot", "--override-tensor", "-cmoe", "--cpu-moe"):
+            assert self._check(32, "auto", None, ["-ngl", "99", flag, "x"]) is False
+
+    def test_every_unknown_answers_no(self):
+        # No block count, no extras, unparseable -ngl: all keep the old behaviour
+        # of page-locking rather than guessing a full offload.
+        assert self._check(None, "manual", 33) is False
+        assert self._check(0, "manual", 33) is False
+        assert self._check(32, "auto", None, None) is False
+        assert self._check(32, "auto", None, []) is False
+        assert self._check(32, "auto", None, ["-ngl", "abc"]) is False
+
+    def test_manual_auto_layers_falls_back_to_the_extras(self):
+        # gpu_layers < 0 means manual did not pin a count.
+        assert self._check(32, "manual", -1, ["-ngl", "99"]) is True
+        assert self._check(32, "manual", -1, []) is False
+
+    def test_the_manual_branch_really_does_not_set_fully_gpu_offloaded(self):
+        """Pins the premise. If a later change starts setting it there, this
+        test fails and the derived check can be simplified away."""
+        import ast
+        import inspect
+        import textwrap
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        source = textwrap.dedent(inspect.getsource(LlamaCppBackend.load_model))
+        tree = ast.parse(source)
+        manual_branches = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.If)
+            and "gpu_memory_mode == \"manual\" and gpu_layers >= 0"
+            in ast.unparse(node.test).replace("'", '"')
+        ]
+        assert manual_branches, "the manual offload branch moved"
+        # Only the branch body: its orelse holds the auto branch, which is the
+        # one place that does set the flag.
+        assigned = {
+            target.id
+            for branch in manual_branches
+            for statement in branch.body
+            for node in ast.walk(statement)
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        assert "fully_gpu_offloaded" not in assigned
+
