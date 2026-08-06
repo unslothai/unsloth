@@ -1523,7 +1523,7 @@ def test_a_quoted_command_line_with_nothing_behind_it_is_still_screened(windows_
     "command",
     [
         'start "powershell -Command ls"',
-        'start "powershell -Command ls" -x y',
+        'start "powershell -Command ls" /min',
         'start /d C:\\dir "powershell -Command ls" ; rm -rf x',
         'start "powershell -Command ls"\nrm -rf x',
     ],
@@ -1533,6 +1533,20 @@ def test_a_quoted_command_line_is_screened_when_no_command_follows(windows_git_b
     # separator, a newline, or nothing at all means no command came after it, so
     # the quoted word is the command line START runs.
     assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd //c start "C:\\Program Files\\PowerShell\\7\\pwsh.exe" -notepad.exe',
+        'start "powershell -Command ls" -x y',
+    ],
+)
+def test_a_hyphen_target_is_a_program_not_a_start_option(windows_git_bash_only, command):
+    # Every option START documents is slash-prefixed, so a `-` opens none of
+    # them. A hyphenated word behind the quoted one is the program START runs,
+    # which makes the quoted word its window title and nothing to screen.
+    assert not tools._find_blocked_commands(command)
 
 
 @pytest.mark.parametrize(
@@ -1578,3 +1592,71 @@ def test_a_call_wrapper_only_forwards_where_cmd_parses(command):
 
     assert not screen(True)
     assert screen(False)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['cmd //c "xargs call powershell"', 'cmd //c "env call powershell"'],
+)
+def test_call_stops_at_an_external_wrapper(windows_terminal, command):
+    # xargs and env run their child themselves rather than handing the rest of
+    # the line back to cmd, so cmd's own builtins no longer apply behind one.
+    # `xargs [OPTION]... COMMAND [INITIAL-ARGS]...` looks for a program named
+    # call, finds none, and never reaches PowerShell.
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['cmd //c "call xargs powershell"', 'cmd //c "xargs powershell"'],
+)
+def test_a_wrapper_still_runs_its_own_child(windows_terminal, command):
+    # The other half. CALL re-parses the line under cmd, so a wrapper behind one
+    # is still cmd's, and a wrapper with a real child still launches it.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+def test_screening_stays_linear_in_escaped_operators(monkeypatch):
+    # Counting the carets in front of each operator by re-measuring the text
+    # from its start copied a longer prefix every time, so a payload made of
+    # escaped operators cost time in the square of its length.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    monkeypatch.setattr(
+        tools,
+        "_BLOCKED_COMMANDS",
+        tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
+    )
+    assert tools._has_bare_cmd_operator("echo hi&start")
+    assert not tools._has_bare_cmd_operator("echo hi^&start")
+    assert tools._has_bare_cmd_operator("echo hi^^&start")
+    assert not tools._has_bare_cmd_operator("echo hi^^^&start")
+
+    def cost(count):
+        text = 'cmd /c "echo ' + "^&" * count + '"'
+        start = time.perf_counter()
+        tools._find_blocked_commands(text)
+        return time.perf_counter() - start
+
+    cost(2000)  # warm the caches the walk builds
+    small, large = cost(4000), cost(16000)
+    # Quadratic would be about 16x for four times the input.
+    assert large < small * 10, f"{small=} {large=}"
+
+
+def test_screening_stays_linear_in_path_fragments(windows_terminal):
+    # A quoted path made of many separator-less fragments asked the same
+    # lookahead once per fragment, and every call rescanned what was left.
+    assert "pwsh" in tools._find_blocked_commands(
+        'cmd /c "C:\\Program a a dir\\pwsh.exe"'
+    )
+
+    def cost(count):
+        text = 'cmd /c "C:\\Program ' + "a " * count + 'dir\\pwsh.exe"'
+        start = time.perf_counter()
+        tools._find_blocked_commands(text)
+        return time.perf_counter() - start
+
+    cost(500)
+    small, large = cost(1000), cost(4000)
+    assert large < small * 10, f"{small=} {large=}"

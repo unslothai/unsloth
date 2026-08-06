@@ -1128,8 +1128,9 @@ def _is_document_target(target: str) -> bool:
     # final chunk called a PowerShell launch a `.ps1` document and skipped every
     # other check on it.
     words = stripped.split()
+    carries = _path_continuations(words)
     for position, word in enumerate(words):
-        if position and not _continues_path(words, position):
+        if position and not _continues_path(words, position, carries):
             break
         if _path_suffix(word) in _WINDOWS_EXE_SUFFIXES:
             return False
@@ -1147,12 +1148,16 @@ def _has_bare_cmd_operator(text: str) -> bool:
     whole second command behind one. An odd run of carets in front of the
     operator hands it over as literal text instead.
     """
-    for index, char in enumerate(text):
-        if char not in "&|":
+    carets = 0
+    for char in text:
+        if char == "^":
+            carets += 1
             continue
-        carets = len(text[:index]) - len(text[:index].rstrip("^"))
-        if carets % 2 == 0:
+        if char in "&|" and carets % 2 == 0:
             return True
+        # Counted along the one walk rather than re-measured from the start of
+        # the text at every operator, which copied a longer prefix each time.
+        carets = 0
     return False
 
 
@@ -1593,7 +1598,25 @@ def _is_start_switch(token: str) -> bool:
     return switch.startswith("/") and "/" not in switch[1:]
 
 
-def _continues_path(words: "list[str]", position: int) -> bool:
+def _path_continuations(words: "list[str]") -> "list[bool]":
+    """For each position, whether a LATER word still carries a path separator.
+
+    One reverse pass answering the lookahead `_continues_path` needs. Asking it
+    per word rescanned the whole remaining list each time, so a quoted path made
+    of many separator-less fragments cost time in the square of its length.
+    """
+    carries = [False] * (len(words) + 1)
+    for position in range(len(words) - 1, -1, -1):
+        bare = words[position].strip('"')
+        if not bare or bare.startswith("-"):
+            continue
+        if _PATH_FRAGMENT_RE.match(bare) or _URL_SCHEME_RE.match(bare):
+            continue
+        carries[position] = "\\" in bare or "/" in bare or carries[position + 1]
+    return carries
+
+
+def _continues_path(words: "list[str]", position: int, carries: "list[bool] | None" = None) -> bool:
     """Whether ``words[position]`` is another chunk of the path in front of it.
 
     What continues a path holding spaces is a RELATIVE fragment. A word that
@@ -1612,15 +1635,9 @@ def _continues_path(words: "list[str]", position: int) -> bool:
         return False
     if "\\" in bare or "/" in bare:
         return True
-    for later in words[position + 1 :]:
-        following = later.strip('"')
-        if not following or following.startswith("-"):
-            break
-        if _PATH_FRAGMENT_RE.match(following) or _URL_SCHEME_RE.match(following):
-            break
-        if "\\" in following or "/" in following:
-            return True
-    return False
+    if carries is None:
+        carries = _path_continuations(words)
+    return carries[position + 1]
 
 
 def _quoted_program_word(payload: str) -> str:
@@ -1676,6 +1693,7 @@ def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "s
     # recovering a program from it would block a line cmd cannot run.
     if not words or not _PATH_FRAGMENT_RE.match(words[0].strip('"')):
         return set()
+    carries = _path_continuations(words)
     program: "list[str]" = []
     for position, word in enumerate(words):
         bare = word.strip('"')
@@ -1685,7 +1703,7 @@ def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "s
         # continues one is a RELATIVE fragment: `C:\Program Files\PowerShell\7\
         # pwsh` runs pwsh, while the `rm` of `C:\tools\notepad rm` is a file
         # notepad is being run on.
-        if program and not _continues_path(words, position):
+        if program and not _continues_path(words, position, carries):
             break
         program.append(bare)
         if os.path.splitext(bare)[1].lower() in _WINDOWS_EXE_SUFFIXES:
@@ -2009,6 +2027,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         return -1, steps >= _MAX_EXEC_PREFIX_SCAN and i < len(tokens)
 
     expect_command = True  # start of string is a command position
+    active_prefixes = command_prefixes  # narrowed once an external wrapper executes
     command_indexes: "set[int]" = set()  # words the shell runs, for the walks below
     win_shell_pending = False  # a cmd at command position, awaiting its /c or /k
     payload_pending = False  # the next word is what cmd's /c hands to a new shell
@@ -2071,6 +2090,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             win_shell_pending = False
             payload_pending = False
             xargs_index = -1
+            active_prefixes = command_prefixes
             continue
         if token.startswith("-"):
             # A wrapper option whose value is a SEPARATE token precedes that
@@ -2135,11 +2155,17 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             blocked |= _blocked_matching_glob(base)
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag,
         # non-numeric token is the real command. sudo is also in _BLOCKED_COMMANDS.
-        if base in command_prefixes:
+        if base in active_prefixes:
             if base == "xargs" and xargs_index < 0:
                 xargs_index = token_index
             prefix_pending = True
             prefix_command = base
+            if base not in _CMD_ONLY_PREFIXES:
+                # An EXTERNAL wrapper runs its child itself rather than handing
+                # the rest of the line back to cmd, so cmd's own builtins stop
+                # applying behind one: `cmd //c "xargs call powershell"` looks
+                # for a program named call and never reaches PowerShell.
+                active_prefixes = command_prefixes - _CMD_ONLY_PREFIXES
             continue
         expect_command = False
         prefix_pending = False
@@ -2277,15 +2303,17 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             # still glued to a word was quoted and is not an operator at all.
             return ""
         quotes = 0
+        carets = 0
         last = -1
         for position, char in enumerate(token):
+            if char == "^":
+                carets += 1
+                continue
             if char == '"':
                 quotes += 1
-            elif char in "&|(" and quotes % 2 == 0:
-                before = token[:position]
-                carets = len(before) - len(before.rstrip("^"))
-                if carets % 2 == 0:
-                    last = position
+            elif char in "&|(" and quotes % 2 == 0 and carets % 2 == 0:
+                last = position
+            carets = 0
         return token[last + 1 :] if last >= 0 else ""
 
     def _is_start_word(token: str) -> bool:
@@ -2472,6 +2500,10 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         # it means START had a title and a command, so the quoted word is the
         # window title. An option, a separator, or nothing at all means no
         # command followed, and the quoted word was the command line itself.
+        #
+        # START's own options are slash-prefixed, which is what `_is_start_switch`
+        # reads. A `-` opens no option there, so `-notepad.exe` is the program
+        # START runs and the quoted word in front of it really was the title.
         following_word = tokens[j] if j < len(tokens) else ""
         title_had_a_command = (
             bool(following_word)
@@ -2480,7 +2512,8 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             # otherwise read as the program this title was given.
             and j not in newline_starts
             and not (
-                following_word.startswith("-") or following_word.strip('"') in _SHELL_SEPARATORS
+                _is_start_switch(following_word.strip('"'))
+                or following_word.strip('"') in _SHELL_SEPARATORS
             )
         )
         if titled and lexed_posix and not title_had_a_command:
