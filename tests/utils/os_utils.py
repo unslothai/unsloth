@@ -5,6 +5,22 @@ import shutil
 import importlib
 
 
+def _missing_dependency(message):
+    """Skip under pytest, exit when run as a standalone script.
+
+    These helpers are called at module import time, so under pytest the
+    `sys.exit(1)` below lands during collection. pytest turns a SystemExit
+    there into an INTERNALERROR and aborts the whole session, so one absent
+    optional package (xcodec2, snac, soundfile, ffmpeg) means the entire suite
+    runs zero tests rather than skipping four files. The files are also meant
+    to be runnable directly, hence the exit is kept for that path.
+    """
+    if "pytest" in sys.modules:
+        import pytest
+        pytest.skip(message, allow_module_level = True)
+    sys.exit(1)
+
+
 def detect_package_manager():
     """Detect the available package manager"""
     package_managers = {
@@ -56,7 +72,7 @@ def check_package_installed(package_name, package_manager = None):
 
 
 def require_package(package_name, executable_name = None):
-    """Require a package to be installed, exit if not found"""
+    """Require a package to be installed; skip the module under pytest if not."""
 
     # Executable in PATH is the most reliable signal
     if executable_name:
@@ -92,7 +108,7 @@ def require_package(package_name, executable_name = None):
     print(f"  conda install -c conda-forge {package_name}")
 
     print(f"\nPlease install the required package and run the script again.")
-    sys.exit(1)
+    _missing_dependency(f"{package_name} is not installed")
 
 
 # Usage
@@ -104,7 +120,7 @@ def require_python_package(
     import_name = None,
     pip_name = None,
 ):
-    """Require a Python package to be installed, exit if not found"""
+    """Require a Python package to be installed; skip the module under pytest if not."""
     if import_name is None:
         import_name = package_name
     if pip_name is None:
@@ -117,6 +133,6 @@ def require_python_package(
         print(f"  # or with conda:")
         print(f"  conda install {pip_name}")
         print(f"\nAfter installation, run this script again.")
-        sys.exit(1)
+        _missing_dependency(f"Python package '{package_name}' is not installed")
     else:
         print(f"✓ Python package '{package_name}' is installed")
