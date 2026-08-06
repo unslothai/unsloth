@@ -6,9 +6,14 @@
 from hub.routes.inventory import router as inventory_router
 from hub.routes.datasets import router as datasets_router
 from hub.routes.token import router as token_router
+from hub.routes.discovery import router as discovery_router
 
 __all__ = [
     "inventory_router",
     "datasets_router",
     "token_router",
+    "discovery_router",
 ]
+
+# Bind the re-export so the import-hoist verifier counts it as used.
+_ = (discovery_router,)
