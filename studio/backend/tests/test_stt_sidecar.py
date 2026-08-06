@@ -1154,7 +1154,12 @@ def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_p
             calls.append(("info", repo, kwargs))
             return SimpleNamespace(sha = revision, siblings = siblings)
 
-    def fake_spawn_download(args, hf_token = None, *, hub_cache = None):
+    def fake_spawn_download(
+        args,
+        hf_token = None,
+        *,
+        hub_cache = None,
+    ):
         calls.append(("snapshot", _worker_args(args)))
         return _FakeDownloadProcess()
 

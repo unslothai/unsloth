@@ -93,7 +93,6 @@ class SttDownloadCacheError(RuntimeError):
 def _capture_stt_hub_cache() -> Path:
     """Capture the configured Hub cache once for one STT download run."""
     from utils.hf_cache_settings import get_hf_cache_paths
-
     return Path(get_hf_cache_paths().hub_cache).expanduser()
 
 
@@ -132,8 +131,7 @@ def _prepare_stt_cache_for_http(repo: str, hub_cache: Path) -> None:
     entries = list(iter_active_repo_cache_dirs("model", repo, root = hub_cache))
     try:
         all_marked_http = bool(entries) and all(
-            (entry / TRANSPORT_MARKER_NAME).read_text(encoding = "utf-8").strip()
-            == TRANSPORT_HTTP
+            (entry / TRANSPORT_MARKER_NAME).read_text(encoding = "utf-8").strip() == TRANSPORT_HTTP
             for entry in (*entries, canonical)
         )
     except (OSError, UnicodeDecodeError):
@@ -312,6 +310,7 @@ def _active_hf_hub_cache() -> Path:
     """Return the currently configured Hub cache, including live relocation."""
     try:
         from utils.hf_cache_settings import get_hf_cache_paths
+
         paths = get_hf_cache_paths()
         # Studio's live cache setting takes precedence over environment defaults.
         if paths.source == "studio":
@@ -331,6 +330,7 @@ def _active_hf_hub_cache() -> Path:
         if hf_home:
             return Path(hf_home).expanduser() / "hub"
         from huggingface_hub.constants import HF_HUB_CACHE
+
         return Path(HF_HUB_CACHE)
 
 
@@ -670,10 +670,7 @@ class _SnapshotDownloadState:
             return None
 
     def _run_worker(
-        self,
-        args: list[str],
-        hf_token: Optional[str],
-        hub_cache: Path,
+        self, args: list[str], hf_token: Optional[str], hub_cache: Path
     ) -> tuple[bool, bytes]:
         from core.inference.stt_download_worker import reap_download, spawn_download
 

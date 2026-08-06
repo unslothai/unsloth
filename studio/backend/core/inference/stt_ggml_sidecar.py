@@ -384,9 +384,11 @@ def _cached_model_path(
             return cached
 
     try:
-        main_revision = (_repo_cache_dir(repo_id, hub_cache = root) / "refs" / "main").read_text(
-            encoding = "utf-8"
-        ).strip()
+        main_revision = (
+            (_repo_cache_dir(repo_id, hub_cache = root) / "refs" / "main")
+            .read_text(encoding = "utf-8")
+            .strip()
+        )
     except OSError:
         return None
     if not _HF_COMMIT_SHA.fullmatch(main_revision):
@@ -497,7 +499,6 @@ class _GgmlDownloadState:
     ) -> None:
         if hub_cache is None:
             from core.inference.stt_sidecar import _active_hf_hub_cache
-
             hub_cache = self._hub_cache or _active_hf_hub_cache()
         repo_id = GGML_STT_REPOS[model_id]
         filename = GGML_STT_MODELS[model_id]

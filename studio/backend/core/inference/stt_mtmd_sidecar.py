@@ -193,6 +193,7 @@ def _cached_file(
     from huggingface_hub import hf_hub_download
 
     from core.inference.stt_sidecar import _active_hf_hub_cache
+
     root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
     try:
         return hf_hub_download(
@@ -215,6 +216,7 @@ def _cached_model_paths(
     """Both cached files, or None when either is missing."""
     spec = MTMD_STT_MODELS[model_id]
     from core.inference.stt_sidecar import _active_hf_hub_cache
+
     root = hub_cache if hub_cache is not None else _active_hf_hub_cache()
 
     def cached_at(candidate_revision: str) -> Optional[tuple[str, str]]:
@@ -245,9 +247,11 @@ def _cached_model_paths(
             return cached
 
     try:
-        main_revision = (_repo_cache_dir(spec.repo, hub_cache = root) / "refs" / "main").read_text(
-            encoding = "utf-8"
-        ).strip()
+        main_revision = (
+            (_repo_cache_dir(spec.repo, hub_cache = root) / "refs" / "main")
+            .read_text(encoding = "utf-8")
+            .strip()
+        )
     except OSError:
         return None
     if not _HF_COMMIT_SHA.fullmatch(main_revision):
@@ -364,7 +368,6 @@ class _MtmdDownloadState:
     ) -> None:
         if hub_cache is None:
             from core.inference.stt_sidecar import _active_hf_hub_cache
-
             hub_cache = self._hub_cache or _active_hf_hub_cache()
         spec = MTMD_STT_MODELS[model_id]
         registry = None

@@ -25,8 +25,7 @@ def _repo_dir(root: Path, repo: str) -> Path:
 
 
 def test_http_cache_preparation_fails_closed_when_blob_directory_is_unreadable(
-    monkeypatch,
-    tmp_path,
+    monkeypatch, tmp_path
 ):
     repo = "Org/Repo"
     entry = _repo_dir(tmp_path, repo)
@@ -70,9 +69,7 @@ def test_http_cache_preparation_requires_marker_readback(monkeypatch, tmp_path):
     ids = ("alias-first", "canonical-first"),
 )
 def test_http_cache_preparation_requires_every_case_variant_marker(
-    monkeypatch,
-    tmp_path,
-    canonical_first,
+    monkeypatch, tmp_path, canonical_first
 ):
     repo = "Org/Repo"
     alias = _repo_dir(tmp_path, "org/repo")
@@ -170,10 +167,7 @@ def test_spawned_stt_worker_is_http_only_and_uses_the_captured_cache(monkeypatch
     assert observed["argv"][-4:] == ["--repo-id", "Org/Repo", "--filename", "model.bin"]
 
 
-def test_captured_cache_worker_stays_online_during_temporary_offline_guard(
-    monkeypatch,
-    tmp_path,
-):
+def test_captured_cache_worker_stays_online_during_temporary_offline_guard(monkeypatch, tmp_path):
     fake_package = tmp_path / "modules" / "huggingface_hub"
     fake_package.mkdir(parents = True)
     observed_path = tmp_path / "worker-environment.json"
@@ -236,10 +230,7 @@ def test_worker_downloads_only_the_exact_repeated_filenames(monkeypatch):
         )
         == 0
     )
-    assert [call["filename"] for call in calls] == [
-        "literal[1].json",
-        "weights/*.safetensors",
-    ]
+    assert [call["filename"] for call in calls] == ["literal[1].json", "weights/*.safetensors"]
 
 
 def test_selected_file_progress_covers_partial_final_and_windows_snapshot(tmp_path):
@@ -333,7 +324,12 @@ def test_mtmd_run_holds_one_owner_and_one_cache_through_final_lookup(monkeypatch
         def terminate(self):
             events.append(("terminate",))
 
-    def spawn(args, hf_token = None, *, hub_cache = None):
+    def spawn(
+        args,
+        hf_token = None,
+        *,
+        hub_cache = None,
+    ):
         events.append(("spawn", args, hub_cache))
         return Process()
 
@@ -426,14 +422,24 @@ def test_ggml_metadata_revision_pins_progress_worker_and_cached_lookup(monkeypat
         lambda *_args, **_kwargs: f"https://example/{repo}/{filename}",
     )
 
-    def spawn(args, hf_token = None, *, hub_cache = None):
+    def spawn(
+        args,
+        hf_token = None,
+        *,
+        hub_cache = None,
+    ):
         observed["args"] = args
         observed["hub_cache"] = hub_cache
         observed["progress"] = state._downloaded_bytes()
         observed["mutable_main"] = revision_b
         return Process()
 
-    def lookup(model, *, hub_cache = None, revision = None):
+    def lookup(
+        model,
+        *,
+        hub_cache = None,
+        revision = None,
+    ):
         observed["lookup"] = (model, hub_cache, revision)
         return str(entry / "snapshots" / revision / filename)
 

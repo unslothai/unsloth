@@ -20,10 +20,7 @@ _CASES = (
 
 @pytest.mark.parametrize("_label,key,variant,blob_hashes", _CASES)
 def test_stt_owner_published_first_blocks_every_same_repo_model_hub_shape(
-    _label,
-    key,
-    variant,
-    blob_hashes,
+    _label, key, variant, blob_hashes
 ):
     registry = DownloadRegistry()
     owner = object()
@@ -46,10 +43,7 @@ def test_stt_owner_published_first_blocks_every_same_repo_model_hub_shape(
 
 @pytest.mark.parametrize("_label,key,variant,blob_hashes", _CASES)
 def test_model_hub_published_first_blocks_stt_for_every_same_repo_shape(
-    _label,
-    key,
-    variant,
-    blob_hashes,
+    _label, key, variant, blob_hashes
 ):
     registry = DownloadRegistry()
     claimed, _state = registry.claim(
