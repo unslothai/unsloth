@@ -110,11 +110,25 @@ DESKTOP_SECRET_HASH_KEY = "desktop_secret_hash"
 DESKTOP_SECRET_CREATED_AT_KEY = "desktop_secret_created_at"
 PBKDF2_ITERATIONS = 100_000
 _START_API_KEY_MARKER_ENV = "_UNSLOTH_START_API_KEY_MARKER"
+_CLOUDFLARE_INTENT_ENV = "_UNSLOTH_CLOUDFLARE_INTENT"
 
 
 def _consume_start_api_key_marker_env() -> bool:
     """Consume the one-shot readiness marker passed across a Studio re-exec."""
     return os.environ.pop(_START_API_KEY_MARKER_ENV, None) == "1"
+
+
+def _preserve_cloudflare_intent(cloudflare: Optional[bool], secure: bool) -> None:
+    """Carry the user's tri-state choice across compatibility re-execs."""
+    if _CLOUDFLARE_INTENT_ENV in os.environ:
+        return
+    if secure or cloudflare is True:
+        intent = "enabled"
+    elif cloudflare is False:
+        intent = "disabled"
+    else:
+        intent = "unset"
+    os.environ[_CLOUDFLARE_INTENT_ENV] = intent
 
 
 # __file__ is unsloth_cli/commands/studio.py -- two parents up is the package root
@@ -1358,7 +1372,9 @@ def studio_default(
         None,
         "--enable-tools/--disable-tools",
         help = "Force server-side tools (web search, code execution) on or off for "
-        "every request. Default: on for every bind, with the per-chat UI toggle honored.",
+        "every request. Default: on for every bind, with the per-chat UI toggle honored. "
+        "/v1/messages takes the on direction per request (enable_tools) because it has no "
+        "confirmation channel; the off direction still applies everywhere.",
     ),
     disable_dns_pinning: bool = typer.Option(
         False,
@@ -1465,6 +1481,8 @@ def studio_default(
             )
             raise typer.Exit(2)
         return
+
+    _preserve_cloudflare_intent(cloudflare, secure)
 
     # --secure requires the tunnel; force a loopback bind.
     if secure:
@@ -1868,7 +1886,9 @@ def run(
         rich_help_panel = _RUN_PANEL_TOOLS,
         help = (
             "Force server-side tools (web search, code execution) on or off for "
-            "every request. Default: on for every bind."
+            "every request. Default: on for every bind. /v1/messages takes the on "
+            "direction per request (enable_tools) because it has no confirmation "
+            "channel; the off direction still applies everywhere."
         ),
     ),
     disable_dns_pinning: bool = typer.Option(
@@ -2044,6 +2064,7 @@ def run(
 
     # Back-compat: --not-secure is a deprecated alias for --no-secure.
     secure = _resolve_secure(secure, not_secure)
+    _preserve_cloudflare_intent(cloudflare, secure)
     extra_llama_args: List[str] = list(ctx.args) if ctx.args else []
 
     # Tool-call healing/nudging are read from the env at backend import. Resolve here

@@ -23,12 +23,14 @@ from models.auth import (
     ChangePasswordRequest,
     CreateApiKeyRequest,
     CreateApiKeyResponse,
+    DesktopInitialPasswordRequest,
     DesktopLoginRequest,
     RefreshTokenRequest,
 )
 from models.users import Token
 from auth import storage, hashing
 from auth.authentication import (
+    authenticated_via_desktop_jwt,
     create_access_token,
     create_refresh_token,
     get_current_credential,
@@ -480,11 +482,81 @@ async def refresh(payload: RefreshTokenRequest) -> Token:
     )
 
 
+@router.post("/desktop-initial-password", response_model = Token)
+async def set_desktop_initial_password(
+    payload: DesktopInitialPasswordRequest,
+    request: Request,
+    current_subject: str = Depends(get_current_subject_allow_password_change),
+    is_desktop: bool = Depends(authenticated_via_desktop_jwt),
+) -> Token:
+    """Set the first real password from the desktop app, which never sees the seeded one.
+
+    Desktop auth is passwordless, so the desktop user cannot complete the normal
+    flow: it needs the generated bootstrap password that only the terminal ever
+    printed. Remote browser logins do need a real password, so an
+    already-authenticated desktop session may set it while the seeded credential
+    is still in place. Once set, change-password owns every later change.
+    """
+    if not is_desktop:
+        raise HTTPException(
+            status_code = status.HTTP_403_FORBIDDEN,
+            detail = "This action requires the Unsloth desktop app.",
+        )
+
+    record = storage.get_user_and_secret(current_subject)
+    if record is None:
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail = "User session is invalid",
+        )
+
+    _salt, pwd_hash, _jwt_secret, must_change_password = record
+    if not must_change_password:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "A password is already set. Change it instead.",
+        )
+    if any(ch.isspace() for ch in payload.new_password):
+        raise HTTPException(
+            status_code = status.HTTP_400_BAD_REQUEST,
+            detail = "New password cannot contain spaces",
+        )
+
+    # Conditional on the credential just read: a web password change or a
+    # reset-password landing while this request is in flight must not be
+    # overwritten by a caller that verified no password at all.
+    new_secret = storage.update_password(
+        current_subject,
+        payload.new_password,
+        revoke_refresh_tokens = True,
+        expect_password_hash = pwd_hash,
+        preserve_desktop_secret = True,
+    )
+    if new_secret is None:
+        raise HTTPException(
+            status_code = status.HTTP_409_CONFLICT,
+            detail = "The password changed while this request was in flight. Try again.",
+        )
+    try:
+        request.app.state.bootstrap_password = None
+    except AttributeError:
+        pass
+    access_token = create_access_token(subject = current_subject, desktop = True, secret = new_secret)
+    refresh_token = create_refresh_token(subject = current_subject, desktop = True, secret = new_secret)
+    return Token(
+        access_token = access_token,
+        refresh_token = refresh_token,
+        token_type = "bearer",
+        must_change_password = False,
+    )
+
+
 @router.post("/change-password", response_model = Token)
 async def change_password(
     payload: ChangePasswordRequest,
     request: Request,
     current_subject: str = Depends(get_current_subject_allow_password_change),
+    is_desktop: bool = Depends(authenticated_via_desktop_jwt),
 ) -> Token:
     """Allow the authenticated user to replace the default password."""
     record = storage.get_user_and_secret(current_subject)
@@ -515,11 +587,15 @@ async def change_password(
     # password commit, leaving pre-change tokens able to mint access tokens.
     # Conditional on the hash just verified: a reset-password that landed while
     # this request was in flight must not be overwritten by it.
+    # The desktop app authenticates with a local secret rather than this
+    # password; revoking that secret would break its auto-auth over a change it
+    # made itself. A browser session still revokes it.
     new_secret = storage.update_password(
         current_subject,
         payload.new_password,
         revoke_refresh_tokens = True,
         expect_password_hash = pwd_hash,
+        preserve_desktop_secret = is_desktop,
     )
     if new_secret is None:
         raise HTTPException(
@@ -530,8 +606,12 @@ async def change_password(
         request.app.state.bootstrap_password = None
     except AttributeError:
         pass
-    access_token = create_access_token(subject = current_subject, secret = new_secret)
-    refresh_token = create_refresh_token(subject = current_subject, secret = new_secret)
+    access_token = create_access_token(
+        subject = current_subject, desktop = is_desktop, secret = new_secret
+    )
+    refresh_token = create_refresh_token(
+        subject = current_subject, desktop = is_desktop, secret = new_secret
+    )
     return Token(
         access_token = access_token,
         refresh_token = refresh_token,

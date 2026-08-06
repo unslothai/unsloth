@@ -317,6 +317,13 @@ export const ko = {
         title: "비밀번호 변경",
         description:
           "현재 비밀번호를 입력하고 새 비밀번호를 선택하세요(최소 {minLength}자).",
+        setTrigger: "원격 비밀번호 설정",
+        setTitle: "원격 비밀번호 설정",
+        setDescription:
+          "원격 브라우저가 unsloth 계정으로 로그인할 때 사용할 비밀번호를 선택하세요(최소 {minLength}자). Unsloth 데스크톱 앱은 계속 자동으로 로그인합니다.",
+        setSubmit: "비밀번호 설정",
+        setting: "설정 중...",
+        setDone: "비밀번호가 설정되었습니다.",
         currentPassword: "현재 비밀번호",
         newPassword: "새 비밀번호",
         confirmPassword: "새 비밀번호 확인",
