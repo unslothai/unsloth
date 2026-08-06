@@ -412,7 +412,7 @@ def test_streamed_reasoning_is_batched_before_database_writes(research_home, mon
     )
     supervisor = worker.ResearchSupervisor(SimpleNamespace(state = SimpleNamespace(server_port = 1)))
 
-    report, reasoning, finish_reason = asyncio.run(
+    report, reasoning, finish_reason, _usage = asyncio.run(
         supervisor._stream_completion(
             run,
             [{"role": "user", "content": "question"}],

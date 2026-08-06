@@ -18,9 +18,14 @@ from core.research_runs import (
     ResearchSupervisor,
     RunCancelled,
     _citation_title,
+    _clamp_max_tokens_for_context,
+    _completion_hit_context_wall,
     _escape_link_destination,
+    _estimate_prompt_tokens,
+    _resolve_max_tokens,
     _sanitize_public_query,
     _shield_untrusted,
+    _synthesis_length_limit_error,
     _validate_report_document_sources,
     _validate_report_sources,
 )
@@ -228,6 +233,48 @@ def test_prompt_budget_counts_the_whole_prompt(monkeypatch):
     assert research_runs._trimmable_budget(total, 0, 1_000) == 1_000
     assert research_runs._trimmable_budget(total, total - 10, 1_000) == 10
     assert research_runs._trimmable_budget(total, total + 5_000, 1_000) == 0
+
+
+def test_resolve_max_tokens_clamps_to_loaded_context(monkeypatch):
+    monkeypatch.setattr(research_runs, "_loaded_context_length", lambda: 12_288)
+    messages = [{"role": "user", "content": "x" * 33_000}]
+    prompt_tokens = _estimate_prompt_tokens(messages)
+    resolved = _resolve_max_tokens(16_384, {}, messages)
+    assert resolved == 12_288 - prompt_tokens
+    assert resolved < 16_384
+
+
+def test_completion_hit_context_wall_matches_live_probe():
+    usage = {
+        "prompt_tokens": 11_032,
+        "completion_tokens": 1_256,
+        "total_tokens": 12_288,
+    }
+    assert _completion_hit_context_wall(
+        usage,
+        requested_max_tokens = 16_384,
+        context_length = 12_288,
+    )
+    assert not _completion_hit_context_wall(
+        {
+            "prompt_tokens": 1_000,
+            "completion_tokens": 16_384,
+            "total_tokens": 17_384,
+        },
+        requested_max_tokens = 16_384,
+        context_length = 32_768,
+    )
+
+
+def test_synthesis_length_limit_error_names_context_window():
+    usage = {
+        "prompt_tokens": 11_032,
+        "completion_tokens": 1_256,
+        "total_tokens": 12_288,
+    }
+    message = _synthesis_length_limit_error(usage, requested_max_tokens = 16_384)
+    assert "context window" in message.lower()
+    assert "Context Length" in message
 
 
 def test_every_research_prompt_path_is_budgeted():
@@ -687,10 +734,10 @@ def test_stream_completion_retries_after_the_model_is_loaded_again(monkeypatch):
         return None
 
     supervisor = _make_supervisor(_check_active)
-    report, reasoning, finish_reason = asyncio.run(
+    report, reasoning, finish_reason, usage = asyncio.run(
         supervisor._stream_completion(_waiting_run(30.0), [{"role": "user"}], report_progress = False)
     )
-    assert (report, reasoning, finish_reason) == ("report", "", "stop")
+    assert (report, reasoning, finish_reason, usage) == ("report", "", "stop", None)
     assert len(sent) == 2
 
 
@@ -738,7 +785,7 @@ def test_stream_completion_retries_a_transport_error_before_any_bytes_stream(mon
         [httpx.ConnectError(_TRANSPORT_BLIP), _response(200, body = _stream_body())],
     )
     supervisor = _make_supervisor(_noop_check_active)
-    assert _run_stream(supervisor) == ("report", "", "stop")
+    assert _run_stream(supervisor) == ("report", "", "stop", None)
     assert len(sent) == 2
     assert delays == [1]
 
@@ -750,7 +797,7 @@ def test_stream_completion_retries_a_transient_server_error(monkeypatch):
         [_response(503, body = "overloaded"), _response(200, body = _stream_body())],
     )
     supervisor = _make_supervisor(_noop_check_active)
-    assert _run_stream(supervisor) == ("report", "", "stop")
+    assert _run_stream(supervisor) == ("report", "", "stop", None)
     assert len(sent) == 2
     assert delays == [1]
 
@@ -1425,7 +1472,7 @@ def test_stream_completion_semantic_output_resets_the_idle_timeout(monkeypatch):
     _install_fake_client(monkeypatch, [_ProgressStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "thinking", "stop")
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "thinking", "stop", None)
 
 
 def test_stream_completion_allows_output_before_first_output_timeout(monkeypatch):
@@ -1453,7 +1500,7 @@ def test_stream_completion_allows_output_before_first_output_timeout(monkeypatch
     _install_fake_client(monkeypatch, [_SlowPrefillStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop")
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop", None)
 
 
 def test_first_output_deadline_disarms_once_output_starts(monkeypatch):
@@ -1554,7 +1601,7 @@ def test_stream_completion_counts_whitespace_tokens_as_output(monkeypatch):
     _install_fake_client(monkeypatch, [_WhitespaceStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 1.0) == (" \n\treport", "", "stop")
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == (" \n\treport", "", "stop", None)
 
 
 def test_stream_completion_stops_at_done_even_if_socket_stays_open(monkeypatch):
@@ -1581,7 +1628,7 @@ def test_stream_completion_stops_at_done_even_if_socket_stays_open(monkeypatch):
     _install_fake_client(monkeypatch, [_OpenSocketAfterDone()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop")
+    assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop", None)
     assert state == {"iteratorClosed": True, "responseClosed": True}
 
 
