@@ -1074,6 +1074,25 @@ def test_root_still_wins_when_both_layouts_name_the_same_family(tmp_path):
     assert found is not None and Path(found).name == root.name
 
 
+def test_an_unusable_candidate_does_not_win_the_tier_comparison(tmp_path):
+    """Tier order is decided by specificity, so an unusable candidate that
+    outranks everything would put its tier first and then be skipped, handing
+    back a less specific sibling instead of the usable copy next door."""
+    import os
+
+    weight = tmp_path / "model_v2_release-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    # Most specific, but a dangling link: it must not speak for the root tier.
+    os.symlink(tmp_path / "missing", tmp_path / "mtp-model_v2_release.gguf")
+    (tmp_path / "mtp-model.gguf").write_bytes(b"base")
+    (tmp_path / "MTP").mkdir()
+    usable = tmp_path / "MTP" / "mtp-model_v2-Q8_0.gguf"
+    usable.write_bytes(b"mid")
+
+    found = detect_mtp_file(str(weight))
+    assert found is not None and Path(found).name == usable.name
+
+
 def test_a_qat_weight_still_pairs_with_its_base_family_drafter(tmp_path):
     """Negative control for the ranking above: unsloth/gemma-4-12B-it-qat-GGUF
     ships mtp-gemma-4-12B-it.gguf, so the prefix rule has to keep working when no

@@ -1840,6 +1840,16 @@ def detect_mtp_file(
                     continue
                 if not _matches_weight(f):
                     continue
+                # Launchability is settled here, not at emission: an unusable
+                # candidate that outranks everything (a dangling link, a partial
+                # split) would otherwise win the tier comparison below and then
+                # be skipped, handing back a less specific sibling. The subdir
+                # tier is filtered at collection for the same reason.
+                try:
+                    if not (f.is_file() and _launchable(f)):
+                        continue
+                except OSError:
+                    continue
                 root_candidates.append(f)
 
     subdir_candidates: list[Path] = []
@@ -1887,8 +1897,6 @@ def detect_mtp_file(
         # Ranking is stable, so files of equal specificity keep the scan order.
         for f in sorted(root_candidates, key = lambda c: _drafter_stem_rank(c.name, kind = "mtp")):
             try:
-                if not (f.is_file() and _launchable(f)):
-                    continue
                 launch = _drafter_launch_path(f)
             except OSError:
                 continue
