@@ -338,6 +338,17 @@ export interface ApiMonitorEntry {
   reason?: "manual" | "idle" | "api" | null;
   // 0-100 while a download row is running.
   progress?: number | null;
+  // Server-side time to first token (engine prefill when reported, else measured).
+  ttft_ms?: number | null;
+  tok_per_sec?: number | null;
+  stop_reason?: string | null;
+}
+
+export interface ApiMonitorQueue {
+  capacity: number;
+  active: number;
+  queued: number;
+  free: number;
 }
 
 export interface ApiMonitorResponse {
@@ -348,6 +359,8 @@ export interface ApiMonitorResponse {
   active_model?: string | null;
   context_length?: number | null;
   active_requests: number;
+  /** Live slot/queue occupancy; null when no llama model is loaded. */
+  queue?: ApiMonitorQueue | null;
   /** Absent on older backends -- treat only an explicit `false` as disabled. */
   logging_enabled?: boolean;
   entries: ApiMonitorEntry[];

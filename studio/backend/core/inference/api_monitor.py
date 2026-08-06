@@ -71,6 +71,11 @@ class ApiMonitorEntry:
     shared: bool = False
     # 0-100 for a running download row; None when not applicable.
     progress: Optional[float] = None
+    # Monotonic stamp of the first reply text; engine timings override it in snapshot().
+    first_token_monotonic: Optional[float] = None
+    prompt_ms: Optional[float] = None
+    tok_per_sec: Optional[float] = None
+    stop_reason: Optional[str] = None
 
     def snapshot(
         self,
@@ -89,6 +94,21 @@ class ApiMonitorEntry:
         context_usage = None
         if self.total_tokens is not None and self.context_length:
             context_usage = min(1.0, max(0.0, self.total_tokens / self.context_length))
+        ttft_ms = None
+        if self.prompt_ms is not None:
+            ttft_ms = max(0, int(self.prompt_ms))
+        elif self.first_token_monotonic is not None:
+            ttft_ms = max(0, int((self.first_token_monotonic - self.started_monotonic) * 1000))
+        tok_per_sec = self.tok_per_sec
+        if (
+            tok_per_sec is None
+            and self.completion_tokens
+            and self.finished_monotonic is not None
+            and self.first_token_monotonic is not None
+        ):
+            gen_s = self.finished_monotonic - self.first_token_monotonic
+            if gen_s > 0.05:
+                tok_per_sec = self.completion_tokens / gen_s
         payload = {
             "id": self.id,
             "endpoint": self.endpoint,
@@ -116,6 +136,9 @@ class ApiMonitorEntry:
             "event": self.event,
             "reason": self.reason,
             "progress": self.progress,
+            "ttft_ms": ttft_ms,
+            "tok_per_sec": round(tok_per_sec, 2) if tok_per_sec is not None else None,
+            "stop_reason": self.stop_reason,
         }
         if include_details:
             payload["prompt"] = self.prompt
@@ -265,6 +288,8 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
+            if entry.first_token_monotonic is None:
+                entry.first_token_monotonic = time.monotonic()
             # Preview is capped: once the "..." marker is present the head is
             # frozen, so skip the per-chunk re-concat (avoids O(n^2) on long
             # generations). A reply that landed exactly on the cap has no marker
@@ -284,7 +309,34 @@ class ApiMonitor:
             entry = self._find_locked(entry_id)
             if entry is None:
                 return
+            if text and entry.first_token_monotonic is None:
+                entry.first_token_monotonic = time.monotonic()
             entry.reply = _trim(text, _MAX_REPLY_CHARS)
+            entry.updated_at = time.time()
+
+    def set_perf(
+        self,
+        entry_id: Optional[str],
+        *,
+        tok_per_sec: Optional[float] = None,
+        prompt_ms: Optional[float] = None,
+        stop_reason: Optional[str] = None,
+    ) -> None:
+        if not entry_id:
+            return
+        with self._lock:
+            entry = self._find_locked(entry_id)
+            if entry is None:
+                return
+            try:
+                if tok_per_sec is not None:
+                    entry.tok_per_sec = float(tok_per_sec)
+                if prompt_ms is not None:
+                    entry.prompt_ms = float(prompt_ms)
+            except (TypeError, ValueError):
+                pass
+            if stop_reason is not None:
+                entry.stop_reason = str(stop_reason)
             entry.updated_at = time.time()
 
     def set_usage(

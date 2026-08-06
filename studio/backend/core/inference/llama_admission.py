@@ -795,6 +795,13 @@ def get_llama_admission_queue(key: str) -> LlamaAdmissionQueue:
         return queue
 
 
+def peek_llama_admission_snapshot(key: str) -> Optional[LlamaAdmissionSnapshot]:
+    """Read-only view of one queue's state; never creates a queue."""
+    with _QUEUES_LOCK:
+        queue = _QUEUES.get(key)
+    return queue.snapshot() if queue is not None else None
+
+
 def reset_llama_admission_queues() -> None:
     global _parked_total
     with _QUEUES_LOCK:
