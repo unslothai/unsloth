@@ -1318,9 +1318,7 @@ def test_an_fp8_checkpoint_without_the_activation_floor_is_rejected():
     assert pq._fp8_activation_floor_present(floored, None) is True
     assert pq._fp8_activation_floor_present(unfloored, None) is False
     # Zero is not a floor either: it is what an unclamped amax divide produces.
-    assert pq._fp8_activation_floor_present(
-        {"w": _FakeFp8Tensor(0.0)}, None
-    ) is False
+    assert pq._fp8_activation_floor_present({"w": _FakeFp8Tensor(0.0)}, None) is False
 
 
 def test_the_floor_check_ignores_dense_and_unreadable_state_dicts():
