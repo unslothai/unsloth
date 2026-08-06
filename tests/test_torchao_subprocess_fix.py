@@ -70,7 +70,7 @@ def test_it_chains_instead_of_shadowing():
 
 def test_the_chain_runs_before_the_fix():
     src = IF._subprocess_sitecustomize_source()
-    assert src.index("_chain_to_the_real_sitecustomize()") < src.index("_apply()")
+    assert src.index("_chain_to_the_real_sitecustomize()") < src.index("sys.meta_path.insert")
 
 
 def test_it_never_raises_at_interpreter_startup():
@@ -356,6 +356,16 @@ def test_the_hook_fixes_a_process_we_never_launched(staged):
     site, fake = staged
     p = _child("import torchao; print('OK', torchao.__version__)", [site, fake])
     assert "OK 0.18.0" in p.stdout, p.stdout + p.stderr
+
+
+def test_it_does_not_import_torch_until_torchao_is(staged):
+    """It runs in every Python descendant, most of which never use torchao.
+    Importing torch there costs seconds of startup and torch's memory."""
+    site, fake = staged
+    p = _child("import sys; print('TORCH', 'torch' in sys.modules)", [site, fake])
+    assert "TORCH False" in p.stdout, p.stdout + p.stderr
+    p = _child("import torchao, sys; print('TORCH', 'torch' in sys.modules)", [site, fake])
+    assert "TORCH True" in p.stdout, p.stdout + p.stderr
 
 
 def test_it_also_reaches_a_grandchild(staged):

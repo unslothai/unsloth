@@ -3703,9 +3703,35 @@ def _apply():
 
 _ATEN_LIBRARY = None
 
+
+class _TorchaoImportHook:
+    """Runs the fix when a child actually imports torchao, and not before.
+
+    This module is on PYTHONPATH, so it starts every Python descendant, most
+    of which never touch torchao. Calling `_apply()` here would import torch
+    in all of them, adding seconds of startup and torch's memory to unrelated
+    utilities and workers. A meta_path finder costs a string compare instead,
+    and still runs before torchao's module body, which is the only ordering
+    the fix needs.
+    """
+
+    def find_spec(self, fullname, path = None, target = None):
+        if fullname != "torchao":
+            return None
+        try:
+            sys.meta_path.remove(self)  # once, and before _apply imports torch
+        except ValueError:
+            pass
+        try:
+            _apply()
+        except Exception:
+            pass
+        return None  # let the normal finders import torchao
+
+
 _chain_to_the_real_sitecustomize()
 try:
-    _apply()
+    sys.meta_path.insert(0, _TorchaoImportHook())
 except Exception:
     # Never let this abort interpreter startup: it would break every
     # subprocess, which is far worse than the import error it fixes.
