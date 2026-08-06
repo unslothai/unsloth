@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+# The POSIX `install.sh --local --no-torch` bootstrap, which 13 jobs across 8
+# workflows ran with a byte-identical body. Extracted so the invocation has one
+# definition: the `set -o pipefail` + `tee` idiom is easy to get subtly wrong
+# (without pipefail the step reports the exit status of `tee`, not of
+# install.sh, and a failed install passes), and a flag or log-path change
+# previously had to be applied to 13 places consistently.
+#
+# Deliberately NOT parameterised beyond the two tokens. This action is "the
+# standard local no-torch install", not a general installer wrapper: giving it
+# an `args` input would let call sites drift apart again, which is the thing it
+# exists to prevent. The Windows `install.ps1` path is a different script with a
+# different body and stays separate.
+#
+# Composite actions cannot read the `secrets` context, so both tokens are
+# explicit inputs that each caller passes. That is not boilerplate for its own
+# sake: it keeps the PR-withholding decision visible at the call site, where it
+# belongs, rather than hidden behind a default.
+#
+# Keep `id`, `if`, `timeout-minutes` and `continue-on-error` on the CALLER's
+# step. They are step-level keys on the `uses:` step, so `steps.<id>.outcome`
+# gating in the caller keeps working unchanged; the caller sees this action as a
+# single step and cannot inspect the steps inside it.
+
+name: Install Unsloth (--local, --no-torch)
+description: >-
+  Run the checked-out install.sh in --local --no-torch mode, teeing the
+  installer output to logs/install.log. Requires actions/checkout to have run.
+
+inputs:
+  gh-token:
+    description: >-
+      Token for installer calls that hit the GitHub API (release lookups for the
+      llama.cpp prebuilt). Normally secrets.GITHUB_TOKEN.
+    required: true
+  hf-token:
+    description: >-
+      Hugging Face token, or the empty string to run unauthenticated. Callers
+      that reach this step on a `pull_request` event should withhold it with
+      `${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}`,
+      because this step executes checked-out PR code; public models still
+      download without it. Callers whose job cannot run on `pull_request` (for
+      example a `workflow_dispatch`-only job) may pass it unconditionally.
+    required: false
+    default: ''
+
+runs:
+  using: composite
+  steps:
+    - name: Install Unsloth (--local, --no-torch)
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.gh-token }}
+        HF_TOKEN: ${{ inputs.hf-token }}
+      run: |
+        mkdir -p logs
+        set -o pipefail
+        bash install.sh --local --no-torch 2>&1 | tee logs/install.log
