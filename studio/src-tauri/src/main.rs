@@ -466,10 +466,10 @@ fn setup_tray(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     // WebKitGTK's hardware dmabuf path can violate Wayland explicit-sync
-    // protocol on current NVIDIA/Mesa stacks. Select its supported shared-
-    // memory transport before any GTK/WebKit object can be initialized.
+    // protocol on current NVIDIA/Mesa stacks. Select a compatible fallback
+    // before any GTK/WebKit object can be initialized.
     #[cfg(target_os = "linux")]
-    let forced_shared_memory = linux_webkit::configure_wayland_renderer();
+    let webkit_rendering_workaround = linux_webkit::configure_wayland_renderer();
     // Fix PATH for GUI apps (macOS .app bundles, Linux AppImage, Windows)
     // GUI apps don't inherit shell dotfile PATH — this spawns the user's
     // login shell to source .zshrc/.bashrc/.profile and sets PATH properly.
@@ -479,8 +479,8 @@ fn main() {
     info!("Unsloth desktop app starting");
 
     #[cfg(target_os = "linux")]
-    if forced_shared_memory {
-        info!("Wayland detected; using WebKitGTK shared-memory buffer transport");
+    if let Some(variable) = webkit_rendering_workaround {
+        info!("Wayland detected; set {variable}=1 for WebKitGTK compatibility");
     }
     windows_job::initialize();
 
