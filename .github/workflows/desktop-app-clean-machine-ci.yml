@@ -111,8 +111,14 @@ jobs:
             echo "resolved release tag: $REL_TAG"
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi
+          # Match on the extension, not on a filename fragment. The old '*aarch64.dmg'
+          # was the Tauri default bundle name, and the release pipeline moved to its own
+          # scheme at desktop-v0.1.512-beta (Unsloth-Desktop-<ver>-MacOS.dmg), which
+          # silently turned every run red at this line with "no assets match the file
+          # pattern". A release ships exactly one .dmg, and the arm64 assertion below is
+          # what actually checks the architecture, so the fragment bought nothing.
           gh release download "$REL_TAG" --repo "$REL_REPO" \
-            --pattern '*aarch64.dmg' --dir dl
+            --pattern '*.dmg' --dir dl
           ls -la dl
 
       - name: Strip the developer toolchain
@@ -178,27 +184,14 @@ jobs:
           # for the button, so launching alone sits for 90s without running the bundled
           # installer. Invoke it as src-tauri/src/install.rs does: --tauri, stdin closed,
           # no tty. --tauri rejects a custom studio home (install.sh:102-114).
-          # KNOWN OUTCOME PIN, retire when the desktop release catches up to #7547: REL_TAG
-          # predates it, so the bundle's own install.sh still hard-exits on the Xcode CLT
-          # gate #7547 turned into a warning. Only a new release moves that, not this PR.
-          # _check_macos_deps is the function #7547 added, so finding it retires the pin.
           SH="$APP/Contents/Resources/install.sh"
-          if grep -q '_check_macos_deps' "$SH"; then
-            echo "::error::the bundled install.sh now carries #7547; delete this pin block and let the venv + torch assertions below run unconditionally"
-            exit 1
-          fi
           rc=0
           env -u UNSLOTH_STUDIO_HOME \
             bash "$SH" --tauri \
             < /dev/null 2>&1 | tee logs/bundled-install.log || rc=$?
           echo "bundled installer exit code: $rc"
-          # Exit code AND the exact gate line, so any other non-zero exit still fails.
-          if [ "$rc" -eq 1 ] && grep -qE '^==> Xcode Command Line Tools are required\.[[:space:]]*$' logs/bundled-install.log; then
-            echo "::notice::known pre-#7547 outcome: the shipped bundle's install.sh stopped on the Xcode CLT gate and exited 1. Not a regression here; the next desktop release retires this pin."
-            exit 0
-          fi
           [ "$rc" -eq 0 ] || {
-            echo "::error::bundled installer exited $rc, which is neither success nor the pinned pre-#7547 outcome (exit 1 plus '==> Xcode Command Line Tools are required.')"
+            echo "::error::bundled installer exited $rc"
             exit 1
           }
           PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
@@ -389,29 +382,14 @@ jobs:
           fi
           [ -n "$SH" ] && [ -f "$SH" ] || { echo "::error::the bundle ships no install.sh resource"; exit 1; }
           echo "bundled installer: $SH"
-          # KNOWN OUTCOME PIN, retire when the desktop release catches up to #7547: the
-          # bundle carries its own install.sh and REL_TAG predates it, so on a stripped
-          # runner it still exits 2 at the NEED_SUDO handshake for the optional set rather
-          # than falling through to prebuilt llama.cpp. Only a new release moves that.
-          # _SMART_APT_OPTIONAL is the guard #7547 added, so finding it retires the pin.
-          if grep -q '_SMART_APT_OPTIONAL' "$SH"; then
-            echo "::error::the bundled install.sh now carries #7547; delete this pin block and let the venv + torch assertions below run unconditionally"
-            exit 1
-          fi
           # --tauri rejects a custom studio home (install.sh:102-114), so drop the
           # workspace-scoped override; close stdin as install.rs does.
           rc=0
           env -u UNSLOTH_STUDIO_HOME \
             bash "$SH" --tauri < /dev/null 2>&1 | tee logs/bundled-install.log || rc=$?
           echo "bundled installer exit code: $rc"
-          # Exit code AND the exact optional set, so a different NEED_SUDO list or any other
-          # non-zero exit is still a failure.
-          if [ "$rc" -eq 2 ] && grep -qE '^\[TAURI:NEED_SUDO\] cmake git build-essential libcurl4-openssl-dev[[:space:]]*$' logs/bundled-install.log; then
-            echo "::notice::known pre-#7547 outcome: the shipped bundle's install.sh asked to elevate for the optional set and exited 2. Not a regression here; the next desktop release retires this pin."
-            exit 0
-          fi
           [ "$rc" -eq 0 ] || {
-            echo "::error::bundled installer exited $rc, which is neither success nor the pinned pre-#7547 outcome (exit 2 plus exactly '[TAURI:NEED_SUDO] cmake git build-essential libcurl4-openssl-dev')"
+            echo "::error::bundled installer exited $rc"
             exit 1
           }
           PY="$HOME/.unsloth/studio/unsloth_studio/bin/python"
@@ -509,7 +487,10 @@ jobs:
             echo "resolved release tag: $REL_TAG"
             echo "REL_TAG=$REL_TAG" >> "$GITHUB_ENV"
           fi
-          gh release download "$REL_TAG" --repo "$REL_REPO" --pattern '*setup.exe' --dir dl
+          # Extension, not fragment: see the macOS leg. '*setup.exe' was the Tauri NSIS
+          # default; the current asset is Unsloth-Desktop-<ver>-Windows.exe, and a release
+          # ships exactly one .exe.
+          gh release download "$REL_TAG" --repo "$REL_REPO" --pattern '*.exe' --dir dl
           ls -la dl
 
       - name: Strip the developer toolchain
@@ -627,7 +608,7 @@ jobs:
       - name: Silent install
         shell: pwsh
         run: |
-          $exe = (Get-ChildItem dl/*setup.exe | Select-Object -First 1).FullName
+          $exe = (Get-ChildItem dl/*.exe | Select-Object -First 1).FullName
           # /S is the NSIS silent switch: a user double-clicks, but an installer that cannot
           # run unattended cannot be scripted or MDM-deployed either.
           $p = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru
@@ -728,10 +709,10 @@ jobs:
             Write-Host '::error::tauri.log records no desktop_preflight disposition; the app never completed preflight'
             exit 1
           }
-          # Windows only, and stricter than macOS/Linux: those two accept the bundled
-          # installer's pre-#7547 pinned exit, so no venv exists there and NotInstalled is
-          # the honest answer. Here the installer was required to exit 0, create the venv
-          # and import torch, and the app reads the same default root it wrote
+          # All three legs now require the installer to exit 0, create the venv and import
+          # torch -- the #7547 outcome pins that let macOS and Linux accept a non-zero exit
+          # are gone. This extra assertion is still Windows-only because the app reads the
+          # same default root it wrote there
           # (%USERPROFILE%\.unsloth\studio; it ignores UNSLOTH_STUDIO_HOME, which is why
           # the log is found at the second path). So anything but a ready disposition means
           # the app cannot boot what was just installed -- the reported failure, on the very
