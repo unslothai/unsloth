@@ -3994,6 +3994,7 @@ class LlamaCppBackend:
                 "supports_metrics": False,
                 "supports_slot_save": False,
                 "supports_no_mmproj_offload": False,
+                "supports_load_mode": False,
                 "spec_draft_ngl_flag": None,
             }
         try:
@@ -4125,6 +4126,8 @@ class LlamaCppBackend:
             supports_metrics = _is_real("--metrics")
             supports_slot_save = _is_real("--slot-save-path")
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
+            # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
+            supports_load_mode = _is_real("--load-mode")
             # Record WHICH alias this build has: --spec-draft-ngl only landed in
             # b8955, and a build exposing only --gpu-layers-draft would refuse to
             # start on the newer name. Long forms only, since the block parser above
@@ -4170,6 +4173,7 @@ class LlamaCppBackend:
             "supports_metrics": supports_metrics,
             "supports_slot_save": supports_slot_save,
             "supports_no_mmproj_offload": supports_no_mmproj_offload,
+            "supports_load_mode": supports_load_mode,
             "spec_draft_ngl_flag": spec_draft_ngl_flag,
         }
         cls._capability_cache[cache_key] = info
@@ -10408,8 +10412,11 @@ class LlamaCppBackend:
                 # vetoed ones are dropped from a launch-only copy: extra_args keeps
                 # None-vs-[] (inherit vs clear) for the commit block below, and the
                 # user's saved flags survive turning the toggle back off.
-                _mem_managed, _mem_extras = apply_model_memory_policy(extra_args)
-                self._mlock_enabled = "--mlock" in _mem_managed
+                _mem_managed, _mem_extras = apply_model_memory_policy(
+                    extra_args,
+                    supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                )
+                self._mlock_enabled = bool(_mem_managed)
                 if _mem_managed:
                     cmd.extend(_mem_managed)
                     logger.info(

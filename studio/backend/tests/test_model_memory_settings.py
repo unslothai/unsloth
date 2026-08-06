@@ -35,11 +35,11 @@ def policy(monkeypatch):
     """
     import utils.model_memory_settings as mm
 
-    def run(keep_resident: bool, no_ram_reserve: bool, extras):
+    def run(keep_resident: bool, no_ram_reserve: bool, extras, supports_load_mode = False):
         monkeypatch.setattr(mm, "get_keep_resident", lambda: keep_resident)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_ram_reserve)
         monkeypatch.setattr(mm, "should_mlock", lambda: keep_resident and not no_ram_reserve)
-        return apply_model_memory_policy(extras)
+        return apply_model_memory_policy(extras, supports_load_mode = supports_load_mode)
 
     return run
 
@@ -53,9 +53,29 @@ class TestFlagPolicy:
         assert out == extras
 
     def test_keep_resident_emits_mlock(self, policy):
+        # Legacy build: --mlock is deprecated upstream but still accepted.
         managed, out = policy(True, False, ["--temp", "0.7"])
         assert managed == ["--mlock"]
         assert out == ["--temp", "0.7"]
+
+    def test_keep_resident_prefers_load_mode_when_supported(self, policy):
+        managed, out = policy(True, False, ["--temp", "0.7"], supports_load_mode = True)
+        assert managed == ["--load-mode", "mmap+mlock"]
+        assert out == ["--temp", "0.7"]
+
+    def test_load_mode_is_stripped_from_extras(self, policy):
+        # A user --load-mode would last-wins-override the managed one, and
+        # "--load-mode mlock" is a RAM reservation no-reserve must veto.
+        _, out = policy(True, False, ["--load-mode", "none", "--temp", "0.7"],
+                        supports_load_mode = True)
+        assert out == ["--temp", "0.7"]
+        _, out = policy(False, True, ["-lm", "mlock", "--temp", "0.7"])
+        assert out == ["--temp", "0.7"]
+
+    def test_load_mode_strip_is_not_boolean(self, policy):
+        # It takes a value, so the value must go with the flag, not survive.
+        _, out = policy(False, True, ["--load-mode", "mmap+mlock"])
+        assert out == []
 
     def test_keep_resident_does_not_double_emit_mlock(self, policy):
         # A user --mlock folds into the managed one, not a second copy.
