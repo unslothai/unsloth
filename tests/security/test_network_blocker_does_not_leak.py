@@ -113,7 +113,7 @@ def test_the_finalizer_really_restores_the_original():
         generator = C.network_blocker.__wrapped__()
         next(generator)
         assert socket.socket is C._BlockedSocket, "setup did not install the guard"
-        next(generator, None)                   # run the finally
+        next(generator, None)  # run the finally
         assert socket.socket is real, "teardown did not hand the original back"
     finally:
         socket.socket = outer
@@ -133,28 +133,48 @@ def test_a_later_suite_gets_a_working_socket_back(tmp_path):
 
     root = Path(__file__).resolve().parents[2]
     (tmp_path / "security").mkdir()
-    (tmp_path / "security" / "conftest.py").write_text(textwrap.dedent(f"""
+    (tmp_path / "security" / "conftest.py").write_text(
+        textwrap.dedent(f"""
         import sys
         sys.path.insert(0, {str(root)!r})
         from tests.security.conftest import *          # noqa: F401,F403
         from tests.security.conftest import network_blocker  # noqa: F401
-    """), encoding = "utf-8")
-    (tmp_path / "security" / "test_inside.py").write_text(textwrap.dedent("""
+    """),
+        encoding = "utf-8",
+    )
+    (tmp_path / "security" / "test_inside.py").write_text(
+        textwrap.dedent("""
         import socket
         def test_the_guard_is_on():
             assert socket.socket.__name__ == "_BlockedSocket"
-    """), encoding = "utf-8")
-    (tmp_path / "test_zafter.py").write_text(textwrap.dedent("""
+    """),
+        encoding = "utf-8",
+    )
+    (tmp_path / "test_zafter.py").write_text(
+        textwrap.dedent("""
         import socket
         def test_the_guard_is_gone():
             assert socket.socket.__name__ != "_BlockedSocket", (
                 "the security suite's socket patch outlived it"
             )
-    """), encoding = "utf-8")
+    """),
+        encoding = "utf-8",
+    )
 
     done = subprocess.run(
-        [sys.executable, "-m", "pytest", str(tmp_path), "-q", "-p", "no:randomly",
-         "-p", "no:cacheprovider"],
-        capture_output = True, text = True, timeout = 300,
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            str(tmp_path),
+            "-q",
+            "-p",
+            "no:randomly",
+            "-p",
+            "no:cacheprovider",
+        ],
+        capture_output = True,
+        text = True,
+        timeout = 300,
     )
     assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-2000:]
