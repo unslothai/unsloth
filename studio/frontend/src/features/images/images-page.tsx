@@ -2543,15 +2543,17 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       /* Settings column + preview canvas: both on the page background, split by a rule. Each pane pads its own content.
          Full width, so the canvas grows with the window; the settings column stays fixed.
          pl-8 puts its content 40px in, level with the model selector label above and
-         with pr-8 on the other side of the column. */
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
+         with pr-8 on the other side of the column.
+         overflow-x-hidden because an unset overflow-x computes to auto beside overflow-y-auto,
+         which would let a wide row pan the page sideways on a phone. */
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
         <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[408px] md:overflow-hidden md:border-r md:border-b-0">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
           <div
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-20 pl-0.5 pr-8 md:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-6 pl-0.5 pr-8 md:pb-20 md:overflow-y-auto",
               settingsFadeClass,
             )}
           >

@@ -1545,7 +1545,9 @@ export function VideoPage({ active = true }: { active?: boolean }) {
       {/* Controls rail + preview canvas, as on the Images tabs: no cards, a rule the full page
           height. Full width, so the preview grows with the window.
           Gutters match Images, so both pages' content starts at the same 40px. */}
-      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
+      {/* overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto,
+          letting a wide row pan the page sideways on a phone. */}
+      <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
         {/* Widened by the pl-8 so the controls keep their old width. */}
         <div className="relative flex w-full shrink-0 flex-col border-b border-border/60 pl-8 md:w-[400px] md:overflow-hidden md:border-r md:border-b-0">
           {/* pl-0.5 keeps focus rings off the scroll container's edge. */}
@@ -1553,7 +1555,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-20 pl-0.5 pr-7 md:overflow-y-auto",
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-6 pl-0.5 pr-7 md:pb-20 md:overflow-y-auto",
               settingsFadeClass,
             )}
           >

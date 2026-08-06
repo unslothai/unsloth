@@ -1111,8 +1111,10 @@ export function DiffusionTrainPanel({
     </div>
   );
 
+  // overflow-x-hidden: an unset overflow-x computes to auto beside overflow-y-auto,
+  // letting a wide row pan the page sideways on a phone.
   return (
-    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
+    <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden pl-2 pr-5 pt-9 sm:pr-8 md:flex-row md:overflow-hidden">
       {/* Left: configure. No cards: both panes sit on the page background, split by a full-height rule. */}
       {/* Gutters match the Create tab: pl-8 puts the content 40px in, level with the model
           selector above; pr-8 sets the gap to the rule. */}
@@ -1123,7 +1125,7 @@ export function DiffusionTrainPanel({
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}
           className={cn(
-            "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-20 pl-0.5 pr-8 pt-1.5 md:overflow-y-auto",
+            "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-6 pl-0.5 pr-8 pt-1.5 md:pb-20 md:overflow-y-auto",
             settingsFadeClass,
           )}
         >

@@ -96,7 +96,9 @@ function DialogContent({
             // z-70, and fill the screen at phone width instead of floating on a sliver of backdrop.
             // Both are viewport-sized, so neither applies to a dialog portaled into a container.
             position === "fixed"
-              ? "fixed top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] max-sm:top-0 max-sm:left-0 max-sm:h-dvh max-sm:w-dvw max-sm:max-h-none max-sm:max-w-none max-sm:translate-x-0 max-sm:translate-y-0 max-sm:rounded-none max-sm:ring-0"
+              // translate-none, not translate-x-0: a zero translate is still not `none`, so it
+              // keeps making this a containing block and the close button below stops being fixed.
+              ? "fixed top-[calc(50%+var(--studio-window-chrome-top,0px)/2)] max-sm:top-0 max-sm:left-0 max-sm:h-dvh max-sm:w-dvw max-sm:max-h-none max-sm:max-w-none max-sm:translate-none max-sm:rounded-none max-sm:ring-0"
               : "absolute",
             className,
           )}

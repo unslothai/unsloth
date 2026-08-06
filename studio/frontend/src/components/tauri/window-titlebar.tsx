@@ -18,6 +18,7 @@ import { ArrowLeft, ArrowRight } from "lucide-react";
 import type { Window as TauriWindow } from "@tauri-apps/api/window";
 import {
   type MouseEvent,
+  type PointerEvent,
   type ReactElement,
   type ReactNode,
   useCallback,
@@ -326,9 +327,11 @@ export function WindowTitlebar({
     [runWindowAction],
   );
 
-  const handleResizeMouseDown = useCallback(
+  // pointerdown, not mousedown: Radix dismisses modals on pointerdown, which fires first,
+  // so a mousedown handler starts the resize but the dialog closes underneath it.
+  const handleResizePointerDown = useCallback(
     (direction: WindowResizeDirection) =>
-      (event: MouseEvent<HTMLDivElement>) => {
+      (event: PointerEvent<HTMLDivElement>) => {
         if (event.button !== 0) {
           return;
         }
@@ -448,42 +451,42 @@ export function WindowTitlebar({
       <div
         aria-hidden="true"
         className="pointer-events-auto fixed inset-x-2 top-0 z-[70] h-1 cursor-n-resize"
-        onMouseDown={handleResizeMouseDown("North")}
+        onPointerDown={handleResizePointerDown("North")}
       />
       <div
         aria-hidden="true"
         className="pointer-events-auto fixed inset-x-2 bottom-0 z-[70] h-1 cursor-s-resize"
-        onMouseDown={handleResizeMouseDown("South")}
+        onPointerDown={handleResizePointerDown("South")}
       />
       <div
         aria-hidden="true"
         className="pointer-events-auto fixed inset-y-2 left-0 z-[70] w-1 cursor-w-resize"
-        onMouseDown={handleResizeMouseDown("West")}
+        onPointerDown={handleResizePointerDown("West")}
       />
       <div
         aria-hidden="true"
         className="pointer-events-auto fixed inset-y-2 right-0 z-[70] w-1 cursor-e-resize"
-        onMouseDown={handleResizeMouseDown("East")}
+        onPointerDown={handleResizePointerDown("East")}
       />
       <div
         aria-hidden="true"
         className="pointer-events-auto fixed left-0 top-0 z-[70] size-3 cursor-nw-resize"
-        onMouseDown={handleResizeMouseDown("NorthWest")}
+        onPointerDown={handleResizePointerDown("NorthWest")}
       />
       <div
         aria-hidden="true"
         className="pointer-events-auto fixed right-0 top-0 z-[70] size-3 cursor-ne-resize"
-        onMouseDown={handleResizeMouseDown("NorthEast")}
+        onPointerDown={handleResizePointerDown("NorthEast")}
       />
       <div
         aria-hidden="true"
         className="pointer-events-auto fixed bottom-0 left-0 z-[70] size-3 cursor-sw-resize"
-        onMouseDown={handleResizeMouseDown("SouthWest")}
+        onPointerDown={handleResizePointerDown("SouthWest")}
       />
       <div
         aria-hidden="true"
         className="pointer-events-auto fixed bottom-0 right-0 z-[70] size-3 cursor-se-resize"
-        onMouseDown={handleResizeMouseDown("SouthEast")}
+        onPointerDown={handleResizePointerDown("SouthEast")}
       />
     </>
   );
