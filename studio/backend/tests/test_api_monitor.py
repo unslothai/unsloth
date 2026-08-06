@@ -888,3 +888,32 @@ def test_parked_tool_resume_counts_as_queued():
     queue = LlamaAdmissionQueue("http://llama.test")
     queue._unpark_tickets.append(1)
     assert queue.snapshot().queued == 1
+
+
+def test_top_level_provider_tool_event_stamps_first_token(monkeypatch):
+    # Hosted providers put _toolEvent on the chunk itself, beside choices, with
+    # an empty delta: a stream that opens with one had shown the client a tool
+    # card while the row recorded nothing.
+    import routes.inference as inf
+
+    monitor = ApiMonitor(max_entries = 3)
+    monkeypatch.setattr(inf, "api_monitor", monitor)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "provider/model",
+        prompt = "hi",
+    )
+    inf._monitor_openai_chunk(
+        entry_id,
+        {
+            "object": "chat.completion.chunk",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": None}],
+            "_toolEvent": {"type": "web_search"},
+        },
+        streaming = True,
+    )
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["ttft_ms"] is not None

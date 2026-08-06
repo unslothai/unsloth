@@ -3116,6 +3116,10 @@ def _monitor_openai_chunk(
     )
     if not isinstance(choices, list) or not choices:
         return
+    if isinstance(data, dict) and data.get("_toolEvent"):
+        # Hosted provider tool cards ride the chunk itself (sibling of choices)
+        # with an empty delta, and are output the client has already been shown.
+        api_monitor.mark_first_token(monitor_id)
     reply_parts: list[tuple[int, str]] = []
     for idx, choice in enumerate(choices):
         if not isinstance(choice, dict):
@@ -3124,10 +3128,7 @@ def _monitor_openai_chunk(
         message = choice.get("message") or {}
         if isinstance(delta, dict) and delta.get("reasoning_content"):
             api_monitor.mark_first_token(monitor_id)
-        if choice.get("_toolEvent") or (isinstance(delta, dict) and delta.get("_toolEvent")):
-            # Hosted provider tool cards carry an empty delta but are output the
-            # client has already been shown.
-            api_monitor.mark_first_token(monitor_id)
+
         content = delta.get("content") if isinstance(delta, dict) else None
         if content:
             api_monitor.append_reply(monitor_id, content)
@@ -11645,7 +11646,10 @@ async def openai_chat_completions(
                         "total_tokens": _prompt_tokens + _sum_completion,
                     },
                     _monitor_context_length(),
-                    timings = _last_timings,
+                    # With n > 1 the counts are summed across choices while
+                    # _last_timings holds only the final one, so reporting its
+                    # speed beside those totals would be a number for neither.
+                    timings = _last_timings if len(_monitor_replies) <= 1 else None,
                     stop_reason = _clamp_finish_reason(_last_finish) if _last_finish else None,
                 )
                 api_monitor.finish(monitor_id)
