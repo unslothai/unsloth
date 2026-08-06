@@ -94,9 +94,10 @@ class LoadRequest(BaseModel):
         None,
         description = (
             "Speculative decoding mode for GGUF models. Canonical values: "
-            "'auto' (platform-aware: MTP on MTP GGUFs, ngram-mod fallback "
-            "for sub-3B), 'mtp' (force draft-mtp only on both GPU and CPU), "
-            "'dspark' (force a draft-dspark sidecar with fit disabled), "
+            "'auto' (platform-aware: DSpark when the model ships a sidecar, "
+            "else MTP on MTP GGUFs, ngram-mod fallback for sub-3B), "
+            "'mtp' (force draft-mtp only on both GPU and CPU), "
+            "'dspark' (force a draft-dspark sidecar), "
             "'ngram' (force ngram-mod only), 'mtp+ngram' (force "
             "ngram-mod+draft-mtp chain on both platforms), 'off' (disabled). "
             "Legacy values 'default' (-> auto), 'draft-mtp' (-> mtp), "
@@ -300,6 +301,21 @@ class ValidateModelRequest(BaseModel):
             "coexistence estimate sizes the KV cache like /load. Omit for the "
             "server-wide --parallel default."
         ),
+    )
+    speculative_type: Optional[str] = Field(
+        None,
+        description = (
+            "Speculative mode intended for the follow-up load. The estimate is "
+            "mode-dependent -- the drafter it charges differs by kind, and a "
+            "DSpark sidecar is ~11 GB -- so omitting it makes this preflight "
+            "disagree with /load in both directions."
+        ),
+    )
+    spec_draft_n_max: Optional[int] = Field(
+        None,
+        ge = 1,
+        le = 16,
+        description = "Draft depth intended for the follow-up load; sizes the draft KV.",
     )
     include_context_length: bool = Field(
         False,
@@ -686,6 +702,15 @@ class InferenceStatusResponse(_InferenceRuntimeFields):
         description = (
             "Whether llama.cpp supports MTP (--spec-type mtp/draft-mtp). "
             "False -> recommend `unsloth studio update`."
+        ),
+    )
+    spec_drafter_kind: Optional[str] = Field(
+        None,
+        description = (
+            "Which drafter the resolution was about, 'mtp' or 'dspark'. Needed "
+            "because Auto resolves the kind itself, so speculative_type still "
+            "reads 'auto', and a fallback leaves the engaged type at 'default': "
+            "neither still says which file the UI should tell the user to fix."
         ),
     )
     spec_fallback_reason: Optional[str] = Field(

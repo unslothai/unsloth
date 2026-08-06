@@ -307,6 +307,12 @@ export interface InferenceStatusResponse {
    * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
    * (updating won't help; choose MTP in Settings to force it). Null otherwise.
    */
+  /**
+   * Which drafter the resolution was about, "mtp" or "dspark". Auto resolves the
+   * kind itself, so speculative_type still reads "auto", and a fallback leaves
+   * the engaged type at "default": neither names the file to fix.
+   */
+  spec_drafter_kind?: string | null;
   spec_fallback_reason?: string | null;
 }
 

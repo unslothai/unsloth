@@ -506,8 +506,12 @@ export function ChatSettingsPanel({
   const nParallel = useChatRuntimeStore((s) => s.nParallel);
   const speculativeType = useChatRuntimeStore((s) => s.speculativeType);
   const specFallbackReason = useChatRuntimeStore((s) => s.specFallbackReason);
+  const specDrafterKind = useChatRuntimeStore((s) => s.specDrafterKind);
+  // The loaded model's own kind, not the pending control: the notice explains a
+  // fallback that already happened, so a staged edit (or a preset applied without
+  // a reload) must not re-label it and point at the wrong file.
   const speculativeDrafterLabel =
-    speculativeType === "dspark" ? "DSpark" : "MTP";
+    (specDrafterKind ?? speculativeType) === "dspark" ? "DSpark" : "MTP";
   const mtpUpdatable =
     specFallbackReason === "binary_no_mtp" ||
     specFallbackReason === "binary_outdated";

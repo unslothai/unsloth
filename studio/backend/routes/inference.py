@@ -5070,9 +5070,13 @@ def _estimate_gguf_required_gb(
             _extra_args_requests_dspark,
         )
 
+        _spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
         dspark_requested = bool(
-            (_canonicalize_spec_mode(speculative_type) or "auto") == "dspark"
+            _spec_mode == "dspark"
             or _extra_args_requests_dspark(llama_extra_args, env = {})
+            # Auto loads the sidecar whenever the model has one, so size it there
+            # too or the guard admits a load 11 GB larger than it estimated.
+            or (_spec_mode == "auto" and getattr(config, "gguf_dspark_file", None))
         )
         if dspark_requested:
             # Gate on the same answer the loader uses: _download_dspark skips the
@@ -5126,8 +5130,12 @@ def _estimate_gguf_required_gb(
                 repo,
                 hf_token = hf_token,
                 include_mmproj = bool(has_vision),
-                include_mtp = not dspark_requested,
-                include_dspark = dspark_requested,
+                # Remote, so which sidecar the repo ships is unknown until the
+                # listing. Under Auto size both: a repo has one kind or the other,
+                # the absent one contributes 0, and over-estimating is the safe
+                # direction for a guard that protects a running training job.
+                include_mtp = _spec_mode == "auto" or not dspark_requested,
+                include_dspark = _spec_mode == "auto" or dspark_requested,
             )
             return (main_bytes + companions) / (1024**3)
         return None
@@ -7974,6 +7982,7 @@ async def get_status(current_subject: str = Depends(get_current_subject)):
                 requested_context_length = llama_backend.requested_n_ctx,
                 llama_cpp_supports_mtp = _supports_mtp,
                 spec_fallback_reason = llama_backend.spec_fallback_reason,
+                spec_drafter_kind = llama_backend.spec_drafter_kind,
                 llama_cpp_prebuilt_stale = _stale,
                 llama_cpp_installed_tag = _installed_tag,
                 llama_cpp_latest_tag = _latest_tag,

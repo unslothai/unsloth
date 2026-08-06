@@ -1043,6 +1043,13 @@ type ChatRuntimeStore = {
    * Mirrors InferenceStatusResponse.spec_fallback_reason.
    */
   specFallbackReason: string | null;
+  /**
+   * Which drafter the loaded model's speculative resolution was about, "mtp" or
+   * "dspark". Paired with specFallbackReason: the reason alone cannot name the
+   * file to fix, since Auto resolves the kind server-side and the requested mode
+   * still reads "auto".
+   */
+  specDrafterKind: string | null;
   /** User --spec-draft-n-max override (null = platform default). */
   specDraftNMax: number | null;
   loadedSpecDraftNMax: number | null;
@@ -1594,6 +1601,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   speculativeType: readPersistedSpeculativeType(),
   loadedSpeculativeType: null,
   specFallbackReason: null,
+  specDrafterKind: null,
   specDraftNMax: null,
   loadedSpecDraftNMax: null,
   nParallel: null,
@@ -1962,6 +1970,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
               contextUsageByThreadId: {},
               activeModelIsLocal: false,
               specFallbackReason: null,
+              specDrafterKind: null,
             }
           : {}),
         // Switching to an external provider disables Deep Research, which only
@@ -2044,6 +2053,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       speculativeType: readPersistedSpeculativeType(),
       loadedSpeculativeType: null,
       specFallbackReason: null,
+      specDrafterKind: null,
       specDraftNMax: null,
       loadedSpecDraftNMax: null,
       nParallel: null,

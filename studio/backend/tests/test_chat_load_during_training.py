@@ -1224,6 +1224,26 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(dspark_gb, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(extras_gb, 5000 / (1024**3), places = 9)
 
+    def test_validate_request_carries_the_mode_the_load_will_use(self):
+        """The estimate is mode-dependent, so /validate must be told the mode or
+        its verdict disagrees with the /load that follows it: a user with
+        speculative decoding off and a sidecar on disk would be refused at the
+        preflight for a load that would have been admitted."""
+        from models.inference import ValidateModelRequest
+
+        req = ValidateModelRequest(
+            model_path = "unsloth/DeepSeek-V4-Flash-0731-GGUF",
+            speculative_type = "off",
+            spec_draft_n_max = 3,
+        )
+        self.assertEqual(req.speculative_type, "off")
+        self.assertEqual(req.spec_draft_n_max, 3)
+        # Omitted stays None rather than defaulting to a mode, so the estimate
+        # keeps its previous behaviour for callers that do not send it.
+        self.assertIsNone(
+            ValidateModelRequest(model_path = "org/repo").speculative_type
+        )
+
     def test_dspark_sidecar_is_not_charged_to_a_binary_that_cannot_run_it(self):
         """The loader skips the ~11 GB fetch when llama.cpp has no usable
         draft-dspark, so charging it here would refuse a load that never opens it
