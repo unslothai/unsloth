@@ -1534,6 +1534,26 @@ def _find_blocked_commands(command: str) -> set[str]:
             argv = payload.split()
         if not argv:
             return set()
+        # A wrapper in the split argv forwards to what it execs, so
+        # `env -S 'env powershell'` reaches powershell through the inner env.
+        position = 0
+        while position < len(argv):
+            candidate = _token_basename(argv[position])
+            if candidate not in _COMMAND_PREFIXES:
+                break
+            position += 1
+            while position < len(argv):
+                word = argv[position]
+                if word in _WRAPPER_VALUE_FLAGS_BY_CMD.get(candidate, frozenset()):
+                    position += 2
+                    continue
+                if word.startswith("-") or "=" in word or _WRAPPER_DURATION_RE.fullmatch(word):
+                    position += 1
+                    continue
+                break
+        if position >= len(argv):
+            return set()
+        argv = argv[position:]
         found: "set[str]" = set()
         base = _token_basename(argv[0])
         if base in _BLOCKED_COMMANDS:
@@ -1818,6 +1838,8 @@ def _find_blocked_commands(command: str) -> set[str]:
         )
         blocked.update(re.findall(pattern, lowered))
 
+    walked_payload_states: "set[tuple[int, bool, bool]]" = set()
+
     def _cmd_payload_commands(start: int) -> "list[int]":
         """Command positions inside a `cmd /c` payload.
 
@@ -1831,6 +1853,15 @@ def _find_blocked_commands(command: str) -> set[str]:
         indexes: "list[int]" = []
         k, expect, in_if = start, True, False
         while k < len(tokens):
+            # Every `/c` walked the whole remaining suffix, so a chain of them
+            # made screening quadratic (1500 prefixes, ~10 kB, took 0.89s
+            # against 0.06s before). A (position, expect) state reached once
+            # yields the same positions every later time, and the callers only
+            # ever union the results, so stopping there costs nothing and makes
+            # the total work linear in the token count.
+            if (k, expect, in_if) in walked_payload_states:
+                break
+            walked_payload_states.add((k, expect, in_if))
             token = tokens[k]
             if token in _SHELL_SEPARATORS:
                 k, expect, in_if = k + 1, True, False
@@ -1892,8 +1923,40 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # `for %i in (set) do CMD`: the body is whatever follows `do`,
                 # not a short condition, so stepping a fixed width recorded the
                 # loop variable and left the body unscreened.
+                depth = 0
+                # `for /f %i in ('CMD') do ...` RUNS the quoted set as a child
+                # command, so the first word inside that group is a command
+                # position rather than iterable data.
+                substitutes = any(
+                    _win_switch(_cmd_unquote(tokens[j]).lower()) == "/f"
+                    for j in range(k, min(k + 3, len(tokens)))
+                )
+                opened = False
                 while k < len(tokens) and tokens[k] not in _SHELL_SEPARATORS:
-                    is_do = _cmd_unquote(tokens[k]).lower() == "do"
+                    word = _cmd_unquote(tokens[k])
+                    # `for %i in (x do y) do CMD`: the first `do` is an iterable
+                    # value. Only the one AFTER the group closes is the body.
+                    was_outside = depth <= 0
+                    depth += word.count("(") - word.count(")")
+                    if substitutes and was_outside and depth > 0:
+                        # The group just opened. Its command word is either glued
+                        # to the opener (`('cmd`) or the token after it.
+                        stripped = word.lstrip("(").lstrip("'\"`")
+                        if stripped:
+                            # Glued to the opener (`('powershell`), so the index
+                            # alone will not read as the command: the quote is
+                            # left on deliberately elsewhere, cmd having no
+                            # single-quote syntax. Screen the word here instead.
+                            glued = _token_basename(stripped)
+                            if glued in _BLOCKED_COMMANDS:
+                                blocked.add(glued)
+                            else:
+                                blocked |= _blocked_matching_glob(glued)
+                            indexes.append(k)
+                        elif k + 1 < len(tokens):
+                            indexes.append(k + 1)
+                        opened = True
+                    is_do = depth <= 0 and word.lower() == "do" and not (opened and depth > 0)
                     k += 1
                     if is_do:
                         break
@@ -1936,15 +1999,10 @@ def _find_blocked_commands(command: str) -> set[str]:
             # `if 1==1 (start "" cmd /c powershell)` lexes the group opener onto
             # the command word, so it never reached command_positions even
             # though both grammars run whatever follows a `(`.
-            or (
-                0 <= idx < len(tokens)
-                and tokens[idx].startswith("(")
-                # A QUOTED `(` is data the command receives. The posix lexer
-                # drops the marks, so `echo "(start" powershell` looked exactly
-                # like a group opener; quoted_separators is what tells them
-                # apart, and the separator test above already relies on it.
-                and idx not in quoted_group_openers
-            )
+            # A `(` glued to the command word is NOT runnable on its own: the
+            # cmd payload walk decides that, because only it knows where the
+            # grammar expects a command. Testing startswith("(") alone made
+            # `echo (start powershell` a launcher of its echoed argument.
         )
 
     # Nested shell invocations (bash -c '...', bash -lc '...', cmd /c '...'):

@@ -1159,3 +1159,79 @@ def test_an_env_split_string_is_argv_not_shell_syntax(monkeypatch, command):
 def test_an_env_split_string_still_reaches_its_command(monkeypatch, command):
     monkeypatch.setattr(sys, "platform", "linux")
     assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # `for /f ... in ('CMD')` RUNS the quoted set, so its first word is a
+        # command position rather than iterable data. cmd syntax only: under
+        # bash the parenthesis is a syntax error and nothing is launched.
+        "for /f %i in (' cmd /c powershell -Command ls ') do echo %i",
+        "for /f %i in ('powershell -Command ls') do echo %i",
+        'for /f "tokens=1" %i in (\'rm -rf x\') do echo %i',
+    ],
+)
+def test_a_for_f_command_set_is_screened(monkeypatch, command):
+    _fake_windows_screening(monkeypatch, bash = None)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+def test_the_for_body_delimiter_is_found_after_the_iterable(monkeypatch, bash):
+    # `for %i in (x do y) do CMD`: the first `do` is an iterable value, so
+    # stopping there marked `y)` as the body and missed the real launcher.
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands("for %i in (x do y) do start powershell")
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        "for %i in (1 2 3) do echo %i",
+        "for /f %i in (file.txt) do echo %i",
+        "for /f %i in ('echo hello') do echo %i",
+    ],
+)
+def test_an_ordinary_for_loop_launches_nothing(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A wrapper inside the split argv forwards to what it execs.
+        'env -S "env powershell"',
+        'env -S "nice rm -rf victim"',
+        'env -S "env -u FOO rm -rf victim"',
+    ],
+)
+def test_a_wrapper_inside_an_env_split_string_is_followed(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
+def test_a_glued_paren_is_a_group_opener_only_at_a_command_position(monkeypatch):
+    # `echo (start powershell` passes the text to echo. Treating every
+    # `(`-prefixed word as runnable read the echoed argument as a launcher.
+    _fake_windows_screening(monkeypatch, bash = None)
+    assert not tools._find_blocked_commands("echo (start powershell")
+    assert tools._find_blocked_commands('if 1==1 (start "" cmd /c powershell) else echo no')
+
+
+def test_nested_cmd_prefixes_stay_linear(monkeypatch):
+    # Every `/c` re-walked the whole remaining suffix, so a chain of them made
+    # screening quadratic (1500 prefixes, ~10 kB, 0.89s against 0.06s before).
+    import time
+
+    _fake_windows_screening(monkeypatch, bash = None)
+    elapsed = []
+    for count in (750, 3000):
+        began = time.perf_counter()
+        assert tools._find_blocked_commands("cmd /c " * count + "powershell")
+        elapsed.append(time.perf_counter() - began)
+    assert elapsed[1] < 8 * elapsed[0] + 0.5, elapsed  # linear, not quadratic
+    assert elapsed[1] < 2.0, elapsed
