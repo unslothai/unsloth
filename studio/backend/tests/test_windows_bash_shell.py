@@ -319,10 +319,9 @@ def test_detached_windows_stay_launchable(command, _windows_blocklist):
     assert not tools._find_blocked_commands(command)
 
 
-# Whether Git Bash resolves decides which lexer screens the command, and that is
-# what decided most of the cases below: the cmd lexer keeps the quote marks the
-# posix one strips. The tests above pin only the shell the Linux runner picks, so
-# these run each command through both.
+# Whether Git Bash resolves picks the lexer, and the cmd lexer keeps the quote
+# marks the posix one strips. The tests above pin only the shell the Linux runner
+# happens to pick, so these run each command through both.
 _WINDOWS_SHELLS = [r"C:\Program Files\Git\bin\bash.exe", None]
 
 
@@ -343,8 +342,7 @@ def _screen_on_windows(monkeypatch, bash, command):
         'cmd //c start "my window" /min powershell',
         # A value-style switch, which the old width heuristic did not recognise.
         "cmd /v:on /c powershell -Command ls",
-        # Git Bash doubles the slash on the switches ahead of /c too, so they
-        # need the same normalisation the trigger already gets.
+        # Git Bash doubles the slash on the switches ahead of /c too.
         "cmd //v:on //c powershell -Command ls",
         'start "" powershell -Command ls',
         'cmd //c env start "" powershell',
@@ -364,8 +362,7 @@ def test_windows_shellouts_are_screened_on_either_shell(
         'start "Build" npm run build',
         'cmd /c "echo hello"',
         r'echo "C:\Windows\System32\cmd.exe"',
-        # A document opened through its file association, which is what the
-        # quoted `start ""` idiom is for.
+        # A document opened through its file association, what `start ""` is for.
         r'cmd //c start "" "C:\Users\me\My Documents\report.docx"',
         "npm start",
         "./start.sh",
@@ -383,10 +380,9 @@ def test_ordinary_windows_commands_stay_runnable(monkeypatch, bash, command, _wi
     "command",
     [
         # The documented `start "title" prog` form. Only the cmd lexer can see
-        # this: the posix lexer has already stripped the marks, so a one-word
-        # title is indistinguishable from a program name and is not guessed at
-        # (guessing screened the token after every `start`, which refused
-        # ordinary text like `echo start notepad powershell`).
+        # it: the posix lexer has stripped the marks, leaving a one-word title
+        # indistinguishable from a program name, and guessing there would refuse
+        # ordinary text like `echo start notepad powershell`.
         'cmd //c start "job" powershell -Command ls',
         'cmd /c start "t" pwsh -c ls',
     ],
@@ -399,16 +395,14 @@ def test_a_single_word_start_title_is_screened_under_the_cmd_lexer(
 
 @pytest.mark.parametrize("command", ['echo "cmd" /c powershell', 'printf "%s" "cmd" /c powershell'])
 def test_a_quoted_word_is_not_a_shell_under_the_cmd_lexer(monkeypatch, command, _windows_blocklist):
-    # The cmd lexer keeps the marks precisely so an argument-position word stays
-    # distinguishable, so `"cmd"` there is text rather than a shell to recurse
-    # into. (Under the posix lexer the marks are already gone and this reads as
-    # a real cmd, which is how it behaves on main as well.)
+    # The cmd lexer keeps the marks, so `"cmd"` in argument position stays text
+    # rather than a shell to recurse into. (Under the posix lexer the marks are
+    # gone and this reads as a real cmd, as it does on main too.)
     assert not _screen_on_windows(monkeypatch, None, command)
 
 
 def test_a_program_path_is_not_read_as_a_cmd_switch(monkeypatch, _windows_blocklist):
-    # The switch pattern is anchored on both ends. Matched loosely it would find
-    # the `/b` of /bin/bash, skip the token as a flag, and never reach the shell
-    # name behind it, leaving the payload unscreened.
+    # Matched loosely, the pattern would find the `/b` of /bin/bash, skip the
+    # token as a flag, and never reach the shell name behind it.
     assert not tools._CMD_SWITCH_RE.fullmatch("/bin/bash")
     assert _screen_on_windows(monkeypatch, _WINDOWS_SHELLS[0], '/bin/bash -c "rm -rf x"') == {"rm"}

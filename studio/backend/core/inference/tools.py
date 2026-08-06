@@ -1342,9 +1342,8 @@ def _win_switch(token: str) -> str:
 # position. These switches precede it; the value-taking ones eat a token.
 _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 
-# A cmd switch is a slash, one letter, and an optional `:value` (/s, /v:on,
-# /t:0a). Anchored on both ends so a program spelled as a path (/bin/bash) is
-# never mistaken for a switch and skipped.
+# A slash, one letter, optional `:value` (/s, /v:on, /t:0a). Matched in full so
+# a program spelled as a path (/bin/bash) is never skipped as a switch.
 _CMD_SWITCH_RE = re.compile(r"/[a-zA-Z](?::[\w.]+)?")
 
 
@@ -1653,24 +1652,22 @@ def _find_blocked_commands(command: str) -> set[str]:
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
             continue
         # Look back past flags for the shell binary. Windows flags and absolute
-        # paths both start with /, so only skip things shaped like a switch
-        # (/s, /q, /v:on) and never a program spelled as a path (/bin/bash).
+        # paths both start with /, so only skip things shaped like a whole
+        # switch (/s, /v:on) and never a program spelled as a path (/bin/bash).
         for j in range(i - 1, -1, -1):
             prev = tokens[j]
             if prev.startswith("-"):
                 continue  # skip Unix flags like --login, -l
-            # Git Bash hands cmd a doubled slash, so the preceding switches
-            # carry the same spelling the trigger does and are normalised the
-            # same way: without it `cmd //v:on //c powershell` stopped here.
+            # Git Bash doubles the slash on these switches too, so normalise
+            # them like the trigger: else `cmd //v:on //c powershell` stops here.
             if is_win_c and _CMD_SWITCH_RE.fullmatch(_win_switch(prev)):
                 continue  # skip Windows switches like /s, /q, /v:on
             prev_base = os.path.basename(prev).lower()
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             elif is_win_c and prev_base in _SHELLS_WIN:
-                # Same lexer asymmetry: `cmd /c "powershell -Command ls"`
-                # arrives with the marks attached, so the recursion below would
-                # otherwise scan a first word of `"powershell` and match nothing.
+                # The cmd lexer keeps the marks, so `cmd /c "powershell ls"`
+                # would recurse on a first word of `"powershell` and match nothing.
                 payload = tokens[i + 1]
                 if len(payload) > 1 and payload[0] == '"' and payload[-1] == '"':
                     payload = payload[1:-1]
@@ -1689,11 +1686,10 @@ def _find_blocked_commands(command: str) -> set[str]:
                 break
             # /d C:\dir and friends carry their value in the next token.
             j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
-        # cmd reads a quoted first argument as the window title, so the program
-        # sits one token further on. Screening the token after every `start`
-        # unconditionally refuses ordinary text (`echo start notepad powershell`),
-        # so the second candidate is read only when the first is recognisably a
-        # title rather than a program.
+        # cmd reads a quoted first argument as the window title, putting the
+        # program one token further on. Taking that second token unconditionally
+        # refuses ordinary text (`echo start notepad powershell`), so it is read
+        # only when the first is recognisably a title.
         if j < len(tokens):
             blocked |= _find_blocked_commands(tokens[j])
         if j + 1 < len(tokens) and _is_start_title(tokens[j]):
