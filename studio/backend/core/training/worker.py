@@ -2207,6 +2207,31 @@ def _resolve_mlx_output_dir(config, model_name):
     return str(resolve_output_dir(output_dir))
 
 
+def _resolve_mlx_max_grad_norm(value):
+    """Global-norm clip threshold for MLX runs; None keeps the trainer's default.
+
+    The worker used to hardcode 0.0 and drop the requested value, so an API caller
+    asking for a threshold got none. Unset stays 0.0 so MLX keeps its cheap
+    per-parameter clipping: the gradient-norm chart is fed by report_grad_norm
+    instead, which measures the same norm without changing what gets clipped.
+    """
+    if value is None:
+        return 0.0
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f"Unsloth MLX: max_grad_norm={value!r} must be a non-negative float or None."
+        )
+    # inf clears a >= 0 check but never binds, so the run would train unclipped.
+    if value < 0 or not math.isfinite(value):
+        raise ValueError(
+            f"Unsloth MLX: max_grad_norm={value} must be a finite value >= 0 "
+            "(use 0 to disable global norm clipping)."
+        )
+    return value
+
+
 def _run_mlx_training(event_queue, stop_queue, config):
     """Self-contained MLX training path for Apple Silicon.
 
@@ -2668,22 +2693,22 @@ def _run_mlx_training(event_queue, stop_queue, config):
     else:
         eval_steps_val = int(eval_steps_value)
 
-    # Per-element clipping only; re-validated here for direct worker callers.
-    max_grad_norm = 0.0
+    # Re-validate for direct worker callers; training.py normalizes the main path.
+    max_grad_norm = _resolve_mlx_max_grad_norm(config.get("max_grad_norm"))
     max_grad_value = config.get("max_grad_value")
     if max_grad_value is not None:
         max_grad_value = float(max_grad_value)
-        if max_grad_value < 0:
+        if max_grad_value < 0 or not math.isfinite(max_grad_value):
             raise ValueError(
-                f"Unsloth MLX: max_grad_value={max_grad_value} must be >= 0 "
+                f"Unsloth MLX: max_grad_value={max_grad_value} must be finite and >= 0 "
                 "(0 or None disables elementwise clipping)."
             )
     max_grad_leaf_norm = config.get("max_grad_leaf_norm")
     if max_grad_leaf_norm is not None:
         max_grad_leaf_norm = float(max_grad_leaf_norm)
-        if max_grad_leaf_norm < 0:
+        if max_grad_leaf_norm < 0 or not math.isfinite(max_grad_leaf_norm):
             raise ValueError(
-                f"Unsloth MLX: max_grad_leaf_norm={max_grad_leaf_norm} must be >= 0 "
+                f"Unsloth MLX: max_grad_leaf_norm={max_grad_leaf_norm} must be finite and >= 0 "
                 "(0 or None disables proportional leaf-norm clipping)."
             )
     weight_decay = config.get("weight_decay", 0.001)
@@ -2728,6 +2753,11 @@ def _run_mlx_training(event_queue, stop_queue, config):
         mlx_config_kwargs["dataset_order"] = "torch_randperm"
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
+    if "report_grad_norm" in _supported_fields:
+        # Refills the gradient-norm chart. MLX returns a norm for free only under
+        # global-norm clipping; asking for it beats switching clip modes, which
+        # would alter the loss trajectory and cost VLM runs mx.compile.
+        mlx_config_kwargs["report_grad_norm"] = True
     if "append_eos" in _supported_fields:
         # Unsloth SFT formatting owns rendered examples; raw/CPT text still needs MLX to append EOS.
         mlx_config_kwargs["append_eos"] = bool(raw_text_mode)
