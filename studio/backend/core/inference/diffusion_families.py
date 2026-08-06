@@ -559,6 +559,44 @@ def _upstream_is_cached(repo_id: str, files: Optional[Sequence[str]] = None) -> 
         return False
 
 
+# Lowercased unsloth mirror -> the community repack the tables named before it. The mirrors are
+# byte identical, so an existing install that already pulled the repack holds the very same bytes
+# under the OLD repo key: the HF cache is keyed by repo id, so re-pointing the table alone would
+# re-download up to tens of GB on upgrade and fail outright offline.
+_SD_CPP_LEGACY_SOURCES: dict[str, str] = {
+    "unsloth/flux-text-encoders": "comfyanonymous/flux_text_encoders",
+    "unsloth/qwen-image-comfyui": "Comfy-Org/Qwen-Image_ComfyUI",
+    "unsloth/flux.2-vae": "Comfy-Org/flux2-dev",
+    "unsloth/flux.2-dev-comfyui": "Comfy-Org/flux2-dev",
+    "unsloth/z-image-turbo-comfyui": "Comfy-Org/z_image_turbo",
+    "unsloth/flux.2-klein-9b-comfyui": "Comfy-Org/vae-text-encorder-for-flux-klein-9b",
+    "unsloth/wan2.2-ti2v-5b-gguf": "QuantStack/Wan2.2-TI2V-5B-GGUF",
+}
+
+
+def legacy_source_repo(repo_id: Optional[str]) -> Optional[str]:
+    """The community repack ``repo_id`` mirrors, or None when it is not one of the mirrors."""
+    return _SD_CPP_LEGACY_SOURCES.get((repo_id or "").strip().lower())
+
+
+def prefer_cached_legacy_source(
+    repo_id: str,
+    files: Optional[Sequence[str]] = None,
+) -> str:
+    """``repo_id``, or the community repack it mirrors when THAT already satisfies ``files``.
+
+    The mirror stays the preferred source for a fresh install; this only spares an existing one
+    from re-fetching bytes it already has under the old repo key. Same ``_upstream_is_cached``
+    probe the gated swap uses, so an interrupted or partial repack does not win.
+
+    PURE: table lookup + local stat, no network, so the staging plan and the fetch agree.
+    """
+    legacy = _SD_CPP_LEGACY_SOURCES.get((repo_id or "").strip().lower())
+    if not legacy:
+        return repo_id
+    return legacy if _upstream_is_cached(legacy, files) else repo_id
+
+
 def _is_local_path(base: str) -> bool:
     """Whether ``base`` exists on disk, i.e. a local dir rather than a Hub id.
 

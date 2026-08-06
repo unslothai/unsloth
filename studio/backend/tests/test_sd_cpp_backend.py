@@ -1182,3 +1182,51 @@ def test_generate_rejects_image_conditioned_on_native_engine():
 def test_status_native_reports_supports_controlnet_false():
     b = _loaded_backend()
     assert b.status()["supports_controlnet"] is False
+
+
+def test_a_cached_community_repack_is_reused_instead_of_re_downloading_the_mirror(
+    monkeypatch, tmp_path
+):
+    """Repointing the tables at unsloth mirrors would re-pull tens of GB on upgrade.
+
+    The HF cache is keyed by repo id, so an install that already holds the byte-identical repack
+    has it filed under the OLD id: the mirror's namespace is empty, the fetch re-downloads, and an
+    offline load fails outright over bytes already on disk."""
+    from core.inference.diffusion_families import prefer_cached_legacy_source
+    from core.inference.sd_cpp_backend import _fetch_repo_map
+
+    repack = "Comfy-Org/z_image_turbo"
+    root = tmp_path / f"models--{repack.replace('/', '--')}"
+    snapshot = root / "snapshots" / ("d" * 40)
+    (snapshot / "split_files" / "vae").mkdir(parents = True)
+    (snapshot / "split_files" / "vae" / "ae.safetensors").write_bytes(b"x" * 64)
+    (root / "refs").mkdir(parents = True)
+    (root / "refs" / "main").write_text("d" * 40, encoding = "utf-8")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache", lambda: str(tmp_path), raising = False
+    )
+
+    assets = [("unsloth/Z-Image-Turbo-ComfyUI", "split_files/vae/ae.safetensors", "vae")]
+    assert _fetch_repo_map(assets, None)["unsloth/Z-Image-Turbo-ComfyUI"] == repack
+
+    # A fresh install has no repack, so the mirror stays the source.
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.active_hf_hub_cache",
+        lambda: str(tmp_path / "empty"),
+        raising = False,
+    )
+    assert _fetch_repo_map(assets, None)["unsloth/Z-Image-Turbo-ComfyUI"] == (
+        "unsloth/Z-Image-Turbo-ComfyUI"
+    )
+    # And a repo that mirrors nothing is returned unchanged.
+    assert prefer_cached_legacy_source("unsloth/Qwen-Image", ["x"]) == "unsloth/Qwen-Image"
+
+
+def test_the_delete_guard_names_the_repack_as_well_as_the_mirror(monkeypatch):
+    """The bytes land in whichever of the three the load chose, and that is re-decided per load, so
+    a guard naming only one of them can delete a repo the next load needs."""
+    from core.inference.sd_cpp_backend import _with_mirrors
+
+    protected = _with_mirrors(["unsloth/Z-Image-Turbo-ComfyUI"])
+    assert "unsloth/Z-Image-Turbo-ComfyUI" in protected
+    assert "Comfy-Org/z_image_turbo" in protected
