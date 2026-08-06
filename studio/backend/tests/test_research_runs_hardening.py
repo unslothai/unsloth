@@ -1021,7 +1021,9 @@ def test_stream_completion_semantic_output_resets_the_idle_timeout(monkeypatch):
 
 
 def test_stream_completion_allows_output_before_first_output_timeout(monkeypatch):
-    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.15)
+    # Deadline well clear of the 0.10 s prefill: Windows rounds each sleep up to a
+    # 15.625 ms tick, which makes it 0.15625 s, and Backend CI is ubuntu-only.
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 1.0)
     monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.03)
 
     class _SlowPrefillStream:
@@ -1045,6 +1047,81 @@ def test_stream_completion_allows_output_before_first_output_timeout(monkeypatch
     supervisor = _make_supervisor(_noop_check_active)
 
     assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "", "stop")
+
+
+def test_first_output_deadline_disarms_once_output_starts(monkeypatch):
+    """The budget bounds the wait for the FIRST token, never total generation time."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.15)
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 5.0)
+
+    class _LongGenerationStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            await asyncio.sleep(0.05)
+            yield 'data: {"choices":[{"delta":{"content":"start"}}]}'
+            for index in range(12):
+                await asyncio.sleep(0.05)
+                yield 'data: {"choices":[{"delta":{"content":" w%d"}}]}' % index
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_LongGenerationStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    report, _reasoning, finish_reason = _run_stream(supervisor, timeout_seconds = 30.0)
+    assert finish_reason == "stop"
+    assert report.startswith("start w0 w1")
+    assert report.endswith("w11")
+
+
+def test_reasoning_only_prefix_disarms_the_first_output_deadline(monkeypatch):
+    """A thinking model may reason for longer than the budget before any content."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.15)
+    monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 5.0)
+    # Reasoning deltas flush to storage whatever report_progress says.
+    monkeypatch.setattr(research_runs.db, "append_worker_event", lambda *args, **kwargs: 1)
+
+    class _LongThinkStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            await asyncio.sleep(0.05)
+            for index in range(10):
+                yield 'data: {"choices":[{"delta":{"reasoning_content":"t%d "}}]}' % index
+                await asyncio.sleep(0.05)
+            yield 'data: {"choices":[{"delta":{"content":"answer"}}]}'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_LongThinkStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    report, reasoning, _finish = _run_stream(supervisor, timeout_seconds = 30.0)
+    assert report == "answer"
+    assert reasoning.startswith("t0 ")
+
+
+def test_shipped_stream_deadline_constants_are_pinned():
+    """Every other test monkeypatches these, so nothing else would notice a change."""
+    assert research_runs._MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS == 120.0
+    assert research_runs._MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS == 120.0
+    assert (
+        research_runs._MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
+        >= research_runs._MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS
+    )
 
 
 def test_stream_completion_counts_whitespace_tokens_as_output(monkeypatch):

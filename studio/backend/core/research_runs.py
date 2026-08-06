@@ -150,6 +150,9 @@ _NO_MODEL_LOADED_DETAIL = "No model loaded"
 # Transport keepalives prevent HTTP read timeouts without proving that a model is progressing.
 _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS = 120.0
 _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS = 120.0
+# Cancellation is cooperative, so bound the wait for a cancelled iterator to unwind;
+# otherwise a stuck one holds a timed-out call open for the rest of the wall clock.
+_STREAM_CLEANUP_TIMEOUT_SECONDS = 5.0
 
 
 def _auto_scrape_default() -> int:
@@ -572,11 +575,14 @@ class LeaseLost(Exception):
 
 
 class ModelOutputIdleTimeout(httpx.ReadTimeout):
-    pass
+    # Default message: the stream reader raises the class the deadline names.
+    def __init__(self, message: str = "Local model stopped producing output"):
+        super().__init__(message)
 
 
 class ModelFirstOutputTimeout(httpx.ReadTimeout):
-    pass
+    def __init__(self, message: str = "Local model never produced output"):
+        super().__init__(message)
 
 
 class ModelWallClockTimeout(httpx.ReadTimeout):
@@ -1628,11 +1634,35 @@ class ResearchSupervisor:
                     "research.api_key_cleanup_failed run_id=%s", run["id"], exc_info = True
                 )
 
+    async def _discard_task(self, run_id: str, task: asyncio.Task, what: str) -> None:
+        """Cancel a pending task and absorb its outcome, without waiting forever.
+
+        Awaiting it keeps a late error from surfacing as an unretrieved task exception;
+        bounding the wait keeps an iterator that declines cancellation from pinning the
+        caller here, and swallowing only its own outcome keeps the real error intact.
+        """
+        task.cancel()
+        try:
+            await asyncio.wait({task}, timeout = _STREAM_CLEANUP_TIMEOUT_SECONDS)
+        except asyncio.CancelledError:
+            raise  # an outer cancellation (wall clock, shutdown) must keep propagating
+        if not task.done():
+            logger.warning("research.%s_cleanup_timed_out run_id=%s", what, run_id)
+            return
+        try:
+            task.result()
+        except (asyncio.CancelledError, StopAsyncIteration):
+            pass
+        except Exception:
+            logger.warning(
+                "research.%s_cleanup_failed run_id=%s", what, run_id, exc_info = True
+            )
+
     async def _iter_stream_lines(
         self,
         run_id: str,
         response: httpx.Response,
-        semantic_deadline: Callable[[], float | None] | None = None,
+        semantic_deadline: Callable[[], tuple[float, type[BaseException]] | None] | None = None,
     ) -> AsyncIterator[str]:
         iterator = response.aiter_lines().__aiter__()
 
@@ -1642,10 +1672,12 @@ class ResearchSupervisor:
             deadline = semantic_deadline()
             if deadline is None:
                 return 0.2
-            remaining = deadline - asyncio.get_running_loop().time()
+            at, expired = deadline
+            remaining = at - asyncio.get_running_loop().time()
             if remaining > 0:
                 return min(0.2, remaining)
-            raise ModelOutputIdleTimeout("Local model stopped producing output")
+            # Named by the caller, so a first-output deadline is never reported as a stall.
+            raise expired()
 
         while True:
             if self._cancel_event(run_id).is_set():
@@ -1656,18 +1688,12 @@ class ResearchSupervisor:
                 while not line_task.done():
                     await asyncio.wait({line_task}, timeout = timeout)
                     if self._cancel_event(run_id).is_set():
-                        line_task.cancel()
-                        try:
-                            await line_task
-                        except asyncio.CancelledError:
-                            pass
-                        except Exception:
-                            logger.warning(
-                                "research.stream_iterator_cleanup_failed run_id=%s",
-                                run_id,
-                                exc_info = True,
-                            )
+                        await self._discard_task(run_id, line_task, "stream_iterator")
                         await self._check_active(run_id)
+                    # A line that arrived during the wait is earned; recomputing the
+                    # deadline first would let an expiry in the same turn discard it.
+                    if line_task.done():
+                        break
                     timeout = wait_timeout()
                 try:
                     line = line_task.result()
@@ -1675,17 +1701,7 @@ class ResearchSupervisor:
                     return
             finally:
                 if not line_task.done():
-                    line_task.cancel()
-                    try:
-                        await line_task
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception:
-                        logger.warning(
-                            "research.stream_iterator_cleanup_failed run_id=%s",
-                            run_id,
-                            exc_info = True,
-                        )
+                    await self._discard_task(run_id, line_task, "stream_iterator")
             yield line
 
     async def _stream_completion(
@@ -1805,14 +1821,15 @@ class ResearchSupervisor:
             timeout = httpx.Timeout(model_timeout)
             loop = asyncio.get_running_loop()
 
-            def semantic_deadline() -> float | None:
+            def semantic_deadline() -> tuple[float, type[BaseException]] | None:
                 if semantic_output_at is None:
                     if first_output_deadline is None:
                         return None
-                    if loop.time() >= first_output_deadline:
-                        raise ModelFirstOutputTimeout("Local model never produced output")
-                    return first_output_deadline
-                return semantic_output_at + _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS
+                    return first_output_deadline, ModelFirstOutputTimeout
+                return (
+                    semantic_output_at + _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS,
+                    ModelOutputIdleTimeout,
+                )
 
             async with (
                 _wall_clock_timeout(model_timeout),
@@ -1835,11 +1852,7 @@ class ResearchSupervisor:
                             while not send_task.done():
                                 await asyncio.wait({send_task}, timeout = 0.2)
                                 if self._cancel_event(run["id"]).is_set():
-                                    send_task.cancel()
-                                    try:
-                                        await send_task
-                                    except asyncio.CancelledError:
-                                        pass
+                                    await self._discard_task(run["id"], send_task, "send")
                                     await self._check_active(run["id"])
                             response = await send_task
                             response.raise_for_status()
@@ -1923,11 +1936,7 @@ class ResearchSupervisor:
                         raise ModelFirstOutputTimeout("Local model never produced output")
                 finally:
                     if send_task is not None and not send_task.done():
-                        send_task.cancel()
-                        try:
-                            await send_task
-                        except asyncio.CancelledError:
-                            pass
+                        await self._discard_task(run["id"], send_task, "send")
                     if (
                         response is None
                         and send_task is not None
