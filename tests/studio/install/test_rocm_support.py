@@ -923,6 +923,7 @@ class TestEnsureRocmTorch:
         assert "torch>=2.11.0,<2.12.0" in torch_call
 
     @patch.object(stack_mod, "IS_MACOS", False)
+    @patch("platform.machine", return_value = "x86_64")
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
@@ -933,7 +934,7 @@ class TestEnsureRocmTorch:
         stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1100", "gfx1100", "gfx1151"]
     )
     def test_mask_indexes_devices_not_deduplicated_arches(
-        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, mock_machine
     ):
         # The mask names a device ordinal. On two gfx1100 plus a gfx1151, device 1 is
         # the second gfx1100, but a deduplicated ['gfx1100','gfx1151'] reads index 1 as
@@ -954,6 +955,7 @@ class TestEnsureRocmTorch:
         assert "non-Strix runtime target (gfx1100)" in buf.getvalue()
 
     @patch.object(stack_mod, "IS_MACOS", False)
+    @patch("platform.machine", return_value = "x86_64")
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
@@ -964,7 +966,7 @@ class TestEnsureRocmTorch:
         stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1100", "gfx1100", "gfx1151"]
     )
     def test_mask_naming_the_strix_device_still_reroutes(
-        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try, mock_machine
     ):
         # Negative control for the above: device 2 really is the Strix, so the reroute
         # must still fire. Guards against "fixing" the index by disabling the reroute.
