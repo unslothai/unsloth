@@ -268,11 +268,10 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
     tqz.quantize_ = _quantize_boom
     assert tq._smoke_probe(TQ_FP8, "cuda") is False
 
-    # A kernel that RUNS but returns non-finite values probes False too. That is the whole point
-    # of checking finiteness: fp8's per-row activation scale divides by the row amax, so an
-    # all-zero row gives scale 0 and NaN qdata unless the config floors it, and the floor is
-    # applied only on a torchao exposing activation_value_lb. Without this the probe passed on
-    # such a build and every padded text stream (Wan pads prompts to 512 tokens) rendered black.
+    # A kernel that RUNS but returns non-finite values probes False too. torchao's fp8 scale
+    # chooser has no eps clamp, so a zero activation row gives scale 0 and NaN qdata unless the
+    # config floors it, and the floor is applied only on a torchao exposing activation_value_lb.
+    # Without this the probe passed on such a build and every zero-padded text stream went black.
     # int8, not fp8: _make_quant_config(fp8) imports PerRow, which this stub module does not
     # carry, so an fp8 probe here would return False from the ImportError and prove nothing.
     tq._SMOKE_CACHE.clear()
