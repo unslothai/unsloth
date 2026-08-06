@@ -956,8 +956,8 @@ def test_terminal_event_arms_watchdog_and_reaps_wedged_worker(monkeypatch):
 
 
 def test_terminal_error_event_also_arms_watchdog(monkeypatch):
-    # An error never sets _complete_seen, so terminal_seen starts the grace; without it the
-    # watchdog would wait out the full absolute backstop.
+    # A terminal error signals _complete_seen too (nothing is left to save); terminal_seen
+    # starts the grace for a freshly armed watchdog either way.
     monkeypatch.setitem(_G, "_COMPLETE_EXIT_GRACE_S", 0.05)
     monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
     b = TrainingBackend()
@@ -969,7 +969,7 @@ def test_terminal_error_event_also_arms_watchdog(monkeypatch):
 
     b._handle_event({"type": "error", "error": "boom", "stack": ""})
 
-    assert not b._complete_seen.is_set(), "an error is not a completed save"
+    assert b._complete_seen.is_set(), "a terminal error leaves nothing to save"
     assert _wait_until(lambda: calls == ["force", "final"])
     b._stop_watchdog.join(timeout = 5)
 
@@ -1271,3 +1271,29 @@ def test_recoverable_stall_does_not_arm_the_watchdog(monkeypatch):
     assert b.is_run_finished() is False
     time.sleep(0.3)
     assert calls == [], "a respawning run must not be force-terminated"
+
+
+def test_terminal_error_releases_an_in_flight_stop_watchdog(monkeypatch):
+    # Stop and Save, then the worker fails its checkpoint and reports error instead of
+    # complete. The stop watchdog is already watching this proc, so arming again no-ops;
+    # without a terminal signal it would sit out the full save backstop (600s by default)
+    # with the GPU still blocked.
+    monkeypatch.setitem(_G, "_STOP_GRACE_S", 0.05)
+    monkeypatch.setitem(_G, "_STOP_TIMEOUT_S", 100.0)
+    b = _running_backend()
+    b._start_stop_watchdog = TrainingBackend._start_stop_watchdog.__get__(b)
+    calls = _record_force_terminate(monkeypatch, b)
+
+    b._should_stop = True
+    b._start_stop_watchdog(cancel = False)      # the stop's own watchdog, now in flight
+    first = b._stop_watchdog
+    assert first is not None and first.is_alive()
+
+    b._handle_event({"type": "error", "error": "checkpoint failed", "stack": ""})
+
+    assert b._complete_seen.is_set(), "a terminal error must signal the in-flight watchdog"
+    assert b._stop_watchdog is first, "the existing watcher stays; arming again is a no-op"
+    assert _wait_until(
+        lambda: calls == ["force", "final"]
+    ), "the in-flight watchdog must escalate on the grace, not the save backstop"
+    first.join(timeout = 5)

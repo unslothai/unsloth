@@ -2057,6 +2057,9 @@ class TrainingBackend:
             elif etype == "error":
                 self._progress.is_training = False
                 self._progress.error = event.get("error", "Unknown error")
+                # Terminal, so nothing is left to save: let a stop watchdog already
+                # watching this proc drop to its grace instead of the save backstop.
+                self._complete_seen.set()
                 if self._cancel_requested:
                     self._output_dir = self._progress.output_dir = None
                 logger.error("Training error: %s", event.get("error"))
