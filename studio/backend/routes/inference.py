@@ -8171,9 +8171,7 @@ async def generate_audio(
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         text, payload, request, current_subject
     )
-    await asyncio.to_thread(
-        _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
-    )
+    await asyncio.to_thread(_persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type)
 
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
     return JSONResponse(

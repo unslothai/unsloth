@@ -134,6 +134,5 @@ def test_an_mtmd_only_model_forces_its_engine():
 def test_whisper_ids_keep_the_default_engine():
     """Whisper ids are shared with the Transformers sidecar, so nothing is forced."""
     from routes.inference import _stt_engine_for_model
-
     for model in (None, "", "whisper-1", "small", "large-v3-turbo", "openai/whisper-tiny"):
         assert _stt_engine_for_model(model) is None, model
