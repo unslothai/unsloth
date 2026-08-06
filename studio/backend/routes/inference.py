@@ -5077,8 +5077,7 @@ def _estimate_gguf_required_gb(
         # Auto loads the sidecar whenever the model has one, so size it there too
         # or the guard admits a load 11 GB larger than it estimated.
         dspark_requested = bool(
-            _forced_dspark
-            or (_spec_mode == "auto" and getattr(config, "gguf_dspark_file", None))
+            _forced_dspark or (_spec_mode == "auto" and getattr(config, "gguf_dspark_file", None))
         )
         _dspark_capable = True
         if dspark_requested:
@@ -5146,8 +5145,7 @@ def _estimate_gguf_required_gb(
                 # the absent one contributes 0, and over-estimating is the safe
                 # direction for a guard that protects a running training job.
                 include_mtp = (
-                    not _charge_no_drafter
-                    and (_spec_mode == "auto" or not dspark_requested)
+                    not _charge_no_drafter and (_spec_mode == "auto" or not dspark_requested)
                 ),
                 include_dspark = (
                     not _charge_no_drafter and (_spec_mode == "auto" or dspark_requested)

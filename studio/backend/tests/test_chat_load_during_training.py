@@ -1248,9 +1248,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
                 self._dspark_capable(False),
             ):
-                forced = self.route._estimate_gguf_required_gb(
-                    cfg, speculative_type = "dspark"
-                )
+                forced = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
                 auto = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
         self.assertAlmostEqual(forced, 2000 / (1024**3), places = 9)
         self.assertAlmostEqual(auto, 5000 / (1024**3), places = 9)
