@@ -1039,6 +1039,11 @@ def test_first_output_budget_never_undercuts_the_admission_heartbeat(monkeypatch
     monkeypatch.setenv("UNSLOTH_OPENAI_COMPAT_ADMISSION_KEEPALIVE_INTERVAL", "200")
     assert research_runs._first_output_budget() == 400.0
 
+    # With the queue switched off, reserve() leases outright and never sends a heartbeat,
+    # so the floor would only postpone catching a genuinely stalled request.
+    monkeypatch.setenv("UNSLOTH_LLAMA_ADMISSION_CONTROL", "0")
+    assert research_runs._first_output_budget() == 120.0
+
 
 def test_stall_keepalives_after_the_first_frame_do_not_renew_the_budget(monkeypatch):
     """A wedged local GGUF model must still time out.
@@ -1071,6 +1076,52 @@ def test_stall_keepalives_after_the_first_frame_do_not_renew_the_budget(monkeypa
     with pytest.raises(research_runs.ModelFirstOutputTimeout):
         _run_stream(supervisor, timeout_seconds = 30.0)
     assert time.monotonic() - started < 5.0, "must end on the budget, not the wall clock"
+
+
+def test_outer_cancellation_still_hands_off_the_child_task(monkeypatch):
+    """Shutdown or the wall clock must not strand the child with nobody reading it.
+
+    _discard_task re-raises an outer cancellation, but the child outlives the frame
+    either way, so its outcome still has to be claimed before the caller leaves.
+    """
+    monkeypatch.setattr(research_runs, "_STREAM_CLEANUP_TIMEOUT_SECONDS", 30.0)
+    absorbed = []
+    real_absorb = research_runs.ResearchSupervisor._absorb_late_task
+
+    def _spy(run_id, what, task):
+        absorbed.append(what)
+        return real_absorb(run_id, what, task)
+
+    monkeypatch.setattr(research_runs.ResearchSupervisor, "_absorb_late_task", staticmethod(_spy))
+    supervisor = _make_supervisor(_noop_check_active)
+
+    async def _drive():
+        gate = asyncio.get_running_loop().create_future()
+
+        async def _stubborn():
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                pass  # declines the first cancellation
+            await gate
+            raise RuntimeError("late failure")
+
+        child = asyncio.create_task(_stubborn())
+        await asyncio.sleep(0)
+        cleanup = asyncio.create_task(supervisor._discard_task("run-1", child, "stream_iterator"))
+        await asyncio.sleep(0.05)
+        # Cancel the cleanup itself, standing in for the wall clock or a shutdown.
+        cleanup.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await cleanup
+
+        gate.set_result(None)
+        await asyncio.sleep(0.05)
+        assert child.done()
+        assert absorbed == ["stream_iterator"], f"child was stranded: {absorbed}"
+        assert isinstance(child.exception(), RuntimeError)
+
+    asyncio.run(_drive())
 
 
 def test_a_cancelled_send_is_only_discarded_once(monkeypatch):

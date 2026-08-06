@@ -164,8 +164,12 @@ def _first_output_budget() -> float:
     perfectly healthy queued run before it could ever speak. The wall clock still caps
     the total either way.
     """
-    interval = llama_admission_config_from_env().keepalive_interval_s
-    return max(_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS, 2.0 * interval)
+    config = llama_admission_config_from_env()
+    if not config.enabled:
+        # reserve() hands back a lease outright, so no heartbeat is ever sent and
+        # raising the budget would only delay catching a genuinely stalled request.
+        return _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
+    return max(_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS, 2.0 * config.keepalive_interval_s)
 
 
 def _auto_scrape_default() -> int:
@@ -1658,6 +1662,13 @@ class ResearchSupervisor:
                 "research.%s_late_cleanup_failed run_id=%s", what, run_id, exc_info = error
             )
 
+    def _absorb_when_done(self, run_id: str, task: asyncio.Task, what: str) -> None:
+        """Arrange for a task still running past cleanup to have its outcome retrieved."""
+        if task.done():
+            self._absorb_late_task(run_id, what, task)
+            return
+        task.add_done_callback(lambda finished: self._absorb_late_task(run_id, what, finished))
+
     async def _discard_task(self, run_id: str, task: asyncio.Task, what: str) -> None:
         """Cancel a pending task and absorb its outcome, without waiting forever.
 
@@ -1669,12 +1680,15 @@ class ResearchSupervisor:
         try:
             await asyncio.wait({task}, timeout = _STREAM_CLEANUP_TIMEOUT_SECONDS)
         except asyncio.CancelledError:
-            raise  # an outer cancellation (wall clock, shutdown) must keep propagating
+            # An outer cancellation (wall clock, shutdown) must keep propagating, but the
+            # child outlives this frame either way, so hand its outcome over before leaving.
+            self._absorb_when_done(run_id, task, what)
+            raise
         if not task.done():
             logger.warning("research.%s_cleanup_timed_out run_id=%s", what, run_id)
             # The bound expired but the task lives on, so keep the promise above by
             # absorbing its outcome whenever it finally cooperates.
-            task.add_done_callback(lambda finished: self._absorb_late_task(run_id, what, finished))
+            self._absorb_when_done(run_id, task, what)
             return
         try:
             task.result()
