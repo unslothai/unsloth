@@ -95,6 +95,7 @@ import {
   currentRuntimePerModelConfig,
   normalizeMaxSeqLength,
   type PerModelConfig,
+  loadedContextFields,
 } from "@/features/model-picker";
 import {
   invalidateLlamaFlagCatalog,
@@ -1626,15 +1627,6 @@ export function useChatModelRuntime() {
               !(loadResponse.is_diffusion ?? false)
                 ? (loadNUbatch ?? null)
                 : null;
-            const nativeCtx = loadResponse.is_gguf
-              ? (loadResponse.context_length ?? 131072)
-              : null;
-            const reportedMaxCtx = loadResponse.is_gguf
-              ? (loadResponse.max_context_length ?? null)
-              : null;
-            const reportedNativeCtx = loadResponse.is_gguf
-              ? (loadResponse.native_context_length ?? null)
-              : null;
             // Keep an explicit Manual+Auto context pin (so a later Apply doesn't
             // revert it to Auto) and retain the user's requested context so
             // re-open/re-save keeps the intended override, not the backend's
@@ -1664,7 +1656,6 @@ export function useChatModelRuntime() {
                     reasoningEffortLevels,
                   )
                 : clampLocalReasoningEffort(existingReasoningEffort);
-            const maxContextLength = reportedMaxCtx;
             const nextReasoningEnabled = reasoningAlwaysOn
               ? true
               : reloadingSameModel && supportsReasoning
@@ -1674,10 +1665,7 @@ export function useChatModelRuntime() {
             // A later rollback reads the snapshot path, not the id this was stored under.
             rememberApprovedRemoteCode(loadPath, approvedRemoteCodeFingerprint);
             useChatRuntimeStore.setState({
-              loadedContextLength: nativeCtx,
-              maxContextLength,
-              nativeContextLength: reportedNativeCtx,
-              loadedIsGguf: loadResponse.is_gguf ?? false,
+              ...loadedContextFields(loadResponse),
               modelRequiresTrustRemoteCode:
                 loadResponse.requires_trust_remote_code ?? false,
               supportsReasoning,

@@ -3,6 +3,7 @@
 
 import { authFetch } from "@/features/auth";
 import { mirrorHfTokenInto, useHfTokenStore } from "@/features/hub";
+import { loadedContextFields } from "@/features/model-picker/model-config/per-model-config";
 import {
   cachedPinnableGpuIndexKind,
   reconcileCachedGpuSelection,
@@ -4108,10 +4109,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       activeLoadId: null,
       activeNativePathToken: null,
       activeNativePathExpiresAtMs: null,
-      loadedContextLength: null,
-      maxContextLength: null,
-      nativeContextLength: null,
-      loadedIsGguf: null,
+      ...loadedContextFields(null),
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       contextUsageByThreadId: {},

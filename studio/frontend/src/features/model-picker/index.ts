@@ -50,6 +50,7 @@ export {
   adoptLegacyConfigKey,
   isServedByLlamaCpp,
   isServedByMlx,
+  loadedContextFields,
   presetLoadSettingNames,
   resolveInitialConfig,
   resolveResidentInitialConfig,
