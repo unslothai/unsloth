@@ -927,6 +927,76 @@ class TestEnsureRocmTorch:
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
     @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 14))
+    @patch.object(
+        stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1100", "gfx1100", "gfx1151"]
+    )
+    def test_mask_indexes_devices_not_deduplicated_arches(
+        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        # The mask names a device ordinal. On two gfx1100 plus a gfx1151, device 1 is
+        # the second gfx1100, but a deduplicated ['gfx1100','gfx1151'] reads index 1 as
+        # the Strix and routes the whole install to the Strix-only AMD index.
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"7.14.60850|2.11.0+rocm7.2\n"
+        buf = io.StringIO()
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "1"}, clear = False):
+            for _v in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+                os.environ.pop(_v, None)
+            with contextlib.redirect_stdout(buf):
+                with patch("os.path.isdir", return_value = True):
+                    with patch("subprocess.run", return_value = mock_probe):
+                        _ensure_rocm_torch()
+        calls = str(mock_pip.call_args_list) + str(mock_pip_try.call_args_list)
+        assert "gfx1151" not in calls
+        assert "non-Strix runtime target (gfx1100)" in buf.getvalue()
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
+    @patch.object(stack_mod, "_detect_rocm_version", return_value = (7, 14))
+    @patch.object(
+        stack_mod, "_detect_amd_gfx_codes", return_value = ["gfx1100", "gfx1100", "gfx1151"]
+    )
+    def test_mask_naming_the_strix_device_still_reroutes(
+        self, mock_gfx, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try
+    ):
+        # Negative control for the above: device 2 really is the Strix, so the reroute
+        # must still fire. Guards against "fixing" the index by disabling the reroute.
+        mock_probe = MagicMock()
+        mock_probe.returncode = 0
+        mock_probe.stdout = b"7.14.60850|2.11.0+rocm7.2\n"
+        with patch.dict(os.environ, {"CUDA_VISIBLE_DEVICES": "2"}, clear = False):
+            for _v in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES"):
+                os.environ.pop(_v, None)
+            with patch("os.path.isdir", return_value = True):
+                with patch("subprocess.run", return_value = mock_probe):
+                    _ensure_rocm_torch()
+        calls = str(mock_pip.call_args_list) + str(mock_pip_try.call_args_list)
+        assert "gfx1151" in calls
+
+    def test_gfx_probe_can_return_one_entry_per_device(self):
+        # dedup=False is what makes the ordinals above meaningful.
+        out = "Name: gfx1100\nName: gfx1100\nName: gfx1151\n"
+        run = MagicMock(returncode = 0, stdout = out)
+        which = lambda n: "/usr/bin/rocminfo" if n == "rocminfo" else None  # noqa: E731
+        with patch("shutil.which", side_effect = which):
+            with patch("subprocess.run", return_value = run):
+                assert stack_mod._detect_amd_gfx_codes() == ["gfx1100", "gfx1151"]
+                assert stack_mod._detect_amd_gfx_codes(dedup = False) == [
+                    "gfx1100",
+                    "gfx1100",
+                    "gfx1151",
+                ]
+
+    @patch.object(stack_mod, "IS_WINDOWS", False)
+    @patch.object(stack_mod, "pip_install_try", return_value = True)
+    @patch.object(stack_mod, "pip_install")
+    @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)
+    @patch.object(stack_mod, "_has_rocm_gpu", return_value = True)
     @patch.object(stack_mod, "_detect_rocm_version", return_value = (6, 4))
     def test_explicit_gfx_index_honored_and_skips_strix_reroute(
         self, mock_ver, mock_gpu, mock_nvidia, mock_pip, mock_pip_try

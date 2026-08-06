@@ -1421,17 +1421,22 @@ def _has_usable_nvidia_gpu() -> bool:
     return False
 
 
-def _detect_amd_gfx_codes() -> list[str]:
+def _detect_amd_gfx_codes(dedup: bool = True) -> list[str]:
     """Return the AMD gfx ISA strings visible to ROCm (e.g. ['gfx1151']).
 
     Probes rocminfo, then falls back to ``amd-smi list`` and ``amd-smi
     static --asic`` for runtime-only Radeon hosts that ship amd-smi but no
     rocminfo. Returns an empty list when no probe yields a gfx target.
+
+    dedup=False keeps one entry per DEVICE instead of one per arch, which a
+    caller resolving HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES needs: those
+    mask values are device ordinals, so indexing a deduplicated list reads the
+    wrong card whenever the host has two GPUs of the same arch.
     """
 
     def _extract(text: str) -> list[str]:
-        codes = re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())
-        return list(dict.fromkeys(f"gfx{c}" for c in codes))
+        codes = [f"gfx{c}" for c in re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())]
+        return list(dict.fromkeys(codes)) if dedup else codes
 
     probes: list[list[str]] = []
     if shutil.which("rocminfo"):
@@ -2227,17 +2232,18 @@ def _ensure_rocm_torch() -> None:
         and _explicit_rocm_torch_index_url() is None
         and not _gfx906_arch_override
     ):
-        gfx_codes = _detect_amd_gfx_codes()
+        # One entry per DEVICE: the mask names a device ordinal, so resolving it
+        # against a deduplicated list picks the wrong card on a host with two GPUs
+        # of one arch (gfx1100,gfx1100,gfx1151 would read index 1 as the Strix).
+        gfx_devices = _detect_amd_gfx_codes(dedup = False)
+        gfx_codes = list(dict.fromkeys(gfx_devices))
         _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
         _detected_strix = _strix_gfx.intersection(gfx_codes)
         if _detected_strix:
-            # Runtime-visible GPU (HIP_VISIBLE_DEVICES index into gfx_codes, else first);
+            # Runtime-visible GPU (mask index into the device list, else first);
             # skip the override unless it's Strix.
-            # warn=False: _detect_amd_gfx_codes() deduplicates, so on a dual
-            # same-arch box (two gfx1151) the list is shorter than the device
-            # count and a valid index legitimately reads as out of range.
             _runtime_gfx = (
-                gfx_codes[_pick_visible_index(len(gfx_codes), warn = False)] if gfx_codes else None
+                gfx_devices[_pick_visible_index(len(gfx_devices))] if gfx_devices else None
             )
             if _runtime_gfx in _strix_gfx:
                 _selected_gfx = _runtime_gfx
