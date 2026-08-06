@@ -194,11 +194,11 @@ def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monke
     b._db_run_created = True
     real_stop, fired = b.stop_training, []
 
-    def stop_after_complete(save = True):
+    def stop_after_complete(save = True, expected_job_id = None):
         if not fired:
             fired.append(True)
             b._handle_event(dict(_DONE))  # the pump wins the gap
-        return real_stop(save = save)
+        return real_stop(save = save, expected_job_id = expected_job_id)
 
     b.stop_training = stop_after_complete
 

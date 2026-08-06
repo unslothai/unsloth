@@ -47,11 +47,11 @@ export interface CachedInventoryRow {
   capabilities: ModelInventoryCapabilities;
   bytes: number;
   cachePath?: string | null;
+  loadCachePath?: string | null;
   lastModified?: number | null;
   partial?: boolean;
   partialTransport?: string | null;
-  /** A download manifest or cancel marker exists for some quant. Moves when a
-   *  sibling is cancelled, which changes neither bytes nor mtime. */
+  /** A download manifest or cancel marker exists for some quant; moves on a sibling cancel, which changes neither bytes nor mtime. */
   hasVariantState?: boolean;
   pipelineTag?: string | null;
   // Inferred pipeline task from the backend. The task-scoped pickers filter On Device rows on it.
@@ -77,6 +77,7 @@ export interface LocalInventoryRow {
   title: string;
   source: LocalSource;
   sourceLabel: string;
+  datasetSource?: "recipe" | "upload";
   modelId?: string | null;
   displayName?: string;
   path: string;
