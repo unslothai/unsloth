@@ -30,9 +30,13 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: 'Release tag in the desktop release repo'
+        description: 'Release tag in the desktop release repo (empty resolves the newest)'
         type: string
-        default: 'desktop-v0.1.50-beta'
+        # Empty, not a pinned tag. desktop-v0.1.50-beta predates #7547, so with the
+        # outcome pins retired a dispatch that took this default would fail all four
+        # POSIX legs at the installer step -- on a bundle nobody meant to test. Empty
+        # falls through to the same newest-desktop-v* resolution the schedule uses.
+        default: ''
       release_repo:
         description: 'owner/name hosting the desktop release'
         type: string
@@ -241,14 +245,29 @@ jobs:
             grep -E "disposition=|can_auto_repair=|Xcode Command Line|ModuleNotFoundError" "$f" || true
             found=1
             if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
+            dispositions="${dispositions:-} $(grep -oE 'desktop_preflight completed disposition=[A-Za-z]+' "$f" | sed 's/.*disposition=//' | tr '\n' ' ')"
           done
-          # Everything above is `|| true`, so without these two lines the step could not
+          # Everything above is `|| true`, so without these lines the step could not
           # fail while the header sells the disposition as an acceptance criterion.
           # setup_logging (src-tauri/src/main.rs:50-67) opens tauri.log unconditionally at
           # process start, so no log means the binary never got that far, and a process
           # that hangs before preflight must not pass.
           [ "${found:-0}" = "1" ] || { echo "::error::the app wrote no tauri.log; it never reached setup_logging"; exit 1; }
           [ "${disposition:-0}" = "1" ] || { echo "::error::tauri.log records no desktop_preflight disposition; the app never completed preflight"; exit 1; }
+          # A recorded disposition is not enough. A post-#7547 bundle can install a
+          # working venv and still have preflight regress to NotInstalled, and the app
+          # then sits happily on the Install screen: alive, log written, disposition
+          # present, nothing built recognised. Windows has always required a READY
+          # disposition; the reason given for keeping that Windows-only was the install
+          # root, and the source says otherwise -- preflight/managed.rs env_removes
+          # UNSLOTH_STUDIO_HOME and STUDIO_HOME on every platform, not under a
+          # cfg(windows), so all three read the same legacy root.
+          echo "dispositions recorded: ${dispositions:-<none>}"
+          case "${dispositions:-}" in
+            *ManagedReady*|*OwnedReady*|*AttachedReady*) ;;
+            *) echo "::error::preflight never reported a ready disposition (saw: ${dispositions:-<none>}); the app did not recognise the environment the bundled installer just built"
+               exit 1 ;;
+          esac
 
       - name: Restore the runner
         if: always()
@@ -441,11 +460,26 @@ jobs:
             grep -E "disposition=|can_auto_repair=|ModuleNotFoundError" "$f" || true
             found=1
             if grep -qE "desktop_preflight completed disposition=" "$f"; then disposition=1; fi
+            dispositions="${dispositions:-} $(grep -oE 'desktop_preflight completed disposition=[A-Za-z]+' "$f" | sed 's/.*disposition=//' | tr '\n' ' ')"
           done
           # Same criterion the macOS rows enforce, same reason: everything above is
           # `|| true` and the loop skips a missing log, so the step could not fail.
           [ "${found:-0}" = "1" ] || { echo "::error::the app wrote no tauri.log; it never reached setup_logging"; exit 1; }
           [ "${disposition:-0}" = "1" ] || { echo "::error::tauri.log records no desktop_preflight disposition; the app never completed preflight"; exit 1; }
+          # A recorded disposition is not enough. A post-#7547 bundle can install a
+          # working venv and still have preflight regress to NotInstalled, and the app
+          # then sits happily on the Install screen: alive, log written, disposition
+          # present, nothing built recognised. Windows has always required a READY
+          # disposition; the reason given for keeping that Windows-only was the install
+          # root, and the source says otherwise -- preflight/managed.rs env_removes
+          # UNSLOTH_STUDIO_HOME and STUDIO_HOME on every platform, not under a
+          # cfg(windows), so all three read the same legacy root.
+          echo "dispositions recorded: ${dispositions:-<none>}"
+          case "${dispositions:-}" in
+            *ManagedReady*|*OwnedReady*|*AttachedReady*) ;;
+            *) echo "::error::preflight never reported a ready disposition (saw: ${dispositions:-<none>}); the app did not recognise the environment the bundled installer just built"
+               exit 1 ;;
+          esac
 
       - name: Restore the runner
         if: always()
@@ -722,9 +756,9 @@ jobs:
             exit 1
           }
           # All three legs now require the installer to exit 0, create the venv and import
-          # torch -- the #7547 outcome pins that let macOS and Linux accept a non-zero exit
-          # are gone. This extra assertion is still Windows-only because the app reads the
-          # same default root it wrote there
+          # torch, AND a ready disposition -- the #7547 outcome pins are gone and the
+          # POSIX legs carry the same case check. Kept spelled out here because the app
+          # reads the same default root it wrote
           # (%USERPROFILE%\.unsloth\studio; it ignores UNSLOTH_STUDIO_HOME, which is why
           # the log is found at the second path). So anything but a ready disposition means
           # the app cannot boot what was just installed -- the reported failure, on the very
