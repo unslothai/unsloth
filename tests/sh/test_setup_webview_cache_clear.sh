@@ -22,8 +22,10 @@ FAIL=0
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
-assert_gone()    { _l="$1"; if [ -e "$2" ]; then echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); else echo "  PASS: $_l"; PASS=$((PASS+1)); fi; }
-assert_present() { _l="$1"; if [ -e "$2" ]; then echo "  PASS: $_l"; PASS=$((PASS+1)); else echo "  FAIL: $_l (missing: $2)"; FAIL=$((FAIL+1)); fi; }
+# -e || -L, matching the production guard: -e alone is false for a dangling
+# symlink, so assert_gone would pass on one that was never removed.
+assert_gone()    { _l="$1"; if [ -e "$2" ] || [ -L "$2" ]; then echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); else echo "  PASS: $_l"; PASS=$((PASS+1)); fi; }
+assert_present() { _l="$1"; if [ -e "$2" ] || [ -L "$2" ]; then echo "  PASS: $_l"; PASS=$((PASS+1)); else echo "  FAIL: $_l (missing: $2)"; FAIL=$((FAIL+1)); fi; }
 
 # Explicit template: -p is GNU-only (BSD got it in macOS 14) and a bare
 # mktemp -d implies -t, landing outside _TMP_ROOT on macOS.

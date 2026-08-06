@@ -851,16 +851,17 @@ fn webview_profile_root(bundle_id: &str) -> Option<std::path::PathBuf> {
 #[must_use]
 fn clear_webview_caches(bundle_id: &str, version: &str) -> Option<fs::File> {
     let root = webview_profile_root(bundle_id)?;
-    let stamp = root.join(".webview-cache-cleared");
-    if fs::read_to_string(&stamp).is_ok_and(|v| v.trim() == version) {
-        return None;
-    }
-    // The stamp read is not atomic, so claim the profile before deleting: the
-    // loser of a duplicate launch skips this launch instead of racing. The OS
-    // drops the lock if we crash, so a dead process never blocks a later clear.
+    // Claim the profile BEFORE reading the stamp, and keep the lock even when the
+    // stamp matches: an already-stamped launch that held nothing would let a
+    // newer executable started alongside it delete this instance's live profile.
+    // The OS drops the lock if we crash, so a dead process never blocks a clear.
     let _ = fs::create_dir_all(&root);
     let lock = fs::File::create(root.join(".webview-cache-lock")).ok()?;
     lock.try_lock().ok()?;
+    let stamp = root.join(".webview-cache-cleared");
+    if fs::read_to_string(&stamp).is_ok_and(|v| v.trim() == version) {
+        return Some(lock);
+    }
 
     let mut paths: Vec<std::path::PathBuf> = Vec::new();
     #[cfg(target_os = "windows")]
@@ -1192,6 +1193,18 @@ mod tests {
 
         // Exit or crash drops the lock, so the next launch clears.
         drop(live);
+
+        // A launch whose stamp already matches must still TAKE the lock, or a
+        // newer executable started alongside it could delete the live profile.
+        fs::create_dir_all(root.join("WebKitCache")).unwrap();
+        let stamped = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.0"));
+        assert!(stamped.is_some(), "a stamped launch dropped the profile lock");
+        assert!(root.join("WebKitCache").exists(), "a stamped launch cleared anyway");
+        let racer = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.1"));
+        assert!(racer.is_none(), "a newer launch took the lock from a stamped instance");
+        assert!(root.join("WebKitCache").exists(), "deleted a stamped instance's cache");
+        drop(stamped);
+
         let next = with_xdg_data_home(xdg, || clear_webview_caches(BID, "1.0.1"));
         assert!(!root.join("WebKitCache").exists(), "a released lock still blocked the clear");
         drop(next);
