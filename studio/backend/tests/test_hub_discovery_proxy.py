@@ -1031,7 +1031,11 @@ class TestATimedOutJobIsNotLeftQueued:
         release = threading.Event()
         started = []
 
-        def _hang(url, token, accept = None):
+        def _hang(
+            url,
+            token,
+            accept = None,
+        ):
             started.append(url)
             release.wait(10)
             return 200, b"[]", ""
@@ -1062,6 +1066,6 @@ class TestATimedOutJobIsNotLeftQueued:
             loop.run_until_complete(loop.shutdown_default_executor())
             loop.close()
 
-        assert len(started) == queued, (
-            f"{len(started) - queued} abandoned job(s) still hit the network"
-        )
+        assert (
+            len(started) == queued
+        ), f"{len(started) - queued} abandoned job(s) still hit the network"
