@@ -1226,6 +1226,10 @@ class MLXInferenceBackend:
             _revoke_override_that_drops_image(
                 self._template_override, self._tokenizer, self._processor
             )
+        # Released once the media checks are done: the pairs strongly reference
+        # the tokenizer and processor, and nothing reads them afterwards, so
+        # keeping them would outlive the unload that nulls both.
+        self._template_override["restore"] = []
         if self._template_override["reason"]:
             logger.info(
                 "MLX chat template override not applied: %s",

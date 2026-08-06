@@ -2406,3 +2406,29 @@ def test_a_quantized_entry_is_retainable_when_only_nbytes_is_broken(monkeypatch)
     )
     assert (converted, skipped, failure) == (1, 0, None)
     assert retainable is True
+
+
+def test_a_successful_override_does_not_pin_the_tokenizer_past_load(monkeypatch):
+    """The restore pairs hold the tokenizer, so unload_model cannot free it.
+
+    Nothing reads them once the audio and image checks have run, and the worker
+    outlives the model, so holding them defeats part of what unload releases.
+    """
+    _install_fake_mlx(monkeypatch)
+    _install_fake_fast_mlx(monkeypatch, [])
+    # A text model with no template of its own is the one case an override may create.
+    monkeypatch.setattr(_DummyTokenizer, "chat_template", None, raising = False)
+    monkeypatch.setattr(
+        "core.inference.chat_template_helpers.apply_chat_template_for_generation",
+        lambda target, messages, **kwargs: "rendered",
+    )
+    from core.inference.mlx_inference import MLXInferenceBackend
+
+    backend = MLXInferenceBackend()
+    config = SimpleNamespace(identifier = "fake/text", is_vision = False, is_lora = False)
+    assert backend.load_model(config, chat_template_override = "{{ custom }}")
+
+    status = backend._template_override
+    assert status["applied"] == "{{ custom }}"
+    assert status["restore"] == []
+    assert backend._tokenizer.chat_template == "{{ custom }}"
