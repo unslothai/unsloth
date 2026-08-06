@@ -6834,7 +6834,14 @@ def test_codex_preload_gate_defers_to_the_resident_model(fake_studio, monkeypatc
     # already serving, whose file may since have moved.
     inner = start._http_json
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         if "/api/models/gguf-variants" in url:
@@ -6854,7 +6861,14 @@ def test_codex_preload_gate_still_runs_for_a_different_variant(fake_studio, monk
     inner = start._http_json
     probed = []
 
-    def http_json(method, url, token, payload = None, timeout = 30, error = None):
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
         if url.endswith("/api/inference/status"):
             return {"is_gguf": True, "gguf_variant": "Q4_K_M"}
         if "/api/models/gguf-variants" in url:
