@@ -36,6 +36,9 @@ on:
       # not pull in the GGUF smoke jobs.
       - 'tests/studio/*.ps1'
       - '.github/workflows/studio-windows-inference-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
   push:
     branches: [main, pip]
   workflow_dispatch:
@@ -323,11 +326,7 @@ jobs:
         timeout-minutes: 2
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         timeout-minutes: 10
@@ -628,11 +627,8 @@ jobs:
         if: ${{ !cancelled() && steps.shim.outcome == 'success' && steps.download-gguf-tools.outcome != 'failure' }}
         timeout-minutes: 2
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio_tools.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port "$STUDIO_PORT" --log logs/studio_tools.log
 
       - name: Wait for /api/health, log in, change password, load model
         id: ready-tools
@@ -1084,11 +1080,8 @@ jobs:
         if: ${{ !cancelled() && steps.shim.outcome == 'success' && steps.sdks.outcome == 'success' && steps.prime-hf-vision.outcome != 'failure' }}
         timeout-minutes: 2
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio_vision.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh \
+            --port "$STUDIO_PORT" --log logs/studio_vision.log
 
       - name: Wait for /api/health, log in, change password, load model
         id: ready-vision
@@ -1606,11 +1599,7 @@ jobs:
 
       - name: Reset auth + boot Unsloth (API-only)
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health, log in, load the GGUF
         run: |
