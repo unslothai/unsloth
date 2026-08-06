@@ -1073,6 +1073,62 @@ def test_stall_keepalives_after_the_first_frame_do_not_renew_the_budget(monkeypa
     assert time.monotonic() - started < 5.0, "must end on the budget, not the wall clock"
 
 
+def test_a_cancelled_send_is_only_discarded_once(monkeypatch):
+    """The pre-header send needs the same single-cleanup guarantee as the iterator.
+
+    A send that declines cancellation past the bound would otherwise be waited on again
+    by the enclosing finally, doubling how long a user cancellation takes.
+    """
+    monkeypatch.setattr(research_runs, "_STREAM_CLEANUP_TIMEOUT_SECONDS", 0.2)
+    discards = []
+    real_discard = research_runs.ResearchSupervisor._discard_task
+
+    async def _counting_discard(self, run_id, task, what):
+        discards.append(what)
+        return await real_discard(self, run_id, task, what)
+
+    monkeypatch.setattr(research_runs.ResearchSupervisor, "_discard_task", _counting_discard)
+
+    supervisor = _make_supervisor(_noop_check_active)
+    run = _waiting_run(30.0)
+
+    class _StubbornClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc_info):
+            return False
+
+        def build_request(self, *args, **kwargs):
+            return SimpleNamespace(headers = {})
+
+        async def send(
+            self,
+            request,
+            stream = False,
+        ):
+            supervisor._cancel_event(run["id"]).set()
+            try:
+                await asyncio.sleep(10)
+            except asyncio.CancelledError:
+                await asyncio.sleep(10)  # declines cancellation past the bound
+
+    monkeypatch.setattr(research_runs.httpx, "AsyncClient", lambda **kwargs: _StubbornClient())
+
+    async def _cancelled(run_id):
+        if supervisor._cancel_event(run_id).is_set():
+            raise research_runs.RunCancelled()
+
+    supervisor._check_active = _cancelled
+
+    started = time.monotonic()
+    with pytest.raises(research_runs.RunCancelled):
+        asyncio.run(supervisor._stream_completion(run, [{"role": "user"}], report_progress = False))
+    elapsed = time.monotonic() - started
+    assert [w for w in discards if w == "send"] == ["send"], f"discards: {discards}"
+    assert elapsed < 1.0, f"cancellation took {elapsed:.2f}s, more than one cleanup bound"
+
+
 def test_a_cancelled_stream_iterator_is_only_discarded_once(monkeypatch):
     """Cancellation must stay inside one cleanup bound, not two.
 

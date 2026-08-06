@@ -1867,6 +1867,7 @@ class ResearchSupervisor:
             ):
                 response: httpx.Response | None = None
                 send_task: asyncio.Task | None = None
+                send_discarded = False
                 model_waits = 0
                 attempt = 0
                 try:
@@ -1879,9 +1880,14 @@ class ResearchSupervisor:
                         )
                         try:
                             send_task = asyncio.create_task(client.send(request, stream = True))
+                            # A retry builds a fresh task, so the guard starts over with it.
+                            send_discarded = False
                             while not send_task.done():
                                 await asyncio.wait({send_task}, timeout = 0.2)
                                 if self._cancel_event(run["id"]).is_set():
+                                    # Set first, for the same reason as the iterator path:
+                                    # a send that outlasts the bound must not be waited on twice.
+                                    send_discarded = True
                                     await self._discard_task(run["id"], send_task, "send")
                                     await self._check_active(run["id"])
                             response = await send_task
@@ -1971,7 +1977,7 @@ class ResearchSupervisor:
                     if semantic_output_at is None:
                         raise ModelFirstOutputTimeout("Local model never produced output")
                 finally:
-                    if send_task is not None and not send_task.done():
+                    if send_task is not None and not send_discarded and not send_task.done():
                         await self._discard_task(run["id"], send_task, "send")
                     if (
                         response is None
