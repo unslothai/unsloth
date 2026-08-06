@@ -1892,3 +1892,43 @@ def test_a_cmd_comparison_is_never_a_path(windows_terminal, command):
     # And even inside a real condition, cmd compares two operands and neither
     # carries a separator, so a word holding one is the program it looks like.
     assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c echo&cmd /c powershell&echo",
+        "cmd /c echo&call powershell&echo",
+        "cmd /c echo&powershell&echo",
+        "cmd /c echo|powershell|echo",
+    ],
+)
+def test_every_segment_of_a_glued_token_is_a_command(windows_cmd_only, command):
+    # One token can carry a whole chain, because cmd needs no whitespace around
+    # its separators. Reading only what followed the LAST operator skipped every
+    # command before it, so a trailing `&echo` hid the launch in front of it.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'cmd //c "C:\\Windows\\System32\\cmd.exe /c powershell"',
+        'cmd //c "C:/Windows/System32/cmd.exe /c powershell"',
+        'cmd //c "C:\\Program Files\\Git\\bin\\bash.exe -c powershell"',
+        'cmd //c "C:\\tools\\env.exe powershell"',
+    ],
+)
+def test_a_path_qualified_shell_still_has_its_arguments_read(windows_terminal, command):
+    # A payload opening with a program path reported that program and stopped.
+    # Where the program is itself a shell or a wrapper its ARGUMENTS carry
+    # another command, and PATHEXT makes the suffix optional, so the name is
+    # matched by its stem too.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+def test_a_path_qualified_program_is_still_just_a_program(windows_terminal):
+    # And one that is neither still reports only itself.
+    assert tools._find_blocked_commands('cmd //c "C:\\tools\\pwsh.exe -Command ls"') == {
+        "pwsh"
+    }

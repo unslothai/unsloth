@@ -1165,6 +1165,34 @@ def _is_win_comparison(tokens: "list[str]", index: int) -> bool:
     return index + 1 < len(tokens) and tokens[index + 1].lower() in _WIN_COMPARE_OPERATORS
 
 
+def _live_operator_segments(token: str, lexed_posix: bool) -> "list[str]":
+    """``token`` split at every live cmd operator inside it.
+
+    One token can carry a whole chain of commands, because cmd needs no
+    whitespace around its separators: `powershell&echo` is two. Reading only
+    what follows the LAST operator skipped every command before it.
+    """
+    if lexed_posix:
+        return [token]
+    segments: "list[str]" = []
+    quotes = 0
+    carets = 0
+    start = 0
+    for position, char in enumerate(token):
+        if char == "^":
+            carets += 1
+            continue
+        if char == '"':
+            quotes += 1
+        elif char in "&|(" and quotes % 2 == 0 and carets % 2 == 0:
+            if char != "(" or position == 0 or token[position - 1] in "&|()^":
+                segments.append(token[start:position])
+                start = position + 1
+        carets = 0
+    segments.append(token[start:])
+    return segments
+
+
 def _live_operator_tail(token: str, lexed_posix: bool) -> str:
     """What ``token`` starts a new command with, or ``""`` if it does not.
 
@@ -1907,14 +1935,31 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             # notepad.exe` runs notepad and reported the folder it sits in. The
             # recovery below reads the program off the path instead.
             return _blocked_quoted_program(text, _BLOCKED_COMMANDS)
-        if _quoted_program_word(text):
+        program_word = _quoted_program_word(text)
+        if program_word:
             # A path followed by its own arguments is still a program, not a
             # command line: re-lexing `C:\tools\notepad.exe -x y` matched the
             # POSIX source builtin on the extension dot and refused the launch.
             # The recovery reads the whole payload rather than its first word,
             # because the path may hold spaces of its own and
             # `C:\powershell scripts\notepad.exe -x` runs notepad.
-            return _blocked_quoted_program(text, _BLOCKED_COMMANDS)
+            found = _blocked_quoted_program(text, _BLOCKED_COMMANDS)
+            program_base = _token_basename(program_word.replace("\\", "/"))
+            # PATHEXT makes the suffix optional, so the shell is named either
+            # way: `cmd.exe /c ...` and `cmd /c ...` open the same payload.
+            program_stem = os.path.splitext(program_base)[0]
+            if not {program_base, program_stem} & (_SHELLS | _SHELLS_WIN | _COMMAND_PREFIXES):
+                return found
+            # Unless the program is itself a shell or a wrapper, in which case
+            # its ARGUMENTS carry another command: `cmd //c "C:\Windows\
+            # System32\cmd.exe /c powershell"` reaches cmd as one string and
+            # runs PowerShell. Reporting only the path stopped at the wrapper.
+            # Spelled by its stem so the walk reads it as the shell it is: the
+            # path is what made it unrecognisable, and `cmd /c powershell` is
+            # what this line runs once the directory is off the front.
+            return found | _find_blocked_commands(
+                program_stem + text[len(program_word) :], _cmd_payload = True
+            )
         if any(char.isspace() or char in "\"'" for char in text):
             return _find_blocked_commands(text, _cmd_payload = True)
         base = _token_basename(text)
@@ -2213,8 +2258,22 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             if not prefix_pending:
                 expect_command = False
             continue
+        operator_segments = _live_operator_segments(token, lexed_posix)
         operator_tail = _live_operator_tail(token, lexed_posix)
         if operator_tail:
+            # Everything between the first operator and the last is a command of
+            # its own, and so is the leading segment when this token stood at a
+            # command position: `cmd /c echo&cmd /c powershell&echo` runs three.
+            for position, segment in enumerate(operator_segments[:-1]):
+                if position and not segment:
+                    continue
+                if position == 0 and not expect_command:
+                    continue
+                segment_base = _token_basename(_unquote(segment).replace("\\", "/"))
+                if segment_base in _BLOCKED_COMMANDS:
+                    blocked.add(segment_base)
+                else:
+                    blocked |= _blocked_matching_glob(segment_base)
             # A control operator INSIDE the token ends the command in front of
             # it and opens one behind it, so the word the operator hands over is
             # a command word: `cmd /c echo ok&cmd /c powershell` really nests,
