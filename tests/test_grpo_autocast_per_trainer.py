@@ -318,7 +318,10 @@ def test_a_later_load_cannot_take_full_finetunings_bfloat16_away():
     env = {"UNSLOTH_FORCE_FLOAT32": "1", "UNSLOTH_ENABLE_FULL_FINETUNING": "1"}
     # A LoRA load between this model and its trainer.
     trainer = _build_trainer(
-        env, torch.bfloat16, bf16_supported = True, full_finetuning = True,
+        env,
+        torch.bfloat16,
+        bf16_supported = True,
+        full_finetuning = True,
         env_override = {"UNSLOTH_ENABLE_FULL_FINETUNING": "0"},
     )
     assert env["ACCELERATE_MIXED_PRECISION"] == "bf16"
@@ -328,9 +331,7 @@ def test_a_later_load_cannot_take_full_finetunings_bfloat16_away():
 def test_an_unstamped_model_still_takes_the_environments_finetuning_mode():
     """The fallback, for a model loaded before this stamp existed."""
     env = {"UNSLOTH_FORCE_FLOAT32": "1", "UNSLOTH_ENABLE_FULL_FINETUNING": "1"}
-    trainer = _build_trainer(
-        env, torch.bfloat16, bf16_supported = True, mark_full_finetuning = False
-    )
+    trainer = _build_trainer(env, torch.bfloat16, bf16_supported = True, mark_full_finetuning = False)
     assert not hasattr(trainer.model, "_unsloth_full_finetuning")
     assert env["ACCELERATE_MIXED_PRECISION"] == "bf16"
 
@@ -367,9 +368,20 @@ class _RecordingTorch:
     rather than the branch under test, and these tests could never pass on a
     CPU-only machine. What the code decides to ask for is the thing under test.
     """
-    def __init__(self, calls): self._calls = calls
-    def __getattr__(self, name): return getattr(torch, name)
-    def autocast(self, device_type = None, dtype = None, enabled = True, **kwargs):
+
+    def __init__(self, calls):
+        self._calls = calls
+
+    def __getattr__(self, name):
+        return getattr(torch, name)
+
+    def autocast(
+        self,
+        device_type = None,
+        dtype = None,
+        enabled = True,
+        **kwargs,
+    ):
         self._calls.append((enabled, dtype))
         return nullcontext()
 

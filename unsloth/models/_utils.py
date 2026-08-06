@@ -2122,8 +2122,8 @@ if DEVICE_TYPE == "cuda":
                 # Stop Flash Attention from importing!
                 import transformers.utils.import_utils
 
-                transformers.utils.import_utils.is_flash_attn_2_available = (
-                    lambda *args, **kwargs: (False)
+                transformers.utils.import_utils.is_flash_attn_2_available = lambda *args, **kwargs: (
+                    False
                 )
                 import transformers.utils
 
@@ -3746,9 +3746,9 @@ def _untie_input_output_embeddings(model: torch.nn.Module) -> None:
         raise AttributeError("Couldn't locate output projection (lm_head).")
 
     # (Optional) sanity: shapes should match [vocab, hidden]
-    assert (
-        out_proj.weight.shape == in_emb.weight.shape
-    ), f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
+    assert out_proj.weight.shape == in_emb.weight.shape, (
+        f"Shape mismatch: out_proj {out_proj.weight.shape} vs in_emb {in_emb.weight.shape}"
+    )
 
     # 3) Only clone if they are actually tied (shared storage)
     if out_proj.weight.data_ptr() == in_emb.weight.data_ptr():

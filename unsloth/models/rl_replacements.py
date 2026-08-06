@@ -931,8 +931,9 @@ def _unsloth_grpo_autocast(self):
 def _unsloth_grpo_autocast_kwargs(self, device_type = "cuda"):
     """torch.amp.autocast keyword arguments for GRPO generation."""
     enabled, dtype = _unsloth_grpo_autocast(self)
-    if (not getattr(self, "_autocast_force_float32", False)
-            and torch.is_autocast_enabled(device_type)):
+    if not getattr(self, "_autocast_force_float32", False) and torch.is_autocast_enabled(
+        device_type
+    ):
         # Already inside an autocast: inherit its dtype by not naming one.
         # `dtype` has to be absent rather than a sentinel, since autocast hands
         # whatever it is straight to set_autocast_dtype, which takes a
@@ -2416,13 +2417,7 @@ def grpo_trainer_compute_loss(function_name, function):
         _logits_to_keep = logits_to_keep
 
         get_logps_func = (
-            lambda model,
-            input_ids,
-            attention_mask,
-            logits_to_keep,
-            batch_size = None,
-            compute_entropy = False,
-            compute_efficient = False: (
+            lambda model, input_ids, attention_mask, logits_to_keep, batch_size = None, compute_entropy = False, compute_efficient = False: (
                 self._get_per_token_logps(
                     model, input_ids, attention_mask, logits_to_keep, compute_efficient
                 )

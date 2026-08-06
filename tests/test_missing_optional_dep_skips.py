@@ -45,7 +45,8 @@ def test_an_installed_package_is_a_no_op():
 def test_the_call_at_module_scope_does_not_kill_the_session(tmp_path, helper, args):
     """The real regression: the helper at import time, in its own pytest session."""
     module = tmp_path / f"test_absent_{helper}.py"
-    module.write_text(textwrap.dedent(f"""
+    module.write_text(
+        textwrap.dedent(f"""
         import sys
         sys.path.insert(0, {str(_repo_root())!r})
         from tests.utils.os_utils import {helper}
@@ -53,11 +54,15 @@ def test_the_call_at_module_scope_does_not_kill_the_session(tmp_path, helper, ar
 
         def test_unreachable():
             raise AssertionError("the module-level skip should have stopped this")
-    """), encoding = "utf-8")
+    """),
+        encoding = "utf-8",
+    )
 
     result = subprocess.run(
         [sys.executable, "-m", "pytest", str(module), "-q", "-p", "no:cacheprovider"],
-        capture_output = True, text = True, cwd = str(tmp_path),
+        capture_output = True,
+        text = True,
+        cwd = str(tmp_path),
     )
     output = result.stdout + result.stderr
     assert "INTERNALERROR" not in output, output
