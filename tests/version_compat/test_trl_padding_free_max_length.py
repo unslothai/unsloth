@@ -643,15 +643,12 @@ def _late_overlength_dataset(tok):
     return base.with_transform(
         lambda batch: {
             "input_ids": [list(long if t == "L" else short) for t in batch["text"]],
-            "attention_mask": [[1] * len(long if t == "L" else short)
-                               for t in batch["text"]],
+            "attention_mask": [[1] * len(long if t == "L" else short) for t in batch["text"]],
         }
     )
 
 
-def test_a_later_overlength_row_is_not_hidden_by_a_short_first_one(
-    tmp_path, trl_has_guard
-):
+def test_a_later_overlength_row_is_not_hidden_by_a_short_first_one(tmp_path, trl_has_guard):
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     with pytest.raises(ValueError, match = "cannot be enforced"):
@@ -664,5 +661,6 @@ def test_the_cap_check_reads_the_whole_split():
     block = _padding_free_codegen_block()
     assert "_UNSLOTH_SCAN_ROWS" in block
     assert "if len(_row['input_ids']) > _unsloth_cap: return False" in block
-    assert "return len(_row['input_ids']) <= _unsloth_cap" not in block, \
-        "that early return inspected only the first row"
+    assert (
+        "return len(_row['input_ids']) <= _unsloth_cap" not in block
+    ), "that early return inspected only the first row"
