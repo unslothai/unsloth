@@ -677,9 +677,8 @@ export function AgentsTab() {
   const [knownVariants, setKnownVariants] = useState<Record<string, string>>({
     [EXAMPLE_MODEL_REPO]: EXAMPLE_MODEL_VARIANT,
   });
-  const [selectedModel, setSelectedModel] = useState(
-    storedPrefs.agentsModel ?? EXAMPLE_MODEL_REPO,
-  );
+  const initialModel = storedPrefs.agentsModel ?? EXAMPLE_MODEL_REPO;
+  const [selectedModel, setSelectedModel] = useState(initialModel);
   const modelSelectionChanged = useRef(storedPrefs.agentsModel != null);
   // held until discovery and the first status can confirm the restored model.
   const restoredModel = useRef<string | null>(storedPrefs.agentsModel);
@@ -688,22 +687,32 @@ export function AgentsTab() {
   );
   const [statusSettled, setStatusSettled] = useState(false);
   // The model status last reported, for the discovery scan to preserve.
-  const activeModelRef = useRef<string | null>(null);
+  const activeModelRef = useRef<{
+    model: string;
+    variant: string | null;
+  } | null>(null);
   // Only the newest status request may apply; a slow earlier one must not win.
   const statusSeq = useRef(0);
   // A quant picked by hand, scoped to its repo: polling and refetches must not
   // overwrite it, but it must not follow the selection onto a different repo.
-  // seeding a restored quant here puts it through the same fetch a fresh one is.
+  // a restored quant is scoped the same way, so it applies when its model does.
   const chosenVariant = useRef<{ model: string; variant: string } | null>(
-    storedPrefs.agentsModel && storedPrefs.agentsVariant
-      ? { model: storedPrefs.agentsModel, variant: storedPrefs.agentsVariant }
+    storedPrefs.agentsVariantModel && storedPrefs.agentsVariant
+      ? {
+          model: storedPrefs.agentsVariantModel,
+          variant: storedPrefs.agentsVariant,
+        }
       : null,
   );
   const [modelSearch, setModelSearch] = useState("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [variants, setVariants] = useState<GgufVariantDetail[]>([]);
   const [selectedVariant, setSelectedVariant] = useState<string | null>(
-    storedPrefs.agentsModel ? storedPrefs.agentsVariant : EXAMPLE_MODEL_VARIANT,
+    chosenVariant.current?.model === initialModel
+      ? chosenVariant.current.variant
+      : initialModel === EXAMPLE_MODEL_REPO
+        ? EXAMPLE_MODEL_VARIANT
+        : null,
   );
   const [variantsLoading, setVariantsLoading] = useState(true);
   const [variantsFailed, setVariantsFailed] = useState(false);
@@ -885,7 +894,7 @@ export function AgentsTab() {
         // Status is applied on its own schedule now, so keep whatever model it has
         // already adopted rather than dropping it when this slower scan lands.
         setModels(() => {
-          const active = activeModelRef.current;
+          const active = activeModelRef.current?.model;
           return active && !discovered.models.includes(active)
             ? [active, ...discovered.models]
             : discovered.models;
@@ -919,9 +928,13 @@ export function AgentsTab() {
       }
       if (!modelSelectionChanged.current) {
         setSelectedModel(active.model);
-        if (chosenVariant.current?.model !== active.model) {
-          setSelectedVariant(active.variant);
-        }
+        // a remembered quant for this model wins, since it may be adopted here
+        // before the variants fetch below has had a chance to apply it.
+        setSelectedVariant(
+          chosenVariant.current?.model === active.model
+            ? chosenVariant.current.variant
+            : active.variant,
+        );
       }
     },
     [],
@@ -974,7 +987,9 @@ export function AgentsTab() {
   const applyStatus = useCallback(
     (status: InferenceStatusResponse) => {
       const active = activeGgufSelection(status);
-      activeModelRef.current = active?.model ?? null;
+      activeModelRef.current = active
+        ? { model: active.model, variant: active.variant }
+        : null;
       const wasAttachOnly = attachOnlyModel;
       setActiveStatusModel(active?.model ?? null);
       setAttachOnlyModel(active && !active.named ? active.model : null);
@@ -1030,20 +1045,25 @@ export function AgentsTab() {
   useEffect(() => {
     const restored = restoredModel.current;
     if (!(restored && discoveredKeys && statusSettled)) return;
+    const active = activeModelRef.current;
     restoredModel.current = null;
-    if (
-      discoveredKeys.has(modelKey(restored)) ||
-      activeModelRef.current === restored
-    ) {
+    if (discoveredKeys.has(modelKey(restored)) || active?.model === restored) {
       return;
     }
     // an uncached pick would pin the builder to a model the CLI cannot load.
     modelSelectionChanged.current = false;
     chosenVariant.current = null;
     setStoredModel(null, null);
+    // adopt straight away rather than parking on the example model: the next
+    // poll is STATUS_POLL_MS away, and a command copied meanwhile would switch
+    // a shared server off whatever is loaded.
+    if (active) {
+      adoptActiveModel(active);
+      return;
+    }
     setSelectedModel(EXAMPLE_MODEL_REPO);
     setSelectedVariant(EXAMPLE_MODEL_VARIANT);
-  }, [discoveredKeys, statusSettled, setStoredModel]);
+  }, [adoptActiveModel, discoveredKeys, statusSettled, setStoredModel]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1391,12 +1411,10 @@ export function AgentsTab() {
                 onValueChange={(variant) => {
                   chosenVariant.current = { model: selectedModel, variant };
                   setSelectedVariant(variant);
-                  // a quant picked while following the resident model is its own.
-                  if (
-                    useSettingsPanelPrefsStore.getState().agentsModel ===
-                    selectedModel
-                  ) {
-                    setStoredVariant(variant);
+                  // stored against its model, so a quant picked while following
+                  // the resident model is remembered without pinning it.
+                  if (selectedModel !== attachOnlyModel) {
+                    setStoredVariant(selectedModel, variant);
                   }
                   resetCopied();
                 }}

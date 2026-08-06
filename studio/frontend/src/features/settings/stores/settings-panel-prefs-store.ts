@@ -14,10 +14,13 @@ export interface SettingsPanelPrefsState {
   // null model means "follow whichever model the server has resident".
   agentsAgent: string | null;
   agentsModel: string | null;
+  // the quant carries the model it was picked for, so remembering a quant alone
+  // never pins a model the tab would otherwise keep following.
   agentsVariant: string | null;
+  agentsVariantModel: string | null;
   setAgentsAgent: (agent: string | null) => void;
   setAgentsModel: (model: string | null, variant: string | null) => void;
-  setAgentsVariant: (variant: string | null) => void;
+  setAgentsVariant: (model: string, variant: string) => void;
 
   // null os means "follow the detected device type".
   apiExampleLang: string | null;
@@ -40,11 +43,13 @@ export const useSettingsPanelPrefsStore = create<SettingsPanelPrefsState>()(
       agentsAgent: null,
       agentsModel: null,
       agentsVariant: null,
+      agentsVariantModel: null,
       setAgentsAgent: (agentsAgent) => set({ agentsAgent }),
-      // a quant belongs to its repo, so the two only ever move together.
+      // picking a model carries its quant, and clearing it clears that quant.
       setAgentsModel: (agentsModel, agentsVariant) =>
-        set({ agentsModel, agentsVariant }),
-      setAgentsVariant: (agentsVariant) => set({ agentsVariant }),
+        set({ agentsModel, agentsVariant, agentsVariantModel: agentsModel }),
+      setAgentsVariant: (agentsVariantModel, agentsVariant) =>
+        set({ agentsVariant, agentsVariantModel }),
 
       apiExampleLang: null,
       apiExampleOs: null,

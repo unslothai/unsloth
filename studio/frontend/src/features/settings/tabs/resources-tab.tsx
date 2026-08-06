@@ -189,8 +189,9 @@ export function ResourcesTab() {
     (s) => s.setResourcesLiveUpdates,
   );
   const { isOpen, setIsOpen } = useMonitorOverlayStore();
+  // always fetch once: the switch is persisted now, so gating the hook on it
+  // would leave a session that opens with it off reading zeros forever.
   const systemInfo = useSystemInfo({
-    enabled: liveUpdates,
     pollMs: liveUpdates ? POLL_MS : undefined,
   });
   const [hfCache, setHfCache] = useState<HuggingFaceCacheSettings | null>(null);
