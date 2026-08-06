@@ -50,6 +50,59 @@ fn reveal_main_window(app: tauri::AppHandle) {
 }
 
 #[tauri::command]
+fn get_launch_at_login(app: tauri::AppHandle) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    app.autolaunch()
+        .is_enabled()
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn set_launch_at_login(app: tauri::AppHandle, enabled: bool) -> Result<bool, String> {
+    use tauri_plugin_autostart::ManagerExt;
+    let autolaunch = app.autolaunch();
+    let result = if enabled {
+        autolaunch.enable()
+    } else {
+        autolaunch.disable()
+    };
+    result.map_err(|error| error.to_string())?;
+    if enabled && cfg!(target_os = "linux") {
+        guard_linux_autostart_entry(&app);
+    }
+    autolaunch
+        .is_enabled()
+        .map_err(|error| error.to_string())
+}
+
+/// XDG launchers skip an autostart entry whose TryExec binary is missing, so a
+/// removed install stops autostarting without postrm touching user homes
+/// (auto-launch writes no TryExec of its own).
+fn tryexec_guarded_entry(entry: &str) -> Option<String> {
+    if entry.lines().any(|line| line.starts_with("TryExec=")) {
+        return None;
+    }
+    let exec = entry.lines().find_map(|line| line.strip_prefix("Exec="))?;
+    let binary = exec.strip_suffix(" --hidden").unwrap_or(exec);
+    Some(format!("{entry}\nTryExec={binary}"))
+}
+
+fn guard_linux_autostart_entry(app: &tauri::AppHandle) {
+    let Some(config_dir) = dirs::config_dir() else {
+        return;
+    };
+    let path = config_dir
+        .join("autostart")
+        .join(format!("{}.desktop", app.package_info().name));
+    let Ok(entry) = fs::read_to_string(&path) else {
+        return;
+    };
+    if let Some(guarded) = tryexec_guarded_entry(&entry) {
+        let _ = fs::write(&path, guarded);
+    }
+}
+
+#[tauri::command]
 fn has_saved_window_state(app: tauri::AppHandle) -> bool {
     let Ok(dir) = app.path().app_config_dir() else {
         return false;
@@ -560,6 +613,8 @@ fn main() {
             has_saved_window_state,
             was_launched_hidden,
             reveal_main_window,
+            get_launch_at_login,
+            set_launch_at_login,
         ])
         .setup(|app| {
             #[cfg(target_os = "macos")]
@@ -651,6 +706,25 @@ mod tests {
             begin_quit().is_some(),
             "a panicking quit must release the guard"
         );
+    }
+
+    #[test]
+    fn tryexec_guard_appends_the_exec_binary_without_args() {
+        let entry = "[Desktop Entry]\nType=Application\nExec=/usr/bin/unsloth-studio --hidden\nTerminal=false";
+        let guarded = tryexec_guarded_entry(entry).expect("guard must be added");
+        assert!(guarded.starts_with(entry));
+        assert!(guarded.ends_with("\nTryExec=/usr/bin/unsloth-studio"));
+    }
+
+    #[test]
+    fn tryexec_guard_is_idempotent() {
+        let entry = "[Desktop Entry]\nExec=/a --hidden\nTryExec=/a";
+        assert!(tryexec_guarded_entry(entry).is_none());
+    }
+
+    #[test]
+    fn tryexec_guard_needs_an_exec_line() {
+        assert!(tryexec_guarded_entry("[Desktop Entry]\nType=Application").is_none());
     }
 
     fn renderer_activity(state: &RendererActivityState) -> (bool, bool) {
