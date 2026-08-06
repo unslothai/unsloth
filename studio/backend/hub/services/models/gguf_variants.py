@@ -675,16 +675,25 @@ def _will_serve(resolved: Optional[str]) -> bool:
         return True
 
 
-def _loadable_variants(identifier: str, variants) -> list:
+def _loadable_variants(identifier: str, variants):
     """The advertised quants a load of *identifier* would actually serve.
 
     Authoritative by construction: it asks the same resolver
     /api/inference/load uses, then checks the chosen file the way llama-server
     will find it, so a client never has to predict either from filenames. One
     resolver call per row, and only for local answers, whose scan already walks
-    the same directory.
+    the same directory. None when the question does not apply.
     """
     from utils.models.model_config import _find_local_gguf_by_variant
+
+    # from_identifier only consults the variant for a DIRECTORY; a direct file
+    # loads itself whatever quant was asked for. Listing labels here would be
+    # stricter than the load, so leave it unanswered and let `loadable` speak.
+    try:
+        if Path(identifier).expanduser().is_file():
+            return None
+    except OSError:
+        pass
 
     # One resolver call per ROW, not per spelling: the resolver walks the tree
     # each time, so asking it about every alias turned a single request into

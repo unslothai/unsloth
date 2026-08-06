@@ -2208,6 +2208,11 @@ def _attach_gguf_check_for_codex(
         # more right than the code that performs the load.
         if isinstance(variants, list) and isinstance(info, dict):
             offered = info.get("loadable_variants")
+            # No list but a positive verdict: the load resolves this identifier
+            # without consulting the quant (a direct file loads itself), so a
+            # variant cannot make it fail.
+            if variant and offered is None and info.get("loadable") is True:
+                return
             if variant and isinstance(offered, list):
                 wanted_variant = str(variant).strip().lower()
                 if not any(

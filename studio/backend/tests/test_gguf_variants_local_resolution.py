@@ -110,8 +110,10 @@ def test_direct_gguf_file_quant_round_trips_through_the_load_path(in_tmp_cwd):
     config = ModelConfig.from_identifier(os.fspath(gguf), gguf_variant = quant)
     assert config is not None and config.is_gguf
     assert config.gguf_file == os.fspath(gguf)
-    # A quant the file is not stays unresolved rather than loading other weights.
-    assert ModelConfig.from_identifier(os.fspath(gguf), gguf_variant = "Q8_0").is_gguf is False
+    # from_identifier consults the quant only for a directory, so a direct file
+    # loads itself whatever was asked for; the listing must not be stricter.
+    assert ModelConfig.from_identifier(os.fspath(gguf), gguf_variant = "Q8_0").is_gguf is True
+    assert _variants(os.fspath(gguf)).loadable_variants is None
 
 
 def test_direct_gguf_file_quant_round_trips_case_insensitively(in_tmp_cwd):
