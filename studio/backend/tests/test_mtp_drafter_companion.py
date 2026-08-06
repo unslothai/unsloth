@@ -819,7 +819,12 @@ def test_download_mtp_online_skips_cache_reuse(tmp_path, monkeypatch):
 # ── DSpark sidecar fetch is gated on the binary that would launch it ──
 
 
-def _dspark_download_probe(monkeypatch, *, supports_dspark, cached = None):
+def _dspark_download_probe(
+    monkeypatch,
+    *,
+    supports_dspark,
+    cached = None,
+):
     """Run _download_dspark against a stubbed capability probe and an optionally
     cached sidecar; report whether the ~11 GB fetch (and even the repo listing)
     was reached."""
@@ -880,9 +885,7 @@ def test_download_dspark_still_reports_a_cached_sidecar_it_cannot_run(monkeypatc
     comparing it against the launched None and reloading the same drafter-free
     server each time. _build_speculative_flags re-checks and still falls back."""
     cached = "/cache/snap/dspark/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
-    got, reached = _dspark_download_probe(
-        monkeypatch, supports_dspark = False, cached = cached
-    )
+    got, reached = _dspark_download_probe(monkeypatch, supports_dspark = False, cached = cached)
     assert got == cached
     assert reached is False
 
