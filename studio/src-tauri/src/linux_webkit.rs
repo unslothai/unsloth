@@ -31,11 +31,12 @@ fn rendering_plan(env: impl Fn(&str) -> Option<OsString>) -> RenderingPlan {
 
     // WAYLAND_DISPLAY is inherited in XWayland sessions too. Respect an
     // explicit GDK X11 selection rather than penalizing that rendering path.
+    // GTK's `*` selector allows every available backend, including Wayland.
     if let Some(backends) = env(GDK_BACKEND) {
-        let allows_wayland = backends
-            .to_string_lossy()
-            .split(',')
-            .any(|backend| backend.trim().eq_ignore_ascii_case("wayland"));
+        let allows_wayland = backends.to_string_lossy().split(',').any(|backend| {
+            let backend = backend.trim();
+            backend == "*" || backend.eq_ignore_ascii_case("wayland")
+        });
         if !allows_wayland {
             return RenderingPlan::PreserveEnvironment;
         }
@@ -95,6 +96,14 @@ mod tests {
         assert_eq!(
             plan(&[(WAYLAND_DISPLAY, "wayland-0"), (GDK_BACKEND, "x11")]),
             RenderingPlan::PreserveEnvironment
+        );
+    }
+
+    #[test]
+    fn a_gdk_wildcard_can_select_wayland() {
+        assert_eq!(
+            plan(&[(WAYLAND_DISPLAY, "wayland-0"), (GDK_BACKEND, "*")]),
+            RenderingPlan::ForceSharedMemory
         );
     }
 
