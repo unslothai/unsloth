@@ -193,9 +193,31 @@ def test_scheme_supported_shortcircuits(monkeypatch):
     assert tq._scheme_supported(TQ_FP8, "cuda") is False
 
 
+class _FakeTensor:
+    """Records the probe's zero-row write so the assertion below can check it happened."""
+
+    def __init__(self):
+        self.zeroed = []
+
+    def __setitem__(self, key, value):
+        self.zeroed.append((key, value))
+
+
+class _FakeBool:
+    def __init__(self, value):
+        self.value = value
+
+    def all(self):
+        return self
+
+    def item(self):
+        return self.value
+
+
 def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
     tq._SMOKE_CACHE.clear()
     calls = {"n": 0}
+    finite = {"ok": True}
 
     class _Lin:
         def __init__(self, *a, **k):
@@ -207,7 +229,8 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
     torch = types.ModuleType("torch")
     torch.bfloat16 = "bfloat16"
     torch.nn = types.SimpleNamespace(Linear = _Lin)
-    torch.randn = lambda *a, **k: object()
+    torch.randn = lambda *a, **k: _FakeTensor()
+    torch.isfinite = lambda t: _FakeBool(finite["ok"])
     torch.no_grad = lambda: __import__("contextlib").nullcontext()
     torch.cuda = types.SimpleNamespace(is_available = lambda: True, synchronize = lambda: None)
     monkeypatch.setitem(sys.modules, "torch", torch)
@@ -244,6 +267,54 @@ def test_smoke_probe_caches_and_tolerates_failure(monkeypatch):
 
     tqz.quantize_ = _quantize_boom
     assert tq._smoke_probe(TQ_FP8, "cuda") is False
+
+    # A kernel that RUNS but returns non-finite values probes False too. torchao's fp8 scale
+    # chooser has no eps clamp, so a zero activation row gives scale 0 and NaN qdata unless the
+    # config floors it, and the floor is applied only on a torchao exposing activation_value_lb.
+    # Without this the probe passed on such a build and every zero-padded text stream went black.
+    # int8, not fp8: _make_quant_config(fp8) imports PerRow, which this stub module does not
+    # carry, so an fp8 probe here would return False from the ImportError and prove nothing.
+    tq._SMOKE_CACHE.clear()
+    tqz.quantize_ = _quantize_ok
+    finite["ok"] = False
+    assert tq._smoke_probe(TQ_INT8, "cuda") is False
+
+
+def test_the_smoke_probe_feeds_zero_rows_not_only_noise(monkeypatch):
+    # The finiteness check above is only meaningful if the input actually contains a zero row:
+    # torch.randn alone never produces one, which is exactly how the silent degradation survived.
+    tq._SMOKE_CACHE.clear()
+    seen = {}
+
+    class _Lin:
+        def __init__(self, *a, **k):
+            pass
+
+        def to(self, **k):
+            return self
+
+        def __call__(self, x):
+            seen["x"] = x
+            return x
+
+    torch = types.ModuleType("torch")
+    torch.bfloat16 = "bfloat16"
+    torch.nn = types.SimpleNamespace(Linear = _Lin)
+    torch.randn = lambda *a, **k: _FakeTensor()
+    torch.isfinite = lambda t: _FakeBool(True)
+    torch.no_grad = lambda: __import__("contextlib").nullcontext()
+    torch.cuda = types.SimpleNamespace(is_available = lambda: True, synchronize = lambda: None)
+    monkeypatch.setitem(sys.modules, "torch", torch)
+
+    tqz = types.ModuleType("torchao.quantization")
+    tqz.quantize_ = lambda module, config, filter_fn = None: None
+    tqz.Int8DynamicActivationInt8WeightConfig = lambda: "int8cfg"
+    tqz.Float8DynamicActivationFloat8WeightConfig = lambda: "fp8cfg"
+    monkeypatch.setitem(sys.modules, "torchao.quantization", tqz)
+
+    assert tq._smoke_probe(TQ_INT8, "cuda") is True
+    assert seen["x"].zeroed, "probe input was never zeroed anywhere"
+    assert all(value == 0 for _, value in seen["x"].zeroed)
 
 
 # ── consumer-vs-datacenter detection (fp8 fast-accumulate gate) ──────────────────

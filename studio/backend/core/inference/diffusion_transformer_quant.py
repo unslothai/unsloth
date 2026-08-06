@@ -266,9 +266,22 @@ def _scheme_supported(scheme: str, device: str) -> bool:
 
 
 def _smoke_probe(scheme: str, device: str) -> bool:
-    """True iff a tiny Linear quantised with ``scheme`` runs one M=32 forward. Cached per
-    (scheme, device). Makes ``auto`` robust to a build lacking a prototype kernel: it fails
-    here and the ladder moves on, rather than crashing at the first real denoise step."""
+    """True iff a tiny Linear quantised with ``scheme`` runs one M=32 forward and returns
+    finite values. Cached per (scheme, device). Makes ``auto`` robust to a build lacking a
+    prototype kernel: it fails here and the ladder moves on, rather than crashing at the first
+    real denoise step.
+
+    Half the input is all-zero rows and the output is checked for finiteness, because a kernel
+    that runs is not the same as one that is usable. torchao's ``_choose_scale_float8`` has no
+    eps clamp, so a zero row yields scale 0 and NaN qdata; that is the root cause behind
+    qwen-image's fp8 black frames (its txt stream emits all-zero token rows through a set of
+    ``txt_mlp.net.2`` linears that changes run to run, which is why keeping a fixed subset bf16
+    does not fix it). ``_make_quant_config`` floors it with ``activation_value_lb``, but only
+    when the installed torchao exposes that kwarg, and without a zero row the probe passed on a
+    build lacking it. Zero rows are not exotic: every Wan pipeline pads prompt embeddings with
+    ``new_zeros`` out to 226 or 512, so the tail rows reaching the DiT are exactly zero.
+    Measured on B200, 4096-wide Linear: 412 of 512 rows non-finite without the floor, 0 of 512
+    with it. Failing here costs one ladder step down to int8 instead."""
     key = (scheme, device)
     if key in _SMOKE_CACHE:
         return _SMOKE_CACHE[key]
@@ -279,11 +292,13 @@ def _smoke_probe(scheme: str, device: str) -> bool:
 
         lin = torch.nn.Linear(512, 512, bias = False).to(device = device, dtype = torch.bfloat16)
         quantize_(lin, _make_quant_config(scheme), filter_fn = make_filter_fn(0))
+        # M stays 32 (scaled_mm wants 16-aligned dims); the zero rows go inside it, not after it.
         x = torch.randn(32, 512, device = device, dtype = torch.bfloat16)
+        x[16:] = 0
         with torch.no_grad():
-            lin(x)
+            out = lin(x)
         torch.cuda.synchronize()
-        ok = True
+        ok = bool(torch.isfinite(out).all().item())
     except Exception:
         ok = False
     _SMOKE_CACHE[key] = ok
