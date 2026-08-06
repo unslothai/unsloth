@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import math
 import os
 import threading
 import time
@@ -329,9 +330,9 @@ class ApiMonitor:
             if entry is None:
                 return
             try:
-                if tok_per_sec is not None:
+                if tok_per_sec is not None and math.isfinite(float(tok_per_sec)):
                     entry.tok_per_sec = float(tok_per_sec)
-                if prompt_ms is not None:
+                if prompt_ms is not None and math.isfinite(float(prompt_ms)):
                     entry.prompt_ms = float(prompt_ms)
             except (TypeError, ValueError):
                 pass

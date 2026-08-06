@@ -704,3 +704,38 @@ def test_monitor_route_disabled_still_hides_recorded_rows(monkeypatch):
 
     assert payload["logging_enabled"] is False
     assert payload["entries"] == []
+
+
+def test_set_perf_records_stats_and_snapshot_reports_them():
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.append_reply(entry_id, "hi")
+    monitor.set_perf(entry_id, tok_per_sec = 42.5, prompt_ms = 123.4, stop_reason = "length")
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["tok_per_sec"] == 42.5
+    assert entry["ttft_ms"] == 123
+    assert entry["stop_reason"] == "length"
+
+
+def test_set_perf_rejects_non_finite_values():
+    monitor = ApiMonitor(max_entries = 3)
+    entry_id = monitor.start(
+        endpoint = "/v1/chat/completions",
+        method = "POST",
+        model = "local-model",
+        prompt = "user: hello",
+    )
+    monitor.set_perf(entry_id, tok_per_sec = float("nan"), prompt_ms = float("inf"))
+    monitor.set_perf(entry_id, tok_per_sec = "bogus", prompt_ms = None)
+    monitor.finish(entry_id)
+
+    [entry] = monitor.snapshot()
+    assert entry["tok_per_sec"] is None
+    assert entry["ttft_ms"] is None
