@@ -94,7 +94,7 @@ fn setup_custom_titlebar(app: &tauri::App) -> Result<(), Box<dyn std::error::Err
     Ok(())
 }
 
-/// A Tauri quit never fires beforeunload, so the frontend mirrors run state here.
+/// A Tauri quit never fires beforeunload, so the frontend mirrors quit protection here.
 pub type TrainingActivityState = std::sync::Arc<std::sync::Mutex<bool>>;
 
 fn new_training_activity_state() -> TrainingActivityState {
@@ -108,7 +108,8 @@ fn set_training_active(state: tauri::State<'_, TrainingActivityState>, active: b
     }
 }
 
-/// Ask before quitting mid-training (true to proceed). request_quit only, as below.
+/// Ask before quitting while training is starting or active (true to proceed).
+/// request_quit only, as below.
 fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
@@ -120,8 +121,8 @@ fn confirm_quit_during_training(app: &tauri::AppHandle) -> bool {
     }
     app.dialog()
         .message(
-            "Training is still running. Quitting now stops the run and the \
-             progress since the last checkpoint is lost.",
+            "Training is starting or still running. Quitting now can stop the \
+             run and lose progress since the last checkpoint.",
         )
         .kind(MessageDialogKind::Warning)
         .title("Training in progress")
@@ -525,9 +526,11 @@ fn main() {
             native_clipboard::read_native_clipboard_png,
             native_file_dialogs::save_native_file,
             native_file_dialogs::pick_native_chat_import,
+            native_file_dialogs::pick_native_training_config,
             native_intents::drain_native_intents,
             native_intents::register_native_model_path,
             native_intents::register_native_attachment_path,
+            native_intents::register_native_dataset_path,
             native_intents::pick_native_model,
             native_intents::pick_hugging_face_cache_dir,
             native_intents::consume_native_path_token,
@@ -553,7 +556,7 @@ fn main() {
         })
         .on_window_event(|window, event| {
             // Record real drops here, in Rust, so the renderer can only register paths the
-            // OS actually handed us (see native_intents::register_native_attachment_path).
+            // OS actually handed to the native intake commands.
             if let tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                 window
                     .state::<native_intents::NativeIntakeState>()

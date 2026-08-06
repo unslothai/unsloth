@@ -71,7 +71,11 @@ def te_base_equivalent(ckpt_base: str, base: str) -> bool:
     equivalence group above."""
     if _same_base_model(ckpt_base, base):
         return True
-    a, b = str(ckpt_base).strip().lower(), str(base).strip().lower()
+    # The groups hold UPSTREAM ids: an unnormalised mirror id is a different string, so it would be
+    # refused and the pre-cast encoder dropped for a dense pull.
+    from .diffusion_families import canonical_base
+
+    a, b = canonical_base(ckpt_base).lower(), canonical_base(base).lower()
     return any(a in group and b in group for group in _TE_EQUIVALENT_BASES)
 
 

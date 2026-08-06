@@ -169,6 +169,11 @@ jobs:
 
       - uses: swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
         with:
+          # Save only on main. This action defaults to saving on every ref, and
+          # a PR-scoped rust cache (550-840MB here) can only be restored by
+          # re-runs of that same PR while still counting against the 10GB
+          # per-repo budget, evicting main's copy that every PR can restore.
+          save-if: ${{ github.ref == 'refs/heads/main' }}
           workspaces: studio/src-tauri -> target
 
       - name: Install pip-audit + cargo-audit
