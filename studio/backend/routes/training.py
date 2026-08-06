@@ -1732,9 +1732,7 @@ def _training_status_identity(backend) -> TrainingStatusIdentitySnapshot:
         current_start_request = current_start_request,
         # getattr-guarded like every other backend read here: a stand-in backend without
         # it must fall back, not 500 the whole status route.
-        status_start_request = (
-            status_start_request() if callable(status_start_request) else None
-        ),
+        status_start_request = (status_start_request() if callable(status_start_request) else None),
         new_job_spawn_id = getattr(backend, "_new_job_spawn_id", None),
         spawn_in_progress = getattr(backend, "_spawn_in_progress", False),
     )
