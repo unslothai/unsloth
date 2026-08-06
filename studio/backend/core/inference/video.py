@@ -42,7 +42,11 @@ from typing import Any, Optional
 
 from loggers import get_logger
 
-from .diffusion_attention import apply_attention_backend, select_attention_backend
+from .diffusion_attention import (
+    apply_attention_backend,
+    install_hunyuan_attention_trim,
+    select_attention_backend,
+)
 from .diffusion_cache import (
     FBCACHE_MIN_STEPS,
     TC_AUTO,
@@ -64,6 +68,7 @@ from .diffusion_memory import (
 )
 from .diffusion_speed import (
     SPEED_DEFAULT,
+    SPEED_MAX,
     SPEED_OFF,
     apply_speed_optims,
     resolve_speed_mode,
@@ -1429,6 +1434,16 @@ class VideoBackend:
         else:
             cache_reason = "requested"
         attention_engaged = None
+        # HunyuanVideo-1.5 only, and once for the whole pipe (the installer fans out over every
+        # denoiser DiT itself). Before apply_attention_backend below, so the requested kernel pins
+        # onto the new processors. Held off on SPEED_OFF (which must stay bit-identical) and on
+        # SPEED_MAX (its blocks compile with dynamic=False, and the trimmed text length varies per
+        # prompt, so every prompt would be a fresh graph).
+        attention_trim_engaged = (
+            install_hunyuan_attention_trim(pipe, fam, logger = logger)
+            if effective_speed not in (SPEED_OFF, SPEED_MAX)
+            else False
+        )
         speed_optims: tuple = ()
         for view in views:
             # Both helpers act on ``view.transformer``; call once per view (engaged values match, so record the first). is_gguf needs kind==gguf AND no quant engaged.
@@ -1453,6 +1468,8 @@ class VideoBackend:
             if view is pipe:
                 attention_engaged = engaged
                 speed_optims = tuple(k for k, v in applied.items() if v)
+                if attention_trim_engaged:
+                    speed_optims += ("hunyuan_attn_trim",)
         with self._generate_lock:
             # A cancelled/superseded load must not place weights on a GPU the arbiter may have reassigned; recheck before placement.
             if _load_token is not None and _load_token != self._load_token:

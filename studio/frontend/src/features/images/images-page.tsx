@@ -2840,7 +2840,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
                   )}
                   {loras.map((sel, i) => (
                     <div
-                      key={sel.id || i}
+                      // Key on the index, not sel.id: sel.id is the value of the editable repo-id
+                      // Input below, so keying on it changes the key on the first character typed,
+                      // which remounts the row and drops input focus. The list is index-addressed
+                      // (every mutation matches j === i) and rows are removed explicitly, so the
+                      // index is stable for as long as the row lives.
+                      key={i}
                       className="space-y-1.5 rounded-lg border border-border bg-muted/30 p-2"
                     >
                       <div className="flex items-center gap-2">
