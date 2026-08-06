@@ -1528,9 +1528,7 @@ def test_a_quoted_command_line_with_nothing_behind_it_is_still_screened(windows_
         'start "powershell -Command ls"\nrm -rf x',
     ],
 )
-def test_a_quoted_command_line_is_screened_when_no_command_follows(
-    windows_git_bash_only, command
-):
+def test_a_quoted_command_line_is_screened_when_no_command_follows(windows_git_bash_only, command):
     # What follows the quoted word decides whether it WAS a title. An option, a
     # separator, a newline, or nothing at all means no command came after it, so
     # the quoted word is the command line START runs.

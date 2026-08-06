@@ -1955,7 +1955,9 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         # later `xargs "" rm`, which is a different command entirely.
         return chunk_of[index] == chunk_of[index + 1]
 
-    def _exec_child_index(start: int, prefixes: "frozenset[str] | set[str]" = ()) -> "tuple[int, bool]":
+    def _exec_child_index(
+        start: int, prefixes: "frozenset[str] | set[str]" = ()
+    ) -> "tuple[int, bool]":
         """The command a `find -exec` actually runs, as ``(index, overflowed)``;
         the index is -1 when the action holds no command word at all.
 
