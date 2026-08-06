@@ -96,9 +96,9 @@ export const KV_CACHE_DTYPES = [
   "f32",
 ] as const;
 
-// MLX quantizes the KV cache by bit width. Kept separate from KV_CACHE_DTYPES:
-// the two backends take different quantities and neither can honor the other's.
-export const MLX_KV_BITS: readonly number[] = [8, 4];
+// MLX quantizes by bit width, not a dtype name, hence separate from
+// KV_CACHE_DTYPES. Every width mx.quantize supports; mlx-lm adds no domain.
+export const MLX_KV_BITS: readonly number[] = [8, 6, 5, 4, 3, 2];
 const VALID_KV_CACHE_DTYPES = new Set<string>(KV_CACHE_DTYPES);
 
 export const SPECULATIVE_TYPES = [

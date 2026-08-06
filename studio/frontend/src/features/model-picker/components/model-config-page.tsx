@@ -499,36 +499,67 @@ function GpuMemorySettings({
   );
 }
 
-const MLX_KV_BITS_OFF = "off";
+const MLX_KV_BITS_AUTO = "auto";
+
+function AdvancedSettingsToggle({
+  checked,
+  onCheckedChange,
+}: {
+  checked: boolean;
+  onCheckedChange: (next: boolean) => void;
+}) {
+  return (
+    <div className={ROW_CLASS}>
+      <div className="flex min-w-0 items-center gap-1.5">
+        <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
+          Advanced settings
+        </span>
+        <InfoHint>
+          Extra options for how the model loads. Most setups don't need these.
+        </InfoHint>
+      </div>
+      <Switch
+        className="panel-switch shrink-0"
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        aria-label="Show advanced settings"
+      />
+    </div>
+  );
+}
 
 function MlxAdvancedSettings({
   config,
   update,
   outcome,
+  servedByMlx,
+  onEditTemplate,
 }: {
   config: PerModelConfig;
   update: (patch: Partial<PerModelConfig>) => void;
   /** What the backend reported for this exact setting on the loaded model. */
   outcome: string | null;
+  /** KV quantization is MLX-only; a CUDA safetensors model has no such control. */
+  servedByMlx: boolean;
+  onEditTemplate: () => void;
 }) {
   return (
     <div className="flex flex-col gap-1">
+      {servedByMlx && (
+        <>
       <div className={ROW_CLASS}>
         <div className="flex min-w-0 items-center gap-1.5">
-          <span className={LABEL_CLASS}>KV Cache Quantization</span>
+          <span className={LABEL_CLASS}>KV Cache Dtype</span>
           <InfoHint>
-            Store the KV cache at lower precision to save memory during long
-            conversations. 8-bit roughly halves it with little quality cost;
-            4-bit saves more but is likelier to affect output. Models whose
-            cache cannot be quantized report why instead of applying it. On
-            vision models this starts only once the cache grows past a token
-            threshold, and it can reduce prompt-cache reuse between turns.
+            Lower KV cache precision to save memory at the cost of some
+            quality. Auto keeps full precision; 8-bit is the safest reduction,
+            and lower widths save more memory.
           </InfoHint>
         </div>
         <Select
-          value={config.mlxKvBits ? String(config.mlxKvBits) : MLX_KV_BITS_OFF}
+          value={config.mlxKvBits ? String(config.mlxKvBits) : MLX_KV_BITS_AUTO}
           onValueChange={(v) =>
-            update({ mlxKvBits: v === MLX_KV_BITS_OFF ? null : Number(v) })
+            update({ mlxKvBits: v === MLX_KV_BITS_AUTO ? null : Number(v) })
           }
         >
           <SelectTrigger
@@ -540,7 +571,7 @@ function MlxAdvancedSettings({
             <SelectValue />
           </SelectTrigger>
           <SelectContent className="menu-soft-surface ring-0 border-0 rounded-lg">
-            <SelectItem value={MLX_KV_BITS_OFF}>off</SelectItem>
+            <SelectItem value={MLX_KV_BITS_AUTO}>Auto</SelectItem>
             {MLX_KV_BITS.map((bits) => (
               <SelectItem key={bits} value={String(bits)}>
                 {bits}-bit
@@ -554,6 +585,13 @@ function MlxAdvancedSettings({
           {outcome}
         </p>
       ) : null}
+        </>
+      )}
+      <ChatTemplateSetting
+        config={config}
+        onEditTemplate={onEditTemplate}
+        readOnly={true}
+      />
     </div>
   );
 }
@@ -1309,34 +1347,14 @@ export function ModelConfigPage({
               />
             )}
 
-            <div className={ROW_CLASS}>
-              <div className="flex min-w-0 items-center gap-1.5">
-                <span className="min-w-0 text-ui-13 font-medium leading-[1.25] tracking-nav text-muted-foreground">
-                  Advanced settings
-                </span>
-                <InfoHint>
-                  Extra options for how the model loads. Most setups don't need
-                  these.
-                </InfoHint>
-              </div>
-              <Switch
-                className="panel-switch shrink-0"
-                checked={showAdvanced}
-                onCheckedChange={toggleAdvanced}
-                aria-label="Show advanced settings"
-              />
-            </div>
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
+            />
           </>
         )}
         {!target.isGguf && (
           <>
-            {servedByMlx && (
-              <MlxAdvancedSettings
-                config={config}
-                update={update}
-                outcome={mlxKvQuantOutcome}
-              />
-            )}
             <MaxSeqLengthSetting
               value={maxSeqLengthValue}
               max={maxSeqLengthMax}
@@ -1348,10 +1366,18 @@ export function ModelConfigPage({
                 })
               }
             />
-            <ChatTemplateSetting
-              config={config}
-              onEditTemplate={() => setTemplateOpen(true)}
-              readOnly={true}
+            {showAdvanced && (
+              <MlxAdvancedSettings
+                config={config}
+                update={update}
+                outcome={mlxKvQuantOutcome}
+                servedByMlx={servedByMlx}
+                onEditTemplate={() => setTemplateOpen(true)}
+              />
+            )}
+            <AdvancedSettingsToggle
+              checked={showAdvanced}
+              onCheckedChange={toggleAdvanced}
             />
           </>
         )}

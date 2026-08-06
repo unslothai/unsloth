@@ -314,9 +314,9 @@ def _build_generation_stats(
 
 PROMPT_CACHE_ENTRIES = 6
 
-# KV-cache quantization. MLX takes a bit width, so this vocabulary is
-# deliberately unrelated to llama.cpp's cache_type_kv dtype names.
-MLX_KV_BITS_CHOICES = (8, 4)
+# MLX takes a bit width, so this vocabulary is unrelated to llama.cpp's
+# cache_type_kv names. Every width mx.quantize supports; mlx-lm adds no domain.
+MLX_KV_BITS_CHOICES = (8, 6, 5, 4, 3, 2)
 # mlx-lm/mlx-vlm quantize the cache in groups of this many elements; a head
 # dimension that is not a multiple of it makes mx.quantize raise.
 MLX_KV_GROUP_SIZE = 64

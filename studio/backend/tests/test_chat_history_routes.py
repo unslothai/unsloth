@@ -159,7 +159,7 @@ def test_chat_settings_payload_accepts_mlx_kv_bits():
         chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": width})
     # Only the widths MLX supports; 3 is not a quantization width it can apply.
     with pytest.raises(ValidationError):
-        chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": 3})
+        chat_history.ChatPresetLoadConfig.model_validate({"mlxKvBits": 7})
 
 
 def test_chat_settings_payload_accepts_nudge_tool_calls():

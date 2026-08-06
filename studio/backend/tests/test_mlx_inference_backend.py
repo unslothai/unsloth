@@ -1823,9 +1823,11 @@ def test_kv_quant_status_applies_only_when_eligible_and_notes_vlm_cost(monkeypat
     # Unset stays unset: no kwarg, so generation is byte-identical to today.
     assert mlx_inference._kv_quant_status(None, object(), False)["kv_bits"] is None
     # Out of domain degrades rather than raising.
-    assert mlx_inference._normalize_mlx_kv_bits(3) is None
+    assert mlx_inference._normalize_mlx_kv_bits(7) is None
     assert mlx_inference._normalize_mlx_kv_bits("eight") is None
     assert mlx_inference._normalize_mlx_kv_bits(8) == 8
+    # Every width the runtime accepts is offered; mlx-lm adds no domain of its own.
+    assert [mlx_inference._normalize_mlx_kv_bits(b) for b in (2, 3, 5, 6)] == [2, 3, 5, 6]
 
     text = mlx_inference._kv_quant_status(8, object(), False)
     vlm = mlx_inference._kv_quant_status(8, object(), True)
@@ -1880,7 +1882,7 @@ def test_reload_comparison_and_response_carry_the_resolved_setting():
     assert _mlx_runtime_settings_match(be, SimpleNamespace(mlx_kv_bits = 8))
     assert not _mlx_runtime_settings_match(be, SimpleNamespace(mlx_kv_bits = 4))
     be.models["m"] = {"mlx_kv_bits_requested": None}
-    assert _mlx_runtime_settings_match(be, SimpleNamespace(mlx_kv_bits = 3))  # both normalize away
+    assert _mlx_runtime_settings_match(be, SimpleNamespace(mlx_kv_bits = 7))  # both normalize away
     assert _mlx_runtime_settings_match(
         SimpleNamespace(active_model_name = "m", models = {"m": {}}),
         SimpleNamespace(mlx_kv_bits = 8),

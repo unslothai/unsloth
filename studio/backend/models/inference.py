@@ -79,7 +79,7 @@ class LoadRequest(BaseModel):
     mlx_kv_bits: Optional[int] = Field(
         None,
         description = (
-            "MLX KV cache quantization bit width (8 or 4). MLX takes a bit "
+            "MLX KV cache quantization bit width (8, 6, 5, 4, 3 or 2). MLX takes a bit "
             "width rather than a llama.cpp dtype name, so this is separate from "
             "cache_type_kv. Omit for an unquantized cache. Ignored by non-MLX "
             "backends; a model whose cache layout cannot be quantized reports "
