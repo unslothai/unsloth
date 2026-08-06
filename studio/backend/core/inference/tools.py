@@ -1413,6 +1413,8 @@ def _blocked_start_program(token: str) -> "set[str]":
     names = {target}
     if "%" in target:
         names.add(_CMD_VARIABLE_RE.sub("", target))
+    if "!" in target:
+        names.add(_CMD_DELAYED_RE.sub("", target))
     blocked: "set[str]" = set()
     for name in names:
         base = os.path.basename(name.replace("\\", "/")).lower()
@@ -1614,6 +1616,18 @@ _START_SWITCH_RE = re.compile(r"/[a-z][a-z0-9]*", re.IGNORECASE)
 _CMD_SWITCH_RE = re.compile(r"/[a-z](?::[^\s/]*)?$", re.IGNORECASE)
 # A cmd variable expansion, `%NAME%` or a substring of one (`%PATH:~0,0%`).
 _CMD_VARIABLE_RE = re.compile(r"%[^%\s]*%")
+# ...and the delayed form, which cmd expands where /v:on or the registry enables
+# it. An unset variable leaves nothing behind in either spelling.
+_CMD_DELAYED_RE = re.compile(r"![^!\s]*!")
+# cmd's own commands, from its `help` list. `start` hands one of these to a
+# command processor rather than resolving a program, so the words behind it are
+# a command line: "If command is an internal cmd command or a batch file then
+# the command processor CMD.exe is run with the /K switch" (`start /?`).
+_CMD_INTERNAL_COMMANDS = frozenset(
+    """assoc break call cd chdir cls color copy date del dir echo endlocal erase exit for
+    ftype goto graftabl if md mkdir mklink move path pause popd prompt pushd rd rem ren
+    rename rmdir set setlocal shift start time title type ver verify vol""".split()
+)
 
 
 def _find_blocked_commands(command: str) -> set[str]:
@@ -1705,7 +1719,15 @@ def _find_blocked_commands(command: str) -> set[str]:
         # The bracket comes off before the prefix, or `(@start` keeps its `@`
         # and never matches: cmd reads the group opener, then the suppression.
         name = (pieces[-1] if pieces else "").lstrip("@").strip('"')
-        return os.path.basename(name.replace("\\", "/")).lower()
+        base = os.path.basename(name.replace("\\", "/")).lower()
+        # Delayed expansion happens before the word is resolved and an unset
+        # variable leaves nothing behind, so `st!X!art` IS start where it is
+        # enabled -- by /v:on on this line or by the registry on the host, which
+        # a command line does not show. Reading the spelling both ways is the
+        # safe direction: a file really named that launches nothing.
+        if "!" in base:
+            return _CMD_DELAYED_RE.sub("", base) or base
+        return base
 
     def _cmd_condition_words(index: int) -> int:
         """How many words cmd's `if` condition occupies, starting at ``index``.
@@ -2113,6 +2135,32 @@ def _find_blocked_commands(command: str) -> set[str]:
                 cmd_for_indexes.add(pos)
         return cmd_grammar_spent
 
+    def _cmd_payload_text(index: int) -> str:
+        """The source text from ``tokens[index]`` on, dequoted as cmd dequotes
+        its command line.
+
+        Microsoft: the string "is processed by examining the first character to
+        verify whether it's an opening quotation mark. If the first character is
+        an opening quotation mark, it's stripped along with the closing
+        quotation mark. Any text following the closing quotation marks is
+        preserved."
+
+        Read from the source rather than rebuilt from the tokens, because the
+        rebuild is what loses it: the cmd lexer splits `"start "" powershell"`
+        at the quotes into pieces that no longer sit where they did.
+        """
+        cursor = 0
+        for position, token in enumerate(tokens):
+            found = command.find(token, cursor)
+            if found < 0:
+                return ""  # a token the lexer built rather than copied
+            if position == index:
+                payload = command[found:]
+                closing = payload.rfind('"')
+                return payload[1:closing] + payload[closing + 1 :] if closing > 0 else payload[1:]
+            cursor = found + len(token)
+        return ""
+
     def _start_program_index(index: int) -> int:
         """The token the `start` at ``index`` launches, or -1 for none.
 
@@ -2175,6 +2223,8 @@ def _find_blocked_commands(command: str) -> set[str]:
     # recursively scan the nested command string.
     _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
     _SHELLS_WIN = {"cmd", "cmd.exe"}
+    # (switch index, shell index, shell name) per cmd command line found here.
+    cmd_payloads: "list[tuple[int, int, str]]" = []
     for i, token in enumerate(tokens):
         tok_lower = token.lower()
         # Match -c exactly, or combined flags ending in c (e.g. -lc, -xc)
@@ -2211,21 +2261,72 @@ def _find_blocked_commands(command: str) -> set[str]:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             elif is_win_c and prev_base in _SHELLS_WIN:
                 blocked |= _find_blocked_commands(tokens[i + 1])
+                # cmd strips the quotation marks around its whole command line
+                # -- always with /s, and otherwise unless the string is one
+                # quoted executable name -- and runs what is left: `cmd /s /c
+                # "start "" powershell"` runs `start "" powershell`. The cmd
+                # lexer chops that string into quote-carrying pieces no grammar
+                # can read (`"start "`, `" powershell"`), so the line is taken
+                # from the source text instead, which the lexer cannot mangle.
+                if not lexed_posix and tokens[i + 1].startswith('"'):
+                    blocked |= _find_blocked_commands(_cmd_payload_text(i + 1))
                 # Everything from here on is cmd's command line, which the outer
-                # scan can only read as arguments of cmd. Recursing does not
+                # scan can only read as arguments of cmd, and recursing does not
                 # reach it either: only the one token is passed on, and `start`
-                # by itself blocks nothing. Only where this cmd is a command the
-                # line runs, though: `echo cmd /c start "" powershell` prints
-                # those words, and reading them as a command line refused the
-                # message. Visited left to right, so an outer cmd has already
-                # named the inner one by the time it is reached.
-                if _cmd_runs_here(j) and _read_cmd_line(i + 1):
-                    # The budget ran out inside this payload, so a launch may
-                    # sit in the part never read: refuse the shell running it
-                    # rather than let `cmd /c cmd /c ...x300` ride in on the
-                    # scan giving up.
-                    blocked.add(prev_base)
+                # by itself blocks nothing. Read below, once it is settled
+                # whether this cmd is a word the line runs.
+                cmd_payloads.append((i, j, prev_base))
             break  # stop at first non-flag token
+
+    # `start` launches a program in cmd. On a POSIX host it is whatever the user
+    # has by that name, its arguments are arguments, and reading them as cmd
+    # syntax refused `start "dry run" rm` on Linux and macOS.
+    screen_starts = sys.platform == "win32"
+    # Only a start that is really a launch. `echo start "my title" powershell`
+    # prints text, and reading every token named start walked the title branch
+    # into a hard block for it.
+    #
+    # Payloads and starts settle together rather than in two passes, because
+    # each can uncover the other: a `cmd /c` payload holds a start, a start may
+    # launch cmd, and `start "" call cmd /c start "" powershell` is both at
+    # once. The work is bounded -- a payload and a start are each read once,
+    # and the grammar budget above caps the total either way.
+    read_payloads: "set[int]" = set()
+    screened_starts: "set[int]" = set()
+    while True:
+        progressed = False
+        for i, j, prev_base in cmd_payloads:
+            if i in read_payloads or not _cmd_runs_here(j):
+                continue
+            # `echo cmd /c start "" powershell` prints those words, so a payload
+            # is read only where the cmd running it is a word the line runs.
+            read_payloads.add(i)
+            progressed = True
+            if _read_cmd_line(i + 1):
+                # The budget ran out inside this payload, so a launch may sit in
+                # the part never read: refuse the shell running it rather than
+                # let `cmd /c cmd /c ...x300` ride in on the scan giving up.
+                blocked.add(prev_base)
+        for i in sorted(start_indexes - screened_starts) if screen_starts else []:
+            screened_starts.add(i)
+            progressed = True
+            program = _start_program_index(i)
+            if program < 0:
+                continue
+            # "If command is an internal cmd command or a batch file then the
+            # command processor CMD.exe is run with the /K switch" (`start /?`),
+            # so the words behind an internal command are a cmd command line
+            # rather than that program's arguments: `start "" call start ""
+            # powershell` launches powershell, and screening the `call` alone
+            # returned nothing at all. cmd's own documented example is the same
+            # shape, `start /max start /?`.
+            if _cmd_word_base(tokens[program]) in _CMD_INTERNAL_COMMANDS:
+                if _read_cmd_line(program):
+                    blocked.add(_cmd_word_base(tokens[program]))
+                continue
+            blocked |= _blocked_start_program(tokens[program])
+        if not progressed:
+            break
 
     # `for /f %i in ('CMD') do ...` runs CMD as a child command and reads its
     # output, so the set is a command position the token scan sees only as data.
@@ -2247,26 +2348,18 @@ def _find_blocked_commands(command: str) -> set[str]:
         # Reading both as commands refused `for /f %i in (`powershell`)`, which
         # looks up a file by that name.
         backquoted = match.group("alt") is not None
-        if backquoted != ("usebackq" in (match.group("options") or "").lower()):
+        # A word of its own, not a substring: the options are keywords separated
+        # by whitespace, so `delims=usebackq` sets a delimiter set and leaves
+        # the backquotes a filename, where a search of the whole option text
+        # read it as the keyword and refused a line that launches nothing.
+        keywords = (match.group("options") or "").lower().replace('"', " ").split()
+        if backquoted != ("usebackq" in keywords):
             continue
         # The escapes are the outer parse's, so cmd hands the child a line with
         # them already applied: `echo x ^& start ""` reaches it as a real
         # separator, and reading it raw left the start an operand of echo.
         body = match.group("body") or match.group("alt") or ""
         blocked |= _find_blocked_commands(_cmd_split(body, "")[0])
-
-    # `start` launches a program in cmd. On a POSIX host it is whatever the user
-    # has by that name, its arguments are arguments, and reading them as cmd
-    # syntax refused `start "dry run" rm` on Linux and macOS.
-    if sys.platform != "win32":
-        start_indexes.clear()
-    # Only a start that is really a launch. `echo start "my title" powershell`
-    # prints text, and reading every token named start walked the title branch
-    # into a hard block for it.
-    for i in sorted(start_indexes):
-        program = _start_program_index(i)
-        if program >= 0:
-            blocked |= _blocked_start_program(tokens[program])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The

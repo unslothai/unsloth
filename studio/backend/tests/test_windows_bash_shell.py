@@ -1192,6 +1192,10 @@ def test_a_nested_cmd_payload_needs_a_cmd_that_runs(monkeypatch, bash, command, 
         # the option scan at the first one hid the set behind it.
         ("""cmd /c for /f "delims=(" %i in ('start "" powershell') do echo %i""", True),
         ("""cmd /c for /f "usebackq delims=(" %i in (`start "" powershell`) do echo %i""", True),
+        # The options are keywords separated by whitespace, so this one sets a
+        # delimiter set and leaves the backquotes a filename.
+        ("""cmd /c for /f "delims=usebackq" %i in (`start "" powershell`) do echo %i""", False),
+        ("""cmd /c for /f "usebackq delims=," %i in (`start "" powershell`) do echo %i""", True),
     ],
 )
 def test_a_for_set_runs_only_in_the_spelling_usebackq_selects(monkeypatch, command, blocked):
@@ -1263,6 +1267,67 @@ def test_a_redirection_is_not_the_program_start_launches(monkeypatch, bash, comm
     monkeypatch.setattr(sys, "platform", "win32")
     monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
     assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # Delayed expansion happens before the word is resolved and an unset
+        # variable leaves nothing behind, so this IS start where /v:on or the
+        # registry enables it, and the launcher itself went unread.
+        ('cmd /v:on /c st!X!art "" powershell', True),
+        ('cmd /c start "" power!X!shell', True),
+        # A name that expands to nothing blocked stays allowed.
+        ('cmd /c start "" my!X!file.txt', False),
+        ('cmd /c start "" report%DATE%.txt', False),
+    ],
+)
+def test_an_expansion_does_not_hide_the_command_word(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # `start /?`: an internal cmd command is handed to a command processor
+        # with /K, so the words behind it are a command line rather than that
+        # program's arguments. cmd's own example is the same shape.
+        ('cmd /c start "" call start "" powershell', True),
+        ('cmd /c start "" if exist x start "" powershell', True),
+        ('cmd /c start "" call cmd /c start "" powershell', True),
+        # ...and that command line is read as one, so a printing form stays
+        # allowed and an ordinary program's arguments are still arguments.
+        ('cmd /c start "" echo start "" powershell', False),
+        ('cmd /c start "" dir report.txt', False),
+        ('cmd /c start "" notepad rm.txt', False),
+    ],
+)
+def test_start_hands_an_internal_command_to_a_command_processor(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # cmd strips the marks around its whole command line and runs what is
+        # left. The cmd lexer chops that string into quote-carrying pieces no
+        # grammar can read, so the line is taken from the source text.
+        ('cmd /s /c "start "" powershell"', True),
+        ('cmd /c "start "" powershell"', True),
+        ('cmd /s /c "start powershell"', True),
+        ('cmd /s /c "echo start "" powershell"', False),
+        ('cmd /s /c "start "" notepad"', False),
+    ],
+)
+def test_cmd_strips_the_quotes_around_its_command_line(monkeypatch, bash, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert bool(tools._find_blocked_commands(command)) is blocked
 
 
 def test_a_chain_of_cmd_payloads_is_bounded_and_fails_closed(monkeypatch):
