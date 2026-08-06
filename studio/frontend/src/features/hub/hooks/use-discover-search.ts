@@ -210,17 +210,31 @@ export function useDiscoverSearch({
   // on TTL expiry produced a permanent offline/back-online loop.
   const wasUnavailableRef = useRef(phase !== "available");
   const lastReconnectAtRef = useRef(0);
+  // Whether this feed is the one probing. Latched while it has a request in
+  // flight and cleared once it is idle and unavailable, so the reconnect effect
+  // can tell its own recovery from another surface's.
+  const selfProbedRef = useRef(false);
   useEffect(() => {
-    // Not on proxy-served availability: retrySearch would build a fresh
-    // transport with no affinity and re-attempt the blocked direct request.
+    if (isLoading || isLoadingMore) {
+      selfProbedRef.current = true;
+    } else if (!online) {
+      selfProbedRef.current = false;
+    }
+  }, [online, isLoading, isLoadingMore]);
+  useEffect(() => {
     if (online && wasUnavailableRef.current && isDiscoverTab) {
       const now = Date.now();
       if (now - lastReconnectAtRef.current > RECONNECT_RETRY_COOLDOWN_MS) {
         lastReconnectAtRef.current = now;
+        const selfProbed = selfProbedRef.current;
+        selfProbedRef.current = false;
         toast.success("Back online", {
           description: "Refreshing the discovery feed.",
         });
-        retrySearch();
+        // Only when something else proved the Hub reachable. Our own successful
+        // request is what usually clears the window, and its results are already
+        // rendered, so retrying would discard them and re-issue the same call.
+        if (!selfProbed) retrySearch();
       }
     }
     wasUnavailableRef.current = !online;

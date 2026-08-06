@@ -95,3 +95,29 @@ test("the datasets-server constant is the host that client actually calls", asyn
     `fetchDatasetSize does not call ${decl[1]}`,
   );
 });
+
+test("a repo lookup never speaks for the listing", async () => {
+  const src = await read("../src/features/hub/hooks/use-hub-model-search.ts");
+  // cachedModelInfo runs in parallel with listModels. On the feed's own key its
+  // response, a 404 included, called markRemoteNetworkOnline and deleted the
+  // listing's failure and window: the panel lost the classified cause and the
+  // phase read "available" while the listing was still blocked.
+  assert.ok(
+    bodyOf(src, "function makeHfFetch").includes('service: "other"'),
+    "the repo lookup must not retire the listing's diagnosis",
+  );
+  // And the listing itself stays on the feed's key, or nothing arms it at all.
+  const listing = bodyOf(src, "function makeSortFetch");
+  assert.ok(!listing.includes('service: "other"'), "the listing IS the feed");
+  // makeSortFetch is what listModels is handed; makeHfFetch only ever reaches
+  // cachedModelInfo, so tagging it cannot silence a real listing failure.
+  for (const call of src.matchAll(/fetch: (makeHfFetch|sortFetch)\(/g)) {
+    const before = src.slice(Math.max(0, call.index - 400), call.index);
+    const isInfo = before.lastIndexOf("cachedModelInfo(") > before.lastIndexOf("listModels(");
+    assert.equal(
+      call[1] === "makeHfFetch",
+      isInfo,
+      "makeHfFetch is for repo lookups only",
+    );
+  }
+});

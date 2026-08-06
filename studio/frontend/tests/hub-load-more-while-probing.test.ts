@@ -81,3 +81,40 @@ test("only a proven success counts as available", async () => {
   // what announced "Back online", retried, failed and looped.
   assert.match(search, /const online = phase === "available";/);
 });
+
+test("the feed does not re-run the request that just proved recovery", async () => {
+  const search = await read("../src/features/hub/hooks/use-discover-search.ts");
+  // Retry -> clearRemoteBackoff -> retrySearch -> the response resolves ->
+  // markRemoteNetworkOnline -> online flips true -> this effect fired and called
+  // retrySearch a second time, discarding the results that had just arrived and
+  // re-issuing the same call. Only another surface's recovery should refresh us.
+  assert.match(search, /const selfProbed = selfProbedRef\.current;/);
+  assert.match(search, /if \(!selfProbed\) retrySearch\(\);/);
+  // The announcement is unconditional: the recovery is real either way, so the
+  // toast has to sit between the latch read and the guarded retry, ungated.
+  const marker = "selfProbedRef.current = false;";
+  const from = search.indexOf(marker, search.indexOf("const selfProbed ="));
+  const to = search.indexOf("if (!selfProbed) retrySearch();");
+  assert.ok(from !== -1 && to > from);
+  const announce = search.slice(from + marker.length, to);
+  assert.ok(announce.includes('toast.success("Back online"'));
+  assert.ok(!announce.includes("selfProbed"), "the toast must not be gated on it");
+  assert.ok(!/\bif\s*\(/.test(announce), "nor on anything else");
+});
+
+test("the probing flag tracks this feed's own requests", async () => {
+  const search = await read("../src/features/hub/hooks/use-discover-search.ts");
+  const at = search.indexOf("const selfProbedRef = useRef(false);");
+  assert.notEqual(at, -1);
+  const effect = search.slice(at, search.indexOf("}, [online, isLoading", at));
+  // Latch first, reset second. Reversing them loses a request that was already
+  // in flight when the outage was recorded, and its success then triggers the
+  // redundant retry this exists to stop.
+  const latch = effect.indexOf("selfProbedRef.current = true;");
+  const reset = effect.indexOf("selfProbedRef.current = false;");
+  assert.notEqual(latch, -1);
+  assert.notEqual(reset, -1);
+  assert.ok(latch < reset, "an in-flight request outranks the idle reset");
+  assert.match(effect, /if \(isLoading \|\| isLoadingMore\)/);
+  assert.match(effect, /else if \(!online\)/);
+});
