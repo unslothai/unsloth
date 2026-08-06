@@ -1945,9 +1945,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # command delimiter -- single quotes, or backticks under
                 # usebackq. Unquoted it names a FILE whose contents are parsed,
                 # so `for /f %i in (powershell) do ...` launches nothing.
-                usebackq = any(
-                    "usebackq" in _cmd_unquote(tokens[j]).lower() for j in head_window
-                )
+                usebackq = any("usebackq" in _cmd_unquote(tokens[j]).lower() for j in head_window)
                 delimiters = "`" if usebackq else "'"
                 substitutes = any(
                     _win_switch(_cmd_unquote(tokens[j]).lower()) == "/f" for j in head_window
