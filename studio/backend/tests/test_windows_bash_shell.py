@@ -1169,7 +1169,7 @@ def test_an_env_split_string_still_reaches_its_command(monkeypatch, command):
         # bash the parenthesis is a syntax error and nothing is launched.
         "for /f %i in (' cmd /c powershell -Command ls ') do echo %i",
         "for /f %i in ('powershell -Command ls') do echo %i",
-        'for /f "tokens=1" %i in (\'rm -rf x\') do echo %i',
+        "for /f \"tokens=1\" %i in ('rm -rf x') do echo %i",
     ],
 )
 def test_a_for_f_command_set_is_screened(monkeypatch, command):
