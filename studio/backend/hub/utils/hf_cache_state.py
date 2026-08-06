@@ -549,10 +549,16 @@ def with_load_subdirs(model_name: str, names: tuple[str, ...]) -> tuple[str, ...
     worker's revalidation and the provenance attester each get their own answer.
 
     Detection can raise offline or for a gated repo, so a failure degrades to root-only.
+
+    Asked offline on purpose. Every caller here is deciding whether a cache already on
+    disk is usable, which was pure filesystem work before this helper existed; letting
+    it reach the hub would put a network round trip, with no timeout, in front of local
+    snapshot resolution. The subdir layout is a property of the cached snapshot, so the
+    local answer is the correct one here.
     """
     try:
         from utils.security import security_load_subdirs
-        subdirs = security_load_subdirs(model_name)
+        subdirs = security_load_subdirs(model_name, local_files_only = True)
     except Exception:
         return names
     if not subdirs:

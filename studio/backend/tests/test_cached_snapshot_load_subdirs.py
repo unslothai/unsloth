@@ -61,7 +61,7 @@ def bicodec_subdirs(monkeypatch):
     """Report LLM/ for the BiCodec repo without touching the network."""
     import utils.security as security_pkg
 
-    def fake_subdirs(model_name, hf_token = None):
+    def fake_subdirs(model_name, hf_token = None, local_files_only = False):
         return ("LLM",) if model_name == _REPO else ()
 
     monkeypatch.setattr(security_pkg, "security_load_subdirs", fake_subdirs)
@@ -118,7 +118,7 @@ def test_load_subdir_lookup_failure_degrades_to_root_only(cache_root, monkeypatc
     """Detection can raise offline or for a gated repo; that must not break resolution."""
     import utils.security as security_pkg
 
-    def boom(model_name, hf_token = None):
+    def boom(model_name, hf_token = None, local_files_only = False):
         raise RuntimeError("hub unreachable")
 
     monkeypatch.setattr(security_pkg, "security_load_subdirs", boom)

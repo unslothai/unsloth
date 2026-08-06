@@ -44,7 +44,7 @@ def bicodec_subdirs(monkeypatch):
     monkeypatch.setattr(
         security_pkg,
         "security_load_subdirs",
-        lambda model_name, hf_token = None: ("LLM",) if model_name == _BICODEC else (),
+        lambda model_name, hf_token = None, local_files_only = False: ("LLM",) if model_name == _BICODEC else (),
     )
 
 

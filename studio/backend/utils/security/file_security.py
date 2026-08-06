@@ -245,14 +245,25 @@ class FileSecurityDecision:
         }
 
 
-def security_load_subdirs(model_name: str, hf_token: Optional[str] = None) -> tuple:
+def security_load_subdirs(
+    model_name: str,
+    hf_token: Optional[str] = None,
+    local_files_only: bool = False,
+) -> tuple:
     """Snapshot subdirectories a load calls ``from_pretrained`` on, for scoping the scan.
     Most models load from the root (``()``); Spark-TTS / BiCodec load ``<snapshot>/LLM``,
     so ``LLM/`` is a load root for them. Metadata-only (tokenizer special tokens), cached.
+
+    ``local_files_only`` skips the remote tokenizer fetch. Callers deciding whether a
+    cache already on disk is usable must pass it: that work is meant to be pure
+    filesystem, and a hung hub would otherwise block local snapshot resolution.
     """
     try:
         from utils.models.model_config import detect_audio_type, load_model_defaults
-        if detect_audio_type(model_name, hf_token = hf_token) == "bicodec":
+        if (
+            detect_audio_type(model_name, hf_token = hf_token, local_files_only = local_files_only)
+            == "bicodec"
+        ):
             return ("LLM",)
         # Tokenizer detection can fail (network/gated/unresolved alias); the YAML default
         # also pins the audio type, so fall back to it (else a flagged LLM/ pickle is
