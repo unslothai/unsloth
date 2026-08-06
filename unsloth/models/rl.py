@@ -1308,12 +1308,23 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # will do; this is the one check that observes it. A split with no
                     # `input_ids` is raw, so prep tokenizes it with the cap and it is fine.
                     "    _unsloth_cap = args.max_length\n"
+                    # EVERY row, not the first. A short row 0 in front of a long
+                    # row 5000 read as "within the cap", and in the fallback branch
+                    # nothing downstream truncates it. A map-style split is read in
+                    # full; a stream cannot be rewound, so a bounded prefix is all
+                    # there is and the check says so rather than pretending.
+                    "    _UNSLOTH_SCAN_ROWS = 1024\n"
                     "    def _unsloth_within_cap(_ds):\n"
                     "        if _ds is None: return True\n"
                     "        try:\n"
+                    "            try:    _n = len(_ds)\n"
+                    "            except Exception: _n = None\n"
+                    "            _seen = 0\n"
                     "            for _row in _ds:\n"
                     "                if 'input_ids' not in _row: return True\n"
-                    "                return len(_row['input_ids']) <= _unsloth_cap\n"
+                    "                if len(_row['input_ids']) > _unsloth_cap: return False\n"
+                    "                _seen += 1\n"
+                    "                if _n is None and _seen >= _UNSLOTH_SCAN_ROWS: break\n"
                     "        except Exception:\n"
                     "            return False\n"
                     "        return True\n"

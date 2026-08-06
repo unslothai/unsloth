@@ -627,3 +627,42 @@ def test_generator_only_emits_the_none_for_a_trl_that_guards():
 def test_padding_free_error_matcher(message, expected):
     from unsloth.trainer import _should_skip_auto_padding_free_error
     assert _should_skip_auto_padding_free_error(ValueError(message)) is expected
+
+
+def _late_overlength_dataset(tok):
+    """Row 0 fits, row 3 does not. Only the first row was ever inspected."""
+    from datasets import Dataset
+
+    short = tok("hi")["input_ids"]
+    long = tok("The quick brown fox. " * 200)["input_ids"]
+    assert len(long) > _MODEL_MAX_SEQ_LENGTH
+    # Keyed off the row's own text, not its position: `with_transform` is handed
+    # whatever slice was asked for, so a batch index says nothing about which
+    # row of the dataset it is.
+    base = Dataset.from_list([{"text": t} for t in ("s", "s", "s", "L")])
+    return base.with_transform(
+        lambda batch: {
+            "input_ids": [list(long if t == "L" else short) for t in batch["text"]],
+            "attention_mask": [[1] * len(long if t == "L" else short)
+                               for t in batch["text"]],
+        }
+    )
+
+
+def test_a_later_overlength_row_is_not_hidden_by_a_short_first_one(
+    tmp_path, trl_has_guard
+):
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    with pytest.raises(ValueError, match = "cannot be enforced"):
+        _build(tmp_path, dataset = _late_overlength_dataset)
+
+
+def test_the_cap_check_reads_the_whole_split():
+    """A map-style split is read in full; a stream cannot be rewound, so a
+    bounded prefix is all there is and the generated code says so."""
+    block = _padding_free_codegen_block()
+    assert "_UNSLOTH_SCAN_ROWS" in block
+    assert "if len(_row['input_ids']) > _unsloth_cap: return False" in block
+    assert "return len(_row['input_ids']) <= _unsloth_cap" not in block, \
+        "that early return inspected only the first row"
