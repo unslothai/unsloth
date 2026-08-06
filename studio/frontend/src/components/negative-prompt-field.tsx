@@ -7,10 +7,6 @@ import { InfoHint } from "@/components/ui/info-hint";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
-// The hint and chevron only appear with the row, so a rarely used field stays quiet.
-const REVEAL_ON_ROW_HOVER =
-  "pointer-events-none inline-flex opacity-0 transition-opacity group-hover/negative:pointer-events-auto group-hover/negative:opacity-100 group-focus-within/negative:pointer-events-auto group-focus-within/negative:opacity-100";
-
 /** Collapsible negative prompt, shared by the Images and Video Create panels. */
 export function NegativePromptField({
   value,
@@ -25,8 +21,9 @@ export function NegativePromptField({
   onOpenChange: (open: boolean) => void;
   hint: string;
 }) {
+  // Same shape as Field, so it keeps the panel's spacing.
   return (
-    <div className="group/negative -mt-1 flex flex-col gap-1.5 pb-2">
+    <div className="flex flex-col gap-1.5">
       <div className="flex items-center gap-1">
         <button
           type="button"
@@ -43,10 +40,7 @@ export function NegativePromptField({
           aria-hidden={true}
           tabIndex={-1}
           onClick={() => onOpenChange(!open)}
-          className={cn(
-            REVEAL_ON_ROW_HOVER,
-            open && "pointer-events-auto opacity-100",
-          )}
+          className="ml-auto inline-flex"
         >
           <ChevronDown
             className={cn(

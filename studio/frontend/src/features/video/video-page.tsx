@@ -1557,16 +1557,19 @@ export function VideoPage({ active = true }: { active?: boolean }) {
               settingsFadeClass,
             )}
           >
-          {/* Names the pane, as the Images column does. h-9 keeps both pages' headings level. */}
-          <div className="grid gap-1">
-            <h2 className="flex h-9 items-center gap-2 font-heading text-xl font-medium text-foreground">
-              {/* The app's Video icon, same as the sidebar row. */}
-              <HugeiconsIcon icon={FlimSlateIcon} className="size-[22px] shrink-0" />
-              Create videos
-            </h2>
-            <p className="text-ui-12p5 leading-snug text-muted-foreground">
-              Generate a video from a prompt
-            </p>
+          {/* Names the pane, as the Images column does. Same shape there, so
+              the two pages stay level. */}
+          <div className="mb-2 flex items-center gap-4">
+            {/* The app's Video icon, same as the sidebar row. */}
+            <HugeiconsIcon icon={FlimSlateIcon} className="size-[30px] shrink-0" />
+            <div className="grid min-w-0 gap-0.5">
+              <h2 className="font-heading text-xl font-medium leading-none text-foreground">
+                Create videos
+              </h2>
+              <p className="text-xs leading-snug text-muted-foreground">
+                Generate a video from a prompt
+              </p>
+            </div>
           </div>
 
           <Field label="Prompt">

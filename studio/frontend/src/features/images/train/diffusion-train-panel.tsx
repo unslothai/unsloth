@@ -1127,15 +1127,16 @@ export function DiffusionTrainPanel({
             settingsFadeClass,
           )}
         >
-          <div>
-            {/* Matches "Training settings" across the rule, so the two headings read as one row. */}
-            <h2 className="font-heading flex items-center gap-1.5 text-xl font-medium">
-              <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-[22px]" />
-              Train a LoRA
-            </h2>
-            <p className="mt-1 text-ui-12p5 leading-snug text-muted-foreground">
-              Teach a model a style or subject from your own images.
-            </p>
+          {/* Icon centred on the heading and its line together. */}
+          <div className="mb-1 flex items-center gap-4">
+            <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-[30px] shrink-0" />
+            <div className="min-w-0">
+              {/* Matches "Training settings" across the rule, so the two headings read as one row. */}
+              <h2 className="font-heading text-xl font-medium leading-none">Train a LoRA</h2>
+              <p className="mt-0.5 text-xs leading-snug text-muted-foreground">
+                Teach a model a style or subject from your own images.
+              </p>
+            </div>
           </div>
 
           {/* Family + base */}
@@ -1484,8 +1485,8 @@ export function DiffusionTrainPanel({
           <>
             <div className="flex flex-col gap-4">
               <div className="flex items-center justify-between">
-                <span className="font-heading flex items-center gap-1.5 text-xl font-medium">
-                  <HugeiconsIcon icon={Settings02Icon} className="size-[22px]" />
+                <span className="font-heading flex items-center gap-4 text-xl font-medium">
+                  <HugeiconsIcon icon={Settings02Icon} className="size-7" />
                   Training settings
                 </span>
                 <span className="text-xs text-muted-foreground">
