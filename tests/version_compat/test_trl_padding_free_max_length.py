@@ -453,9 +453,7 @@ def test_a_transformed_dataset_within_the_cap_is_not_refused(tmp_path, trl_has_g
         assert trainer.args.padding_free is False
 
 
-def test_a_tokenized_eval_split_that_cannot_be_truncated_is_refused(
-    tmp_path, trl_has_guard
-):
+def test_a_tokenized_eval_split_that_cannot_be_truncated_is_refused(tmp_path, trl_has_guard):
     """The train split truncates cleanly, so the cap was consumed on its word
     alone. A transformed eval split already yields `input_ids`, so prep never
     re-tokenizes it and evaluation ran over the cap."""
