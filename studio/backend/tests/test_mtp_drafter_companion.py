@@ -1014,6 +1014,37 @@ def test_a_release_specific_sidecar_outranks_the_base_family(tmp_path, kind):
     assert found is not None and Path(found).name == exact.name
 
 
+def test_root_mtp_candidates_are_ranked_not_taken_in_directory_order(tmp_path):
+    """The root branch returns the first match it walks, so specificity has to be
+    applied before the walk: mtp-model.gguf sorts ahead of mtp-model_v2-Q8_0.gguf
+    yet only the second names this weight's family."""
+    weight = tmp_path / "model_v2-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    (tmp_path / "mtp-model.gguf").write_bytes(b"base")
+    exact = tmp_path / "mtp-model_v2-Q8_0.gguf"
+    exact.write_bytes(b"exact")
+
+    found = detect_mtp_file(str(weight))
+    assert found is not None and Path(found).name == exact.name
+
+
+def test_root_mtp_ranking_spans_the_search_root(tmp_path):
+    """Same ordering hazard across the two scanned directories: the base sits in
+    the model's own folder and the exact match only in the search root."""
+    home = tmp_path / "home"
+    root = tmp_path / "root"
+    home.mkdir()
+    root.mkdir()
+    weight = home / "model_v2-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    (home / "mtp-model.gguf").write_bytes(b"base")
+    exact = root / "mtp-model_v2-Q8_0.gguf"
+    exact.write_bytes(b"exact")
+
+    found = detect_mtp_file(str(weight), search_root = str(root))
+    assert found is not None and Path(found).name == exact.name
+
+
 def test_a_qat_weight_still_pairs_with_its_base_family_drafter(tmp_path):
     """Negative control for the ranking above: unsloth/gemma-4-12B-it-qat-GGUF
     ships mtp-gemma-4-12B-it.gguf, so the prefix rule has to keep working when no
