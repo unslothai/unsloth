@@ -456,13 +456,43 @@ jobs:
 
       - name: Stop Unsloth
         if: always()
-        # Run as cmd so we are not running through the Git Bash shell;
-        # Git Bash on windows-latest has been observed to exit 143
-        # (SIGTERM) from any inline kill/sleep block, masking a green
-        # test run. The runner reclaims the Unsloth child process at
-        # job end either way, so just emit a marker and exit 0.
-        shell: cmd
-        run: echo Stop Unsloth (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
+        # NOT via Git Bash: bash on windows-latest has been observed to exit
+        # 143 (SIGTERM) from any inline kill/sleep block, masking a green test
+        # run (#5460, #5462). That is why this used to be a cmd no-op relying
+        # on the runner to reclaim the process at job end.
+        #
+        # That reliance was only safe while each phase was its OWN job. In one
+        # job the phase 1 server would stay alive through phases 2 and 3,
+        # holding its model resident and, worse, still owning
+        # ~/.unsloth/studio/auth while the next phase wipes and re-seeds that
+        # directory to get a fresh bootstrap password.
+        #
+        # Kill by listening port rather than by PID: STUDIO_PID comes from
+        # bash's `$!`, which is an MSYS pid that taskkill/Stop-Process cannot
+        # resolve to the real Windows process. pwsh keeps us off Git Bash, and
+        # every failure is swallowed so teardown can never fail the job.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          $port = $env:STUDIO_PORT
+          $owners = (Get-NetTCPConnection -LocalPort $port -State Listen).OwningProcess |
+                    Sort-Object -Unique
+          foreach ($owner in $owners) {
+            try {
+              $p = Get-Process -Id $owner
+              Write-Host "stopping pid $owner ($($p.ProcessName)) on port $port"
+              Stop-Process -Id $owner -Force
+            } catch {
+              Write-Host "pid $owner already gone"
+            }
+          }
+          Start-Sleep -Seconds 2
+          if ((Get-NetTCPConnection -LocalPort $port -State Listen)) {
+            Write-Host "note: something is still listening on $port"
+          } else {
+            Write-Host "port $port is free"
+          }
+          exit 0
 
       - name: Collect llama-server logs
         if: always()
@@ -497,6 +527,11 @@ jobs:
   # Job 2: Tool calling Tests
   # ─────────────────────────────────────────────────────────────────────
       - name: Phase 2 environment (tool calling)
+        # Same gate as the rest of this phase. Without it the step rides the
+        # implicit success(), so a phase 1 TEST failure would skip it while the
+        # gated steps below still ran -- and they would then inherit the previous
+        # phase's model, port and HF_HOME.
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
         run: |
           echo "GGUF_REPO=unsloth/Qwen3.5-2B-GGUF" >> "$GITHUB_ENV"
           echo "GGUF_FILE=Qwen3.5-2B-UD-Q4_K_XL.gguf" >> "$GITHUB_ENV"
@@ -850,13 +885,43 @@ jobs:
 
       - name: Stop Unsloth
         if: always()
-        # Run as cmd so we are not running through the Git Bash shell;
-        # Git Bash on windows-latest has been observed to exit 143
-        # (SIGTERM) from any inline kill/sleep block, masking a green
-        # test run. The runner reclaims the Unsloth child process at
-        # job end either way, so just emit a marker and exit 0.
-        shell: cmd
-        run: echo Stop Unsloth (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
+        # NOT via Git Bash: bash on windows-latest has been observed to exit
+        # 143 (SIGTERM) from any inline kill/sleep block, masking a green test
+        # run (#5460, #5462). That is why this used to be a cmd no-op relying
+        # on the runner to reclaim the process at job end.
+        #
+        # That reliance was only safe while each phase was its OWN job. In one
+        # job the phase 1 server would stay alive through phases 2 and 3,
+        # holding its model resident and, worse, still owning
+        # ~/.unsloth/studio/auth while the next phase wipes and re-seeds that
+        # directory to get a fresh bootstrap password.
+        #
+        # Kill by listening port rather than by PID: STUDIO_PID comes from
+        # bash's `$!`, which is an MSYS pid that taskkill/Stop-Process cannot
+        # resolve to the real Windows process. pwsh keeps us off Git Bash, and
+        # every failure is swallowed so teardown can never fail the job.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          $port = $env:STUDIO_PORT
+          $owners = (Get-NetTCPConnection -LocalPort $port -State Listen).OwningProcess |
+                    Sort-Object -Unique
+          foreach ($owner in $owners) {
+            try {
+              $p = Get-Process -Id $owner
+              Write-Host "stopping pid $owner ($($p.ProcessName)) on port $port"
+              Stop-Process -Id $owner -Force
+            } catch {
+              Write-Host "pid $owner already gone"
+            }
+          }
+          Start-Sleep -Seconds 2
+          if ((Get-NetTCPConnection -LocalPort $port -State Listen)) {
+            Write-Host "note: something is still listening on $port"
+          } else {
+            Write-Host "port $port is free"
+          }
+          exit 0
 
       - name: Collect llama-server logs
         if: always()
@@ -891,6 +956,11 @@ jobs:
   # Job 3: JSON, images
   # ─────────────────────────────────────────────────────────────────────
       - name: Phase 3 environment (JSON + vision)
+        # Same gate as the rest of this phase. Without it the step rides the
+        # implicit success(), so a phase 1 TEST failure would skip it while the
+        # gated steps below still ran -- and they would then inherit the previous
+        # phase's model, port and HF_HOME.
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
         run: |
           echo "GGUF_REPO=unsloth/Qwen3-VL-2B-Instruct-GGUF" >> "$GITHUB_ENV"
           echo "GGUF_VARIANT=UD-IQ2_XXS" >> "$GITHUB_ENV"
@@ -1172,13 +1242,43 @@ jobs:
 
       - name: Stop Unsloth
         if: always()
-        # Run as cmd so we are not running through the Git Bash shell;
-        # Git Bash on windows-latest has been observed to exit 143
-        # (SIGTERM) from any inline kill/sleep block, masking a green
-        # test run. The runner reclaims the Unsloth child process at
-        # job end either way, so just emit a marker and exit 0.
-        shell: cmd
-        run: echo Stop Unsloth (no-op; runner reclaims STUDIO_PID=%STUDIO_PID% at job end)
+        # NOT via Git Bash: bash on windows-latest has been observed to exit
+        # 143 (SIGTERM) from any inline kill/sleep block, masking a green test
+        # run (#5460, #5462). That is why this used to be a cmd no-op relying
+        # on the runner to reclaim the process at job end.
+        #
+        # That reliance was only safe while each phase was its OWN job. In one
+        # job the phase 1 server would stay alive through phases 2 and 3,
+        # holding its model resident and, worse, still owning
+        # ~/.unsloth/studio/auth while the next phase wipes and re-seeds that
+        # directory to get a fresh bootstrap password.
+        #
+        # Kill by listening port rather than by PID: STUDIO_PID comes from
+        # bash's `$!`, which is an MSYS pid that taskkill/Stop-Process cannot
+        # resolve to the real Windows process. pwsh keeps us off Git Bash, and
+        # every failure is swallowed so teardown can never fail the job.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'SilentlyContinue'
+          $port = $env:STUDIO_PORT
+          $owners = (Get-NetTCPConnection -LocalPort $port -State Listen).OwningProcess |
+                    Sort-Object -Unique
+          foreach ($owner in $owners) {
+            try {
+              $p = Get-Process -Id $owner
+              Write-Host "stopping pid $owner ($($p.ProcessName)) on port $port"
+              Stop-Process -Id $owner -Force
+            } catch {
+              Write-Host "pid $owner already gone"
+            }
+          }
+          Start-Sleep -Seconds 2
+          if ((Get-NetTCPConnection -LocalPort $port -State Listen)) {
+            Write-Host "note: something is still listening on $port"
+          } else {
+            Write-Host "port $port is free"
+          }
+          exit 0
 
       - name: Collect llama-server logs
         if: always()
