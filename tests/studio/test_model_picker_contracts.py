@@ -600,7 +600,9 @@ def test_local_mtp_warning_covers_path_and_native_gguf_sources():
     )[0]
     assert "activeModelIsLocal: false" in reset
     assert "specFallbackReason: null" in reset
-    assert "isLocalGguf" in src.split('specFallbackReason === "drafter_not_found"', 1)[1]
+    # The reason chain is a switch, so slice on the case label rather than the
+    # ternary comparison it replaced.
+    assert "isLocalGguf" in src.split('case "drafter_not_found":', 1)[1]
 
 
 def test_local_mtp_warning_uses_backend_source_metadata():

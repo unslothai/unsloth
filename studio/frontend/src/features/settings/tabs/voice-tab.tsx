@@ -199,6 +199,7 @@ function SttModelPicker({
       <PopoverTrigger asChild={true}>
         <button
           type="button"
+          data-testid="stt-model-trigger"
           aria-label={t("settings.voice.dictation.sttModelLabel")}
           className="border-border bg-background hover:bg-accent/50 dark:border-transparent dark:bg-white/[0.06] dark:hover:bg-white/10 focus-visible:border-ring flex h-8 w-full cursor-pointer items-center justify-between gap-1.5 rounded-full border px-3.5 text-sm outline-none transition-colors"
         >
@@ -884,6 +885,7 @@ export function VoiceTab() {
               }}
             >
               <SelectTrigger
+                data-testid="dictation-engine-trigger"
                 aria-label={t("settings.voice.dictation.engineLabel")}
                 className="w-56"
                 size="sm"
@@ -894,7 +896,7 @@ export function VoiceTab() {
                 <SelectItem value="browser">
                   {t("settings.voice.dictation.engineBrowser")}
                 </SelectItem>
-                <SelectItem value="model">
+                <SelectItem value="model" data-testid="dictation-engine-model">
                   {t("settings.voice.dictation.engineModel")}
                 </SelectItem>
               </SelectContent>

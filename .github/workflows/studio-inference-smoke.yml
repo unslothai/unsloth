@@ -38,6 +38,12 @@ on:
       - 'install.sh'
       - 'pyproject.toml'
       - '.github/workflows/studio-inference-smoke.yml'
+      # Every server boot in this workflow shells out to that script, so an edit
+      # to it changes what this workflow actually runs.
+      - '.github/scripts/boot-studio-api-only.sh'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
   push:
     branches: [main, pip]
   # Manual trigger for pre-warming HF_HOME caches on main, or re-running
@@ -106,21 +112,28 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }}
-        if: always() && steps.prime-hf.outcome == 'success'
+        # Save on main only. Caches created on a PR ref are scoped to that
+        # merge ref -- per GitHub's docs they "can only be restored by re-runs
+        # of the pull request" -- while every PR *can* restore from the default
+        # branch. So a PR-scoped save helps almost nothing and competes for the
+        # 10GB per-repo budget, and when that budget is exceeded GitHub evicts
+        # by least-recently-used, which deletes main's copies that all PRs share.
+        # This repo was measured at 33.3GB across 30 caches, 3.3x over, with the
+        # same 4.6GB model held four times on four different PR refs and no copy
+        # on main at all. That is the thrash loop: PR misses -> downloads ->
+        # saves its own copy -> evicts main's -> next PR misses.
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
@@ -128,11 +141,7 @@ jobs:
       - name: Reset auth + boot Unsloth (API-only)
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health
         run: |
@@ -375,21 +384,18 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh "$GGUF_REPO" "$GGUF_FILE" gguf-cache
 
       - name: Save GGUF model file
-        if: always() && steps.download-gguf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.download-gguf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: gguf-cache
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Reset auth + boot Unsloth (API-only, default tool policy)
         # We deliberately use the API-only mode rather than
@@ -401,11 +407,7 @@ jobs:
         # tool_policy=None so each request's `enable_tools` field is
         # honoured.
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health, log in, change password, load model
         run: |
@@ -955,21 +957,18 @@ jobs:
           bash .github/scripts/hf-download-with-retry.sh ggml-org/models tinyllamas/stories260K.gguf
 
       - name: Save HF_HOME for ${{ env.GGUF_REPO }} (model + mmproj)
-        if: always() && steps.prime-hf.outcome == 'success'
+        if: always() && github.ref == 'refs/heads/main' && steps.prime-hf.outcome == 'success'
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-${{ env.MMPROJ_FILE }}-v2
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Install OpenAI + Anthropic Python SDKs
         run: pip install 'openai>=1.50' 'anthropic>=0.40'
@@ -979,11 +978,7 @@ jobs:
         # response_format requests aren't routed through the agentic
         # tool loop.
         run: |
-          rm -rf ~/.unsloth/studio/auth
-          mkdir -p logs
-          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p "$STUDIO_PORT" \
-            > logs/studio.log 2>&1 &
-          echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
+          bash .github/scripts/boot-studio-api-only.sh --port "$STUDIO_PORT"
 
       - name: Wait for /api/health, log in, change password, load model
         run: |

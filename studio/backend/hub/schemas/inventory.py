@@ -232,6 +232,10 @@ class CachedModelRepo(CachedRepoBase):
     # True for a diffusion-tagged repo with NO top-level model_index.json: a single-file checkpoint needing from_single_file
     # + a filename. Pickers must not offer it as a pipeline load unless the catalog carries a curated artifact for it.
     single_file: bool = False
+    # True for an sd.cpp companion mirror: a VAE / text-encoder repo with no denoiser, so it is
+    # never a pick on ANY page. It still gets a row, because these run to tens of GB and the row
+    # is how they are seen and deleted; the pickers filter on this instead.
+    companion: bool = False
 
 
 class CachedModelsResponse(BaseModel):
