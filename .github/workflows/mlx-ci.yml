@@ -36,13 +36,17 @@
 #      only place in CI that exercises a real MLX backward pass +
 #      optimizer step + inference call.
 #
-# Three dispatch test files documented in tests/studio/README.md:
-#   - test_hardware_dispatch_matrix.py    parametrized 7-profile matrix
-#                                         + 2 dispatch-priority canaries
-#   - test_is_mlx_dispatch_gate.py        AST + runtime guard on
-#                                         unsloth._IS_MLX
+# Dispatch test files documented in tests/studio/README.md:
 #   - test_mlx_training_worker_behaviors.py  AST contract checks on
 #                                            studio/backend/core/training/worker.py
+#     Run here because no other workflow claims it.
+#
+# test_hardware_dispatch_matrix.py and test_is_mlx_dispatch_gate.py are NOT run
+# here. Both are fully spoofed (monkeypatched profiles plus a MetaPathFinder
+# that blocks `import mlx.core`), so they assert identically on any host, and
+# studio-backend-ci.yml runs both on ubuntu-latest. macOS concurrency is capped
+# at 5 jobs account-wide; re-running host-independent tests on that pool is the
+# most expensive way to learn nothing new.
 #
 # Surfaces a single PR check ("MLX CI on Mac M1 / dispatch").
 #
@@ -64,8 +68,12 @@ on:
       - 'studio/backend/utils/hardware/**'
       - 'studio/backend/core/training/worker.py'
       - 'studio/backend/core/inference/mlx_inference.py'
-      - 'tests/studio/test_hardware_dispatch_matrix.py'
-      - 'tests/studio/test_is_mlx_dispatch_gate.py'
+      # test_hardware_dispatch_matrix.py and test_is_mlx_dispatch_gate.py are
+      # deliberately absent: this workflow no longer runs them (see the AST
+      # contract step below), so booting a macOS runner when only those files
+      # change would burn a slot from the 5-job account-wide macOS cap to run
+      # nothing related. studio-backend-ci.yml covers both on ubuntu-latest and
+      # already triggers on them.
       - 'tests/studio/test_mlx_training_worker_behaviors.py'
       - 'tests/studio/run_real_mlx_smoke.py'
       - 'tests/conftest.py'
@@ -216,19 +224,24 @@ jobs:
           print('OK: FastMLXModel + MLXTrainer surface present')
           "
 
-      # Spoofed dispatch matrix. Runs on the real Mac too -- the
-      # test fixture installs a MetaPathFinder that blocks
-      # `import mlx.core` for "no-mlx" profiles, so the spoofs
-      # faithfully simulate every supported hardware combo regardless
-      # of whether mlx is installed for real.
-      - name: MLX dispatch tests (3 files, 36 tests)
+      # AST contract checks on worker.py. Pure `ast.parse`, no runtime and no
+      # mlx import, so it would run anywhere -- but this is the only workflow
+      # that runs it at all, so it stays here until something on Linux claims it.
+      #
+      # test_hardware_dispatch_matrix.py and test_is_mlx_dispatch_gate.py used
+      # to run here too. They are 100% spoofed monkeypatches (the fixture
+      # installs a MetaPathFinder that blocks `import mlx.core` for "no-mlx"
+      # profiles), so they assert the same thing on any host -- and
+      # studio-backend-ci.yml already runs both on ubuntu-latest in its
+      # "Hardware-spoof tests" step. Running them again on a macOS runner spent
+      # minutes from a pool capped at 5 concurrent jobs account-wide to
+      # re-derive a result Linux had already produced.
+      - name: MLX worker AST contract tests
         env:
           PYTHONPATH: ${{ github.workspace }}/studio
           UNSLOTH_COMPILE_DISABLE: '1'
         run: |
           python -m pytest -v --tb=short \
-            tests/studio/test_hardware_dispatch_matrix.py \
-            tests/studio/test_is_mlx_dispatch_gate.py \
             tests/studio/test_mlx_training_worker_behaviors.py
 
       # Real MLX training + inference smoke test. Trains

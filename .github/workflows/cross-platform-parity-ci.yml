@@ -71,7 +71,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        # No macOS leg on purpose. This matrix exists for Windows: the parity
+        # tests are pure `Path.read_text()` + regex assertions over install.sh /
+        # install.ps1 / setup.ps1, and the OS-specific risk they guard is the
+        # cp1252 default encoding on Windows. There is no `platform.`,
+        # `sys.platform`, `darwin` or `uname` reference anywhere in
+        # tests/python/test_cross_platform_parity.py, so the macOS row asserted
+        # exactly what the Linux row already asserts. macOS concurrency is
+        # capped at 5 account-wide; do not add it back without a Mac-specific
+        # assertion to justify it.
+        os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:
