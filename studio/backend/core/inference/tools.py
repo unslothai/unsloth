@@ -1346,6 +1346,34 @@ _START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
 # a program spelled as a path (/bin/bash) is never skipped as a switch.
 _CMD_SWITCH_RE = re.compile(r"/[a-zA-Z](?::[\w.]+)?")
 
+# START's documented switches. Matched by name rather than by a leading slash,
+# because MSYS rewrites a POSIX path argument and hands cmd back something like
+# /c/Windows/.../powershell.exe, which is a program and not a switch.
+_START_SWITCHES = frozenset(
+    {
+        "/min", "/max", "/separate", "/shared", "/low", "/normal", "/high",
+        "/realtime", "/abovenormal", "/belownormal", "/wait", "/b", "/i",
+        "/d", "/node", "/affinity", "/machine",
+    }
+)
+
+
+def _runs_at_command_position(tokens: "list[str]", index: int) -> bool:
+    """True when the shell RUNS ``tokens[index]`` rather than passing it as text.
+
+    A local test, not a parse: the word opens the string, follows a separator,
+    follows a wrapper that forwards command position (env/nohup/timeout), or
+    follows a cmd switch that introduces a payload (`cmd /c start ...`).
+    Without it, `echo start "My Title" powershell` and `echo cmd /v:on /c
+    powershell` are refused even though echo only prints them.
+    """
+    if index <= 0:
+        return True
+    prev = tokens[index - 1]
+    if prev in _SHELL_SEPARATORS or _win_switch(prev.lower()).startswith("/"):
+        return True
+    return os.path.basename(prev.strip('"').lower()) in _COMMAND_PREFIXES
+
 
 def _is_start_title(token: str) -> bool:
     """True when START would read ``token`` as its window title, not the program.
@@ -1663,6 +1691,10 @@ def _find_blocked_commands(command: str) -> set[str]:
             if is_win_c and _CMD_SWITCH_RE.fullmatch(_win_switch(prev)):
                 continue  # skip Windows switches like /s, /q, /v:on
             prev_base = os.path.basename(prev).lower()
+            # A shell name the shell does not run is text: `echo cmd /v:on /c
+            # powershell` only prints.
+            if not _runs_at_command_position(tokens, j):
+                break
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             elif is_win_c and prev_base in _SHELLS_WIN:
@@ -1679,13 +1711,13 @@ def _find_blocked_commands(command: str) -> set[str]:
     for i, token in enumerate(tokens):
         if os.path.basename(token).lower() not in ("start", "start.exe"):
             continue
+        # `echo start "My Title" powershell` only prints its arguments.
+        if not _runs_at_command_position(tokens, i):
+            continue
         j = i + 1
-        while j < len(tokens):
-            switch = _win_switch(tokens[j].lower())
-            if not switch.startswith("/"):
-                break
+        while j < len(tokens) and _win_switch(tokens[j].lower()) in _START_SWITCHES:
             # /d C:\dir and friends carry their value in the next token.
-            j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
+            j += 2 if _win_switch(tokens[j].lower()) in _START_SWITCHES_WITH_VALUE else 1
         # cmd reads a quoted first argument as the window title, putting the
         # program one token further on. Taking that second token unconditionally
         # refuses ordinary text (`echo start notepad powershell`), so it is read
@@ -1695,7 +1727,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.
-            while k < len(tokens) and _win_switch(tokens[k].lower()).startswith("/"):
+            while k < len(tokens) and _win_switch(tokens[k].lower()) in _START_SWITCHES:
                 k += 2 if _win_switch(tokens[k].lower()) in _START_SWITCHES_WITH_VALUE else 1
             if k < len(tokens):
                 blocked |= _find_blocked_commands(tokens[k])

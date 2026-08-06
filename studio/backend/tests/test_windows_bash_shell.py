@@ -344,6 +344,9 @@ def _screen_on_windows(monkeypatch, bash, command):
         "cmd /v:on /c powershell -Command ls",
         # Git Bash doubles the slash on the switches ahead of /c too.
         "cmd //v:on //c powershell -Command ls",
+        # MSYS rewrites a POSIX path before cmd sees it, so the program arrives
+        # with a leading slash. Skipping every /-word as a switch stepped over it.
+        'cmd //c start "" /c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe -Command ls',
         'start "" powershell -Command ls',
         'cmd //c env start "" powershell',
     ],
@@ -366,10 +369,15 @@ def test_windows_shellouts_are_screened_on_either_shell(
         r'cmd //c start "" "C:\Users\me\My Documents\report.docx"',
         "npm start",
         "./start.sh",
-        # `start` as data, not as a program. Screening the token after every
-        # `start` refused both of these.
+        # `start` and `cmd` as data, not as programs. A shell name the shell
+        # never runs is text, however it is spelled after it.
         "echo start notepad powershell",
         "grep start README powershell",
+        'echo start "My Title" powershell',
+        "echo cmd /v:on /c powershell",
+        # main refuses these two; the command-position gate fixes them too.
+        'echo "cmd" /c powershell',
+        'printf "%s" "cmd" /c powershell',
     ],
 )
 def test_ordinary_windows_commands_stay_runnable(monkeypatch, bash, command, _windows_blocklist):
@@ -391,14 +399,6 @@ def test_a_single_word_start_title_is_screened_under_the_cmd_lexer(
     monkeypatch, command, _windows_blocklist
 ):
     assert _screen_on_windows(monkeypatch, None, command)
-
-
-@pytest.mark.parametrize("command", ['echo "cmd" /c powershell', 'printf "%s" "cmd" /c powershell'])
-def test_a_quoted_word_is_not_a_shell_under_the_cmd_lexer(monkeypatch, command, _windows_blocklist):
-    # The cmd lexer keeps the marks, so `"cmd"` in argument position stays text
-    # rather than a shell to recurse into. (Under the posix lexer the marks are
-    # gone and this reads as a real cmd, as it does on main too.)
-    assert not _screen_on_windows(monkeypatch, None, command)
 
 
 def test_a_program_path_is_not_read_as_a_cmd_switch(monkeypatch, _windows_blocklist):
