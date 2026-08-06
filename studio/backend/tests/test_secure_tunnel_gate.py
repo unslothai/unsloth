@@ -326,11 +326,13 @@ def test_cors_preflight_cache_window_is_short():
         max_age = 60,
     )
     response = middleware.preflight_response(
-        Headers({
-            "origin": "https://browser-client.example",
-            "access-control-request-method": "POST",
-            "access-control-request-headers": "authorization",
-        })
+        Headers(
+            {
+                "origin": "https://browser-client.example",
+                "access-control-request-method": "POST",
+                "access-control-request-headers": "authorization",
+            }
+        )
     )
     assert response.status_code == 200
     assert int(response.headers["access-control-max-age"]) <= 60
