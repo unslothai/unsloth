@@ -1760,6 +1760,4 @@ def test_a_call_boundary_still_forwards_inside_a_quoted_payload():
             "_BLOCKED_COMMANDS",
             tools._BLOCKED_COMMANDS_COMMON | tools._BLOCKED_COMMANDS_WIN,
         )
-        assert "powershell" in tools._find_blocked_commands(
-            'cmd //c "echo hi& call powershell"'
-        )
+        assert "powershell" in tools._find_blocked_commands('cmd //c "echo hi& call powershell"')
