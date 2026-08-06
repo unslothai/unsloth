@@ -37,19 +37,24 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # No macos-14 leg. This job is install.sh --local --no-torch followed
+          # No macos-15 leg. This job is install.sh --local --no-torch followed
           # by assert-llama-loads.sh, and that exact pair already runs on
-          # macos-14 in studio-mac-update-smoke, studio-mac-ui-smoke,
+          # macos-15 in studio-mac-update-smoke, studio-mac-ui-smoke,
           # studio-mac-inference-smoke and clean-machine-install-ci.
           # Every path that triggers this workflow
-          # triggers at least one of those on macos-14 too (checked per path),
+          # triggers at least one of those on macos-15 too (checked per path),
           # so the leg re-derived a result five other jobs had already produced
           # while holding one of the 5 macOS slots available account-wide.
           #
+          # This exclusion used to name macos-14, because that was the shared
+          # runner. The macos-14 retirement (brownouts from 2026-10-05, removed
+          # 2026-11-02) moved those four workflows to macos-15, which moved the
+          # redundancy onto the macos-15 leg that used to live here. Dropping it
+          # keeps this matrix what it has always been: the versions NOT covered
+          # by the shared-runner workflows.
+          #
           # The versions below are the point of this matrix: they are the only
-          # place macOS 15, 26 and Intel are exercised at all. Do not trim them.
-          - os: macos-15        # Apple Silicon, macOS 15 Sequoia
-            experimental: false
+          # place macOS 26 and Intel are exercised at all. Do not trim them.
           - os: macos-26        # Apple Silicon, macOS 26 Tahoe
             experimental: false
           - os: macos-15-intel  # Intel x86_64, macOS 15 (informational)

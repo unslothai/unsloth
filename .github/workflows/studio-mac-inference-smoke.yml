@@ -58,7 +58,7 @@ jobs:
   # only in model, port and test body: the checkout, setup-node, setup-python,
   # `install.sh --local --no-torch` and assert-llama-loads.sh preamble was
   # byte-identical in all three, so every triggering PR did the same install on
-  # three macos-14 runners at once. Concurrent macOS jobs are capped at 5 per
+  # three macOS runners at once. Concurrent macOS jobs are capped at 5 per
   # account (shared with unslothai/unsloth-zoo), so that burst took 3 of the 5
   # slots to re-derive the same install twice.
   #
@@ -69,7 +69,7 @@ jobs:
   # later phases still run -- the same independence the three jobs had.
   inference-smoke:
     name: GGUF inference smoke (API, tools, vision)
-    runs-on: macos-14
+    runs-on: macos-15
     # Was 25 for the first phase alone; the three were 25 + 25 + 30 across three
     # runners. Sequentially they share one install, so the sum is less than 80,
     # but a cold model cache on the vision phase is the slow case. 90 covers it
@@ -675,7 +675,7 @@ jobs:
           # Mac the model often loses the tool calling contract before
           # producing the answer; accept either the answer OR a
           # non-empty SSE stream as proof the path completes.
-          # macos-14 free runner is ~10 tok/s on Qwen3.5-2B Q4_K_XL;
+          # macOS free runner is ~10 tok/s on Qwen3.5-2B Q4_K_XL;
           # cap max_tokens tightly so each SSE round stays under ~30s
           # even when the model stalls in a degenerate output state.
           # retries=0 on the best-effort probes: this step's 20-minute cap
@@ -708,7 +708,7 @@ jobs:
           # was dropped in favour of the python axis above. Both share
           # the SAME server-side agentic loop wiring (only the registry
           # entry differs); the python axis is the canonical proof. On
-          # macos-14 the duplicated SSE round was the dominant cost in
+          # macOS the duplicated SSE round was the dominant cost in
           # this step, so collapsing the two saves ~30-60 s wallclock
           # without losing distinct coverage.
 
@@ -744,7 +744,7 @@ jobs:
                   "temperature":     TEMP,
                   "seed":            SEED,
                   # 80 tokens lands within this step's 20-minute cap
-                  # on the macos-14 free runner. 17 is small; this is
+                  # on the macOS free runner. 17 is small; this is
                   # plenty of room for either "Yes" + brief reasoning
                   # or a degenerate empty completion.
                   "max_tokens":      80,
@@ -838,7 +838,7 @@ jobs:
       - name: Download GGUF + mmproj if cache miss or partial
         id: download-gguf-vision
         if: ${{ !cancelled() && steps.assert-llama.outcome == 'success' && (steps.cache-gguf-vision.outputs.cache-hit != 'true' || steps.verify-cache.outputs.ok != 'true') }}
-        # Authenticated + parallel: shared macos-14 NAT egress stalls
+        # Authenticated + parallel: shared macOS NAT egress stalls
         # multi-GB anonymous downloads. hf-download-with-retry.sh retries
         # forever, so this cap is what actually bounds a permanent stall --
         # 30 matches the old json-images job timeout, the slowest of the three.
