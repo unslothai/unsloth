@@ -7,8 +7,18 @@
 # job would miss (e.g. the Mac Tauri shell loading the same React
 # bundle, or the Mac llama.cpp prebuilt's HTTP layer behaving
 # differently from the Linux build).
+#
+# Also carries the API + auth phase that used to live in its own
+# studio-mac-api-smoke.yml. That workflow shared this one's model, GGUF
+# variant, HF_HOME cache key and 6 of its 7 path filters, and re-ran a
+# byte-identical `install.sh --local --no-torch` plus assert-llama-loads.sh
+# on a second macos-14 runner. Since concurrent macOS jobs are capped at 5
+# account-wide (shared with unslothai/unsloth-zoo), paying two slots and two
+# full installs to test two surfaces of the same server was the single
+# cheapest duplication to remove. The API phase runs last, on its own port,
+# after the UI phases have stopped their servers.
 
-name: Mac Studio UI CI
+name: Mac Studio UI + API CI
 
 on:
   pull_request:
@@ -21,6 +31,9 @@ on:
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      # No new entries needed for the absorbed API phase: every path
+      # studio-mac-api-smoke.yml watched is already covered above, and
+      # tests/studio/** covers studio_api_smoke.py itself.
   push:
     branches: [main, pip]
   workflow_dispatch:
@@ -34,9 +47,14 @@ permissions:
 
 jobs:
   ui-smoke:
-    name: Chat UI Tests
+    name: Chat UI + API Tests
     runs-on: macos-14
-    timeout-minutes: 35
+    # 35 covered the UI phases alone. The absorbed API phase adds a pyjwt
+    # install, a third server boot and studio_api_smoke.py -- a few minutes on
+    # an already-installed tree, since it reuses this job's install rather than
+    # doing its own. 50 leaves headroom without inviting a hang to sit for an
+    # hour holding one of the 5 macOS slots.
+    timeout-minutes: 50
     env:
       GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
       GGUF_VARIANT: UD-Q4_K_XL
@@ -339,6 +357,58 @@ jobs:
           kill "${STUDIO_EXTRA_PID}" 2>/dev/null || true
           sleep 2
 
+      # ---------------------------------------------------------------
+      # API + auth phase, absorbed from studio-mac-api-smoke.yml.
+      # Runs on 18894: 18896 and 18897 were used by the UI phases above and
+      # 18895 by the permission-browser script, so a fresh port keeps this
+      # phase independent of whether any of those shut down cleanly.
+      # ---------------------------------------------------------------
+      - name: Install pyjwt for the JWT-expiry forge test
+        run: pip install 'pyjwt>=2.6'
+
+      - name: Reset auth + boot Unsloth (API-only, port 18894)
+        run: |
+          # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
+          rm -rf ~/.unsloth/studio/auth
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18894 \
+            > logs/studio_api.log 2>&1 &
+          echo "STUDIO_API_PID=$!" >> "$GITHUB_ENV"
+
+      - name: Wait for /api/health on 18894
+        run: |
+          for i in $(seq 1 180); do
+            if curl -fs "http://127.0.0.1:18894/api/health" > /tmp/health_api.json; then
+              jq -e '.status == "healthy"' /tmp/health_api.json && break
+            fi
+            sleep 1
+          done
+          jq -e '.status == "healthy"' /tmp/health_api.json
+
+      - name: Pass bootstrap password + rotated targets to the API test
+        run: |
+          OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
+          NEW="ApiSmoke-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          NEW2="ApiSmoke-$(python -c 'import secrets; print(secrets.token_urlsafe(16))')"
+          echo "::add-mask::$OLD"
+          echo "::add-mask::$NEW"
+          echo "::add-mask::$NEW2"
+          echo "STUDIO_OLD_PW=$OLD"  >> "$GITHUB_ENV"
+          echo "STUDIO_NEW_PW=$NEW"  >> "$GITHUB_ENV"
+          echo "STUDIO_NEW2_PW=$NEW2" >> "$GITHUB_ENV"
+
+      - name: Run Unsloth API & Auth tests
+        env:
+          BASE_URL: http://127.0.0.1:18894
+          STUDIO_AUTH_DIR: /Users/runner/.unsloth/studio/auth
+        run: python tests/studio/studio_api_smoke.py
+
+      - name: Stop API-phase Unsloth
+        if: always()
+        run: |
+          kill "${STUDIO_API_PID}" 2>/dev/null || true
+          sleep 2
+
       - name: Upload Playwright artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -347,6 +417,7 @@ jobs:
           path: |
             logs/studio.log
             logs/studio_extra.log
+            logs/studio_api.log
             logs/install.log
             logs/playwright
             logs/playwright-permissions-*
