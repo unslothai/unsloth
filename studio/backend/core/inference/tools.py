@@ -206,6 +206,7 @@ def _selects_its_own_executable(token: str) -> bool:
     bare = token.strip("\"'")
     return "/" in bare or "\\" in bare
 
+
 # bash's source builtins. cmd has neither, so a PATH whose last segment happens
 # to spell one names a file rather than the builtin: `cd C:\dir\.` is an
 # ordinary directory walk and reading `.` out of it refused the line.
