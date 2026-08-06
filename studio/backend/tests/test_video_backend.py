@@ -2281,7 +2281,12 @@ def _trim_spy(monkeypatch):
 
     calls: list = []
 
-    def _fake(pipe, family, *, logger = None):
+    def _fake(
+        pipe,
+        family,
+        *,
+        logger = None,
+    ):
         calls.append(getattr(family, "name", None))
         return True
 
