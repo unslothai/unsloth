@@ -220,11 +220,16 @@ _MLOCK_FLAGS: frozenset[str] = frozenset({"--mlock", "-mlock"})
 # Modern spelling of both, as an enum value. Takes a value, so NOT boolean.
 _LOAD_MODE_FLAGS: frozenset[str] = frozenset({"--load-mode", "-lm"})
 _NO_MMAP_FLAGS: frozenset[str] = frozenset({"--no-mmap", "-no-mmap"})
-# Measured: any trailing mmap-family flag resets the WHOLE load mode, so
-# "--load-mode mmap+mlock --mmap" (or --no-mmap) silently drops the mlock. The
-# affirmative spelling is harmless on its own, so it is stripped only when a
-# managed flag is emitted, never by no-reserve.
-_MMAP_TOGGLE_FLAGS: frozenset[str] = _NO_MMAP_FLAGS | frozenset({"--mmap"})
+# Deprecated selectors for the same load-mode enum. Measured: ANY of them
+# trailing the managed flag resets the WHOLE mode and drops the mlock, in both
+# polarities ("--mmap" and "--no-direct-io" do it too). Harmless on their own, so
+# stripped only when a managed flag is emitted, never by no-reserve.
+_DIO_FLAGS: frozenset[str] = frozenset(
+    {"--direct-io", "-dio", "--no-direct-io", "-ndio"}
+)
+_LOAD_MODE_ALIAS_FLAGS: frozenset[str] = (
+    _NO_MMAP_FLAGS | frozenset({"--mmap"}) | _DIO_FLAGS
+)
 _MEMORY_PLACEMENT_FLAGS: frozenset[str] = _MLOCK_FLAGS | _NO_MMAP_FLAGS
 # llama.cpp reads these before argv, so an inherited value survives stripping the
 # equivalent tokens. Scrubbed whenever a toggle is on, like the spec/placement
@@ -253,6 +258,10 @@ _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
         "--no-mmap",
         "-no-mmap",
         "--mmap",
+        "--direct-io",
+        "-dio",
+        "--no-direct-io",
+        "-ndio",
     }
 )
 
@@ -512,7 +521,7 @@ def strip_shadowing_flags(
     strip_device: bool = False,
     strip_mlock: bool = False,
     strip_no_mmap: bool = False,
-    strip_mmap_toggle: bool = False,
+    strip_load_mode_aliases: bool = False,
     strip_load_mode: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
@@ -555,8 +564,8 @@ def strip_shadowing_flags(
         shadowing |= _MLOCK_FLAGS
     if strip_no_mmap:
         shadowing |= _NO_MMAP_FLAGS
-    if strip_mmap_toggle:
-        shadowing |= _MMAP_TOGGLE_FLAGS
+    if strip_load_mode_aliases:
+        shadowing |= _LOAD_MODE_ALIAS_FLAGS
     if strip_load_mode:
         shadowing |= _LOAD_MODE_FLAGS
 
@@ -647,7 +656,7 @@ def apply_model_memory_policy(
             strip_template = False,
             strip_split_mode = False,
             strip_mlock = True,
-            strip_mmap_toggle = True,
+            strip_load_mode_aliases = True,
             strip_load_mode = True,
         )
     return managed, tokens
@@ -679,13 +688,15 @@ _ENV_TRUE_VALUES = frozenset({"on", "enabled", "true", "1"})
 _ENV_FALSE_VALUES = frozenset({"off", "disabled", "false", "0"})
 
 _LOAD_MODE_MLOCK_VALUES = frozenset({"mlock", "mmap+mlock"})
-_LOAD_MODE_MMAP_VALUES = frozenset({"mmap", "mmap+mlock"})
+# Modes that read the weights into a full host buffer. "dio" streams via
+# DirectIO and "mmap" maps, so neither reserves RAM for the whole model.
+_LOAD_MODE_RESERVING_VALUES = frozenset({"none", "mlock"})
 
 
 def resolve_effective_memory_state(
     argv: Optional[Iterable[str]], env: Optional[Mapping[str, str]] = None
 ) -> tuple[bool, bool]:
-    """``(mlock, mmap_disabled)`` the child will actually run with.
+    """``(mlock, reserves_ram)`` the child will actually run with.
 
     Mirrors llama.cpp: env supplies defaults, argv overrides last-wins. Used to
     compare a running process against the current settings, so the reload hint
@@ -695,11 +706,11 @@ def resolve_effective_memory_state(
     mlock = str(env.get("LLAMA_ARG_MLOCK", "")).strip().lower() in _ENV_TRUE_VALUES
     # LLAMA_ARG_MMAP is whether to mmap, so "off" means mmap disabled.
     _mmap_env = str(env.get("LLAMA_ARG_MMAP", "")).strip().lower()
-    mmap_disabled = _mmap_env in _ENV_FALSE_VALUES and _mmap_env != ""
+    reserves_ram = _mmap_env in _ENV_FALSE_VALUES and _mmap_env != ""
     _mode_env = str(env.get("LLAMA_ARG_LOAD_MODE", "")).strip().lower()
     if _mode_env:
         mlock = _mode_env in _LOAD_MODE_MLOCK_VALUES
-        mmap_disabled = _mode_env not in _LOAD_MODE_MMAP_VALUES
+        reserves_ram = _mode_env in _LOAD_MODE_RESERVING_VALUES
 
     tokens = [str(a) for a in (argv or [])]
     i, n = 0, len(tokens)
@@ -713,7 +724,17 @@ def resolve_effective_memory_state(
             mlock = True
             i += 1
         elif flag in _NO_MMAP_FLAGS:
-            mmap_disabled = True
+            reserves_ram = True
+            i += 1
+        elif flag in _DIO_FLAGS:
+            # Deprecated load-mode selector: resets the mode, so the mlock goes.
+            # DirectIO streams the weights, so it holds no full host copy.
+            mlock = False
+            reserves_ram = False
+            i += 1
+        elif flag == "--mmap":
+            mlock = False
+            reserves_ram = False
             i += 1
         elif flag in _LOAD_MODE_FLAGS:
             if "=" in tok:
@@ -725,28 +746,34 @@ def resolve_effective_memory_state(
             value = value.strip().lower()
             if value:
                 mlock = value in _LOAD_MODE_MLOCK_VALUES
-                mmap_disabled = value not in _LOAD_MODE_MMAP_VALUES
+                reserves_ram = value in _LOAD_MODE_RESERVING_VALUES
             i += step
         else:
             i += 1
-    return mlock, mmap_disabled
+    return mlock, reserves_ram
 
 
-def memory_state_satisfies_settings(state: tuple[bool, bool]) -> bool:
-    """True when a launched ``(mlock, mmap_disabled)`` matches the settings.
+def memory_state_satisfies_settings(
+    state: tuple[bool, bool], managed: bool = False
+) -> bool:
+    """True when a launched ``(mlock, reserves_ram)`` matches the settings.
 
     Shared by the duplicate-load comparator (so toggling a setting forces a real
     relaunch instead of returning already-loaded) and the settings route (so the
-    reload hint agrees with it). With both toggles off Unsloth does not manage
-    placement, so any state is acceptable.
+    reload hint agrees with it).
+
+    ``managed`` says the live flag was emitted by this policy. With both toggles
+    off Unsloth no longer manages placement, so a flag of its own that is still
+    having an effect has to come off on the next launch, while a purely
+    user-supplied one is left alone.
     """
     try:
         from utils.model_memory_settings import get_keep_resident, get_no_ram_reserve
     except Exception:
         return True
-    mlock, mmap_disabled = state
+    mlock, reserves_ram = state
     if get_no_ram_reserve():
-        return not (mlock or mmap_disabled)
+        return not (mlock or reserves_ram)
     if get_keep_resident():
         return mlock
-    return True
+    return not (managed and (mlock or reserves_ram))

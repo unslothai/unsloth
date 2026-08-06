@@ -283,7 +283,8 @@ class TestEffectiveMemoryState:
             (["--no-mmap"], {}, (False, True)),
             (["--load-mode", "mmap+mlock"], {}, (True, False)),
             (["--load-mode=mmap+mlock"], {}, (True, False)),
-            (["-lm", "mlock"], {}, (True, True)),
+            (["-lm", "mlock"], {}, (True, True)),   # mlock without mmap
+            (["--load-mode", "dio"], {}, (False, False)),  # DirectIO streams
             (["--load-mode", "none"], {}, (False, True)),
             ([], {"LLAMA_ARG_MLOCK": "1"}, (True, False)),
             ([], {"LLAMA_ARG_MMAP": "off"}, (False, True)),
@@ -313,7 +314,9 @@ class TestReloadRequired:
         import routes.settings as rs
         import utils.model_memory_settings as mm
 
-        backend = type("_B", (), {"is_loaded": True, "_memory_state": state})()
+        backend = type(
+            "_B", (), {"is_loaded": True, "_memory_state": state, "_memory_managed": True}
+        )()
         monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
         monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
@@ -329,8 +332,8 @@ class TestReloadRequired:
             # keep_resident: satisfied by any mlock, including a user one.
             (True, False, (True, False), False),
             (True, False, (False, False), True),
-            # Both off: Unsloth does not manage placement.
-            (False, False, (True, True), False),
+            # Both off with a flag this policy emitted: it has to come off.
+            (False, False, (True, True), True),
             (False, False, (False, False), False),
         ],
     )
@@ -341,7 +344,9 @@ class TestReloadRequired:
         import routes.inference
         import routes.settings as rs
 
-        backend = type("_B", (), {"is_loaded": False, "_memory_state": (False, True)})()
+        backend = type(
+            "_B", (), {"is_loaded": False, "_memory_state": (False, True), "_memory_managed": True}
+        )()
         monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
         assert rs._model_memory_reload_required() is False
 
@@ -354,15 +359,11 @@ class TestManagedFlagIsNotReset:
     @pytest.mark.parametrize("load_mode", [True, False])
     @pytest.mark.parametrize(
         "preset",
-        [
-            ["--no-mmap"],
-            ["--mmap"],
-            ["-no-mmap"],
-            ["-lm", "none"],
-            ["--load-mode", "mmap"],
-            ["--load-mode=none"],
-            ["--mlock"],
-        ],
+        [["--no-mmap"], ["--mmap"], ["-no-mmap"], ["-lm", "none"],
+         ["--load-mode", "mmap"], ["--load-mode=none"], ["--mlock"],
+         # Deprecated load-mode selectors: measured to reset the mode in BOTH
+         # polarities, so all four spellings must go.
+         ["--direct-io"], ["-dio"], ["--no-direct-io"], ["-ndio"]],
     )
     def test_nothing_after_the_managed_flag_can_reset_it(self, policy, load_mode, preset):
         managed, extras = policy(
@@ -386,24 +387,29 @@ class TestDuplicateLoadComparator:
     process and never apply the setting."""
 
     @pytest.mark.parametrize(
-        ("launched", "keep", "no_res", "satisfied"),
+        ("launched", "managed", "keep", "no_res", "satisfied"),
         [
-            ((False, False), True, False, False),  # turn residency on
-            ((True, False), False, True, False),  # turn no-reserve on, mlocked
-            ((False, True), False, True, False),  # turn no-reserve on, no-mmap
-            ((True, False), True, False, True),  # already pinned
-            ((False, False), False, True, True),  # already clean
-            ((True, True), False, False, True),  # unmanaged
+            ((False, False), False, True, False, False),  # turn residency on
+            ((True, False), True, False, True, False),    # no-reserve on, mlocked
+            ((False, True), False, False, True, False),   # no-reserve on, no-mmap
+            ((True, False), True, True, False, True),     # already pinned
+            ((False, False), False, False, True, True),   # already clean
+            # Both off: OUR flag must come off, a user's own must not be fought.
+            ((True, False), True, False, False, False),
+            ((True, False), False, False, False, True),
+            ((False, False), False, False, False, True),
+            # DirectIO is not a RAM reservation, so no-reserve is satisfied.
+            ((False, False), False, False, True, True),
         ],
     )
     def test_forces_a_reload_only_when_the_policy_changed(
-        self, monkeypatch, launched, keep, no_res, satisfied
+        self, monkeypatch, launched, managed, keep, no_res, satisfied
     ):
         import utils.model_memory_settings as mm
 
         monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
-        assert memory_state_satisfies_settings(launched) is satisfied
+        assert memory_state_satisfies_settings(launched, managed) is satisfied
 
 
 class TestCapabilityProbeFallback:
