@@ -3201,14 +3201,13 @@ def patch_accelerate_recursively_apply():
                         pass
 
 
-# The one ImportError worth answering False to. "torchao" appearing anywhere in
-# the text is far too wide: "No module named 'torchao.quantization'" and
-# "libtorchao_ops_cuda.so: cannot open shared object file" both mention it, and
-# both describe an installation that is genuinely broken rather than merely old.
-# Those must keep propagating, so match the version complaint itself. peft's
-# current wording is the first alternative; the others are the same sentence as
-# other libraries phrase it, so a rewording upstream does not silently turn this
-# back into a raise.
+# The one ImportError worth answering False to. Matching "torchao" anywhere is
+# too wide: "No module named 'torchao.quantization'" and a missing
+# libtorchao_ops_cuda.so also say it, and both mean genuinely broken rather than
+# merely old, so they must keep propagating. Match the version complaint itself.
+# peft's current wording is the first alternative; the rest are how other
+# libraries phrase the same sentence, so an upstream reword does not silently
+# turn this back into a raise.
 _TORCHAO_STALE_VERSION_ERROR = re.compile(
     r"incompatible version of torchao"
     r"|torchao.{0,120}?only versions?\s+(?:above|below|>=|<=)"
@@ -3221,15 +3220,10 @@ def fix_peft_stale_torchao_import_error():
     """Stop an old torchao from aborting LoRA creation that never uses it.
 
     ``peft.import_utils.is_torchao_available`` returns False when torchao is
-    absent, but raises when it is installed and older than peft's minimum::
-
-        ImportError: Found an incompatible version of torchao. Found version
-        0.10.0, but only versions above 0.16.0 are supported
-
-    peft calls it from ``dispatch_torchao`` for every LoRA layer, so one stale
-    optional dependency ends ``get_peft_model`` for a model that never touches
-    torchao. "Installed but unusable" is closer to "not installed" than to
-    "fatal", so answer False and warn once, naming the upgrade.
+    absent but raises when it is installed and older than peft's minimum, and
+    ``dispatch_torchao`` calls it for every LoRA layer, so one stale optional
+    dependency ends ``get_peft_model``. "Installed but unusable" is closer to
+    "not installed" than to "fatal", so answer False and warn once.
 
     Returns True when patched, False when no patch is needed, None when peft
     is absent.
@@ -3252,9 +3246,8 @@ def fix_peft_stale_torchao_import_error():
         try:
             return original(*args, **kwargs)
         except ImportError as exc:
-            # Only the version complaint. A torchao that fails to import for
-            # any other reason is a real problem and must still surface, even
-            # though its message also says "torchao".
+            # Only the version complaint; any other torchao import failure is
+            # a real problem and must still surface.
             message = str(exc)
             if _TORCHAO_STALE_VERSION_ERROR.search(message) is None:
                 raise
@@ -3278,8 +3271,8 @@ def fix_peft_stale_torchao_import_error():
         return False
 
     # `from peft.import_utils import is_torchao_available` binds the original
-    # into each importing module, so patching only import_utils would leave
-    # peft.tuners.lora.torchao -- the actual caller -- still raising.
+    # into each importing module, so patching import_utils alone would leave
+    # peft.tuners.lora.torchao, the actual caller, still raising.
     for mod_name, mod in tuple(sys.modules.items()):
         if not mod_name.startswith("peft") or mod is None:
             continue
@@ -3291,13 +3284,11 @@ def fix_peft_stale_torchao_import_error():
     return patched
 
 
-# Every name torchao 0.18.0 imports from torch.nn.functional, collected with
+# Every name torchao 0.18.0 imports from torch.nn.functional, from
 #     grep -rh "from torch.nn.functional import" torchao/
-# over the installed package. scaled_grouped_mm matters as much as the two
-# mx_formats names: it is on the path of a plain `import torchao`.
-# scaled_dot_product_attention is listed for completeness and exists on every
-# supported torch, so it never gets a placeholder -- the loop below skips any
-# symbol torch already provides.
+# scaled_grouped_mm is on the path of a plain `import torchao`.
+# scaled_dot_product_attention is listed for completeness only: it exists on
+# every supported torch, and the loop below skips symbols torch provides.
 _TORCHAO_TORCH_SYMBOLS = (
     "ScalingType",
     "SwizzleType",
@@ -3309,10 +3300,9 @@ _TORCHAO_TORCH_SYMBOLS = (
 def _make_torch_symbol_placeholder(name, detail):
     """A stand-in that imports cleanly and refuses to be used.
 
-    torchao 0.17 left these names undefined on older torch, so anything
-    wanting them already raised NameError. Pretending to be a real enum would
-    be worse than the crash it replaces -- it could hand a float8 path a
-    meaningless value. This satisfies the `from ... import` and nothing else.
+    Pretending to be a real enum would be worse than the crash it replaces: it
+    could hand a float8 path a meaningless value. torchao 0.17 left these names
+    undefined on older torch anyway, so anything wanting them already raised.
     """
     message = (
         f"Unsloth: `torch.nn.functional.{name}` does not exist in this torch. "
@@ -3333,39 +3323,31 @@ def _make_torch_symbol_placeholder(name, detail):
             return f"<unsloth placeholder for torch.nn.functional.{name}>"
 
     placeholder = _Meta(name, (), {"__doc__": message})
-    # So we can recognise (and never double-patch) our own object later.
+    # So we can recognise our own object later and never double-patch.
     type.__setattr__(placeholder, "__unsloth_placeholder__", True)
     return placeholder
 
 
-# The same skew, one layer down. torchao 0.18 also registers a handler against
-# an aten op at module scope, in float8/float8_tensor.py:
-#
-#     @implements([aten._grouped_mm.default])
-#
-# `aten::_grouped_mm` arrived in torch 2.8, so on anything older the lookup
-# raises before the decorator is applied:
-#
-#     AttributeError: '_OpNamespace' 'aten' object has no attribute '_grouped_mm'
-#
-# Supplying the torch.nn.functional names does not help: this lookup goes
-# through torch.ops, so the schema itself has to exist.
+# The same skew one layer down: torchao 0.18 does `@implements([aten.
+# _grouped_mm.default])` at module scope in float8/float8_tensor.py, and that
+# op only arrived in torch 2.8, so older torch raises AttributeError on the
+# lookup. The torch.nn.functional names above do not help; this goes through
+# torch.ops, so the schema itself has to exist.
 _ATEN_GROUPED_MM_SCHEMA = (
     "_grouped_mm(Tensor self, Tensor mat2, Tensor? offs=None, "
     "Tensor? bias=None, ScalarType? out_dtype=None) -> Tensor"
 )
 
 # Module level on purpose: a torch.library.Library deregisters everything it
-# defined when it is garbage collected, so a local would undo itself.
+# defined once collected, so a local would undo itself.
 _aten_grouped_mm_library = None
 
 
 def _torch_op_is_missing(namespace, name):
     """Is `torch.ops.<namespace>.<name>` absent on this torch?
 
-    Only a plain AttributeError counts. Anything else means we could not tell,
-    and the safe answer to "should I register into the aten namespace?" when
-    unsure is no.
+    Only a plain AttributeError counts: anything else means we could not tell,
+    and when unsure we must not register into the aten namespace.
     """
     try:
         import torch
@@ -3385,9 +3367,9 @@ def _ensure_aten_grouped_mm(detail):
     """Define an unusable `aten::_grouped_mm` so torchao's decorator resolves.
 
     No real implementation on purpose: torchao only wants somewhere to hang a
-    float8 handler this torch will never dispatch to, so the schema is the
-    whole requirement. A silently wrong grouped matmul would be far worse than
-    the crash it replaces, so calling it raises and says why.
+    float8 handler this torch never dispatches to, so the schema is the whole
+    requirement, and a silently wrong grouped matmul would be worse than the
+    crash it replaces. Calling it raises and says why.
     """
     global _aten_grouped_mm_library
     if _aten_grouped_mm_library is not None:
@@ -3415,13 +3397,13 @@ def _ensure_aten_grouped_mm(detail):
     try:
         import torch
 
-        # FRAGMENT is the documented way to add to a namespace someone else
-        # owns; DEF would try to claim "aten" outright and be rejected.
+        # FRAGMENT adds to a namespace someone else owns; DEF would try to
+        # claim "aten" outright and be rejected.
         library = torch.library.Library("aten", "FRAGMENT")
         library.define(_ATEN_GROUPED_MM_SCHEMA)
         library.impl("_grouped_mm", _refuse, "CompositeExplicitAutograd")
     except Exception:
-        # A torch that will not let us register simply keeps its own error.
+        # A torch that will not let us register keeps its own error.
         return False
 
     _aten_grouped_mm_library = library
@@ -3431,17 +3413,13 @@ def _ensure_aten_grouped_mm(detail):
 def fix_torchao_torch_symbol_skew():
     """Let `import unsloth` survive a torchao built for a newer torch.
 
-    torchao 0.17 guarded the import behind `torch_version_at_least("2.10.0")`.
-    0.18.0 left it unguarded at module level, so on torch below 2.10::
+    torchao 0.17 guarded the import behind `torch_version_at_least("2.10.0")`;
+    0.18.0 left it unguarded at module level, so torch below 2.10 raises
+    "cannot import name 'ScalingType' from 'torch.nn.functional'" while
+    importing transformers, naming neither torchao nor torch.
 
-        ImportError: cannot import name 'ScalingType' from 'torch.nn.functional'
-
-    That surfaces while importing transformers, so the failure reaches the
-    user as a bare Exception naming neither torchao nor torch.
-
-    Narrow by design: it fires only when torchao is installed, its version
-    actually has the bug, and torch really is missing the symbol. On a healthy
-    pair it does nothing, so nothing is masked.
+    Narrow by design: only fires when torchao is installed, its version has
+    the bug, and torch really lacks the symbol. Nothing is masked otherwise.
     """
     if importlib.util.find_spec("torchao") is None:
         return False
@@ -3450,7 +3428,7 @@ def fix_torchao_torch_symbol_skew():
     except Exception:
         return False
     try:
-        # 0.17 and earlier guard their own import and need no help.
+        # 0.17 and earlier guard their own import.
         if Version(torchao_version) < Version("0.18.0"):
             return False
     except Exception:
@@ -3488,9 +3466,9 @@ def fix_torchao_torch_symbol_skew():
             torch_version,
         )
 
-    # The aten-op half of the same skew. Independent of the loop above: a
-    # torch can have every torch.nn.functional symbol and still be missing
-    # the operator, and vice versa, so neither result gates the other.
+    # The aten-op half of the same skew. Independent of the loop above: a torch
+    # can have every functional symbol and still lack the operator, or vice
+    # versa, so neither result gates the other.
     op_detail = (
         f"torchao {torchao_version} registers a handler for it at "
         f"import time, but torch {torch_version} does not provide it "
@@ -3508,16 +3486,15 @@ def fix_torchao_torch_symbol_skew():
     return bool(patched)
 
 
-# The in-process fix above is not enough for vLLM, which inspects model
-# architectures in a separate process. That child imports torch and torchao
-# itself, never sees a parent monkey-patch, and fails with the same
-# ImportError, surfacing only as the generic
-# "Model architectures ['...'] failed to be inspected".
+# vLLM inspects model architectures in a separate process, which imports
+# torchao itself, never sees a parent monkey-patch, and fails with the same
+# ImportError as the generic "Model architectures ['...'] failed to be
+# inspected".
 #
 # `sitecustomize` is the one hook that reaches a process we do not launch:
-# `site` imports it at interpreter startup and finds it on PYTHONPATH, which
-# subprocesses inherit. A `.pth` would also work, but only inside a real site
-# directory, which a library has no business writing into.
+# `site` imports it at interpreter startup off PYTHONPATH, which subprocesses
+# inherit. A `.pth` would also work, but only inside a real site directory,
+# which a library has no business writing into.
 
 _SUBPROCESS_FIX_DIRNAME = "unsloth_subprocess_import_fix"
 
@@ -3525,18 +3502,14 @@ _SUBPROCESS_FIX_DIRNAME = "unsloth_subprocess_import_fix"
 def _subprocess_fix_directory():
     """A private directory for the generated sitecustomize.
 
-    Everything on PYTHONPATH is executed by every subprocess, and the temp dir
-    is shared on Linux, so a fixed name there would let whoever created it
-    first run code as everyone else. Scope it per user and refuse a path this
-    user does not own. Windows already gives each user a private TEMP.
+    Everything on PYTHONPATH runs in every subprocess and /tmp is shared on
+    Linux, so a fixed name there would let whoever created it first run code as
+    everyone else. Scope it per user and refuse a path this user does not own.
 
-    Ownership is not on its own enough. ``exist_ok = True`` does not apply
-    ``mode`` to a directory that already exists, so one left behind
-    group- or world-writable -- by an older release, a loose umask, or a hand
-    -created path -- stays that way, and anyone who can write into it can
-    replace the ``sitecustomize.py`` that goes on PYTHONPATH and so run their
-    code in every Python subprocess started after ``import unsloth``. Take the
-    write bits away, and refuse the directory if they cannot be taken away.
+    Ownership alone is not enough: ``exist_ok = True`` does not apply ``mode``
+    to an existing directory, so one left group- or world-writable stays that
+    way and anyone who can write into it can replace the ``sitecustomize.py``.
+    Take the write bits away, and refuse the directory if they will not go.
     """
     import stat
     import tempfile
@@ -3554,8 +3527,8 @@ def _subprocess_fix_directory():
             raise RuntimeError(
                 "refusing a subprocess fix directory owned by another user: " + directory
             )
-        # chmod, then re-read: a filesystem that ignores mode bits (some
-        # network and FUSE mounts) reports success and changes nothing.
+        # chmod then re-read: some network and FUSE mounts ignore mode bits
+        # and report success without changing anything.
         if stat.S_IMODE(info.st_mode) & 0o022:
             try:
                 os.chmod(directory, 0o700)
@@ -3573,10 +3546,9 @@ def _subprocess_fix_directory():
 def _subprocess_sitecustomize_source():
     """The sitecustomize we hand to child processes.
 
-    It chains rather than shadows: `sitecustomize` is a single global name and
-    other things legitimately install one, so silently replacing it would
-    disable whatever that does for every subprocess unsloth spawns. Ours loads
-    the next `sitecustomize.py` on sys.path first, then applies the fix.
+    It chains rather than shadows: `sitecustomize` is a single global name that
+    other things legitimately install, so replacing it would disable them in
+    every subprocess. Ours runs the next one on sys.path first, then the fix.
     """
     return '''"""Written by unsloth. Makes `import torchao` survive a torch that
 predates the symbols torchao 0.18 imports unconditionally, in processes
@@ -3752,12 +3724,11 @@ def _existing_hook_is_trustworthy(target):
     """Can the file already at `target` only have been written by us?
 
     Tightening the directory does not revoke access to what is already inside
-    it: a `sitecustomize.py` planted while the directory was group- or
-    world-writable stays a foreign-owned file, or a symlink whose target lives
-    somewhere still writable. Since this file is executed by every Python
-    descendant, anything but a private regular file of ours has to be replaced
-    outright -- including when its current contents match, which is exactly
-    what an attacker would arrange to keep the write below from happening.
+    it: a file planted while it was group- or world-writable stays foreign
+    owned, or is a symlink into somewhere still writable. This file runs in
+    every Python descendant, so anything but a private regular file of ours is
+    replaced outright, even when its contents match, which is exactly what an
+    attacker would arrange to skip the write below.
     """
     import stat
 
@@ -3771,16 +3742,15 @@ def _existing_hook_is_trustworthy(target):
         return False
     if hasattr(os, "getuid") and info.st_uid != os.getuid():
         return False
-    # Writable by anyone else means its contents are not evidence of anything.
+    # Writable by anyone else means its contents prove nothing.
     return not stat.S_IMODE(info.st_mode) & 0o022
 
 
 def _torch_really_has(F, name):
     """Does torch itself provide `name`, or is it a placeholder we installed?
 
-    `_gpu_init` calls `fix_torchao_torch_symbol_skew()` immediately before the
-    function below, and that call adds a placeholder for every symbol torch is
-    missing. A plain `hasattr` would therefore read as healthy in exactly the
+    `_gpu_init` runs `fix_torchao_torch_symbol_skew()` just before the function
+    below, so a plain `hasattr` would read as healthy in exactly the
     environments the child fix exists for.
     """
     symbol = getattr(F, name, None)
@@ -3792,24 +3762,17 @@ def _torch_really_has(F, name):
 def propagate_torchao_fix_to_subprocesses():
     """Make the torchao fix apply to child processes too.
 
-    Deliberately narrow, and a no-op unless the fix is actually needed: it
-    returns early when torchao is absent, when torchao is old enough to guard
-    its own import, or when torch already has the symbols. On a healthy pair
-    nothing is written and PYTHONPATH is not touched.
+    A no-op unless the fix is needed: returns early when torchao is absent,
+    old enough to guard its own import, or when torch already has the symbols.
+    Nothing is written and PYTHONPATH is untouched on a healthy pair.
 
-    Only the torchao symbol fix is propagated, and the generated file inlines
-    it rather than importing unsloth: a sitecustomize runs at the start of
-    every subprocess on the machine, so importing unsloth there would pay the
-    full import cost each time and could recurse through this function.
-
-    The other fixes in this module were checked and do not need a child.
-    There are two other torchao ones, and both guard work that happens in this
-    process: `fix_peft_stale_torchao_import_error` guards LoRA construction,
-    and `fix_torchao_nf4tensor_move` guards `import torchtune` (and xcodec2,
-    which imports torchtune) -- neither is imported by a process unsloth does
-    not launch, and the vLLM inspector this hook exists for imports neither.
-    Anything found to be needed later should be inlined here too, not turned
-    into an `import unsloth`.
+    The generated file inlines the symbol fix rather than importing unsloth: a
+    sitecustomize runs at the start of every subprocess on the machine, so an
+    `import unsloth` there would pay the full import cost each time and could
+    recurse through this function. Anything else found to be needed should be
+    inlined here too. The other two torchao fixes need no child: both guard
+    work in this process (LoRA construction, `import torchtune` via xcodec2),
+    and the vLLM inspector this hook exists for imports neither.
 
     Returns the directory added to PYTHONPATH, or None.
     """
@@ -3823,12 +3786,11 @@ def propagate_torchao_fix_to_subprocesses():
     try:
         import torch.nn.functional as F
 
-        # Both halves of the skew must be absent for there to be nothing to
-        # do. Today a torch missing the operator is also missing the functional
-        # symbols (2.8 vs 2.10), so the second check never fires on its own; it
-        # keeps the gate correct if that ordering ever stops holding.
-        # Our own patches do not count as torch being new enough: the in-process
-        # fix runs first and would otherwise make this look healthy every time.
+        # Both halves of the skew must be absent for there to be nothing to do.
+        # Today a torch missing the operator also misses the functional symbols
+        # (2.8 vs 2.10), so the second check never fires alone; it keeps the
+        # gate correct if that ever stops holding. Our own patches do not count
+        # as torch being new enough: the in-process fix ran first.
         if (
             all(_torch_really_has(F, n) for n in _TORCHAO_TORCH_SYMBOLS)
             and _aten_grouped_mm_library is None
@@ -3843,10 +3805,10 @@ def propagate_torchao_fix_to_subprocesses():
         target = os.path.join(directory, "sitecustomize.py")
         source = _subprocess_sitecustomize_source()
         # Rewrite only when it differs, so concurrent runs do not fight and a
-        # reader never sees a truncated file. Matching contents are only
-        # evidence when the file itself is ours: see the helper. A directory
-        # left in the way makes os.replace raise, which the handler below turns
-        # into "no subprocess fix" rather than into a hook we do not trust.
+        # reader never sees a truncated file. Matching contents only count as
+        # evidence when the file is ours: see the helper. A directory in the
+        # way makes os.replace raise, which the handler below turns into "no
+        # subprocess fix" rather than into a hook we do not trust.
         if _existing_hook_is_trustworthy(target):
             try:
                 existing = open(target, "r", encoding = "utf-8").read()
@@ -3875,13 +3837,10 @@ def propagate_torchao_fix_to_subprocesses():
     current = os.environ.get("PYTHONPATH", "")
     # An empty component is an import location, not padding: it is what
     # `PYTHONPATH="$PYTHONPATH:/opt/lib"` leaves behind when PYTHONPATH was
-    # unset, and CPython reads it as the current working directory (3.11+
-    # absolutises every component in Modules/getpath.py, and abspath("") is the
-    # cwd; 3.10 puts the literal "" on sys.path and site.removeduppaths() makes
-    # it absolute). Dropping those would quietly take an import location away
-    # from every descendant process. A SET-BUT-EMPTY PYTHONPATH is the opposite
-    # case: CPython ignores it entirely, so it must not become a lone ""
-    # component, which would ADD the cwd instead.
+    # unset, and CPython reads it as the cwd, so dropping it would take an
+    # import location away from every descendant. A SET-BUT-EMPTY PYTHONPATH is
+    # the opposite case: CPython ignores it entirely, so it must not become a
+    # lone "" component, which would ADD the cwd instead.
     parts = current.split(os.pathsep) if current else []
     if directory not in parts:
         os.environ["PYTHONPATH"] = os.pathsep.join([directory] + parts)
@@ -3894,17 +3853,13 @@ def propagate_torchao_fix_to_subprocesses():
     return directory
 
 
-# torchao 0.18.0 moved `torchao/dtypes/nf4tensor.py` to
-# `torchao/quantization/quantize_/workflows/nf4/nf4_tensor.py`. torchtune still
-# imports the old path, and xcodec2 imports torchtune, so anything downstream
-# dies with
-#
-#   ModuleNotFoundError: No module named 'torchao.dtypes.nf4tensor'
+# torchao 0.18.0 moved `torchao/dtypes/nf4tensor.py` under
+# `quantization/quantize_/workflows/nf4/`, but torchtune (and xcodec2 through
+# it) still imports the old path and dies with ModuleNotFoundError.
 #
 # Same shape as the vLLM tokenizer stub above: a meta path finder APPENDED
-# after the real finders, so an older torchao that still ships the module
-# always wins, and the alias resolves lazily so `import unsloth` does not pay
-# for a torchao import nobody asked for.
+# after the real ones, so an older torchao that still ships the module wins,
+# and the alias resolves lazily so `import unsloth` pays nothing.
 _TORCHAO_NF4_OLD = "torchao.dtypes.nf4tensor"
 _TORCHAO_NF4_NEW = "torchao.quantization.quantize_.workflows.nf4.nf4_tensor"
 _TORCHAO_NF4_SENTINEL = "__unsloth_torchao_nf4_alias__"
@@ -3918,20 +3873,20 @@ class _TorchaoNF4AliasLoader(importlib.abc.Loader):
         self.real_spec = None
 
     def create_module(self, spec):
-        # Return the RELOCATED module itself rather than a stub with a
-        # hand-copied surface. Whatever torchtune reaches for is then whatever
-        # torchao actually ships, and this cannot rot as symbols are added.
+        # Return the RELOCATED module itself, not a stub with a hand-copied
+        # surface: torchtune then sees whatever torchao actually ships, and
+        # this cannot rot as symbols are added.
         module = importlib.import_module(_TORCHAO_NF4_NEW)
         # module_from_spec is about to overwrite this shared object's __spec__
-        # with the old-name one (importlib/_bootstrap.py assigns __spec__
-        # unconditionally, unlike every other attribute), which would leave
-        # find_spec reporting the old name for the new module and make reload
-        # run the no-op exec_module below instead of the file.
+        # with the old-name one (_bootstrap.py assigns __spec__ unconditionally,
+        # unlike every other attribute), which would leave find_spec reporting
+        # the old name for the new module and make reload run the no-op
+        # exec_module below instead of the file.
         self.real_spec = getattr(module, "__spec__", None)
         return module
 
     def exec_module(self, module):
-        # Already imported, so nothing to execute. Put back the specification
+        # Already imported, so nothing to execute. Put back the __spec__
         # module_from_spec just clobbered.
         if self.real_spec is not None:
             try:

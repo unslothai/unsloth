@@ -15,28 +15,19 @@
 """The torchao fix has to reach processes unsloth does not launch.
 
 `fix_torchao_torch_symbol_skew` patches `torch.nn.functional` in the current
-interpreter. vLLM inspects model architectures in a SEPARATE process, which
-imports torch and torchao itself and sees none of that, so with
-`fast_inference = True` the run still dies:
-
-    ERROR registry.py:781] Error in inspecting model architecture 'Qwen3ForCausalLM'
-    ERROR registry.py:781] ImportError: cannot import name 'ScalingType' from 'torch.nn.functional'
-
-and the user is shown only "Model architectures ['Qwen3ForCausalLM'] failed to
-be inspected", which names neither torchao nor torch. Observed on Colab AFTER
-the in-process fix had reported success, so the parent looked healthy right up
-to the failure.
+interpreter, but vLLM inspects model architectures in a SEPARATE process that
+imports torch and torchao itself, so `fast_inference = True` still dies with
+the same ImportError, shown only as "Model architectures [...] failed to be
+inspected". Observed on Colab AFTER the in-process fix reported success.
 
 `sitecustomize` is the hook that reaches such a process: `site` imports it at
-interpreter startup, it is found on PYTHONPATH, and subprocesses inherit
-PYTHONPATH. A `.pth` file would work too but only inside a real site
-directory, which a library should not be writing into.
+interpreter startup off PYTHONPATH, which subprocesses inherit. A `.pth` would
+work too, but only inside a real site directory, which a library should not be
+writing into.
 
-The hazard that dominates these tests is **shadowing**. `sitecustomize` is a
-single global name and other things legitimately install one -- the machine
-this was developed on has one at /etc/unslothai/python/sitecustomize.py -- so
-replacing it would silently disable whatever it does for every subprocess
-unsloth spawns.
+The hazard dominating these tests is shadowing: `sitecustomize` is a single
+global name that other things legitimately install (this machine has one at
+/etc/unslothai/python/), so replacing it would silently disable them.
 """
 
 import os
@@ -57,8 +48,8 @@ from unsloth import import_fixes as IF  # noqa: E402
 
 
 def test_it_is_valid_python():
-    """It is imported at the start of EVERY subprocess. A syntax error here
-    breaks all of them, which is far worse than the bug being fixed."""
+    """A syntax error breaks every subprocess on the machine, which is far
+    worse than the bug being fixed."""
     compile(IF._subprocess_sitecustomize_source(), "<sitecustomize>", "exec")
 
 
@@ -89,10 +80,9 @@ def test_it_does_not_overwrite_existing_torch_symbols():
 
 
 def test_the_child_never_imports_unsloth():
-    """This runs at the START of every subprocess on the machine. Importing
-    unsloth there would pay the full import cost each time and could recurse
-    back through propagate_torchao_fix_to_subprocesses itself. The logic is
-    inlined for that reason."""
+    """Importing unsloth at the start of every subprocess would pay the full
+    import cost each time and could recurse back through
+    propagate_torchao_fix_to_subprocesses, so the logic is inlined."""
     src = IF._subprocess_sitecustomize_source()
     assert "import unsloth" not in src
     assert "from unsloth" not in src
@@ -145,14 +135,14 @@ def _torchao_is_broken_here() -> bool:
     import torch.nn.functional as F
 
     # `_torch_really_has`, not `hasattr`: conftest.py imports unsloth, so on a
-    # broken environment the placeholders are already on F and a plain hasattr
-    # reads it as healthy -- the very confusion the product gate avoids.
+    # broken environment the placeholders are already on F and hasattr would
+    # read it as healthy.
     return not all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS)
 
 
 def test_it_is_a_noop_on_a_healthy_environment():
     """Nothing is written and PYTHONPATH is untouched unless the fix is
-    actually needed. This environment has torchao 0.17, which is healthy."""
+    actually needed."""
     if _torchao_is_broken_here():
         pytest.skip("this environment genuinely needs the fix")
     before = os.environ.get("PYTHONPATH")
@@ -170,8 +160,8 @@ def test_it_uses_the_platform_path_separator():
 
 
 def test_it_writes_atomically():
-    """Concurrent runs must never let a subprocess read a truncated
-    sitecustomize -- that would be a SyntaxError at startup."""
+    """A truncated sitecustomize read by a concurrent subprocess is a
+    SyntaxError at startup."""
     import inspect
 
     src = inspect.getsource(IF.propagate_torchao_fix_to_subprocesses)
@@ -188,7 +178,7 @@ def test_it_is_idempotent_on_pythonpath():
 
 
 def test_the_directory_is_private_to_this_user():
-    """The temp dir is shared, and everything on PYTHONPATH runs in every
+    """The temp dir is shared and everything on PYTHONPATH runs in every
     subprocess, so a fixed name there is code execution for whoever creates it
     first."""
     directory = IF._subprocess_fix_directory()
@@ -222,8 +212,7 @@ def test_it_refuses_a_directory_owned_by_someone_else(monkeypatch, tmp_path):
 @pytest.mark.parametrize("mode", [0o777, 0o770, 0o707, 0o702, 0o720])
 def test_an_existing_loose_directory_is_tightened(monkeypatch, tmp_path, mode):
     """`os.makedirs(mode = 0o700, exist_ok = True)` does NOT re-apply the mode
-    to a directory that is already there. One left group- or world-writable is
-    write access to the sitecustomize that goes on PYTHONPATH, which is code
+    to an existing directory, and one left group- or world-writable is code
     execution in every subprocess started after `import unsloth`."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX permissions only")
@@ -242,7 +231,7 @@ def test_an_existing_loose_directory_is_tightened(monkeypatch, tmp_path, mode):
 
 
 def test_a_directory_that_cannot_be_tightened_is_refused(monkeypatch, tmp_path):
-    """Some network and FUSE mounts accept chmod and change nothing. Handing
+    """Some network and FUSE mounts accept chmod and change nothing; handing
     back a world-writable PYTHONPATH entry anyway is the whole bug."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX permissions only")
@@ -257,8 +246,8 @@ def test_a_directory_that_cannot_be_tightened_is_refused(monkeypatch, tmp_path):
 
 
 def test_the_refusal_does_not_propagate_as_a_crash(monkeypatch):
-    """`propagate_...` wraps the staging in try/except and warns. A hostile
-    directory must degrade to "no subprocess fix", not kill the import."""
+    """A hostile directory must degrade to "no subprocess fix", not kill the
+    import."""
     import inspect
 
     src = inspect.getsource(IF.propagate_torchao_fix_to_subprocesses)
@@ -307,9 +296,8 @@ def bare_interpreter(tmp_path_factory):
     """An interpreter whose site-packages is empty.
 
     PYTHONPATH can shadow a module but cannot un-install one: the child still
-    finds the real torchao's dist-info, and importlib.metadata is exactly what
-    the hook reads. So on a machine that has torchao -- which CI now does --
-    "torchao is absent" is only expressible as a venv without system packages.
+    finds the real torchao's dist-info, which is what the hook reads. On a
+    machine that has torchao, "absent" is only expressible as a bare venv.
     """
     venv = tmp_path_factory.mktemp("bare") / "venv"
     try:
@@ -359,8 +347,8 @@ def test_the_hook_fixes_a_process_we_never_launched(staged):
 
 
 def test_it_does_not_import_torch_until_torchao_is(staged):
-    """It runs in every Python descendant, most of which never use torchao.
-    Importing torch there costs seconds of startup and torch's memory."""
+    """Most Python descendants never use torchao, and importing torch there
+    costs seconds of startup and torch's memory."""
     site, fake = staged
     p = _child("import sys; print('TORCH', 'torch' in sys.modules)", [site, fake])
     assert "TORCH False" in p.stdout, p.stdout + p.stderr
@@ -400,8 +388,8 @@ def test_the_placeholder_still_refuses_to_be_used(staged):
 
 
 def test_an_existing_sitecustomize_still_runs(staged, tmp_path):
-    """The shadowing hazard, which is real: this machine already has a
-    sitecustomize at /etc/unslothai/python/. Ours must chain to it."""
+    """The shadowing hazard is real: this machine already has a sitecustomize
+    at /etc/unslothai/python/, and ours must chain to it."""
     site, fake = staged
     other = tmp_path / "other"
     other.mkdir()
@@ -412,9 +400,8 @@ def test_an_existing_sitecustomize_still_runs(staged, tmp_path):
 
 
 def test_a_package_form_existing_sitecustomize_still_runs(staged, tmp_path):
-    """`sitecustomize` is also legitimately installed as a package. CPython
-    imports it exactly like the file form, so probing for a `sitecustomize.py`
-    would silently drop it in every subprocess."""
+    """CPython imports the package form exactly like the file form, so probing
+    for a `sitecustomize.py` would silently drop it in every subprocess."""
     site, fake = staged
     other = tmp_path / "other"
     (other / "sitecustomize").mkdir(parents = True)
@@ -457,8 +444,7 @@ def test_a_broken_package_form_sitecustomize_does_not_kill_the_process(staged, t
 
 
 def test_a_broken_existing_sitecustomize_does_not_kill_the_process(staged, tmp_path):
-    """Chaining must not turn somebody else's bug into a startup crash for
-    every subprocess."""
+    """Chaining must not turn somebody else's bug into a startup crash."""
     site, fake = staged
     other = tmp_path / "other"
     other.mkdir()
@@ -507,20 +493,18 @@ if __name__ == "__main__":
 
 
 def test_the_in_process_fix_does_not_disable_the_subprocess_fix(monkeypatch, tmp_path):
-    """_gpu_init.py calls fix_torchao_torch_symbol_skew() immediately before
-    propagate_torchao_fix_to_subprocesses(). The first installs a placeholder
-    for every missing symbol and registers the aten schema, so a gate that
-    only asked `hasattr` would read a healthy torch and stage nothing, in
-    exactly the environments vLLM's inspector child needs it."""
+    """_gpu_init.py runs fix_torchao_torch_symbol_skew() immediately before
+    this one, so a gate asking only `hasattr` would read its placeholders as a
+    healthy torch and stage nothing, in exactly the environments vLLM's
+    inspector child needs it."""
     import torch.nn.functional as F
 
     if all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS):
         pytest.skip("this torch provides every symbol; nothing to place")
 
-    # conftest.py imports unsloth, so on the environment this fix exists for the
-    # placeholders are already installed before any test runs, and the call
-    # below would find nothing left to do and return False. _gpu_init sees a
-    # fresh interpreter; reproduce that.
+    # conftest.py imports unsloth, so on an affected environment the
+    # placeholders are already installed and the call below would return False.
+    # _gpu_init sees a fresh interpreter; reproduce that.
     for name in IF._TORCHAO_TORCH_SYMBOLS:
         if getattr(getattr(F, name, None), "__unsloth_placeholder__", False):
             delattr(F, name)
@@ -560,8 +544,7 @@ def test_a_placeholder_does_not_count_as_a_real_torch_symbol():
 
 
 def _plant(directory, kind, source):
-    """A `sitecustomize.py` of the given shape, as it could survive a
-    directory that used to be group- or world-writable."""
+    """A `sitecustomize.py` as it could survive a once-writable directory."""
     target = directory / "sitecustomize.py"
     if kind == "symlink":
         elsewhere = directory.parent / "planted_elsewhere.py"
@@ -576,8 +559,8 @@ def _plant(directory, kind, source):
 
 @pytest.mark.parametrize("kind", ["symlink", "group_writable"])
 def test_a_planted_hook_is_not_trusted(tmp_path, kind):
-    """Contents equal to ours are what an attacker arranges so the rewrite is
-    skipped; only a private regular file of ours makes them evidence."""
+    """Contents equal to ours are what an attacker arranges to skip the
+    rewrite; only a private regular file of ours makes them evidence."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX ownership/permissions only")
     directory = tmp_path / "dir"
@@ -587,8 +570,8 @@ def test_a_planted_hook_is_not_trusted(tmp_path, kind):
 
 
 def test_a_foreign_owned_hook_is_not_trusted(tmp_path, monkeypatch):
-    """Anyone could create the file while the directory was world-writable,
-    and it stays theirs to rewrite after the directory is tightened."""
+    """A file created while the directory was world-writable stays theirs to
+    rewrite after the directory is tightened."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX ownership only")
     target = tmp_path / "sitecustomize.py"
@@ -602,8 +585,7 @@ def test_a_foreign_owned_hook_is_not_trusted(tmp_path, monkeypatch):
 
 
 def test_our_own_hook_file_is_trusted(tmp_path):
-    """The fast path must survive: a rewrite on every import would make
-    concurrent runs fight over the file."""
+    """The fast path must survive, or concurrent runs fight over the file."""
     target = tmp_path / "sitecustomize.py"
     target.write_text(IF._subprocess_sitecustomize_source(), encoding = "utf-8")
     os.chmod(target, 0o600)
@@ -613,10 +595,9 @@ def test_our_own_hook_file_is_trusted(tmp_path):
 
 @pytest.mark.parametrize("kind", ["symlink", "group_writable"])
 def test_a_planted_hook_is_replaced_even_when_it_matches(monkeypatch, tmp_path, kind):
-    """End to end: the directory used to be world-writable and already holds a
-    hook whose contents match ours. Tightening the directory does not revoke
-    write access to that file, so leaving it in place is code execution in
-    every Python subprocess started after `import unsloth`."""
+    """End to end: a once-world-writable directory already holds a hook whose
+    contents match ours. Tightening the directory does not revoke write access
+    to that file, so leaving it is code execution in every subprocess."""
     if not hasattr(os, "getuid"):
         pytest.skip("POSIX ownership/permissions only")
     import torch.nn.functional as F
@@ -662,9 +643,9 @@ def test_a_planted_hook_is_replaced_even_when_it_matches(monkeypatch, tmp_path, 
 
 
 def test_a_chained_package_stays_importable(staged, tmp_path):
-    """Restoring our module under `sitecustomize` after running the real one
-    hides it from `import sitecustomize`, and breaks the relative imports its
-    own callbacks perform after startup."""
+    """Restoring our module under `sitecustomize` would hide the real one from
+    `import sitecustomize` and break the relative imports its own callbacks
+    perform after startup."""
     site, fake = staged
     other = tmp_path / "other"
     (other / "sitecustomize").mkdir(parents = True)
@@ -697,8 +678,8 @@ def test_a_chained_package_stays_importable(staged, tmp_path):
 
 
 def test_a_broken_chained_module_does_not_keep_our_name(staged, tmp_path):
-    """The handover only happens on success: a sitecustomize that raised
-    half-way through must not be left behind as `sitecustomize`."""
+    """The handover only happens on success: one that raised half-way through
+    must not be left behind under the name."""
     site, fake = staged
     other = tmp_path / "other"
     other.mkdir()

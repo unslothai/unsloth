@@ -14,24 +14,20 @@
 
 """torchao 0.18.0 moved nf4tensor; torchtune still imports the old path.
 
-torchao 0.18.0 (2026-08-03) relocated `torchao/dtypes/nf4tensor.py` to
-`torchao/quantization/quantize_/workflows/nf4/nf4_tensor.py`. torchtune imports
-the old path and xcodec2 imports torchtune, so every Llasa TTS notebook died
-one cell after a green install with
-
-    ModuleNotFoundError: No module named 'torchao.dtypes.nf4tensor'
-
-Pinning torchao below 0.18 in those notebooks fixes those notebooks. Aliasing
-the module in `import_fixes.py` fixes anyone who imports the old path, on any
-notebook, and lets them keep the new torchao.
+torchao 0.18.0 relocated `torchao/dtypes/nf4tensor.py` under
+`quantization/quantize_/workflows/nf4/`. torchtune imports the old path and
+xcodec2 imports torchtune, so every Llasa TTS notebook died one cell after a
+green install with ModuleNotFoundError. Pinning torchao below 0.18 fixes those
+notebooks; aliasing the module fixes anyone importing the old path, anywhere,
+on the new torchao.
 
 Built like the vLLM tokenizer stub beside it: a meta path finder APPENDED after
-the real finders, so an older torchao that still ships the module always wins,
-and resolution is lazy so `import unsloth` pays nothing for it.
+the real ones, so an older torchao that still ships the module wins, and
+resolution is lazy so `import unsloth` pays nothing.
 
-The layouts here are real package trees written to a tmp_path and imported in a
+The layouts are real package trees written to tmp_path and imported in a
 SUBPROCESS. Stubbing `sys.modules` would test the stub; this tests the import
-machinery, which is where an appended-versus-inserted finder actually matters.
+machinery, where appended-versus-inserted actually matters.
 """
 
 import subprocess
@@ -73,8 +69,8 @@ def _make_torchao(root: Path, *, old: bool, new: bool):
 def _run(root: Path, body: str):
     """Import the fix in a subprocess with `root` first on sys.path.
 
-    import_fixes is loaded by file path, not as `unsloth.import_fixes`, so the
-    test never triggers unsloth's full GPU init just to reach one function.
+    Loaded by file path, not as `unsloth.import_fixes`, so one function does
+    not trigger unsloth's full GPU init.
     """
     script = textwrap.dedent(f"""
         import sys, importlib.util
@@ -121,8 +117,8 @@ def test_without_the_fix_that_import_fails(tmp_path):
 
 
 def test_an_older_torchao_still_gets_its_own_module(tmp_path):
-    """Appended, not inserted at 0. On torchao < 0.18 the real module must win,
-    or the fix would silently swap out code that was working."""
+    """Appended, not inserted at 0: on torchao < 0.18 the real module must
+    win, or the fix silently swaps out working code."""
     _make_torchao(tmp_path, old = True, new = True)
     r = _run(
         tmp_path,
@@ -136,8 +132,8 @@ def test_an_older_torchao_still_gets_its_own_module(tmp_path):
 
 
 def test_neither_layout_still_raises(tmp_path):
-    """A genuinely missing module must not be masked by an empty alias -- that
-    would turn a clear ModuleNotFoundError into an AttributeError later."""
+    """An empty alias would turn a clear ModuleNotFoundError into an
+    AttributeError later."""
     _make_torchao(tmp_path, old = False, new = False)
     r = _run(
         tmp_path,
@@ -172,10 +168,8 @@ def test_it_is_idempotent(tmp_path):
 def test_no_torchao_means_no_finder(tmp_path):
     """Nothing installed: do not append a finder that can never fire.
 
-    site-packages is pruned from sys.path first. An empty tmp_path is not
-    enough -- this venv really has torchao, so the first version of this test
-    asserted no finder while a finder was correctly being added, and it was the
-    test that was wrong.
+    site-packages is pruned from sys.path first, because an empty tmp_path is
+    not enough when this venv really has torchao.
     """
     r = _run(
         tmp_path,
@@ -195,8 +189,8 @@ def test_no_torchao_means_no_finder(tmp_path):
 
 
 def test_it_does_not_import_torchao_eagerly(tmp_path):
-    """Lazy by construction. Calling the fix must not drag torchao into every
-    `import unsloth`, which on some builds is seconds and a CUDA probe."""
+    """Calling the fix must not drag torchao into every `import unsloth`,
+    which on some builds is seconds and a CUDA probe."""
     _make_torchao(tmp_path, old = False, new = True)
     r = _run(
         tmp_path,
@@ -217,11 +211,10 @@ def test_it_is_wired_into_the_init_sequence():
 
 
 def test_the_real_environment_is_left_alone():
-    """This machine has torchao 0.17, which still ships the old path. The fix
-    must be a no-op there rather than redirecting a working import."""
-    # In a child, like every other case here. Once anything in this session has
-    # imported unsloth the alias is already registered, so find_spec answers for
-    # the alias and an in-process check would read the new layout as the old one.
+    """On a torchao that still ships the old path the fix must be a no-op
+    rather than redirecting a working import."""
+    # In a child: once anything in this session has imported unsloth the alias
+    # is registered, so an in-process check would read the new layout as old.
     p = subprocess.run(
         [
             sys.executable,
@@ -262,11 +255,10 @@ if __name__ == "__main__":
 
 
 def test_the_relocated_module_keeps_its_own_specification(tmp_path):
-    """create_module() returns the module torchao actually ships, and
-    module_from_spec then overwrites that shared object's __spec__ with the
-    alias's (importlib/_bootstrap.py assigns __spec__ unconditionally). Left
-    alone, find_spec reports the old name for the new module and reload runs
-    the alias loader's no-op exec_module instead of the file."""
+    """create_module() returns the module torchao ships, and module_from_spec
+    then overwrites that shared object's __spec__ with the alias's. Left alone,
+    find_spec reports the old name for the new module and reload runs the alias
+    loader's no-op exec_module instead of the file."""
     _make_torchao(tmp_path, old = False, new = True)
     r = _run(
         tmp_path,
@@ -287,9 +279,9 @@ def test_the_relocated_module_keeps_its_own_specification(tmp_path):
 
 
 def test_the_mlx_branch_installs_the_alias_too():
-    """_gpu_init.py is the only other caller and the MLX branch never reaches
-    it, so on Apple Silicon xcodec2 would still die on the old path. Source
-    level, because the branch only runs when mlx is importable."""
+    """The MLX branch never reaches _gpu_init.py, the only other caller, so
+    Apple Silicon xcodec2 would still die on the old path. Checked at source
+    level because the branch only runs when mlx is importable."""
     import ast
 
     src = (ROOT / "unsloth" / "__init__.py").read_text(encoding = "utf-8")

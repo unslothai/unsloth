@@ -14,25 +14,17 @@
 
 """An old torchao must not end LoRA creation that never touches torchao.
 
-`peft.import_utils.is_torchao_available` returns False when torchao is
-absent, but raises when it is installed and older than peft's minimum:
+`peft.import_utils.is_torchao_available` returns False when torchao is absent
+but raises when it is installed and older than peft's minimum, and
+`dispatch_torchao` calls it for every LoRA layer, so one stale optional
+dependency ends `get_peft_model`. FunctionGemma_(270M)-LMStudio dies this way
+on Kaggle, whose preinstalled torchao is 0.10.0; its sibling notebook survives
+the same kernel only because it upgrades torchao first.
 
-    ImportError: Found an incompatible version of torchao. Found version
-    0.10.0, but only versions above 0.16.0 are supported
-
-peft calls it from `dispatch_torchao` for every LoRA layer it builds, so one
-stale optional dependency ends `get_peft_model` outright.
-FunctionGemma_(270M)-LMStudio dies this way on Kaggle, whose preinstalled
-torchao is 0.10.0. Its sibling notebook survives on the same kernel only
-because it happens to run `pip install --upgrade "torchao>=0.16.0"` first --
-so the difference between pass and fail is one install line, not the model.
-
-"Installed but unusable" is much closer to "not installed" than to "fatal".
-Any other ImportError still propagates, because a torchao that fails to
-import for a different reason is a real problem -- including the ones whose
-message also happens to say "torchao", such as a missing submodule or an
-unloadable extension, which is why the version complaint is matched rather
-than the word.
+"Installed but unusable" is closer to "not installed" than to "fatal". Any
+other ImportError still propagates, including ones whose message also says
+"torchao" (missing submodule, unloadable extension), which is why the version
+complaint is matched rather than the word.
 """
 
 import sys
@@ -54,8 +46,8 @@ def peft_env(monkeypatch):
         import_utils = types.ModuleType("peft.import_utils")
         import_utils.is_torchao_available = raiser
         consumer = types.ModuleType("peft.tuners.lora.torchao")
-        # `from peft.import_utils import is_torchao_available` binds the
-        # ORIGINAL here, which is what actually gets called.
+        # `from peft.import_utils import ...` binds the ORIGINAL here, and
+        # this is the copy that actually gets called.
         consumer.is_torchao_available = raiser
         pkg = types.ModuleType("peft")
         pkg.__path__ = []
@@ -80,7 +72,7 @@ _WANTED = ("fix_peft_stale_torchao_import_error", "_TORCHAO_STALE_VERSION_ERROR"
 def _fix(warning = None):
     """Load the function without importing unsloth (which needs a GPU).
 
-    The module-level regex it consults has to come along, or the wrapper
+    The module-level regex it consults must come along, or the wrapper
     NameErrors on the first suppressed ImportError.
     """
     import ast
@@ -135,8 +127,8 @@ def test_stale_torchao_becomes_false(peft_env):
 
 
 def test_the_module_that_actually_calls_it_is_patched(peft_env):
-    # dispatch_torchao lives here and holds its own reference; patching only
-    # import_utils would leave the real call site still raising.
+    # dispatch_torchao holds its own reference; patching import_utils alone
+    # would leave the real call site raising.
     _, consumer = peft_env(_raiser(STALE))
     FIX()
     assert consumer.is_torchao_available() is False
@@ -166,9 +158,8 @@ def test_an_unrelated_import_error_still_raises(peft_env):
 @pytest.mark.parametrize(
     "message",
     [
-        # A half-installed or partially built torchao. Says "torchao", is not a
-        # version complaint, and reporting it as "torchao is unavailable" hides
-        # a broken install from the user.
+        # Half-installed torchao: says "torchao", is not a version complaint,
+        # and calling it "unavailable" would hide a broken install.
         "No module named 'torchao.quantization'",
         "cannot import name 'quantize_' from 'torchao'",
         # An extension built against a different torch/CUDA.

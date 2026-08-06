@@ -12,32 +12,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""`import unsloth` must survive a torchao that wants an aten op this torch lacks.
+"""`import unsloth` must survive a torchao wanting an aten op this torch lacks.
 
-torchao 0.18 registers a float8 handler at module scope::
+torchao 0.18 does `@implements([aten._grouped_mm.default])` at module scope,
+and that op arrived in torch 2.8, so older torch raises AttributeError on the
+lookup. transformers imports torchao from `modeling_utils`, so this kills
+`import transformers` and therefore `import unsloth`. Seen on Colab in
+Granite4.0, which pins torch 2.7.1 via uv against a current torchao.
 
-    @implements([aten._grouped_mm.default])
-    def float8_grouped_mm(func, types, args, kwargs):
+Sibling of the `ScalingType` skew in test_torchao_subprocess_fix.py, but not
+the same bug: this lookup goes through `torch.ops`, so adding names to
+`torch.nn.functional` does nothing for it.
 
-`aten::_grouped_mm` arrived in torch 2.8, so on anything older the attribute
-lookup raises before the decorator is applied::
-
-    AttributeError: '_OpNamespace' 'aten' object has no attribute '_grouped_mm'
-
-transformers imports torchao from `modeling_utils` under
-`is_torchao_available()`, so this kills `import transformers` and therefore
-`import unsloth`. Seen on Colab in Granite4.0, which pins torch 2.7.1 via uv
-while resolving a current torchao.
-
-This is the sibling of the `ScalingType` skew already covered by
-test_torchao_subprocess_fix.py, but it is NOT the same bug: the lookup goes
-through `torch.ops`, so adding names to `torch.nn.functional` does nothing for
-it. The two are fixed independently and tested independently.
-
-The tests below run on a torch that HAS the operator, so they mostly assert the
-safety properties -- that the fix stays out of the way, refuses to guess, and
-never registers twice. That is the behaviour most likely to cause damage, since
-registering into the `aten` namespace on a healthy torch would be far worse
+These tests run on a torch that HAS the operator, so they mostly assert the
+safety properties: the fix stays out of the way, refuses to guess, and never
+registers twice. Registering into `aten` on a healthy torch would be far worse
 than the crash being fixed.
 """
 
@@ -66,20 +55,17 @@ def test_an_absent_op_is_reported_as_missing():
 
 
 def test_an_op_in_an_unknown_namespace_is_missing():
-    """`getattr(torch.ops, "nope")` happily hands back a namespace object, but
-    looking an op up inside it still raises AttributeError -- and an op in a
-    namespace that does not exist is, correctly, missing.
-
-    This only stays harmless because the sole caller passes "aten", which
-    always exists, so the answer is never used to decide whether to register
-    into a namespace that is not there.
+    """`getattr(torch.ops, "nope")` hands back a namespace object, but looking
+    an op up inside it still raises AttributeError, so an op in a namespace
+    that does not exist is correctly missing. Harmless only because the sole
+    caller passes "aten", which always exists.
     """
     assert IF._torch_op_is_missing("unsloth_no_such_namespace", "_grouped_mm") is True
 
 
 def test_a_non_attribute_error_means_do_not_touch_it(monkeypatch):
-    """Only a plain AttributeError is evidence of absence. Anything else means
-    we could not tell, and the safe answer is to leave torch alone."""
+    """Only a plain AttributeError proves absence; anything else means we
+    could not tell, so leave torch alone."""
 
     class Exploding:
         def __getattr__(self, item):
@@ -97,9 +83,8 @@ def test_a_non_attribute_error_means_do_not_touch_it(monkeypatch):
     reason = "this torch is missing the op; see the live test",
 )
 def test_it_does_nothing_when_torch_already_has_the_op():
-    """The property that matters most here. Registering a placeholder over a
-    real aten operator would replace a working grouped matmul with one that
-    raises."""
+    """Registering a placeholder over the real aten operator would replace a
+    working grouped matmul with one that raises."""
     before = torch.ops.aten._grouped_mm
     assert IF._ensure_aten_grouped_mm("detail") is False
     assert torch.ops.aten._grouped_mm is before
@@ -117,8 +102,8 @@ def test_the_real_operator_still_works_afterwards():
 
 
 def test_it_never_registers_twice(monkeypatch):
-    """A second call must be a no-op even if the op still looks missing --
-    re-defining a schema raises, and the fix should not depend on that."""
+    """A second call must be a no-op even if the op still looks missing:
+    re-defining a schema raises, and the fix must not depend on that."""
     monkeypatch.setattr(IF, "_aten_grouped_mm_library", object())
     assert IF._ensure_aten_grouped_mm("detail") is False
 
@@ -129,8 +114,8 @@ def test_it_never_registers_twice(monkeypatch):
 def test_the_placeholder_schema_matches_upstream():
     """Read off `torch.ops.aten._grouped_mm.default._schema` on torch 2.9.
 
-    If it drifts, torchao's decorator still resolves but anything that
-    introspects the signature sees a lie, so pin it.
+    If it drifts, torchao's decorator still resolves but anything introspecting
+    the signature sees a lie, so pin it.
     """
     s = IF._ATEN_GROUPED_MM_SCHEMA
     assert s.startswith("_grouped_mm(Tensor self, Tensor mat2")
@@ -140,8 +125,8 @@ def test_the_placeholder_schema_matches_upstream():
 
 
 def test_the_schema_parses_as_a_real_torch_schema():
-    """Registering it under a private namespace proves torch accepts the
-    string, without touching `aten` on a machine that does not need help."""
+    """A private namespace proves torch accepts the string without touching
+    `aten` on a machine that does not need help."""
     lib = torch.library.Library("unsloth_schema_probe", "FRAGMENT")
     try:
         lib.define(IF._ATEN_GROUPED_MM_SCHEMA)
@@ -151,8 +136,8 @@ def test_the_schema_parses_as_a_real_torch_schema():
 
 
 def test_the_placeholder_refuses_to_compute_rather_than_guessing():
-    """A placeholder that returned a plausible tensor would be the worst
-    outcome: a silently wrong grouped matmul is not debuggable."""
+    """A placeholder returning a plausible tensor would be the worst outcome:
+    a silently wrong grouped matmul is not debuggable."""
     lib = torch.library.Library("unsloth_refuse_probe", "FRAGMENT")
     try:
         lib.define(IF._ATEN_GROUPED_MM_SCHEMA)
@@ -179,9 +164,8 @@ def test_the_placeholder_refuses_to_compute_rather_than_guessing():
 
 
 def test_the_subprocess_fix_covers_the_op_too():
-    """vLLM inspects architectures in a child process that never sees an
-    in-process patch, so the generated sitecustomize has to carry this fix as
-    well as the functional-symbol one."""
+    """vLLM's inspector child never sees an in-process patch, so the generated
+    sitecustomize must carry this fix as well as the functional-symbol one."""
     src = IF._subprocess_sitecustomize_source()
     assert "torch.ops.aten._grouped_mm" in src
     assert "_grouped_mm(Tensor self, Tensor mat2" in src
@@ -189,8 +173,8 @@ def test_the_subprocess_fix_covers_the_op_too():
 
 
 def test_the_subprocess_fix_keeps_the_library_alive():
-    """A torch.library.Library deregisters its schema when collected, so a
-    local variable would silently undo the fix."""
+    """A torch.library.Library deregisters its schema once collected, so a
+    local would silently undo the fix."""
     src = IF._subprocess_sitecustomize_source()
     assert "global _ATEN_LIBRARY" in src
     assert "_ATEN_LIBRARY = None" in src
@@ -202,16 +186,16 @@ def test_the_generated_sitecustomize_is_valid_python():
 
 
 def test_the_subprocess_fix_never_aborts_interpreter_startup():
-    """It runs in every child process on the machine. Raising there would be
-    far worse than the import error it fixes."""
+    """It runs in every child process on the machine, so raising there would
+    be far worse than the import error it fixes."""
     src = IF._subprocess_sitecustomize_source()
     tail = src[src.index("_chain_to_the_real_sitecustomize()") :]
     assert "try:" in tail and "except Exception:" in tail
 
 
 def test_the_symbol_fix_reports_the_op_as_one_of_its_patches():
-    """`fix_torchao_torch_symbol_skew` returns whether it did anything; the
-    op half has to count, or a torch needing only that fix reports False."""
+    """The op half must count towards the return value, or a torch needing
+    only that fix reports False."""
     import inspect
 
     src = inspect.getsource(IF.fix_torchao_torch_symbol_skew)

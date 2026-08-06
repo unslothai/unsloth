@@ -13,12 +13,11 @@
 # limitations under the License.
 """A deferred compile-mode switch must be settled between training steps.
 
-unsloth_zoo defers the switch to eager when torch.compile runs out of
-recompile cache, because switching mid-call splits a non-reentrant activation
-checkpoint region across two compile modes and the backward then dies with
-"Something went unexpectedly wrong in activation checkpoint". Somebody has to
-settle that debt where no region is half-packed, and the top of
-`Trainer.training_step` is that point.
+unsloth_zoo defers the switch to eager on recompile-limit exhaustion, because
+switching mid-call splits a non-reentrant checkpoint region across two compile
+modes and the backward dies with "Something went unexpectedly wrong in
+activation checkpoint". The top of `Trainer.training_step` is the point where
+no region is half-packed.
 """
 
 import pytest
@@ -36,10 +35,10 @@ pytestmark = pytest.mark.skipif(
 
 @pytest.fixture
 def FakeTrainer():
-    """Enough of a Trainer for the patch to wrap and for the wrapper to call.
+    """Enough of a Trainer for the patch to wrap.
 
-    `training_step` deliberately has no `num_items_in_batch`, so the gradient
-    accumulation source rewrite skips it and the test sees only the settler.
+    `training_step` has no `num_items_in_batch` on purpose, so the gradient
+    accumulation source rewrite skips it and only the settler is exercised.
     A fresh class per test keeps the patch's install-once flag honest.
     """
 

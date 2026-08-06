@@ -81,12 +81,8 @@ def _is_mlx_available():
 _IS_MLX = _is_mlx_available()
 
 if _IS_MLX:
-    # The GPU path runs this from _gpu_init before it imports unsloth_zoo. The
-    # MLX path never reaches _gpu_init, so without it an Apple Silicon user
-    # with torchao 0.18 and torch < 2.10 hits the same dead import:
-    #   ImportError: cannot import name 'ScalingType' from 'torch.nn.functional'
-    # No-op unless torchao is installed and actually affected, so it costs one
-    # find_spec elsewhere and touches nothing CUDA-specific.
+    # _gpu_init does this on the GPU path; the MLX path never reaches it, so
+    # torchao 0.18 + torch < 2.10 dies on `ScalingType`. No-op otherwise.
     try:
         from .import_fixes import fix_torchao_torch_symbol_skew as _fix_torchao
         _fix_torchao()
@@ -94,8 +90,8 @@ if _IS_MLX:
     except Exception:
         pass
     try:
-        # Same reason: xcodec2 imports torchtune, which still imports the old
-        # torchao.dtypes.nf4tensor, and MLX audio work reaches both.
+        # Same reason: MLX audio reaches xcodec2 -> torchtune -> the old
+        # torchao.dtypes.nf4tensor path.
         from .import_fixes import fix_torchao_nf4tensor_move as _fix_nf4
         _fix_nf4()
         del _fix_nf4

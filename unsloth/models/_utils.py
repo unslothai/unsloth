@@ -3199,21 +3199,18 @@ def patch_gradient_accumulation_fix(Trainer):
         Trainer.training_step = _unsloth_training_step
 
     # Settle any deferred compile-mode switch at the start of every step.
-    #
-    # When torch.compile runs out of recompile cache, unsloth_zoo keeps the
-    # call compiled and marks the patched function for a switch to eager
-    # instead of switching mid-call. It has to: non-reentrant activation
-    # checkpointing packs the forward and recomputes it during the backward,
-    # and a region packed compiled but recomputed eagerly aborts the backward
+    # On recompile-limit exhaustion unsloth_zoo defers the switch to eager
+    # instead of flipping mid-call: non-reentrant checkpointing packs the
+    # forward compiled and would recompute it eagerly, aborting the backward
     # with "Something went unexpectedly wrong in activation checkpoint".
-    # Here, between steps, nothing is half-packed, so the switch is free.
+    # Between steps nothing is half-packed, so the switch is free.
     if not getattr(Trainer, "_unsloth_settles_eager_fallbacks", False):
         try:
             from unsloth_zoo.temporary_patches.utils import (
                 apply_pending_eager_fallbacks as _apply_pending_eager_fallbacks,
             )
         except Exception:
-            # Older unsloth_zoo without the deferred switch. Nothing to settle.
+            # Older unsloth_zoo has no deferred switch, so nothing to settle.
             _apply_pending_eager_fallbacks = None
         if _apply_pending_eager_fallbacks is not None:
             _training_step_before_settle = Trainer.training_step
