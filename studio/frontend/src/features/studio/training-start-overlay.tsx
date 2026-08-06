@@ -343,9 +343,12 @@ export function TrainingStartOverlay({
                   onClick={() => {
                     setCancelRequested(true);
                     setCancelDialogOpen(false);
-                    useTrainingRuntimeStore.getState().setStopRequested(true);
+                    const runtime = useTrainingRuntimeStore.getState();
+                    const cancellingPendingStart =
+                      runtime.startRequestId !== null;
+                    runtime.setStopRequested(true);
                     void stopTrainingRun(false).then((ok) => {
-                      if (ok) {
+                      if (ok && !cancellingPendingStart) {
                         void dismissTrainingRun();
                       } else {
                         setCancelRequested(false);

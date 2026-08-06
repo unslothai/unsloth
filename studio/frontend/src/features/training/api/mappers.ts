@@ -1,12 +1,12 @@
 
 
 
-import type { TrainingConfigState } from "../types/config";
-import type { TrainingStartRequest } from "../types/api";
 import {
   isRawTextDatasetFormat,
   toBackendTrainingType,
 } from "../lib/training-methods";
+import type { TrainingStartRequest } from "../types/api";
+import type { TrainingConfigState } from "../types/config";
 
 function parseSliceValue(value: string | null): number | null {
   if (value == null) return null;
@@ -35,6 +35,7 @@ function buildS3PayloadConfig(config: TrainingConfigState) {
 
 export function buildTrainingStartPayload(
   config: TrainingConfigState,
+  hfToken: string | null,
 ): TrainingStartRequest {
   const isCpt = config.trainingMethod === "cpt";
   const adapterMethod = config.trainingMethod !== "full";
@@ -45,15 +46,17 @@ export function buildTrainingStartPayload(
   const isDeepseekOcr =
     _selectedModelLower.includes("deepseek") &&
     _selectedModelLower.includes("ocr");
-  const isEmbedding = config.isEmbeddingModel;
+  const isEmbedding =
+    config.isEmbeddingModel || config.modelType === "embeddings";
   const isRawText = isRawTextDatasetFormat(config.datasetFormat);
-  const hfDataset = config.datasetSource === "huggingface" ? config.dataset : null;
+  const hfDataset =
+    config.datasetSource === "huggingface" ? config.dataset : null;
   const localDatasets =
     config.datasetSource === "upload" && config.uploadedFile
       ? [config.uploadedFile]
       : [];
   const s3Config = buildS3PayloadConfig(config);
-  let customFormatMapping: Record<string, unknown> | undefined =
+  const customFormatMapping: Record<string, unknown> | undefined =
     Object.keys(config.datasetManualMapping).length > 0
       ? { ...config.datasetManualMapping }
       : undefined;
@@ -75,7 +78,10 @@ export function buildTrainingStartPayload(
     model_name: config.selectedModel ?? "",
     project_name: (config.projectName || "").trim() || null,
     training_type: toBackendTrainingType(config.trainingMethod),
-    hf_token: config.hfToken.trim() || null,
+    hf_token: hfToken,
+    model_known_cached: config.modelKnownCached,
+    model_local_path: config.modelKnownCached ? config.modelLocalPath : null,
+    model_format: config.modelFormat,
     load_in_4bit: (adapterMethod && isQloraMethod) || (isCpt && isFourBitModel),
     max_seq_length: config.contextLength,
     vision_image_size:
@@ -83,8 +89,13 @@ export function buildTrainingStartPayload(
         ? config.visionImageSize
         : null,
     trust_remote_code: config.trustRemoteCode ?? false,
-    approved_remote_code_fingerprint: config.approvedRemoteCodeFingerprint ?? null,
+    approved_remote_code_fingerprint:
+      config.approvedRemoteCodeFingerprint ?? null,
     hf_dataset: hfDataset,
+    dataset_known_cached:
+      hfDataset && !config.datasetStreaming ? config.datasetKnownCached : false,
+    dataset_local_path:
+      hfDataset && !config.datasetStreaming ? config.datasetLocalPath : null,
     subset: hfDataset ? config.datasetSubset : null,
     train_split: hfDataset ? config.datasetSplit : null,
     eval_split: hfDataset ? config.datasetEvalSplit : null,
@@ -113,7 +124,9 @@ export function buildTrainingStartPayload(
     save_steps: config.saveSteps,
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
-    max_grad_norm: 0.0,
+    // max_grad_norm omitted on purpose: the backend now honors an explicit value,
+    // so hardcoding 0 here would pin every UI run to "clipping off" and override
+    // that. Guarded by tests/training-start-payload-grad-norm.test.ts.
     max_grad_value: null,
     random_seed: config.randomSeed,
     packing: isEmbedding ? false : config.packing,
@@ -129,7 +142,8 @@ export function buildTrainingStartPayload(
     use_loftq: adapterMethod && config.loraVariant === "loftq",
     use_dora: adapterMethod && config.loraVariant === "dora",
     // CPT always trains on full sequences (no chat format masking)
-    train_on_completions: (isEmbedding || isCpt || isRawText) ? false : config.trainOnCompletions,
+    train_on_completions:
+      isEmbedding || isCpt || isRawText ? false : config.trainOnCompletions,
     finetune_vision_layers: config.finetuneVisionLayers,
     finetune_language_layers: config.finetuneLanguageLayers,
     finetune_attention_modules: config.finetuneAttentionModules,

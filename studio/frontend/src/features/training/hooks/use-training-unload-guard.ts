@@ -1,9 +1,13 @@
 
 
 
-import { useEffect } from "react";
 import { isTauri } from "@/lib/api-base";
-import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
+import { useEffect } from "react";
+import { subscribeToTrainingActivity } from "../lib/training-activity";
+import {
+  isTrainingStartPending,
+  useTrainingRuntimeStore,
+} from "../stores/training-runtime-store";
 
 let currentHandler: ((e: BeforeUnloadEvent) => void) | null = null;
 
@@ -15,14 +19,12 @@ function publishTrainingActive(active: boolean): void {
     .catch(() => {});
 }
 
-/**
- * Mounts a beforeunload guard that warns the user if training is running.
- * Call once at the app root.
- */
+/** Mounts a beforeunload guard that warns while training is starting or active.
+* Call once at the app root. */
 export function useTrainingUnloadGuard() {
   useEffect(() => {
     const handler = (e: BeforeUnloadEvent) => {
-      if (!useTrainingRuntimeStore.getState().isTrainingRunning) {
+      if (!isTrainingStartPending(useTrainingRuntimeStore.getState())) {
         return;
       }
       e.preventDefault();
@@ -39,22 +41,13 @@ export function useTrainingUnloadGuard() {
   }, []);
 
   useEffect(() => {
-    publishTrainingActive(
-      useTrainingRuntimeStore.getState().isTrainingRunning,
-    );
-    return useTrainingRuntimeStore.subscribe((state, previous) => {
-      if (state.isTrainingRunning !== previous.isTrainingRunning) {
-        publishTrainingActive(state.isTrainingRunning);
-      }
-    });
+    return subscribeToTrainingActivity(publishTrainingActive);
   }, []);
 }
 
 /**
- * Removes the active beforeunload guard (if any). Call before intentionally
- * ending the session (e.g. shutting down the server) so the "Server stopped"
- * page renders without the browser prompting to confirm leaving.
- */
+* Removes the active beforeunload guard (if any). Call before intentionally ending the session
+* so the "Server stopped" page renders without the browser prompting to confirm leaving. */
 export function removeTrainingUnloadGuard() {
   if (currentHandler) {
     window.removeEventListener("beforeunload", currentHandler);

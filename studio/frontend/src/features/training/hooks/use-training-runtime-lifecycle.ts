@@ -2,6 +2,7 @@
 
 
 import { hasAuthToken } from "@/features/auth";
+import { useHfTokenStore } from "@/features/hub";
 import {
   notifyNative,
   safeNotificationLabel,
@@ -14,6 +15,15 @@ import {
   isAbortError,
   streamTrainingProgress,
 } from "../api/train-api";
+import {
+  isTrainingStatusRequestCurrent,
+  trainingStatusRequestKey,
+} from "../lib/training-status-request";
+import {
+  createTrainingStreamScope,
+  isTrainingProgressForScope,
+  isTrainingStreamScopeCurrent,
+} from "../lib/training-stream-scope";
 import { useTrainingConfigStore } from "../stores/training-config-store";
 import { useTrainingRuntimeStore } from "../stores/training-runtime-store";
 import type { TrainingRuntimeStore } from "../types/runtime";
@@ -96,8 +106,34 @@ function maybeNotifyTrainingTerminalTransition(
 
 export function useTrainingRuntimeLifecycle(): void {
   useEffect(() => {
+    const clearStartError = () => {
+      const runtime = useTrainingRuntimeStore.getState();
+      if (runtime.startError !== null) {
+        runtime.setStartError(null);
+      }
+    };
+    const unsubscribeConfig = useTrainingConfigStore.subscribe(
+      (state, previousState) => {
+        if (state.userEditRevision !== previousState.userEditRevision) {
+          clearStartError();
+        }
+      },
+    );
+    const unsubscribeToken = useHfTokenStore.subscribe(
+      (state, previousState) => {
+        if (state.token !== previousState.token) {
+          clearStartError();
+        }
+      },
+    );
+    return () => {
+      unsubscribeConfig();
+      unsubscribeToken();
+    };
+  }, []);
+
+  useEffect(() => {
     let disposed = false;
-    let openingStream = false;
     let streamController: AbortController | null = null;
     let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -112,22 +148,26 @@ export function useTrainingRuntimeLifecycle(): void {
 
     const stopStream = () => {
       clearReconnect();
-      if (streamController) {
-        streamController.abort();
-        streamController = null;
-      }
+      const controller = streamController;
+      streamController = null;
+      controller?.abort();
       runtimeStore.getState().setSseConnected(false);
     };
 
-    const pollMetrics = async () => {
+    const pollMetrics = async (options?: { fresh?: boolean }) => {
       if (!hasAuthToken()) return;
-      const gen = runtimeStore.getState().resetGeneration;
+      const initial = runtimeStore.getState();
+      if (!initial.jobId) return;
+      const requestKey = trainingStatusRequestKey(initial);
       try {
-        const metrics = await getTrainingMetrics();
-        if (disposed || runtimeStore.getState().resetGeneration !== gen) {
+        const metrics = await getTrainingMetrics(initial.jobId, requestKey, {
+          fresh: options?.fresh,
+        });
+        const current = runtimeStore.getState();
+        if (disposed || !isTrainingStatusRequestCurrent(requestKey, current)) {
           return;
         }
-        runtimeStore.getState().applyMetrics(metrics);
+        current.applyMetrics(metrics);
       } catch (error) {
         if (!isAbortError(error) && !disposed && hasAuthToken()) {
           runtimeStore.getState().setSseConnected(false);
@@ -136,24 +176,37 @@ export function useTrainingRuntimeLifecycle(): void {
     };
 
     const pollStatus = async (options?: {
+      fresh?: boolean;
       suppressNativeNotifications?: boolean;
     }) => {
       if (!hasAuthToken()) return;
-      const gen = runtimeStore.getState().resetGeneration;
+      const initial = runtimeStore.getState();
+      const requestKey = trainingStatusRequestKey(initial);
       try {
-        const status = await getTrainingStatus();
-        if (disposed || runtimeStore.getState().resetGeneration !== gen) {
+        const status = await getTrainingStatus(requestKey, {
+          fresh: options?.fresh,
+        });
+        const current = runtimeStore.getState();
+        if (disposed || !isTrainingStatusRequestCurrent(requestKey, current)) {
           return;
         }
 
-        const previousState = runtimeStore.getState();
-        runtimeStore.getState().applyStatus(status);
+        const previousState = initial;
+        current.applyStatus(status);
 
         const nextState = runtimeStore.getState();
         if (!options?.suppressNativeNotifications) {
           maybeNotifyTrainingTerminalTransition(previousState, nextState);
         }
-        if (shouldUseLiveSync(nextState)) {
+        const acceptedLocalStart =
+          nextState.isStarting &&
+          status.start_request_state === "accepted" &&
+          status.start_request_id === nextState.startRequestId;
+        if (
+          shouldUseLiveSync(nextState) &&
+          status.start_request_state !== "pending" &&
+          (!nextState.isStarting || acceptedLocalStart)
+        ) {
           void ensureStream();
         } else {
           stopStream();
@@ -167,39 +220,48 @@ export function useTrainingRuntimeLifecycle(): void {
 
     const ensureStream = async () => {
       const state = runtimeStore.getState();
-      if (
-        disposed ||
-        openingStream ||
-        streamController ||
-        !shouldUseLiveSync(state)
-      ) {
+      const scope = createTrainingStreamScope(state);
+      if (disposed || streamController || !scope || !shouldUseLiveSync(state)) {
         return;
       }
 
       clearReconnect();
-      openingStream = true;
       const controller = new AbortController();
       streamController = controller;
+      const isCurrentStream = () =>
+        streamController === controller &&
+        !controller.signal.aborted &&
+        isTrainingStreamScopeCurrent(scope, runtimeStore.getState());
 
       try {
         await streamTrainingProgress({
           signal: controller.signal,
+          expectedJobId: scope.jobId,
           lastEventId: state.lastEventId,
           onOpen: () => {
+            if (!isCurrentStream()) {
+              controller.abort();
+              return;
+            }
             runtimeStore.getState().setSseConnected(true);
           },
           onEvent: (event) => {
-            const liveStore = runtimeStore.getState();
-            if (typeof event.id === "number") {
-              liveStore.setLastEventId(event.id);
+            if (!isCurrentStream()) {
+              controller.abort();
+              return;
             }
-
+            if (!isTrainingProgressForScope(scope, event.payload)) {
+              stopStream();
+              return;
+            }
+            const liveStore = runtimeStore.getState();
             liveStore.applyProgress(event.payload, event.id ?? undefined);
 
             if (event.event === "complete") {
-              void pollStatus();
-              void pollMetrics();
               stopStream();
+              void pollStatus({ fresh: true });
+              void pollMetrics({ fresh: true });
+              return;
             }
 
             if (event.event === "error") {
@@ -209,22 +271,35 @@ export function useTrainingRuntimeLifecycle(): void {
           },
         });
       } catch (error) {
-        if (!disposed && !controller.signal.aborted && !isAbortError(error)) {
+        if (
+          isCurrentStream() &&
+          !disposed &&
+          !controller.signal.aborted &&
+          !isAbortError(error)
+        ) {
           runtimeStore.getState().setSseConnected(false);
         }
       } finally {
-        openingStream = false;
         if (streamController === controller) {
           streamController = null;
-        }
-        runtimeStore.getState().setSseConnected(false);
+          runtimeStore.getState().setSseConnected(false);
 
-        if (!disposed && !controller.signal.aborted) {
-          const liveState = runtimeStore.getState();
-          if (shouldUseLiveSync(liveState)) {
-            reconnectTimer = setTimeout(() => {
-              void ensureStream();
-            }, STREAM_RECONNECT_DELAY_MS);
+          if (!disposed && !controller.signal.aborted) {
+            const liveState = runtimeStore.getState();
+            if (
+              isTrainingStreamScopeCurrent(scope, liveState) &&
+              shouldUseLiveSync(liveState)
+            ) {
+              reconnectTimer = setTimeout(() => {
+                reconnectTimer = null;
+                if (
+                  !disposed &&
+                  isTrainingStreamScopeCurrent(scope, runtimeStore.getState())
+                ) {
+                  void ensureStream();
+                }
+              }, STREAM_RECONNECT_DELAY_MS);
+            }
           }
         }
       }
@@ -244,6 +319,14 @@ export function useTrainingRuntimeLifecycle(): void {
         }
       }
     };
+
+    const unsubscribeRuntime = runtimeStore.subscribe(
+      (state, previousState) => {
+        if (state.jobId !== previousState.jobId) {
+          stopStream();
+        }
+      },
+    );
 
     void hydrate();
 
@@ -271,8 +354,7 @@ export function useTrainingRuntimeLifecycle(): void {
       }
     }, METRICS_POLL_INTERVAL_MS);
 
-    // Low-frequency background poll to recover from failed hydration or detect
-    // out-of-band state changes (e.g. training started from another client).
+    // Low-frequency poll: recovers failed hydration and catches out-of-band state changes.
     const idleTimer = setInterval(() => {
       const s = runtimeStore.getState();
       if (!s.hasHydrated || s.isHydrating) {
@@ -289,6 +371,7 @@ export function useTrainingRuntimeLifecycle(): void {
       clearInterval(statusTimer);
       clearInterval(metricsTimer);
       clearInterval(idleTimer);
+      unsubscribeRuntime();
       stopStream();
     };
   }, []);

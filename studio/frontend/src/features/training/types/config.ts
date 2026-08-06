@@ -1,6 +1,7 @@
 
 
 
+import type { ModelInventoryFormat } from "@/features/hub";
 import type {
   DatasetFormat,
   DatasetSource,
@@ -14,27 +15,69 @@ import type { BackendModelConfig } from "../api/models-api";
 
 export type LoraVariant = "lora" | "rslora" | "loftq" | "dora";
 
+export interface ModelCacheReferenceOptions {
+  knownCached?: boolean;
+  localPath?: string | null;
+  modelFormat?: ModelInventoryFormat | null;
+}
+
+export interface TrainingModelSelectionOptions
+  extends ModelCacheReferenceOptions {
+  isEmbedding?: boolean | null;
+  isAudio?: boolean | null;
+  isVision?: boolean | null;
+}
+
+export interface DatasetCacheReferenceOptions {
+  knownCached?: boolean;
+  localPath?: string | null;
+  preferLocalCache?: boolean;
+}
+
+export type BrowseDatasetSelection =
+  | {
+      source: "huggingface";
+      dataset: string | null;
+      knownCached: boolean;
+      localPath: string | null;
+    }
+  | {
+      source: "upload";
+      uploadedFile: string | null;
+    };
+
+export interface TrainingMethodProvenance {
+  learningRateManuallySet: boolean;
+  modelAdapterLearningRate: number | null;
+  datasetFormatBeforeCpt: DatasetFormat | null;
+}
+
 /** Column-to-role mapping, e.g. { "problem": "user", "solution": "assistant", "context": "system" } */
 export type DatasetManualMapping = Record<string, string>;
 
 export interface TrainingConfigState {
+  userEditRevision: number;
   currentStep: StepNumber;
   modelType: ModelType | null;
   selectedModel: string | null;
+  modelKnownCached: boolean;
+  modelLocalPath: string | null;
+  modelFormat: ModelInventoryFormat | null;
   projectName: string;
   trainingMethod: TrainingMethod;
-  hfToken: string;
+  trainingMethodProvenance: TrainingMethodProvenance;
   datasetSource: DatasetSource;
+  browseDatasetSelection: BrowseDatasetSelection;
   datasetFormat: DatasetFormat;
   dataset: string | null;
+  datasetKnownCached: boolean;
+  datasetLocalPath: string | null;
   datasetSubset: string | null;
   datasetSplit: string | null;
   datasetEvalSplit: string | null;
   datasetStreaming: boolean;
   datasetManualMapping: DatasetManualMapping;
   datasetSystemPrompt: string;
-  datasetUserTemplate: string;
-  datasetAssistantTemplate: string;
   datasetLabelMapping: Record<string, Record<string, string>>;
   datasetAdvisorNotification: string | null;
   datasetSliceStart: string | null;
@@ -75,9 +118,12 @@ export interface TrainingConfigState {
   isLoadingModelDefaults: boolean;
   modelDefaultsError: string | null;
   modelDefaultsAppliedFor: string | null;
+  advancedSettingsBaseline: AdvancedSettingsBaseline | null;
+  trainOnCompletionsDefaultPendingFor: string | null;
   isCheckingDataset: boolean;
   isDatasetImage: boolean | null;
   isDatasetAudio: boolean;
+  datasetCheckFailed: boolean;
   trustRemoteCode: boolean;
   approvedRemoteCodeFingerprint?: string | null;
   finetuneVisionLayers: boolean;
@@ -90,21 +136,74 @@ export interface TrainingConfigState {
   s3Config: S3Config | null;
 }
 
+export type AdvancedSettingsBaseline = Partial<
+  Pick<
+    TrainingConfigState,
+    | "optimizerType"
+    | "lrSchedulerType"
+    | "weightDecay"
+    | "warmupSteps"
+    | "saveSteps"
+    | "evalSteps"
+    | "randomSeed"
+    | "packing"
+    | "trainOnCompletions"
+    | "gradientCheckpointing"
+    | "visionImageSize"
+    | "finetuneVisionLayers"
+    | "finetuneLanguageLayers"
+    | "finetuneAttentionModules"
+    | "finetuneMLPModules"
+    | "loraRank"
+    | "loraAlpha"
+    | "loraDropout"
+    | "loraVariant"
+    | "targetModules"
+  >
+>;
+
 export interface TrainingConfigActions {
   setStep: (step: StepNumber) => void;
   nextStep: () => void;
   prevStep: () => void;
   setModelType: (type: ModelType) => void;
   setSelectedModel: (model: string | null) => void;
+  selectTrainingModel: (
+    model: string | null,
+    modelType: ModelType | null,
+    options?: TrainingModelSelectionOptions,
+  ) => void;
+  setSelectedModelCacheReference: (
+    model: string,
+    options: {
+      localPath: string | null;
+      modelFormat: ModelInventoryFormat | null;
+    },
+  ) => void;
+  clearSelectedModelCacheReference: (
+    model: string,
+    localPath?: string | null,
+  ) => void;
+  clearSelectedDatasetCacheReference: (
+    dataset: string,
+    localPath?: string | null,
+  ) => void;
+  setSelectedDatasetCacheReference: (
+    dataset: string,
+    localPath: string | null,
+  ) => void;
   setProjectName: (value: string) => void;
   ensureModelDefaultsLoaded: () => void;
   ensureDatasetChecked: () => void;
   setTrainingMethod: (method: TrainingMethod) => void;
-  setHfToken: (token: string) => void;
   setDatasetSource: (source: DatasetSource) => void;
-  selectHfDataset: (dataset: string | null) => void;
+  selectHfDataset: (
+    dataset: string | null,
+    options?: DatasetCacheReferenceOptions,
+  ) => void;
   selectLocalDataset: (file: string | null) => void;
   selectS3Source: () => void;
+  restoreBrowseDatasetSource: () => void;
   setDatasetFormat: (format: DatasetFormat) => void;
   setDataset: (dataset: string | null) => void;
   setDatasetSubset: (subset: string | null) => void;
@@ -117,7 +216,6 @@ export interface TrainingConfigActions {
     labelMapping?: Record<string, Record<string, string>>;
     notification?: string | null;
   }) => void;
-  clearDatasetAdvisorFields: () => void;
   setDatasetSliceStart: (value: string | null) => void;
   setDatasetSliceEnd: (value: string | null) => void;
   setUploadedFile: (file: string | null) => void;

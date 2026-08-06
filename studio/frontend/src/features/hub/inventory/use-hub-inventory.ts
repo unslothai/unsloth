@@ -2,12 +2,12 @@
 
 
 import {
+  type ManagedDownload,
   clearCompletedInventoryHint,
   useDownloadManagerStore,
-  type ManagedDownload,
 } from "@/features/hub/download-manager";
 import { useHfTokenStore } from "@/features/hub/stores/hf-token-store";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { LocalDatasetInfo } from "./api";
 import {
   dedupeSameSourceHubCacheRows,
@@ -25,6 +25,7 @@ import {
   type PendingInventoryHints,
   nextInventoryHintExpiryDelay,
 } from "./inventory-hints";
+import { resolveInventorySettlement } from "./inventory-settlement";
 import type { CachedInventoryRow, LocalInventoryRow } from "./types";
 import {
   type DeviceInventorySource,
@@ -44,6 +45,7 @@ export interface HubInventory {
   availableSet: Set<string>;
   partialSet: Set<string>;
   downloadedReady: boolean;
+  inventorySettled: boolean;
   inventoryError: boolean;
   inventoryWarning: boolean;
   refreshInventory: () => Promise<void>;
@@ -109,6 +111,13 @@ function isReadyForDisplay(source: {
   if (source.error !== null) return true;
   if (!source.ready) return false;
   return !(source.loading && source.rows.length === 0);
+}
+
+function hasUnreadyFailure(source: {
+  error: string | null;
+  ready: boolean;
+}): boolean {
+  return source.error !== null && !source.ready;
 }
 
 function liveInventoryRank(job: ManagedDownload): number {
@@ -272,7 +281,8 @@ export function useHubInventory(
     [isDatasetMode],
   );
   const liveInventoryJobs = useDownloadManagerStore(selectLiveInventoryJobs);
-  const emptyRevalidationSignatureRef = useRef<string | null>(null);
+  const [lastEmptyRevalidationSignature, setLastEmptyRevalidationSignature] =
+    useState<string | null>(null);
   const pendingForRenderRef = useRef<PendingInventoryHints | null>(null);
 
   const pendingForRenderNext = useMemo(
@@ -418,8 +428,7 @@ export function useHubInventory(
       [
         ...(isDatasetMode ? liveDownloadRows : []),
         ...cachedDatasets.map((row) => buildCachedInventoryRow(row, "unknown")),
-      ]
-        .sort(compareCachedRows),
+      ].sort(compareCachedRows),
     [cachedDatasets, isDatasetMode, liveDownloadRows],
   );
 
@@ -441,6 +450,10 @@ export function useHubInventory(
           title: ds.label || ds.id,
           source: "custom" as const,
           sourceLabel: localDatasetSourceLabel(ds.source),
+          datasetSource:
+            ds.source === "recipe" || ds.source === "upload"
+              ? ds.source
+              : undefined,
           path: ds.path,
           isGguf: false,
           loadId: ds.id,
@@ -512,6 +525,12 @@ export function useHubInventory(
           cachedModelsSource.error ||
           (includeLocal && localModelsSource.error),
       );
+  const hasUnreadyInventoryFailure = isDatasetMode
+    ? hasUnreadyFailure(cachedDatasetsSource) ||
+      (includeLocal && hasUnreadyFailure(localDatasetsSource))
+    : hasUnreadyFailure(cachedGgufSource) ||
+      hasUnreadyFailure(cachedModelsSource) ||
+      (includeLocal && hasUnreadyFailure(localModelsSource));
   const inventoryWarning =
     inventoryFailed && (cachedRows.length > 0 || effectiveLocalRows.length > 0);
 
@@ -569,32 +588,30 @@ export function useHubInventory(
       localModelsSource,
     ],
   );
+  const { emptyRevalidationRequired, inventorySettled } =
+    resolveInventorySettlement({
+      downloadedReady,
+      emptyRevalidationSignature,
+      hasActiveEmptyRefresh,
+      hasInventoryRows,
+      hasUnreadyInventoryFailure,
+      inventoryFailed,
+      lastEmptyRevalidationSignature,
+    });
 
   useEffect(() => {
-    if (
-      !enabled ||
-      !downloadedReady ||
-      inventoryFailed ||
-      hasInventoryRows ||
-      hasActiveEmptyRefresh
-    ) {
-      return;
-    }
-    if (emptyRevalidationSignatureRef.current === emptyRevalidationSignature) {
+    if (!(enabled && emptyRevalidationRequired)) {
       return;
     }
     const timer = window.setTimeout(() => {
-      emptyRevalidationSignatureRef.current = emptyRevalidationSignature;
+      setLastEmptyRevalidationSignature(emptyRevalidationSignature);
       void refreshDeviceInventory();
     }, 500);
     return () => window.clearTimeout(timer);
   }, [
-    downloadedReady,
+    emptyRevalidationRequired,
     emptyRevalidationSignature,
     enabled,
-    hasActiveEmptyRefresh,
-    hasInventoryRows,
-    inventoryFailed,
     refreshDeviceInventory,
   ]);
 
@@ -604,6 +621,7 @@ export function useHubInventory(
     availableSet,
     partialSet,
     downloadedReady,
+    inventorySettled,
     inventoryError: inventoryFailed,
     inventoryWarning,
     refreshInventory,

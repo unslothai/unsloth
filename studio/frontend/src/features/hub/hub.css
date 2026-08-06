@@ -6,10 +6,9 @@
    Lives with the Hub feature module so the styling stays bundled with the
    Hub. Wired into the build via a single @import in studio/frontend/src/index.css.
 
-   Format/status color tokens are defined at :root and :root.dark so Tailwind
-   utilities like `bg-format-gguf` or `text-status-success` resolve everywhere
-   the Hub UI is rendered. Rule bodies are scoped to .hub-page or hub-prefixed
-   classes so they do not bleed into chat, train or settings surfaces. */
+   Format/status color tokens and shared picker controls resolve wherever those
+   components render. Hub-only rule bodies are scoped to .hub-page or
+   hub-prefixed classes. */
 
 :root {
   --format-gguf: #60a5fa;
@@ -87,7 +86,6 @@
 
   .field-soft:focus-visible {
     background-color: color-mix(in srgb, var(--foreground) 8%, transparent) !important;
-    box-shadow: none !important;
     outline: none;
   }
 
@@ -102,7 +100,6 @@
 
   .dark .field-soft:focus-visible {
     background-color: #1c1c1c !important;
-    box-shadow: none !important;
   }
 
   /* The Hub search field is `type="search"` (so the browser won't offer saved
@@ -494,14 +491,6 @@
     font-weight: 600;
     letter-spacing: 0;
     color: var(--foreground);
-  }
-
-  .hub-page .page-title-halo {
-    text-shadow: 0 0 24px #e4e3df, 0 0 56px #ebeae6, 0 0 96px #efeeea;
-  }
-
-  html.dark .hub-page .page-title-halo {
-    text-shadow: none;
   }
 
   html:not(.dark) .hub-page {

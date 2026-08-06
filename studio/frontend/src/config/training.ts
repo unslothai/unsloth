@@ -47,24 +47,26 @@ export const MODEL_TYPES: ReadonlyArray<{
     label: "Text",
     description: "Language models",
   },
-    {
-      value: "vision",
-      label: "Vision",
-      description: "Image understanding models",
-    },
-    {
-      value: "audio",
-      label: "Audio",
-      description: "Audio and speech models",
-    },
-    {
-      value: "embeddings",
-      label: "Embeddings",
-      description: "Text embedding models",
-    },
-  ];
+  {
+    value: "vision",
+    label: "Vision",
+    description: "Image understanding models",
+  },
+  {
+    value: "audio",
+    label: "Audio",
+    description: "Audio and speech models",
+  },
+  {
+    value: "embeddings",
+    label: "Embeddings",
+    description: "Text embedding models",
+  },
+];
 
-export const CONTEXT_LENGTHS = [512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144];
+export const CONTEXT_LENGTHS = [
+  512, 1024, 2048, 4096, 8192, 16384, 32768, 65536, 131072, 262144,
+];
 
 export const TARGET_MODULES = [
   "q_proj",
@@ -83,7 +85,10 @@ export const CPT_TARGET_MODULES = [
   "lm_head",
 ];
 
-export const OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+export const OPTIMIZER_OPTIONS: ReadonlyArray<{
+  value: string;
+  label: string;
+}> = [
   { value: "adamw_8bit", label: "AdamW 8-bit" },
   { value: "paged_adamw_8bit", label: "Paged AdamW 8-bit" },
   { value: "adamw_bnb_8bit", label: "AdamW BNB 8-bit" },
@@ -92,7 +97,12 @@ export const OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> 
   { value: "adamw_torch_fused", label: "AdamW (PyTorch Fused)" },
 ];
 
-export const MLX_OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+// MLX trainer optimizers (Apple Silicon); must match SUPPORTED_MLX_OPTIMIZERS in unsloth-zoo's
+// mlx/trainer.py. The CUDA/torch names above are remapped to AdamW on MLX.
+export const MLX_OPTIMIZER_OPTIONS: ReadonlyArray<{
+  value: string;
+  label: string;
+}> = [
   { value: "adamw", label: "AdamW" },
   { value: "adam", label: "Adam" },
   { value: "lion", label: "Lion" },
@@ -101,15 +111,16 @@ export const MLX_OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string
   { value: "adafactor", label: "Adafactor" },
 ];
 
-export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
+export const LR_SCHEDULER_OPTIONS: ReadonlyArray<{
+  value: string;
+  label: string;
+}> = [
   { value: "linear", label: "Linear" },
   { value: "cosine", label: "Cosine" },
 ];
 
-/**
- * Method-aware learning rate defaults.
- * Backend mirrors these in the YAML configs under studio/backend/assets/configs/.
- */
+/** Method-aware learning rate defaults; the backend mirrors these in
+* studio/backend/assets/configs/. */
 export const LR_DEFAULT_LORA = 2e-4;
 export const LR_DEFAULT_FULL = 2e-5;
 export const LR_DEFAULT_CPT = 5e-5;
@@ -119,6 +130,7 @@ export const DEFAULT_HYPERPARAMS = {
   contextLength: 2048,
   visionImageSize: null as number | null,
   learningRate: LR_DEFAULT_LORA,
+  // null = let backend auto-compute (lr/10 per Unsloth CPT recipe). Only used by CPT.
   embeddingLearningRate: null as number | null,
   optimizerType: "adamw_8bit",
   lrSchedulerType: "linear",
@@ -132,7 +144,7 @@ export const DEFAULT_HYPERPARAMS = {
   warmupSteps: 5,
   maxSteps: 60,
   saveSteps: 0,
-  evalSteps: 0.00,
+  evalSteps: 0.0,
   packing: false,
   trainOnCompletions: false,
   gradientCheckpointing: "unsloth" as const,
@@ -152,13 +164,26 @@ export const DEFAULT_HYPERPARAMS = {
   s3Config: null as import("@/types/training").S3Config | null,
 };
 
-export const MODEL_TYPE_TO_HF_TASK: Record<ModelType, PipelineType> = {
-  text: "text-generation",
-  vision: "image-text-to-text",
-  audio: "text-to-speech",
-  embeddings: "feature-extraction",
+export const MODEL_TYPE_TO_HF_TASKS: Record<
+  ModelType,
+  readonly PipelineType[]
+> = {
+  text: ["text-generation"],
+  vision: [
+    "image-text-to-text",
+    "visual-question-answering",
+    "document-question-answering",
+    "image-to-text",
+    "any-to-any",
+  ],
+  audio: [
+    "text-to-speech",
+    "automatic-speech-recognition",
+    "audio-text-to-text",
+    "text-to-audio",
+  ],
+  embeddings: ["feature-extraction"],
 };
-
 
 export const PRIORITY_TRAINING_MODELS: readonly string[] = [
   "unsloth/gemma-4-E2B-it",

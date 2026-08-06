@@ -61,6 +61,7 @@ export {
   fetchInventorySource,
   useDeviceInventorySources,
   useDeviceInventoryStore,
+  useTokenScopedInventoryRequestOptions,
   type DeviceInventoryRows,
   type DeviceInventorySource,
   type DeviceInventorySourceState,

@@ -27,13 +27,14 @@ import {
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
-import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import type { TrainingViewData } from "@/features/training";
-import type { RunConfigOverride } from "./run-config-override";
+import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import { useGpuUtilization } from "@/hooks";
 import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
+import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
+  Alert02Icon,
   ChartAverageIcon,
   DashboardSpeed01Icon,
   FolderExportIcon,
@@ -53,7 +54,7 @@ import {
   formatNumber,
   phaseColors,
 } from "./progress-section-lib";
-import { useT, type TranslationKey } from "@/i18n";
+import type { RunConfigOverride } from "./run-config-override";
 
 type ConfigGroup = {
   section: string;
@@ -146,8 +147,7 @@ export function ProgressSection({
     await navigate({ to: "/chat" });
   };
 
-  // A finished run can be exported to GGUF: deep-link to the Export page with
-  // this run preselected (its output-dir basename is the export model name).
+  // A finished run can be exported to GGUF: deep-link to Export with this run preselected.
   const exportRunName = data.outputDir
     ? (data.outputDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || null)
     : null;
@@ -175,8 +175,7 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  // Prefer the run's saved snapshot when present (#6853). Live falls back to the
-  // editable form store until it loads; History shows blanks, never live form values.
+  // Prefer the run's saved snapshot when present (#6853); History shows blanks, never form values.
   const cfg = configOverride ?? (isHistorical ? undefined : config);
   const cfgEpochs = cfg?.epochs;
   const cfgBatchSize = cfg?.batchSize;
@@ -190,8 +189,7 @@ export function ProgressSection({
   const cfgLoraDropout = cfg?.loraDropout;
   const cfgLoraVariant = cfg?.loraVariant;
 
-  // Mirror the training form: on Mac the MLX backend runs CUDA optimizers as
-  // AdamW, so label them AdamW here too.
+  // Mirror the training form: on Mac the MLX backend runs CUDA optimizers as AdamW.
   const effectiveOptimizer =
     platformDeviceType === "mac" &&
     OPTIMIZER_OPTIONS.some((o) => o.value === cfgOptimizerType)
@@ -313,6 +311,25 @@ export function ProgressSection({
             <p className="rounded-2xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-red-500 leading-relaxed">
               {data.error}
             </p>
+          )}
+
+          {data.warnings.length > 0 && (
+            <div
+              aria-live="polite"
+              className="flex gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+            >
+              <HugeiconsIcon
+                icon={Alert02Icon}
+                className="mt-0.5 size-4 shrink-0"
+              />
+              <ul className="min-w-0 space-y-1">
+                {data.warnings.map((warning) => (
+                  <li key={warning} className="break-words">
+                    {warning}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
 
           <div

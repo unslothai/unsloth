@@ -1,6 +1,7 @@
 
 
 
+import { bumpInventoryVersion } from "@/features/hub";
 import { toastError, toastSuccess } from "@/shared/toast";
 import {
   getRecipeJobAnalysis,
@@ -320,6 +321,9 @@ export async function trackRecipeExecution({
       finishedAt: latestExecution.finishedAt ?? Date.now(),
     };
     onUpsert(latestExecution);
+    if (kind === "full") {
+      bumpInventoryVersion();
+    }
 
     if (notify) {
       if (kind === "preview") {

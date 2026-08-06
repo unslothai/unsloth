@@ -119,8 +119,11 @@ import {
   isMlxId,
   isMobileVariant,
   isRecommendableFormat,
+  loadScopedGpu,
   matchesFormatFilter,
+  orderRecommendedRows,
   paramsFromId,
+  searchRowFitsDevice,
 } from "./recommended-fit";
 import {
   ggufVariantsMatchForPicker,
@@ -149,7 +152,11 @@ import type {
   ModelOption,
   ModelSelectorChangeMeta,
 } from "./types";
-import { type CatalogGroup, artifactForRepoId } from "./model-catalog";
+import {
+  type CatalogGroup,
+  artifactForRepoId,
+  curatedSizeBytesFor,
+} from "./model-catalog";
 import { describeVariantListingError } from "./variant-listing-error";
 import {
   shouldMountVariantExpander,
@@ -2351,39 +2358,67 @@ export function HubModelPicker({
   const hubRowsShowSize =
     formatFilter === "mlx" || formatFilter === "safetensors";
 
+  // Paint curated rows before any request, so a task-scoped picker whose models
+  // are already in memory does not sit on a spinner for a round trip.
+  const catalogSeedRows = useMemo<HfModelResult[]>(() => {
+    if (!task) return [];
+    return dedupe(models.map((model) => model.id))
+      .filter((id) => !isHiddenModelId(id))
+      .filter((id) => !isMobileVariant(id))
+      .filter((id) => !isImageEditModel(id))
+      .filter((id) => {
+        const isG = isKnownGgufRepo(id);
+        return formatFilter === "all"
+          ? isRecommendableFormat(id, isG, isMac)
+          : matchesFormatFilter(id, isG, formatFilter);
+      })
+      .map((id) => ({
+        id,
+        downloads: 0,
+        likes: 0,
+        isGguf: isKnownGgufRepo(id),
+        // Size from the catalog, not an id "<n>B" guess: the guess is missing for
+        // most curated ids and wrong for others (Wan2.2-TI2V-5B is 30 GB, not 2),
+        // and non-unsloth ids never get a listing row to correct it.
+        curatedSizeBytes: catalog ? curatedSizeBytesFor(id, catalog) : undefined,
+      }));
+  }, [catalog, models, formatFilter, isKnownGgufRepo, isMac, task]);
+
   // Recommended suggests GGUF anywhere; on Mac also MLX and safetensors. The
   // "recommended" sort also drops models too big for the device. Already-
   // downloaded models stay visible (badged), never hidden.
   const recommendedRows = useMemo(() => {
-    // Never list mobile-targeted builds in the Unsloth section.
-    let rows = recommendedSearch.results
-      .filter((r) => !isHiddenModelId(r.id))
-      .filter((r) => !isMobileVariant(r.id));
-    // Drop models Unsloth can't run for chat (diffusion / image / video / etc.).
-    rows = rows.filter(isChatSupported);
-    // With no explicit format, show the device-recommended formats (GGUF, plus
-    // MLX on Mac). When the user picks a format, honor it instead so Safetensors
-    // is not dropped by the recommendation default.
-    rows =
-      formatFilter === "all"
-        ? rows.filter((r) => isRecommendableFormat(r.id, r.isGguf, isMac))
-        : rows.filter((r) => matchesFormatFilter(r.id, r.isGguf, formatFilter));
-    // Task-scoped pages load single-file GGUF only. As with recommendedIds, a curated artifact is loadable whatever its format, so GGUF-only here hid the catalog's bf16 / bnb-4bit / fp8 models from Hub search.
-    if (task) {
-      rows = rows.filter(
-        (r) => r.isGguf || Boolean(catalog && artifactForRepoId(r.id, catalog)),
-      );
-    }
-    // Members would render under their canonical group row, which does not exist yet (see recommendedIds): filtering here removed curated models from Hub
-    // search too. The "recommended" sort always applies the device-fit filter; the shared "Fits on device" tick extends it to the other sorts.
-    if (recommendedSort !== "recommended" && !fitOnDeviceOnly) return rows;
-    return rows.filter((r) => {
-      // Downloaded models always show, regardless of device fit.
-      if (downloadedSet.has(r.id.toLowerCase())) return true;
-      return hfModelFitsDevice(r, r.isGguf ? inferenceGpu : gpu);
+    const keep = (r: HfModelResult) =>
+      !isHiddenModelId(r.id) &&
+      !isMobileVariant(r.id) &&
+      isChatSupported(r) &&
+      // No pick: device-recommended formats (GGUF, plus MLX on Mac). A pick wins.
+      (formatFilter === "all"
+        ? isRecommendableFormat(r.id, r.isGguf, isMac)
+        : matchesFormatFilter(r.id, r.isGguf, formatFilter)) &&
+      // Task pages load single-file GGUF, plus curated artifacts in any format.
+      (!task || r.isGguf || Boolean(catalog && artifactForRepoId(r.id, catalog)));
+    // Members are not filtered here (see recommendedIds): it dropped them from
+    // Hub search too. "recommended" always device-filters; the "Fits on device"
+    // tick extends that to the other sorts.
+    const deviceFiltered = recommendedSort === "recommended" || fitOnDeviceOnly;
+    const taskScoped = Boolean(task);
+    const rowGpu = loadScopedGpu(gpu, taskScoped);
+    const rowInferenceGpu = loadScopedGpu(inferenceGpu, taskScoped);
+    const fits = (r: HfModelResult) =>
+      // Downloaded models show regardless of fit.
+      downloadedSet.has(r.id.toLowerCase()) ||
+      hfModelFitsDevice(r, r.isGguf ? rowInferenceGpu : rowGpu);
+    return orderRecommendedRows({
+      seeds: catalogSeedRows,
+      results: recommendedSearch.results,
+      keep,
+      deviceFiltered,
+      fits,
     });
   }, [
     recommendedSearch.results,
+    catalogSeedRows,
     downloadedSet,
     recommendedSort,
     fitOnDeviceOnly,
@@ -2513,11 +2548,7 @@ export function HubModelPicker({
   // Task-scoped loads put the whole pipeline on ONE device, so quant fit uses the device the load lands on (the lowest visible ordinal), not the multi-GPU sum or the largest card: sizing against the bigger card OOMs the smaller one. Chat keeps the sum.
   // The source is picked per row (a GGUF row sizes against the inference GPU, anything else against the system view); this only decides how much of it a row may claim.
   const expanderGpuGbFrom = (info: typeof inferenceGpu) =>
-    info.available
-      ? task
-        ? info.loadDeviceMemoryGb || info.maxDeviceMemoryGb
-        : info.memoryTotalGb
-      : undefined;
+    info.available ? loadScopedGpu(info, Boolean(task)).memoryTotalGb : undefined;
   const expanderGpuGb = expanderGpuGbFrom(inferenceGpu);
   const expanderSystemGpuGb = expanderGpuGbFrom(gpu);
 
@@ -2840,6 +2871,40 @@ export function HubModelPicker({
     return map;
   }, [results, recommendedSearch.results]);
 
+  // Shared by both search lists so a curated id one drops cannot return via the
+  // other as a raw Hub row.
+  const searchRowFits = useCallback(
+    (row: {
+      id: string;
+      totalParams?: number;
+      estimatedSizeBytes?: number;
+      curatedSizeBytes?: number;
+    }) =>
+      searchRowFitsDevice(
+        {
+          ...row,
+          totalParams: row.totalParams ?? recommendedParamCountById.get(row.id),
+        },
+        {
+          isGguf: isKnownGgufRepo(row.id),
+          curatedSizeBytes: catalog
+            ? curatedSizeBytesFor(row.id, catalog)
+            : undefined,
+          gpu,
+          inferenceGpu,
+          taskScoped: Boolean(task),
+        },
+      ),
+    [
+      catalog,
+      gpu,
+      inferenceGpu,
+      isKnownGgufRepo,
+      recommendedParamCountById,
+      task,
+    ],
+  );
+
   // Recommended models that match the current search query
   const filteredRecommendedIds = useMemo(() => {
     if (!showHfSection) return [];
@@ -2856,14 +2921,7 @@ export function HubModelPicker({
           (id) =>
             !fitOnDeviceOnly ||
             downloadedSet.has(id.toLowerCase()) ||
-            hfModelFitsDevice(
-              {
-                id,
-                totalParams: recommendedParamCountById.get(id),
-                isGguf: isKnownGgufRepo(id),
-              },
-              isKnownGgufRepo(id) ? inferenceGpu : gpu,
-            ),
+            searchRowFits({ id }),
         )
     );
   }, [
@@ -2874,9 +2932,7 @@ export function HubModelPicker({
     isKnownGgufRepo,
     fitOnDeviceOnly,
     downloadedSet,
-    recommendedParamCountById,
-    gpu,
-    inferenceGpu,
+    searchRowFits,
   ]);
 
   const recommendedSet = useMemo(
@@ -2894,7 +2950,7 @@ export function HubModelPicker({
           (r) =>
             !fitOnDeviceOnly ||
             downloadedSet.has(r.id.toLowerCase()) ||
-            hfModelFitsDevice(r, r.isGguf ? inferenceGpu : gpu),
+            searchRowFits(r),
         )
         .map((result) => result.id)
         .filter((id) => !isHiddenModelId(id))
@@ -2922,8 +2978,7 @@ export function HubModelPicker({
     formatFilter,
     fitOnDeviceOnly,
     downloadedSet,
-    gpu,
-    inferenceGpu,
+    searchRowFits,
     isMac,
   ]);
 
@@ -3358,9 +3413,12 @@ export function HubModelPicker({
 
   const downloadedRowButtonClassName =
     "bg-transparent pr-1 hover:bg-transparent focus-visible:bg-transparent dark:bg-transparent dark:hover:bg-transparent dark:focus-visible:bg-transparent";
+  // Not focus-within: the dots menu returns focus to its trigger on close, so
+  // the row stayed lit after the pointer left. Keyboard focus and an open menu
+  // still light it.
   const downloadedRowShellClassName = (selected: boolean) =>
     cn(
-      "group flex items-center rounded-full transition-colors hover:bg-[#ececec] focus-within:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:focus-within:bg-[var(--sidebar-accent)]",
+      "group flex items-center rounded-full transition-colors hover:bg-[#ececec] has-[:focus-visible]:bg-[#ececec] has-[[data-state=open]]:bg-[#ececec] dark:hover:bg-[var(--sidebar-accent)] dark:has-[:focus-visible]:bg-[var(--sidebar-accent)] dark:has-[[data-state=open]]:bg-[var(--sidebar-accent)]",
       selected && "bg-[#ececec] dark:bg-[var(--sidebar-accent)]",
     );
 
@@ -4767,9 +4825,12 @@ export function HubModelPicker({
                     {recommendedSearch.hasMore && (
                       <>
                         <div ref={recommendedSentinelRef} className="h-px" />
-                        <div className="flex items-center justify-center py-2">
-                          <Spinner className="size-3.5 text-muted-foreground" />
-                        </div>
+                        {/* Only while a page is in flight; on hasMore it sat under a usable list. */}
+                        {recommendedSearch.isLoadingMore ? (
+                          <div className="flex items-center justify-center py-2">
+                            <Spinner className="size-3.5 text-muted-foreground" />
+                          </div>
+                        ) : null}
                       </>
                     )}
                   </>

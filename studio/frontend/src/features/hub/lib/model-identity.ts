@@ -3,8 +3,11 @@
 
 import { looksLikeLocalPath } from "./local-path.ts";
 
-const WINDOWS_DRIVE_PATH_RE = /^[A-Za-z]:[\\/]/;
+const WINDOWS_DRIVE_PATH_RE = /^[A-Za-z]:/;
+const WINDOWS_RELATIVE_PATH_RE = /^\.{1,2}\\/;
+const WINDOWS_ROOTED_PATH_RE = /^\\/;
 const WSL_DRIVE_PATH_RE = /^\/mnt\/[A-Za-z](?:\/|$)/;
+const TILDE_PATH_RE = /^~[^\\/]*(?:[\\/]|$)/;
 
 function trimTrailingSeparators(path: string, minLength: number): string {
   let end = path.length;
@@ -33,10 +36,19 @@ export function normalizeModelIdentity(modelId: string): string {
   if (slashPath.startsWith("//")) {
     return normalizeCaseInsensitivePath(trimmed, 2);
   }
+  if (WINDOWS_ROOTED_PATH_RE.test(trimmed)) {
+    return normalizeCaseInsensitivePath(trimmed, 1);
+  }
   if (WSL_DRIVE_PATH_RE.test(slashPath)) {
     return normalizeCaseInsensitivePath(trimmed, 6);
   }
-  return trimmed;
+  if (WINDOWS_RELATIVE_PATH_RE.test(trimmed)) {
+    return trimTrailingSeparators(slashPath, 1);
+  }
+  if (TILDE_PATH_RE.test(trimmed)) {
+    return trimTrailingSeparators(slashPath, 1);
+  }
+  return trimTrailingSeparators(trimmed, 1);
 }
 
 export function normalizeGgufVariantIdentity(
@@ -96,11 +108,10 @@ function hfCacheRepoId(path: string): string | null {
 }
 
 /**
- * The clean id the backend reports for a model loaded by path. Mirrors ``public_model_id`` in
- * core/inference/model_ids.py, which is what ``/api/inference/status`` puts in ``active_model``:
- * an HF cache snapshot becomes its repo id, any other local GGUF its filename stem, and a repo
- * id or clean name comes back unchanged.
- */
+* The clean id the backend reports for a model loaded by path. Mirrors ``public_model_id`` in
+* core/inference/model_ids.py, which is what ``/api/inference/status`` puts in ``active_model``:
+* an HF cache snapshot becomes its repo id, any other local GGUF its filename stem.
+*/
 export function publicModelId(identifier: string): string {
   const trimmed = identifier.trim();
   if (!(trimmed && looksLikeModelPath(trimmed))) {
@@ -118,14 +129,13 @@ export function publicModelId(identifier: string): string {
 }
 
 /**
- * Whether the model the backend reports as loaded is one of *candidates*.
- *
- * A GGUF from an inactive HF cache loads by path, so a caller holding only the public id would
- * read an exact comparison as "not loaded": candidates are compared literally first, then by
- * public id. That second pass only accepts an identity naming one model, since an HF snapshot
- * collapses onto its unique repo id while every other path collapses onto a stem two models can
- * share, and accepting a stem would save one model's live config under another's key.
- */
+* Whether the model the backend reports as loaded is one of *candidates*.
+*
+* A GGUF from an inactive HF cache loads by path, so a caller holding only the public id would
+* read an exact comparison as "not loaded": candidates are compared literally first, then by
+* public id. That second pass only accepts an identity naming one model, since an HF snapshot
+* collapses onto its unique repo id while other paths collapse onto a shareable stem.
+*/
 export function residentModelIdMatches(
   activeModelId: string | null | undefined,
   ...candidates: (string | null | undefined)[]
@@ -149,9 +159,8 @@ export function residentModelIdMatches(
   });
 }
 
-// Ollama's blobs reach the picker through a symlink dir that local_model_resolver.py
-// refuses to index, so the API can never load one and mirroring its settings would
-// advertise a load that cannot happen.
+// Ollama's blobs reach the picker through a symlink dir that local_model_resolver.py refuses
+// to index, so mirroring their settings would advertise a load that cannot happen.
 const OLLAMA_LINK_SEGMENTS = new Set([".studio_links", "ollama_links"]);
 
 export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
@@ -165,9 +174,8 @@ export function isOllamaLinkPath(modelId: string | null | undefined): boolean {
 }
 
 // A dropped or file-picked GGUF is the API's second unreachable identity: /status withholds the
-// host path for a lease-backed load, so the browser keys settings by the bare file name echoed
-// back, which _build_index (path and stem only) never uses as an index key. Anything the API can
-// load is keyed by a path or a repo id, both of which carry a separator.
+// host path for a lease-backed load, so the browser keys settings by the bare file name, which
+// _build_index (path and stem only) never uses. Anything loadable carries a separator.
 const NATIVE_FILE_LABEL_RE = /^[^/\\]+\.gguf$/i;
 
 export function isNativeFileLabel(modelId: string | null | undefined): boolean {
@@ -175,11 +183,9 @@ export function isNativeFileLabel(modelId: string | null | undefined): boolean {
 }
 
 // A scanned standalone .gguf, keyed by its on-disk path with no variant: it has no quant to
-// choose between, and adopting the filename label would key one file's config two ways
-// (settings-identity.ts applies the same rule to a Hub row). The suffix alone does not say that:
-// repo ids ending in .gguf are real on the Hub, an iMat repo among them, and those hold every
-// quant, so reading one as a single file would collapse Q4 and Q8 onto the same key. The id has
-// to name something on this machine too, which a repo id never does.
+// choose between, and adopting the filename label would key one file's config two ways. The
+// suffix alone does not say that -- repo ids ending in .gguf are real on the Hub and hold every
+// quant -- so the id has to name something on this machine too, which a repo id never does.
 export function isStandaloneGgufPath(
   modelId: string | null | undefined,
 ): boolean {

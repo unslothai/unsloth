@@ -1,15 +1,12 @@
 
 
 
-// Parity check between en.ts and every non-English locale.
-// - Locale files may be partial; missing keys must fall back to English.
+// Parity check between en.ts and every non-English locale:
+// - Locale files may be partial; required release surfaces must be translated.
 // - All non-English keys must exist in en (no extras).
 // - Placeholder set must match per leaf between en and the overlay.
-//
-// --strict also fails on missing keys, naming them. See studio-frontend-ci.yml
-// for why CI needs that on top of the runtime fallback.
-//
-// Run: npx tsx src/i18n/check-parity.ts [--strict]
+// --strict also fails on missing keys, naming them (see studio-frontend-ci.yml).
+// Run: npm run i18n:check   (or: npx tsx src/i18n/check-parity.ts [--strict])
 
 import { en } from "./locales/en.ts";
 
@@ -23,7 +20,13 @@ function placeholders(s: string): string[] {
   const out: string[] = [];
   const re = /\{([a-zA-Z0-9_]+)\}/g;
   let m: RegExpExecArray | null;
-  while ((m = re.exec(s))) out.push(m[1]);
+  while (true) {
+    m = re.exec(s);
+    if (m === null) {
+      break;
+    }
+    out.push(m[1]);
+  }
   return out.sort();
 }
 
@@ -84,13 +87,21 @@ function checkExtras(
     if (isTree(v) && isTree(enV)) {
       checkExtras(v, enV, subPath, errors);
     } else if (isTree(v) !== isTree(enV)) {
-      errors.push(`${subPath}: shape mismatch (en=${typeof enV}, overlay=${typeof v})`);
+      errors.push(
+        `${subPath}: shape mismatch (en=${typeof enV}, overlay=${typeof v})`,
+      );
     }
   }
 }
 
-const overlays: Record<string, Tree> = {
-};
+const overlays: Record<string, Tree> = {};
+
+const requiredOverlayPrefixes = ["picker.", "studio."] as const;
+
+function requiresOverlay(key: string): boolean {
+  return requiredOverlayPrefixes.some((prefix) => key.startsWith(prefix));
+}
+
 const strict = process.argv.includes("--strict");
 let anyError = false;
 let anyMissing = false;
@@ -100,6 +111,11 @@ for (const [locale, overlay] of Object.entries(overlays)) {
   const missing: string[] = [];
   checkOverlay(en as unknown as Tree, overlay, "", errors, missing);
   checkExtras(overlay, en as unknown as Tree, "", errors);
+  for (const key of missing) {
+    if (requiresOverlay(key)) {
+      errors.push(`${key} must be localized`);
+    }
+  }
 
   console.log(`\n=== ${locale} ===`);
   console.log(`Missing keys (will fall back to en): ${missing.length}`);
@@ -110,20 +126,24 @@ for (const [locale, overlay] of Object.entries(overlays)) {
       console.log(`  - ${k}`);
     }
   }
-  if (errors.length) {
+  if (errors.length > 0) {
     anyError = true;
     console.error(`Errors (${errors.length}):`);
-    for (const e of errors) console.error(`  - ${e}`);
+    for (const e of errors) {
+      console.error(`  - ${e}`);
+    }
   } else {
     console.log("No errors.");
   }
 }
 
-if (anyError) process.exit(1);
+if (anyError) {
+  process.exit(1);
+}
 if (strict && anyMissing) {
   console.error(
     "\nMissing keys above. Add them to every overlay, or run without --strict " +
-    "to accept the English fallback.",
+      "to accept the English fallback.",
   );
   process.exit(1);
 }

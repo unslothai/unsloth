@@ -2,7 +2,6 @@
 
 
 import { create } from "zustand";
-import { bumpInventoryVersion } from "./inventory-events";
 
 const HF_TOKEN_KEY = "unsloth_hf_token";
 const LEGACY_TRAINING_KEY = "unsloth_training_config_v1";
@@ -18,7 +17,7 @@ function loadInitial(): string {
   try {
     const direct = window.localStorage.getItem(HF_TOKEN_KEY);
     if (direct !== null) {
-      const normalized = normalize(direct);
+      const normalized = normalizeHfToken(direct);
       if (normalized !== direct) persist(normalized);
       return normalized;
     }
@@ -30,8 +29,7 @@ function loadInitial(): string {
       };
       const fromTraining = parsed?.state?.hfToken;
       if (typeof fromTraining === "string" && fromTraining.length > 0) {
-        const normalized = normalize(fromTraining);
-        // Copy only: training-config-store reads its own hfToken; deleting the legacy field drops it.
+        const normalized = normalizeHfToken(fromTraining);
         persist(normalized);
         return normalized;
       }
@@ -51,7 +49,7 @@ function persist(value: string): void {
   }
 }
 
-function normalize(raw: string): string {
+export function normalizeHfToken(raw: string): string {
   return raw.replace(/^[\s"']+|[\s"']+$/g, "");
 }
 
@@ -76,15 +74,12 @@ interface HfTokenStore {
 
 export const useHfTokenStore = create<HfTokenStore>((set) => {
   const applyToken = (value: string, shouldPersist: boolean) => {
-    const next = normalize(value);
+    const next = normalizeHfToken(value);
     if (shouldPersist || next !== value) persist(next);
-    let changed = false;
     set((state) => {
       if (state.token === next) return state;
-      changed = true;
       return { token: next };
     });
-    if (changed) bumpInventoryVersion();
   };
 
   if (!storageSyncStarted && canUseStorage()) {
@@ -107,9 +102,8 @@ export function getHfToken(): string {
   return useHfTokenStore.getState().token;
 }
 
-// Keep a plain zustand store's `hfToken` field in sync with the shared token:
-// seed the current value, then mirror later edits. Returns the unsubscribe so
-// callers can wire it to HMR disposal.
+// Keep a plain zustand store's `hfToken` in sync with the shared token: seed the current
+// value, then mirror later edits. Returns the unsubscribe so callers can wire it to HMR.
 export function mirrorHfTokenInto<T extends { hfToken: string }>(store: {
   getState: () => T;
   setState: (partial: Partial<T>) => void;
@@ -122,10 +116,11 @@ export function mirrorHfTokenInto<T extends { hfToken: string }>(store: {
   });
 }
 
-// HF's JS client throws on a non-empty token that isn't `hf_...` instead of
-// browsing anonymously, so treat anything malformed as no token.
+// HF's JS client throws on a non-empty token without the `hf_` prefix instead
+// of browsing anonymously. Action-time validation handles legacy `hf_` shapes.
 export function hfApiToken(
   token: string | undefined | null,
 ): string | undefined {
-  return token && token.startsWith("hf_") ? token : undefined;
+  const normalized = token ? normalizeHfToken(token) : "";
+  return normalized.startsWith("hf_") ? normalized : undefined;
 }

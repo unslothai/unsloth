@@ -12,6 +12,7 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { usePlatformStore } from "@/config/env";
 import { isCustomProviderType } from "@/features/chat";
+import { useT } from "@/i18n";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
 import { cn } from "@/lib/utils";
 import {
@@ -187,18 +188,15 @@ function ModelSelectorTrigger({
         data-tour={dataTour}
         className={cn(
           "unsloth-model-selector-trigger group/trigger flex min-w-0 items-center gap-2 transition-colors",
-          // Suppress the pill's hover background while the eject hit area is
-          // hovered, so only the dot's own circle reacts.
+          // Suppress the pill's hover background while the eject hit area is hovered.
           variant === "outline" &&
             "rounded-full border border-border/60 hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "ghost" &&
             "rounded-full hover:bg-accent has-[[data-eject-hit]:hover]:!bg-transparent",
           variant === "muted" &&
             "rounded-full bg-muted hover:bg-muted/80 has-[[data-eject-hit]:hover]:!bg-muted",
-          // More left padding than right; the chevron is pulled close to the
-          // label (below) so the trigger reads balanced around the text.
-          // Height stays pinned: both call sites force the chat header's own
-          // --studio-chat-control-height, which its fixed header cannot grow.
+          // More left padding than right; the chevron is pulled close to the label so the trigger reads
+          // balanced around the text. Height stays pinned to --studio-chat-control-height.
           size === "sm" && "h-8 pl-3 pr-1.5 text-xs",
           size === "default" && "h-9 pl-4 pr-2 text-sm",
           size === "lg" && "h-10 pl-4.5 pr-2.5 text-sm",
@@ -207,11 +205,9 @@ function ModelSelectorTrigger({
       >
         {isLoaded &&
           (onEject ? (
-            // Loaded status doubles as a mouse eject shortcut (checkmark at rest,
-            // eject icon on hover). A plain span keeps it out of the trigger
-            // button's content model (no focusable descendants); keyboard/SR users
-            // eject via the "Eject model" button. aria-hidden marks it decorative;
-            // stopPropagation stops the popover toggling. On touch (no hover)
+            // Loaded status doubles as a mouse eject shortcut (checkmark at rest, eject on hover). A plain
+            // span keeps it out of the trigger button's content model; keyboard/SR users eject via the
+            // "Eject model" button. stopPropagation stops the popover toggling, and on touch (no hover)
             // pointer-events-none disables it so taps open the picker instead.
             <span
               aria-hidden={true}
@@ -222,8 +218,7 @@ function ModelSelectorTrigger({
                 event.stopPropagation();
                 onEject();
               }}
-              // Hit area larger than the icon, with a hover circle. Negative
-              // margin keeps the icon in the dot's original spot.
+              // Hit area larger than the icon, with a hover circle; negative margin keeps the icon in place.
               className="-m-1 flex size-5 shrink-0 cursor-pointer items-center justify-center rounded-full transition-colors hover:bg-black/10 dark:hover:bg-white/10 [@media(hover:none)]:pointer-events-none"
             >
               <HugeiconsIcon
@@ -281,11 +276,9 @@ function ModelSelectorTrigger({
 
 type HubSection = "downloaded" | "recommended" | "custom" | "connected";
 
-// The user's most recently clicked Hub section, restored on every open so the
-// selector returns to the tab they last used.
+// The user's most recently clicked Hub section, restored on every open.
 const HUB_SECTION_KEY = "unsloth_model_selector_section";
-// Last tab the user actually clicked, or null when none is stored yet. Only
-// On Device / Recommended persist (Connected is provider-conditional).
+// Last tab the user actually clicked, or null. Only On Device / Recommended persist.
 function loadLastHubSection(): HubSection | null {
   try {
     const raw = localStorage.getItem(HUB_SECTION_KEY);
@@ -302,8 +295,7 @@ function saveLastHubSection(section: HubSection): void {
     // Ignore unavailable storage.
   }
 }
-// Default the Hub section: the last tab the user clicked; first time, On Device
-// when they have downloads, else Recommended.
+// Default the Hub section: the last tab clicked; first time, On Device with downloads else Recommended.
 function defaultHubSection(): HubSection {
   return (
     loadLastHubSection() ??
@@ -369,11 +361,11 @@ function ModelSelectorContent({
   task?: HfTaskFilter;
   catalog?: CatalogGroup[];
 }) {
+  const t = useT();
   const hasSelection = Boolean(value);
   const chatOnly = usePlatformStore((s) => s.isChatOnly());
   const hasExternal = externalModels.length > 0;
-  // The Fine-tuned tab is for fine-tuned models only. Local models (LM Studio,
-  // Ollama, custom folders) carry source "local" and live in the Hub tab instead.
+  // The Fine-tuned tab is for fine-tuned models only; local models (LM Studio, Ollama, custom folders) live in Hub.
   const fineTunedModels = useMemo(
     () => loraModels.filter((model) => isFineTunedSource(model.source)),
     [loraModels],
@@ -432,14 +424,13 @@ function ModelSelectorContent({
     null,
   );
 
-  // The picker remounts on each open but this tab state does not, so re-derive
-  // the default tab on the open edge (else a lora/external selection reopens on Hub).
+  // The picker remounts on each open but this tab state does not, so re-derive the default tab
+  // on the open edge, else a lora/external selection reopens on Hub.
   const wasOpen = useRef(open);
   useEffect(() => {
     if (open && !wasOpen.current) {
       setActiveTab(chatOnly ? chatOnlyTabsDefault : studioTabsDefault);
-      // Connected when an external model is active, else On Device when the
-      // user has downloads, else their last section.
+      // Connected when an external model is active, else On Device with downloads, else their last section.
       setHubSection(wantsConnectedDefault ? "connected" : defaultHubSection());
     }
     if (!open && wasOpen.current) {
@@ -504,8 +495,7 @@ function ModelSelectorContent({
       displayName: meta.ggufVariant ? `${leaf} · ${meta.ggufVariant}` : leaf,
       ggufVariant: meta.ggufVariant ?? null,
       isGguf,
-      // Ollama's models sit under a link dir the resolver skips, so mirroring their
-      // settings would advertise a load the API can never make.
+      // Ollama's models sit under a link dir the resolver skips, so mirroring their settings would advertise an impossible load.
       apiLoadable: isGguf && !isOllamaLinkPath(id),
       meta,
     });
@@ -534,10 +524,8 @@ function ModelSelectorContent({
           ? "max-h-[var(--radix-popover-content-available-height)] w-[min(468px,calc(100vw-1rem))] overflow-y-auto px-4 pt-4 pb-4"
           : cn(
               "pt-4 pb-0 pl-4",
-              // Sized so the left-packed row keeps uniform gaps and the last
-              // dropdown's right gap matches the pill's left gap (pl-4 vs pr-4).
-              // Widths track the controls they hold, so the tuned single-line
-              // row does not wrap once text and icons grow.
+              // Sized so the left-packed row keeps uniform gaps and the last dropdown's right gap matches the
+              // pill's left gap. Widths track the controls they hold so the single-line row does not wrap.
               hasExternal
                 ? "w-[min(var(--picker-panel-w-external),calc(100vw-1rem))] pr-4"
                 : "w-[min(var(--picker-panel-w),calc(100vw-1rem))] pr-2",
@@ -591,83 +579,83 @@ function ModelSelectorContent({
           />
         ) : (
           <>
-        {tabs.length > 1 ? (
-          <PillTabs
-            ariaLabel="Model source"
-            tabs={tabs}
-            value={effectiveTab}
-            onValueChange={setActiveTab}
-            fit={true}
-            className="mb-2"
-          />
-        ) : null}
-
-        {effectiveTab === "hub" ? (
-          <HubModelPicker
-            models={models}
-            loraModels={fineTunedModels}
-            externalModels={externalModels}
-            value={value}
-            onSelect={handlePick}
-            onFoldersChange={onFoldersChange}
-            onBrowseHub={onBrowseHub}
-            onModelsChange={onModelsChange}
-            onConfigure={openConfigPage}
-            deleteDisabled={deleteDisabled}
-            onEject={hasSelection && onEject ? onEject : undefined}
-            task={task}
-            catalog={catalog}
-            section={effectiveHubSection}
-            sectionToggle={
+            {tabs.length > 1 ? (
               <PillTabs
-                ariaLabel="Hub section"
-                tabs={hubSectionTabs}
-                value={effectiveHubSection}
-                onValueChange={(next) => {
-                  const section = next as HubSection;
-                  setHubSection(section);
-                  saveLastHubSection(section);
-                }}
+                ariaLabel={t("picker.modelSourceAriaLabel")}
+                tabs={tabs}
+                value={effectiveTab}
+                onValueChange={setActiveTab}
                 fit={true}
+                className="mb-2"
               />
-            }
-          />
-        ) : null}
+            ) : null}
 
-        {effectiveTab === "external" ? (
-          <ExternalModelPicker
-            externalModels={externalModels}
-            value={value}
-            onSelect={onSelect}
-          />
-        ) : null}
+            {effectiveTab === "hub" ? (
+              <HubModelPicker
+                models={models}
+                loraModels={fineTunedModels}
+                externalModels={externalModels}
+                value={value}
+                onSelect={handlePick}
+                onFoldersChange={onFoldersChange}
+                onBrowseHub={onBrowseHub}
+                onModelsChange={onModelsChange}
+                onConfigure={openConfigPage}
+                deleteDisabled={deleteDisabled}
+                onEject={hasSelection && onEject ? onEject : undefined}
+                task={task}
+                catalog={catalog}
+                section={effectiveHubSection}
+                sectionToggle={
+                  <PillTabs
+                    ariaLabel={t("picker.hubSectionAriaLabel")}
+                    tabs={hubSectionTabs}
+                    value={effectiveHubSection}
+                    onValueChange={(next) => {
+                      const section = next as HubSection;
+                      setHubSection(section);
+                      saveLastHubSection(section);
+                    }}
+                    fit={true}
+                  />
+                }
+              />
+            ) : null}
 
-        {onPickLocalModel ? (
-          <div className="mt-1.5 border-t border-border/70 pt-1.5">
-            <button
-              type="button"
-              onClick={onPickLocalModel}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
-              title="Pick a model file from disk"
-            >
-              <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
-              Pick a model file from disk
-            </button>
-          </div>
-        ) : null}
-        {effectiveTab !== "hub" && hasSelection && onEject ? (
-          <div className="mt-1.5 border-t border-border/70 pt-1.5 pb-2">
-            <button
-              type="button"
-              onClick={onEject}
-              className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
-              title="Eject model"
-            >
-              <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
-              Eject loaded model
-            </button>
-          </div>
-        ) : null}
+            {effectiveTab === "external" ? (
+              <ExternalModelPicker
+                externalModels={externalModels}
+                value={value}
+                onSelect={onSelect}
+              />
+            ) : null}
+
+            {onPickLocalModel ? (
+              <div className="mt-1.5 border-t border-border/70 pt-1.5">
+                <button
+                  type="button"
+                  onClick={onPickLocalModel}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60"
+                  title={t("picker.pickModelFile")}
+                >
+                  <HugeiconsIcon icon={FolderSearchIcon} className="size-3.5" />
+                  {t("picker.pickModelFile")}
+                </button>
+              </div>
+            ) : null}
+            {effectiveTab !== "hub" && hasSelection && onEject ? (
+              <div className="mt-1.5 border-t border-border/70 pt-1.5 pb-2">
+                <button
+                  type="button"
+                  onClick={onEject}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-md px-2 py-1.5 text-xs text-destructive transition-colors hover:bg-destructive/10"
+                  title={t("picker.ejectLoadedModel")}
+                >
+                  <HugeiconsIcon icon={RemoveCircleIcon} className="size-3.5" />
+                  {t("picker.ejectLoadedModel")}
+                </button>
+              </div>
+            ) : null}
           </>
         )}
       </TooltipProvider>

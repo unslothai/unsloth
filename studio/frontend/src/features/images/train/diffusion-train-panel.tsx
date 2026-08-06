@@ -1127,14 +1127,18 @@ export function DiffusionTrainPanel({
             settingsFadeClass,
           )}
         >
-          <div>
-            {/* Matches "Training settings" across the rule, so the two headings read as one row. */}
-            <h2 className="font-heading flex items-center gap-1.5 text-base font-medium">
-              <HugeiconsIcon icon={TestTubeOutlineIcon} className="size-4" />
+          {/* Icon rides the heading; the line below runs the full width. */}
+          <div className="mb-1 grid gap-1.5">
+            {/* Matches "Train settings" across the rule, so the two headings read as one row. */}
+            <h2 className="flex items-center gap-2 font-heading text-xl font-medium leading-none">
+              <HugeiconsIcon
+                icon={TestTubeOutlineIcon}
+                className="size-[18px] shrink-0"
+              />
               Train a LoRA
             </h2>
-            <p className="mt-1 text-ui-11 leading-snug text-muted-foreground">
-              Teach a model a style or subject from your own images.
+            <p className="text-xs leading-snug text-muted-foreground">
+              Teach a model a new style or subject.
             </p>
           </div>
 
@@ -1483,11 +1487,21 @@ export function DiffusionTrainPanel({
         ) : !hasRun ? (
           <>
             <div className="flex flex-col gap-4">
-              <div className="flex items-center justify-between">
-                <span className="font-heading flex items-center gap-1.5 text-base font-medium">
-                  <HugeiconsIcon icon={Settings02Icon} className="size-4" />
-                  Training settings
-                </span>
+              {/* mb-2 + gap-4 matches the left column's mb-1 + gap-5, so Steps
+                  starts level with Model family. */}
+              <div className="mb-2 flex items-center justify-between">
+                <div className="grid gap-1.5">
+                  <span className="flex items-center gap-2 font-heading text-xl font-medium leading-none">
+                    <HugeiconsIcon
+                      icon={Settings02Icon}
+                      className="size-[18px] shrink-0"
+                    />
+                    Train settings
+                  </span>
+                  <p className="text-xs leading-snug text-muted-foreground">
+                    Hyperparameters for this run.
+                  </p>
+                </div>
                 <span className="text-xs text-muted-foreground">
                   Applied on Start training
                 </span>

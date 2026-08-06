@@ -2,6 +2,32 @@
 
 
 export const en = {
+  picker: {
+    onDevice: "On Device",
+    huggingFace: "Hugging Face",
+    retry: "Retry",
+    loadMore: "Load more",
+    offlineTitle: "You're offline",
+    offlineBody: "Switch to Device to use cached or local {noun}.",
+    offlineSwitchDevice: "Device",
+    searchAriaLabel: "Search {noun}",
+    modelSourceAriaLabel: "Model source",
+    hubSectionAriaLabel: "Hub section",
+    pickModelFile: "Pick a model file from disk",
+    ejectLoadedModel: "Eject loaded model",
+    multipleMatches: "Multiple matching {noun}. Choose one from the list.",
+    rateLimitedTitle: "Hugging Face rate limit reached",
+    rateLimitedBody: "Wait a moment, then retry searching {noun}.",
+    hfToken: {
+      label: "HF token",
+      saved: "Saved",
+      add: "Not set",
+      savedAriaLabel: "Hugging Face token saved",
+      addAriaLabel: "Set Hugging Face token",
+      savedHint: "Token saved. Access is checked when you use it.",
+      addHint: "Set a token to access private and gated repositories.",
+    },
+  },
   common: {
     cancel: "Cancel",
     close: "Close",
@@ -1096,7 +1122,185 @@ export const en = {
   },
   studio: {
     routeTitle: "Train",
-    title: "Fine-tuning Studio",
+    wizard: {
+      modelTitle: "Model",
+      modelDescription: "Select model and training method",
+      datasetTitle: "Dataset",
+      datasetDescription: "Select or upload training data",
+      paramsTitle: "Parameters",
+      paramsDescription: "Configure training parameters",
+      configTitle: "Configuration",
+      configDescription: "Save and load configurations",
+      modelLabel: "Model",
+      modelTooltip: "The base model you want to fine-tune.",
+      methodLabel: "Method",
+      methodTooltip:
+        "How the model is trained. LoRA and QLoRA update small adapters instead of every weight.",
+      datasetLabel: "Dataset",
+      datasetTooltip: "The training data used to fine-tune the model.",
+      hfTokenLabel: "Hugging Face token",
+      hfTokenDescription: "Required for gated or private models and datasets.",
+      hfTokenGet: "Get token",
+      hfTokenChecking: "Checking token…",
+      modelPickerDescription:
+        "Search Hugging Face or choose a trainable model already on this device.",
+      trainingMethod: "Training method",
+      trainingMethodDescription: "Choose how to fine-tune {model}",
+      trainingMethodTooltip:
+        "QLoRA uses 4-bit quantization for the lowest VRAM use. LoRA uses 16-bit weights, while full fine-tuning updates every weight.",
+      datasetPickerDescription:
+        "Search Hugging Face or choose a dataset already on this device.",
+      uploadDataset: "Upload a dataset",
+      uploadDatasetDescription: "Supports CSV, JSONL, JSON, and Parquet.",
+      chooseFile: "Choose a file",
+      format: "Format",
+      autoDetect: "Auto Detect",
+      uploadLocalLabel: "Or upload a local file",
+      sourceBrowse: "Browse",
+      releaseToUpload: "Release to upload",
+      loadYaml: "Load YAML",
+      saveYaml: "Save YAML",
+      resetDefaults: "Reset to defaults",
+      cachedModelGoneTitle: "Cached model no longer available",
+      cachedModelGoneDescription:
+        "The model files left this device, so training will download them again.",
+      cachedDatasetGoneTitle: "Cached dataset no longer available",
+      cachedDatasetGoneDescription:
+        "The dataset files left this device, so training will download them again.",
+    },
+    preview: {
+      title: "Run preview",
+      ready: "Ready",
+      notReady: "Not ready",
+      modelPending: "Model pending",
+      datasetPending: "Dataset pending",
+      method: "Method",
+      length: "Length",
+      stepZero: "{count} steps",
+      step: "{count} step",
+      stepTwo: "{count} steps",
+      stepFew: "{count} steps",
+      stepMany: "{count} steps",
+      steps: "{count} steps",
+      epochZero: "{count} epochs",
+      epoch: "{count} epoch",
+      epochTwo: "{count} epochs",
+      epochFew: "{count} epochs",
+      epochMany: "{count} epochs",
+      epochs: "{count} epochs",
+      batch: "Batch",
+      context: "Context",
+      lr: "LR",
+      hardware: "Hardware",
+      noGpu: "No GPU detected",
+      hfToken: "HF token",
+      saved: "Saved",
+      notSet: "Not set",
+      files: "Files",
+      model: "Model",
+      dataset: "Dataset",
+      downloadsOnStart: "Downloads on start",
+      continuesOnStart: "Continues on start",
+      noticeModelDownload:
+        "This model is not on this device yet. Training will download it automatically.",
+      noticeModelPartial:
+        "Training will complete the partial model download before loading it.",
+      noticeDatasetDownload:
+        "This dataset is not on this device yet. Training will download it automatically.",
+      noticeDatasetPartial:
+        "Training will complete the partial dataset download before reading it.",
+      advancedSettings: "Advanced settings",
+      defaultAdvancedSettings: "Defaults",
+      nonDefaultAdvancedSettings: "{count} non-default",
+    },
+    datasetPicker: {
+      noun: "datasets",
+      selectDataset: "Select dataset",
+      hubPlaceholder: "Search Hugging Face datasets...",
+      devicePlaceholder: "Search local datasets...",
+      useAsHubDataset: "Use as Hugging Face dataset",
+      hfCacheLabel: "HF cache",
+      scanningLocal: "Scanning datasets on this device…",
+      couldntScan: "Couldn't scan local datasets",
+      someLocationsUnscanned: "Some dataset locations could not be scanned.",
+      noLocalDatasets:
+        "Nothing on this device yet. Download a dataset from the Hub, build one in Recipes, or upload a file.",
+      openDataRecipes: "Open Data Recipes",
+      searchingHub: "Searching Hugging Face…",
+      noDatasetsFound: "No datasets found.",
+      tokenRejectedTitle: "Hugging Face token rejected",
+      tokenRejectedBody: "Update your token in Settings → General, then retry.",
+      hubUnreachable: "Couldn't reach Hugging Face",
+      cantUseDataset: "Can't use dataset",
+      reasonInvalidHubId:
+        "Enter a valid Hugging Face dataset ID: repo or owner/repo, with no consecutive periods or hyphens and no .git suffix (maximum 96 characters per part).",
+      sourceRecipe: "Recipe",
+      sourceUpload: "Upload",
+      sourceLocal: "Local",
+    },
+    modelPicker: {
+      noun: "models",
+      selectModel: "Select model",
+      hubPlaceholder: "Search or paste a Hugging Face id...",
+      devicePlaceholder: "Search local models or paste a folder path...",
+      useAsHubModel: "Use as Hugging Face model",
+      useAsLocalPath: "Use as local path",
+      hfCacheLabel: "HF cache",
+      scanningLocal: "Scanning local models…",
+      couldntScan: "Couldn't scan local models",
+      someLocationsUnscanned: "Some local locations could not be scanned.",
+      noLocalModels: "No local models found.",
+      noLocalModelsHint: "Paste a folder path above or switch to Hugging Face.",
+      searchingHub: "Searching Hugging Face…",
+      noModelsFound: "No models found.",
+      tokenRejectedTitle: "Hugging Face token rejected",
+      tokenRejectedBody: "Update your token in Settings → General, then retry.",
+      hubUnreachable: "Couldn't reach Hugging Face",
+      cantUseModel: "Can't use model for training",
+      reasonTypeMismatch:
+        "This model doesn't match the training type selected in the previous step.",
+      reasonEmptyId: "Enter a model id or local model path.",
+      reasonGguf: "GGUF models cannot be used for training.",
+      reasonAdapter: "Adapter outputs cannot be used as base training models.",
+      reasonNotTrainable: "This on-device model is not trainable.",
+      reasonUnsupportedFormat:
+        "This model format is not supported for training.",
+      reasonInvalidHubId:
+        "Enter a valid Hugging Face model ID: repo or owner/repo, with no consecutive periods or hyphens and no .git suffix (maximum 96 characters per part).",
+      sourceModelsFolder: "Models folder",
+      sourceHfCache: "HF cache",
+      sourceLmStudio: "LM Studio",
+      sourceOllama: "Ollama",
+      sourceCustomFolder: "Custom folder",
+      sourceLocalModel: "Local model",
+      vramOomBadge: "OOM",
+      vramTightBadge: "Tight",
+      vramNeeds: "Needs ~{est}GB VRAM (GPU: {total}GB)",
+      vramTight: "~{est}GB VRAM (tight on {total}GB)",
+      vramApprox: "~{est}GB VRAM",
+    },
+    methods: {
+      qlora: {
+        label: "QLoRA",
+        hint: "4-bit quantization. Lowest VRAM, fastest to start.",
+        note: "4-bit",
+      },
+      lora: {
+        label: "LoRA",
+        hint: "16-bit adapters. Balanced quality and memory.",
+        note: "16-bit",
+      },
+      full: {
+        label: "Full fine-tune",
+        hint: "Trains all weights. Highest quality, needs the most VRAM.",
+        note: "fp16",
+      },
+      cpt: {
+        label: "Continued pretraining",
+        hint: "Continued pretraining for new domains or languages.",
+        note: "continued",
+      },
+    },
     subtitles: {
       configure: "Configure and start training",
       trainingInProgress: "Training in progress",
@@ -1108,6 +1312,8 @@ export const en = {
       currentRun: "Current Run",
       history: "History",
     },
+    imageTraining: "Image training",
+    goToImageTraining: "Go to image training",
     loadingRuntime: "Loading training runtime...",
     backToHistory: "Back to history",
     sections: {
@@ -1127,64 +1333,29 @@ export const en = {
       checkingDataset: "Checking dataset...",
       trainingConfig: "Training Config",
     },
-    model: {
-      title: "Model",
-      description: "Select base model and training method",
-      fasterTrainingBadge: "2x Faster Training",
-      baseModel: "Base model",
-      localModel: "Local Model",
-      localModelTooltip:
-        "Path to a locally downloaded model or a custom HF repo.",
-      scanningLocalAndCachedModels: "Scanning local and cached models...",
-      scanning: "Scanning...",
-      scanningLocalModels: "Scanning local models...",
-      noLocalModelsFound: "No local models found",
-      noLocalModelsFoundManual: "No local models found. Enter path manually.",
-      failedToLoadLocalModels: "Failed to load local models",
-      hfCache: "HF cache",
-      customFolders: "Custom Folders",
-      localDir: "Local dir",
-      huggingFaceModel: "Hugging Face Model",
-      huggingFaceModelTooltip:
-        "Search Hugging Face models or pick from our recommended list.",
-      searchModels: "Search models...",
-      searching: "Searching...",
-      noModelsFound: "No models found",
-      needsVram: "Needs ~{vram}GB VRAM (GPU: {gpu}GB)",
-      tightVram: "~{vram}GB VRAM (tight fit on {gpu}GB)",
-      vramEstimate: "~{vram}GB VRAM",
-      method: "Method",
-      methodTooltip:
-        "QLoRA uses 4-bit quantization for lowest VRAM. LoRA uses 16-bit. Full updates all weights. CPT (Continued Pretraining) trains on raw text to adapt the model to a new domain without chat formatting.",
-      readMore: "Read more",
-      fullFineTune: "Full Fine-tune",
-      checkingToken: "Checking token...",
-      getOrUpdateToken: "Get or update token",
-      huggingFaceTokenOptional: "Hugging Face Token (Optional)",
-      continuedPretraining: "Continued Pretraining",
-      localModels: "Local models",
-      localModelsFound: "{count} local/cached models found",
-      loadingLocalModels: "Loading local models...",
-    },
     dataset: {
-      title: "Dataset",
-      description: "Select or upload training data",
+      selectors: {
+        subset: "Subset",
+        subsetTooltip: "Select which subset (config) of the dataset to use.",
+        trainSplit: "Train Split",
+        trainSplitTooltip: "Select which split to use for training.",
+        evaluationSplit: "Evaluation Split",
+        evaluationSplitTooltip:
+          "Select which split to use for evaluation. None means no evaluation during training.",
+        selectSubset: "Select a subset...",
+        selectSplit: "Select a split...",
+        none: "None",
+        loading: "Loading dataset configs and splits...",
+        manualTitle: "Enter dataset options manually",
+        manualDescription:
+          "Enter the exact Hugging Face config and split names to use.",
+        manualSubsetPlaceholder: "Optional config name",
+        manualRequired: "A train split is required.",
+        manualTooLong: "Use 128 characters or fewer.",
+        manualInvalid: "This value contains unsupported characters.",
+      },
       source: "Dataset source",
-      chooseDataset: "Choose dataset",
-      chooseDatasetTooltip:
-        "Use the popup tabs to switch between Hugging Face and local recipe outputs.",
-      localTab: "Local",
-      searchHuggingFaceDatasets: "Search Hugging Face datasets...",
-      searchLocalDatasets: "Search local datasets...",
-      searching: "Searching...",
-      noDatasetsFound: "No datasets found",
-      loadingLocalDatasets: "Loading local datasets...",
-      failedToLoadLocalDatasets: "Failed to load local datasets.",
-      noLocalDatasetsYet: "No local datasets yet.",
-      noLocalDatasetsMatchSearch: "No local datasets match search.",
-      openDataRecipes: "Open Data Recipes",
-      browsingSource: "Browsing {browsing}. Current selection stays {current}.",
-      localDatasets: "Local datasets",
+      sourceAriaLabel: "Dataset source",
       localDataset: "Local dataset",
       localDatasetRows: " / {count} rows",
       huggingFaceDataset: "Hugging Face Dataset",
@@ -1196,14 +1367,69 @@ export const en = {
       updated: "Updated",
       evalDataset: "Eval dataset",
       uploading: "Uploading...",
-      upload: "Upload",
       uploadEvalFile: "Upload eval file",
+      fileTooLarge: "File too large",
+      fileTooLargeDescription:
+        "{file} is {size}. Training uploads support up to {limit}.",
+      uploadLimitsHint:
+        "CSV, JSONL, JSON, Parquet · up to {limit}; PDF/DOCX/TXT → Learning Recipes",
+      documentRedirect: {
+        title: "This file needs conversion first",
+        genericFile: "This file",
+        description:
+          "{file} is source material, not a ready-to-train dataset. Use Data Recipes to turn the document into a dataset, then return here to fine-tune.",
+        nextStepTitle: "Best next step",
+        nextStepDescription:
+          "Open Learning Recipes and start with a document-based recipe such as PDF grounded QA.",
+        openAction: "Open Learning Recipes",
+      },
       evalDatasetDescription:
         "Optional. If not provided, a small portion will be split from the training data.",
       advanced: "Advanced",
       targetFormat: "Target Format",
       targetFormatTooltip:
         "Format of your training data. Auto-detect works for most datasets.",
+      streamingInfoAriaLabel: "Dataset streaming information",
+      streaming: {
+        label: "Enable streaming",
+        description:
+          "Stream Hugging Face text datasets instead of downloading them.",
+        unavailable: "Streaming unavailable. To enable:",
+        completionsUnavailable:
+          "Not available while dataset streaming is enabled.",
+        blockers: {
+          source:
+            "Use a Hugging Face dataset (not a local upload or S3 source).",
+          maxSteps:
+            "Set Max Steps > 0 — streaming datasets have no known length.",
+          trainOnCompletions: 'Turn off "Assistant completions only".',
+          evalSplit:
+            "Pick a separate eval split — evaluation is on but no distinct eval split is set.",
+          visionModel: "Vision models don't support streaming.",
+          audioModel: "Audio models don't support streaming.",
+          embeddingModel:
+            "Embedding models don't support streaming (training needs the full dataset).",
+          imageDataset: "This dataset looks like images, which can't stream.",
+          audioDataset: "This dataset looks like audio, which can't stream.",
+          appleSilicon: "Streaming isn't supported on Apple Silicon (MLX) yet.",
+        },
+        options: {
+          trainOnCompletions: "assistant completions only",
+          evaluation: "evaluation (needs a separate eval split)",
+        },
+        notifications: {
+          turnedOffMaxSteps:
+            "Streaming turned off: streaming needs a fixed Max Steps > 0.",
+          adjusted:
+            "Adjusted for streaming. Disabled incompatible options: {options}.",
+          needsMaxSteps:
+            "Streaming needs a fixed Max Steps (streaming datasets have no known length). Set Max Steps > 0 first.",
+          enabledAdjusted:
+            "Streaming enabled. Disabled incompatible options: {options}.",
+          disabledForDetectedModality:
+            "Streaming was turned off because image and audio datasets require a full download. Review the setting, then start again.",
+        },
+      },
       auto: "Auto",
       rawText: "Raw Text",
       trainSplitStart: "Train Split Start",
@@ -1214,7 +1440,10 @@ export const en = {
         "Last row index to include from the training split (inclusive, 0-based). For example, set Start to 0 and End to 99 to train on the first 100 rows. Leave empty to use all remaining rows.",
       endPlaceholder: "End",
       clear: "Clear",
-      dropFileOrClick: "Drop 1 file here or click to upload",
+      dropFileOrClick: "Drop file or click to upload",
+      uploadDetails: "Upload details",
+      uploadDetailsTooltip:
+        "Up to {limit} per file. PDF, DOCX and TXT are not ready-to-train datasets, so convert them in Learning Recipes first.",
       viewDataset: "View dataset",
       uploadFailed: "Upload failed",
       unknownError: "Unknown error",
@@ -1225,9 +1454,28 @@ export const en = {
       uploadOneFileAtATime: "Upload one file at a time",
       uploadSingleFileDescription:
         "Training dataset upload accepts a single file.",
-      checkingToken: "Checking token...",
-      getOrUpdateToken: "Get or update token",
       preview: "Preview dataset",
+      previewLoadingHuggingFace:
+        "Fetching dataset preview from Hugging Face...",
+      previewLoading: "Loading preview...",
+      mappingRequirements: {
+        audioAndText: "audio and text",
+        imageAndText: "image and text",
+        instructionAndOutput: "instruction and output",
+        humanAndGpt: "human and GPT",
+        userAndAssistant: "user and assistant",
+      },
+      mappingStatus: {
+        heuristicTitle: "Heuristic-detected mapping",
+        readyTitle: "Mapping ready",
+        requiredTitle: "Map dataset columns",
+        heuristicDescription:
+          "We auto-detected the column mapping below using heuristics. Please review and adjust using the dropdowns in the column headers, or use AI Assist for a smarter mapping.",
+        readyDescription:
+          "Looks good. We'll convert this dataset automatically.",
+        requiredDescription:
+          "Assign roles to columns using the dropdowns in the headers. At minimum, assign {required}.",
+      },
       split: "Split",
       subset: "Subset",
       s3: {
@@ -1257,8 +1505,11 @@ export const en = {
       },
     },
     params: {
-      title: "Parameters",
-      description: "Configure training hyperparameters",
+      mode: {
+        simple: "Simple",
+        advanced: "Advanced",
+        ariaLabel: "Parameter mode",
+      },
       projectName: "Project Name",
       optional: "Optional",
       projectNameDescription:
@@ -1271,13 +1522,9 @@ export const en = {
       useEpochs: "Use Epochs",
       maxStepsTooltip: "Override total optimizer steps.",
       epochsTooltip: "Number of full passes over the dataset.",
-      epochsDescription: "Each epoch is one full pass over your dataset.",
-      maxStepsDescription:
-        "Limits training to a fixed number of optimizer steps.",
       contextLength: "Context Length",
       contextLengthTooltip: "Maximum number of tokens per training sample.",
       customContextLength: "Enter a custom value",
-      contextLengthDescription: "Max sequence length for training samples",
       learningRate: "Learning Rate",
       learningRateTooltip:
         "Step size for weight updates. Lower values train slower but more stably.",
@@ -1286,8 +1533,6 @@ export const en = {
       embeddingLearningRate: "Embedding Learning Rate",
       embeddingLearningRateTooltip:
         "Only used when CPT is training embed_tokens. Embeddings are easier to destabilize than LoRA weights, so they usually need a smaller LR. Leave blank to use lr/10; typical working range is 2x-10x smaller than the main LR. Increase it only if vocabulary or domain-token adaptation is too slow.",
-      embeddingLearningRateDescription:
-        "Leave blank to use lr/10 (recommended). Typical range is 2x-10x smaller than the main learning rate.",
       rank: "Rank",
       rankTooltip:
         "Dimension of the low-rank matrices. Higher = more capacity.",
@@ -1306,6 +1551,7 @@ export const en = {
       stableRank: "Stable Rank",
       memoryEfficient: "Memory Efficient",
       weightDecomposed: "Weight-Decomposed",
+      notSupportedAppleSilicon: "Not supported on Apple Silicon",
       optimization: "Optimization",
       schedule: "Schedule",
       memory: "Memory",
@@ -1357,25 +1603,62 @@ export const en = {
       readMore: "Read more",
     },
     training: {
-      title: "Training",
-      description: "Monitor and control training",
-      chartNoDataTitle: "No training data yet",
-      chartNoDataDescription: "Start training to see loss progress",
       startTraining: "Start Training",
       starting: "Starting...",
       loadingModel: "Loading model...",
       checkingDataset: "Checking dataset...",
-      configLabel: "Training Config",
-      upload: "Upload",
+      chooseModel: "Choose a model",
+      chooseDataset: "Choose a dataset",
+      chooseModelAndDataset: "Choose model and dataset",
+      validation: {
+        s3MultimodalUnsupported:
+          "S3 datasets are not supported for vision or audio training yet.",
+        s3BucketRequired: "Enter an S3 bucket name first.",
+        s3CredentialsRequired: "Provide S3 access keys or enable IAM role.",
+        modelRequired: "Select a base model first.",
+        learningRatePositive: "Enter a learning rate greater than zero.",
+        embeddingLearningRateRange:
+          "Enter an embedding learning rate greater than 0 and less than 1.",
+        hfDatasetRequired: "Select a Hugging Face dataset first.",
+        hfDatasetSplitRequired: "Select or enter a train split first.",
+        localDatasetRequired: "Select a local dataset first.",
+        unsupportedDatasetSource: "Unsupported dataset source.",
+      },
+      startFailed: "Failed to start training",
+      startUnconfirmed:
+        "Unsloth couldn't confirm whether training started. Checking status in the background.",
+      stopFailed: "Failed to stop training",
+      trainingStillActiveTitle: "Training still active",
+      stopBeforeConfig: "Stop training first, then return to configuration.",
+      resumeFailed: "Failed to resume training",
+      resumeFailedTitle: "Could not resume training",
+      resumeUnavailable:
+        "Only stopped or errored runs with a saved checkpoint can be resumed.",
+      modelUnverified:
+        "Couldn't verify this model's settings. Check your connection or Hugging Face token, then retry.",
+      legacyDatasetScriptUnsupported:
+        "This Hub dataset relies on a legacy custom script and isn’t supported in this training flow.",
+      hfModelAccessDenied:
+        "Hugging Face denied access to this model. Add a valid Hugging Face token with repository access and accept any required access terms, then try again.",
+      hfModelVerificationRateLimited:
+        "Hugging Face model verification is rate-limited. Retry shortly.",
+      hfModelVerificationFailed:
+        "The Hugging Face model could not be verified. Check the repository ID and your access token.",
+      hfModelMetadataUnavailable:
+        "Hugging Face model metadata is temporarily unavailable. Retry before starting training.",
+      datasetUnverified:
+        "Couldn't verify the dataset is compatible with this model. Check your connection or Hugging Face token — starting training will retry the check.",
+      setupChanged:
+        "Training setup changed while it was being checked. Review it and start again.",
       uploadConfigTooltip: "Load a saved YAML config",
-      save: "Save",
       saveConfigTooltip: "Download current config as YAML",
-      reset: "Reset",
       resetConfigTooltip: "Reset to model defaults",
       configLoaded: "Config loaded",
       failedToLoadConfig: "Failed to load config",
       invalidYamlFile: "Invalid YAML file",
+      configTooLarge: "Training config is too large (maximum 1 MiB).",
       failedToReadFile: "Failed to read file",
+      failedToSaveConfig: "Failed to save config",
       parametersReset: "Parameters reset to model defaults",
       audioIncompatible:
         "This model does not support audio. Switch to an audio-capable model or choose a non-audio dataset.",
@@ -1400,6 +1683,20 @@ export const en = {
     },
     history: {
       title: "History",
+      filesDeleted: "Files deleted",
+      deleteArtifactsLabel: "Also delete adapter files on disk",
+      deleteArtifactsDescription:
+        "Removes the run's output folder, including saved adapters and checkpoints.",
+      deleteArtifactsSharedNote:
+        "Another run shares this output folder. Files are kept until the last run that uses them is deleted.",
+      artifactsKeptShared:
+        "Run deleted. Adapter files were kept because another run uses the same folder.",
+      deleteArtifactsActiveError:
+        "These files are in use by the training run in progress. Stop training before deleting them.",
+      deleteArtifactsFailed:
+        "The run was deleted but its files could not be removed.",
+      deleteArtifactsRetainedError:
+        "The adapter files could not be removed, so the training run was kept in history.",
       emptyTitle: "No training runs yet",
       emptyDescription:
         "No training runs yet. Start your first training run in the Configure tab.",

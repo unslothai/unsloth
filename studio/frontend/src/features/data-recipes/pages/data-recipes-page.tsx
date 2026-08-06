@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/empty";
 import { ShineBorder } from "@/components/ui/shine-border";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY } from "@/lib/navigation-intents";
 import { toastError } from "@/shared/toast";
 import {
   Album02Icon,
@@ -51,9 +52,6 @@ import {
   useRecipes,
 } from "../data/recipes-db";
 import { LEARNING_RECIPES } from "../learning-recipes";
-
-const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
-  "data-recipes:open-learning-recipes";
 
 type TemplateCard = {
   title: string;

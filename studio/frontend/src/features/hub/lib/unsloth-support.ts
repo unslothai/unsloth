@@ -60,6 +60,11 @@ const UNSUPPORTED_LIBRARY_TAGS: ReadonlySet<string> = new Set([
   "flux",
   "controlnet",
   "lora-diffusers",
+  // ComfyUI-style single-file repos, including the VAE / text-encoder mirrors that carry no
+  // denoiser at all. Checked AFTER the pipeline tag, so a real single-file checkpoint keeps its
+  // Images/Video routing; only a taskless one (which is what a companion mirror is) lands here,
+  // where it would otherwise read as a chat model and be offered by the chat picker.
+  "diffusion-single-file",
 ]);
 
 const FORMAT_TAG_LABEL: Record<string, string> = {
