@@ -758,3 +758,248 @@ def test_bitsandbytes_rocm_detection_helpers_recognizable():
                 "decline to patch it and Windows ROCm import-time noise / "
                 "wrong ROCM_GPU_ARCH may return."
             )
+
+
+# ===========================================================================
+# torchao Windows-ROCm import shim -- fix_torchao_windows_rocm_import
+# ===========================================================================
+# The shim FRAGMENT-registers the `_c10d_functional` op schemas so real torchao
+# imports on a distributed-less Windows ROCm wheel. These verify the schema table
+# tracks the installed torch, the FRAGMENT (not DEF) collision semantics, the
+# strict no-op / capability gating, and that it is wired into startup. Windows ROCm
+# itself cannot be reproduced here, so the transactional acceptance-import + rollback
+# is what guarantees no regression on the real device.
+
+
+def _torch_minor_tuple():
+    import torch
+    base = torch.__version__.split("+", 1)[0].split(".")
+    return (int(base[0]), int(base[1]))
+
+
+def _live_c10d_functional_ops():
+    import torch
+
+    get_ops = getattr(torch._C, "_dispatch_get_all_op_names", None)
+    if not callable(get_ops):
+        pytest.skip("dispatcher op enumeration unavailable")
+    return sorted({n.split("::", 1)[1] for n in get_ops() if n.startswith("_c10d_functional::")})
+
+
+def _live_dtensor_ops():
+    import torch
+
+    get_ops = getattr(torch._C, "_dispatch_get_all_op_names", None)
+    if not callable(get_ops):
+        pytest.skip("dispatcher op enumeration unavailable")
+    return sorted({n.split("::", 1)[1] for n in get_ops() if n.startswith("_dtensor::")})
+
+
+def test_torchao_rocm_shim_schema_table_matches_installed_torch():
+    """The `_c10d_functional` schema table must exactly match the ops the installed
+    torch registers (op set + canonical schema strings). A minor with no row means the
+    shim fail-closes there (safe, no coverage) -> skip; a present row must be exact."""
+    from unsloth.import_fixes import _C10D_FUNCTIONAL_SCHEMAS, _schema_op_name
+
+    import torch
+
+    native = _live_c10d_functional_ops()
+    if not native:
+        pytest.skip("no native _c10d_functional ops (distributed-less torch build).")
+
+    minor = _torch_minor_tuple()
+    schemas = _C10D_FUNCTIONAL_SCHEMAS.get(minor)
+    if schemas is None:
+        pytest.skip(
+            f"no shim schema row for torch {minor}; fix_torchao_windows_rocm_import "
+            f"fail-closes here (safe). Add a reviewed tuple to enable it (ops: {native})."
+        )
+
+    table_ops = sorted(_schema_op_name(s) for s in schemas)
+    assert table_ops == native, (
+        f"DRIFT DETECTED: torchao shim _c10d_functional table for torch {minor} lists "
+        f"{table_ops} but the installed torch registers {native}. Update "
+        f"_C10D_FUNCTIONAL_SCHEMAS."
+    )
+
+    parse = getattr(torch._C, "parse_schema", None)
+    if not callable(parse):
+        return
+    real = {}
+    for op in native:
+        packet = getattr(torch.ops._c10d_functional, op)
+        overload = packet.overloads()[0]
+        real[op] = str(getattr(packet, overload)._schema)
+    for s in schemas:
+        parsed = parse(f"_c10d_functional::{s}")  # must not raise
+        name = _schema_op_name(s)
+        assert str(parsed) == real[name], (
+            f"DRIFT DETECTED: torchao shim schema for _c10d_functional::{name}\n"
+            f"  shim:  {parsed}\n  torch: {real[name]}"
+        )
+
+
+def test_torchao_rocm_shim_dtensor_schema_matches_installed_torch():
+    """The `_dtensor` schema table must exactly match the ops the installed torch registers.
+    torchao's `from torch.distributed._tensor import DTensor` runs
+    `register_fake("_dtensor::shard_dim_alltoall")` at import, which raises unless the op is
+    defined, so the shim must define this namespace too (not only _c10d_functional)."""
+    from unsloth.import_fixes import _DTENSOR_SCHEMAS, _schema_op_name
+
+    import torch
+
+    native = _live_dtensor_ops()
+    if not native:
+        pytest.skip("no native _dtensor ops (distributed-less torch build).")
+
+    minor = _torch_minor_tuple()
+    schemas = _DTENSOR_SCHEMAS.get(minor)
+    if schemas is None:
+        pytest.skip(
+            f"no shim _dtensor row for torch {minor}; fix_torchao_windows_rocm_import "
+            f"fail-closes here (safe). Add a reviewed tuple to enable it (ops: {native})."
+        )
+
+    table_ops = sorted(_schema_op_name(s) for s in schemas)
+    assert table_ops == native, (
+        f"DRIFT DETECTED: torchao shim _dtensor table for torch {minor} lists {table_ops} "
+        f"but the installed torch registers {native}. Update _DTENSOR_SCHEMAS."
+    )
+
+    parse = getattr(torch._C, "parse_schema", None)
+    if not callable(parse):
+        return
+    real = {}
+    for op in native:
+        packet = getattr(torch.ops._dtensor, op)
+        overload = packet.overloads()[0]
+        real[op] = str(getattr(packet, overload)._schema)
+    for s in schemas:
+        parsed = parse(f"_dtensor::{s}")  # must not raise
+        name = _schema_op_name(s)
+        assert str(parsed) == real[name], (
+            f"DRIFT DETECTED: torchao shim schema for _dtensor::{name}\n"
+            f"  shim:  {parsed}\n  torch: {real[name]}"
+        )
+
+
+def test_torchao_rocm_shim_strict_noop_on_non_windows():
+    """On a non-Windows / distributed-present box the shim must not touch sys.modules,
+    torch.ops, or torch.distributed.is_available()."""
+    from unsloth.import_fixes import fix_torchao_windows_rocm_import
+
+    import torch
+
+    assert sys.platform != "win32"
+    before_ext = "torch._C._distributed_c10d" in sys.modules
+    before_avail = torch.distributed.is_available()
+    before_ops = set(_live_c10d_functional_ops())
+
+    fix_torchao_windows_rocm_import()
+
+    assert ("torch._C._distributed_c10d" in sys.modules) == before_ext
+    assert torch.distributed.is_available() == before_avail
+    assert set(_live_c10d_functional_ops()) == before_ops
+
+
+def test_torchao_rocm_shim_native_present_builds_no_library(monkeypatch):
+    """Even with the platform gates spoofed to look like Windows ROCm, a box that already
+    has real distributed (native _c10d_functional ops / is_available) must trip a guard
+    before any torch.library.Library is constructed."""
+    from unsloth.import_fixes import (
+        fix_torchao_windows_rocm_import,
+        _native_c10d_functional_present,
+    )
+
+    import torch
+
+    monkeypatch.setattr(sys, "platform", "win32")
+    if not getattr(getattr(torch, "version", None), "hip", None):
+        monkeypatch.setattr(torch.version, "hip", "6.4.0", raising = False)
+
+    assert _native_c10d_functional_present(torch) is True
+
+    calls = {"n": 0}
+    real_library = torch.library.Library
+
+    def _tripwire(*args, **kwargs):
+        calls["n"] += 1
+        return real_library(*args, **kwargs)
+
+    monkeypatch.setattr(torch.library, "Library", _tripwire)
+    fix_torchao_windows_rocm_import()
+    assert (
+        calls["n"] == 0
+    ), "torchao shim constructed a torch.library.Library despite a real distributed build."
+
+
+_TORCHAO_ROCM_FRAGMENT_PROBE = """
+import torch
+ns = "_unsloth_torchao_shim_probe_ns"
+# A second DEF on a namespace raises; FRAGMENT must not -- that is why the shim uses
+# FRAGMENT (no fatal collision with a native C++ TORCH_LIBRARY). NB: the first DEF must be
+# held by a strong ref, else CPython GCs it (its __del__ calls _destroy) and releases the
+# namespace before the second call -- the same reason the shim keeps a strong ref to its
+# FRAGMENT Library so its registered schemas are not dropped.
+_hold = torch.library.Library(ns, "DEF")
+raised = False
+try:
+    torch.library.Library(ns, "DEF")
+except Exception:
+    raised = True
+assert raised, "second DEF unexpectedly did not raise"
+frag = torch.library.Library(ns, "FRAGMENT")  # must not raise
+frag.define("myop(Tensor x) -> Tensor")
+assert hasattr(torch.ops, ns) and hasattr(getattr(torch.ops, ns), "myop")
+frag._destroy()
+print("FRAGMENT_OK")
+"""
+
+
+def test_torchao_rocm_shim_fragment_semantics_subprocess():
+    """FRAGMENT-define + resolve + _destroy work and FRAGMENT (unlike a second DEF) never
+    collides -- run in a subprocess since dispatcher registration is process-global."""
+    import subprocess
+
+    result = subprocess.run(
+        [sys.executable, "-c", _TORCHAO_ROCM_FRAGMENT_PROBE],
+        capture_output = True,
+        text = True,
+        timeout = 300,
+    )
+    assert (
+        "FRAGMENT_OK" in result.stdout
+    ), f"FRAGMENT probe failed:\nSTDOUT:{result.stdout}\nSTDERR:{result.stderr}"
+
+
+def test_torchao_rocm_shim_source_has_guards_fragment_and_rollback():
+    """The shim source must keep its win32 + HIP + is_available() gates, use FRAGMENT (not a
+    DEF on _c10d_functional), and roll back via Library._destroy."""
+    import inspect
+
+    from unsloth import import_fixes
+
+    src = inspect.getsource(import_fixes.fix_torchao_windows_rocm_import)
+    assert "win32" in src, "missing win32 guard"
+    assert "hip" in src, "missing torch.version.hip guard"
+    assert '"rocm" in' in src, (
+        "shim ROCm detection must also accept a 'rocm'-tagged __version__ wheel (parity with "
+        "the Studio is_win32_rocm() helper), not gate on torch.version.hip alone"
+    )
+    assert "is_available()" in src, "missing is_available() guard"
+    assert '"FRAGMENT"' in src, "shim must register with FRAGMENT, not DEF"
+    assert '"_c10d_functional", "DEF"' not in src, "shim must never DEF _c10d_functional"
+    assert '"_dtensor", "DEF"' not in src, "shim must never DEF _dtensor"
+    assert '"_dtensor"' in src, "shim must also register the _dtensor namespace"
+    assert "_destroy" in src, "missing rollback via Library._destroy"
+
+
+def test_torchao_rocm_shim_wired_into_gpu_init():
+    """The shim must be called at startup (before `import unsloth_zoo`), not merely
+    importable (mirrors test_accelerate_patch_wired_into_gpu_init)."""
+    source = Path(__file__).resolve().parent.parent / "unsloth" / "_gpu_init.py"
+    text = source.read_text()
+    assert "fix_torchao_windows_rocm_import()" in text, (
+        "DRIFT DETECTED: fix_torchao_windows_rocm_import is defined but never called in "
+        "_gpu_init.py, so real imports never install it."
+    )
