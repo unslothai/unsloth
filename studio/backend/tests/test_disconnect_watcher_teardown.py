@@ -287,15 +287,38 @@ def test_admission_is_released_after_the_upstream_stream_is_closed(func_name):
             + "\n".join(ast.unparse(stmt) for stmt in block)
         )
 
-    # and every close must be inside a try whose finally does release, so a stalled
-    # close cannot drop the lease entirely
-    releasing = set()
-    for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Try)
-            and _first_index(node.finalbody, ("_release_admission",)) is not None
-        ):
-            releasing.update(id(stmt) for stmt in node.body)
+    # and every close must be protected by a try whose finally releases, so a stalled close
+    # cannot drop the lease. Checked by ancestry, not direct membership in a try's body:
+    # the nesting that stops a cancel in _aclose_send_task's wait from skipping the later
+    # closes puts the first teardown one level up, and membership rejects that even though
+    # it is strictly safer. Ancestry is the property that matters: some enclosing try releases.
+    parents = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[child] = parent
+
+    def _finally_releases(stmts):
+        """A release anywhere under the finally counts, including nested in another try."""
+        for stmt in stmts:
+            for node in ast.walk(stmt):
+                if isinstance(node, ast.Expr) and _called_name(node) == "_release_admission":
+                    return True
+        return False
+
+    def _protected(node):
+        seen = node
+        current = parents.get(node)
+        while current is not None:
+            if (
+                isinstance(current, ast.Try)
+                and _finally_releases(current.finalbody)
+                # a teardown sitting *in* the releasing finally is not protected by it
+                and not any(seen is stmt for stmt in current.finalbody)
+            ):
+                return True
+            seen = current
+            current = parents.get(current)
+        return False
 
     teardowns = [
         node
@@ -304,8 +327,8 @@ def test_admission_is_released_after_the_upstream_stream_is_closed(func_name):
     ]
     assert teardowns, f"{func_name}: found no teardown await to check"
     for node in teardowns:
-        assert id(node) in releasing, (
-            f"{func_name}: teardown await is not in the body of a try that releases "
+        assert _protected(node), (
+            f"{func_name}: teardown await is not inside a try that releases "
             f"admission in its finally:\n{ast.unparse(node)}"
         )
 

@@ -1656,15 +1656,19 @@ async def _aclose_stream_resources(
     the response, and the client. Each step swallows its own exceptions so teardown
     always completes; a close-time CancelledError is re-raised only after every
     step has run. See _anthropic_passthrough_stream for the ordering rationale."""
-    for watcher in watchers:
-        if watcher is not None:
-            try:
-                # bounded: a watcher parked in Request.is_disconnected() can swallow
-                # our cancel() outright, so awaiting it here would hold the response
-                # open until the client itself gives up. see #7617.
-                await _stop_local_disconnect_cancel_watcher(watcher)
-            except (asyncio.CancelledError, Exception):
-                pass
+    # bounded: a watcher parked in Request.is_disconnected() can swallow cancel(), so an
+    # unbounded await here holds the response open until the client gives up. Stopped
+    # together, not in sequence, so N watchers cost one bound rather than N before the
+    # closes below, which are what actually stop llama-server decoding. #7617
+    live = [w for w in watchers if w is not None]
+    if live:
+        try:
+            await asyncio.gather(
+                *(_stop_local_disconnect_cancel_watcher(w) for w in live),
+                return_exceptions = True,
+            )
+        except (asyncio.CancelledError, Exception):
+            pass
     close_cancelled = False
     if iterator is not None:
         try:
@@ -1691,10 +1695,32 @@ async def _aclose_stream_resources(
         raise asyncio.CancelledError()
 
 
+async def _aclose_quietly(obj) -> None:
+    try:
+        await obj.aclose()
+    except Exception:
+        pass
+
+
 def _discard_task_outcome(task: asyncio.Task) -> None:
-    """Drain an abandoned teardown task so asyncio does not log its result as unretrieved."""
-    if not task.cancelled():
-        task.exception()
+    """Drain an abandoned teardown task, closing a late response rather than dropping it.
+
+    Closing the per-request client does not close a response the send goes on to produce on
+    a connection opened after that close. Never raises: this is a done callback. #7617
+    """
+    try:
+        if task.cancelled():
+            return
+        if task.exception() is not None:
+            return
+        result = task.result()
+    except Exception:
+        return
+    if result is not None and hasattr(result, "aclose") and not getattr(result, "is_closed", False):
+        try:
+            asyncio.ensure_future(_aclose_quietly(result))
+        except RuntimeError:
+            pass
 
 
 def _release_admission(admission_lease = None, tracker = None) -> None:
@@ -2641,6 +2667,9 @@ async def _stop_local_disconnect_cancel_watcher(
     watcher.cancel()
     done, _pending = await asyncio.wait({watcher}, timeout = timeout_s)
     if not done:
+        # _wait_preheader_cancel has no exception handler, so a raise after we stop waiting
+        # would surface as "Task exception was never retrieved". Same drain the sends use.
+        watcher.add_done_callback(_discard_task_outcome)
         return
     try:
         watcher.result()
@@ -17904,11 +17933,14 @@ async def _openai_passthrough_stream_admitted(
                 logger.error("openai passthrough stream: upstream unreachable: %s", e)
                 api_monitor.fail(monitor_id, _friendly_error(e))
                 # the outer handler releases too, but _release_admission is idempotent.
+                # nested so a cancel inside _aclose_send_task's wait cannot skip the closes.
                 try:
                     await _aclose_send_task(send_task)
-                    await _aclose_stream_resources(resp = resp, client = client)
                 finally:
-                    _release_admission(admission_lease, _tracker)
+                    try:
+                        await _aclose_stream_resources(resp = resp, client = client)
+                    finally:
+                        _release_admission(admission_lease, _tracker)
                 raise HTTPException(
                     status_code = 502,
                     detail = _friendly_error(e),
@@ -17921,9 +17953,11 @@ async def _openai_passthrough_stream_admitted(
                 api_monitor.finish(monitor_id, "cancelled")
                 try:
                     await _aclose_send_task(send_task)
-                    await _aclose_stream_resources(client = client)
                 finally:
-                    _release_admission(admission_lease, _tracker)
+                    try:
+                        await _aclose_stream_resources(client = client)
+                    finally:
+                        _release_admission(admission_lease, _tracker)
                 return _SameTaskStreamingResponse(
                     iter(()),
                     media_type = "text/event-stream",
@@ -18460,18 +18494,21 @@ async def _openai_passthrough_stream_admitted(
             finally:
                 # Close the upstream stream first: on the disconnect path llama-server is
                 # still decoding until resp is closed, so releasing the slot before that
-                # would admit a second request past --parallel. Holding it across these
-                # closes is safe now only because every await in them is bounded. #7617
+                # would admit a second request past --parallel. Safe to hold across these
+                # closes because every task await in them is bounded; the aclose() calls
+                # are not, but on HTTP/1.1 to a local llama-server they do not block. #7617
                 try:
                     await _aclose_send_task(send_task)
-                    await _aclose_stream_resources(
-                        watchers = (cancel_watcher, disconnect_watcher),
-                        iterator = lines_iter,
-                        resp = resp,
-                        client = client,
-                    )
                 finally:
-                    _release_admission(admission_lease, _tracker)
+                    try:
+                        await _aclose_stream_resources(
+                            watchers = (cancel_watcher, disconnect_watcher),
+                            iterator = lines_iter,
+                            resp = resp,
+                            client = client,
+                        )
+                    finally:
+                        _release_admission(admission_lease, _tracker)
 
         async def _unstarted_cleanup() -> None:
             # Client disconnected before the body stream started, so _stream()'s
@@ -18480,9 +18517,11 @@ async def _openai_passthrough_stream_admitted(
             # are created inside _stream(), so there is nothing else to close.
             try:
                 await _aclose_send_task(send_task)
-                await _aclose_stream_resources(resp = resp, client = client)
             finally:
-                _release_admission(admission_lease, _tracker)
+                try:
+                    await _aclose_stream_resources(resp = resp, client = client)
+                finally:
+                    _release_admission(admission_lease, _tracker)
 
         return _SameTaskStreamingResponse(
             _stream(),
@@ -18504,9 +18543,11 @@ async def _openai_passthrough_stream_admitted(
             api_monitor.fail(monitor_id, str(detail))
         try:
             await _aclose_send_task(send_task)
-            await _aclose_stream_resources(resp = resp, client = client)
         finally:
-            _release_admission(admission_lease, _tracker)
+            try:
+                await _aclose_stream_resources(resp = resp, client = client)
+            finally:
+                _release_admission(admission_lease, _tracker)
         raise
 
 
