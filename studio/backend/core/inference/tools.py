@@ -1240,6 +1240,51 @@ _CMD_FOR_SUBSTITUTION_RE = re.compile(
 )
 
 
+def _cmd_quoted_offsets(text: str) -> "list[bool]":
+    """Which offsets of ``text`` cmd reads inside quotation marks.
+
+    The same walk as _cmd_split, kept as a map rather than a split for the two
+    callers that need to place something in the original text: a group bracket
+    is only cmd's syntax unquoted, and a `for` expression found by re-reading
+    the line is only a construct where it is not quoted data.
+    """
+    inside: "list[bool]" = []
+    quoted = False
+    index = 0
+    while index < len(text):
+        char = text[index]
+        if char == "^" and index + 1 < len(text) and not quoted:
+            inside.extend([quoted, quoted])
+            index += 2
+            continue
+        if char == '"':
+            quoted = not quoted
+            inside.append(True)  # the mark belongs to the quoting either way
+            index += 1
+            continue
+        inside.append(quoted)
+        index += 1
+    return inside
+
+
+def _cmd_group_delta(token: str) -> int:
+    """How far ``token`` opens or closes cmd's grouping, quotes excluded.
+
+    A quoted bracket is argument data: `if exist x (echo ")" & echo done) else
+    start "" pwsh` closed the group early on the quoted one, so the `&` after it
+    read as outside the branch and the else that reopens the position was lost.
+    """
+    delta = 0
+    for char, quoted in zip(token, _cmd_quoted_offsets(token)):
+        if quoted:
+            continue
+        if char == "(":
+            delta += 1
+        elif char == ")":
+            delta -= 1
+    return delta
+
+
 def _cmd_split(token: str, chars: str) -> "list[str]":
     """``token`` split on the ``chars`` cmd reads as syntax, escapes applied.
 
@@ -1690,7 +1735,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                     # `if exist x (echo a & echo b) else start "" pwsh` runs the
                     # start, and clearing here lost the else that reopens it.
                     control = control and depth > 0
-                depth += token.count("(") - token.count(")")
+                depth += _cmd_group_delta(token)
                 continue
             # A separator with no space around it stays inside the token, under
             # either lexer: the cmd one takes no punctuation_chars, and bash
@@ -1714,7 +1759,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             if len(pieces) > 1:
                 expect = True
                 control = control and depth > 0
-            depth += token.count("(") - token.count(")")
+            depth += _cmd_group_delta(token)
             word = _cmd_word_base(pieces[-1])
             if skip > 0:
                 skip -= 1
@@ -2030,7 +2075,14 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Only where cmd runs a `for` itself. The body is found by re-reading the
     # text, which cannot tell a construct from a quotation of one on its own, so
     # `echo "for /f %i in ('rm -rf x') do echo %i"` was refused for printing.
+    quoted_offsets = _cmd_quoted_offsets(command) if cmd_for_indexes else []
     for match in _CMD_FOR_SUBSTITUTION_RE.finditer(command if cmd_for_indexes else ""):
+        # A `for` cmd runs somewhere on the line is not this `for`: the outer
+        # one in `for %i in (x) do echo "for /f %j in ('start "" pwsh') ..."` is
+        # real while the inner expression is echo's data, so each match has to
+        # be unquoted where it sits, not merely accompanied by a construct.
+        if match.start() < len(quoted_offsets) and quoted_offsets[match.start()]:
+            continue
         # The escapes are the outer parse's, so cmd hands the child a line with
         # them already applied: `echo x ^& start ""` reaches it as a real
         # separator, and reading it raw left the start an operand of echo.

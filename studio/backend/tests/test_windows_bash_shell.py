@@ -1047,6 +1047,30 @@ def test_quotes_protect_cmd_separators_under_the_cmd_lexer(monkeypatch, command,
 
 
 @pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # A quoted bracket is argument data, so it neither opens nor closes the
+        # branch: closing early on one let the `&` read as outside it and lost
+        # the `else` that reopens the command position.
+        ('cmd /c if exist no_f (echo ")" & echo done) else start "" powershell', True),
+        ('cmd /c if exist no_f (echo "(" & echo done) else start "" pwsh', True),
+        ('cmd /c if exist no_f (echo ok & echo done) else start "" powershell', True),
+        # A `for` cmd runs somewhere on the line is not this `for`: the outer
+        # one here is real while the inner expression is echo's data.
+        (
+            """cmd /c for %i in (x) do echo "for /f %j in ('start "" powershell') do echo %j\"""",
+            False,
+        ),
+        ("""cmd /c for /f %i in ('start "" pwsh') do echo %i""", True),
+    ],
+)
+def test_quoting_decides_what_is_cmd_syntax_in_place(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
     "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
 )
 def test_windows_only_names_are_not_hard_blocked_off_windows(monkeypatch, command):
