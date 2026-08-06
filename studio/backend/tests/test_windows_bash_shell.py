@@ -1243,6 +1243,46 @@ def test_a_start_target_is_read_as_cmd_resolves_it(monkeypatch, command, blocked
     assert bool(tools._find_blocked_commands(command)) is blocked
 
 
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A redirection is the shell's own syntax, taken out of the line before
+        # the command runs, so it stands between `start` and its program
+        # without being either. Reading the `>nul` as the program left the
+        # launch behind it unscreened.
+        'cmd /c start >nul "" powershell',
+        'cmd /c start "" >nul powershell',
+        'cmd /c start "" 2>&1 powershell',
+        "cmd /c start >nul powershell",
+        'cmd /c start > nul "" powershell',
+        'cmd /c start /min >nul "" powershell',
+    ],
+)
+def test_a_redirection_is_not_the_program_start_launches(monkeypatch, bash, command):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+def test_a_chain_of_cmd_payloads_is_bounded_and_fails_closed(monkeypatch):
+    # Every `cmd /c` begins a command line of its own, so the tail is read once
+    # per level and a long enough chain is quadratic in what the model wrote.
+    # The scan runs before the command does, so that wait is the caller's: the
+    # budget is shared across the line, and a chain that spends it is refused
+    # rather than trusted on the half that was read.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    # The shell whose command line went unread is what comes back, so the
+    # refusal holds even where the chain names nothing blocked at all.
+    assert "cmd" in tools._find_blocked_commands("cmd /c " * 400 + "echo ok")
+    assert "cmd" in tools._find_blocked_commands("cmd /c " * 400 + 'start "" powershell')
+    # A line no longer than anything a model writes is read in full, budget
+    # untouched, so the bound costs no detection where it matters.
+    assert "powershell" in tools._find_blocked_commands("cmd /c " * 8 + 'start "" powershell')
+    assert not tools._find_blocked_commands("cmd /c " * 8 + "echo ok")
+
+
 @pytest.mark.parametrize(
     "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
 )

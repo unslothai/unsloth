@@ -350,6 +350,13 @@ _SED_SCAN_BUDGET = 200_000
 # Wrappers may sit between `find -exec` and the command it runs; bounded so a
 # line padded with `-exec env -exec env ...` cannot make the scan quadratic.
 _MAX_EXEC_PREFIX_SCAN = 32
+# Words the cmd-grammar scans may read across ONE command line, shared by all of
+# them. Every `cmd /c` begins a command line of its own, so `cmd /c cmd /c ...`
+# reads the tail once per level and the work is quadratic in what the model
+# wrote; this runs before the command does, so the wait is the caller's. Ten
+# times the words any real line holds, and a chain long enough to spend it is
+# refused rather than half-read.
+_CMD_GRAMMAR_BUDGET = 20_000
 # First window tried when balancing a `$(...)`, quadrupled until the span closes
 # (_substitution_span), so a line of many short substitutions stays linear.
 _SUBSTITUTION_SPAN_STEP = 64
@@ -1173,10 +1180,28 @@ def _unquoted_glob_indexes(text: str, tokens: "list[str]", punctuation: str) -> 
     )
 
 
-def _skip_start_switches(tokens: "list[str]", index: int) -> int:
-    """The first index at or after ``index`` that is not one of `start`'s switches."""
+def _skip_start_switches(
+    tokens: "list[str]",
+    index: int,
+    redirects: "frozenset[int]" = frozenset(),
+) -> int:
+    """The first index at or after ``index`` that is neither one of `start`'s
+    switches nor part of a redirection.
+
+    A redirection is the shell's own syntax and is taken out of the line before
+    the command runs, wherever it was written, so it stands between `start` and
+    its program without being either: `start >nul "" powershell` and `start ""
+    >nul powershell` both launch, and reading the `>nul` as the program left the
+    launch unscreened. Which words those are is the redirection scan's answer,
+    not a second reading of the spelling: `2>&1` is one token to the cmd lexer
+    and three to the POSIX one.
+    """
     while index < len(tokens):
-        switch = _win_switch(tokens[index].lower())
+        token = tokens[index]
+        if index in redirects:
+            index += 1
+            continue
+        switch = _win_switch(token.lower())
         if not _START_SWITCH_RE.fullmatch(switch):
             break
         # /d C:\dir and friends carry their value in the next token.
@@ -1753,7 +1778,15 @@ def _find_blocked_commands(command: str) -> set[str]:
         depth = 0  # open group brackets, which an `if` branch is written in
         skip = 0  # condition words still to consume
         skip_operand = False  # the word after a bare redirection operator
+        nonlocal cmd_grammar_budget, cmd_grammar_spent
         for index in range(begin, len(tokens)):
+            if cmd_grammar_budget <= 0:
+                # Read no further rather than spend the caller's wait on a
+                # chain of command lines; what is left goes unread, so the
+                # caller refuses the line instead of trusting a partial parse.
+                cmd_grammar_spent = True
+                break
+            cmd_grammar_budget -= 1
             token = tokens[index]
             if _looks_like_separator(token):
                 if lexed_posix and index not in quoted_separators:
@@ -2059,15 +2092,26 @@ def _find_blocked_commands(command: str) -> set[str]:
     # `time` is a cmd builtin that shows the clock, and `time start ""
     # powershell` launches nothing.
     cmd_run_indexes: "set[int]" = set()
+    # Words those scans have left to read, and whether one stopped without
+    # finishing. Shared across the whole line: every `cmd /c` begins a command
+    # line of its own, so a chain of them reads the same tail once per level.
+    cmd_grammar_budget = _CMD_GRAMMAR_BUDGET
+    cmd_grammar_spent = False
 
-    def _read_cmd_line(begin: int) -> None:
-        """Collect the words cmd runs in the command line starting at ``begin``."""
+    def _read_cmd_line(begin: int) -> bool:
+        """Collect the words cmd runs in the command line starting at ``begin``.
+
+        Returns whether the grammar budget ran out with words still ahead,
+        which is NOT the same as finding nothing: the rest of that command line
+        was never read, so the caller fails closed on it.
+        """
         for pos, cmd_word in _cmd_command_positions(begin).items():
             cmd_run_indexes.add(pos)
             if cmd_word == "start":
                 start_indexes.add(pos)
             elif cmd_word == "for":
                 cmd_for_indexes.add(pos)
+        return cmd_grammar_spent
 
     def _start_program_index(index: int) -> int:
         """The token the `start` at ``index`` launches, or -1 for none.
@@ -2096,12 +2140,12 @@ def _find_blocked_commands(command: str) -> set[str]:
         if title_tokens is None:
             # Built at most once per call, and only when a start is actually here.
             title_tokens = _start_title_indexes(tokens, lexed_posix)
-        first = _skip_start_switches(tokens, index + 1)
+        first = _skip_start_switches(tokens, index + 1, redirect_indexes)
         if first >= len(tokens):
             return -1
         if first not in title_tokens:
             return first
-        behind = _skip_start_switches(tokens, first + 1)
+        behind = _skip_start_switches(tokens, first + 1, redirect_indexes)
         return behind if behind < len(tokens) else -1
 
     def _cmd_runs_here(index: int) -> bool:
@@ -2121,8 +2165,10 @@ def _find_blocked_commands(command: str) -> set[str]:
             _start_program_index(pos) == index for pos in start_indexes
         )
 
-    if not lexed_posix:
-        _read_cmd_line(0)
+    if not lexed_posix and _read_cmd_line(0) and tokens:
+        # Unreachable on any line a model writes -- one pass costs one word per
+        # word -- but a partial parse is a free pass, so it is not trusted.
+        blocked.add(_token_basename(tokens[0]))
 
     # Nested shell invocations (bash -c '...', bash -lc '...', cmd /c '...'):
     # on a -c/-/c flag, look back for a shell name (skipping flags) and
@@ -2173,8 +2219,12 @@ def _find_blocked_commands(command: str) -> set[str]:
                 # those words, and reading them as a command line refused the
                 # message. Visited left to right, so an outer cmd has already
                 # named the inner one by the time it is reached.
-                if _cmd_runs_here(j):
-                    _read_cmd_line(i + 1)
+                if _cmd_runs_here(j) and _read_cmd_line(i + 1):
+                    # The budget ran out inside this payload, so a launch may
+                    # sit in the part never read: refuse the shell running it
+                    # rather than let `cmd /c cmd /c ...x300` ride in on the
+                    # scan giving up.
+                    blocked.add(prev_base)
             break  # stop at first non-flag token
 
     # `for /f %i in ('CMD') do ...` runs CMD as a child command and reads its
