@@ -129,10 +129,8 @@ import type {
 } from "./types";
 
 // What per-model settings are keyed by, which is not always what the loader is handed: a repo
-// cached outside the active HF cache loads by snapshot path while the picker and the auto-switch
-// index key it by repo id, so saving under the path strands them. The row decides that, not the
-// view it is shown in (a cache row is reachable from Discover too); `hub_cache` marks exactly
-// those, while a local row in the active cache stays on its run id.
+// cached outside the active HF cache loads by snapshot path while the picker keys it by repo
+// id. The row decides that, not the view it is shown in; `hub_cache` marks exactly those.
 function modelConfigIdentity(
   kind: SelectedModelView["kind"],
   resource: SelectedResourceRef,
@@ -148,8 +146,7 @@ const ALL_MODELS_VIEW_STORAGE_KEY = "unsloth.hub.allModelsView";
 const INVENTORY_SORT_STORAGE_KEY = "unsloth.hub.inventorySort";
 const OWNER_SCOPE_STORAGE_KEY = "unsloth.hub.ownerScope";
 
-// Iconless models (repo name matches no provider logo, e.g. Ornith, Inkling)
-// still show in the feed once they clear this many Hugging Face likes.
+// Iconless models (no provider logo, e.g. Ornith, Inkling) show once they clear this many likes.
 const MIN_ICONLESS_MODEL_LIKES = 30;
 
 /** Discover browsing scope: the whole Hub (default) or only the unsloth org. */
@@ -186,8 +183,7 @@ type DiscoverMode = "feed" | "channel-list" | "search";
 
 type ModelLoadOptions = { ggufVariant?: string; expectedBytes?: number };
 
-// Focused list heading stays "Models"/"Datasets" regardless of filters; only
-// search changes the label.
+// Focused list heading stays "Models"/"Datasets" regardless of filters; only search relabels it.
 function buildFocusedHeading({
   query,
   channel,
@@ -396,19 +392,15 @@ export function ModelsPage() {
 
   // Drops a response that lands after a newer read started, or after unmount.
   const residentStatusSeq = useRef(0);
-  // The newest read started, so a dropped response can resolve with that instead of with
-  // nothing. A caller awaits a settled store, and the settings handlers' own guard counts
-  // settings opens only: a focus or visibilitychange refresh supersedes one without bumping it.
+  // The newest read started, so a dropped response can resolve with that instead of nothing. The
+  // settings handlers' own guard counts settings opens only: a focus refresh supersedes without bumping.
   const residentStatusSupersession = useRef<RefreshSupersession>({
     latest: null,
   });
   // /status cannot say whether an empty answer is an idle eviction that will reload or a real
   // unload, and only this endpoint knows. Read alongside every status read rather than cached,
-  // since the idle timeout is editable from Settings while this page stays mounted, and awaited
-  // with it, since the first read is the one most likely to land on an evicted model.
-  // Last answer wins on failure, not the default: "disarmed" is the side that clears the
-  // checkpoint, so a transient failure would discard a selection the idle loop is bringing
-  // back. Before any successful read it is false, the setting's own default.
+  // since the idle timeout is editable while this page stays mounted. Last answer wins on
+  // failure, not the default: "disarmed" clears the checkpoint, so a blip would discard a selection.
   const idleUnloadArmed = useRef(false);
   const readIdleUnloadArmed = useCallback(
     (): Promise<boolean> =>
@@ -425,16 +417,14 @@ export function ModelsPage() {
     const seq = ++residentStatusSeq.current;
     const read = Promise.all([getInferenceStatus(), readIdleUnloadArmed()])
       .then(([status, idleUnloadArmed]) => {
-        // A newer read owns the store, so this writes nothing; resolving with the refresh
-        // that took it over keeps an awaiting caller from reading the store it has not
-        // written yet, which is the pre-switch store the await was there to replace.
+        // A newer read owns the store, so this writes nothing; resolving with the refresh that took
+        // it over keeps an awaiting caller off the pre-switch store the await was there to replace.
         if (seq !== residentStatusSeq.current)
           return supersedingRefresh(residentStatusSupersession.current, seq);
         const store = useChatRuntimeStore.getState();
         adoptResidentModelStatus(
           {
-            // The loadable identifier, as every other status reader records it: a GGUF off
-            // disk loads by path, and two files sharing a stem collapse onto one public id.
+            // The loadable identifier: a GGUF off disk loads by path, and two files sharing a stem collapse.
             checkpointId: resolveInferenceCheckpointId(status),
             ggufVariant: status.gguf_variant ?? null,
           },
@@ -452,8 +442,7 @@ export function ModelsPage() {
             clearCheckpoint: () => {
               store.clearCheckpoint();
             },
-            // Landing here is the one entry point that has applied no status yet, so the
-            // settings page would read the live config off a store holding defaults.
+            // The one entry point that has applied no status yet, so settings would read defaults.
             applyStatus: (previous) => {
               applyActiveModelStatusToStore(status, {
                 previousCheckpoint: previous.checkpoint ?? undefined,
@@ -464,14 +453,12 @@ export function ModelsPage() {
         );
       })
       .catch(() => undefined);
-    // In start order, synchronously with the sequence number, so a dropped response always
-    // finds the read that took the store over rather than one older than itself.
+    // In start order, synchronously with the sequence number, so a dropped response finds the newest read.
     registerRefresh(residentStatusSupersession.current, seq, read);
     return read;
   }, [readIdleUnloadArmed]);
 
-  // Mount, then again whenever this tab could have missed an API-driven switch. Re-reading is
-  // safe: adoptResidentModelStatus stands down for an external selection and this tab's loads.
+  // Mount, then whenever this tab could have missed an API-driven switch. Re-reading is safe.
   useEffect(() => {
     void refreshResidentModelStatus();
     const unsubscribe = subscribeResidentStatusRefresh(
@@ -550,15 +537,13 @@ export function ModelsPage() {
   const [allModelsView, setAllModelsViewState] = useState<AllModelsView>(
     readAllModelsViewPreference,
   );
-  // Remembers the last non-split view so "Back to Hub" can drop out of split
-  // mode into the prior browsing layout (defaults to the two-column grid).
+  // Remembers the last non-split view so "Back to Hub" drops into the prior browsing layout.
   const lastNonSplitViewRef = useRef<AllModelsView>("two");
   const setAllModelsView = useCallback(
     (view: AllModelsView) => {
       setAllModelsViewState(view);
       writeAllModelsViewPreference(view);
-      // Leaving split view drops the inline preview so the user lands on the
-      // full hub list, not the model detail overlay.
+      // Leaving split view drops the inline preview so the user lands on the full hub list.
       if (view !== "split") {
         void navigate({
           to: "/hub",
@@ -627,8 +612,7 @@ export function ModelsPage() {
       }
       setCapabilityFilter("all");
       setSortBrowseActive(false);
-      // Clear search: an active query outranks the section in `mode`, hiding
-      // the curated list behind global results otherwise.
+      // Clear search: an active query outranks the section in `mode`, hiding the curated list.
       setQuery("");
       void navigate({
         to: "/hub",
@@ -662,8 +646,7 @@ export function ModelsPage() {
     setSortBrowseActive(false);
     void navigate({
       to: "/hub",
-      // Assert the tab here too: fires alongside setModelsTab's navigation, and
-      // spreading prev could otherwise restore the old tab.
+      // Assert the tab here too: it fires alongside setModelsTab's navigation, and spreading prev would restore the old tab.
       search: (prev) => ({
         ...prev,
         tab: "discover",
@@ -726,9 +709,8 @@ export function ModelsPage() {
   const effectiveSort: HfSortKey =
     isFeedMode && liveListChannel ? liveListChannel.sort : sortBy;
   const effectiveDirection: HfSortDirection = isFeedMode ? "desc" : direction;
-  // The format dropdown always filters the visible list, including the feed's
-  // "Latest" list, so the default (GGUF) hides fp8/safetensors and picking a
-  // format actually changes the rows.
+  // The format dropdown always filters the visible list, including the feed's "Latest" list, so
+  // the default (GGUF) hides fp8/safetensors and picking a format actually changes the rows.
   const effectiveDiscoverFormat: ModelFormatFilter = deferredFormatFilter;
 
   const listChannel = useMemo<HfModelSearchChannel | null>(() => {
@@ -861,8 +843,7 @@ export function ModelsPage() {
         ) &&
         matchesCapability(row.capabilities, deferredCapabilityFilter) &&
         (!activeChannel?.finetunableOnly || isUnslothFinetunable(row.result)) &&
-        // Models already on disk stay visible regardless of device fit,
-        // matching the chat model selector.
+        // Models already on disk stay visible regardless of device fit, matching the chat selector.
         (!fitOnDeviceOnly ||
           row.isAvailableOnDevice ||
           hfModelFitsDevice(
@@ -905,8 +886,7 @@ export function ModelsPage() {
             !isConfiguredHiddenModelId(hiddenEmbeddingModelIds, row.id),
         )
         .filter((row) => matchesFormat(row.result.isGguf, "gguf"))
-        // Same fit filter as the main Discover list, so the feed carousel
-        // honors the toggle too.
+        // Same fit filter as the main Discover list, so the feed carousel honors the toggle too.
         .filter(
           (row) =>
             !fitOnDeviceOnly ||
@@ -947,8 +927,7 @@ export function ModelsPage() {
     () => (isDiscoverTab ? [] : tokenizeQuery(deferredDebouncedQuery)),
     [isDiscoverTab, deferredDebouncedQuery],
   );
-  // Server cache rows already apply variant-aware infra hiding. Optimistic
-  // rows are not server-confirmed, so apply the client filter first.
+  // Server cache rows already apply variant-aware infra hiding; optimistic rows are not confirmed.
   const isVisibleInventoryRow = useCallback(
     (row: CachedInventoryRow | LocalInventoryRow) => {
       if (row.kind === "cache") {
@@ -972,17 +951,15 @@ export function ModelsPage() {
     },
     [hiddenEmbeddingModelIds, inventoryTokens],
   );
-  // Format filter is a deliberate scope narrowing, so hard-filter it out. The
-  // text query instead drives dim-not-filter on On Device (see ModelsCatalog) so
-  // selection survives typing; matching rows are partitioned to the top.
+  // Format filter is a deliberate scope narrowing, so hard-filter it out. The text query instead
+  // drives dim-not-filter on On Device so selection survives typing; matches sort to the top.
   const filteredCachedRows = useMemo(
     () =>
       partitionByMatch(
         effectiveCachedRows.filter(
           (row) =>
-            // Hidden-model filtering is model-only; datasets bypass it (and the
-            // format filter) the way Discover does, so a dataset whose
-            // id/title/path happens to contain an infra needle is not dropped.
+            // Hidden-model filtering is model-only; datasets bypass it (and the format filter) as Discover
+            // does, so a dataset whose id/title/path contains an infra needle is not dropped.
             isDatasetMode ||
             (matchesFormat(row.modelFormat, deferredFormatFilter) &&
               matchesModelType(row, inventoryTypeFilter) &&
@@ -1005,9 +982,8 @@ export function ModelsPage() {
       partitionByMatch(
         effectiveLocalRows.filter(
           (row) =>
-            // Hidden-model filtering is model-only; datasets bypass it (and the
-            // format filter) the way Discover does, so a dataset whose
-            // id/title/path happens to contain an infra needle is not dropped.
+            // Hidden-model filtering is model-only; datasets bypass it (and the format filter) as Discover
+            // does, so a dataset whose id/title/path contains an infra needle is not dropped.
             isDatasetMode ||
             (matchesFormat(row.modelFormat, deferredFormatFilter) &&
               matchesModelType(row, inventoryTypeFilter) &&
@@ -1025,11 +1001,9 @@ export function ModelsPage() {
     ],
   );
 
-  // Header tallies exclude infra/hidden models so the count matches the On
-  // Device list (a fresh install with only the bge embedder cached reads 0,
-  // not 1 over an empty list). Reuse isVisibleInventoryRow so a hidden row
-  // revealed by an active search is counted too, and datasets (never infra)
-  // keep their full count, mirroring the row filter above.
+  // Header tallies exclude infra/hidden models so the count matches the On Device list (a fresh
+  // install with only the bge embedder cached reads 0, not 1 over an empty list). Reuse
+  // isVisibleInventoryRow so a search-revealed row is counted, and datasets keep their full count.
   const visibleCachedCount = useMemo(
     () =>
       effectiveCachedRows.filter(
@@ -1097,10 +1071,8 @@ export function ModelsPage() {
     fetchMoreManually: fetchMoreDiscoverManually,
   } = useHubInfiniteScroll(
     fetchMore,
-    // Re-evaluate off the raw fetched count, not the filtered one: aggressive
-    // format/capability filters can reject every row, stalling
-    // filteredDiscoverRows.length while results grow. The raw count guarantees
-    // the auto-fire effect re-runs after each fetch lands.
+    // Re-evaluate off the raw fetched count, not the filtered one: aggressive filters can reject
+    // every row, stalling filteredDiscoverRows.length while results grow.
     scannedCount,
     {
       enabled: online && isDiscoverTab && hasMore,
@@ -1144,9 +1116,8 @@ export function ModelsPage() {
     [setSelected, navigate],
   );
   const handleCloseDetail = useCallback(() => {
-    // From split view, "Back to Hub" exits the master-detail layout and returns
-    // to the main hub feed (not the filtered list): leave split mode, reset
-    // discover state to defaults, and clear the inline preview and channel.
+    // From split view, "Back to Hub" returns to the main hub feed (not the filtered list): leave
+    // split mode, reset discover state, and clear the inline preview and channel.
     if (allModelsView === "split") {
       const next = lastNonSplitViewRef.current;
       setAllModelsViewState(next);
@@ -1210,13 +1181,11 @@ export function ModelsPage() {
     }
   }, [allModelsView]);
 
-  // Split view previews the first row so the detail pane isn't empty. Feed mode
-  // included: split view hides the trending feed and shows only the master list,
-  // so previewing its first row lands on a real README instead of a placeholder.
+  // Split view previews the first row so the detail pane isn't empty. Feed mode included: split
+  // view shows only the master list, so its first row lands on a real README, not a placeholder.
   useEffect(() => {
     if (allModelsView !== "split" || urlModel) return;
-    // Use the filtered rows the master pane renders, not raw inventory, so the
-    // preview never lands on a filtered-out row.
+    // Use the filtered rows the master pane renders so the preview never lands on a filtered-out row.
     const firstId = isDiscoverTab
       ? listRows[0]?.id
       : (filteredCachedRows[0]?.id ?? filteredLocalRows[0]?.id);
@@ -1296,8 +1265,7 @@ export function ModelsPage() {
         selectedModel.kind,
         selectedModel.resource,
       );
-      // A cached repo used to be keyed by the snapshot path it loads from, which is its
-      // runId. Move that record over before reading, or an upgrade reads as unremembered.
+      // A cached repo used to be keyed by its snapshot path (its runId); move that record over first.
       adoptLegacyConfigKey(configIdentity, runId, opts.ggufVariant);
       const resolvedConfig = resolveInitialConfig(
         configIdentity,
@@ -1337,14 +1305,12 @@ export function ModelsPage() {
     [runSelectedModel, selectedModel],
   );
 
-  // Full-page per-model settings, opened from a downloaded row's menu. Local state, not a
-  // URL param: a deep link would need the row re-resolved against an unloaded inventory.
+  // Full-page per-model settings. Local state, not a URL param: a deep link would need the row re-resolved.
   const [settingsTarget, setSettingsTarget] = useState<ModelPickTarget | null>(
     null,
   );
   // Opening settings is where a stale read costs something: the editor is seeded once and Apply
-  // reloads with what it seeded, so this covers a switch that landed while the window kept
-  // focus. Resolving a target is openModelSettings' own read; this is for ready-made targets.
+  // reloads with what it seeded. Resolving a target is openModelSettings' own read.
   useEffect(() => {
     if (settingsTarget) void refreshResidentModelStatus();
   }, [settingsTarget, refreshResidentModelStatus]);
@@ -1353,9 +1319,8 @@ export function ModelsPage() {
   const openModelSettings = useCallback(
     async (row: CachedInventoryRow | LocalInventoryRow) => {
       const openSeq = ++settingsOpenSeq.current;
-      // Before anything reads the store: the status effect watches settingsTarget, so it
-      // cannot run until the target exists. Every path out of here seeds the editor from the
-      // store and Apply reloads with that, so a pre-switch read would launch wrong settings.
+      // Before anything reads the store: the status effect watches settingsTarget. Every path out
+      // seeds the editor from the store and Apply reloads with that, so a stale read misconfigures.
       await refreshResidentModelStatus();
       if (settingsOpenSeq.current !== openSeq) return;
       // loadId is what the loader accepts; repoId is only a display/API alias.
@@ -1365,13 +1330,11 @@ export function ModelsPage() {
         row.kind === "local"
           ? [id, row.repoId, row.path]
           : [id, row.repoId, row.cachePath];
-      // Cached repo rows never carry a quant, and a null variant keys the config to `repo::`
-      // while the loader reads `repo::Q4_K_M`, so resolve one as the on-device card does.
+      // Cached repo rows carry no quant, and a null variant keys the config to `repo::` while the loader reads `repo::Q4_K_M`.
       let ggufVariant = settingsGgufVariantForRow(row);
       if (!ggufVariant && row.isGguf && row.capabilities.requiresVariant) {
-        // A local row only carries a repo id inside the HF cache, so a plain folder of quants
-        // has none while still needing one. The listing scans a path in the same position, as
-        // the on-device card does; without it this menu entry only reaches the error toast.
+        // A local row only carries a repo id inside the HF cache, so a plain folder of quants has
+        // none while still needing one; the listing scans a path in the same position.
         const repoId =
           row.kind === "cache" ? row.repoId : (row.repoId ?? row.path ?? null);
         if (repoId) {
@@ -1382,10 +1345,9 @@ export function ModelsPage() {
                 row.kind === "local" ? row.path : (row.cachePath ?? null),
             });
             const downloaded = res.variants.filter((v) => v.downloaded);
-            // Re-read after this await too: the lookup hits the network, and a switch during
-            // it would leave the branch below on the displaced model's quant. Against the
-            // server, not the store: nothing pushes an API switch into this tab, so the store
-            // is as old as the read above.
+            // Re-read after this await too: the lookup hits the network, and a switch during it would
+            // leave the branch below on the displaced model's quant. Against the server, not the store:
+            // nothing pushes an API switch into this tab.
             await refreshResidentModelStatus();
             if (settingsOpenSeq.current !== openSeq) return;
             const settled = useChatRuntimeStore.getState();
@@ -1398,8 +1360,7 @@ export function ModelsPage() {
               modelIdsMatch(alias, settledCheckpoint),
             );
             ggufVariant =
-              // Loaded quant, then repo default, then whatever is on disk, mirroring
-              // LocalOnDeviceCard. Loaded row only: Q4_K_M exists in most repos.
+              // Loaded quant, then repo default, then whatever is on disk, mirroring LocalOnDeviceCard.
               (settledIsActive
                 ? downloaded.find((v) =>
                     ggufVariantsMatch(v.quant, settled.activeGgufVariant),
@@ -1415,8 +1376,7 @@ export function ModelsPage() {
           }
         }
         if (!ggufVariant) {
-          // A model needing a quant cannot be configured without one: the picker matches
-          // variants exactly and would never find the config, while the API would.
+          // A model needing a quant cannot be configured without one: the picker matches variants exactly.
           toast.error("Couldn't determine which quant to configure.", {
             description:
               "Settings for this model are per quant. Check the connection or the model's cache, then try again.",
@@ -1428,8 +1388,7 @@ export function ModelsPage() {
       if (settingsOpenSeq.current !== openSeq) {
         return;
       }
-      // A repo in a previous cache loads by snapshot path, so `id` ends in the revision
-      // hash; name the row by what the user calls it instead.
+      // A repo in a previous cache loads by snapshot path, so `id` ends in the revision hash.
       const configId = row.kind === "cache" ? row.repoId : id;
       const leaf = configId.split(/[\\/]/).filter(Boolean).pop() ?? configId;
       setSettingsTarget({
@@ -1455,8 +1414,7 @@ export function ModelsPage() {
     },
     [activeCheckpoint, activeGgufVariant, hfToken, refreshResidentModelStatus],
   );
-  // Applying loads the model with exactly these settings, which ModelConfigPage has already
-  // persisted locally and, with "remember" on, to the server, so an API load matches.
+  // Applying loads the model with exactly these settings, already persisted by ModelConfigPage.
   const runSettingsTarget = useCallback(
     (config: PerModelConfig) => {
       const target = settingsTarget;
@@ -1494,13 +1452,11 @@ export function ModelsPage() {
       if (!selectedModel) return;
       // Shared with openModelSettings: another row's pending lookup must not land here.
       const openSeq = ++settingsOpenSeq.current;
-      // Unconditional, as in openModelSettings: the editor is seeded from the store and
-      // Apply reloads with what it seeded.
+      // Unconditional, as in openModelSettings: the editor seeds from the store and Apply reloads it.
       await refreshResidentModelStatus();
       if (settingsOpenSeq.current !== openSeq) return;
       let variant = ggufVariant;
-      // The card derived this quant from the store's active variant, now settled by the
-      // read above. A user-picked quant stands; a derived one defers to what is loaded.
+      // The card derived this quant from the store's active variant. A user-picked quant stands.
       if (!quantIsUserPicked) {
         const settled = useChatRuntimeStore.getState();
         const settledCheckpoint =
@@ -1521,8 +1477,7 @@ export function ModelsPage() {
           variant = settled.activeGgufVariant;
         }
       }
-      // The card passes null while its lookup is pending or after it failed, so this needs
-      // the same guard openModelSettings applies.
+      // The card passes null while its lookup is pending or failed, so guard as openModelSettings does.
       if (!variant && selectedModel.isGguf && selectedModel.requiresVariant) {
         toast.error("Couldn't determine which quant to configure.", {
           description:
@@ -1535,8 +1490,7 @@ export function ModelsPage() {
         selectedModel.kind,
         selectedModel.resource,
       );
-      // As in runSelectedModel: the editor seeds from this key, so the move has to happen
-      // before it reads or the page opens on defaults and Apply writes them back.
+      // As in runSelectedModel: the editor seeds from this key, so the move must happen first.
       adoptLegacyConfigKey(configId, id, variant);
       const leaf = configId.split(/[\\/]/).filter(Boolean).pop() ?? configId;
       setSettingsTarget({
@@ -1560,10 +1514,9 @@ export function ModelsPage() {
     },
     [selectedModel, refreshResidentModelStatus],
   );
-  // Whether the settings page is open on the loaded model, so it can show the live launch
-  // config. A GGUF off disk loads by path but is reported by its public id, so the row's path
-  // and its settings identity are both offered as aliases. A loose .gguf carries no variant while
-  // the loader derives one from its filename, so the two can never be required to agree.
+  // Whether the settings page is open on the loaded model, so it can show the live launch config.
+  // A GGUF off disk loads by path but is reported by its public id, so the row's path and its
+  // settings identity are both offered as aliases; a loose .gguf carries no variant.
   const settingsTargetIsStandaloneFile =
     settingsTarget !== null &&
     settingsTarget.ggufVariant == null &&
@@ -1653,13 +1606,41 @@ export function ModelsPage() {
     ],
   );
 
-  const catalogState = useMemo<ModelsCatalogState>(() => {
-    const typeFilterActive = !isDatasetMode && inventoryTypeFilter !== "all";
-    return {
+  const catalogState = useMemo<ModelsCatalogState>(
+    () => {
+      const typeFilterActive =
+        !isDatasetMode && inventoryTypeFilter !== "all";
+      return {
+        tab,
+        discoverRows: listRows,
+        cachedRows: filteredCachedRows,
+        localRows: filteredLocalRows,
+        selectedId,
+        isLoading,
+        downloadedReady,
+        inventoryError,
+        inventoryWarning,
+        query,
+        activeCheckpoint,
+        activeGgufVariant,
+        searchError,
+        online,
+        isDataset: isDatasetMode,
+        inventoryTokens,
+        scannedCount,
+        loadingIntentCount: discoverFetchIntent,
+        hasMore,
+        manualFetchAvailable: discoverManualFetchAvailable,
+        hasActiveFilters:
+          !isFeedMode &&
+          (deferredFormatFilter !== "all" ||
+            deferredCapabilityFilter !== "all" ||
+            (tab === "downloaded" && typeFilterActive)),
+        typeFilterActive,
+      };
+    },
+    [
       tab,
-      discoverRows: listRows,
-      cachedRows: filteredCachedRows,
-      localRows: filteredLocalRows,
       selectedId,
       isLoading,
       downloadedReady,
@@ -1670,45 +1651,21 @@ export function ModelsPage() {
       activeGgufVariant,
       searchError,
       online,
-      isDataset: isDatasetMode,
       inventoryTokens,
       scannedCount,
-      loadingIntentCount: discoverFetchIntent,
       hasMore,
-      manualFetchAvailable: discoverManualFetchAvailable,
-      hasActiveFilters:
-        !isFeedMode &&
-        (deferredFormatFilter !== "all" ||
-          deferredCapabilityFilter !== "all" ||
-          (tab === "downloaded" && typeFilterActive)),
-      typeFilterActive,
-    };
-  }, [
-    tab,
-    isFeedMode,
-    listRows,
-    filteredCachedRows,
-    filteredLocalRows,
-    selectedId,
-    isLoading,
-    downloadedReady,
-    inventoryError,
-    inventoryWarning,
-    query,
-    activeCheckpoint,
-    activeGgufVariant,
-    searchError,
-    online,
-    isDatasetMode,
-    inventoryTokens,
-    scannedCount,
-    discoverFetchIntent,
-    hasMore,
-    discoverManualFetchAvailable,
-    deferredFormatFilter,
-    deferredCapabilityFilter,
-    inventoryTypeFilter,
-  ]);
+      isFeedMode,
+      listRows,
+      filteredCachedRows,
+      filteredLocalRows,
+      isDatasetMode,
+      discoverFetchIntent,
+      discoverManualFetchAvailable,
+      deferredFormatFilter,
+      deferredCapabilityFilter,
+      inventoryTypeFilter,
+    ],
+  );
 
   const catalogPagination = useMemo<ModelsCatalogPagination>(
     () => ({
@@ -1790,8 +1747,7 @@ export function ModelsPage() {
     const ownerToggle = isDatasetMode ? undefined : (
       <OwnerScopeToggle value={ownerScope} onChange={setOwnerScope} />
     );
-    // Compact pill so it stays beside the view-mode tabs even in the narrow
-    // split pane instead of dropping to its own row.
+    // Compact pill so it stays beside the view-mode tabs even in the narrow split pane.
     return (
       <div className="flex flex-col gap-3 pt-6">
         {isChannelListMode ? (
@@ -1841,8 +1797,7 @@ export function ModelsPage() {
   ]);
 
   const downloadedHeader = useMemo(() => {
-    // Compact pills so they stay beside the view-mode tabs even in the narrow
-    // split pane instead of dropping to their own row.
+    // Compact pills so they stay beside the view-mode tabs even in the narrow split pane.
     const controls = (
       <div className="flex min-w-0 items-center gap-1.5">
         {!isDatasetMode && (
@@ -1921,8 +1876,7 @@ export function ModelsPage() {
       <div
         className={cn(
           "relative flex min-h-0 min-w-0 flex-1 basis-0",
-          // Split mode shares the top bar's centered --hub-measure column so the
-          // master list lines up with the heading instead of hugging the edge.
+          // Split mode shares the top bar's centered --hub-measure column so the list lines up.
           splitMode
             ? "flex-col lg:mx-auto lg:w-full lg:max-w-[var(--hub-measure)] lg:flex-row"
             : "flex-col",
@@ -1931,14 +1885,12 @@ export function ModelsPage() {
         <div
           className={cn(
             "flex min-h-0 flex-col",
-            // Split mode keeps the catalog as a master pane that grows with the
-            // container off a 460px floor; otherwise it fills the area and the
-            // detail view overlays it.
+            // Split mode keeps the catalog as a master pane that grows off a 460px floor; otherwise it
+            // fills the area and the detail view overlays it.
             splitMode
               ? "flex-1 lg:w-[clamp(460px,32%,620px)] lg:max-w-[44%] lg:flex-none lg:shrink-0 lg:border-r lg:border-border/60"
               : "flex-1",
-            // A full-bleed opaque overlay, so the catalog leaves the tab order; without
-            // this, tabbing out of the form walks into the rows behind it.
+            // A full-bleed opaque overlay, so the catalog leaves the tab order; else tabbing walks behind it.
             catalogCovered && "pointer-events-none",
           )}
           aria-hidden={catalogCovered || undefined}

@@ -10,6 +10,13 @@ export {
 } from "./api/hugging-face-cache";
 export type { HuggingFaceCacheSettings } from "./api/hugging-face-cache";
 export {
+  formatUploadSize,
+  getCachedUploadLimitBytes,
+  getCachedUploadLimitLabel,
+  loadUploadLimitSettings,
+  subscribeUploadLimitSettings,
+} from "./api/upload-limit";
+export {
   loadPersonalization,
   savePersonalization,
 } from "./api/personalization";

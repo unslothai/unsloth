@@ -172,8 +172,8 @@ def client(monkeypatch, tmp_path):
         "get_active_diffusion_engine",
         lambda: diffusion_module.get_diffusion_backend(),
     )
-    # The load route predicts the engine before selection (to preflight it before any unload); left
-    # real it reaches the host's binaries and, on a GPU-less runner, the live sd.cpp backend.
+    # The load route predicts the engine before selection; left real it reaches the host's binaries
+    # and, on a GPU-less runner, the live sd.cpp backend.
     monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: "diffusers")
     monkeypatch.setattr(engine_router, "_active_engine_name", "diffusers")
     monkeypatch.setattr(engine_router, "_fallback_reason", None)
@@ -636,9 +636,9 @@ def test_load_validation_failure_does_not_evict_chat(client, monkeypatch):
 
 
 def test_gated_base_load_returns_400_without_evicting_chat(client, monkeypatch):
-    # The images page falls back to /images/load whenever the download plan fails, so the plan's
-    # gated-base refusal alone is not enough: run here BEFORE acquire_for, or the pick the plan
-    # already rejected tears down the loaded chat model and only then reports the same message.
+    # The images page falls back to /images/load whenever the plan fails, so the plan's refusal
+    # alone is not enough: run here BEFORE acquire_for, or the pick the plan already rejected tears
+    # down the loaded chat model and only then reports the same message.
     import types as _types
 
     import core.inference.diffusion_device as devmod
@@ -674,8 +674,8 @@ def test_gated_base_load_returns_400_without_evicting_chat(client, monkeypatch):
 
 
 def test_cpu_load_skips_the_gated_preflight(client, monkeypatch):
-    # No arbiter handoff on a CPU host means no eviction to protect, so the route must not pay the
-    # preflight's Hub round-trips there: the loader's own copy still catches the gated base.
+    # No arbiter handoff on a CPU host means no eviction to protect, so the route skips the
+    # preflight's Hub round-trips: the loader's own copy still catches the gated base.
     import types as _types
 
     import core.inference.diffusion_device as devmod
@@ -703,11 +703,9 @@ def test_cpu_load_skips_the_gated_preflight(client, monkeypatch):
 
 def test_a_cpu_mispredicted_engine_is_still_preflighted(monkeypatch):
     """predict_engine never installs, so a host where the sd-cli install then fails lands on the
-    OTHER engine, and the preflight ran against the one that was never activated.
-
-    The GPU path always re-asked the engine it actually got. The CPU path did not, so a mispredict
-    there switched engines and started the load with the diffusers companions unread -- the bare
-    mid-download token error this preflight exists to replace."""
+    OTHER engine and the preflight ran against one never activated. The GPU path always re-asked the
+    engine it got; the CPU path did not, so a mispredict there started the load with the diffusers
+    companions unread -- the bare mid-download token error this preflight exists to replace."""
     from types import SimpleNamespace
 
     import core.inference.diffusion_device as devmod
@@ -766,13 +764,10 @@ def test_a_cpu_mispredicted_engine_is_still_preflighted(monkeypatch):
     [("cuda", {}), ("cpu", {"UNSLOTH_DIFFUSION_SD_CPP": "0"})],
 )
 def test_gated_pick_on_an_engine_switch_keeps_the_previous_model(monkeypatch, device, env):
-    """The refusal must precede the engine switch, not follow it.
-
-    Activating the other engine unloads the deactivated one, so a preflight that ran after the
-    selection destroyed the resident image model and only then reported the gated repo -- exactly
-    the eviction this check exists to prevent. The CPU case has no GPU handoff at all, so there the
-    switch is the only thing at stake.
-    """
+    """The refusal must precede the engine switch, not follow it: activating the other engine
+    unloads the deactivated one, so a preflight running after the selection destroyed the resident
+    image model and only then reported the gated repo. The CPU case has no GPU handoff at all, so
+    there the switch is the only thing at stake."""
     from types import SimpleNamespace
 
     import core.inference.diffusion_device as devmod
@@ -1318,7 +1313,7 @@ def test_download_plan_uses_the_engine_the_load_will_pick(client, monkeypatch):
     native_plan = {
         "entries": [
             {
-                "repo_id": "Comfy-Org/z_image_turbo",
+                "repo_id": "unsloth/Z-Image-Turbo-ComfyUI",
                 "files": ["ae.safetensors"],
                 "bytes": 7,
                 "gguf_filename": None,
