@@ -188,23 +188,13 @@ _COMMAND_PREFIXES = frozenset(
 # the ARGUMENTS of a user program that happens to be named call.
 # https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/call
 _CMD_ONLY_PREFIXES = frozenset({"call"})
-# The other direction: shell builtins cmd either lacks or means differently.
-# Windows `time` is `time [/t]`, which sets the clock rather than running the
-# word behind it, and `command`, `builtin` and `exec` are bash's own.
-_POSIX_ONLY_PREFIXES = frozenset({"time", "timeout", "command", "builtin", "exec"})
-
-
-def _selects_its_own_executable(token: str) -> bool:
-    """Whether ``token`` names a program by PATH rather than by bare name.
-
-    A bare `timeout` is whatever the system resolves, and on Windows that is
-    the one taking a delay. A path picks a specific executable instead, so the
-    reasons for reading the bare Windows spelling as a non-wrapper do not carry
-    over to it. Quote marks are cmd's to strip, and either separator counts:
-    cmd accepts both.
-    """
-    bare = token.strip("\"'")
-    return "/" in bare or "\\" in bare
+# Windows spells some of these differently -- `time [/t]` sets the clock and
+# TIMEOUT takes a delay rather than a command -- but which executable a BARE
+# name resolves to is not ours to assume: _build_safe_env puts the interpreter
+# directory and an active venv in front of System32, so a coreutils
+# `timeout.exe` dropped in either one wins the lookup and really does run
+# `timeout 5 powershell`. A screen that guessed the Windows spelling here would
+# fail open on exactly that. They are read as wrappers on both lanes.
 
 
 # bash's source builtins. cmd has neither, so a PATH whose last segment happens
@@ -1163,15 +1153,18 @@ def _is_document_target(target: str) -> bool:
             break
         if _path_suffix(word) in _WINDOWS_EXE_SUFFIXES:
             return False
-    if stopped < len(words) and any(
-        word.strip('"').startswith("-") or _is_start_switch(word.strip('"'))
-        for word in words[stopped:]
-    ):
-        # An OPTION behind the path is what makes the string a command line:
-        # `C:\tools\powershell -Command script.ps1` runs a shell and hands it a
-        # script. Without one the extra words belong to the file's own name,
-        # which may hold as many spaces as it likes, so
-        # `C:\tmp\curl notes report.pdf` is one document START opens.
+    if stopped < len(words):
+        # Words behind the path make the string a command line, whether they
+        # are options or positional. An unquoted name holding spaces is
+        # ambiguous and Windows resolves the ambiguity by trying successively
+        # LONGER prefixes with `.exe` appended, first one wins, so
+        # `C:\tools\powershell payload.ps1` runs `C:\tools\powershell.exe`
+        # before the whole string is ever tried as a filename.
+        # https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw
+        # Requiring an option here was mine, and it read that first prefix as
+        # part of a document's name: a launch behind a positional argument went
+        # unscreened. A name whose first word is no program is untouched, since
+        # the walk only reaches here once one has been resolved.
         return False
     # Nothing along the path is executable, so the whole target is a candidate
     # FILE and its own suffix decides. A document's name may hold spaces, which
@@ -1281,6 +1274,30 @@ def _has_bare_cmd_operator(text: str) -> bool:
         # the text at every operator, which copied a longer prefix each time.
         carets = 0
     return False
+
+
+def _cmd_group_delta(token: str) -> int:
+    """How many cmd groups ``token`` opens, less how many it closes.
+
+    Only LIVE parentheses count, on the same terms as ``_live_operator_tail``:
+    one inside a quoted span or behind an odd run of carets is text, and a `(`
+    glued behind a plain word is `echo(`'s no-space form rather than a group.
+    """
+    quotes = 0
+    carets = 0
+    delta = 0
+    for position, char in enumerate(token):
+        if char == "^" and quotes % 2 == 0:
+            carets += 1
+            continue
+        if char == '"' and carets % 2 == 0:
+            quotes += 1
+        elif quotes % 2 == 0 and carets % 2 == 0:
+            if char == "(" and (position == 0 or token[position - 1] in "&|()^"):
+                delta += 1
+            elif char == ")":
+                delta -= 1
+    return delta
 
 
 def _ends_with_cmd_operator(token: str) -> bool:
@@ -1902,7 +1919,14 @@ def _blocked_quoted_program(payload: str, blocked_names: "frozenset[str]") -> "s
         # a real executable, `C:\powershell scripts\notepad.exe`, still reports
         # the notepad it launches rather than the folder it sits in.
         first = os.path.basename(program[0].replace("\\", "/"))
-        candidates.append(os.path.splitext(first)[0].lower())
+        first_stem, first_ext = os.path.splitext(first)
+        if not first_ext or first_ext.lower() in _WINDOWS_EXE_SUFFIXES:
+            # `.exe` is appended only to a name that carries NO extension, so a
+            # prefix that already has one is tried literally. cmd runs neither
+            # `C:\reports\curl.txt` nor `C:\tmp\powershell.docx` -- without
+            # START there is no association to open them through -- and reading
+            # the stem out of one reported a program that never launches.
+            candidates.append(first_stem.lower())
     return {base for base in candidates if base in blocked_names}
 
 
@@ -1958,7 +1982,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
     command_prefixes = (
         _COMMAND_PREFIXES
         if lexed_posix and not _cmd_payload
-        else (_COMMAND_PREFIXES | _CMD_ONLY_PREFIXES) - _POSIX_ONLY_PREFIXES
+        else _COMMAND_PREFIXES | _CMD_ONLY_PREFIXES
     )
     try:
         if not lexed_posix:
@@ -2047,15 +2071,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 # The closing mark of the span belongs to the program, not to
                 # the arguments behind it.
                 consumed += 1
-            respelled = program_stem
-            if program_stem in _POSIX_ONLY_PREFIXES and _selects_its_own_executable(program_word):
-                # ...except where the DIRECTORY is the thing that matters. cmd's
-                # own `timeout` takes a delay, so the cmd lane reads the bare
-                # name as no wrapper at all; dropping the path in front of it
-                # turned `C:/tools/timeout 5 powershell` into that bare name and
-                # lost the launch. Only the suffix comes off here.
-                respelled = os.path.splitext(program_word.strip('"'))[0]
-            return found | _find_blocked_commands(respelled + text[consumed:], _cmd_payload = True)
+            return found | _find_blocked_commands(program_stem + text[consumed:], _cmd_payload = True)
         if any(char.isspace() or char in "\"'" for char in text):
             return _find_blocked_commands(text, _cmd_payload = True)
         base = _token_basename(text)
@@ -2261,12 +2277,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             # whole meant `start "" C:\tools\timeout 5 powershell` named no
             # wrapper at all while its forward-slash spelling did.
             base = _reported_basename(token)
-            # A path picks a specific executable, so cmd's reasons for reading
-            # the bare `timeout` as no wrapper do not reach it. Same rule the
-            # main walk applies, and START's target comes through here.
-            if base in (prefixes or command_prefixes) or (
-                base in _POSIX_ONLY_PREFIXES and _selects_its_own_executable(token)
-            ):
+            if base in (prefixes or command_prefixes):
                 wrapper = base
                 i += 1
                 continue
@@ -2286,7 +2297,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
     expect_command = True  # start of string is a command position
     # What a `/c` hands over is cmd's command line whatever lexed the outer one,
     # so bash's own builtins stop being wrappers inside it.
-    cmd_payload_prefixes = (command_prefixes | _CMD_ONLY_PREFIXES) - _POSIX_ONLY_PREFIXES
+    cmd_payload_prefixes = command_prefixes | _CMD_ONLY_PREFIXES
     in_cmd_payload = False
     active_prefixes = command_prefixes  # narrowed once an external wrapper executes
     command_indexes: "set[int]" = set()  # words the shell runs, for the walks below
@@ -2300,7 +2311,14 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
     sed_indexes: "list[int]" = []  # command-position sed words, for the `e` scan below
     sed_xargs: "dict[int, int]" = {}  # sed word -> the xargs that builds its argv
     xargs_index = -1  # an xargs awaiting the command it wraps
+    group_depth = 0  # cmd groups opened by a live `(` and not yet closed
     for token_index, token in enumerate(tokens):
+        # Counted before the token is read, so a `)` is judged against the
+        # groups standing in front of it. Never below zero: an unmatched `)` on
+        # a line cmd would refuse must not make a later one look matched.
+        opened_before = group_depth
+        if not lexed_posix:
+            group_depth = max(0, group_depth + _cmd_group_delta(token))
         if token_index in newline_starts:
             # A newline ends the command as surely as `;` does, and it ends any
             # operand or wrapper still waiting on one with it. Both lexers count
@@ -2356,7 +2374,12 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             in_cmd_payload = True
             active_prefixes = cmd_payload_prefixes
             continue
-        if expect_command and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
+        if expect_command and if_pending and token.lower() in _WIN_CONDITIONAL_KEYWORDS:
+            # Only inside a condition. EXIST, DEFINED, ERRORLEVEL and
+            # CMDEXTVERSION are IF's operators, not commands: at a command
+            # position of their own they name a program and take their words as
+            # ordinary arguments, so consuming an operand there stepped over one
+            # and opened a command position cmd never opens.
             skip_operand = token.lower() != "not"
             if_pending = token.lower() == "not" and if_pending
             continue
@@ -2463,12 +2486,23 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             prefix_pending = tail_base in (command_prefixes | _CMD_ONLY_PREFIXES)
             prefix_command = tail_base if prefix_pending else ""
             # A keyword handed over by the operator opens what it always opens,
-            # IF's condition included: cmd runs `echo&if 1==1 powershell`.
-            if_pending = tail_base == "if"
+            # IF's condition included: cmd runs `echo&if 1==1 powershell`. Read
+            # from the RAW tail, since _token_basename drops an executable
+            # suffix and `echo&if.exe 1==1 powershell` launches a program named
+            # if.exe with those words as its arguments, evaluating nothing.
+            if_pending = _unquote(operator_tail).lower() == "if"
             expect_command = prefix_pending or tail_base in _SHELL_KEYWORDS_AS_SEP
             continue
         if not expect_command:
-            if not lexed_posix and _ends_with_cmd_operator(token):
+            if (
+                not lexed_posix
+                and _ends_with_cmd_operator(token)
+                # ...but a `)` ends a command only if a group was ever opened.
+                # cmd has nothing to close otherwise, so the parenthesis is
+                # ordinary text and the words behind it stay arguments:
+                # `cmd /c echo foo) powershell` prints the lot.
+                and (token[-1] != ")" or opened_before > 0)
+            ):
                 # A group closing on the same token as its last word still ends
                 # the command: `if 1==0 (echo no) else powershell` runs the ELSE
                 # clause, and treating `no)` as an ordinary argument left it
@@ -2528,14 +2562,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             blocked |= _blocked_matching_glob(base)
         # Wrappers (env/time/xargs/sudo) consume one command; the next non-flag,
         # non-numeric token is the real command. sudo is also in _BLOCKED_COMMANDS.
-        # cmd's own `time` and `timeout` take a clock reading or a delay rather
-        # than a command, which is why the cmd lane subtracts them. A PATH picks
-        # a DIFFERENT executable: `C:/tools/timeout 5 powershell` selects the one
-        # documented as `timeout DURATION COMMAND [ARG]...`, which really does
-        # launch its child, so the wrapper reading has to survive for it.
-        if base in active_prefixes or (
-            base in _POSIX_ONLY_PREFIXES and _selects_its_own_executable(token)
-        ):
+        if base in active_prefixes:
             if base == "xargs" and xargs_index < 0:
                 xargs_index = token_index
             prefix_pending = True

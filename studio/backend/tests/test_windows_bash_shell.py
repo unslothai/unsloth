@@ -664,20 +664,6 @@ def test_a_posix_builtin_wrapper_is_read_only_under_bash(windows_git_bash_only, 
     assert tools._find_blocked_commands(command)
 
 
-@pytest.mark.parametrize(
-    "command",
-    [
-        "cmd /c time powershell",
-        "cmd /c command powershell",
-        "cmd /c exec powershell",
-        "cmd /c builtin powershell",
-    ],
-)
-def test_a_posix_builtin_wrapper_is_not_read_in_a_cmd_payload(windows_terminal, command):
-    # The other half. A `/c` payload is cmd's line whatever lexed the outer one,
-    # so bash's own builtins do not run anything inside it.
-    assert not tools._find_blocked_commands(command)
-
 
 def test_a_newline_inside_quotes_does_not_start_a_command(windows_terminal):
     # Only a newline the quoting left bare ends a command. One inside a quoted
@@ -1011,14 +997,14 @@ def test_a_caret_continues_a_cmd_line(monkeypatch):
 @pytest.mark.parametrize(
     "command",
     [
-        'cmd //c start "" "C:\\tmp\\rm report.docx"',
-        'cmd //c start "" "C:\\my docs\\curl notes.pdf"',
+        'cmd //c start "" "C:\\tmp\\my report.docx"',
+        'cmd //c start "" "C:\\my docs\\notes summary.pdf"',
     ],
 )
 def test_a_document_path_with_spaces_is_still_a_document(windows_terminal, command):
     # A quoted document path holds spaces like any other, and re-lexing it as a
-    # command line read `rm report.docx` as the rm builtin. Its suffix is not one
-    # cmd executes, so START opens it through its association.
+    # command line read the first word as a program. No prefix of these names
+    # spells one, so START opens the file through its association.
     assert not tools._find_blocked_commands(command)
 
 
@@ -1422,9 +1408,9 @@ def test_an_executable_is_not_extended_into_its_arguments(windows_terminal, comm
 
 
 def test_a_document_name_may_still_hold_a_space(windows_terminal):
-    # The other side of that: nothing along `C:\tmp\rm report.docx` is
+    # The other side of that: nothing along `C:\tmp\my report.docx` is
     # executable, so the whole target is one file and its own suffix decides.
-    assert not tools._find_blocked_commands('cmd //c start "" "C:\\tmp\\rm report.docx"')
+    assert not tools._find_blocked_commands('cmd //c start "" "C:\\tmp\\my report.docx"')
 
 
 def test_the_newline_marker_is_not_attacker_controlled(windows_terminal):
@@ -1946,16 +1932,6 @@ def test_if_skips_its_case_insensitive_switch(windows_terminal):
     assert "powershell" in tools._find_blocked_commands("cmd /c if /i a==a powershell -Command ls")
 
 
-@pytest.mark.parametrize(
-    "command",
-    ["cmd /c timeout 5 powershell -Command ls", "cmd /c timeout /t 5 powershell"],
-)
-def test_windows_timeout_runs_nothing_behind_it(windows_terminal, command):
-    # Windows TIMEOUT pauses the command processor; it takes `/t` and `/nobreak`
-    # and does not forward to the word behind it, unlike the POSIX wrapper of
-    # the same name.
-    assert not tools._find_blocked_commands(command)
-
 
 def test_the_posix_timeout_still_wraps(windows_git_bash_only):
     # The other half, on the lane where `timeout 5 cmd` really does run cmd.
@@ -2128,14 +2104,14 @@ def test_a_document_name_may_still_hold_spaces(windows_terminal, command):
 @pytest.mark.parametrize(
     "command",
     [
-        'cmd /c start "" "C:\\tmp\\curl notes report.pdf"',
         'cmd /c start "" "C:\\tmp\\my report.pdf"',
+        'cmd /c start "" "C:\\tmp\\notes for review.pdf"',
     ],
 )
 def test_a_document_name_may_hold_many_words(windows_terminal, command):
-    # An OPTION behind the path is what makes a quoted string a command line.
-    # Without one the extra words belong to the file's own name, however many
-    # of them there are, and START opens it by association.
+    # A file's name may hold as many spaces as it likes, and none of the
+    # prefixes Windows tries out of these spells a program, so START opens
+    # the document by association.
     assert not tools._find_blocked_commands(command)
 
 
@@ -2266,17 +2242,139 @@ def test_a_path_qualified_wrapper_still_wraps(windows_cmd_only, command):
     assert "powershell" in tools._find_blocked_commands(command)
 
 
+
+
 @pytest.mark.parametrize(
     "command",
     [
         "timeout 5 powershell -Command ls",
         "time powershell -Command ls",
+        "command powershell -Command ls",
+        "exec powershell -Command ls",
+        "builtin powershell -Command ls",
         'cmd /c "timeout 5 powershell -Command ls"',
+        "cmd /c time powershell -Command ls",
         'start "" timeout 5 powershell -Command ls',
     ],
 )
-def test_a_bare_windows_wrapper_launches_nothing(windows_cmd_only, command):
-    # The other half, and the reason the subtraction exists: cmd's own spelling
-    # of these names runs no child, so reading one as a wrapper refuses a line
-    # that could not have launched anything.
+def test_a_bare_wrapper_name_is_still_a_wrapper(windows_cmd_only, command):
+    # Windows spells some of these differently -- TIME sets the clock, TIMEOUT
+    # takes a delay -- but which executable a bare name RESOLVES to is not ours
+    # to assume. _build_safe_env puts the interpreter directory and an active
+    # venv in front of System32, so a coreutils timeout.exe in either one wins
+    # the lookup and really does run the word behind it.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("command", ["timeout /t 5", "time /t", "cmd /c timeout /t 5"])
+def test_a_wrapper_with_no_child_names_nothing(windows_cmd_only, command):
+    # The flag is the wrapper's own argument either way, so no command follows.
     assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'start "" "C:\\tools\\powershell payload.ps1"',
+        'cmd /c start "" "C:\\tools\\powershell payload.ps1"',
+        'cmd /c start "" "C:\\tmp\\curl notes report.pdf"',
+        'cmd //c start "" "C:\\my docs\\curl notes.pdf"',
+    ],
+)
+def test_a_prefix_of_a_spaced_name_that_spells_a_program_is_one(windows_terminal, command):
+    # An unquoted name holding spaces is ambiguous, and Windows resolves it by
+    # trying successively LONGER prefixes with `.exe` appended, first one wins.
+    # So a positional argument behind the path is no more a document than an
+    # option is: the program at the front of it runs either way.
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c C:\\reports\\curl.txt",
+        "cmd /c C:\\tmp\\powershell.docx",
+    ],
+)
+def test_a_non_executable_suffix_names_no_program(windows_cmd_only, command):
+    # `.exe` is appended only to a name carrying NO extension, so one that
+    # already has a non-executable suffix is tried literally. Without START
+    # there is no association to open it through, and cmd refuses the line.
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command", ["cmd /c C:\\tools\\powershell.exe", "cmd /c C:\\tools\\powershell"]
+)
+def test_an_executable_or_suffixless_path_still_names_its_program(windows_cmd_only, command):
+    # The other half: an executable suffix runs, and a suffixless path is what
+    # PATHEXT completes.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command", ["cmd /c echo foo) powershell -Command ls", "echo hi) rm -rf x"]
+)
+def test_an_unmatched_paren_closes_no_group(windows_cmd_only, command):
+    # cmd has nothing to close, so the parenthesis is ordinary text and the
+    # words behind it stay arguments of the command in front.
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c (echo foo) powershell -Command ls",
+        "cmd /c ( echo no ) powershell -Command ls",
+        "cmd /c if 1==0 (echo no) else powershell -Command ls",
+    ],
+)
+def test_a_group_that_was_opened_still_ends_the_command(windows_cmd_only, command):
+    # The other half: a live `(` in front means the `)` really does close one.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c cmdextversion foo powershell",
+        "cmd /c errorlevel foo powershell",
+        "cmd /c defined foo powershell",
+        "cmd /c exist foo powershell",
+    ],
+)
+def test_a_condition_operator_is_not_one_at_command_position(windows_cmd_only, command):
+    # EXIST, DEFINED, ERRORLEVEL and CMDEXTVERSION are IF's operators. On their
+    # own they name a program and take their words as ordinary arguments, so
+    # consuming an operand there opened a command position cmd never opens.
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c if cmdextversion 1 powershell",
+        "cmd /c if errorlevel 1 powershell",
+        "cmd /c if exist x powershell",
+        "cmd /c if not exist x powershell",
+    ],
+)
+def test_a_condition_operator_behind_if_still_opens_a_body(windows_cmd_only, command):
+    # The other half, inside a condition IF really opened.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["cmd /c echo&if.exe 1==1 powershell", "cmd /c echo&if.cmd 1==1 powershell"],
+)
+def test_a_program_named_if_behind_an_operator_is_a_program(windows_cmd_only, command):
+    # The basename drops an executable suffix, which turned `if.exe` into the
+    # keyword. cmd launches it with those words as arguments and evaluates
+    # nothing. The unglued and START paths already drew this distinction.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_a_bare_if_behind_an_operator_still_opens_a_condition(windows_cmd_only):
+    # The other half, unchanged.
+    assert "powershell" in tools._find_blocked_commands("cmd /c echo&if 1==1 powershell")
