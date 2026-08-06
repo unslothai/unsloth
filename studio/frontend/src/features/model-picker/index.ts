@@ -54,6 +54,7 @@ export {
   PER_MODEL_CONFIG_STORAGE_KEY,
   PER_MODEL_CONFIG_UPDATED_EVENT,
   adoptLegacyConfigKey,
+  isServedByLlamaCpp,
   listPerModelConfigs,
   isServedByMlx,
   presetLoadSettingNames,

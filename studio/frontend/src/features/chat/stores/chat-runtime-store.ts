@@ -2487,6 +2487,9 @@ type ChatRuntimeStore = {
   loadedContextLength: number | null;
   maxContextLength: number | null;
   nativeContextLength: number | null;
+  /** The backend's own is_gguf for the loaded model; null until one loads. Set wherever
+   *  loadedContextLength is, so a context never arrives unattributed. */
+  loadedIsGguf: boolean | null;
   modelRequiresTrustRemoteCode: boolean;
   supportsReasoning: boolean;
   reasoningAlwaysOn: boolean;
@@ -3737,6 +3740,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
   loadedContextLength: null,
   maxContextLength: null,
   nativeContextLength: null,
+  loadedIsGguf: null,
   modelRequiresTrustRemoteCode: false,
   supportsReasoning: false,
   reasoningAlwaysOn: false,
@@ -4552,6 +4556,7 @@ export const useChatRuntimeStore = create<ChatRuntimeStore>((set, get) => ({
       loadedContextLength: null,
       maxContextLength: null,
       nativeContextLength: null,
+      loadedIsGguf: null,
       modelRequiresTrustRemoteCode: false,
       contextUsage: null,
       contextUsageByThreadId: {},
