@@ -4859,11 +4859,14 @@ def _estimate_gguf_kv_gb(
     tensor_parallel: bool = False,
     n_batch: Optional[int] = None,
     n_ubatch: Optional[int] = None,
+    n_devices: int = 1,
 ) -> float:
     """KV-cache plus compute-buffer VRAM (GB) at the larger of max_seq_length and
     any `--ctx-size`/`-c` override, over n_parallel slots at the effective
     micro-batch, using the effective cache settings and managed launcher
-    defaults. 0 if metadata is unreadable."""
+    defaults. Compute buffers scale with the split the loader budgets: tensor
+    mode reserves them on every device, a multi-GPU layer split replicates the
+    context-linear term. 0 if metadata is unreadable."""
     try:
         from core.inference.llama_server_args import parse_ctx_override
 
@@ -4919,10 +4922,33 @@ def _estimate_gguf_kv_gb(
             flash_attn = False,
         )
         # the load also reserves the ubatch-scaled compute buffers, so a large micro-batch must count against training here too
-        compute = probe._estimate_compute_buffer_bytes(
-            n_ubatch = effective_ubatch,
-            n_parallel = slots,
-        ) + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_budget)
+        devices = max(1, int(n_devices))
+        if tensor_parallel:
+            # mirrors _plan_tensor_parallel: per-device buffer and ctx growth on every device
+            compute = devices * (
+                probe._estimate_compute_buffer_bytes(
+                    n_ubatch = effective_ubatch,
+                    n_parallel = slots,
+                    per_device_tensor = True,
+                )
+                + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_budget)
+            )
+        else:
+            # mirrors the layer fit: flat buffer once, per-device overhead per extra device, ctx growth replicated across the split
+            compute = (
+                probe._estimate_compute_buffer_bytes(
+                    n_ubatch = effective_ubatch,
+                    n_parallel = slots,
+                )
+                + (devices - 1) * probe._PIPELINE_PER_DEVICE_OVERHEAD_MIB * 1024 * 1024
+                + devices
+                * probe._compute_buffer_ctx_bytes(
+                    ctx,
+                    effective_ubatch,
+                    cache_type_for_budget,
+                    layer_split = devices > 1,
+                )
+            )
         return (kv + compute) / (1024**3)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
@@ -4939,6 +4965,7 @@ def _estimate_gguf_required_gb(
     tensor_parallel: bool = False,
     n_batch: Optional[int] = None,
     n_ubatch: Optional[int] = None,
+    n_devices: int = 1,
 ) -> Optional[float]:
     """Approximate GGUF VRAM (GB): quantized weights + companions, plus the KV
     cache for local files (unreadable pre-download for remote). None when nothing
@@ -4962,6 +4989,7 @@ def _estimate_gguf_required_gb(
                 tensor_parallel,
                 n_batch,
                 n_ubatch,
+                n_devices,
             )
 
         repo = getattr(config, "gguf_hf_repo", None)
@@ -5449,6 +5477,8 @@ def _guard_chat_load_against_training(
                     or LlamaCppBackend._effective_gpu_count(requested_gpu_ids) >= 2
                 )
             ),
+            # size the compute buffers for the split the loader would budget
+            n_devices = max(1, LlamaCppBackend._effective_gpu_count(requested_gpu_ids)),
         )
         if is_gguf
         else None

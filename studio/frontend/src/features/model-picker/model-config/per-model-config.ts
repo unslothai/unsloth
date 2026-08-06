@@ -92,13 +92,15 @@ export const MTP_SPECULATIVE_TYPES: ReadonlySet<string> = new Set([
 const STORAGE_KEY = "unsloth_model_configs";
 const LEGACY_STORAGE_KEY = "unsloth_load_settings";
 const LEGACY_MIGRATION_FLAG = "unsloth_model_configs_migrated";
-const STORAGE_SCHEMA_VERSION = 1;
+// v2 added nBatch / nUbatch; a v1 client's normalizer would rewrite them away
+const STORAGE_SCHEMA_VERSION = 2;
+const PRE_BATCH_SCHEMA_VERSION = 1;
 const MAX_ENTRIES = 500;
 const MAX_PER_MODEL_CONFIG_STORAGE_BYTES = 1024 * 1024;
 export const MAX_CHAT_TEMPLATE_BYTES = 65_536;
 
 type StoredPerModelConfig = PerModelConfig & {
-  version: typeof STORAGE_SCHEMA_VERSION;
+  version: number;
 };
 type StoredMap = Record<string, PerModelConfig | StoredPerModelConfig>;
 type RawConfig = Partial<PerModelConfig> & { version?: unknown };
@@ -639,9 +641,15 @@ function normalize(raw: unknown): PerModelConfig {
 }
 
 function toStoredConfig(config: PerModelConfig): StoredPerModelConfig {
+  const normalized = normalize(config);
+  // records without the v2-only batch fields keep v1 so an older client can still read and rewrite them safely
+  const version =
+    normalized.nBatch != null || normalized.nUbatch != null
+      ? STORAGE_SCHEMA_VERSION
+      : PRE_BATCH_SCHEMA_VERSION;
   return {
-    version: STORAGE_SCHEMA_VERSION,
-    ...normalize(config),
+    version,
+    ...normalized,
   };
 }
 

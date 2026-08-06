@@ -1280,12 +1280,15 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 seen["flash_attn"] = flash_attn
                 return ctx * n_parallel * (1024**2)  # 1 MiB per ctx unit per slot
 
+            _PIPELINE_PER_DEVICE_OVERHEAD_MIB = 0
+
             # zeroed: this test pins the kv sizing, not the compute buffers
             def _estimate_compute_buffer_bytes(
                 self,
                 *,
                 n_ubatch = None,
                 n_parallel = 1,
+                per_device_tensor = False,
             ):
                 seen["compute_n_ubatch"] = n_ubatch
                 return 0
@@ -1295,6 +1298,8 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 n_ctx,
                 n_ubatch = None,
                 cache_type_kv = None,
+                *,
+                layer_split = False,
             ):
                 return 0
 
