@@ -322,7 +322,14 @@ jobs:
   # ═════════════════════════════════════════════════════════════════════
   file-edit:
     name: file-edit (${{ matrix.agent }})
-    if: github.event_name != 'pull_request'
+    # Weekly / dispatch only, stated explicitly rather than as "not a PR".
+    # The main push trigger above exists solely to seed the cache that the
+    # save steps are now gated to main for, and `connection` already writes
+    # the identical key (same GGUF_REPO and GGUF_FILE), so this job seeds
+    # nothing new. Left as `!= 'pull_request'` a push would newly start its
+    # 2-job matrix at 60 minutes each, which is runtime the seeding does not
+    # need and which this job was never meant to spend outside its cron.
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 60
     # hermes and openclaw drive a multi-turn tool loop that a CPU-only runner
