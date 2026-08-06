@@ -363,7 +363,9 @@ _SUBSTITUTION_SPAN_STEP = 64
 # Distinct from the surrounding quoting because bash expands neither: the `$(` in
 # `sed "s/\$(CC)/gcc/" Makefile` opens no command substitution.
 _ESCAPED_CHAR_STATE = "\\"
-_WIN_CONDITIONAL_KEYWORDS = frozenset({"exist", "defined", "errorlevel", "not"})
+_WIN_CONDITIONAL_KEYWORDS = frozenset(
+    {"exist", "defined", "errorlevel", "cmdextversion", "not"}
+)
 # cmd's IF also takes a comparison, either glued (`if 1==1 cmd`) or spelled with
 # one of these operators (`if %a% equ 1 cmd`). The body behind it is a command
 # cmd runs, so the operands have to be stepped over to reach it.
@@ -1141,11 +1143,20 @@ def _is_document_target(target: str) -> bool:
     # other check on it.
     words = stripped.split()
     carries = _path_continuations(words)
+    stopped = len(words)
     for position, word in enumerate(words):
         if position and not _continues_path(words, position, carries):
+            stopped = position
             break
         if _path_suffix(word) in _WINDOWS_EXE_SUFFIXES:
             return False
+    if stopped < len(words) - 1:
+        # The path ended with more than one word behind it, so those words are
+        # ARGUMENTS and the whole string is a command line. Judging it by the
+        # last one read `C:\tools\powershell -Command script.ps1` as a `.ps1`
+        # document and skipped the shell in front of it. A single trailing word
+        # is still the document's own name, which may hold spaces.
+        return False
     # Nothing along the path is executable, so the whole target is a candidate
     # FILE and its own suffix decides. A document's name may hold spaces, which
     # is why `C:\tmp\rm report.docx` is one file rather than rm with an operand.
@@ -2745,6 +2756,19 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
                 prev_base = _token_basename(_unquote(prev_tail or prev).replace("\\", "/"))
                 if (is_unix_c and prev_base in _SHELLS) or (is_win_c and prev_base in _SHELLS_WIN):
                     command_indexes.add(i + 1)
+                    if is_win_c and i + 1 not in screened_indexes:
+                        # A shell the main walk never reached, published here by
+                        # a launcher pass. cmd runs the WHOLE remainder as one
+                        # command string, so `start "" cmd /c if 1==1 powershell`
+                        # needs the condition parser over `if 1==1 powershell`
+                        # rather than the single word behind the switch.
+                        offsets = _token_offsets()
+                        remainder = (
+                            command[offsets[i + 1] :]
+                            if offsets and i + 1 < len(offsets)
+                            else " ".join(tokens[i + 1 :])
+                        )
+                        blocked |= _screen_cmd_payload(_unwrap_quotes(remainder.strip()))
                     # What follows a `/c` is cmd's to parse even when the outer
                     # shell is bash, so CALL forwards there too. Published here
                     # rather than read from the prefix set, which is bash's on

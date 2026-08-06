@@ -2070,3 +2070,56 @@ def test_a_glued_payload_never_raises(windows_terminal, command):
     # were unassigned on the first pass. Found by randomised differential
     # fuzzing, which counts a raise as a crash rather than an answer.
     assert isinstance(tools._find_blocked_commands(command), set)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "cmd /c if cmdextversion 1 powershell -Command ls",
+        "cmd /c if errorlevel 1 powershell -Command ls",
+        "cmd /c if defined FOO powershell -Command ls",
+    ],
+)
+def test_every_cmd_condition_leaves_its_body_behind_it(windows_terminal, command):
+    # IF takes EXIST, DEFINED, ERRORLEVEL and CMDEXTVERSION as well as a
+    # comparison, and each carries its own operand. Missing one consumed the
+    # body as though it were the operand.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'start "" cmd /c if 1==1 powershell -Command ls',
+        "find . -exec cmd /c if 1==1 powershell -Command ls ;",
+    ],
+)
+def test_a_late_discovered_shell_reparses_its_whole_payload(windows_terminal, command):
+    # A shell the main walk never reached is published by a launcher pass, and
+    # cmd runs the WHOLE remainder as one command string. Screening only the
+    # word behind the switch left the condition unparsed and its body unread.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'start "" "C:\\tools\\powershell -Command script.ps1"',
+        'start "" "C:\\tools\\powershell -Command ls"',
+    ],
+)
+def test_a_suffixless_program_with_arguments_is_a_command_line(windows_terminal, command):
+    # START resolves a suffixless leading path through PATHEXT, so a `.ps1` word
+    # further along is its ARGUMENT. Judging the string by its last word called
+    # the whole thing a document and skipped the shell in front of it.
+    assert "powershell" in tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['start "" "C:\\tmp\\report.docx"', 'start "" "C:\\tmp\\my report.docx"'],
+)
+def test_a_document_name_may_still_hold_spaces(windows_terminal, command):
+    # The other half: one trailing word is the document's own name, which may
+    # carry spaces, and that is still a document rather than a command line.
+    assert not tools._find_blocked_commands(command)
