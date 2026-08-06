@@ -1301,6 +1301,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            _cols = getattr(_ds, 'column_names', None)\n"
                     "            if isinstance(_cols, dict):\n"
                     "                _cols = [_c for _v in _cols.values() for _c in (_v or [])]\n"
+                    # A packed split is out: TRL skips truncation when packing
+                    # (`if args.max_length is not None and not packing`), and cutting
+                    # `input_ids` under a `seq_lengths` that still describes the old
+                    # row is worse than not cutting at all.
+                    "            if 'seq_lengths' in (_cols or ()): return False\n"
                     "            return bool(_cols) and 'input_ids' in _cols\n"
                     "        except Exception:\n"
                     "            return False\n"
@@ -1308,6 +1313,12 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     # will do; this is the one check that observes it. A split with no
                     # `input_ids` is raw, so prep tokenizes it with the cap and it is fine.
                     "    _unsloth_cap = args.max_length\n"
+                    # TRL slices [-max_length:] for `keep_end`, which callers use when
+                    # the completion sits at the tail of a long prompt. Consuming
+                    # `max_length` while always keeping the prefix trained on the wrong
+                    # half of every row.
+                    "    _unsloth_keep_end = getattr(args, 'truncation_mode', 'keep_start') == 'keep_end'\n"
+                    "    _unsloth_slice = slice(-_unsloth_cap, None) if _unsloth_keep_end else slice(None, _unsloth_cap)\n"
                     # EVERY row, not the first. A short row 0 in front of a long
                     # row 5000 read as "within the cap", and in the fallback branch
                     # nothing downstream truncates it. A map-style split is read in
@@ -1375,8 +1386,21 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "                return False\n"
                     "            if isinstance(_first, (str, bytes)): return False\n"
                     "            return hasattr(_first, '__len__')\n"
+                    # Per-token columns only, matched by row length against `input_ids`.
+                    # A packed split carries `seq_lengths` -- document lengths, not tokens
+                    # -- and slicing that by the cap left it stale, so padding-free built
+                    # position ids for more tokens than the row now holds.
                     "        def _unsloth_truncate_rows(_batch):\n"
-                    "            return {_k: ([_v[:_unsloth_cap] for _v in _col] if _unsloth_is_sequence_column(_col) else _col) for _k, _col in _batch.items()}\n"
+                    "            _ids = _batch.get('input_ids')\n"
+                    "            _out = {}\n"
+                    "            for _k, _col in _batch.items():\n"
+                    "                if not _unsloth_is_sequence_column(_col):\n"
+                    "                    _out[_k] = _col\n"
+                    "                elif _ids is None:\n"
+                    "                    _out[_k] = [_v[_unsloth_slice] for _v in _col]\n"
+                    "                else:\n"
+                    "                    _out[_k] = [(_v[_unsloth_slice] if len(_v) == len(_r) else _v) for _v, _r in zip(_col, _ids)]\n"
+                    "            return _out\n"
                     # A stream has no length, and `IterableDataset.map` takes no `num_proc`:
                     # passing one raised TypeError, the catch below restored the original,
                     # and the run died on "cannot be enforced" instead of being truncated.
@@ -1402,6 +1426,15 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            if not _unsloth_truncatable(_ds): return _ds, not _unsloth_pretokenized(_ds)\n"
                     "            _kw = {} if _unsloth_is_stream(_ds) else _unsloth_map_kw\n"
                     "            _new = _ds.map(_unsloth_truncate_rows, batched = True, **_kw)\n"
+                    # TRL filters these immediately after truncating: a row whose
+                    # prompt alone fills the cap has every label at -100 and
+                    # contributes no loss, so leaving them in feeds batches with no
+                    # supervised tokens.
+                    "            try:\n"
+                    "                if 'labels' in (getattr(_new, 'column_names', None) or ()):\n"
+                    "                    _new = _new.filter(lambda _e: any(_l != -100 for _l in _e['labels']), **_kw)\n"
+                    "            except Exception:\n"
+                    "                pass\n"
                     "            return _new, (True if _unsloth_is_stream(_new) else _unsloth_within_cap(_new))\n"
                     "        _unsloth_orig_train = train_dataset\n"
                     "        _unsloth_orig_eval = eval_dataset if 'eval_dataset' in locals() else None\n"
