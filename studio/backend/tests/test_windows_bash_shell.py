@@ -1992,3 +1992,17 @@ def test_a_caret_escaped_quote_opens_no_span(windows_cmd_only):
     # behind it is live and the START it opens really launches.
     assert "powershell" in tools._find_blocked_commands('cmd /c echo ^"&start "" powershell')
     assert not tools._find_blocked_commands('cmd /c echo "&start "" powershell')
+
+
+@pytest.mark.parametrize("command", ["\\.", "cd C:\\dir\\.", "dir C:\\tmp\\."])
+def test_a_cmd_path_ending_in_a_dot_names_no_builtin(windows_cmd_only, command):
+    # cmd has neither `.` nor `source`, so the last segment of a path that
+    # happens to spell one is a directory entry rather than a command. Honouring
+    # cmd's separator made every such path report the POSIX source builtin.
+    # Found by randomised differential fuzzing against the previous scan.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_a_bare_source_builtin_is_still_read(windows_git_bash_only):
+    # The other half: spelled on its own it is the builtin, and bash has it.
+    assert "." in tools._find_blocked_commands(". ./script.sh")

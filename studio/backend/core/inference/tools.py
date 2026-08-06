@@ -192,6 +192,10 @@ _CMD_ONLY_PREFIXES = frozenset({"call"})
 # Windows `time` is `time [/t]`, which sets the clock rather than running the
 # word behind it, and `command`, `builtin` and `exec` are bash's own.
 _POSIX_ONLY_PREFIXES = frozenset({"time", "timeout", "command", "builtin", "exec"})
+# bash's source builtins. cmd has neither, so a PATH whose last segment happens
+# to spell one names a file rather than the builtin: `cd C:\dir\.` is an
+# ordinary directory walk and reading `.` out of it refused the line.
+_POSIX_SOURCE_BUILTINS = frozenset({".", "source"})
 # Wrapper options whose VALUE is a separate token (env -u NAME, nice -n 5).
 # Unconsumed, the value is mistaken for the wrapped command: `env -u FOO rm -rf x`
 # reads as command `FOO`. Shared by the auto gate and the blocklist walk.
@@ -2032,6 +2036,19 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             base = stem
         return base
 
+    def _cmd_path_basename(tok: str, plain: str) -> str:
+        """``tok``'s program name once cmd's path separator is honoured.
+
+        Falls back to ``plain`` where splitting the path would produce one of
+        bash's source builtins, which cmd does not have: `\\.` and `C:\\dir\\.`
+        name a directory entry rather than a command, and reporting `.` out of
+        them refused ordinary lines.
+        """
+        split = _token_basename(tok.replace("\\", "/"))
+        if split != plain and split in _POSIX_SOURCE_BUILTINS:
+            return plain
+        return split
+
     def _whitespace_chunks() -> "list[int] | None":
         """For each token, the index of the whitespace-delimited word it came
         from, or ``None`` when the two passes do not line up.
@@ -2365,7 +2382,7 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
             # A backslash is cmd's path separator, not an escape, and
             # os.path.basename leaves such a path whole off Windows. Only on
             # this lexer: under bash those backslashes really are escapes.
-            base = _token_basename(_unquote(token).replace("\\", "/"))
+            base = _cmd_path_basename(_unquote(token), base)
         screened_indexes.add(token_index)
         # Every word this loop reaches is one the shell would RUN, wrappers and
         # assignment prefixes already stepped over. The walks below decide the
@@ -2719,7 +2736,9 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         # Normalised like every other program lookup: os.path.basename leaves a
         # backslash path whole off Windows, so `call C:\tmp\rm.cmd` reported
         # nothing while the forward-slash spelling of the same path was caught.
-        published = _token_basename(_unquote(tokens[index]).replace("\\", "/"))
+        published = _token_basename(_unquote(tokens[index]))
+        if not lexed_posix:
+            published = _cmd_path_basename(_unquote(tokens[index]), published)
         if published in _BLOCKED_COMMANDS:
             blocked.add(published)
         else:
