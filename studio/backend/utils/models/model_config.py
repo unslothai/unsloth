@@ -1893,47 +1893,39 @@ def detect_mtp_file(
                 except OSError:
                     continue
 
-    def _emit_root() -> Optional[str]:
-        # Ranking is stable, so files of equal specificity keep the scan order.
-        for f in sorted(root_candidates, key = lambda c: _drafter_stem_rank(c.name, kind = "mtp")):
+    def _first_pick(candidates: list[Path]) -> Optional[tuple[int, str]]:
+        """The candidate this tier would really launch, with its specificity.
+
+        Ranking the tier's best NAME would let a file that never launches speak
+        for it: rejected by ``accept`` (out of a native grant) or unresolvable,
+        it is skipped at emission and a less specific sibling goes out instead.
+        So each tier is represented by the first candidate that survives every
+        filter, which is the one actually on offer.
+        """
+        for c in candidates:
             try:
-                launch = _drafter_launch_path(f)
+                launch = _drafter_launch_path(c)
             except OSError:
                 continue
             if accept is not None and not accept(launch):
                 continue
-            return launch
+            return _drafter_stem_rank(c.name, kind = "mtp"), launch
         return None
 
-    def _emit_subdir() -> Optional[str]:
-        for candidate in sorted(dict.fromkeys(subdir_candidates), key = _smallest_first):
-            try:
-                resolved = _drafter_launch_path(candidate)
-            except OSError:
-                continue
-            if accept is not None and not accept(resolved):
-                continue
-            logger.info(f"Detected MTP subdirectory drafter: {resolved}")
-            return resolved
-        return None
-
-    def _best_rank(candidates: list[Path]) -> int:
-        # Ranks are negative stem lengths, so 0 is the worst an empty tier can
-        # score and the other side wins by default.
-        return min((_drafter_stem_rank(c.name, kind = "mtp") for c in candidates), default = 0)
+    # Ranking is stable, so files of equal specificity keep the scan order.
+    root_pick = _first_pick(
+        sorted(root_candidates, key = lambda c: _drafter_stem_rank(c.name, kind = "mtp"))
+    )
+    subdir_pick = _first_pick(sorted(dict.fromkeys(subdir_candidates), key = _smallest_first))
 
     # Root keeps its preference at equal specificity, which is every published
     # layout. It loses only to a strictly more specific companion copy, where
     # the root file names a different family and is not this weight's drafter.
-    order = (
-        (_emit_subdir, _emit_root)
-        if _best_rank(subdir_candidates) < _best_rank(root_candidates)
-        else (_emit_root, _emit_subdir)
-    )
-    for emit in order:
-        found = emit()
-        if found is not None:
-            return found
+    if subdir_pick is not None and (root_pick is None or subdir_pick[0] < root_pick[0]):
+        logger.info(f"Detected MTP subdirectory drafter: {subdir_pick[1]}")
+        return subdir_pick[1]
+    if root_pick is not None:
+        return root_pick[1]
     return None
 
 

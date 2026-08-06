@@ -1093,6 +1093,24 @@ def test_an_unusable_candidate_does_not_win_the_tier_comparison(tmp_path):
     assert found is not None and Path(found).name == usable.name
 
 
+def test_a_rejected_candidate_does_not_win_the_tier_comparison(tmp_path):
+    """Same shape as the unusable case, via accept: a native grant can reject the
+    most specific root file, which is then skipped at emission. It must not have
+    spoken for its tier, or a base-family sibling goes out ahead of the more
+    specific accepted copy under MTP/."""
+    weight = tmp_path / "model_v2_release-Q4_K_M.gguf"
+    weight.write_bytes(b"target")
+    rejected = tmp_path / "mtp-model_v2_release.gguf"
+    rejected.write_bytes(b"out-of-grant")
+    (tmp_path / "mtp-model.gguf").write_bytes(b"base")
+    (tmp_path / "MTP").mkdir()
+    accepted = tmp_path / "MTP" / "mtp-model_v2-Q8_0.gguf"
+    accepted.write_bytes(b"mid")
+
+    found = detect_mtp_file(str(weight), accept = lambda candidate: rejected.name not in candidate)
+    assert found is not None and Path(found).name == accepted.name
+
+
 def test_a_qat_weight_still_pairs_with_its_base_family_drafter(tmp_path):
     """Negative control for the ranking above: unsloth/gemma-4-12B-it-qat-GGUF
     ships mtp-gemma-4-12B-it.gguf, so the prefix rule has to keep working when no
