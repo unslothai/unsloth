@@ -120,8 +120,10 @@ def _peft_converter_source():
     import urllib.error
     import urllib.request
 
-    url = ("https://raw.githubusercontent.com/huggingface/peft/main/"
-           "src/peft/utils/transformers_weight_conversion.py")
+    url = (
+        "https://raw.githubusercontent.com/huggingface/peft/main/"
+        "src/peft/utils/transformers_weight_conversion.py"
+    )
     request = urllib.request.Request(url)
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
@@ -238,7 +240,8 @@ def test_a_type_check_against_a_placeholder_raises_rather_than_missing():
     Concatenate)` -- so a placeholder that quietly matches nothing drops the
     operations and converts the adapter wrongly with no error."""
     placeholder = F._unsupported_conversion_symbol(
-        "transformers.core_model_loading.WeightConverter", donor_value = type)
+        "transformers.core_model_loading.WeightConverter", donor_value = type
+    )
     with pytest.raises(RuntimeError, match = "would silently mis-convert"):
         isinstance(object(), placeholder)
 
@@ -247,9 +250,11 @@ def test_a_placeholder_can_still_be_subclassed():
     """peft does `class PeftConcatenate(Concatenate)` at module top, so class
     creation has to work even though construction refuses."""
     placeholder = F._unsupported_conversion_symbol(
-        "transformers.core_model_loading.Concatenate", donor_value = type)
+        "transformers.core_model_loading.Concatenate", donor_value = type
+    )
 
-    class Mine(placeholder): pass
+    class Mine(placeholder):
+        pass
 
     assert issubclass(Mine, placeholder)
 
@@ -259,7 +264,10 @@ def test_the_import_only_symbols_still_come_from_the_stub(fake_modules):
     about instances, so it stays a real usable class."""
     F._backfill_missing_conversion_symbols()
     core = fake_modules["transformers.core_model_loading"]
-    class Mine(core.ConversionOps): pass
+
+    class Mine(core.ConversionOps):
+        pass
+
     assert issubclass(Mine, core.ConversionOps)
 
 
