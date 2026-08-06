@@ -1895,6 +1895,13 @@ class ResearchSupervisor:
                         if self._cancel_event(run["id"]).is_set():
                             await self._check_active(run["id"])
                         if not line.startswith("data:"):
+                            # Studio emits ": keep-alive" while it queues for a slot and
+                            # while it waits on llama-server's headers. Both are live waits,
+                            # not a stalled model, so re-arm; only silence spends the budget.
+                            if line.startswith(":") and semantic_output_at is None:
+                                first_output_deadline = (
+                                    loop.time() + _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
+                                )
                             continue
                         data = line[5:].strip()
                         if data == "[DONE]":

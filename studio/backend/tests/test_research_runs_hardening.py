@@ -886,6 +886,65 @@ def test_stream_completion_times_out_when_output_stalls(monkeypatch):
 
 
 def test_stream_completion_times_out_when_output_never_starts(monkeypatch):
+    """#7964: headers arrive, then the backend goes silent. Silence is the fault signal."""
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
+
+    class _SilentStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            await asyncio.sleep(30)
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_SilentStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 1.0)
+
+
+def test_admission_keepalives_do_not_spend_the_first_output_budget(monkeypatch):
+    """A run queued behind another generation must still be served, not failed.
+
+    Studio's admission queue has no default timeout and emits ": keep-alive" while a
+    caller waits for a llama.cpp slot, so a queued Deep Research run outlives any fixed
+    first-output budget through no fault of the model.
+    """
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
+
+    class _QueuedThenServedStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            # Ten keepalive periods, each shorter than the budget but far longer than
+            # it in total: the wait is live, so none of them may end the run.
+            for _ in range(10):
+                await asyncio.sleep(0.02)
+                yield ": keep-alive"
+            yield 'data: {"choices":[{"delta":{"content":"report"}}]}'
+            yield 'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}'
+            yield "data: [DONE]"
+
+    _install_fake_client(monkeypatch, [_QueuedThenServedStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    assert _run_stream(supervisor, timeout_seconds = 5.0) == ("report", "", "stop")
+
+
+def test_endless_keepalives_still_end_at_the_wall_clock(monkeypatch):
+    """Re-arming on keepalives must not make a stream unbounded."""
     monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
 
     class _KeepaliveOnlyStream:
@@ -905,8 +964,8 @@ def test_stream_completion_times_out_when_output_never_starts(monkeypatch):
     _install_fake_client(monkeypatch, [_KeepaliveOnlyStream()])
     supervisor = _make_supervisor(_noop_check_active)
 
-    with pytest.raises(research_runs.ModelFirstOutputTimeout):
-        _run_stream(supervisor, timeout_seconds = 1.0)
+    with pytest.raises(research_runs.ModelWallClockTimeout):
+        _run_stream(supervisor, timeout_seconds = 0.4)
 
 
 def test_stream_completion_first_output_timeout_survives_iterator_cleanup(monkeypatch):
