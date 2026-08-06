@@ -14136,6 +14136,9 @@ async def _responses_non_streaming(
             monitor_id,
             usage_data,
             _monitor_context_length(),
+            # The inner chat monitor is suppressed for this wrapper, so the
+            # perf stats only reach the row if they are read off the body here.
+            timings = body.get("timings") if isinstance(body, dict) else None,
             stop_reason = (choices[0].get("finish_reason") if choices else None),
         )
         api_monitor.finish(monitor_id)
@@ -14818,6 +14821,11 @@ async def _responses_stream(
                     elif visible_delta:
                         healed_events = healer.feed(visible_delta)
                     visible_delta = ""
+                    if healed_events:
+                        # Healed output goes out here instead of through
+                        # append_reply below, so this is where the client first
+                        # sees a promoted tool call or its surrounding text.
+                        api_monitor.mark_first_token(monitor_id)
                     for event in _healed_event_sse(healed_events):
                         yield event
                 if visible_delta:

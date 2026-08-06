@@ -2279,3 +2279,38 @@ class TestResponsesStreamHealing:
         ]
         assert len(calls) == 1
         assert calls[0]["item"]["name"] == "lookup"
+
+
+def test_healed_responses_tool_call_stamps_first_token(monkeypatch):
+    # Healed output is yielded through the healer rather than append_reply, so
+    # a turn whose first output is a text-form tool call would otherwise not be
+    # timed until the item closes near end-of-stream.
+    from core.inference.api_monitor import api_monitor
+
+    xml = TestResponsesStreamHealing._XML
+    tool = TestResponsesStreamHealing._TOOL
+    TestResponsesStreamAdapter._install_stream_mock(
+        monkeypatch, [{"choices": [{"delta": {"content": xml}}]}]
+    )
+    payload = ResponsesRequest(input = "hi", stream = True, tools = [tool])
+    messages = [ChatMessage(role = "user", content = "hi")]
+    monitor_id = api_monitor.start(
+        endpoint = "/v1/responses", method = "POST", model = "org/M-GGUF", prompt = "hi"
+    )
+    stamped: list[str] = []
+    real_mark = api_monitor.mark_first_token
+    monkeypatch.setattr(
+        api_monitor,
+        "mark_first_token",
+        lambda mid: (stamped.append(mid), real_mark(mid))[1],
+    )
+
+    async def run():
+        response = await _responses_stream(
+            payload, messages, TestResponsesStreamAdapter._Request(), monitor_id
+        )
+        return await TestResponsesStreamAdapter._collect(response)
+
+    asyncio.run(run())
+
+    assert stamped, "a healed tool call is output the client already received"
