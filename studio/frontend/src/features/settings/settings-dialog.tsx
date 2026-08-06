@@ -289,7 +289,10 @@ export function SettingsDialog() {
             // Soft shadow, no outline ring. Pin --radius to the light value so
             // corner rounding matches in dark mode.
             "shadow-border rounded-xl ring-0 [--radius:1.1rem]",
-            "max-sm:h-dvh max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
+            // Same chrome-subtracted height the shared DialogContent uses at this
+            // breakpoint: a plain h-dvh wins tailwind-merge and would hang the surface
+            // (and its overflow-hidden bottom edge) below the window. 0px on web.
+            "max-sm:h-[calc(100dvh-var(--studio-window-chrome-top,0px))] max-sm:w-dvw max-sm:!max-w-none max-sm:rounded-none",
           )}
         >
           <DialogTitle className="sr-only">

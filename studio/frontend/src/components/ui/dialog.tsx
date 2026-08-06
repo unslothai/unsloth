@@ -112,10 +112,14 @@ function DialogContent({
               <Button
                 variant="ghost"
                 // fixed on phones so the close stays put while a full-screen dialog scrolls; a
-                // container-portaled dialog is not full screen, so it keeps the absolute corner
+                // container-portaled dialog is not full screen, so it keeps the absolute corner.
+                // Once fixed it is viewport-relative, so it needs the same chrome offset the
+                // dialog above takes: at top-5 alone it lands under the z-70 desktop titlebar,
+                // and its top-right corner sits on the window's own close button. 0px on web.
                 className={cn(
                   "absolute top-5 right-5 z-10",
-                  position === "fixed" && "max-sm:fixed",
+                  position === "fixed" &&
+                    "max-sm:fixed max-sm:top-[calc(1.25rem+var(--studio-window-chrome-top,0px))]",
                 )}
                 size="icon-sm"
               >

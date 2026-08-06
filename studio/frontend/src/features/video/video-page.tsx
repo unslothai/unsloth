@@ -1555,7 +1555,10 @@ export function VideoPage({ active = true }: { active?: boolean }) {
             ref={attachSettingsScroll}
             onScroll={onSettingsScroll}
             className={cn(
-              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-6 pl-0.5 pr-7 md:pb-20 md:overflow-y-auto",
+              // pb-20 at every width: the floating Generate button below is absolutely
+              // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
+              // phone padding puts it on top of the last control.
+              "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-4 pb-20 pl-0.5 pr-7 md:overflow-y-auto",
               settingsFadeClass,
             )}
           >

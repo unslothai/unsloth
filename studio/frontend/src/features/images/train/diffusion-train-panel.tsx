@@ -1125,7 +1125,10 @@ export function DiffusionTrainPanel({
           ref={attachSettingsScroll}
           onScroll={onSettingsScroll}
           className={cn(
-            "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-6 pl-0.5 pr-8 pt-1.5 md:pb-20 md:overflow-y-auto",
+            // pb-20 at every width: the floating Start training button below is absolutely
+            // positioned over this rail and stands 72px tall (h-11 + pb-7), so a smaller
+            // phone padding puts it on top of the Adapter name field.
+            "hover-scrollbar panel-scroll-fade flex min-h-0 flex-1 flex-col gap-5 overflow-x-hidden pb-20 pl-0.5 pr-8 pt-1.5 md:overflow-y-auto",
             settingsFadeClass,
           )}
         >
