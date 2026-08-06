@@ -29,8 +29,11 @@ _MAX_PROCESSED_METADATA_FILES = 256
 _MAX_PROCESSED_WALK_DEPTH = 4
 _MAX_OPTIONS = 2048
 _MAX_OPTION_LENGTH = 128
-_CONFIG_RE = re.compile(r"[^<>:/\\|?*\x00-\x1f\x7f]+")
-_SPLIT_RE = re.compile(r"\w+(?:\.\w+)*")
+# The picker starts these, so they have to be the grammar TrainingStartRequest accepts:
+# anything looser is offered and then 422s, anything tighter hides a usable option.
+# _check_subset and _check_split_name in models/training.py are the authority.
+_CONFIG_RE = re.compile(r"[A-Za-z0-9._\-]+")
+_SPLIT_RE = re.compile(r"[A-Za-z0-9_\-\[\]:%.+ ]+")
 
 
 def _valid_option(value: Any, pattern: re.Pattern[str]) -> Optional[str]:
@@ -43,7 +46,7 @@ def _valid_option(value: Any, pattern: re.Pattern[str]) -> Optional[str]:
         "\x00" in normalized
         or "/" in normalized
         or "\\" in normalized
-        or normalized in {".", ".."}
+        or ".." in normalized
         or pattern.fullmatch(normalized) is None
     ):
         return None
