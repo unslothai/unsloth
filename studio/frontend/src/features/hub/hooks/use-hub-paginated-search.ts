@@ -289,6 +289,15 @@ export function useHubPaginatedSearch<T>(
       return false;
     }
 
+    // A generator that threw is finished; hasMore stays true only to keep the
+    // footer and its error. Pulling again returns done, which clears both, so
+    // the auto-fill would swallow the failure. Only a restart resumes.
+    if (iterDeadRef.current) {
+      queuedAfterBusyRef.current = false;
+      queuedWhileHiddenRef.current = false;
+      return false;
+    }
+
     const iter = iterRef.current;
     const { hasMore } = stateRef.current;
     if (!iter || !hasMore) {

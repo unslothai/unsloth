@@ -110,7 +110,25 @@ test("a served card records that the backend is the working route", async () => 
   // The direct attempt already opened an "other" backoff, so without recording
   // this the gate shuts on the next card and none load until it lapses.
   assert.ok(
-    branch.includes("setDirectHubBlocked(true)"),
+    branch.includes("readmeFallbackProven = true"),
     "a successful fallback has to promote, or it only helps the first card",
   );
+  // And readmeViaBackend has to read it back, or the flag is decorative.
+  const gateAt = src.indexOf("export function readmeViaBackend");
+  const gate = src.slice(gateAt, src.indexOf("\n}", gateAt));
+  assert.ok(gate.includes("readmeFallbackProven"));
+});
+
+test("a blocked card does not declare the whole origin unreachable", async () => {
+  const src = await read("../src/features/hub/lib/hf-readme.ts");
+  // A filter on /raw says nothing about /api, the avatar CDN or the dataset
+  // size lookup. Promoting to the origin-wide flag pushed all of them onto the
+  // proxy and, through isDirectHubOffline, showed the listing as unreachable
+  // when only the card was.
+  assert.ok(
+    !src.includes("setDirectHubBlocked"),
+    "card evidence stays scoped to cards",
+  );
+  // Read-only is fine and is what keeps the listing's own diagnosis honoured.
+  assert.ok(src.includes("isDirectHubBlocked()"));
 });

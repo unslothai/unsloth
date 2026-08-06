@@ -19,6 +19,7 @@ import asyncio
 import json
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import quote, urlencode
 
@@ -39,6 +40,14 @@ from utils.utils import hf_endpoint_url
 
 
 router = APIRouter()
+
+# Its own bounded pool: a timed-out fetch keeps running, since a thread cannot be
+# cancelled, so on the loop's shared executor a stalled resolver would park
+# orphans there and starve every other asyncio.to_thread user in the process.
+_UPSTREAM_POOL = ThreadPoolExecutor(
+    max_workers = 8,
+    thread_name_prefix = "hub-discovery",
+)
 
 # Discovery is interactive: a slow mirror should fail fast enough to fall back.
 _REQUEST_TIMEOUT_SECONDS = 15.0
@@ -251,7 +260,11 @@ class _QueryPairs:
         return list(self._pairs)
 
 
-def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
+def _fetch_upstream(
+    url: str,
+    hf_token: Optional[str],
+    accept: str = "application/json",
+) -> tuple:
     """Blocking upstream GET -> (status, body, link_header).
 
     Uses huggingface_hub's session so proxy settings and the user agent are
@@ -263,7 +276,9 @@ def _fetch_upstream(url: str, hf_token: Optional[str]) -> tuple:
     # (headers, then a stalled body); half each bounds the whole call by it.
     deadline = time.monotonic() + _REQUEST_TIMEOUT_SECONDS
     read_timeout = _REQUEST_TIMEOUT_SECONDS / 2
-    headers = {"Accept": "application/json"}
+    # Parameterised: the repo card is markdown, and a content-negotiating mirror
+    # may answer 406, or hand back JSON, if we only ever ask for JSON.
+    headers = {"Accept": accept}
     if hf_token:
         headers["Authorization"] = f"Bearer {hf_token}"
 
@@ -325,7 +340,11 @@ def _scrub_detail(message: str, hf_token: Optional[str]) -> str:
     return _HOST_IN_MESSAGE_RE.sub("host='<host>'", cleaned)
 
 
-async def _fetch_bounded(url: str, hf_token: Optional[str]) -> tuple:
+async def _fetch_bounded(
+    url: str,
+    hf_token: Optional[str],
+    accept: str = "application/json",
+) -> tuple:
     """_fetch_upstream under a wall-clock deadline.
 
     requests' timeout is per socket operation, so a stalled DNS lookup or OS
@@ -333,7 +352,10 @@ async def _fetch_bounded(url: str, hf_token: Optional[str]) -> tuple:
     exists for. Without an outer bound the request hangs well past the advertised
     window and holds an executor thread while retries pile onto the pool.
     """
-    task = asyncio.ensure_future(asyncio.to_thread(_fetch_upstream, url, hf_token))
+    loop = asyncio.get_running_loop()
+    task = asyncio.ensure_future(
+        loop.run_in_executor(_UPSTREAM_POOL, _fetch_upstream, url, hf_token, accept)
+    )
     done, _pending = await asyncio.wait({task}, timeout = _REQUEST_TIMEOUT_SECONDS)
     if not done:
         # Not wait_for: that cancels the inner future and then waits for the
@@ -365,8 +387,17 @@ def _upstream_error(e: Exception, hf_token: Optional[str]) -> HTTPException:
     )
 
 
-async def _proxy_get(url: str, hf_token: Optional[str]) -> tuple:
-    """Fetch upstream and map every failure mode -> (payload, link_header)."""
+async def _proxy_get(
+    url: str,
+    hf_token: Optional[str],
+    expect: Optional[type] = None,
+) -> tuple:
+    """Fetch upstream and map every failure mode -> (payload, link_header).
+
+    ``expect`` is the JSON shape the caller needs: a listing is an array and a
+    repo lookup is an object, and anything else is a mirror answering something
+    that is not the thing we asked for.
+    """
     try:
         status, body, link = await _fetch_bounded(url, hf_token)
     except HTTPException:
@@ -391,12 +422,20 @@ async def _proxy_get(url: str, hf_token: Optional[str]) -> tuple:
             detail = f"Hugging Face returned {status} for this request",
         )
     try:
-        return json.loads(body.decode("utf-8")), link
+        payload = json.loads(body.decode("utf-8"))
     except Exception:
         raise HTTPException(
             status_code = 502,
             detail = "Hugging Face returned a malformed discovery response",
         )
+    # Shape, not just syntax: a 200 carrying an error object or an SSO page would
+    # otherwise pass as a working feed and throw inside the SDK's iteration.
+    if expect is not None and not isinstance(payload, expect):
+        raise HTTPException(
+            status_code = 502,
+            detail = "Hugging Face returned a malformed discovery response",
+        )
+    return payload, link
 
 
 # Listing filters are rejected so this cannot become a second listing route.
@@ -454,7 +493,7 @@ async def discovery_info(
     if pairs:
         url += "?" + urlencode(pairs)
     try:
-        payload, _ = await _proxy_get(url, hf_token)
+        payload, _ = await _proxy_get(url, hf_token, expect = dict)
     except HTTPException as e:
         return _stamped(e)
     return JSONResponse(content = payload, headers = dict(_PRIVATE_HEADERS))
@@ -504,7 +543,9 @@ async def discovery_readme(
     path = "/".join(quote(part, safe = "") for part in repo.split("/"))
     url = f"{base}/{prefix}{path}/raw/{branch}/README.md"
     try:
-        status, body, _ = await _fetch_bounded(url, hf_token)
+        status, body, _ = await _fetch_bounded(
+            url, hf_token, accept = "text/markdown, text/plain;q=0.9, */*;q=0.8"
+        )
     except HTTPException as e:
         return _stamped(e)
     except Exception as e:
@@ -552,7 +593,7 @@ async def discovery_search(
     url = build_upstream_url(resource, pairs)
 
     try:
-        payload, link = await _proxy_get(url, hf_token)
+        payload, link = await _proxy_get(url, hf_token, expect = list)
     except HTTPException as e:
         return _stamped(e)
 

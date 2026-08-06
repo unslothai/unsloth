@@ -6,7 +6,6 @@ import {
   fetchWithTimeout,
   isDirectHubBlocked,
   isHubProxyServing,
-  setDirectHubBlocked,
 } from "@/features/hub/lib/network";
 import {
   hubEndpointBase,
@@ -60,11 +59,21 @@ export function readmeBaseUrl(
  * can. Exported because the card's load effect is gated on connectivity, and
  * this route works when the direct one does not.
  */
+// A card that fell back proves /raw is filtered, not that the origin is
+// unreachable, so it is remembered here rather than promoted to the origin-wide
+// flag: the listing, avatars and dataset sizes may all still work directly.
+let readmeFallbackProven = false;
+
 export function readmeViaBackend(): boolean {
   // isDirectHubBlocked covers the deep link, pinned publisher and detail pane:
   // those never run a listing, so the only proof the backend can reach the Hub
   // is their own model-info fallback.
-  return hubProxyFirst() || isHubProxyServing() || isDirectHubBlocked();
+  return (
+    hubProxyFirst() ||
+    isHubProxyServing() ||
+    isDirectHubBlocked() ||
+    readmeFallbackProven
+  );
 }
 
 const README_PROXY_PREFIX = "/api/hub/discovery-readme/";
@@ -136,11 +145,9 @@ async function fetchReadmeOnce(
     // card permanently unavailable.
     try {
       const served = await fetchReadmeViaBackend(repoId, kind, token);
-      // fetchWithTimeout already opened an "other" backoff on the direct
-      // attempt, and without recording this the gate closes on the next card
-      // and none load until that window lapses. Same evidence the model-info
-      // fallback records: this browser could not, the backend could.
-      setDirectHubBlocked(true);
+      // The direct attempt already opened an "other" backoff, so without
+      // recording this the gate shuts on the next card until that window lapses.
+      readmeFallbackProven = true;
       return served;
     } catch {
       throw new Error(`Failed to fetch README for ${repoId}`);

@@ -59,3 +59,34 @@ test("the manual Load more restarts rather than resuming a dead feed", async () 
     "resuming a finished generator would end pagination instead of probing",
   );
 });
+
+test("the auto-fill refuses a dead feed instead of swallowing its error", async () => {
+  const src = await readFile(
+    new URL("../src/features/hub/hooks/use-hub-paginated-search.ts", import.meta.url),
+    "utf8",
+  );
+  const at = src.indexOf("const fetchMore = useCallback");
+  assert.notEqual(at, -1);
+  const body = src.slice(at, src.indexOf("const iter = iterRef.current;", at));
+  // hasMore stays true so the footer and its error survive, so the observer
+  // fires again the moment the row scrolls into view. That pull returns done,
+  // which sets error: null and hasMore: false: the failure disappears and the
+  // list silently ends. Only retry(), which builds a new generator, may resume.
+  assert.match(body, /if \(iterDeadRef\.current\) \{/);
+  const guard = body.slice(body.indexOf("if (iterDeadRef.current) {"));
+  assert.ok(guard.includes("return false;"), "a dead feed starts nothing");
+});
+
+test("the success path is the only thing that clears the error", async () => {
+  const src = await readFile(
+    new URL("../src/features/hub/hooks/use-hub-paginated-search.ts", import.meta.url),
+    "utf8",
+  );
+  // Pins why the guard matters: a done page really does blank the error, so
+  // without the guard above the observer overwrites the diagnosis with nothing.
+  const at = src.indexOf("pullBatch(iter, mapItem, BATCH)");
+  assert.notEqual(at, -1);
+  const then = src.slice(at, src.indexOf(".catch(", at));
+  assert.ok(then.includes("error: null"));
+  assert.ok(then.includes("hasMore: !done"));
+});
