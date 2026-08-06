@@ -178,7 +178,11 @@ export function isRemoteNetworkOffline(
  * uncached repo, and the quant list a user is trying to download disappears.
  */
 export function shouldPreferLocalCache(): boolean {
-  if (hubProxyServing) {
+  // Both flags are set only where the backend answered what this browser could
+  // not, so either is proof of the server's reach. Honouring one and not the
+  // other sent cache-only requests after a proxied repo lookup had just proved
+  // otherwise, and every uncached repo came back 404.
+  if (hubProxyServing || directHubBlocked) {
     return false;
   }
   return isHuggingFaceOffline();

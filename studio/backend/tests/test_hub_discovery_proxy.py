@@ -1002,3 +1002,66 @@ class TestTimedOutWorkersAreBounded:
         # rather than by the stalled workers finishing.
         assert elapsed < 3, f"a queued caller waited {elapsed:.1f}s"
         assert response.status_code == 504
+
+
+class TestATimedOutJobIsNotLeftQueued:
+    """The deadline gives up on the worker; the queue does not.
+
+    ThreadPoolExecutor's queue is unbounded, so with every thread stalled the
+    jobs behind them still run later, one upstream request each, for callers
+    that were handed a 504 long ago. Sustained retries turn that into a backlog.
+    A queued future can still be cancelled, so it is.
+    """
+
+    def test_the_task_is_cancelled_rather_than_abandoned(self, monkeypatch):
+        import inspect
+
+        src = inspect.getsource(discovery._fetch_bounded)
+        assert "task.cancel()" in src
+        # Not wait_for: that awaits the cancellation of an uncancellable thread
+        # and hands the wall-clock bound straight back. The call, not the word,
+        # since the comment explaining this names it too.
+        assert "asyncio.wait_for(" not in src
+        assert "asyncio.wait(" in src
+
+    def test_a_queued_job_never_reaches_the_network(self, monkeypatch):
+        import threading
+        import time as _time
+
+        release = threading.Event()
+        started = []
+
+        def _hang(url, token, accept = None):
+            started.append(url)
+            release.wait(10)
+            return 200, b"[]", ""
+
+        monkeypatch.setattr(discovery, "_fetch_upstream", _hang)
+        monkeypatch.setattr(discovery, "_REQUEST_TIMEOUT_SECONDS", 0.25)
+        cap = discovery._UPSTREAM_POOL._max_workers
+
+        async def _drive():
+            # Fill every thread, then queue two more behind them.
+            for _ in range(cap + 2):
+                await discovery.discovery_search(
+                    "models",
+                    _Request([("search", "gemma")]),
+                    hf_token = None,
+                    current_subject = "tester",
+                )
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(_drive())
+            queued = cap
+            release.set()
+            # Let anything still runnable drain before counting.
+            loop.run_until_complete(asyncio.sleep(0.5))
+        finally:
+            release.set()
+            loop.run_until_complete(loop.shutdown_default_executor())
+            loop.close()
+
+        assert len(started) == queued, (
+            f"{len(started) - queued} abandoned job(s) still hit the network"
+        )

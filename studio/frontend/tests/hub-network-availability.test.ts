@@ -534,6 +534,31 @@ test("the cause on screen describes the window that is in force", async () => {
   markRemoteNetworkOnline();
 });
 
+test("a proxied repo lookup is proof the server can reach the Hub too", async () => {
+  markRemoteNetworkOnline();
+  const failure = {
+    kind: "network-opaque" as const,
+    message: "boom",
+    origin: HF,
+    retryable: true,
+  };
+  markRemoteNetworkOffline(HF, 30_000, failure, "other");
+  assert.equal(shouldPreferLocalCache(), true, "nothing has answered for us yet");
+
+  // Set only where the backend served a repo lookup this browser could not
+  // make, so it says the same thing about the server's reach as the feed flag.
+  // Honouring one and not the other 404'd every uncached repo.
+  setDirectHubBlocked(true);
+  assert.equal(
+    shouldPreferLocalCache(),
+    false,
+    "the lookup that just succeeded proves the server is not offline",
+  );
+  // The browser is still blocked, which is what suppresses the direct clients.
+  assert.equal(isDirectHubOffline(), true);
+  markRemoteNetworkOnline();
+});
+
 test("a serving proxy is proof the server can reach the Hub", async () => {
   markRemoteNetworkOnline();
   const failure = {

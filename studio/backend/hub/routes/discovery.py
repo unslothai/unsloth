@@ -358,12 +358,14 @@ async def _fetch_bounded(
     )
     done, _pending = await asyncio.wait({task}, timeout = _REQUEST_TIMEOUT_SECONDS)
     if not done:
-        # Not wait_for: that cancels the inner future and then waits for the
-        # cancellation to finish, and a thread cannot be cancelled, so the wall
-        # clock bound goes straight back. Leave it running instead, bounded by
-        # the socket timeout, and swallow its outcome so nothing reports it as
-        # an unretrieved exception.
+        # Not wait_for: that cancels and then *awaits* the cancellation, and a
+        # thread cannot be cancelled, so the wall clock bound goes straight back.
+        # Cancel without awaiting: a job still queued behind a full pool is
+        # discarded, which is what stops sustained retries piling up work every
+        # caller has already given up on. One already running is unaffected and
+        # stays bounded by the socket timeout.
         task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+        task.cancel()
         raise asyncio.TimeoutError()
     return task.result()
 
