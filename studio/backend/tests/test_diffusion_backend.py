@@ -3732,6 +3732,34 @@ def _hub_blob(root, repo_id, name, mib):
     return blob
 
 
+def _hub_snapshot_file(root, repo_id, rev, rel, blob_name):
+    """The pointer a finished download leaves at ``snapshots/<rev>/<rel>``: a symlink at the blob
+    named after the file's etag, exactly as hf_hub_download creates it once the blob is complete."""
+    repo = root / f"models--{repo_id.replace('/', '--')}"
+    pointer = repo / "snapshots" / rev / rel
+    pointer.parent.mkdir(parents = True, exist_ok = True)
+    pointer.symlink_to(repo / "blobs" / blob_name)
+    return pointer
+
+
+def _hub_ref(root, repo_id, rev):
+    """``refs/main`` -> the commit this root currently serves. hf_hub_download writes it as soon as
+    it resolves the revision, i.e. BEFORE the first byte of that revision lands."""
+    ref = root / f"models--{repo_id.replace('/', '--')}" / "refs" / "main"
+    ref.parent.mkdir(parents = True, exist_ok = True)
+    ref.write_text(rev)
+    return ref
+
+
+def _sparse_snapshot_file(root, repo_id, rev, rel, mib):
+    """One file of ``rev`` present in ``root``'s snapshot. Sparse, so the size costs no disk."""
+    path = root / f"models--{repo_id.replace('/', '--')}" / "snapshots" / rev / rel
+    path.parent.mkdir(parents = True, exist_ok = True)
+    with open(path, "wb") as fh:
+        fh.truncate(mib * 1024 * 1024)
+    return path
+
+
 def _safetensors_with_params(path, numel):
     """A safetensors shard whose JSON header declares ``numel`` elements. Only the header is read
     (_safetensors_param_count never touches tensor data), so no payload is written."""
@@ -3904,6 +3932,74 @@ def test_load_progress_counts_a_checkpoint_the_other_cache_root_already_holds(
     progress = backend.load_progress()
     assert progress["phase"] == "finalizing"
     assert progress["fraction"] == 1.0
+
+
+def test_load_progress_ignores_a_revision_the_moved_root_has_superseded(tmp_path, monkeypatch):
+    # blobs/ is append-only: a republished repo leaves the superseded revision's blobs there
+    # forever, under different etags from the ones now downloading, so nothing dedupes them.
+    # Summing the whole dir counts that stale full copy on top of the live partial one, and
+    # load_progress reports "finalizing" for the rest of a multi-GB pull -- the UI calls a download
+    # finished while it is barely half through.
+    from core.inference.diffusion import _LoadingState
+
+    _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
+    old_rev, new_rev = "a" * 40, "b" * 40
+    # Revision A, complete: what this root downloaded before the cache folder changed.
+    _hub_blob(other, "org/pipe", "a1", 2000)
+    _hub_blob(other, "org/pipe", "a2", 2000)
+    _hub_snapshot_file(other, "org/pipe", old_rev, "transformer/shard-1.safetensors", "a1")
+    _hub_snapshot_file(other, "org/pipe", old_rev, "vae/diffusion_pytorch_model.safetensors", "a2")
+    # The repo was republished and the per-file root reuse serves this load through the same root:
+    # refs/main moves to B first, then B's shards land one at a time.
+    _hub_ref(other, "org/pipe", new_rev)
+    _hub_blob(other, "org/pipe", "b1", 2000)
+    _hub_snapshot_file(other, "org/pipe", new_rev, "transformer/shard-1.safetensors", "b1")
+    _hub_blob(other, "org/pipe", "b2.incomplete", 200)  # 200 of the second 2000 MiB shard
+
+    # 2000 done + 200 in flight out of a 4000 MiB revision. A's bytes are not this load's; the
+    # .incomplete one is, so the bar still moves inside a shard instead of freezing per shard.
+    assert DiffusionBackend._cache_bytes("org/pipe") == 2200 * 1024 * 1024
+
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = "org/pipe", base_repo = None, expected_bytes = 4000 * 1024 * 1024
+    )
+    progress = backend.load_progress()
+    assert progress["phase"] == "downloading"
+    assert progress["fraction"] == 0.55
+
+
+def test_companion_bytes_union_a_base_the_prefetch_split_across_roots(tmp_path, monkeypatch):
+    # reuse_other_cache_root resolves EACH file through whichever root holds it, so a moved cache
+    # can leave the text encoder in the old snapshot while the VAE downloads into the live one.
+    # Those two snapshots are disjoint PARTS of one revision, not copies of it, so sizing off the
+    # larger one budgets a fraction of the companions the load goes on to make resident.
+    from core.inference.diffusion_memory import OFFLOAD_GROUP, OFFLOAD_NONE
+
+    live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
+    rev = "a" * 40
+    _sparse_snapshot_file(other, "bfl/base", rev, "text_encoder/model.safetensors", 200)
+    _sparse_snapshot_file(live, "bfl/base", rev, "vae/diffusion_pytorch_model.safetensors", 150)
+
+    assert DiffusionBackend._companion_cache_bytes("bfl/base") == 350 * 1024 * 1024
+
+    target = _small_card(monkeypatch)
+    plan = DiffusionBackend()._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "flux.1"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 100,
+    )
+    assert plan.estimates["companion_dense_mib"] == 350
+    # 100 + 350 + 100 + 2048 = 2598 > the 2509 MiB resident margin, so stream the transformer.
+    # Off the larger half alone (200) it reads 2448 and stays resident, and the 150 MiB the other
+    # root holds arrives unbudgeted on a card with nothing left for it.
+    assert plan.offload_policy != OFFLOAD_NONE
+    assert plan.offload_policy == OFFLOAD_GROUP
 
 
 def test_plan_memory_sizes_a_pipeline_split_across_both_cache_roots(monkeypatch, tmp_path):

@@ -1582,36 +1582,89 @@ class DiffusionBackend:
         return [live, Path(other) / folder]
 
     @staticmethod
+    def _live_snapshot_dir(repo_dir: Path) -> Optional[Path]:
+        """The snapshot ``refs/main`` names: the ONE revision a load reads out of this root.
+
+        ``try_to_load_from_cache`` (what the per-file root reuse probes with) defaults to
+        ``main`` and resolves it through ``refs/main``, so this is exactly the tree the loader
+        will read here. None when the cache does not say -- no ref file (a revision pinned to a
+        commit hash never writes one), unreadable, or the snapshot it names is gone. Callers then
+        fall back to reading the whole root: a cache we cannot scope must still report its bytes,
+        never zero."""
+        try:
+            rev = (repo_dir / "refs" / "main").read_text().strip()
+        except (OSError, ValueError):
+            return None
+        # A ref file holds a bare commit hash; anything with a separator is not one, and joining
+        # it would walk out of the cache.
+        if not rev or rev in (".", "..") or "/" in rev or "\\" in rev:
+            return None
+        snapshot = repo_dir / "snapshots" / rev
+        return snapshot if snapshot.is_dir() else None
+
+    @staticmethod
     def _cache_bytes(repo_id: str) -> int:
         """Bytes of ``repo_id`` on disk across every cache root, for progress and the pipeline plan.
+
+        Scoped per root to the revision that root serves (``refs/main``), because ``blobs/`` is
+        append-only: a republished repo leaves the superseded revision's blobs there forever, and
+        they carry different etags from the ones now downloading, so nothing dedupes them. Summing
+        the whole dir then counts a stale full copy on top of the live partial one and
+        ``load_progress`` reports "finalizing" through the rest of a multi-GB pull. The in-flight
+        ``blobs/*.incomplete`` still counts: it is this download's own bytes, and dropping it would
+        freeze the bar for the length of each shard.
 
         Keyed by blob filename, not summed per root: a blob is named after the file's etag, so the
         same file carries the same name in either root and a copy present in both must count once.
         Scanning only the live root reports 0 for a load a moved cache serves entirely off disk,
         which pins the progress bar near 0% for the whole construction."""
         sizes: dict[str, int] = {}
-        for repo_dir in DiffusionBackend._hub_cache_repo_dirs(repo_id):
+
+        def _add(key: str, path: Path) -> None:
             try:
-                entries = list((repo_dir / "blobs").iterdir())
+                size = path.stat().st_size
             except OSError:
-                continue  # repo not in this root yet / unreadable
-            for entry in entries:
-                try:
-                    size = entry.stat().st_size
-                except OSError:
-                    continue  # broken symlink / unreadable
-                sizes[entry.name] = max(sizes.get(entry.name, 0), size)
+                return  # broken symlink / unreadable
+            sizes[key] = max(sizes.get(key, 0), size)
+
+        for repo_dir in DiffusionBackend._hub_cache_repo_dirs(repo_id):
+            snapshot = DiffusionBackend._live_snapshot_dir(repo_dir)
+            try:
+                blobs = list((repo_dir / "blobs").iterdir())
+            except OSError:
+                blobs = []  # repo not in this root yet / unreadable / no-symlink cache mode
+            if snapshot is None:
+                # Unscopeable root: read every blob, as before.
+                for entry in blobs:
+                    _add(entry.name, entry)
+                continue
+            for entry in blobs:
+                if entry.name.endswith(".incomplete"):
+                    _add(entry.name, entry)
+            try:
+                for f in snapshot.rglob("*"):
+                    if not f.is_file():
+                        continue
+                    # Dedupe on the etag, so a file mirrored in both roots counts once. A
+                    # no-symlink cache stores the file in the snapshot itself; key those on their
+                    # path instead, which never collides with a hash.
+                    real = os.path.realpath(f)
+                    key = (
+                        os.path.basename(real)
+                        if os.path.basename(os.path.dirname(real)) == "blobs"
+                        else f"path:{f.relative_to(snapshot).as_posix()}"
+                    )
+                    _add(key, f)
+            except OSError:
+                pass  # the download is writing this tree under the walk; report what we counted
         return sum(sizes.values())
 
     @staticmethod
-    def _local_dir_weight_bytes(path: Path, *, exclude_transformer: bool) -> int:
-        """Sum the on-disk weight files under a local diffusers directory. The HF blob
-        cache is empty for a local path, so this is the only size signal for auto memory
-        planning; without it a large local model folds to zero and the planner skips
-        offload and OOMs. ``exclude_transformer`` drops the ``transformer/`` subfolder
-        for GGUF/single-file loads (their transformer is the single file, not resident
-        here); a full pipeline load keeps it (the whole repo is resident)."""
-        total = 0
+    def _local_dir_weight_sizes(path: Path, *, exclude_transformer: bool) -> dict[str, int]:
+        """``{relative path: on-disk bytes}`` for the weight files under a diffusers directory.
+        Per file, not a total, so callers merging several trees can dedupe by path. See
+        ``_local_dir_weight_bytes`` for what the filter is for."""
+        sizes: dict[str, int] = {}
         for f in path.rglob("*"):
             if f.suffix.lower() not in (".safetensors", ".bin", ".pt", ".ckpt"):
                 continue
@@ -1622,37 +1675,61 @@ class DiffusionBackend:
             if exclude_transformer and rel.parts and rel.parts[0] == "transformer":
                 continue
             try:
-                total += f.stat().st_size
+                sizes[rel.as_posix()] = f.stat().st_size
             except OSError:
                 continue
-        return total
+        return sizes
 
     @staticmethod
-    def _max_over_cached_revs(
+    def _local_dir_weight_bytes(path: Path, *, exclude_transformer: bool) -> int:
+        """Sum the on-disk weight files under a local diffusers directory. The HF blob
+        cache is empty for a local path, so this is the only size signal for auto memory
+        planning; without it a large local model folds to zero and the planner skips
+        offload and OOMs. ``exclude_transformer`` drops the ``transformer/`` subfolder
+        for GGUF/single-file loads (their transformer is the single file, not resident
+        here); a full pipeline load keeps it (the whole repo is resident)."""
+        return sum(
+            DiffusionBackend._local_dir_weight_sizes(
+                path, exclude_transformer = exclude_transformer
+            ).values()
+        )
+
+    @staticmethod
+    def _union_over_cached_revs(
         base: str,
-        fn: Callable[[Path], int],
+        fn: Callable[[Path], dict[str, int]],
         staged_dir: Optional[str] = None,
     ) -> int:
-        """Apply ``fn`` to a LOCAL diffusers dir, or to the fullest tree this load could read
-        ``base`` from, returning that count. 0 when nothing is cached.
+        """Total ``fn`` over a LOCAL diffusers dir, or over the UNION of every tree this load could
+        read ``base`` from. 0 when nothing is cached.
 
-        The candidates are every cached snapshot revision under EVERY cache root, plus
-        ``staged_dir`` (the snapshot the prefetch/preflight handed back). Both roots because a
-        moved cache leaves the bytes under huggingface_hub's import-time one, where a live-root
-        scan reads zero. Max, not sum: these are copies of one tree, never additive, and for a
-        memory plan the fullest copy is the safe read -- under-counting OOMs, over-counting only
-        buys offload. That also makes the staged dir a floor rather than a replacement, so a
-        snapshot carrying only part of the repo cannot erase what a root does hold."""
+        ``fn`` maps a directory to ``{relative path: count}`` so the merge happens per FILE. The
+        candidates are every cached snapshot revision under EVERY cache root, plus ``staged_dir``
+        (the snapshot the prefetch/preflight handed back). Both roots because the loader's per-file
+        root reuse resolves EACH file through whichever root holds it, so after a cache-folder
+        change the candidates are disjoint PARTS of one repo, not copies of it: a text encoder left
+        in the old snapshot and a VAE prefetched into the live one both load, and taking the larger
+        total would budget only one of them -- under-counting leaves an auto plan resident and
+        OOMing on weights it never counted. Keying on the relative path is what keeps that safe for
+        genuine copies too: a file mirrored in two roots, or shared by two revisions, still counts
+        once, at its largest copy. It also makes the staged dir purely additive, so a snapshot
+        carrying only part of the repo cannot erase what a root does hold."""
         local = Path(base).expanduser()
         if local.is_dir():
-            return fn(local)
+            return sum(fn(local).values())
         candidates: list[Path] = [Path(staged_dir).expanduser()] if staged_dir else []
         for repo_dir in DiffusionBackend._hub_cache_repo_dirs(base):
             try:
                 candidates.extend(rev for rev in (repo_dir / "snapshots").iterdir() if rev.is_dir())
             except OSError:
                 continue  # a root with no copy of this repo contributes nothing
-        return max((fn(c) for c in candidates if c.is_dir()), default = 0)
+        merged: dict[str, int] = {}
+        for candidate in candidates:
+            if not candidate.is_dir():
+                continue
+            for rel, count in fn(candidate).items():
+                merged[rel] = max(merged.get(rel, 0), count)
+        return sum(merged.values())
 
     @staticmethod
     def _companion_cache_bytes(base: str, staged_dir: Optional[str] = None) -> int:
@@ -1662,9 +1739,9 @@ class DiffusionBackend:
         otherwise the dense-quant prefetch's cached transformer shards would inflate this
         and wrongly force offload. Walks the snapshot dir, not the flat ``blobs/`` cache,
         since only the snapshot preserves the subfolder split needed to exclude it."""
-        return DiffusionBackend._max_over_cached_revs(
+        return DiffusionBackend._union_over_cached_revs(
             base,
-            lambda d: DiffusionBackend._local_dir_weight_bytes(d, exclude_transformer = True),
+            lambda d: DiffusionBackend._local_dir_weight_sizes(d, exclude_transformer = True),
             staged_dir,
         )
 
@@ -1699,16 +1776,17 @@ class DiffusionBackend:
         the fast path on the plain plan -- so a base whose shards this misses skips the fit
         check entirely and lets the dense build OOM under a plan sized for the GGUF."""
 
-        def _params(d: Path) -> int:
+        def _params(d: Path) -> dict[str, int]:
             tdir = d / "transformer"
             if not tdir.is_dir():
-                return 0
-            return sum(
-                DiffusionBackend._safetensors_param_count(s) for s in tdir.glob("*.safetensors")
-            )
+                return {}
+            return {
+                f"transformer/{s.name}": DiffusionBackend._safetensors_param_count(s)
+                for s in tdir.glob("*.safetensors")
+            }
 
         # bf16: 2 bytes/param
-        return DiffusionBackend._max_over_cached_revs(base, _params, staged_dir) * 2
+        return DiffusionBackend._union_over_cached_revs(base, _params, staged_dir) * 2
 
     # ── Synchronous load / generate / unload ───────────────────────────────
 
@@ -2713,8 +2791,9 @@ class DiffusionBackend:
         ``base_local_dir`` is the snapshot the load will actually read, carried into the size
         lookups as an extra source alongside the cache roots. A prefetch split across roots hands
         back no snapshot at all, and a preflight-excused one can hold less than the repo, so it is
-        a floor and never a replacement: whichever source is fullest wins, since under-counting
-        here leaves an auto plan resident and OOMing on weights it never budgeted."""
+        additive and never a replacement: the companion lookup unions the sources file by file and
+        the pipeline branch takes the fullest, since under-counting here leaves an auto plan
+        resident and OOMing on weights it never budgeted."""
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full.
         device_memory = settled_snapshot_device_memory(target)
         if kind == "pipeline":
