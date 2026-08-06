@@ -125,10 +125,13 @@ fn hardened_autostart_entry(entry: &str) -> Option<String> {
 }
 
 fn guard_linux_autostart_entry(app: &tauri::AppHandle) {
-    let Some(config_dir) = dirs::config_dir() else {
+    let Some(home_dir) = dirs::home_dir() else {
         return;
     };
-    let path = config_dir
+    // auto-launch hardcodes ~/.config regardless of XDG_CONFIG_HOME; mirror it
+    // or the guard reads a file the plugin never writes.
+    let path = home_dir
+        .join(".config")
         .join("autostart")
         .join(format!("{}.desktop", app.package_info().name));
     let Ok(entry) = fs::read_to_string(&path) else {
@@ -136,6 +139,25 @@ fn guard_linux_autostart_entry(app: &tauri::AppHandle) {
     };
     if let Some(hardened) = hardened_autostart_entry(&entry) {
         let _ = fs::write(&path, hardened);
+    }
+}
+
+/// A moved or re-downloaded AppImage leaves the autostart entry pointing at
+/// the old path while `is_enabled` still reports true (it only checks that
+/// the entry file exists), so rewrite the entry to the current executable on
+/// every startup.
+fn reconcile_autostart_entry(app: &tauri::AppHandle) {
+    use tauri_plugin_autostart::ManagerExt;
+    // A dev run would repoint the entry at target/debug.
+    if cfg!(debug_assertions) {
+        return;
+    }
+    let autolaunch = app.autolaunch();
+    if !autolaunch.is_enabled().unwrap_or(false) {
+        return;
+    }
+    if autolaunch.enable().is_ok() && cfg!(target_os = "linux") {
+        guard_linux_autostart_entry(app);
     }
 }
 
@@ -658,6 +680,7 @@ fn main() {
             if was_launched_hidden() {
                 app.set_activation_policy(tauri::ActivationPolicy::Accessory);
             }
+            reconcile_autostart_entry(app.handle());
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]
             {
                 use tauri_plugin_deep_link::DeepLinkExt;
