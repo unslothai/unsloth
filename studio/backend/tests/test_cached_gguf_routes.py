@@ -3031,6 +3031,61 @@ def test_cached_repo_task_never_offers_an_sd_cpp_companion_repo_as_a_model(tmp_p
     )
 
 
+def test_a_companion_mirror_is_listed_but_flagged_so_no_picker_offers_it(monkeypatch, tmp_path):
+    """A task of None does NOT drop the row: it is exactly what an unclassified CHAT repo carries,
+    so the chat picker showed the companion as loadable. Deleting the row instead would hide tens
+    of GB the user can then never find or remove, so the row stays and carries a flag the pickers
+    filter on."""
+    companion = _repo(
+        "unsloth/Z-Image-Turbo-ComfyUI",
+        [_file("split_files/vae/ae.safetensors", 300_000)],
+        tmp_path / "models--unsloth--Z-Image-Turbo-ComfyUI",
+    )
+    chat = _repo(
+        "unsloth/Qwen3-8B",
+        [_file("model.safetensors", 900_000)],
+        tmp_path / "models--unsloth--Qwen3-8B",
+    )
+    monkeypatch.setattr(
+        models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [companion, chat])]
+    )
+
+    rows = {r["repo_id"]: r for r in asyncio.run(
+        models_route.list_cached_models(current_subject = "test-user")
+    )["cached"]}
+
+    # Listed, so it stays visible and deletable...
+    assert "unsloth/Z-Image-Turbo-ComfyUI" in rows
+    # ...and flagged, which is the part a task of None could never express.
+    assert rows["unsloth/Z-Image-Turbo-ComfyUI"]["companion"] is True
+    assert rows["unsloth/Z-Image-Turbo-ComfyUI"]["task"] is None
+    # An ordinary chat repo carries the same task of None and must NOT be flagged.
+    assert rows["unsloth/Qwen3-8B"].get("companion") is None
+    assert rows["unsloth/Qwen3-8B"]["task"] is None
+
+
+def test_the_companion_set_never_hides_a_repo_that_is_a_real_chat_model(tmp_path):
+    """sd.cpp borrows unsloth/Qwen2.5-VL-7B-Instruct-GGUF as a text encoder, but it is a genuine
+    chat model. It is in the companion set, so the only thing keeping it safe is that the listing
+    this set feeds never sees a GGUF-only repo. Pin that, or a future caller takes a downloaded
+    model away from the user."""
+    from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
+    assert "unsloth/qwen2.5-vl-7b-instruct-gguf" in sd_cpp_companion_only_repo_ids()
+    # A GGUF-only repo has no .safetensors / .bin, so list_cached_models drops it before the flag.
+    gguf_only = _repo(
+        "unsloth/Qwen2.5-VL-7B-Instruct-GGUF",
+        [_file("Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf", 4_000_000)],
+        tmp_path / "models--unsloth--Qwen2.5-VL-7B-Instruct-GGUF",
+    )
+    assert not [
+        f
+        for rev in gguf_only.revisions
+        for f in rev.files
+        if f.file_name.endswith((".safetensors", ".bin"))
+    ]
+
+
 def test_cached_repo_task_hides_an_untrusted_video_repo_instead_of_listing_it_under_images(
     monkeypatch, tmp_path
 ):

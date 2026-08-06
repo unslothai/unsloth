@@ -58,6 +58,9 @@ export interface CachedInventoryRow {
   task?: string | null;
   // Diffusion repo with no pipeline index: loadable only via from_single_file + a filename, so the task pickers must not offer it as a pipeline load.
   singleFile?: boolean;
+  // sd.cpp companion mirror: VAE / text encoders with no denoiser. Still listed, because these
+  // run to tens of GB and the row is how they are seen and deleted, but never a pick.
+  companion?: boolean;
   tags?: string[];
   libraryName?: string | null;
   quantMethod?: string | null;

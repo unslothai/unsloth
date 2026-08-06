@@ -636,10 +636,16 @@ _FLUX2_KLEIN_9B_SD_CPP_TEXT_ENCODERS = (
 def sd_cpp_companion_only_repo_ids() -> frozenset[str]:
     """Lowercased ids of repos that exist ONLY to hand sd.cpp a single-file VAE / text encoder.
 
-    They carry no denoiser, so nothing can be loaded from one. Third-party repacks never cleared
-    the cached-model trust gate, but their ``unsloth/*`` mirrors do, so they need excluding by hand
-    or each becomes an un-loadable On Device row. Derived from the tables, minus repos that are
-    also a real base: FLUX.1-schnell ships the FLUX.1 VAE and IS loadable."""
+    They carry no DENOISER, so no diffusion pipeline loads from one. Third-party repacks never
+    cleared the cached-model trust gate, but their ``unsloth/*`` mirrors do, so they need excluding
+    by hand or each becomes an un-loadable On Device row. Derived from the tables, minus repos that
+    are also a real base: FLUX.1-schnell ships the FLUX.1 VAE and IS loadable.
+
+    Diffusion-only, and callers must keep it that way: the set includes
+    ``unsloth/Qwen2.5-VL-7B-Instruct-GGUF``, which is a perfectly good CHAT model that sd.cpp also
+    borrows as a text encoder. Hiding this set from a chat or GGUF listing would take a real model
+    away from a user who downloaded it to chat with. Today's only consumer is the non-GGUF
+    cached-model listing, which never sees a GGUF-only repo."""
     companions: set[str] = set()
     loadable: set[str] = set()
     for fam in _FAMILIES:

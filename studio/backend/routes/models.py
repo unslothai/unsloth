@@ -37,6 +37,9 @@ class CachedModelRepo(BaseModel):
     partial: Optional[bool] = None
     # True for a diffusion-tagged repo with NO top-level model_index.json: it needs from_single_file + a filename, so pickers must not offer a pipeline load.
     single_file: Optional[bool] = None
+    # True for an sd.cpp companion mirror (VAE / text encoders, no denoiser). Declared here or
+    # response_model drops it and the flag never reaches the picker that has to filter on it.
+    companion: Optional[bool] = None
 
 
 class CachedModelsResponse(BaseModel):
@@ -3932,6 +3935,16 @@ def _cached_repo_partial(repo_id: str, repo_cache_dir: Optional[Path] = None) ->
         return False
 
 
+def _is_sd_cpp_companion_repo(repo_id: str) -> bool:
+    """True for a mirror that holds only sd.cpp companions (VAE / text encoders, no denoiser)."""
+    try:
+        from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
+
+        return (repo_id or "").strip().lower() in sd_cpp_companion_only_repo_ids()
+    except Exception:  # noqa: BLE001 -- an import failure must not hide a usable repo
+        return False
+
+
 def _cached_repo_task(repo_info) -> Optional[str]:
     """Pipeline task for a cached non-GGUF repo: 'text-to-video' for repos the
     video backend can load as full pipelines (its trust list / family detector),
@@ -3962,12 +3975,13 @@ def _cached_repo_task(repo_info) -> Optional[str]:
         from core.inference.diffusion_families import (
             detect_family,
             family_pipeline_available,
-            sd_cpp_companion_only_repo_ids,
         )
 
         # An sd.cpp companion repo holds no denoiser, so it is never a pick even though its
-        # unsloth/* mirror clears the trust gate below (the third-party ids never did).
-        if repo_id.strip().lower() in sd_cpp_companion_only_repo_ids():
+        # unsloth/* mirror clears the trust gate below (the third-party ids never did). No task
+        # keeps it out of the IMAGE picker; the row's companion flag is what keeps it out of the
+        # chat one, since a task of None is what every unclassified chat repo carries.
+        if _is_sd_cpp_companion_repo(repo_id):
             return None
         fam = detect_family(repo_id)
         if not _is_trusted_diffusion_repo(repo_id) or fam is None:
@@ -4057,6 +4071,10 @@ async def list_cached_models(
                         }
                         if is_partial:
                             row["partial"] = True
+                        # Listed, so tens of GB of companion weights stay visible and deletable,
+                        # but flagged, so no picker offers a denoiser-less repo as a load.
+                        if _is_sd_cpp_companion_repo(repo_id):
+                            row["companion"] = True
                         # Flag diffusion repos with no pipeline index: loadable only via from_single_file, so pickers must not offer a pipeline load.
                         if row["task"] is not None and not _repo_has_pipeline_index(repo_info):
                             row["single_file"] = True
