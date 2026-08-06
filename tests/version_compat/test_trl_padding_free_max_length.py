@@ -81,8 +81,21 @@ _MODEL_MAX_SEQ_LENGTH = 128
 _USER_MAX_LENGTH = 64
 
 
-@pytest.fixture(scope = "module")
-def trl_has_guard():
+@pytest.fixture(scope = "module", autouse = True)
+def patched_sft():
+    """Import unsloth, and make sure the SFT trainer really did get patched.
+
+    `import unsloth` alone is not enough: under `UNSLOTH_ALLOW_CPU=1` (which
+    CPU-only CI sets so unsloth imports without a GPU) both halves of the SFT
+    patch are deliberately skipped, so drift detectors keep seeing the pristine
+    upstream TRL classes -- `rl.PatchFastRL` returns before
+    `patch_trl_rl_trainers`, and `_gpu_init` guards `_patch_trl_trainer`, which
+    installs the `__init__` wrapper that resolves packing / padding-free. These
+    tests are about the patched trainer, so ask for both explicitly, in
+    `_gpu_init`'s order: the codegen swaps `trl.SFTTrainer` out wholesale, so
+    the wrapper has to go on afterwards or it is thrown away. Both are
+    no-ops once applied, so this stays inert wherever the import did the work.
+    """
     global torch  # the `import torch._dynamo` below would otherwise shadow it
     import unsloth  # noqa: F401
 
@@ -92,8 +105,20 @@ def trl_has_guard():
         torch._dynamo.config.disable = True
     except Exception:
         pass
-    from trl.trainer import sft_trainer
 
+    import trl
+
+    if trl.SFTTrainer.__name__ != "UnslothSFTTrainer":
+        from unsloth.models.rl import _patch_trl_rl_trainers
+        from unsloth.trainer import _patch_trl_trainer
+
+        _patch_trl_rl_trainers("sft_trainer")
+        _patch_trl_trainer()
+
+
+@pytest.fixture(scope = "module")
+def trl_has_guard(patched_sft):
+    from trl.trainer import sft_trainer
     return "`max_length` is not enforced" in inspect.getsource(sft_trainer)
 
 
