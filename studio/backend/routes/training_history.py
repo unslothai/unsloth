@@ -8,8 +8,9 @@ Training history API routes — browse, view, and delete past training runs.
 import asyncio
 import json
 import shutil
+import uuid
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loggers import get_logger
@@ -127,7 +128,7 @@ def _summaries_from_rows(rows: list[dict], sharing_on: bool) -> list[TrainingRun
     return [_summary_from_row(row, sharing_on, resource_cache) for row in rows]
 
 
-def _delete_run_output_dir(run_id: str, output_dir: str) -> bool:
+def _delete_run_output_dir(run_id: str, output_dir: str) -> Union[Path, bool]:
     resolved = _canonical_output_dir(output_dir)
     if resolved is None:
         logger.warning(
@@ -151,12 +152,16 @@ def _delete_run_output_dir(run_id: str, output_dir: str) -> bool:
         logger.warning("Run %s output path is not a directory; skipping: %s", run_id, resolved)
         return False
 
+    staged = resolved.with_name(f".{resolved.name}.deleting-{uuid.uuid4().hex}")
     try:
-        shutil.rmtree(resolved)
-        logger.info("Deleted adapter directory for run %s: %s", run_id, resolved)
-        return True
+        # A same-parent rename, not an rmtree: the run is logically gone immediately but
+        # the bytes survive until the database row is committed, so a failed row delete
+        # can roll the whole operation back instead of stranding a row whose artifacts
+        # are silently missing. _purge_staged_output_dir does the destructive half.
+        resolved.rename(staged)
+        return staged
     except OSError:
-        logger.exception("Failed to delete adapter directory for run %s: %s", run_id, resolved)
+        logger.exception("Failed to stage adapter directory for run %s: %s", run_id, resolved)
         return False
 
 
@@ -198,14 +203,67 @@ def _output_dir_shared(output_dir: str, run_id: str) -> bool:
 _ArtifactDeleteOutcome = Literal["deleted", "active", "shared", "failed"]
 
 
-def _delete_run_output_dir_guarded(run_id: str, output_dir: str) -> _ArtifactDeleteOutcome:
+def _delete_run_output_dir_guarded(
+    run_id: str, output_dir: str
+) -> tuple[_ArtifactDeleteOutcome, Optional[Path], Optional[Path]]:
+    """Move the run's artifacts aside, reversibly, instead of destroying them.
+
+    Deleting the directory outright and only then removing the database row leaves an
+    unrecoverable half-state if the row delete fails: the artifacts are gone and the row
+    survives with ``output_dir`` still populated, which is indistinguishable from the
+    legitimate "history kept, files kept" outcome. A same-parent rename is atomic and
+    costs nothing, so the destructive step can wait until the row is actually gone.
+
+    Returns the outcome plus (original, staged) paths when there is something to purge.
+    """
     from core.training.lifecycle import training_lifecycle_guard
     with training_lifecycle_guard():
         if _output_dirs_overlap(output_dir, _active_training_output_dir()):
-            return "active"
+            return "active", None, None
         if _output_dir_shared(output_dir, run_id):
-            return "shared"
-        return "deleted" if _delete_run_output_dir(run_id, output_dir) else "failed"
+            return "shared", None, None
+
+        resolved = _canonical_output_dir(output_dir)
+        if resolved is None:
+            logger.warning(
+                "Cannot resolve output_dir for run %s; skipping disk cleanup: %s",
+                run_id,
+                output_dir,
+            )
+            return "failed", None, None
+        outputs_base = outputs_root().expanduser().resolve(strict = False)
+        if resolved == outputs_base:
+            logger.warning(
+                "Refusing to delete the outputs root itself for run %s: %s", run_id, resolved
+            )
+            return "failed", None, None
+        if not resolved.exists():
+            return "deleted", None, None
+        if not resolved.is_dir():
+            logger.warning("Run %s output path is not a directory; skipping: %s", run_id, resolved)
+            return "failed", None, None
+
+        staged = _delete_run_output_dir(run_id, str(resolved))
+        if not staged:
+            return "failed", None, None
+        return "deleted", resolved, staged if isinstance(staged, Path) else None
+
+
+def _restore_staged_output_dir(original: Path, staged: Path) -> None:
+    """Undo the staging rename after a failed database delete."""
+    try:
+        staged.rename(original)
+    except OSError:
+        logger.exception("Failed to restore staged artifacts from %s to %s", staged, original)
+
+
+def _purge_staged_output_dir(run_id: str, staged: Path) -> None:
+    """Remove the staged copy once the row is gone. A failure here only leaks disk."""
+    try:
+        shutil.rmtree(staged)
+        logger.info("Deleted adapter directory for run %s: %s", run_id, staged)
+    except OSError:
+        logger.exception("Failed to purge staged artifacts for run %s: %s", run_id, staged)
 
 
 @router.get("/runs", response_model = TrainingRunListResponse)
@@ -300,10 +358,12 @@ async def delete_training_run(
     logger.info("Deleting training run %s (delete_artifacts=%s)", run_id, delete_artifacts)
     artifacts_deleted = False
     artifacts_kept_reason: Optional[str] = None
+    staged_original: Optional[Path] = None
+    staged_path: Optional[Path] = None
     if delete_artifacts:
         output_dir = run.get("output_dir")
         if output_dir:
-            delete_outcome = await asyncio.to_thread(
+            delete_outcome, staged_original, staged_path = await asyncio.to_thread(
                 _delete_run_output_dir_guarded,
                 run_id,
                 output_dir,
@@ -336,7 +396,17 @@ async def delete_training_run(
                 )
             else:
                 artifacts_deleted = True
-    delete_run(run_id)
+    try:
+        delete_run(run_id)
+    except Exception:
+        # The artifacts are only staged, so the whole operation rolls back and the run
+        # is exactly as it was. Destroying them first would leave a row whose artifacts
+        # are silently gone, looking just like a deliberate "kept history" outcome.
+        if staged_original is not None and staged_path is not None:
+            await asyncio.to_thread(_restore_staged_output_dir, staged_original, staged_path)
+        raise
+    if staged_path is not None:
+        await asyncio.to_thread(_purge_staged_output_dir, run_id, staged_path)
     return TrainingRunDeleteResponse(
         status = "deleted",
         message = f"Run {run_id} deleted",

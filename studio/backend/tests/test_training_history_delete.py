@@ -616,7 +616,9 @@ def test_delete_artifacts_uses_thread_offload(monkeypatch, tmp_path):
 
     async def fake_to_thread(function, *args):
         calls.append((function, args))
-        return "deleted"
+        # Staging returns (outcome, original, staged); the purge that follows the row
+        # delete returns nothing.
+        return ("deleted", None, None) if len(calls) == 1 else None
 
     monkeypatch.setattr(training_history.asyncio, "to_thread", fake_to_thread)
     monkeypatch.setattr(training_history, "_delete_run_output_dir", lambda *args: True)
@@ -629,6 +631,7 @@ def test_delete_artifacts_uses_thread_offload(monkeypatch, tmp_path):
 
     assert response.artifacts_deleted is True
     assert deleted_runs == ["run-1"]
+    # One offload, not two: nothing was staged here, so there is no purge phase.
     assert len(calls) == 1
 
 
@@ -697,7 +700,7 @@ def test_guarded_delete_prevents_resume_from_spawning_after_artifacts_are_remove
     delete_thread.join(timeout = 2)
     start_thread.join(timeout = 2)
 
-    assert outcomes["delete"] == "deleted"
+    assert outcomes["delete"][0] == "deleted"
     assert outcomes["start"] is False
     assert internal_start_called.is_set() is False
     assert run_dir.exists() is False
@@ -725,7 +728,7 @@ def test_guarded_delete_rechecks_shared_output_after_waiting_for_lifecycle(monke
 
     def guarded_delete():
         delete_attempted.set()
-        outcome.append(training_history._delete_run_output_dir_guarded("run-1", str(run_dir)))
+        outcome.append(training_history._delete_run_output_dir_guarded("run-1", str(run_dir))[0])
 
     with training_lifecycle_guard():
         delete_thread = threading.Thread(target = guarded_delete)
