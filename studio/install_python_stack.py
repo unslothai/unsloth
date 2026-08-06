@@ -653,22 +653,20 @@ _SHADOWING_INTEGRATED_GFX: "frozenset[str]" = frozenset(
 
 
 def _visible_devices_pinned() -> bool:
-    """True when the user pinned a GPU via HIP_VISIBLE_DEVICES /
+    """True when the user selected devices via HIP_VISIBLE_DEVICES /
     ROCR_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES.
 
-    Any explicit selection (other than the "no mask" spellings "" and "-1") must
-    be honoured verbatim, so the iGPU-shadowing preference below never overrides
-    a device the user named on purpose. CUDA_VISIBLE_DEVICES counts as a pin
-    because the HIP runtime honours it with the same semantics -- the ROCm
-    target picker in install_llama_prebuilt.py (`_pick_rocm_gfx_target`) already
-    resolves all three masks identically, so a host that exposed only its iGPU
-    that way must keep getting the iGPU's wheels."""
+    First-set-wins, and ANY value counts -- including "" and "-1", which select
+    *no* GPU rather than meaning "unset". The ROCm runtime stores an explicitly
+    empty var as " " (clr `flags.cpp`) and then picks the HIP mask whenever its
+    first byte is not NUL (`paldevice.cpp` / `rocdevice.cpp`), so an empty
+    HIP_VISIBLE_DEVICES shadows CUDA_VISIBLE_DEVICES instead of deferring to it;
+    `parseRequestedDeviceList` then surfaces zero devices for " " and "-1", which
+    ROCR states outright. Whatever the user selected is honoured verbatim, so the
+    iGPU-shadowing preference below never overrides a deliberate choice. Same
+    precedence as `_pick_rocm_gfx_target` in install_llama_prebuilt.py."""
     for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
-        _val = os.environ.get(_env)
-        if _val is None:
-            continue
-        _val = _val.strip()
-        if _val and _val != "-1":
+        if os.environ.get(_env) is not None:
             return True
     return False
 
@@ -678,20 +676,18 @@ def _pick_visible_index(num_tokens: int, warn: bool = True) -> int:
     to an index into a list of length num_tokens. Returns 0 (first GPU) for
     unset, empty, '-1', UUID-style, or out-of-range values.
 
-    Must resolve the same mask `_visible_devices_pinned()` treats as the pin, or
-    the two disagree: that function skips "" / "-1" and reads the next var, so
-    stopping here on an empty HIP_VISIBLE_DEVICES made a host with
-    CUDA_VISIBLE_DEVICES=1 count as pinned while the index still resolved to GPU
-    0, and the probes that enumerate every GPU regardless of the masks (amd-smi,
-    WMI) then installed the leading iGPU's wheels for a device the user masked
-    away."""
+    First-set-wins, matching `_visible_devices_pinned()` and
+    `_pick_rocm_gfx_target` in install_llama_prebuilt.py. Falling through to the
+    next var on "" / "-1" would contradict the runtime: an empty HIP mask
+    shadows CUDA_VISIBLE_DEVICES rather than deferring to it, and selects no GPU
+    at all."""
     for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
         _val = os.environ.get(_env)
         if _val is None:
             continue
         _val = _val.strip()
         if _val == "" or _val == "-1":
-            continue
+            return 0
         _first = _val.split(",")[0].strip()
         try:
             _idx = int(_first)
@@ -874,6 +870,12 @@ def _detect_windows_gfx_arch() -> str | None:
     #    (amd-smi does not exist on Windows at all), but the display driver
     #    always knows the GPU name. Mirrors setup.ps1's $nameArchTable so a
     #    standalone `studio update` can repair a CPU-only venv on such hosts.
+    #
+    #    ConfigManagerErrorCode 0 is "working properly". WMI keeps listing an
+    #    adapter that is disabled in Device Manager or sitting on a driver error,
+    #    and _dedup_pick()'s shadowing skip would let such a card depose the
+    #    working iGPU -- installing wheels for a GPU Windows never exposes. Same
+    #    filter setup.ps1 applies to $wmiGpus.
     try:
         result = subprocess.run(
             [
@@ -881,7 +883,9 @@ def _detect_windows_gfx_arch() -> str | None:
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "(Get-CimInstance Win32_VideoController).Name",
+                "(Get-CimInstance Win32_VideoController | Where-Object { "
+                "($null -eq $_.ConfigManagerErrorCode) -or "
+                "($_.ConfigManagerErrorCode -eq 0) }).Name",
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,

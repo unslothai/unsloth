@@ -1555,14 +1555,15 @@ $archFamilyMap = @{
 # (leading space), the amd-smi one rejected "1,0". A mask the pin check in
 # Resolve-ShadowingGfxPick honours but the index ignores lands on GPU 0, i.e.
 # the iGPU this whole preference exists to skip. Mirrors _pick_visible_index()
-# in studio/install_python_stack.py: "" and "-1" mean "no mask" so the next var
-# is consulted, and an unparseable or out-of-range value falls back to GPU 0.
+# in studio/install_python_stack.py: first-set-wins (the ROCm runtime lets an
+# empty HIP mask shadow CUDA_VISIBLE_DEVICES rather than defer to it), and an
+# unparseable or out-of-range value falls back to GPU 0.
 function Resolve-VisibleGpuIndex {
     param([int]$Count)
     foreach ($visEnv in @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)) {
         if ($null -eq $visEnv) { continue }
         $val = $visEnv.Trim()
-        if ($val -eq "" -or $val -eq "-1") { continue }
+        if ($val -eq "" -or $val -eq "-1") { return 0 }
         $first = ($val -split ',')[0].Trim()
         if ($first -match '^\d+$' -and [int]$first -lt $Count) { return [int]$first }
         if ($first -match '^\d+$') {
@@ -1584,9 +1585,11 @@ function Resolve-ShadowingGfxPick {
     if (-not $Picked) { return $Picked }
     # Only arches in $archFamilyMap have an AMD Windows wheel index.
     function Test-GfxHasWheels { param([AllowNull()][string]$Arch) return [bool]($Arch -and $archFamilyMap.ContainsKey($Arch)) }
-    # HIP honours CUDA_VISIBLE_DEVICES with the same semantics as its own masks.
+    # First-set-wins, and ANY value is a deliberate selection -- "" and "-1"
+    # select no GPU rather than meaning "unset". Matches Resolve-VisibleGpuIndex
+    # and _visible_devices_pinned().
     foreach ($visEnv in @($env:HIP_VISIBLE_DEVICES, $env:ROCR_VISIBLE_DEVICES, $env:CUDA_VISIBLE_DEVICES)) {
-        if ($visEnv -and $visEnv.Trim() -and $visEnv.Trim() -ne "-1") { return $Picked }
+        if ($null -ne $visEnv) { return $Picked }
     }
     if ($script:ShadowingIntegratedGfx -notcontains $Picked) { return $Picked }
     $distinctArches = @($AllArches | Select-Object -Unique)
@@ -1596,10 +1599,16 @@ function Resolve-ShadowingGfxPick {
     # host to CPU -- strictly worse than the shadowing this preference exists to
     # undo. Mirrors the same guard in _dedup_pick().
     $pickedHasWheels = Test-GfxHasWheels $Picked
-    $discreteArch = @($AllArches | Where-Object {
-        $script:ShadowingIntegratedGfx -notcontains $_ -and
-        ((-not $pickedHasWheels) -or (Test-GfxHasWheels $_))
-    }) | Select-Object -First 1
+    $others = @($AllArches | Where-Object { $script:ShadowingIntegratedGfx -notcontains $_ })
+    # Prefer a wheel-backed discrete card whenever one exists, and only fall back to
+    # an unsupported one when the pick has no wheels either. Mirrors _dedup_pick()'s
+    # `_withWheels or (...)`: taking the first non-integrated arch instead sent a
+    # gfx90c,gfx1010,gfx1200 host to CPU torch despite the supported gfx1200.
+    $withWheels = @($others | Where-Object { Test-GfxHasWheels $_ })
+    $candidates = if ($withWheels.Count -gt 0) { $withWheels }
+                  elseif (-not $pickedHasWheels) { $others }
+                  else { @() }
+    $discreteArch = $candidates | Select-Object -First 1
     if (-not $discreteArch) { return $Picked }
     substep "multiple AMD GPUs detected ($($distinctArches -join ', ')); installing for the discrete $discreteArch instead of the integrated $Picked" "Cyan"
     # HIP still enumerates the iGPU as device 0 at runtime, so the wheels alone do

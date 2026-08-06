@@ -3113,19 +3113,24 @@ class TestDetectWindowsGfxArch:
             monkeypatch.setenv("CUDA_VISIBLE_DEVICES", _value)
             assert stack_mod._pick_visible_index(2) == _expected, _value
 
-    def test_empty_cuda_visible_devices_is_not_a_pin(self, monkeypatch):
-        # "" and "-1" mean "no mask", not "the user chose GPU 0", so the
-        # shadowing-iGPU skip must still apply.
+    @pytest.mark.parametrize("spelling", ["", "-1"])
+    def test_all_hiding_masks_count_as_a_selection(self, monkeypatch, spelling):
+        # "" and "-1" select NO GPU rather than meaning "unset": the ROCm runtime
+        # stores an explicitly empty var as " " (clr flags.cpp) and
+        # parseRequestedDeviceList surfaces zero devices for " " and "-1". So they
+        # are a deliberate choice and must suppress the shadowing skip, not invite
+        # it. Matches _pick_rocm_gfx_target in install_llama_prebuilt.py.
         monkeypatch.delenv("HIP_VISIBLE_DEVICES", raising = False)
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
-        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "")
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", spelling)
+        assert stack_mod._visible_devices_pinned() is True
         mock_result = MagicMock()
         mock_result.returncode = 0
         mock_result.stdout = b"gcnArchName : gfx1036\ngcnArchName : gfx1200\n"
         with patch("shutil.which", return_value = "/usr/bin/hipinfo"):
             with patch("subprocess.run", return_value = mock_result):
                 result = stack_mod._detect_windows_gfx_arch()
-        assert result == "gfx1200"
+        assert result == "gfx1036"
 
     def _hipinfo_pick(self, arches):
         mock_result = MagicMock()
@@ -3135,16 +3140,17 @@ class TestDetectWindowsGfxArch:
             with patch("subprocess.run", return_value = mock_result):
                 return stack_mod._detect_windows_gfx_arch()
 
-    def test_empty_earlier_mask_defers_to_the_later_pin(self, monkeypatch):
-        # _visible_devices_pinned() skips "" and reads CUDA_VISIBLE_DEVICES, so the
-        # index resolver has to skip it too. Stopping here returned GPU 0 while the
-        # host still counted as pinned, installing iGPU wheels for the masked card.
+    def test_an_all_hiding_hip_mask_shadows_a_later_cuda_mask(self, monkeypatch):
+        # clr picks the HIP mask whenever its first byte is not NUL, and an
+        # explicitly empty var is stored as " ", so an empty HIP_VISIBLE_DEVICES
+        # shadows CUDA_VISIBLE_DEVICES instead of deferring to it. Falling through
+        # to the next var would resolve a device the runtime never exposes.
         monkeypatch.delenv("ROCR_VISIBLE_DEVICES", raising = False)
         for _spelling in ("", "-1"):
             monkeypatch.setenv("HIP_VISIBLE_DEVICES", _spelling)
             monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "1")
-            assert stack_mod._pick_visible_index(2) == 1
-            assert self._hipinfo_pick(["gfx1036", "gfx1200"]) == "gfx1200"
+            assert stack_mod._pick_visible_index(2) == 0
+            assert self._hipinfo_pick(["gfx1036", "gfx1200"]) == "gfx1036"
 
     def test_gcn_arch_feature_suffix_is_stripped(self, monkeypatch):
         # hipinfo can print "gfx90a:sramecc+:xnack-"; setup.ps1:1696 splits on ':'
@@ -3315,6 +3321,68 @@ class TestGfxArchNameFallback:
                         result = stack_mod._detect_windows_gfx_arch()
         assert result is None
 
+    def test_wmi_fallback_skips_disabled_adapters(self):
+        # WMI keeps listing a Radeon that is disabled in Device Manager or sitting on
+        # a driver error, and _dedup_pick()'s shadowing skip would let one depose the
+        # working iGPU: a driver-only laptop with a live 780M and a disabled RX 9060
+        # installed gfx120X-all wheels for a GPU Windows never exposes. setup.ps1
+        # filters on ConfigManagerErrorCode, so this path has to as well.
+        captured = {}
+
+        ps_result = MagicMock()
+        ps_result.returncode = 0
+        ps_result.stdout = b"AMD Radeon(TM) 780M Graphics\r\n"
+
+        def _run(cmd, **kwargs):
+            if cmd and "powershell.exe" in str(cmd[0]).lower():
+                captured["cmd"] = cmd[-1]
+                return ps_result
+            raise FileNotFoundError(cmd[0])
+
+        with patch.dict(os.environ, {}, clear = False):
+            for _v in (
+                "HIP_PATH",
+                "ROCM_PATH",
+                "UNSLOTH_ROCM_GFX_ARCH",
+                "UNSLOTH_ENABLE_AMD_SMI",
+                "HIP_VISIBLE_DEVICES",
+                "ROCR_VISIBLE_DEVICES",
+                "CUDA_VISIBLE_DEVICES",
+            ):
+                os.environ.pop(_v, None)
+            with patch("shutil.which", return_value = None):
+                with patch("os.path.isfile", return_value = False):
+                    with patch("subprocess.run", side_effect = _run):
+                        result = stack_mod._detect_windows_gfx_arch()
+        assert result == "gfx1103"
+        assert "ConfigManagerErrorCode" in captured["cmd"]
+
+    @pytest.mark.skipif(shutil.which("pwsh") is None, reason = "pwsh not installed")
+    def test_wmi_adapter_filter_is_valid_powershell(self):
+        # The filter lives in a Python string, so nothing else type-checks it. Run the
+        # real expression over stand-in adapters: a null error code (the property is
+        # absent on some drivers) and 0 stay, anything else goes.
+        source = _STACK_PATH.read_text(encoding = "utf-8")
+        assert "ConfigManagerErrorCode" in source
+        script = """
+class FakeAdapter { [string]$Name; [object]$ConfigManagerErrorCode }
+$adapters = @(
+    [FakeAdapter]@{ Name = 'AMD Radeon(TM) 780M Graphics'; ConfigManagerErrorCode = 0 }
+    [FakeAdapter]@{ Name = 'AMD Radeon RX 9060 XT';        ConfigManagerErrorCode = 22 }
+    [FakeAdapter]@{ Name = 'AMD Radeon RX 7900 XTX';       ConfigManagerErrorCode = $null }
+)
+($adapters | Where-Object { ($null -eq $_.ConfigManagerErrorCode) -or (
+    $_.ConfigManagerErrorCode -eq 0) }).Name
+"""
+        out = subprocess.run(
+            ["pwsh", "-NoProfile", "-NonInteractive", "-Command", script],
+            check = True,
+            capture_output = True,
+            text = True,
+        ).stdout.split()
+        assert "9060" not in " ".join(out)
+        assert "780M" in " ".join(out) and "7900" in " ".join(out)
+
     def test_stack_probes_venv_hipinfo(self):
         """venv Scripts hipInfo.exe (from AMD torch wheels) must be a probe candidate for driver-only hosts."""
         source = _STACK_PATH.read_text(encoding = "utf-8")
@@ -3452,9 +3520,11 @@ foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
         body = 'Resolve-ShadowingGfxPick -Picked "gfx1151" -AllArches @("gfx1151","gfx1200")'
         assert self._run(body) == "gfx1151"
 
-    def test_no_mask_spellings_do_not_count_as_a_pin(self):
+    def test_all_hiding_spellings_count_as_a_selection(self):
+        # "" / "-1" surface zero devices, so they are a deliberate choice and must
+        # suppress the repick rather than invite it.
         for _val in ("", "-1"):
-            assert self._run(self._MIXED, {"HIP_VISIBLE_DEVICES": _val}) == "gfx1200"
+            assert self._run(self._MIXED, {"HIP_VISIBLE_DEVICES": _val}) == "gfx1036"
 
     @pytest.mark.parametrize("mask", ["1", "1,0", " 1 "])
     def test_index_resolves_every_mask_spelling(self, mask):
@@ -3467,14 +3537,32 @@ foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
         for _val in ("7", "GPU-abc123", "-1", ""):
             assert self._run("Resolve-VisibleGpuIndex 2", {"HIP_VISIBLE_DEVICES": _val}) == "0"
 
-    def test_empty_earlier_mask_defers_to_the_next_one(self):
-        # "" means "no mask", so CUDA_VISIBLE_DEVICES is the operative pin.
+    def test_an_all_hiding_hip_mask_shadows_a_later_cuda_mask(self):
+        # First-set-wins, same as the Python resolver: an empty HIP mask shadows
+        # CUDA_VISIBLE_DEVICES in the runtime rather than deferring to it.
         env = {"HIP_VISIBLE_DEVICES": "", "CUDA_VISIBLE_DEVICES": "1"}
-        assert self._run("Resolve-VisibleGpuIndex 2", env) == "1"
+        assert self._run("Resolve-VisibleGpuIndex 2", env) == "0"
 
     def test_wheelless_discrete_does_not_depose_a_supported_igpu(self):
         body = 'Resolve-ShadowingGfxPick -Picked "gfx1036" -AllArches @("gfx1036","gfx1010")'
         assert self._run(body) == "gfx1036"
+
+    def test_wheelless_igpu_still_prefers_a_wheel_backed_discrete(self):
+        # PowerShell mirror of test_prefers_a_wheel_backed_discrete_over_an_unsupported_one.
+        # gfx90c (Cezanne) has no AMD Windows wheel index, so the guard above is
+        # inactive and every discrete arch qualifies -- taking the first one landed on
+        # gfx1010, which has no wheels either, and $ROCmIndexUrl stayed null: a fresh
+        # install went CPU-only despite the supported gfx1200 in the same enumeration.
+        for _igpu in ("gfx90c", "gfx1013", "gfx1153"):
+            body = (
+                f'Resolve-ShadowingGfxPick -Picked "{_igpu}" '
+                f'-AllArches @("{_igpu}","gfx1010","gfx1200")'
+            )
+            assert self._run(body) == "gfx1200", _igpu
+        # Not over-tightened: with nothing wheel-backed to move to, a wheel-less iGPU
+        # still yields to the discrete card, exactly as _dedup_pick() does.
+        body = 'Resolve-ShadowingGfxPick -Picked "gfx90c" -AllArches @("gfx90c","gfx1010")'
+        assert self._run(body) == "gfx1010"
 
     def test_degenerate_inputs_do_not_throw(self):
         for _all in ("$null", "@()", '@("gfx1036")'):
