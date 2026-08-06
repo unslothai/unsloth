@@ -728,15 +728,61 @@ class TestEnsureRocmTorch:
         # unreadable. Guessing would force a multi-GB reinstall on every update.
         assert self._windows_repair(None).call_count == 0
 
-    def test_installed_wheel_family_reads_the_amd_runtime_package(self):
-        # The family lives in the rocm-sdk-libraries-<family> distribution AMD's per-arch
-        # index resolves alongside torch; nothing else on disk records it.
-        dist = MagicMock()
-        dist.metadata = {"Name": "rocm_sdk_libraries_gfx120X-all"}
-        with patch("importlib.metadata.distributions", return_value = [dist]):
+    @staticmethod
+    def _dists(*names):
+        out = []
+        for n in names:
+            d = MagicMock()
+            d.metadata = {"Name": n}
+            out.append(d)
+        return out
+
+    def test_installed_wheel_family_reads_the_rocm_metapackage(self):
+        # AMD's torch requires rocm[libraries], and that extra names the arch-specific
+        # runtime, so the installed `rocm` meta-package is the authoritative record.
+        reqs = [
+            "rocm-sdk-core==7.13.0",
+            'rocm-sdk-libraries-gfx120X-all==7.13.0; extra == "libraries"',
+        ]
+        with patch("importlib.metadata.requires", return_value = reqs):
             assert stack_mod._installed_rocm_wheel_family() == "gfx120x-all"
-        with patch("importlib.metadata.distributions", return_value = []):
-            assert stack_mod._installed_rocm_wheel_family() is None
+
+    def test_orphaned_runtime_does_not_masquerade_as_the_active_family(self):
+        # pip leaves the old rocm-sdk-libraries-<family> behind on a switch: it is a
+        # different distribution name, so it is never uninstalled. Reading the first one
+        # found would report the orphan and redownload the stack on every update.
+        reqs = ['rocm-sdk-libraries-gfx120X-all==7.13.0; extra == "libraries"']
+        dists = self._dists("rocm_sdk_libraries_gfx103X-all", "rocm_sdk_libraries_gfx120X-all")
+        with patch("importlib.metadata.requires", return_value = reqs):
+            with patch("importlib.metadata.distributions", return_value = dists):
+                assert stack_mod._installed_rocm_wheel_family() == "gfx120x-all"
+
+    def test_two_runtimes_without_a_metapackage_are_unknowable(self):
+        # No `rocm` to arbitrate and two runtimes on disk: neither can be called active,
+        # so the install is left alone rather than guessed at.
+        dists = self._dists("rocm_sdk_libraries_gfx103X-all", "rocm_sdk_libraries_gfx120X-all")
+        with patch("importlib.metadata.requires", return_value = None):
+            with patch("importlib.metadata.distributions", return_value = dists):
+                assert stack_mod._installed_rocm_wheel_family() is None
+
+    def test_single_runtime_without_a_metapackage_still_reads(self):
+        dists = self._dists("rocm_sdk_libraries_gfx1151")
+        with patch("importlib.metadata.requires", return_value = None):
+            with patch("importlib.metadata.distributions", return_value = dists):
+                assert stack_mod._installed_rocm_wheel_family() == "gfx1151"
+        with patch("importlib.metadata.requires", return_value = None):
+            with patch("importlib.metadata.distributions", return_value = []):
+                assert stack_mod._installed_rocm_wheel_family() is None
+
+    def test_switched_host_does_not_reinstall_on_every_update(self):
+        # End to end for the loop: after the gfx103X -> gfx120X switch the orphan is still
+        # installed, and the next `studio update` must do nothing.
+        reqs = ['rocm-sdk-libraries-gfx120X-all==7.13.0; extra == "libraries"']
+        dists = self._dists("rocm_sdk_libraries_gfx103X-all", "rocm_sdk_libraries_gfx120X-all")
+        with patch("importlib.metadata.requires", return_value = reqs):
+            with patch("importlib.metadata.distributions", return_value = dists):
+                family = stack_mod._installed_rocm_wheel_family()
+        assert self._windows_repair(family).call_count == 0
 
     @patch.object(stack_mod, "pip_install")
     @patch.object(stack_mod, "_has_usable_nvidia_gpu", return_value = False)

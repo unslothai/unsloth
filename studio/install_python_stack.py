@@ -1123,23 +1123,53 @@ def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
     return f"{_ROCM_WINDOWS_INDEX_BASE}/{arch_family}/"
 
 
+def _rocm_family_token(text: str) -> "str | None":
+    """Family out of a 'rocm-sdk-libraries-<family>' name or requirement string."""
+    _m = re.search(r"rocm[-_]sdk[-_]libraries[-_]([A-Za-z0-9][A-Za-z0-9._-]*)", text)
+    if not _m:
+        return None
+    # Requirement strings carry a specifier and marker: "...-gfx120X-all==7.13.0; extra".
+    return re.split(r"[=<>!~;,\[\]()\s]", _m.group(1))[0].strip().lower().replace("_", "-")
+
+
 def _installed_rocm_wheel_family() -> str | None:
-    """The AMD per-arch family the installed torch came from, normalized (e.g.
-    'gfx120x-all'), or None when nothing on disk identifies it.
+    """The AMD per-arch family the installed torch actually runs on, normalized (e.g.
+    'gfx120x-all'), or None when nothing on disk identifies it unambiguously.
 
     torch.version.hip only says "some ROCm build", so it cannot tell a gfx103X wheel
-    from a gfx120X one. AMD's per-arch index resolves a rocm-sdk-libraries-<family>
-    runtime as a dependency of torch, so that distribution name is the record of which
-    family was installed. None means "unknowable" (a pinned index, or an older wheel
-    that predates the split runtime) and callers must leave the install alone rather
-    than guess -- a wrong guess re-downloads multiple GB on every update.
+    from a gfx120X one. AMD's torch requires rocm[libraries], and that extra resolves
+    to the arch-specific rocm-sdk-libraries-<family> runtime, so the installed `rocm`
+    meta-package names the active family. Read it there rather than by scanning for a
+    rocm-sdk-libraries-* distribution: `rocm` is upgraded in place across a family
+    switch, but the previous arch-specific runtime keeps its own distribution name and
+    so is never uninstalled, and mistaking that orphan for the active family would
+    reinstall the multi-GB stack on every update.
+
+    None means "unknowable" -- an older wheel predating the split runtime, a pinned
+    index, or two runtimes with no `rocm` to arbitrate. Callers must leave the install
+    alone rather than guess.
     """
     try:
         from importlib import metadata
+
+        for _req in metadata.requires("rocm") or []:
+            _fam = _rocm_family_token(_req)
+            if _fam:
+                return _fam
+    except Exception:
+        pass
+    # No `rocm` meta-package: fall back to the runtimes on disk, but only when exactly
+    # one is present, since with several there is nothing left to say which is active.
+    try:
+        from importlib import metadata
+
+        _found = set()
         for _dist in metadata.distributions():
-            _name = (_dist.metadata["Name"] or "").strip().lower().replace("_", "-")
-            if _name.startswith("rocm-sdk-libraries-"):
-                return _name[len("rocm-sdk-libraries-") :]
+            _fam = _rocm_family_token((_dist.metadata["Name"] or "").strip())
+            if _fam:
+                _found.add(_fam)
+        if len(_found) == 1:
+            return _found.pop()
     except Exception:
         return None
     return None
