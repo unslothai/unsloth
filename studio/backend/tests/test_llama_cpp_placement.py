@@ -230,22 +230,17 @@ def test_dspark_composed_argv_respects_placement_fit_decision(tmp_path, use_fit)
     cmd = result["cmd"]
     assert cmd.count("--fit") == 1
     assert cmd[cmd.index("--fit") + 1] == ("on" if use_fit else "off")
-    if use_fit:
-        assert "--spec-default" in cmd
-        assert "--model-draft" not in cmd
-        assert backend.spec_fallback_reason == "dspark_fit_required"
-    else:
-        assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
-        assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
-        assert backend.spec_fallback_reason is None
+    # DSpark engages under either placement: --fit on only means llama.cpp skips
+    # the sidecar's memory reserve, it does not refuse to load it.
+    assert cmd[cmd.index("--model-draft") + 1] == str(sidecar)
+    assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
+    assert backend.spec_fallback_reason is None
 
 
-def test_managed_dspark_strips_conflicting_fit_extra_arg(tmp_path):
-    backend, gguf = _backend(
-        tmp_path,
-        vulkan = False,
-        memory = [(0, 24_000, 24_000)],
-    )
+def test_dspark_keeps_a_user_fit_flag(tmp_path):
+    """A caller's --fit is theirs to set: the sidecar loads under either value,
+    so Studio has no reason to rewrite it."""
+    backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
     backend._select_gpus = lambda *args, **kwargs: ([0], False)
@@ -264,15 +259,15 @@ def test_managed_dspark_strips_conflicting_fit_extra_arg(tmp_path):
     )
 
     cmd = result["cmd"]
-    assert [cmd[i + 1] for i, a in enumerate(cmd) if a == "--fit"] == ["off", "off"]
+    assert cmd[len(cmd) - 1 - cmd[::-1].index("--fit") + 1] == "on"
     assert cmd[cmd.index("--top-k") + 1] == "5"
     assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
 
 
-def test_pass_through_dspark_overrides_an_auto_fit_placement(tmp_path):
-    """Manual + Auto layers emits --fit on, and a user-owned --spec-type returns
-    from _build_speculative_flags before Studio can refuse DSpark, so the extras
-    must end in --fit off: llama.cpp is last-wins and cannot reshape the layout."""
+def test_pass_through_dspark_loads_under_an_auto_fit_placement(tmp_path):
+    """Manual + Auto layers emits --fit on and a user-owned --spec-type returns
+    from _build_speculative_flags early. Nothing rewrites the placement: llama.cpp
+    only skips the sidecar's memory reserve under fitting, it still loads it."""
     backend, gguf = _backend(tmp_path, vulkan = False, memory = [(0, 24_000, 24_000)])
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
@@ -286,7 +281,8 @@ def test_pass_through_dspark_overrides_an_auto_fit_placement(tmp_path):
     )
 
     cmd = result["cmd"]
-    assert "--fit" in cmd and cmd[len(cmd) - 1 - cmd[::-1].index("--fit") + 1] == "off"
+    assert cmd.count("--fit") == 1
+    assert cmd[cmd.index("--fit") + 1] == "on"
     assert cmd[cmd.index("--spec-type") + 1] == "draft-dspark"
 
 

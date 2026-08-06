@@ -303,8 +303,6 @@ export interface InferenceStatusResponse {
    * "binary_no_mtp" / "binary_outdated" -> updating llama.cpp would re-enable
    * it; "runtime_error" -> the current build could not run it;
    * "drafter_not_found" -> its MTP or DSpark sidecar was unavailable;
-   * "dspark_fit_required" -> DSpark required fixed placement but Studio could
-   * not confirm the target and sidecar fit;
    * "mla_mtp_disabled" -> an Auto-mode policy downgrade for MLA models
    * (GLM-5.2 et al.) whose llama.cpp MTP path is slower than no speculation
    * (updating won't help; choose MTP in Settings to force it). Null otherwise.

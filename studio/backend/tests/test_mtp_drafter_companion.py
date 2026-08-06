@@ -1139,8 +1139,8 @@ def test_gemma_mtp_is_still_auto_downloaded():
 
 def test_a_cached_dspark_drafter_is_never_launched_as_an_mtp_drafter(tmp_path, monkeypatch):
     """_cached_repo_mtp_drafter uses the predicate inversely, to pick a drafter to
-    launch with --spec-type draft-mtp. DSpark needs draft-dspark plus --fit off,
-    so broadening that predicate must not widen what is launched."""
+    launch with --spec-type draft-mtp. DSpark needs draft-dspark, so broadening
+    that predicate must not widen what is launched."""
     import core.inference.llama_cpp as llama_cpp_module
 
     def _snapshot(files):

@@ -1557,7 +1557,10 @@ def test_build_speculative_flags_dspark_blames_the_binary_not_the_missing_sideca
     assert backend.spec_fallback_reason == "binary_no_mtp"
 
 
-def test_build_speculative_flags_dspark_declines_when_fit_is_required(monkeypatch, tmp_path):
+def test_build_speculative_flags_dspark_engages_under_auto_fit(monkeypatch, tmp_path):
+    """--fit on is not a blocker. The sidecar borrows the target's token_embd and
+    output, so llama.cpp's fit step cannot build a standalone draft context to
+    measure it and skips the reserve; the load itself still gets the drafter."""
     backend = _resolver_backend(monkeypatch)
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
@@ -1570,11 +1573,12 @@ def test_build_speculative_flags_dspark_declines_when_fit_is_required(monkeypatc
         gpus = True,
         binary = "/fake/llama-server",
         dspark_draft_path = str(sidecar),
-        dspark_fit_allowed = False,
+        dspark_fit_sized = False,
     )
-    assert flags == ["--spec-default"]
-    assert backend.speculative_type == "default"
-    assert backend.spec_fallback_reason == "dspark_fit_required"
+    assert flags[flags.index("--spec-type") + 1] == "draft-dspark"
+    assert flags[flags.index("--model-draft") + 1] == str(sidecar)
+    assert backend.speculative_type == "draft-dspark"
+    assert backend.spec_fallback_reason is None
 
 
 @pytest.mark.parametrize("mode", ["auto", "mtp", "dspark", "ngram", "mtp+ngram", "off"])

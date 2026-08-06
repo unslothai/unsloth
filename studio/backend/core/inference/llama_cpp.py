@@ -1159,10 +1159,9 @@ def _is_companion_gguf_path(path: str) -> bool:
 
 
 def _is_mtp_only_drafter_path(path: str) -> bool:
-    """MTP only, not the other companion GGUFs. Each drafter kind launches
-    differently (DSpark needs ``draft-dspark`` plus a fixed ``--fit off``), so
-    discovery narrows to one kind rather than reusing the broad companion
-    predicate, which exists to EXCLUDE companions from variant menus."""
+    """MTP only, not the other companion GGUFs. Each drafter kind needs its own
+    ``--spec-type``, so discovery narrows to one kind rather than reusing the
+    broad companion predicate, which exists to EXCLUDE companions from menus."""
     return _drafter_path_kind(path) == "mtp"
 
 
@@ -10334,7 +10333,7 @@ class LlamaCppBackend:
                     binary = binary,
                     mtp_draft_path = (None if _spec_canon == "dspark" else launch_mtp_draft_path),
                     dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
-                    dspark_fit_allowed = not use_fit,
+                    dspark_fit_sized = not use_fit,
                     draft_device = _draft_device,
                 )
                 # _build_speculative_flags judged the stripped list, so a user
@@ -10599,31 +10598,6 @@ class LlamaCppBackend:
                 # below when the Studio picker owns the GPU selection.
                 if extra_args:
                     _emit_extra_args = list(extra_args)
-                    # Extras owning --spec-type return from _build_speculative_flags
-                    # before _speculative_type is set, so pass-through DSpark needs
-                    # the accumulated types too.
-                    if self._speculative_type == "draft-dspark" or _extra_args_requests_dspark(
-                        _emit_extra_args, env = _child_spec_env(_emit_extra_args)
-                    ):
-                        _without_fit = strip_shadowing_flags(
-                            _emit_extra_args,
-                            strip_context = False,
-                            strip_cache = False,
-                            strip_spec = False,
-                            strip_template = False,
-                            strip_split_mode = False,
-                            strip_fit = True,
-                        )
-                        if _without_fit != _emit_extra_args:
-                            logger.info(
-                                "Dropped user --fit override: DSpark requires the "
-                                "fixed --fit off placement."
-                            )
-                        # Append rather than only strip: the managed command carries
-                        # --fit on whenever the picker chose auto-fit, and llama.cpp
-                        # cannot reshape the DSpark layout. Last wins, so this pins
-                        # the placement whichever side asked for fitting.
-                        _emit_extra_args = [*_without_fit, "--fit", "off"]
                     if gpu_ids is not None:
                         # gpu_ids owns placement, so remove competing device flags.
                         _before_device_strip = list(_emit_extra_args)
@@ -10889,7 +10863,6 @@ class LlamaCppBackend:
                         if (
                             _spawn_attempt == 0
                             and fully_gpu_offloaded
-                            and not _extra_args_requests_dspark(run_cmd, env = env)
                             and _startup_crashed
                             and not _split_axis_crash
                         ):
@@ -10897,7 +10870,8 @@ class LlamaCppBackend:
                             # math placed the model fully on GPU. A startup crash here
                             # means that estimate was optimistic, so fall back to --fit
                             # on and let llama.cpp offload rather than fail the load.
-                            # DSpark is excluded because its layout requires fit off.
+                            # DSpark takes this path too: fitting only skips its
+                            # unmeasurable sidecar reserve, the drafter still loads.
                             logger.warning(
                                 "llama-server crashed during startup (exit code %s) "
                                 "with forced --fit off; the fit estimate was optimistic, "
@@ -11416,7 +11390,7 @@ class LlamaCppBackend:
         binary: Optional[str],
         mtp_draft_path: Optional[str] = None,
         dspark_draft_path: Optional[str] = None,
-        dspark_fit_allowed: bool = True,
+        dspark_fit_sized: bool = True,
         draft_device: Optional[str] = None,
     ) -> List[str]:
         """Return the llama-server flag list for the requested spec mode.
@@ -11553,23 +11527,22 @@ class LlamaCppBackend:
                 self._speculative_type = "default"
                 self._spec_fallback_reason = "drafter_not_found"
                 return flags
-            if not dspark_fit_allowed:
-                logger.warning(
-                    "DSpark requires --fit off, but Studio could not confirm a fixed "
-                    "placement for the target and sidecar; loading without speculative "
-                    "decoding."
+            if not dspark_fit_sized:
+                # Not a blocker: the sidecar ships no token_embd/output and borrows
+                # the target's, so llama.cpp's fit step cannot build a standalone
+                # draft context to measure it (llama-context.cpp:153-160) and skips
+                # the reserve (server-context.cpp:1190-1193). The load still works;
+                # only the ~11 GB is missing from the fit budget.
+                logger.info(
+                    "DSpark under --fit on: llama.cpp cannot size the sidecar during "
+                    "fitting, so its ~%.1f GB is not reserved. Pin GPU Layers in "
+                    "Manual mode if the load runs out of VRAM.",
+                    (self._get_gguf_size_bytes(dspark_draft_path) or 0) / 1e9,
                 )
-                flags.append("--spec-default")
-                self._speculative_type = "default"
-                self._spec_fallback_reason = "dspark_fit_required"
-                return flags
             draft_n_max = int(spec_draft_n_max) if spec_draft_n_max is not None else 3
             if spec_draft_n_max is not None:
                 self._spec_draft_n_max = draft_n_max
             n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
-            # DSpark's weight layout is incompatible with llama.cpp's memory
-            # fitting reshape. Placement has already emitted the required
-            # --fit off exactly once before this speculative block.
             flags.extend(
                 [
                     "--model-draft",

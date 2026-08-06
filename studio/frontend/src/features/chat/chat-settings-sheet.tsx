@@ -420,8 +420,6 @@ function specFallbackMessage({
   switch (reason) {
     case "mla_mtp_disabled":
       return "MTP is disabled by default for this model architecture because it currently runs slower than standard decoding. Choose MTP in the model picker to force it.";
-    case "dspark_fit_required":
-      return "DSpark requires fixed placement, but Studio could not confirm that the target and sidecar fit with the selected settings. It is running without speculative decoding. Switch GPU Memory to Auto or pin GPU Layers in Manual mode; reducing the context or parallel slots, or choosing a smaller model, may also help. Then reload.";
     case "runtime_error":
       return `${drafter} could not start for this model on the installed llama.cpp build, so it is running without speculative decoding.`;
     case "drafter_not_found":
