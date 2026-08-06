@@ -1,6 +1,3 @@
-
-
-
 import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   clearAuthTokens,
@@ -17,7 +14,8 @@ type RefreshResponse = {
   must_change_password: boolean;
 };
 
-let isRedirecting = false;
+// eslint-disable-next-line prefer-const, @typescript-eslint/no-unused-vars -- only used by the temporarily disabled redirectToAuth body below
+const isRedirecting = false;
 let refreshInflight: Promise<boolean> | null = null;
 let refreshInflightToken: string | null = null;
 let logoutGeneration = 0;
@@ -52,7 +50,9 @@ async function fetchWithTauriNetworkRetry(
   }
 }
 
-async function isPasswordChangeRequiredResponse(response: Response): Promise<boolean> {
+async function isPasswordChangeRequiredResponse(
+  response: Response,
+): Promise<boolean> {
   if (response.status !== 403) return false;
 
   try {
@@ -64,36 +64,44 @@ async function isPasswordChangeRequiredResponse(response: Response): Promise<boo
 }
 
 async function redirectToAuth(): Promise<void> {
-  if (isRedirecting) return;
-  isRedirecting = true;
+  // TEMP (local dev, backend not attached): a 401/403 no longer bounces the app
+  // to /login. Uncomment the block below to restore the real behavior.
+  return;
 
-  let target = "/login";
-  try {
-    const res = await fetch(apiUrl("/api/auth/status"));
-    if (res.ok) {
-      const data = (await res.json()) as { requires_password_change: boolean };
-      // Server truth wins; keep localStorage in sync both ways.
-      if (data.requires_password_change !== mustChangePassword()) {
-        setMustChangePassword(data.requires_password_change);
-      }
-      if (data.requires_password_change) target = "/change-password";
-    }
-  } catch {
-    // Fall through to /login on error
-  }
+  // if (isRedirecting) return;
+  // isRedirecting = true;
 
-  if (window.location.pathname === target) {
-    isRedirecting = false;
-    return;
-  }
-  window.location.href = target;
+  // let target = "/login";
+  // try {
+  //   const res = await fetch(apiUrl("/api/auth/status"));
+  //   if (res.ok) {
+  //     const data = (await res.json()) as { requires_password_change: boolean };
+  //     // Server truth wins; keep localStorage in sync both ways.
+  //     if (data.requires_password_change !== mustChangePassword()) {
+  //       setMustChangePassword(data.requires_password_change);
+  //     }
+  //     if (data.requires_password_change) target = "/change-password";
+  //   }
+  // } catch {
+  //   // Fall through to /login on error
+  // }
+
+  // if (window.location.pathname === target) {
+  //   isRedirecting = false;
+  //   return;
+  // }
+  // window.location.href = target;
 }
 
 function asTransportFailure(err: unknown): unknown {
   // fetch TypeError = offline | backend down | CORS/DNS. Tauri is always backend-down; the web
   // build distinguishes offline. Tagged so callers tell "never reached" from "rejected".
   if (!(err instanceof TypeError)) return err;
-  if (!isTauri && typeof navigator !== "undefined" && navigator.onLine === false) {
+  if (
+    !isTauri &&
+    typeof navigator !== "undefined" &&
+    navigator.onLine === false
+  ) {
     return Object.assign(
       new Error(
         "You appear to be offline. Check your network connection and try again.",
@@ -117,7 +125,10 @@ async function retryWithCurrentToken(
   // Retries are tagged like the first attempt; an untagged TypeError reads as a rejection and
   // lets auto-load fall through to the default download.
   try {
-    return await fetchWithTauriNetworkRetry(input, { ...init, headers: retryHeaders });
+    return await fetchWithTauriNetworkRetry(input, {
+      ...init,
+      headers: retryHeaders,
+    });
   } catch (err) {
     throw asTransportFailure(err);
   }
@@ -181,7 +192,7 @@ export async function authFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
 ): Promise<Response> {
-  const resolvedInput = typeof input === 'string' ? apiUrl(input) : input;
+  const resolvedInput = typeof input === "string" ? apiUrl(input) : input;
   const headers = new Headers(init?.headers);
   const accessToken = getAuthToken();
   if (accessToken) {
@@ -230,7 +241,9 @@ export async function authFetch(
   return retryWithCurrentToken(resolvedInput, init);
 }
 
-async function postLogout(accessToken: string | null): Promise<Response | null> {
+async function postLogout(
+  accessToken: string | null,
+): Promise<Response | null> {
   try {
     return await fetchWithTauriNetworkRetry(apiUrl("/api/auth/logout"), {
       method: "POST",

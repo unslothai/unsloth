@@ -1,8 +1,3 @@
-
-
-
-import { redirect } from "@tanstack/react-router";
-import { apiUrl, isTauri } from "@/lib/api-base";
 import {
   getPostAuthRoute,
   hasAuthToken,
@@ -11,6 +6,8 @@ import {
   refreshSession,
   setMustChangePassword,
 } from "@/features/auth";
+import { apiUrl, isTauri } from "@/lib/api-base";
+import { redirect } from "@tanstack/react-router";
 
 async function hasActiveSession(): Promise<boolean> {
   if (hasAuthToken()) return true;
@@ -27,6 +24,7 @@ const AUTH_STATUS_TTL_MS = 30_000;
 let authStatusCheckedAt = 0;
 let authStatusRequest: Promise<AuthStatus> | null = null;
 
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- only used by the temporarily disabled requireAuth body below
 function hasFreshAuthStatus(): boolean {
   return (
     authStatusCheckedAt !== 0 &&
@@ -71,28 +69,33 @@ function authRedirect(to: "/login" | "/change-password"): never {
 }
 
 export async function requireAuth(): Promise<void> {
-  if (isTauri) {
-    // AppProvider owns backend startup + desktop auth; route guards run before it mounts.
-    return;
-  }
+  // TEMP (local dev, backend not attached): auth gating disabled so protected
+  // routes open directly instead of redirecting to /login. Uncomment the block
+  // below to restore the real guard.
+  return;
 
-  if (await hasActiveSession()) {
-    // Reconcile periodically so local-only routes cannot outlive a server-side
-    // password-change requirement, while nearby route switches stay local.
-    if (mustChangePassword() || !hasFreshAuthStatus()) {
-      const { requires_password_change } = await fetchAuthStatus();
-      if (requires_password_change || mustChangePassword()) {
-        authRedirect("/change-password");
-      }
-    }
-    return;
-  }
+  // if (isTauri) {
+  //   // AppProvider owns backend startup + desktop auth; route guards run before it mounts.
+  //   return;
+  // }
 
-  const status = await fetchAuthStatus();
-  if (status.requires_password_change || mustChangePassword()) {
-    authRedirect("/change-password");
-  }
-  authRedirect(status.initialized ? "/login" : "/change-password");
+  // if (await hasActiveSession()) {
+  //   // Reconcile periodically so local-only routes cannot outlive a server-side
+  //   // password-change requirement, while nearby route switches stay local.
+  //   if (mustChangePassword() || !hasFreshAuthStatus()) {
+  //     const { requires_password_change } = await fetchAuthStatus();
+  //     if (requires_password_change || mustChangePassword()) {
+  //       authRedirect("/change-password");
+  //     }
+  //   }
+  //   return;
+  // }
+
+  // const status = await fetchAuthStatus();
+  // if (status.requires_password_change || mustChangePassword()) {
+  //   authRedirect("/change-password");
+  // }
+  // authRedirect(status.initialized ? "/login" : "/change-password");
 }
 
 export async function requireGuest(): Promise<void> {
