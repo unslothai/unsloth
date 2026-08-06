@@ -175,8 +175,10 @@ def remote_access_status(app_state) -> dict:
     with _worker_lock:
         starting = _worker_is_current(_start_worker, _start_worker_admission, current)
         stopping = _worker_is_current(_stop_worker, _stop_worker_admission, current)
-    # a finished stop's worker outlives it while draining; don't mask off or a new start
-    if stopping and status["state"] == "off" and not status.get("stop_pending"):
+        generation_advanced = stopping and _stop_worker_admission[1] != current[1]
+    # A stop worker outlives its teardown. Only one that advanced the generation
+    # and left the tunnel off with nothing pending has actually performed it.
+    if generation_advanced and status["state"] == "off" and not status.get("stop_pending"):
         stopping = False
     if stopping:
         status.update(state = "stopping", managed_by = "settings", url = None, error = None)
