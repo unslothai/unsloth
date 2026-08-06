@@ -1224,6 +1224,37 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(dspark_gb, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(extras_gb, 5000 / (1024**3), places = 9)
 
+    def test_forced_dspark_on_an_incapable_binary_charges_no_drafter_at_all(self):
+        """The loader's DSpark branch falls back to --spec-default, which loads no
+        drafter, so charging the MTP one would refuse a load that fits. Auto is
+        different: it falls through to the MTP branch and keeps that charge."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            mtp = p / "mtp-model.gguf"
+            target.write_bytes(b"x" * 2000)
+            mtp.write_bytes(b"y" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = str(mtp),
+                gguf_dspark_file = None,
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                self._dspark_capable(False),
+            ):
+                forced = self.route._estimate_gguf_required_gb(
+                    cfg, speculative_type = "dspark"
+                )
+                auto = self.route._estimate_gguf_required_gb(cfg, speculative_type = "auto")
+        self.assertAlmostEqual(forced, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(auto, 5000 / (1024**3), places = 9)
+
     def test_validate_request_carries_the_mode_the_load_will_use(self):
         """The estimate is mode-dependent, so /validate must be told the mode or
         its verdict disagrees with the /load that follows it: a user with

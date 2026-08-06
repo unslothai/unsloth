@@ -5071,13 +5071,16 @@ def _estimate_gguf_required_gb(
         )
 
         _spec_mode = _canonicalize_spec_mode(speculative_type) or "auto"
+        _forced_dspark = bool(
+            _spec_mode == "dspark" or _extra_args_requests_dspark(llama_extra_args, env = {})
+        )
+        # Auto loads the sidecar whenever the model has one, so size it there too
+        # or the guard admits a load 11 GB larger than it estimated.
         dspark_requested = bool(
-            _spec_mode == "dspark"
-            or _extra_args_requests_dspark(llama_extra_args, env = {})
-            # Auto loads the sidecar whenever the model has one, so size it there
-            # too or the guard admits a load 11 GB larger than it estimated.
+            _forced_dspark
             or (_spec_mode == "auto" and getattr(config, "gguf_dspark_file", None))
         )
+        _dspark_capable = True
         if dspark_requested:
             # Gate on the same answer the loader uses: _download_dspark skips the
             # sidecar on a binary without usable draft-dspark, so charging its
@@ -5085,11 +5088,17 @@ def _estimate_gguf_required_gb(
             # probe keeps it counted, since this guard protects a running training
             # job and default-denies.
             try:
-                dspark_requested = bool(
+                _dspark_capable = bool(
                     LlamaCppBackend.probe_server_capabilities().get("supports_dspark")
                 )
             except Exception:
                 pass
+            dspark_requested = _dspark_capable
+        # Forced DSpark on a binary that cannot run it falls back to --spec-default,
+        # which loads no drafter at all, so charging the MTP one would refuse a load
+        # that fits. Auto is different: it falls through to the MTP branch, and keeps
+        # its charge.
+        _charge_no_drafter = _forced_dspark and not _dspark_capable
         total_bytes = 0
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
@@ -5097,8 +5106,10 @@ def _estimate_gguf_required_gb(
         # Only the drafter the launch will load: the modes are exclusive, and a
         # 10 GB DSpark sidecar merely sitting on disk must not inflate the guard
         # for a load that never opens it.
-        drafter_attr = "gguf_dspark_file" if dspark_requested else "gguf_mtp_file"
-        for attr in ("gguf_mmproj_file", drafter_attr):
+        _sized_attrs = ["gguf_mmproj_file"]
+        if not _charge_no_drafter:
+            _sized_attrs.append("gguf_dspark_file" if dspark_requested else "gguf_mtp_file")
+        for attr in _sized_attrs:
             f = getattr(config, attr, None)
             if f and Path(f).is_file():
                 # Split-aware, like the main weight above: discovery hands back shard 1,
@@ -5134,8 +5145,13 @@ def _estimate_gguf_required_gb(
                 # listing. Under Auto size both: a repo has one kind or the other,
                 # the absent one contributes 0, and over-estimating is the safe
                 # direction for a guard that protects a running training job.
-                include_mtp = _spec_mode == "auto" or not dspark_requested,
-                include_dspark = _spec_mode == "auto" or dspark_requested,
+                include_mtp = (
+                    not _charge_no_drafter
+                    and (_spec_mode == "auto" or not dspark_requested)
+                ),
+                include_dspark = (
+                    not _charge_no_drafter and (_spec_mode == "auto" or dspark_requested)
+                ),
             )
             return (main_bytes + companions) / (1024**3)
         return None
