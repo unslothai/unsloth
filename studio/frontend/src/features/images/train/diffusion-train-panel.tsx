@@ -1133,7 +1133,7 @@ export function DiffusionTrainPanel({
             <h2 className="flex items-center gap-3 font-heading text-xl font-medium leading-none">
               <HugeiconsIcon
                 icon={TestTubeOutlineIcon}
-                className="size-[26px] shrink-0"
+                className="size-6 shrink-0"
               />
               Train a LoRA
             </h2>
@@ -1487,12 +1487,14 @@ export function DiffusionTrainPanel({
         ) : !hasRun ? (
           <>
             <div className="flex flex-col gap-4">
-              <div className="flex items-center justify-between">
+              {/* mb-2 + gap-4 matches the left column's mb-1 + gap-5, so Steps
+                  starts level with Model family. */}
+              <div className="mb-2 flex items-center justify-between">
                 <div className="grid gap-1.5">
                   <span className="flex items-center gap-3 font-heading text-xl font-medium leading-none">
                     <HugeiconsIcon
                       icon={Settings02Icon}
-                      className="size-[26px] shrink-0"
+                      className="size-6 shrink-0"
                     />
                     Train settings
                   </span>

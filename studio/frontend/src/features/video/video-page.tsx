@@ -1562,7 +1562,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
           <div className="mb-2 grid gap-1.5">
             <h2 className="flex items-center gap-3 font-heading text-xl font-medium leading-none text-foreground">
               {/* The app's Video icon, same as the sidebar row. */}
-              <HugeiconsIcon icon={FlimSlateIcon} className="size-[26px] shrink-0" />
+              <HugeiconsIcon icon={FlimSlateIcon} className="size-6 shrink-0" />
               Create videos
             </h2>
             <p className="text-xs leading-snug text-muted-foreground">
