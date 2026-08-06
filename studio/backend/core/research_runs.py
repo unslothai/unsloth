@@ -746,9 +746,7 @@ def _clamp_max_tokens_for_context(
 
 
 def _resolve_max_tokens(
-    max_tokens: int | None,
-    inference: dict[str, Any],
-    messages: list[dict],
+    max_tokens: int | None, inference: dict[str, Any], messages: list[dict]
 ) -> int:
     requested = int(max_tokens or inference.get("maxTokens") or 4096)
     ceiling = 16384 if max_tokens is not None else 8192
@@ -785,9 +783,7 @@ def _completion_hit_context_wall(
 
 
 def _synthesis_length_limit_error(
-    usage: dict[str, int] | None,
-    *,
-    requested_max_tokens: int,
+    usage: dict[str, int] | None, *, requested_max_tokens: int
 ) -> str:
     if _completion_hit_context_wall(usage, requested_max_tokens = requested_max_tokens):
         return (
@@ -2772,7 +2768,12 @@ class ResearchSupervisor:
                 _MAX_CONTEXT_CHARS,
             )
         ]
-        audit_response, audit_reasoning, _audit_finish_reason, _audit_usage = await self._stream_completion(
+        (
+            audit_response,
+            audit_reasoning,
+            _audit_finish_reason,
+            _audit_usage,
+        ) = await self._stream_completion(
             run,
             [
                 {
@@ -2878,13 +2879,16 @@ class ResearchSupervisor:
                 ),
             },
         ]
-        report, synthesis_reasoning, synthesis_finish_reason, synthesis_usage = (
-            await self._stream_completion(
-                run,
-                synthesis_messages,
-                phase = "synthesis",
-                max_tokens = 16384,
-            )
+        (
+            report,
+            synthesis_reasoning,
+            synthesis_finish_reason,
+            synthesis_usage,
+        ) = await self._stream_completion(
+            run,
+            synthesis_messages,
+            phase = "synthesis",
+            max_tokens = 16384,
         )
         await self._check_active(run["id"])
         if synthesis_finish_reason == "length":
