@@ -1408,6 +1408,13 @@ export const fr = {
         none: "Aucune",
         loading:
           "Chargement des configurations et partitions du jeu de données...",
+        manualTitle: "Saisir manuellement les options du jeu de données",
+        manualDescription:
+          "Saisissez les noms exacts de la configuration et des partitions Hugging Face à utiliser.",
+        manualSubsetPlaceholder: "Nom de configuration facultatif",
+        manualRequired: "Une partition d’entraînement est requise.",
+        manualTooLong: "Utilisez au maximum 128 caractères.",
+        manualInvalid: "Cette valeur contient des caractères non pris en charge.",
       },
       source: "Source du jeu de données",
       sourceAriaLabel: "Source du jeu de données",
@@ -1708,6 +1715,8 @@ export const fr = {
           "Saisissez un taux d'apprentissage des embeddings supérieur à 0 et inférieur à 1.",
         hfDatasetRequired:
           "Sélectionnez d'abord un jeu de données Hugging Face.",
+        hfDatasetSplitRequired:
+          "Sélectionnez ou saisissez d’abord une partition d’entraînement.",
         localDatasetRequired: "Sélectionnez d'abord un jeu de données local.",
         unsupportedDatasetSource:
           "Source de jeu de données non prise en charge.",

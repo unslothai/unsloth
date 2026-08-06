@@ -4,6 +4,7 @@
 import { DEFAULT_HYPERPARAMS, STEPS } from "@/config/training";
 import { getLocale, translate } from "@/i18n";
 import type { DatasetFormat, StepNumber } from "@/types/training";
+import { requiresExplicitCachedDatasetSplit } from "../lib/dataset-split-policy";
 import { isRawTextDatasetFormat } from "../lib/training-methods";
 import { validateS3Source } from "../lib/validation";
 import type {
@@ -124,7 +125,9 @@ export function canProceedForTrainingStep(state: TrainingConfigState): boolean {
       if (state.datasetSource === "s3") {
         return validateS3Source(state).ok;
       }
-      return state.dataset !== null;
+      return (
+        state.dataset !== null && !requiresExplicitCachedDatasetSplit(state)
+      );
     }
     case 4:
     case 5:

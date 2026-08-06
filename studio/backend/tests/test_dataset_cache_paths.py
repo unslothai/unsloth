@@ -927,7 +927,7 @@ def test_app_processed_cache_does_not_scan_or_delete_through_parent_symlink(monk
     assert entry.path.is_dir()
 
 
-def test_manifest_v2_round_trips_metadata_commit(monkeypatch, tmp_path):
+def test_dataset_completion_v2_round_trips_metadata_commit(monkeypatch, tmp_path):
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir()
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
@@ -936,21 +936,283 @@ def test_manifest_v2_round_trips_metadata_commit(monkeypatch, tmp_path):
         lambda: types.SimpleNamespace(hub_cache = hub_cache),
     )
 
+    assert download_manifest.write_dataset_completion(
+        "Org/Data",
+        "commit-a",
+        [download_manifest.ExpectedFile("train.parquet", 4)],
+        "http",
+        hub_cache = hub_cache,
+    )
+    manifest = download_manifest.read_dataset_completion(
+        "Org/Data",
+        "commit-a",
+        hub_cache = hub_cache,
+    )
+
+    assert manifest is not None
+    assert manifest.version == 2
+    assert manifest.commit_hash == "commit-a"
+    assert manifest.metadata_derived is True
+
+
+def test_download_manifest_stays_readable_by_pre_pr_v1_reader(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
     assert download_manifest.write_manifest(
         "dataset",
         "Org/Data",
         None,
         [download_manifest.ExpectedFile("train.parquet", 4)],
         "http",
+        hub_cache = hub_cache,
         commit_hash = "commit-a",
         metadata_derived = True,
     )
-    manifest = download_manifest.read_manifest("dataset", "Org/Data")
+    path = download_manifest.manifest_path(
+        "dataset",
+        "Org/Data",
+        None,
+        hub_cache = hub_cache,
+    )
+    assert path is not None
+    payload = json.loads(path.read_text(encoding = "utf-8"))
 
+    # This is the complete compatibility contract the pre-PR reader used.
+    assert payload["version"] == 1
+    assert payload["expected_files"] == [{"path": "train.parquet", "size": 4}]
+
+    # The current reader can still consume the additive revision attestation,
+    # which the interrupted-download recovery path needs.
+    manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        None,
+        hub_cache = hub_cache,
+    )
     assert manifest is not None
-    assert manifest.version == 2
+    assert manifest.version == 1
     assert manifest.commit_hash == "commit-a"
     assert manifest.metadata_derived is True
+
+
+def test_startup_migrates_existing_ordinary_v2_manifests_across_cache_scopes(
+    monkeypatch, tmp_path
+):
+    active_cache = tmp_path / "active-hub"
+    inactive_cache = tmp_path / "inactive-hub"
+    active_cache.mkdir()
+    inactive_cache.mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+    monkeypatch.setattr(
+        "utils.hf_cache_settings.get_hf_cache_paths",
+        lambda: types.SimpleNamespace(hub_cache = active_cache),
+    )
+
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        "Q4_K_M",
+        [download_manifest.ExpectedFile("model.gguf", 8)],
+        "http",
+        hub_cache = active_cache,
+        _schema_version = 2,
+    )
+    assert download_manifest.write_manifest(
+        "dataset",
+        "Org/Data",
+        None,
+        [download_manifest.ExpectedFile("train.parquet", 4)],
+        "http",
+        hub_cache = inactive_cache,
+        commit_hash = "commit-a",
+        metadata_derived = True,
+        _schema_version = 2,
+    )
+
+    assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() == 2
+    for repo_type, repo_id, variant, hub_cache in (
+        ("model", "Org/Model", "Q4_K_M", active_cache),
+        ("dataset", "Org/Data", None, inactive_cache),
+    ):
+        path = download_manifest.manifest_path(
+            repo_type,
+            repo_id,
+            variant,
+            hub_cache = hub_cache,
+        )
+        assert path is not None
+        payload = json.loads(path.read_text(encoding = "utf-8"))
+        assert payload["version"] == 1
+        assert payload["expected_files"]
+
+    dataset_manifest = download_manifest.read_manifest(
+        "dataset",
+        "Org/Data",
+        None,
+        hub_cache = inactive_cache,
+    )
+    assert dataset_manifest is not None
+    assert dataset_manifest.version == 1
+    assert dataset_manifest.commit_hash == "commit-a"
+    assert dataset_manifest.metadata_derived is True
+    assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() == 0
+
+
+def test_manifest_migration_prefilter_does_not_read_v1_body():
+    reads = []
+
+    class PrefixReader:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, size):
+            reads.append(size)
+            if len(reads) > 1:
+                raise AssertionError("v1 body should not be read")
+            return b'{\n  "version": 1,'
+
+    class ManifestPath:
+        def open(self, mode):
+            assert mode == "rb"
+            return PrefixReader()
+
+    assert download_manifest._read_migration_payload(ManifestPath()) is None
+    assert reads == [download_manifest._MANIFEST_MIGRATION_PREFIX_BYTES]
+
+
+def test_startup_manifest_migration_preserves_dataset_completion_v2(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    assert download_manifest.write_dataset_completion(
+        "Org/Data",
+        "commit-a",
+        [download_manifest.ExpectedFile("train.parquet", 4)],
+        "http",
+        hub_cache = hub_cache,
+    )
+    assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() == 0
+
+    [path] = list((tmp_path / "state" / "hub-state" / "manifests").rglob("*.json"))
+    assert json.loads(path.read_text(encoding = "utf-8"))["version"] == 2
+    assert (
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            "commit-a",
+            hub_cache = hub_cache,
+        )
+        is not None
+    )
+
+
+@pytest.mark.parametrize("invalid_record", ["unsafe_path", "mismatched_identity"])
+def test_startup_manifest_migration_leaves_untrusted_v2_records_untouched(
+    monkeypatch, tmp_path, invalid_record
+):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        None,
+        [download_manifest.ExpectedFile("model.safetensors", 8)],
+        hub_cache = hub_cache,
+        _schema_version = 2,
+    )
+    path = download_manifest.manifest_path(
+        "model",
+        "Org/Model",
+        None,
+        hub_cache = hub_cache,
+    )
+    assert path is not None
+    payload = json.loads(path.read_text(encoding = "utf-8"))
+    if invalid_record == "unsafe_path":
+        payload["expected_files"][0]["path"] = "../outside.safetensors"
+    else:
+        payload["repo_id"] = "Other/Model"
+    path.write_text(json.dumps(payload), encoding = "utf-8")
+
+    assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() == 0
+    assert json.loads(path.read_text(encoding = "utf-8"))["version"] == 2
+
+
+def test_startup_manifest_migration_skips_oversized_record(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    assert download_manifest.write_manifest(
+        "model",
+        "Org/Model",
+        None,
+        [download_manifest.ExpectedFile("model.safetensors", 8)],
+        hub_cache = hub_cache,
+        _schema_version = 2,
+    )
+    path = download_manifest.manifest_path(
+        "model",
+        "Org/Model",
+        None,
+        hub_cache = hub_cache,
+    )
+    assert path is not None
+    monkeypatch.setattr(
+        download_manifest,
+        "_MANIFEST_MIGRATION_MAX_BYTES",
+        path.stat().st_size - 1,
+    )
+
+    assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() == 0
+    assert json.loads(path.read_text(encoding = "utf-8"))["version"] == 2
+
+
+def test_startup_manifest_migration_write_failure_keeps_v2_record(monkeypatch, tmp_path):
+    hub_cache = tmp_path / "hub"
+    hub_cache.mkdir()
+    monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
+
+    assert download_manifest.write_manifest(
+        "dataset",
+        "Org/Data",
+        None,
+        [download_manifest.ExpectedFile("train.parquet", 4)],
+        hub_cache = hub_cache,
+        _schema_version = 2,
+    )
+    path = download_manifest.manifest_path(
+        "dataset",
+        "Org/Data",
+        None,
+        hub_cache = hub_cache,
+    )
+    assert path is not None
+    monkeypatch.setattr(
+        download_manifest,
+        "_atomic_write_json",
+        lambda *_args, **_kwargs: False,
+    )
+
+    assert download_manifest.migrate_ordinary_v2_manifests_for_downgrade() == 0
+    assert json.loads(path.read_text(encoding = "utf-8"))["version"] == 2
+
+
+def test_manifest_compatibility_migration_runs_after_orphan_reaping():
+    source = (Path(__file__).resolve().parent.parent / "main.py").read_text(encoding = "utf-8")
+
+    reaper = source.index("reap_hub_orphan_workers()")
+    migration = source.index("migrate_ordinary_v2_manifests_for_downgrade()")
+    startup_complete = source.index("\n    yield\n", migration)
+
+    assert reaper < migration < startup_complete
 
 
 def test_dataset_completion_rejects_missing_recorded_hub_cache(monkeypatch, tmp_path):
@@ -983,29 +1245,21 @@ def test_manifest_v2_rejects_non_string_variant(monkeypatch, tmp_path, variant):
     hub_cache = tmp_path / "hub"
     hub_cache.mkdir()
     monkeypatch.setattr(state_dir, "cache_root", lambda: tmp_path / "state")
-    assert download_manifest.write_manifest(
-        "model",
-        "Org/Model",
-        None,
-        [download_manifest.ExpectedFile("config.json", 2)],
+    assert download_manifest.write_dataset_completion(
+        "Org/Data",
+        "commit-a",
+        [download_manifest.ExpectedFile("train.parquet", 2)],
         hub_cache = hub_cache,
     )
-    path = download_manifest.manifest_path(
-        "model",
-        "Org/Model",
-        None,
-        hub_cache = hub_cache,
-    )
-    assert path is not None
+    [path] = list((tmp_path / "state" / "hub-state" / "manifests").rglob("*.json"))
     payload = json.loads(path.read_text(encoding = "utf-8"))
     payload["variant"] = variant
     path.write_text(json.dumps(payload), encoding = "utf-8")
 
     assert (
-        download_manifest.read_manifest(
-            "model",
-            "Org/Model",
-            None,
+        download_manifest.read_dataset_completion(
+            "Org/Data",
+            "commit-a",
             hub_cache = hub_cache,
         )
         is None

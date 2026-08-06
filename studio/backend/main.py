@@ -608,6 +608,17 @@ async def lifespan(app: FastAPI):
         _lifespan_log.warning("cleanup_orphaned_runs failed at startup: %s", exc)
 
     reap_hub_orphan_workers()
+    try:
+        from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
+
+        migrated_manifests = migrate_ordinary_v2_manifests_for_downgrade()
+        if migrated_manifests:
+            _lifespan_log.info(
+                "Migrated %s Hub download manifest(s) for downgrade compatibility.",
+                migrated_manifests,
+            )
+    except Exception as exc:
+        _lifespan_log.warning("Hub manifest compatibility migration failed: %s", exc)
 
     # llama.cpp probes: capability (MTP support) + freshness (release age). Inline they could
     # block `Application startup complete` for tens of seconds on macOS (cold GitHub cache,

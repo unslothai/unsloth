@@ -18,6 +18,8 @@ from hub.schemas.datasets import (
     CheckFormatRequest,
     CheckFormatResponse,
     DeleteCachedDatasetResponse,
+    LocalDatasetOptionsRequest,
+    LocalDatasetOptionsResponse,
     LocalDatasetsResponse,
     UploadDatasetResponse,
 )
@@ -31,7 +33,7 @@ from hub.schemas.downloads import (
     DownloadDatasetRequest,
     TransportStatusResponse,
 )
-from hub.services.datasets import cache_inventory, downloads, formatting, local
+from hub.services.datasets import cache_inventory, downloads, formatting, local, local_options
 
 router = APIRouter()
 
@@ -59,6 +61,14 @@ def list_local_datasets(
 )
 async def list_cached_datasets(current_subject: str = Depends(get_current_subject)):
     return await cache_inventory.list_cached_datasets_response()
+
+
+@router.post("/local-options", response_model = LocalDatasetOptionsResponse)
+def get_local_dataset_options(
+    request: LocalDatasetOptionsRequest,
+    current_subject: str = Depends(get_current_subject),
+) -> LocalDatasetOptionsResponse:
+    return local_options.local_dataset_options(request)
 
 
 @router.delete("/cached", response_model = DeleteCachedDatasetResponse)

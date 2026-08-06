@@ -22,6 +22,7 @@ const validConfig = {
   embeddingLearningRate: null,
   datasetSource: "huggingface" as const,
   dataset: "org/dataset",
+  datasetSplit: "train",
   uploadedFile: null,
   s3Config: null,
   modelType: "text" as const,
@@ -53,6 +54,47 @@ test("training validation rejects non-positive learning rates", () => {
 test("training validation accepts a positive learning rate", () => {
   assert.deepEqual(
     validateTrainingConfig({ ...validConfig, learningRate: 0.0002 }),
+    { ok: true, errorKey: null },
+  );
+});
+
+test("training validation requires an explicit split for local cached datasets", () => {
+  assert.deepEqual(
+    validateTrainingConfig({
+      ...validConfig,
+      datasetKnownCached: true,
+      datasetStreaming: false,
+      datasetSplit: null,
+    }),
+    {
+      ok: false,
+      errorKey: "studio.training.validation.hfDatasetSplitRequired",
+    },
+  );
+  assert.deepEqual(
+    validateTrainingConfig({
+      ...validConfig,
+      datasetKnownCached: true,
+      datasetStreaming: false,
+      datasetSplit: "validation",
+    }),
+    { ok: true, errorKey: null },
+  );
+  assert.deepEqual(
+    validateTrainingConfig({
+      ...validConfig,
+      datasetKnownCached: false,
+      datasetSplit: null,
+    }),
+    { ok: true, errorKey: null },
+  );
+  assert.deepEqual(
+    validateTrainingConfig({
+      ...validConfig,
+      datasetKnownCached: true,
+      datasetStreaming: true,
+      datasetSplit: null,
+    }),
     { ok: true, errorKey: null },
   );
 });

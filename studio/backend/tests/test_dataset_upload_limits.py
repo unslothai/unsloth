@@ -6,6 +6,7 @@
 import asyncio
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -52,8 +53,12 @@ def test_legacy_dataset_routes_are_documented_as_deprecated_aliases():
 def test_legacy_format_alias_preserves_body_token(monkeypatch):
     captured = {}
 
-    def check_format(request, token):
-        captured.update(request = request, token = token)
+    def check_format(request, token, *, allow_unlabeled_tier1_fallback):
+        captured.update(
+            request = request,
+            token = token,
+            allow_unlabeled_tier1_fallback = allow_unlabeled_tier1_fallback,
+        )
         return datasets_route.CheckFormatResponse(
             requires_manual_mapping = False,
             detected_format = "alpaca",
@@ -75,6 +80,81 @@ def test_legacy_format_alias_preserves_body_token(monkeypatch):
 
     assert captured["token"] == "body-token"
     assert captured["request"].train_split == "validation"
+    assert captured["allow_unlabeled_tier1_fallback"] is True
+
+
+def test_legacy_format_alias_preserves_single_source_file_column_order(
+    monkeypatch,
+    tmp_path,
+):
+    rows = [
+        {
+            "instruction": "Say hello",
+            "input": "",
+            "output": "Hello",
+        }
+    ]
+
+    class Preview:
+        def __init__(self, preview_rows):
+            self.rows = list(preview_rows)
+            self.column_names = list(self.rows[0])
+
+        def __iter__(self):
+            return iter(self.rows)
+
+        def __getitem__(self, index):
+            return self.rows[index]
+
+    class Dataset:
+        @classmethod
+        def from_list(cls, preview_rows):
+            return Preview(preview_rows)
+
+    class HfApi:
+        def list_repo_files(self, *args, **kwargs):
+            return ["README.md", "alpaca_data_cleaned.json"]
+
+    def load_dataset(**kwargs):
+        assert kwargs["data_files"] == {"train": ["alpaca_data_cleaned.json"]}
+        return Preview(rows)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "datasets",
+        SimpleNamespace(Dataset = Dataset, load_dataset = load_dataset),
+    )
+    monkeypatch.setitem(sys.modules, "huggingface_hub", SimpleNamespace(HfApi = HfApi))
+    monkeypatch.setattr(
+        datasets_route.formatting,
+        "resolve_dataset_path",
+        lambda _name: tmp_path / "not-local",
+    )
+    monkeypatch.setattr(
+        datasets_route.formatting,
+        "check_dataset_format",
+        lambda dataset, **_kwargs: {
+            "requires_manual_mapping": False,
+            "detected_format": "alpaca",
+            "columns": dataset.column_names,
+            "suggested_mapping": None,
+            "is_image": False,
+            "is_audio": False,
+        },
+    )
+    monkeypatch.setattr(
+        datasets_route.formatting,
+        "format_dataset_preview",
+        lambda dataset: dataset,
+    )
+
+    response = datasets_route.check_format(
+        datasets_route.CheckFormatRequest(dataset_name = "yahma/alpaca-cleaned"),
+        hf_token = None,
+        current_subject = "test-user",
+    )
+
+    assert response.columns == ["instruction", "input", "output"]
 
 
 def test_legacy_ai_assist_alias_preserves_body_token(monkeypatch):

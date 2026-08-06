@@ -1378,6 +1378,13 @@ export const ru = {
         selectSplit: "Выберите выборку...",
         none: "Нет",
         loading: "Загрузка конфигураций и выборок датасета...",
+        manualTitle: "Введите параметры датасета вручную",
+        manualDescription:
+          "Введите точные имена конфигурации и выборок Hugging Face, которые нужно использовать.",
+        manualSubsetPlaceholder: "Необязательное имя конфигурации",
+        manualRequired: "Необходимо указать обучающую выборку.",
+        manualTooLong: "Используйте не более 128 символов.",
+        manualInvalid: "Это значение содержит неподдерживаемые символы.",
       },
       source: "Источник датасета",
       sourceAriaLabel: "Источник датасета",
@@ -1679,6 +1686,8 @@ export const ru = {
         embeddingLearningRateRange:
           "Введите скорость обучения эмбеддингов больше 0 и меньше 1.",
         hfDatasetRequired: "Сначала выберите датасет Hugging Face.",
+        hfDatasetSplitRequired:
+          "Сначала выберите или введите обучающую выборку.",
         localDatasetRequired: "Сначала выберите локальный датасет.",
         unsupportedDatasetSource: "Источник датасета не поддерживается.",
       },

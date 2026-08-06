@@ -105,6 +105,22 @@ class CachedDatasetsResponse(BaseModel):
     cached: List[CachedDatasetItem] = Field(default_factory = list)
 
 
+class LocalDatasetOptionsRequest(BaseModel):
+    dataset_name: str
+    local_path: Optional[str] = None
+
+
+class DatasetSplitOption(BaseModel):
+    dataset: str
+    config: str
+    split: str
+
+
+class LocalDatasetOptionsResponse(BaseModel):
+    cache_available: bool = False
+    splits: List[DatasetSplitOption] = Field(default_factory = list)
+
+
 class DeleteCachedDatasetResponse(BaseModel):
     status: str
     repo_id: str

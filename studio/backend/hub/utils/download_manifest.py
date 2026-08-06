@@ -34,6 +34,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -61,6 +62,10 @@ _SUPPORTED_MANIFEST_VERSIONS = frozenset({_LEGACY_MANIFEST_VERSION, _MANIFEST_VE
 _MARKER_VERSION = 2
 _LEGACY_MARKER_VERSION = 1
 _DATASET_COMPLETION_VARIANT_PREFIX = "_studio-dataset-complete-"
+_MANIFEST_MIGRATION_MAX_FILES = 10_000
+_MANIFEST_MIGRATION_MAX_BYTES = 32 * 1024 * 1024
+_MANIFEST_MIGRATION_PREFIX_BYTES = 256
+_V2_MANIFEST_PREFIX = re.compile(rb'^\s*\{\s*"version"\s*:\s*2\s*,')
 
 # Verbatim phrase the worker emits on a degraded completion; shared so emit and match stay coupled.
 MANIFEST_DEGRADED_MARKER = "completed without a manifest so partial detection is degraded"
@@ -208,6 +213,7 @@ def write_manifest(
     hub_cache: Optional[str | Path] = None,
     commit_hash: Optional[str] = None,
     metadata_derived: bool = False,
+    _schema_version: int = _LEGACY_MANIFEST_VERSION,
 ) -> bool:
     """Write/overwrite the manifest for this triple. Best-effort.
 
@@ -226,8 +232,15 @@ def write_manifest(
         return False
     normalized_commit = normalized_commit_hash(commit_hash)
     metadata_attestation = bool(metadata_derived and normalized_commit)
+    # Ordinary download manifests retain the additive v1 schema so a Studio
+    # downgrade can still detect missing/undersized files.  The v2-only
+    # revision attestation lives under a separate completion-manifest key and
+    # opts in below, so an older build never mistakes that record for the
+    # ordinary download state it knows how to consume.
+    if _schema_version not in _SUPPORTED_MANIFEST_VERSIONS:
+        return False
     payload = {
-        "version": _MANIFEST_VERSION,
+        "version": _schema_version,
         "repo_type": repo_type,
         "repo_id": repo_id,
         "variant": variant,
@@ -302,7 +315,8 @@ def read_manifest(
             data.get("version"),
         )
         return None
-    if version == _MANIFEST_VERSION:
+    has_metadata_attestation = data.get("metadata_derived") is True
+    if version == _MANIFEST_VERSION or has_metadata_attestation:
         recorded_repo_type = data.get("repo_type")
         recorded_repo_id = data.get("repo_id")
         recorded_variant = data.get("variant")
@@ -345,13 +359,9 @@ def read_manifest(
         )
     raw_variant = data.get("variant")
     transport = data.get("transport")
-    commit_hash = (
-        normalized_commit_hash(data.get("commit_hash")) if version == _MANIFEST_VERSION else None
-    )
+    commit_hash = normalized_commit_hash(data.get("commit_hash"))
     metadata_derived = bool(
-        version == _MANIFEST_VERSION
-        and data.get("metadata_derived") is True
-        and commit_hash is not None
+        has_metadata_attestation and commit_hash is not None
     )
     return Manifest(
         repo_type = repo_type,
@@ -404,6 +414,7 @@ def write_dataset_completion(
         hub_cache = recorded_hub_cache,
         commit_hash = normalized_commit,
         metadata_derived = True,
+        _schema_version = _MANIFEST_VERSION,
     )
 
 
@@ -469,6 +480,124 @@ def expected_path_is_safe(path_value: str) -> bool:
         and ".." not in posix.parts
         and ".." not in windows.parts
     )
+
+
+def _is_reserved_dataset_completion_payload(data: dict) -> bool:
+    variant = data.get("variant")
+    return (
+        data.get("repo_type") == "dataset"
+        and isinstance(variant, str)
+        and variant.casefold().startswith(_DATASET_COMPLETION_VARIANT_PREFIX)
+    )
+
+
+def _read_migration_payload(path: Path) -> Optional[dict]:
+    try:
+        with path.open("rb") as handle:
+            prefix = handle.read(_MANIFEST_MIGRATION_PREFIX_BYTES)
+            if _V2_MANIFEST_PREFIX.match(prefix) is None:
+                return None
+            if len(prefix) > _MANIFEST_MIGRATION_MAX_BYTES:
+                return None
+            raw = prefix + handle.read(_MANIFEST_MIGRATION_MAX_BYTES - len(prefix) + 1)
+        if len(raw) > _MANIFEST_MIGRATION_MAX_BYTES:
+            return None
+        data = json.loads(raw)
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _migration_manifest_paths(parent: Path) -> Iterator[Path]:
+    yield from parent.glob("*.json")
+    for scoped in parent.glob("cache-*"):
+        if scoped.is_symlink() or not scoped.is_dir():
+            continue
+        yield from scoped.glob("*.json")
+
+
+def migrate_ordinary_v2_manifests_for_downgrade() -> int:
+    """Make prior ordinary v2 records readable after a Studio downgrade.
+
+    Run once after orphan workers are reaped. Dataset-completion records stay
+    v2, and any invalid or changed record is left untouched.
+    """
+    parent = manifests_dir()
+    if parent is None:
+        return 0
+
+    migrated = 0
+    try:
+        candidates = _migration_manifest_paths(parent)
+        for index, path in enumerate(candidates):
+            if index >= _MANIFEST_MIGRATION_MAX_FILES:
+                logger.debug("Stopped Hub manifest migration at the file limit")
+                break
+            try:
+                if path.is_symlink() or not path.is_file():
+                    continue
+                data = _read_migration_payload(path)
+                if data is None or data.get("version") != _MANIFEST_VERSION:
+                    continue
+                if _is_reserved_dataset_completion_payload(data):
+                    continue
+
+                repo_type = data.get("repo_type")
+                repo_id = data.get("repo_id")
+                variant = data.get("variant")
+                recorded_hub_cache = data.get("hub_cache")
+                if (
+                    repo_type not in ("model", "dataset")
+                    or not isinstance(repo_id, str)
+                    or not repo_id
+                    or not (variant is None or isinstance(variant, str))
+                    or not (
+                        recorded_hub_cache is None
+                        or (
+                            isinstance(recorded_hub_cache, str)
+                            and bool(recorded_hub_cache.strip())
+                        )
+                    )
+                ):
+                    continue
+
+                selected = _state_read_path(
+                    manifest_path,
+                    repo_type,
+                    repo_id,
+                    variant,
+                    recorded_hub_cache,
+                )
+                if selected != path:
+                    continue
+                manifest = read_manifest(
+                    repo_type,
+                    repo_id,
+                    variant,
+                    hub_cache = recorded_hub_cache,
+                )
+                if (
+                    manifest is None
+                    or manifest.version != _MANIFEST_VERSION
+                    or any(
+                        not expected_path_is_safe(expected.path)
+                        for expected in manifest.expected_files
+                    )
+                ):
+                    continue
+
+                current = _read_migration_payload(path)
+                if current != data:
+                    continue
+                migrated_payload = dict(current)
+                migrated_payload["version"] = _LEGACY_MANIFEST_VERSION
+                if _atomic_write_json(path, migrated_payload):
+                    migrated += 1
+            except Exception as exc:
+                logger.debug("Could not migrate Hub manifest %s: %s", path, exc)
+    except Exception as exc:
+        logger.debug("Could not enumerate Hub manifests for migration: %s", exc)
+    return migrated
 
 
 def verify_against_disk(manifest: Manifest, snapshot_dir: Path) -> VerifyResult:

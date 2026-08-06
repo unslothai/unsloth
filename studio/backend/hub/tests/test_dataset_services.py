@@ -559,6 +559,51 @@ def test_check_format_rejects_invalid_path_as_400():
     assert exc_info.value.status_code == 400
 
 
+def test_legacy_tier1_fallback_preserves_single_source_file_order():
+    files = ["README.md", "alpaca_data_cleaned.json"]
+
+    assert (
+        formatting._select_tier1_repo_file(
+            files,
+            subset = None,
+            train_split = "train",
+        )
+        is None
+    )
+    assert formatting._select_tier1_repo_file(
+        files,
+        subset = None,
+        train_split = "train",
+        allow_unlabeled_fallback = True,
+    ) == "alpaca_data_cleaned.json"
+
+
+def test_legacy_tier1_fallback_does_not_guess_between_multiple_files():
+    files = ["part-a.json", "part-b.json"]
+
+    assert (
+        formatting._select_tier1_repo_file(
+            files,
+            subset = None,
+            train_split = "train",
+            allow_unlabeled_fallback = True,
+        )
+        is None
+    )
+
+
+def test_legacy_tier1_fallback_does_not_use_a_different_split():
+    assert (
+        formatting._select_tier1_repo_file(
+            ["validation.json"],
+            subset = None,
+            train_split = "train",
+            allow_unlabeled_fallback = True,
+        )
+        is None
+    )
+
+
 @pytest.mark.parametrize(
     "spelling",
     [

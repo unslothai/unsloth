@@ -187,8 +187,20 @@ def _repo_file_matches_split(path: str, split: str) -> bool:
     return _split_label_matches(path, split)
 
 
+def _repo_file_has_other_common_split(path: str, train_split: str) -> bool:
+    requested = train_split.strip().lower()
+    return any(
+        label != requested and _repo_file_matches_split(path, label)
+        for label in ("train", "validation", "valid", "dev", "eval", "test")
+    )
+
+
 def _select_tier1_repo_file(
-    files: list[str], *, subset: Optional[str], train_split: str
+    files: list[str],
+    *,
+    subset: Optional[str],
+    train_split: str,
+    allow_unlabeled_fallback: bool = False,
 ) -> Optional[str]:
     data_files = sorted(f for f in files if any(f.lower().endswith(ext) for ext in DATA_EXTS))
     if not data_files:
@@ -199,8 +211,16 @@ def _select_tier1_repo_file(
         candidates = [f for f in candidates if _repo_file_matches_label(f, subset)]
         if not candidates:
             return None
-    candidates = [f for f in candidates if _repo_file_matches_split(f, train_split)]
-    return candidates[0] if candidates else None
+    split_candidates = [f for f in candidates if _repo_file_matches_split(f, train_split)]
+    if split_candidates:
+        return split_candidates[0]
+    if (
+        allow_unlabeled_fallback
+        and len(candidates) == 1
+        and not _repo_file_has_other_common_split(candidates[0], train_split)
+    ):
+        return candidates[0]
+    return None
 
 
 def _load_cached_hf_preview_slice(request: CheckFormatRequest, preview_size: int):
@@ -273,7 +293,10 @@ def _load_any_cached_hf_preview_slice(
 
 
 def check_format_response(
-    request: CheckFormatRequest, hf_token: Optional[str] = None
+    request: CheckFormatRequest,
+    hf_token: Optional[str] = None,
+    *,
+    allow_unlabeled_tier1_fallback: bool = False,
 ) -> CheckFormatResponse:
     """
     Check if a dataset requires manual column mapping.
@@ -281,7 +304,9 @@ def check_format_response(
     HF datasets: tier 1 loads a single requested split/subset file (avoids
     resolving thousands of files); tier 2 falls back to full streaming. Local
     files load directly. Plain `def` so FastAPI runs the blocking IO in a
-    thread-pool.
+    thread-pool. The deprecated alias opts into the single-file fallback that
+    its previous implementation used, preserving source column order when the
+    only data filename has no split label.
     """
     try:
         from itertools import islice
@@ -344,6 +369,7 @@ def check_format_response(
                         repo_files,
                         subset = request.subset,
                         train_split = train_split,
+                        allow_unlabeled_fallback = allow_unlabeled_tier1_fallback,
                     )
                     if first_file:
                         logger.info(f"Tier 1: loading single file {first_file}")

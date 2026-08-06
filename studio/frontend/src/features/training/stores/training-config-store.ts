@@ -27,6 +27,7 @@ import {
   datasetCacheRecheckKey,
 } from "../lib/dataset-recheck-budget";
 import { resolveDeletedLocalDatasetSelection } from "../lib/dataset-selection";
+import { requiresExplicitCachedDatasetSplit } from "../lib/dataset-split-policy";
 import { isMissingLocalDatasetCacheError } from "../lib/local-cache-errors";
 import { mapBackendModelConfigToTrainingPatch } from "../lib/model-defaults";
 import { trainingConfigPatchTouchesModelDefaults } from "../lib/model-defaults-edit-policy";
@@ -604,6 +605,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
         if (state.datasetSource !== "huggingface" || !state.dataset) {
           return;
         }
+        if (requiresExplicitCachedDatasetSplit(state)) {
+          return;
+        }
         runDatasetCheck(state.dataset, state.datasetSplit || "train", {
           preferLocalCache: !datasetStreaming && state.datasetKnownCached,
         });
@@ -649,7 +653,7 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
           datasetLocalPath: browseDatasetSelection.localPath,
           ...datasetSelectionStreamingPatch(browseDatasetSelection, options),
         });
-        if (datasetId) {
+        if (datasetId && !requiresExplicitCachedDatasetSplit(get())) {
           runDatasetCheck(datasetId, "train");
         }
       };
@@ -1089,6 +1093,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ? state.dataset
               : state.uploadedFile;
           if (!datasetName) return;
+          if (requiresExplicitCachedDatasetSplit({ ...state, datasetSplit })) {
+            return;
+          }
 
           runDatasetCheck(datasetName, datasetSplit || "train");
         },
@@ -1102,6 +1109,9 @@ export const useTrainingConfigStore = create<TrainingConfigStore>()(
               ? state.dataset
               : state.uploadedFile;
           if (!datasetName) return;
+          if (requiresExplicitCachedDatasetSplit(state)) {
+            return;
+          }
 
           const split = state.datasetSplit || "train";
           runDatasetCheck(datasetName, split);

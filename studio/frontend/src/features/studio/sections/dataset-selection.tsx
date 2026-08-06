@@ -7,6 +7,7 @@ import {
   type LocalDatasetInfo,
   hfApiToken,
   useHfTokenStore,
+  useOnlineStatus,
 } from "@/features/hub";
 import {
   HfDatasetSubsetSplitSelectors,
@@ -33,9 +34,13 @@ function DatasetSubsetConfiguration({
   enabled: boolean;
 }) {
   const hfToken = useHfTokenStore((state) => state.token);
+  const online = useOnlineStatus();
   const settings = useTrainingConfigStore(
     useShallow((state) => ({
       datasetEvalSplit: state.datasetEvalSplit,
+      datasetKnownCached: state.datasetKnownCached,
+      datasetLocalPath: state.datasetLocalPath,
+      datasetStreaming: state.datasetStreaming,
       datasetSplit: state.datasetSplit,
       datasetSubset: state.datasetSubset,
       setDatasetEvalSplit: state.setDatasetEvalSplit,
@@ -49,6 +54,11 @@ function DatasetSubsetConfiguration({
       enabled={enabled}
       datasetName={datasetName}
       accessToken={hfApiToken(hfToken)}
+      localPath={settings.datasetLocalPath}
+      online={online}
+      preferLocalCache={
+        settings.datasetKnownCached && !settings.datasetStreaming
+      }
       datasetSubset={settings.datasetSubset}
       setDatasetSubset={settings.setDatasetSubset}
       datasetSplit={settings.datasetSplit}

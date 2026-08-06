@@ -1406,6 +1406,13 @@ export const de = {
         selectSplit: "Aufteilung auswählen...",
         none: "Keine",
         loading: "Datensatzkonfigurationen und -aufteilungen werden geladen...",
+        manualTitle: "Datensatzoptionen manuell eingeben",
+        manualDescription:
+          "Gib die genauen Namen der zu verwendenden Hugging-Face-Konfiguration und Aufteilungen ein.",
+        manualSubsetPlaceholder: "Optionaler Konfigurationsname",
+        manualRequired: "Eine Trainingsaufteilung ist erforderlich.",
+        manualTooLong: "Verwende höchstens 128 Zeichen.",
+        manualInvalid: "Dieser Wert enthält nicht unterstützte Zeichen.",
       },
       source: "Datensatzquelle",
       sourceAriaLabel: "Datensatzquelle",
@@ -1701,6 +1708,8 @@ export const de = {
           "Geben Sie eine Embedding-Lernrate größer als 0 und kleiner als 1 ein.",
         hfDatasetRequired:
           "Wählen Sie zuerst einen Hugging Face-Datensatz aus.",
+        hfDatasetSplitRequired:
+          "Wählen Sie zuerst eine Trainingsaufteilung aus oder geben Sie sie ein.",
         localDatasetRequired: "Wählen Sie zuerst einen lokalen Datensatz aus.",
         unsupportedDatasetSource: "Nicht unterstützte Datensatzquelle.",
       },

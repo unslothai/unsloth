@@ -79,6 +79,7 @@ def check_format(
     return formatting.check_format_response(
         hub_request,
         request.hf_token or hf_token,
+        allow_unlabeled_tier1_fallback = True,
     )
 
 

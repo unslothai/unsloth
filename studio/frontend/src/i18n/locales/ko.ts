@@ -1358,6 +1358,13 @@ export const ko = {
         selectSplit: "분할 선택...",
         none: "없음",
         loading: "데이터셋 구성과 분할을 불러오는 중...",
+        manualTitle: "데이터셋 옵션 직접 입력",
+        manualDescription:
+          "사용할 Hugging Face 구성 및 분할의 정확한 이름을 입력하세요.",
+        manualSubsetPlaceholder: "선택적 구성 이름",
+        manualRequired: "학습 분할이 필요합니다.",
+        manualTooLong: "128자 이하로 입력하세요.",
+        manualInvalid: "이 값에 지원되지 않는 문자가 포함되어 있습니다.",
       },
       source: "데이터셋 소스",
       sourceAriaLabel: "데이터셋 소스",
@@ -1655,6 +1662,7 @@ export const ko = {
         embeddingLearningRateRange:
           "0보다 크고 1보다 작은 임베딩 학습률을 입력하세요.",
         hfDatasetRequired: "Hugging Face 데이터셋을 먼저 선택하세요.",
+        hfDatasetSplitRequired: "먼저 학습 분할을 선택하거나 입력하세요.",
         localDatasetRequired: "로컬 데이터셋을 먼저 선택하세요.",
         unsupportedDatasetSource: "지원되지 않는 데이터셋 소스입니다.",
       },

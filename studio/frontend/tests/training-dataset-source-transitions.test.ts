@@ -45,15 +45,18 @@ const documentTarget = {
   removeEventListener: () => undefined,
 };
 
+let fetchCalls = 0;
 Object.assign(globalThis, {
   document: documentTarget,
-  fetch: () =>
-    Promise.resolve(
+  fetch: () => {
+    fetchCalls += 1;
+    return Promise.resolve(
       new Response(
         '{"columns":["text"],"detected_format":"raw","is_audio":false,"is_image":false,"requires_manual_mapping":false}',
         { headers: { "Content-Type": "application/json" }, status: 200 },
       ),
-    ),
+    );
+  },
   localStorage: storage,
   location,
   window: windowTarget,
@@ -139,6 +142,58 @@ test("upload selection clears Hub streaming and preserves uploaded evaluation", 
   ]);
   assert.equal(payload.eval_steps, 0.1);
   assert.equal(payload.s3_config, null);
+});
+
+test("cached Hub selection waits for a resolved split before checking format", async () => {
+  resetState({ datasetSource: "huggingface" });
+  const beforeSelection = fetchCalls;
+
+  useTrainingConfigStore.getState().selectHfDataset("org/validation-only", {
+    knownCached: true,
+    localPath: "/cache/datasets--org--validation-only",
+    preferLocalCache: true,
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(fetchCalls, beforeSelection);
+
+  useTrainingConfigStore.getState().setDatasetSplit(null);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(fetchCalls, beforeSelection);
+
+  useTrainingConfigStore.getState().ensureDatasetChecked();
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(fetchCalls, beforeSelection);
+
+  useTrainingConfigStore.getState().setDatasetSplit("validation");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(fetchCalls, beforeSelection + 1);
+});
+
+test("remote Hub selection preserves its immediate default split check", async () => {
+  resetState({ datasetSource: "huggingface" });
+  const beforeSelection = fetchCalls;
+
+  useTrainingConfigStore.getState().selectHfDataset("org/remote");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(fetchCalls, beforeSelection + 1);
+
+  useTrainingConfigStore.getState().setDatasetSplit("train");
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(fetchCalls, beforeSelection + 2);
+});
+
+test("streaming cached Hub selection preserves its immediate split check", async () => {
+  resetState({ datasetSource: "huggingface", datasetStreaming: true });
+  const beforeSelection = fetchCalls;
+
+  useTrainingConfigStore.getState().selectHfDataset("org/cached-stream", {
+    knownCached: true,
+    localPath: "/cache/datasets--org--cached-stream",
+  });
+  await new Promise<void>((resolve) => setImmediate(resolve));
+
+  assert.equal(useTrainingConfigStore.getState().datasetStreaming, true);
+  assert.equal(fetchCalls, beforeSelection + 1);
 });
 
 test("S3 selection clears streaming and restores the prior Hub selection", async () => {

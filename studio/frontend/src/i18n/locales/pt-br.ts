@@ -1375,6 +1375,13 @@ export const ptBR = {
         selectSplit: "Selecione uma divisão...",
         none: "Nenhuma",
         loading: "Carregando configurações e divisões do dataset...",
+        manualTitle: "Insira as opções do dataset manualmente",
+        manualDescription:
+          "Insira os nomes exatos da configuração e das divisões do Hugging Face que serão usados.",
+        manualSubsetPlaceholder: "Nome de configuração opcional",
+        manualRequired: "Uma divisão de treino é obrigatória.",
+        manualTooLong: "Use no máximo 128 caracteres.",
+        manualInvalid: "Este valor contém caracteres não suportados.",
       },
       source: "Origem do dataset",
       sourceAriaLabel: "Origem do dataset",
@@ -1661,6 +1668,8 @@ export const ptBR = {
         embeddingLearningRateRange:
           "Insira uma taxa de aprendizado do embedding maior que 0 e menor que 1.",
         hfDatasetRequired: "Selecione primeiro um dataset do Hugging Face.",
+        hfDatasetSplitRequired:
+          "Selecione ou insira primeiro uma divisão de treino.",
         localDatasetRequired: "Selecione primeiro um dataset local.",
         unsupportedDatasetSource: "Fonte de dataset não compatível.",
       },

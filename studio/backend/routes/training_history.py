@@ -218,8 +218,6 @@ def _delete_run_output_dir_guarded(
     with training_lifecycle_guard():
         if _output_dirs_overlap(output_dir, _active_training_output_dir()):
             return "active", None, None
-        if _output_dir_shared(output_dir, run_id):
-            return "shared", None, None
 
         resolved = _canonical_output_dir(output_dir)
         if resolved is None:
@@ -240,6 +238,8 @@ def _delete_run_output_dir_guarded(
         if not resolved.is_dir():
             logger.warning("Run %s output path is not a directory; skipping: %s", run_id, resolved)
             return "failed", None, None
+        if _output_dir_shared(str(resolved), run_id):
+            return "shared", None, None
 
         staged = _delete_run_output_dir(run_id, str(resolved))
         if not staged:
@@ -378,9 +378,18 @@ async def delete_training_run(
                     },
                 )
             if delete_outcome == "shared":
-                artifacts_kept_reason = "shared_output_dir"
                 logger.info(
-                    "Keeping artifacts for run %s; another run shares %s", run_id, output_dir
+                    "Refusing deletion for run %s; another run shares %s", run_id, output_dir
+                )
+                raise HTTPException(
+                    status_code = 409,
+                    detail = {
+                        "code": "training_artifacts_shared",
+                        "message": (
+                            "Cannot delete this run and its artifacts because another "
+                            "training run uses the same output directory"
+                        ),
+                    },
                 )
             elif delete_outcome == "failed":
                 raise HTTPException(

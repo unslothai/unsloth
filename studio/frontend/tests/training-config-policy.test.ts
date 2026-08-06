@@ -9,9 +9,11 @@ import { registerBundlerResolver } from "./helpers/kit.ts";
 registerBundlerResolver();
 
 const {
+  canProceedForTrainingStep,
   createHfBrowseDatasetSelection,
   datasetSelectionStreamingPatch,
   datasetSourceInvariantPatch,
+  initialTrainingConfigState,
   resolveDeferredTrainOnCompletionsDefault,
 } = await import("../src/features/training/stores/training-config-policy.ts");
 
@@ -63,6 +65,33 @@ test("streaming is constrained to Hugging Face dataset sources", () => {
       {},
     );
   }
+});
+
+test("the dataset step waits for an explicit Hugging Face train split", () => {
+  const unresolved = {
+    ...initialTrainingConfigState,
+    currentStep: 3 as const,
+    dataset: "org/validation-only",
+    datasetKnownCached: true,
+    datasetStreaming: false,
+    datasetSplit: null,
+  };
+  assert.equal(canProceedForTrainingStep(unresolved), false);
+  assert.equal(
+    canProceedForTrainingStep({ ...unresolved, datasetSplit: "validation" }),
+    true,
+  );
+  assert.equal(
+    canProceedForTrainingStep({
+      ...unresolved,
+      datasetKnownCached: false,
+    }),
+    true,
+  );
+  assert.equal(
+    canProceedForTrainingStep({ ...unresolved, datasetStreaming: true }),
+    true,
+  );
 });
 
 test("resolves deferred completion defaults without violating training constraints", () => {

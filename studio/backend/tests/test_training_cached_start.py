@@ -170,7 +170,8 @@ def test_hf_dataset_preflight_skips_local_sources(tmp_path):
         _start(route, request, run_dataset_preflight = True)
 
     assert exc_info.value.status_code == 400
-    assert "GGUF" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_model_gguf_not_trainable"
+    assert "GGUF" in exc_info.value.detail["message"]
 
 
 def test_hf_dataset_preflight_accepts_usable_selected_cache(tmp_path):
@@ -314,13 +315,17 @@ def test_hf_dataset_preflight_rejects_before_backend_start():
 
 
 @pytest.mark.parametrize(
-    ("model_format", "expected"),
+    ("model_format", "code", "expected"),
     [
-        ("gguf", "GGUF models are inference-only"),
-        ("adapter", "Adapter models are inference-only"),
+        ("gguf", "training_model_gguf_not_trainable", "GGUF models are inference-only"),
+        (
+            "adapter",
+            "training_model_adapter_not_trainable",
+            "Adapter models are inference-only",
+        ),
     ],
 )
-def test_start_rejects_untrainable_model_formats(model_format, expected):
+def test_start_rejects_untrainable_model_formats(model_format, code, expected):
     route = _load_route_module(f"training_route_reject_{model_format}")
     request = _request(model_format = model_format)
 
@@ -329,7 +334,8 @@ def test_start_rejects_untrainable_model_formats(model_format, expected):
             _start(route, request)
 
     assert exc_info.value.status_code == 400
-    assert expected in exc_info.value.detail
+    assert exc_info.value.detail["code"] == code
+    assert expected in exc_info.value.detail["message"]
 
 
 def test_start_rejects_adapter_only_local_dir(tmp_path):
@@ -343,7 +349,8 @@ def test_start_rejects_adapter_only_local_dir(tmp_path):
             _start(route, request)
 
     assert exc_info.value.status_code == 400
-    assert "Adapter-only local models" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
+    assert "Adapter-only local models" in exc_info.value.detail["message"]
 
 
 def test_start_rejects_missing_local_model(tmp_path):
@@ -355,7 +362,8 @@ def test_start_rejects_missing_local_model(tmp_path):
             _start(route, request)
 
     assert exc_info.value.status_code == 400
-    assert "Local model path was not found" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_unavailable"
+    assert "Local model path was not found" in exc_info.value.detail["message"]
 
 
 def test_start_rejects_local_dir_without_trainable_weights(tmp_path):
@@ -367,7 +375,8 @@ def test_start_rejects_local_dir_without_trainable_weights(tmp_path):
         route._reject_untrainable_model_request(request)
 
     assert exc_info.value.status_code == 400
-    assert "does not contain trainable weights" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_weights_missing"
+    assert "does not contain trainable weights" in exc_info.value.detail["message"]
 
 
 def test_start_rejects_claimed_cache_without_trainable_weights(tmp_path):
@@ -381,7 +390,8 @@ def test_start_rejects_claimed_cache_without_trainable_weights(tmp_path):
         route._reject_untrainable_model_request(request)
 
     assert exc_info.value.status_code == 400
-    assert "does not contain trainable weights" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_weights_missing"
+    assert "does not contain trainable weights" in exc_info.value.detail["message"]
 
 
 @pytest.mark.parametrize("offline_variable", ["HF_HUB_OFFLINE", "TRANSFORMERS_OFFLINE"])
@@ -410,7 +420,8 @@ def test_start_rejects_partial_adapter_local_dir(tmp_path):
         route._reject_untrainable_model_request(request)
 
     assert exc_info.value.status_code == 400
-    assert "Adapter-only local models" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
+    assert "Adapter-only local models" in exc_info.value.detail["message"]
 
 
 def test_start_rejects_gguf_only_local_dir(tmp_path):
@@ -423,7 +434,8 @@ def test_start_rejects_gguf_only_local_dir(tmp_path):
             _start(route, request)
 
     assert exc_info.value.status_code == 400
-    assert "GGUF-only local models" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_gguf_only"
+    assert "GGUF-only local models" in exc_info.value.detail["message"]
 
 
 def test_start_rejects_nested_gguf_only_local_dir(tmp_path):
@@ -436,7 +448,8 @@ def test_start_rejects_nested_gguf_only_local_dir(tmp_path):
         route._reject_untrainable_model_request(request)
 
     assert exc_info.value.status_code == 400
-    assert "GGUF-only local models" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_gguf_only"
+    assert "GGUF-only local models" in exc_info.value.detail["message"]
 
 
 def test_untrainable_gate_rejects_incomplete_local_probe(tmp_path):
@@ -450,7 +463,8 @@ def test_untrainable_gate_rejects_incomplete_local_probe(tmp_path):
             route._reject_untrainable_model_request(request)
 
     assert exc_info.value.status_code == 400
-    assert "too large or could not be read safely" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_scan_incomplete"
+    assert "too large or could not be read safely" in exc_info.value.detail["message"]
 
 
 def test_untrainable_gate_passes_trainable_local_dir(tmp_path):
@@ -544,7 +558,8 @@ def test_untrainable_gate_does_not_trust_claimed_safetensors(tmp_path):
         route._reject_untrainable_model_request(request)
 
     assert exc_info.value.status_code == 400
-    assert "GGUF-only local models" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_gguf_only"
+    assert "GGUF-only local models" in exc_info.value.detail["message"]
 
 
 def test_untrainable_gate_inspects_verified_snapshot_path(tmp_path):
@@ -563,7 +578,8 @@ def test_untrainable_gate_inspects_verified_snapshot_path(tmp_path):
         route._reject_untrainable_model_request(request)
 
     assert exc_info.value.status_code == 400
-    assert "Adapter-only local models" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
+    assert "Adapter-only local models" in exc_info.value.detail["message"]
 
 
 def test_untrainable_gate_inspects_selected_cache(tmp_path):
@@ -580,7 +596,8 @@ def test_untrainable_gate_inspects_selected_cache(tmp_path):
         route._reject_untrainable_model_request(request)
 
     assert exc_info.value.status_code == 400
-    assert "Adapter-only local models" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
+    assert "Adapter-only local models" in exc_info.value.detail["message"]
 
 
 def test_online_probe_ignores_unadvertised_stale_cache(tmp_path):
@@ -608,7 +625,8 @@ def test_unavailable_probe_inspects_unadvertised_cache(tmp_path):
             route._reject_untrainable_model_request(_request())
 
     assert exc_info.value.status_code == 400
-    assert "Adapter-only local models" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
+    assert "Adapter-only local models" in exc_info.value.detail["message"]
 
 
 def test_unavailable_probe_uses_cached_root_level_model(tmp_path):
@@ -985,7 +1003,8 @@ def test_untrainable_gate_rejects_remote_adapter():
             route._reject_untrainable_model_request(request)
 
     assert exc_info.value.status_code == 400
-    assert "Adapter models are inference-only" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_remote_model_adapter_only"
+    assert "Adapter models are inference-only" in exc_info.value.detail["message"]
 
 
 def test_untrainable_gate_rejects_remote_gguf_only_repository():
@@ -997,7 +1016,8 @@ def test_untrainable_gate_rejects_remote_gguf_only_repository():
             route._reject_untrainable_model_request(request)
 
     assert exc_info.value.status_code == 400
-    assert "GGUF-only remote models are inference-only" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_remote_model_gguf_only"
+    assert "GGUF-only remote models are inference-only" in exc_info.value.detail["message"]
 
 
 def test_remote_format_probe_preserves_root_level_repo_id():
@@ -1187,7 +1207,8 @@ def test_optimizer_checkpoint_does_not_make_adapter_trainable(tmp_path):
         route._reject_untrainable_model_request(request)
 
     assert exc_info.value.status_code == 400
-    assert "Adapter-only local models" in exc_info.value.detail
+    assert exc_info.value.detail["code"] == "training_local_model_adapter_only"
+    assert "Adapter-only local models" in exc_info.value.detail["message"]
 
 
 @pytest.mark.parametrize(

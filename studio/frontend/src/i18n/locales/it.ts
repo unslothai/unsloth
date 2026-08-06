@@ -1406,6 +1406,13 @@ export const it = {
         none: "Nessuno",
         loading:
           "Caricamento delle configurazioni e degli split del dataset...",
+        manualTitle: "Inserisci manualmente le opzioni del dataset",
+        manualDescription:
+          "Inserisci i nomi esatti della configurazione e degli split Hugging Face da usare.",
+        manualSubsetPlaceholder: "Nome configurazione facoltativo",
+        manualRequired: "È richiesto uno split di addestramento.",
+        manualTooLong: "Usa al massimo 128 caratteri.",
+        manualInvalid: "Questo valore contiene caratteri non supportati.",
       },
       source: "Origine del dataset",
       sourceAriaLabel: "Origine del dataset",
@@ -1680,6 +1687,8 @@ export const it = {
         embeddingLearningRateRange:
           "Inserisci un tasso di apprendimento degli embedding maggiore di 0 e minore di 1.",
         hfDatasetRequired: "Seleziona prima un dataset Hugging Face.",
+        hfDatasetSplitRequired:
+          "Seleziona o inserisci prima uno split di addestramento.",
         localDatasetRequired: "Seleziona prima un dataset locale.",
         unsupportedDatasetSource: "Origine del dataset non supportata.",
       },

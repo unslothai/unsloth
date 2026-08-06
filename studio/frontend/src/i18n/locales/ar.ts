@@ -1358,6 +1358,13 @@ export const ar = {
         selectSplit: "اختر قسمًا...",
         none: "بلا",
         loading: "جارٍ تحميل إعدادات مجموعة البيانات وأقسامها...",
+        manualTitle: "أدخل خيارات مجموعة البيانات يدويًا",
+        manualDescription:
+          "أدخل أسماء إعداد Hugging Face والأقسام الدقيقة المراد استخدامها.",
+        manualSubsetPlaceholder: "اسم الإعداد اختياري",
+        manualRequired: "قسم التدريب مطلوب.",
+        manualTooLong: "استخدم 128 حرفًا أو أقل.",
+        manualInvalid: "تحتوي هذه القيمة على أحرف غير مدعومة.",
       },
       source: "مصدر مجموعة البيانات",
       sourceAriaLabel: "مصدر مجموعة البيانات",
@@ -1644,6 +1651,7 @@ export const ar = {
         embeddingLearningRateRange:
           "أدخل معدل تعلم تضمين أكبر من 0 وأقل من 1.",
         hfDatasetRequired: "اختر مجموعة بيانات Hugging Face أولًا.",
+        hfDatasetSplitRequired: "اختر قسم التدريب أو أدخله أولًا.",
         localDatasetRequired: "اختر مجموعة بيانات محلية أولًا.",
         unsupportedDatasetSource: "مصدر مجموعة البيانات غير مدعوم.",
       },

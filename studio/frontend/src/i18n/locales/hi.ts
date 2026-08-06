@@ -1366,6 +1366,13 @@ export const hi = {
         selectSplit: "स्प्लिट चुनें...",
         none: "कोई नहीं",
         loading: "डेटासेट कॉन्फ़िगरेशन और स्प्लिट लोड हो रहे हैं...",
+        manualTitle: "डेटासेट विकल्प मैन्युअल रूप से दर्ज करें",
+        manualDescription:
+          "उपयोग करने के लिए सटीक Hugging Face कॉन्फ़िगरेशन और स्प्लिट नाम दर्ज करें।",
+        manualSubsetPlaceholder: "वैकल्पिक कॉन्फ़िगरेशन नाम",
+        manualRequired: "ट्रेनिंग स्प्लिट आवश्यक है।",
+        manualTooLong: "128 या उससे कम वर्णों का उपयोग करें।",
+        manualInvalid: "इस मान में असमर्थित वर्ण हैं।",
       },
       source: "डेटासेट स्रोत",
       sourceAriaLabel: "डेटासेट स्रोत",
@@ -1651,6 +1658,7 @@ export const hi = {
         embeddingLearningRateRange:
           "0 से अधिक और 1 से कम एम्बेडिंग लर्निंग रेट दर्ज करें।",
         hfDatasetRequired: "पहले Hugging Face डेटासेट चुनें।",
+        hfDatasetSplitRequired: "पहले ट्रेनिंग स्प्लिट चुनें या दर्ज करें।",
         localDatasetRequired: "पहले स्थानीय डेटासेट चुनें।",
         unsupportedDatasetSource: "असमर्थित डेटासेट स्रोत।",
       },

@@ -27,6 +27,7 @@ import {
   bumpInventoryVersion,
   hfApiToken,
   useHfTokenStore,
+  useOnlineStatus,
 } from "@/features/hub";
 import {
   formatUploadSize,
@@ -64,6 +65,7 @@ const FORMAT_OPTIONS: { value: DatasetFormat; label: string }[] = [
 export function DatasetStep() {
   const t = useT();
   const hfToken = useHfTokenStore((state) => state.token);
+  const online = useOnlineStatus();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
   const {
@@ -71,6 +73,9 @@ export function DatasetStep() {
     datasetFormat,
     setDatasetFormat,
     dataset,
+    datasetKnownCached,
+    datasetLocalPath,
+    datasetStreaming,
     datasetSubset,
     setDatasetSubset,
     datasetSplit,
@@ -85,6 +90,9 @@ export function DatasetStep() {
       datasetFormat: state.datasetFormat,
       setDatasetFormat: state.setDatasetFormat,
       dataset: state.dataset,
+      datasetKnownCached: state.datasetKnownCached,
+      datasetLocalPath: state.datasetLocalPath,
+      datasetStreaming: state.datasetStreaming,
       datasetSubset: state.datasetSubset,
       setDatasetSubset: state.setDatasetSubset,
       datasetSplit: state.datasetSplit,
@@ -149,6 +157,9 @@ export function DatasetStep() {
           enabled={true}
           datasetName={dataset}
           accessToken={hfApiToken(hfToken)}
+          localPath={datasetLocalPath}
+          online={online}
+          preferLocalCache={datasetKnownCached && !datasetStreaming}
           datasetSubset={datasetSubset}
           setDatasetSubset={setDatasetSubset}
           datasetSplit={datasetSplit}

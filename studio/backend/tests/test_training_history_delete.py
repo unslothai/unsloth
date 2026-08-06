@@ -355,6 +355,26 @@ def test_delete_with_missing_dir_still_deletes_row(monkeypatch, tmp_path):
     assert deleted_runs == ["run-1"]
 
 
+def test_delete_with_missing_shared_dir_still_deletes_row(monkeypatch, tmp_path):
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    missing = outputs / "gone"
+
+    monkeypatch.setattr(training_history, "outputs_root", lambda: outputs)
+    monkeypatch.setattr(training_history, "resolve_output_dir", lambda value: Path(value))
+
+    response, deleted_runs = _delete(
+        monkeypatch,
+        _run_row(output_dir = str(missing)),
+        delete_artifacts = True,
+        sibling_paths = [str(missing)],
+    )
+
+    assert response.status == "deleted"
+    assert response.artifacts_deleted is True
+    assert deleted_runs == ["run-1"]
+
+
 def test_delete_without_flag_leaves_artifacts(monkeypatch, tmp_path):
     outputs = tmp_path / "outputs"
     run_dir = outputs / "run-1"
@@ -503,7 +523,9 @@ def test_output_dir_overlap_detects_ancestors(monkeypatch, tmp_path):
     assert training_history._output_dirs_overlap(str(checkpoint), str(run_dir)) is True
 
 
-def test_delete_artifacts_kept_when_finished_sibling_shares_dir(monkeypatch, tmp_path):
+def test_delete_artifacts_refused_when_finished_sibling_shares_dir(monkeypatch, tmp_path):
+    from fastapi import HTTPException
+
     outputs = tmp_path / "outputs"
     run_dir = outputs / "run-1"
     run_dir.mkdir(parents = True)
@@ -512,17 +534,32 @@ def test_delete_artifacts_kept_when_finished_sibling_shares_dir(monkeypatch, tmp
     monkeypatch.setattr(training_history, "outputs_root", lambda: outputs)
     monkeypatch.setattr(training_history, "resolve_output_dir", lambda value: Path(value))
 
-    response, deleted_runs = _delete(
-        monkeypatch,
-        _run_row(output_dir = str(run_dir)),
-        delete_artifacts = True,
-        sibling_paths = [str(run_dir)],
+    deleted_runs: list[str] = []
+    monkeypatch.setattr(
+        training_history,
+        "get_run",
+        lambda run_id: _run_row(output_dir = str(run_dir)),
+    )
+    monkeypatch.setattr(training_history, "delete_run", deleted_runs.append)
+    monkeypatch.setattr(training_history, "_active_training_output_dir", lambda: None)
+    monkeypatch.setattr(
+        training_history,
+        "list_other_run_output_dirs",
+        lambda run_id: [str(run_dir)],
     )
 
-    assert response.status == "deleted"
-    assert response.artifacts_deleted is False
-    assert response.artifacts_kept_reason == "shared_output_dir"
-    assert deleted_runs == ["run-1"]
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            training_history.delete_training_run(
+                "run-1",
+                delete_artifacts = True,
+                current_subject = "test-user",
+            )
+        )
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail["code"] == "training_artifacts_shared"
+    assert deleted_runs == []
     assert run_dir.exists()
 
 

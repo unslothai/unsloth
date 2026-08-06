@@ -1399,6 +1399,13 @@ export const es = {
         none: "Ninguna",
         loading:
           "Cargando configuraciones y divisiones del conjunto de datos...",
+        manualTitle: "Introduce manualmente las opciones del conjunto de datos",
+        manualDescription:
+          "Introduce los nombres exactos de la configuración y las divisiones de Hugging Face que se utilizarán.",
+        manualSubsetPlaceholder: "Nombre de configuración opcional",
+        manualRequired: "Se requiere una división de entrenamiento.",
+        manualTooLong: "Usa 128 caracteres o menos.",
+        manualInvalid: "Este valor contiene caracteres no compatibles.",
       },
       source: "Origen del conjunto de datos",
       sourceAriaLabel: "Origen del conjunto de datos",
@@ -1695,6 +1702,8 @@ export const es = {
           "Introduce una tasa de aprendizaje de embeddings mayor que 0 y menor que 1.",
         hfDatasetRequired:
           "Selecciona primero un conjunto de datos de Hugging Face.",
+        hfDatasetSplitRequired:
+          "Selecciona o introduce primero una división de entrenamiento.",
         localDatasetRequired: "Selecciona primero un conjunto de datos local.",
         unsupportedDatasetSource: "Origen de conjunto de datos no compatible.",
       },

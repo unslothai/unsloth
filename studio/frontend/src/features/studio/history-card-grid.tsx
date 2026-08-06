@@ -376,9 +376,12 @@ export function HistoryCardGrid({
 
   const handleDelete = async () => {
     if (!deleteTarget) return;
+    const shouldDeleteArtifacts = deleteArtifacts && !deleteTargetShared;
     try {
-      const result = await deleteTrainingRun(deleteTarget, { deleteArtifacts });
-      if (deleteArtifacts) {
+      const result = await deleteTrainingRun(deleteTarget, {
+        deleteArtifacts: shouldDeleteArtifacts,
+      });
+      if (shouldDeleteArtifacts) {
         bumpInventoryVersion();
         if (result.artifacts_kept_reason === "shared_output_dir") {
           toast.info(translate("studio.history.artifactsKeptShared"));
@@ -395,14 +398,20 @@ export function HistoryCardGrid({
       });
     } catch (err) {
       let errorKey: TranslationKey = "studio.history.deleteError";
-      if (err instanceof HistoryRequestError && deleteArtifacts) {
+      let errorDescription: string | undefined;
+      if (err instanceof HistoryRequestError && shouldDeleteArtifacts) {
         if (err.errorCode === "training_artifacts_in_use") {
           errorKey = "studio.history.deleteArtifactsActiveError";
+        } else if (err.errorCode === "training_artifacts_shared") {
+          errorKey = "studio.history.deleteArtifactsRetainedError";
+          errorDescription = translate(
+            "studio.history.deleteArtifactsSharedNote",
+          );
         } else if (err.errorCode === "training_artifact_deletion_failed") {
           errorKey = "studio.history.deleteArtifactsRetainedError";
         }
       }
-      toast.error(translate(errorKey));
+      toast.error(translate(errorKey), { description: errorDescription });
     }
     setDeleteTarget(null);
     setDeleteArtifacts(false);
@@ -700,8 +709,13 @@ export function HistoryCardGrid({
             >
               <Checkbox
                 id="delete-run-artifacts"
-                checked={deleteArtifacts}
-                onCheckedChange={(value) => setDeleteArtifacts(!!value)}
+                checked={!deleteTargetShared && deleteArtifacts}
+                onCheckedChange={(value) => {
+                  if (!deleteTargetShared) {
+                    setDeleteArtifacts(!!value);
+                  }
+                }}
+                disabled={deleteTargetShared}
                 className="mt-0.5"
               />
               <span className="flex flex-col gap-0.5">

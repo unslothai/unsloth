@@ -112,6 +112,13 @@ class TrainingResetRequest(PydanticBaseModel):
 router = APIRouter()
 logger = get_logger(__name__)
 
+_TRAINING_START_ERROR_RESPONSES = {
+    400: {"description": "The requested training configuration or resource is not trainable"},
+    409: {"description": "The requested start conflicts with offline, resume, or runtime state"},
+    429: {"description": "Remote resource verification was rate-limited"},
+    503: {"description": "Remote resource metadata is temporarily unavailable"},
+}
+
 
 def _hub_unreachable() -> bool:
     """Bounded, memoised Hub reachability check.
@@ -139,11 +146,15 @@ class _LocalModelProbeIncomplete(RuntimeError):
     pass
 
 
-def _hf_preflight_error(status_code: int, code: str, message: str) -> HTTPException:
+def _training_start_error(status_code: int, code: str, message: str) -> HTTPException:
     return HTTPException(
         status_code = status_code,
         detail = {"code": code, "message": message},
     )
+
+
+def _hf_preflight_error(status_code: int, code: str, message: str) -> HTTPException:
+    return _training_start_error(status_code, code, message)
 
 
 def _http_exception_error(exc: HTTPException) -> tuple[str, Optional[str]]:
@@ -630,14 +641,16 @@ def _reject_untrainable_model_request(
 ) -> _ModelPreflightResult:
     model_format = (request.model_format or "").strip().lower()
     if model_format == "gguf":
-        raise HTTPException(
-            status_code = 400,
-            detail = "GGUF models are inference-only and cannot be trained.",
+        raise _training_start_error(
+            400,
+            "training_model_gguf_not_trainable",
+            "GGUF models are inference-only and cannot be trained.",
         )
     if model_format == "adapter":
-        raise HTTPException(
-            status_code = 400,
-            detail = "Adapter models are inference-only and cannot be trained as base models.",
+        raise _training_start_error(
+            400,
+            "training_model_adapter_not_trainable",
+            "Adapter models are inference-only and cannot be trained as base models.",
         )
     path: Optional[Path] = None
     model_name = request.model_name
@@ -648,9 +661,10 @@ def _reject_untrainable_model_request(
         try:
             path = Path(normalize_path(request.model_name)).expanduser().resolve(strict = True)
         except (OSError, RuntimeError, ValueError) as error:
-            raise HTTPException(
-                status_code = 400,
-                detail = "Local model path was not found or could not be accessed.",
+            raise _training_start_error(
+                400,
+                "training_local_model_unavailable",
+                "Local model path was not found or could not be accessed.",
             ) from error
         model_name = str(path)
         if request.model_local_path:
@@ -737,44 +751,48 @@ def _reject_untrainable_model_request(
             if remote_format is None:
                 return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
             if remote_format == "gguf":
-                raise HTTPException(
-                    status_code = 400,
-                    detail = "GGUF-only remote models are inference-only and cannot be trained.",
+                raise _training_start_error(
+                    400,
+                    "training_remote_model_gguf_only",
+                    "GGUF-only remote models are inference-only and cannot be trained.",
                 )
-            raise HTTPException(
-                status_code = 400,
-                detail = ("Adapter models are inference-only and cannot be trained as base models."),
+            raise _training_start_error(
+                400,
+                "training_remote_model_adapter_only",
+                "Adapter models are inference-only and cannot be trained as base models.",
             )
     has_trainable_weights = _has_trainable_local_weights(path, request.model_name)
     if has_trainable_weights:
         return _ModelPreflightResult(model_name, model_local_path, cached_model_pin)
     if _has_adapter_metadata(path):
-        raise HTTPException(
-            status_code = 400,
-            detail = (
-                "Adapter-only local models are inference-only and cannot be trained as base models."
-            ),
+        raise _training_start_error(
+            400,
+            "training_local_model_adapter_only",
+            "Adapter-only local models are inference-only and cannot be trained as base models.",
         )
     try:
         has_gguf = _detect_local_gguf(path) is not None
     except _LocalModelProbeIncomplete:
-        raise HTTPException(
-            status_code = 400,
-            detail = (
+        raise _training_start_error(
+            400,
+            "training_local_model_scan_incomplete",
+            (
                 "The local model directory is too large or could not be read safely. "
                 "Select its snapshot directory containing config.json and trainable weights."
             ),
         )
     if has_gguf:
-        raise HTTPException(
-            status_code = 400,
-            detail = "GGUF-only local models are inference-only and cannot be trained.",
+        raise _training_start_error(
+            400,
+            "training_local_model_gguf_only",
+            "GGUF-only local models are inference-only and cannot be trained.",
         )
     if metadata_error is not None:
         raise metadata_error
-    raise HTTPException(
-        status_code = 400,
-        detail = "The selected local model does not contain trainable weights.",
+    raise _training_start_error(
+        400,
+        "training_local_model_weights_missing",
+        "The selected local model does not contain trainable weights.",
     )
 
 
@@ -1026,7 +1044,7 @@ def _background_video_generation_active() -> bool:
         return False
 
 
-@router.post("/start")
+@router.post("/start", responses = _TRAINING_START_ERROR_RESPONSES)
 async def start_training(
     request: TrainingStartRequest,
     current_subject: str = Depends(get_current_subject),

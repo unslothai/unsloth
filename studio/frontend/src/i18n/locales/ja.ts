@@ -1335,6 +1335,13 @@ export const ja = {
         selectSplit: "分割を選択...",
         none: "なし",
         loading: "データセットの設定と分割を読み込んでいます...",
+        manualTitle: "データセットのオプションを手動で入力",
+        manualDescription:
+          "使用する Hugging Face の設定名と分割名を正確に入力してください。",
+        manualSubsetPlaceholder: "設定名（任意）",
+        manualRequired: "学習用分割は必須です。",
+        manualTooLong: "128 文字以内で入力してください。",
+        manualInvalid: "この値には未対応の文字が含まれています。",
       },
       source: "データセットのソース",
       sourceAriaLabel: "データセットのソース",
@@ -1614,6 +1621,8 @@ export const ja = {
           "0 より大きく 1 より小さい埋め込み学習率を入力してください。",
         hfDatasetRequired:
           "先に Hugging Face データセットを選択してください。",
+        hfDatasetSplitRequired:
+          "先に学習用分割を選択または入力してください。",
         localDatasetRequired: "先にローカルデータセットを選択してください。",
         unsupportedDatasetSource:
           "サポートされていないデータセットソースです。",

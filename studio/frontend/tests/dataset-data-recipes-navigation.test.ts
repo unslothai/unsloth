@@ -26,6 +26,12 @@ const DATASET_SECTION_PATH = fileURLToPath(
     import.meta.url,
   ),
 );
+const RECIPE_EXECUTION_TRACKER_PATH = fileURLToPath(
+  new URL(
+    "../src/features/recipe-studio/executions/tracker.ts",
+    import.meta.url,
+  ),
+);
 const sourceText = readFileSync(DATASET_LISTS_PATH, "utf8");
 const sourceFile = ts.createSourceFile(
   DATASET_LISTS_PATH,
@@ -43,6 +49,14 @@ const selectorFile = ts.createSourceFile(
   ts.ScriptKind.TSX,
 );
 const sectionText = readFileSync(DATASET_SECTION_PATH, "utf8");
+const trackerText = readFileSync(RECIPE_EXECUTION_TRACKER_PATH, "utf8");
+const trackerFile = ts.createSourceFile(
+  RECIPE_EXECUTION_TRACKER_PATH,
+  trackerText,
+  ts.ScriptTarget.ESNext,
+  true,
+  ts.ScriptKind.TS,
+);
 
 function findOpenDataRecipesButton(): ts.JsxElement | null {
   let result: ts.JsxElement | null = null;
@@ -135,4 +149,41 @@ test("the dataset section has no raw Data Recipes document navigation", () => {
   assert.doesNotMatch(sectionText, /href\s*=\s*["']\/data-recipes["']/);
   assert.doesNotMatch(sourceText, /href\s*=\s*["']\/data-recipes["']/);
   assert.doesNotMatch(selectorText, /href\s*=\s*["']\/data-recipes["']/);
+});
+
+test("successful full recipe runs invalidate the shared dataset inventory", () => {
+  const inventoryImport = trackerFile.statements.find(
+    (statement): statement is ts.ImportDeclaration =>
+      ts.isImportDeclaration(statement) &&
+      statement.moduleSpecifier.getText(trackerFile) === '"@/features/hub"',
+  );
+  assert.ok(
+    inventoryImport,
+    "the tracker must import the inventory invalidator",
+  );
+  assert.match(
+    inventoryImport.getText(trackerFile),
+    /\bbumpInventoryVersion\b/,
+  );
+
+  const fullRunInvalidations: ts.IfStatement[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isIfStatement(node) &&
+      node.expression.getText(trackerFile) === 'kind === "full"' &&
+      /\bbumpInventoryVersion\s*\(\s*\)/.test(
+        node.thenStatement.getText(trackerFile),
+      )
+    ) {
+      fullRunInvalidations.push(node);
+    }
+    node.forEachChild(visit);
+  };
+  trackerFile.forEachChild(visit);
+
+  assert.equal(
+    fullRunInvalidations.length,
+    1,
+    "only completed full runs should invalidate the selectable dataset inventory",
+  );
 });

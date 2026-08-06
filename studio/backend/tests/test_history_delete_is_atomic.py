@@ -132,6 +132,18 @@ def test_a_shared_output_dir_is_refused_before_anything_moves(outputs, monkeypat
     assert run_dir.is_dir()
 
 
+def test_a_missing_shared_output_dir_is_already_deleted(outputs, monkeypatch):
+    missing = outputs / "gone"
+    monkeypatch.setattr(training_history, "_output_dir_shared", lambda *a, **k: True)
+
+    outcome, original, staged = training_history._delete_run_output_dir_guarded(
+        "run-1", str(missing)
+    )
+
+    assert outcome == "deleted"
+    assert (original, staged) == (None, None)
+
+
 def test_the_outputs_root_itself_is_never_staged(outputs):
     outcome, original, staged = training_history._delete_run_output_dir_guarded(
         "run-1", str(outputs)

@@ -4,6 +4,7 @@
 import { validateHubResourceId } from "@/components/resource-picker/hub-resource-id";
 import type { TranslationKey } from "@/i18n";
 import type { TrainingConfigState } from "../types/config";
+import { requiresExplicitCachedDatasetSplit } from "./dataset-split-policy";
 import { isLocalTrainingModelSelection } from "./model-selection";
 import { isUntrainableModelFormat } from "./model-support";
 import {
@@ -95,6 +96,12 @@ function validateDatasetSelection(
       return {
         ok: false,
         errorKey: "studio.datasetPicker.reasonInvalidHubId",
+      };
+    }
+    if (requiresExplicitCachedDatasetSplit(config)) {
+      return {
+        ok: false,
+        errorKey: "studio.training.validation.hfDatasetSplitRequired",
       };
     }
   } else if (config.datasetSource === "upload") {

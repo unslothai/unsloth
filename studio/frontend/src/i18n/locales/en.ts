@@ -1344,6 +1344,13 @@ export const en = {
         selectSplit: "Select a split...",
         none: "None",
         loading: "Loading dataset configs and splits...",
+        manualTitle: "Enter dataset options manually",
+        manualDescription:
+          "Enter the exact Hugging Face config and split names to use.",
+        manualSubsetPlaceholder: "Optional config name",
+        manualRequired: "A train split is required.",
+        manualTooLong: "Use 128 characters or fewer.",
+        manualInvalid: "This value contains unsupported characters.",
       },
       source: "Dataset source",
       sourceAriaLabel: "Dataset source",
@@ -1611,6 +1618,7 @@ export const en = {
         embeddingLearningRateRange:
           "Enter an embedding learning rate greater than 0 and less than 1.",
         hfDatasetRequired: "Select a Hugging Face dataset first.",
+        hfDatasetSplitRequired: "Select or enter a train split first.",
         localDatasetRequired: "Select a local dataset first.",
         unsupportedDatasetSource: "Unsupported dataset source.",
       },
