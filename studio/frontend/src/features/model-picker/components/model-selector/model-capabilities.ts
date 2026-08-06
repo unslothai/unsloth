@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Pure helpers that infer what a model can do (vision / reasoning / audio) from
 // its HF tags + pipeline tag, falling back to repo-name keywords. No React/DOM

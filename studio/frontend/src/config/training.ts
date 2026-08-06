@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 import type { ModelType, StepConfig } from "@/types/training";
 import type { PipelineType } from "@huggingface/hub";
@@ -92,8 +92,6 @@ export const OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> 
   { value: "adamw_torch_fused", label: "AdamW (PyTorch Fused)" },
 ];
 
-// MLX trainer optimizers (Apple Silicon); must match SUPPORTED_MLX_OPTIMIZERS in
-// unsloth-zoo's mlx/trainer.py. The CUDA/torch names above are remapped to AdamW on MLX.
 export const MLX_OPTIMIZER_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
   { value: "adamw", label: "AdamW" },
   { value: "adam", label: "Adam" },
@@ -121,7 +119,6 @@ export const DEFAULT_HYPERPARAMS = {
   contextLength: 2048,
   visionImageSize: null as number | null,
   learningRate: LR_DEFAULT_LORA,
-  // null = let backend auto-compute (lr/10 per Unsloth CPT recipe). Only used by CPT.
   embeddingLearningRate: null as number | null,
   optimizerType: "adamw_8bit",
   lrSchedulerType: "linear",

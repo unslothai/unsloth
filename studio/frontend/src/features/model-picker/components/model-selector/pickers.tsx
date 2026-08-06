@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 import { useNavigate } from "@tanstack/react-router";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -3266,8 +3266,6 @@ export function HubModelPicker({
       <span className="truncate">{label}</span>
     </span>
   );
-  // On Device / Custom rows are already on disk, so the device-fit filter
-  // only applies to the Unsloth listing.
   const sectionSortDropdown =
     section === "recommended" ? (
       <HubOptionMenu

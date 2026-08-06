@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+
 
 import type { Citation } from "@/components/assistant-ui/citation-utils";
 import { DocumentSourcesGroup } from "@/components/assistant-ui/rag-sources";

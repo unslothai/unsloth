@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // A caller that awaits a status refresh is waiting for the store to be settled, not for one
 // particular HTTP response. Refreshes are sequenced so the newest read owns the store, and a

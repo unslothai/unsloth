@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // A byte-budgeted LRU of object URLs for auth-protected gallery media. The endpoints need an auth header, so each item is fetched into a blob
 // wrapped in an object URL, which pins it until revoked. The galleries stay mounted after the first visit, so an unbounded map grows for the

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Type filter for the On Device list. Mirrors the hub Discover capability
 // options and shares its detection, so both dropdowns behave the same.

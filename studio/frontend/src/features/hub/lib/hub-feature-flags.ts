@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Hub feature flags for staged rollout. JSX/wiring stay in place so flipping
 // a flag here is the only edit needed to re-enable.

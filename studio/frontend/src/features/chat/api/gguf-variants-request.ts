@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // How the chat side asks for a repo's GGUF quants. Split out of chat-api so it imports
 // without the auth barrel. The picker's expander and chat auto-load both block on this

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Top changelog bullets, shown in the collapsed update popup.
 import { codeSpans, parkCodeSpans } from "@/lib/markdown-code-spans";

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // When the Hub has to re-read /api/inference/status. An API request can auto-switch the resident
 // model at any moment and nothing else on /hub reads status, so a mount-only read leaves every

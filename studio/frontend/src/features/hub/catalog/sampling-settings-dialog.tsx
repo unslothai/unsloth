@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Gear button for the GGUF run bar: model config, system prompt, reasoning,
 // sampling, tools and retrieval, using the same controls as the chat page's

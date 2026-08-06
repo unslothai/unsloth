@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Only a trailing `;base64` marks the payload as base64. A segment named
 // `base64` anywhere else is an ordinary parameter, so

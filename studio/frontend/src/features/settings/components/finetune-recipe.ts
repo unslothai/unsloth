@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Settings Data tab glue: turn chat history into a fine-tuning JSONL, stage
 // it as a Data Recipe seed upload, and open a new recipe on that file.

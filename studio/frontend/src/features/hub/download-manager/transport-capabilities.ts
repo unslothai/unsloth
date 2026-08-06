@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Kept OUT of api.ts on purpose: api.ts imports the auth barrel, which the test runner cannot
 // load, so anything defined there is untestable. That is how a normalizer silently dropping the

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Whether a /api/health reply carries a measured hardware verdict or the backend's
 // pre-detection default. Its own import-free module so it is testable: env.ts reaches

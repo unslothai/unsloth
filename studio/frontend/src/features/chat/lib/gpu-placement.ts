@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Placement sentinels and resolution rules shared by the load paths. Kept free
 // of store / React imports so the contract is unit-testable.

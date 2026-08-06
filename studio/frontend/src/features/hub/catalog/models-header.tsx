@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 import { HfTokenIndicator } from "@/features/hub/components/hf-token-indicator";
 import { PageHeading } from "@/features/hub/components/page-heading";

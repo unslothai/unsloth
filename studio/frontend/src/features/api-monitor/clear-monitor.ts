@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // What the monitor's "Clear log" button runs. Its own plain module because the hook it
 // belongs to imports React and cannot be loaded by the node --test suite.

@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Pure helpers for the Recommended list: which formats to surface and whether a
 // model fits the device. No React/DOM deps so they are easy to test.

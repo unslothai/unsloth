@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Identity of one ModelConfigPage editor instance. The page seeds its state from `loadedConfig`
 // in a useState initializer, so it reads that prop once per mount: a host that opens it before

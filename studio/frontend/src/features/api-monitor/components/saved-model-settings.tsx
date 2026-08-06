@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // What a remote load will apply, otherwise unanswerable from outside the process. Read
 // only: the model's settings page is the only place that owns this and the local store.

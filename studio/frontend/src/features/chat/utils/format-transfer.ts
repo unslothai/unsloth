@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 /**
  * Format a byte-per-second rate (e.g. 1_234_567 → "1.2 MB/s"). Returns `"--"`

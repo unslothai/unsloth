@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // The monitor's Unload button releases whatever the backend has resident. /unload matches
 // on the internal id, which the monitor rows do not carry, so the id has to be read from

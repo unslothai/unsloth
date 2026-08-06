@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 import type {
   GlobalOptions as ConfettiGlobalOptions,
@@ -34,9 +34,6 @@ export type ConfettiRef = Api | null;
 
 const ConfettiContext = createContext<Api>({} as Api);
 
-// Unsloth CSP blocks canvas-confetti's default blob: worker, so force
-// useWorker: false. Module-scoped so the prop default keeps stable
-// identity across renders (`canvasRef` depends on `globalOptions`).
 const DEFAULT_GLOBAL_OPTIONS: ConfettiGlobalOptions = {
   resize: true,
   useWorker: false,

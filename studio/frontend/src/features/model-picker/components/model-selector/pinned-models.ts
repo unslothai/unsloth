@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Pinned models for the model selector's On Device list, persisted in
 // localStorage so pins survive reloads. GGUF quants pin individually

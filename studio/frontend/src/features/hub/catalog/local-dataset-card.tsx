@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 import { TrainIcon } from "@/features/hub/components/train-icon";
 import { HUB_POST_DOWNLOAD_ACTIONS_VISIBLE } from "@/features/hub/lib/hub-feature-flags";

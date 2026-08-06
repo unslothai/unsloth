@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: AGPL-3.0-only
+
 
 import { create } from "zustand";
 import { AUTH_SESSION_CLEARED_EVENT } from "@/features/auth";

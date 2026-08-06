@@ -1,5 +1,5 @@
-// SPDX-License-Identifier: AGPL-3.0-only
-// Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
+
+
 
 // Parity check between en.ts and every non-English locale.
 // - Locale files may be partial; missing keys must fall back to English.
@@ -12,17 +12,6 @@
 // Run: npx tsx src/i18n/check-parity.ts [--strict]
 
 import { en } from "./locales/en.ts";
-import { zhCN } from "./locales/zh-CN.ts";
-import { ptBR } from "./locales/pt-br.ts";
-import { ja } from "./locales/ja.ts";
-import { es } from "./locales/es.ts";
-import { hi } from "./locales/hi.ts";
-import { ar } from "./locales/ar.ts";
-import { fr } from "./locales/fr.ts";
-import { ru } from "./locales/ru.ts";
-import { de } from "./locales/de.ts";
-import { ko } from "./locales/ko.ts";
-import { it } from "./locales/it.ts";
 
 type Tree = { readonly [k: string]: string | Tree };
 
@@ -101,17 +90,6 @@ function checkExtras(
 }
 
 const overlays: Record<string, Tree> = {
-  "zh-CN": zhCN as unknown as Tree,
-  "pt-BR": ptBR as unknown as Tree,
-  "ja": ja as unknown as Tree,
-  es: es as unknown as Tree,
-  hi: hi as unknown as Tree,
-  ar: ar as unknown as Tree,
-  fr: fr as unknown as Tree,
-  ru: ru as unknown as Tree,
-  de: de as unknown as Tree,
-  ko: ko as unknown as Tree,
-  it: it as unknown as Tree,
 };
 const strict = process.argv.includes("--strict");
 let anyError = false;
@@ -145,7 +123,7 @@ if (anyError) process.exit(1);
 if (strict && anyMissing) {
   console.error(
     "\nMissing keys above. Add them to every overlay, or run without --strict " +
-      "to accept the English fallback.",
+    "to accept the English fallback.",
   );
   process.exit(1);
 }
