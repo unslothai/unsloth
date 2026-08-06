@@ -3609,19 +3609,24 @@ foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
         assert self._run(body) == "gfx1010"
 
     def test_advisory_names_the_selected_gpus_real_index(self):
-        body = ('$null = Resolve-ShadowingGfxPick -Picked "gfx1036" '
-                '-AllArches @("gfx1036","gfx1010","gfx1200"); '
-                '($script:Msgs -join " ")')
+        body = (
+            '$null = Resolve-ShadowingGfxPick -Picked "gfx1036" '
+            '-AllArches @("gfx1036","gfx1010","gfx1200"); '
+            '($script:Msgs -join " ")'
+        )
         harness = self._HARNESS.replace(
             'function substep { param([string]$Message, [string]$Color = "DarkGray") }',
             'function substep { param([string]$Message, [string]$Color = "DarkGray") '
-            '$script:Msgs += $Message }\n$script:Msgs = @()',
+            "$script:Msgs += $Message }\n$script:Msgs = @()",
         )
         merged = {k: v for k, v in os.environ.items() if not k.endswith("_VISIBLE_DEVICES")}
         merged["SETUP_PS1"] = str(PACKAGE_ROOT / "studio" / "setup.ps1")
         out = subprocess.run(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", harness + body],
-            check = True, capture_output = True, text = True, env = merged,
+            check = True,
+            capture_output = True,
+            text = True,
+            env = merged,
         ).stdout
         assert "HIP_VISIBLE_DEVICES 2" in out
         assert "HIP_VISIBLE_DEVICES 1" not in out
