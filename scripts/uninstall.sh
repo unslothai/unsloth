@@ -167,6 +167,13 @@ _remove_path() {
     fi
 }
 
+# $1 override, $2 default. A relative override is invalid per the XDG spec and
+# is dropped by dirs, which is what Tauri resolves these through, so following
+# one would spare the real data and rm -rf a same-named dir under our cwd.
+_xdg_dir() {
+    case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$2" ;; esac
+}
+
 # Accept as Unsloth root only if Unsloth sentinels exist (matches install.sh's
 # env-mode ownership guard at install.sh:1358-1361). A bare unsloth_studio/
 # directory is NOT enough -- require the install-time owner marker so a user
@@ -560,10 +567,10 @@ _unsloth_uninstall_main() {
             # LocalData/<bid>, so caches sit under XDG_DATA_HOME; rest is app data.
             _bid="ai.unsloth.studio"
             echo "Removing WebView caches and app data ($_bid)..."
-            _remove_path "${XDG_DATA_HOME:-$HOME/.local/share}/$_bid"
-            _remove_path "${XDG_CACHE_HOME:-$HOME/.cache}/$_bid"
-            _remove_path "${XDG_CONFIG_HOME:-$HOME/.config}/$_bid"
-            _remove_path "${XDG_STATE_HOME:-$HOME/.local/state}/$_bid"
+            _remove_path "$(_xdg_dir "${XDG_DATA_HOME:-}" "$HOME/.local/share")/$_bid"
+            _remove_path "$(_xdg_dir "${XDG_CACHE_HOME:-}" "$HOME/.cache")/$_bid"
+            _remove_path "$(_xdg_dir "${XDG_CONFIG_HOME:-}" "$HOME/.config")/$_bid"
+            _remove_path "$(_xdg_dir "${XDG_STATE_HOME:-}" "$HOME/.local/state")/$_bid"
             echo "Removing Linux .desktop entry..."
             _remove_path "$HOME/.local/share/applications/unsloth-studio.desktop"
             if command -v update-desktop-database >/dev/null 2>&1; then

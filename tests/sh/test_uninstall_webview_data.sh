@@ -127,6 +127,24 @@ assert_gone "linux: XDG_DATA_HOME override honored"   "$XDG/data/$BID"
 assert_gone "linux: XDG_CONFIG_HOME override honored" "$XDG/config/$BID"
 assert_gone "linux: XDG_STATE_HOME override honored"  "$XDG/state/$BID"
 
+# ── 3b. Relative XDG overrides are invalid per the spec and dropped by the
+# resolver Tauri uses, so the $HOME default must be removed and the same-named
+# dir under the caller's cwd left alone. ──
+H=$(new_home)
+CWD=$(mktemp -d "$_TMP_ROOT/cwd.XXXXXX")
+mkdir -p "$H/.local/share/$BID" "$H/.cache/$BID" "$H/.config/$BID" "$H/.local/state/$BID" \
+         "$CWD/reldata/$BID" "$CWD/relcache/$BID"
+( cd "$CWD" && env -u UNSLOTH_STUDIO_HOME -u STUDIO_HOME \
+    XDG_DATA_HOME="reldata" XDG_CACHE_HOME="relcache" \
+    XDG_CONFIG_HOME="relconfig" XDG_STATE_HOME="relstate" \
+    HOME="$H" PATH="$STUB_BIN:$PATH" sh "$UNINSTALL_SH" >/dev/null 2>&1 )
+assert_gone    "linux: relative XDG_DATA_HOME falls back to HOME"   "$H/.local/share/$BID"
+assert_gone    "linux: relative XDG_CACHE_HOME falls back to HOME"  "$H/.cache/$BID"
+assert_gone    "linux: relative XDG_CONFIG_HOME falls back to HOME" "$H/.config/$BID"
+assert_gone    "linux: relative XDG_STATE_HOME falls back to HOME"  "$H/.local/state/$BID"
+assert_present "linux: relative XDG left cwd/reldata alone"         "$CWD/reldata/$BID"
+assert_present "linux: relative XDG left cwd/relcache alone"        "$CWD/relcache/$BID"
+
 # ── 4. Nothing to remove is a clean no-op (fresh HOME, exit 0) ──
 H=$(new_home)
 if run_uninstall "$H" Darwin; then
