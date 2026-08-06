@@ -142,6 +142,9 @@ def _build_trainer(
     has_mixed_precision = True,
     mark_forced_float32 = True,
     forced_float32 = None,
+    mark_full_finetuning = True,
+    full_finetuning = None,
+    env_override = None,
 ):
     """Run rl.py's __init__ block for one trainer against the shared env."""
     args = _Args(fp16 = fp16, bf16 = bf16, has_mixed_precision = has_mixed_precision)
@@ -159,7 +162,17 @@ def _build_trainer(
             (env["UNSLOTH_FORCE_FLOAT32"] == "1") if forced_float32 is None else forced_float32
         )
     env.setdefault("UNSLOTH_ENABLE_FULL_FINETUNING", "0")
+    if mark_full_finetuning:
+        # The other half of the load, stamped the same way and for the same reason.
+        model._unsloth_full_finetuning = (
+            (env["UNSLOTH_ENABLE_FULL_FINETUNING"] == "1")
+            if full_finetuning is None
+            else full_finetuning
+        )
     env.setdefault("UNSLOTH_MIXED_PRECISION", "float32")
+    # What a load between this one and its trainer leaves in the shared environment.
+    if env_override:
+        env.update(env_override)
 
     def _get_dtype(dtype):
         return dtype if isinstance(dtype, torch.dtype) else getattr(torch, str(dtype))
@@ -291,6 +304,48 @@ def test_a_forced_float32_model_keeps_the_bfloat16_the_trainer_chose():
     trainer = _build_trainer(env, torch.bfloat16, bf16_supported = True)
     assert env["ACCELERATE_MIXED_PRECISION"] == "bf16"
     assert _generate(trainer, env, has_bf16 = True) == (True, torch.bfloat16)
+
+
+def test_a_later_load_cannot_take_full_finetunings_bfloat16_away():
+    """UNSLOTH_ENABLE_FULL_FINETUNING is the third process wide answer in play.
+
+    from_pretrained writes it on every load, so a LoRA model loaded after a
+    forced float32 family that was loaded for full finetuning leaves '0' behind.
+    The trainer then pairs this model's forced stamp with the other model's
+    finetuning mode, drops to no mixed precision, and generation turns that back
+    into the float16 the forced list exists to avoid.
+    """
+    env = {"UNSLOTH_FORCE_FLOAT32": "1", "UNSLOTH_ENABLE_FULL_FINETUNING": "1"}
+    # A LoRA load between this model and its trainer.
+    trainer = _build_trainer(
+        env, torch.bfloat16, bf16_supported = True, full_finetuning = True,
+        env_override = {"UNSLOTH_ENABLE_FULL_FINETUNING": "0"},
+    )
+    assert env["ACCELERATE_MIXED_PRECISION"] == "bf16"
+    assert _generate(trainer, env, has_bf16 = True) == (True, torch.bfloat16)
+
+
+def test_an_unstamped_model_still_takes_the_environments_finetuning_mode():
+    """The fallback, for a model loaded before this stamp existed."""
+    env = {"UNSLOTH_FORCE_FLOAT32": "1", "UNSLOTH_ENABLE_FULL_FINETUNING": "1"}
+    trainer = _build_trainer(
+        env, torch.bfloat16, bf16_supported = True, mark_full_finetuning = False
+    )
+    assert not hasattr(trainer.model, "_unsloth_full_finetuning")
+    assert env["ACCELERATE_MIXED_PRECISION"] == "bf16"
+
+
+def test_the_loaders_stamp_the_full_finetuning_answer_on_the_model():
+    for rel in ("unsloth/models/loader.py", "unsloth/models/vision.py"):
+        src = (REPO_ROOT / rel).read_text(encoding = "utf-8")
+        assert "_mark_full_finetuning(" in src, rel
+
+
+def test_the_trainer_init_prefers_the_finetuning_stamp_over_the_shared_flag():
+    """One fallback read, as with the forced float32 flag."""
+    assert "_unsloth_full_finetuning" in MP_SRC
+    reads = re.findall(r"environ\.get\(\s*['\"]UNSLOTH_ENABLE_FULL_FINETUNING", MP_SRC)
+    assert len(reads) == 1, reads
 
 
 # ---- the same question again, inside native generation -------------------

@@ -20,6 +20,7 @@ __all__ = [
     "_requested_float32",
     "_mark_requested_float32",
     "_mark_forced_float32",
+    "_mark_full_finetuning",
     "is_vLLM_available",
     "prepare_model_for_kbit_training",
     "xformers",
@@ -2831,6 +2832,20 @@ def _mark_forced_float32(model, forced):
     """
     try:
         model._unsloth_forced_float32 = bool(forced)
+    except Exception:
+        pass
+    return model
+
+
+def _mark_full_finetuning(model, full_finetuning):
+    """Record how this model was loaded, next to the two float32 answers.
+
+    UNSLOTH_ENABLE_FULL_FINETUNING is process wide and every load rewrites it, so
+    a LoRA model loaded before this one trains would say "no" for it and drop the
+    bfloat16 that full finetuning is allowed to keep.
+    """
+    try:
+        model._unsloth_full_finetuning = bool(full_finetuning)
     except Exception:
         pass
     return model

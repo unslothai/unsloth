@@ -1833,6 +1833,7 @@ class FastBaseModel:
         # branch. Stamped here, not per processor branch, so a fallback cannot lose it.
         _mark_loaded_revision(tokenizer, _tokenizer_revision)
         model = _mark_forced_float32(model, do_forced_float32)
+        model = _mark_full_finetuning(model, full_finetuning)
         return _mark_requested_float32(model, user_float32), tokenizer
 
     @staticmethod

@@ -1061,7 +1061,11 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
             # bf16 (V100/T4) keep them in float32 so they never autocast to fp16. On a bf16 GPU,
             # full finetuning can still use bf16 autocast (master weights stay float32), which is
             # faster and uses less memory; LoRA/QLoRA keep float32 when forced.
-            "full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
+            # Stamped by from_pretrained, same as the forced float32 answer below.
+            # The env is process wide, so a LoRA model loaded after this one would
+            # otherwise say "no full finetuning" and cost this trainer its bfloat16.
+            "full_finetuning = getattr(model, '_unsloth_full_finetuning', None)\n"
+            "if full_finetuning is None: full_finetuning = os.environ.get('UNSLOTH_ENABLE_FULL_FINETUNING', '0') == '1'\n"
             # Stamped on the model by from_pretrained, same as _unsloth_grpo_autocast reads
             # it. The env is process wide, so a forced family loaded earlier in the process
             # would otherwise answer here for a model that is not forced at all.

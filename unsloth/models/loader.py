@@ -108,6 +108,7 @@ from ._utils import (
     _requested_float32,
     _mark_requested_float32,
     _mark_forced_float32,
+    _mark_full_finetuning,
     _get_text_only_config,
     resolve_model_class,
     _is_family_text_decoder,
@@ -1115,6 +1116,8 @@ class FastLanguageModel(FastLlamaModel):
         # UNSLOTH_FORCE_FLOAT32, so answer False rather than leaving the trainer
         # to read whatever a later load writes into the environment.
         model = _mark_forced_float32(model, False)
+        # Full finetuning delegates to FastModel above, so this path is always LoRA.
+        model = _mark_full_finetuning(model, False)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 
@@ -1459,6 +1462,7 @@ class FastModel(FastBaseModel):
             # so the answer is False. Stamped rather than left unset: the trainer would
             # otherwise read whatever UNSLOTH_FORCE_FLOAT32 an earlier load wrote.
             model = _mark_forced_float32(model, False)
+            model = _mark_full_finetuning(model, full_finetuning)
             return _mark_requested_float32(model, user_float32), tokenizer
 
         try:
@@ -2170,6 +2174,7 @@ class FastModel(FastBaseModel):
         model = _fix_rope_inv_freq(model)
         model = _exclude_rope_inv_freq_from_ddp(model)
         model = _mark_forced_float32(model, do_forced_float32)
+        model = _mark_full_finetuning(model, full_finetuning)
         return _mark_requested_float32(model, user_float32), tokenizer
 
 
