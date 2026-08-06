@@ -2266,7 +2266,9 @@ def _build_arg_parser():
         action = "store_true",
         default = None,
         help = "Force server-side tools (web search, code execution) on for "
-        "every request. Default: on for every bind, per-request setting honored.",
+        "every request. Default: on for every bind, per-request setting honored. "
+        "/v1/messages takes the on direction per request (enable_tools) because it has "
+        "no confirmation channel; the off direction still applies everywhere.",
     )
     parser.add_argument(
         "--disable-tools",

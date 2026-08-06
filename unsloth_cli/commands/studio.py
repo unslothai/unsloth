@@ -1351,7 +1351,9 @@ def studio_default(
         None,
         "--enable-tools/--disable-tools",
         help = "Force server-side tools (web search, code execution) on or off for "
-        "every request. Default: on for every bind, with the per-chat UI toggle honored.",
+        "every request. Default: on for every bind, with the per-chat UI toggle honored. "
+        "/v1/messages takes the on direction per request (enable_tools) because it has no "
+        "confirmation channel; the off direction still applies everywhere.",
     ),
     disable_dns_pinning: bool = typer.Option(
         False,
@@ -1844,7 +1846,9 @@ def run(
         rich_help_panel = _RUN_PANEL_TOOLS,
         help = (
             "Force server-side tools (web search, code execution) on or off for "
-            "every request. Default: on for every bind."
+            "every request. Default: on for every bind. /v1/messages takes the on "
+            "direction per request (enable_tools) because it has no confirmation "
+            "channel; the off direction still applies everywhere."
         ),
     ),
     disable_dns_pinning: bool = typer.Option(
