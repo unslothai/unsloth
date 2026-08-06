@@ -70,6 +70,9 @@ _TRAINING_PRE_IMPORTED = "core.training.training" in sys.modules
 
 from core.training.training import TrainingBackend, TrainingProgress as _TP
 
+# Captured before the eviction below, so it survives the sys.modules cleanup.
+_TRAINING_MODULE_FILE = sys.modules["core.training.training"].__file__
+
 # Restore every stubbed module so this file never pollutes the shared session.
 for _name in (
     "loggers",
@@ -1190,7 +1193,9 @@ def test_mlx_worker_flushes_tracking_before_every_terminal_send():
     import ast
     from pathlib import Path as _P
 
-    src = (_P(__file__).resolve().parent.parent / "core/training/worker.py").read_text()
+    # Beside the training module we actually imported, not relative to this file, so the
+    # test travels with the package rather than with its directory layout.
+    src = (_P(_TRAINING_MODULE_FILE).resolve().parent / "worker.py").read_text()
     tree = ast.parse(src)
     fn = next(
         n
