@@ -23,6 +23,10 @@ datasets = pytest.importorskip("datasets")
 _BACKEND_ROOT = Path(__file__).resolve().parent.parent
 
 
+async def _inline_to_thread(func, /, *args, **kwargs):
+    return func(*args, **kwargs)
+
+
 def _load_route_module(name: str, relative_path: str):
     spec = importlib.util.spec_from_file_location(name, _BACKEND_ROOT / relative_path)
     module = importlib.util.module_from_spec(spec)
@@ -50,8 +54,7 @@ def _iterable_dataset(rows):
     return datasets.IterableDataset.from_generator(lambda: iter(rows))
 
 
-# --- Streaming keeps dataset.map() lazy: eager-only kwargs (num_proc/desc) are
-#     omitted for IterableDatasets, which reject them. One per module. ---
+# --- Streaming keeps dataset.map() lazy: eager-only kwargs (num_proc/desc) are omitted for IterableDatasets ---
 
 
 def test_chat_template_mapping_omits_eager_kwargs_for_streaming(monkeypatch):
@@ -138,8 +141,7 @@ def test_is_streaming_dataset_false_for_plain_list():
     assert is_streaming_dataset([{"a": 1}]) is False
 
 
-# --- Raw-text / CPT streaming: keep the lazy filter, skip the len()-based
-#     counting that would TypeError on an IterableDataset (the BLOCKER fix). ---
+# --- Raw-text / CPT streaming: keep the lazy filter, skip the len()-based counting (the BLOCKER fix) ---
 
 
 def test_drop_invalid_text_rows_streaming_keeps_filter_skips_len():
@@ -183,7 +185,14 @@ def test_dataset_slice_bounds_are_non_negative():
 
 @pytest.mark.parametrize(
     "bad_hf_dataset",
-    ["../../etc/passwd", "org/../../secret", "a" * 257],
+    [
+        "../../etc/passwd",
+        "org/../../secret",
+        "my dataset!",
+        "owner//repo",
+        ".repo",
+        "a" * 257,
+    ],
 )
 def test_hf_dataset_rejects_unsafe_values(bad_hf_dataset):
     with pytest.raises(ValidationError):
@@ -193,6 +202,33 @@ def test_hf_dataset_rejects_unsafe_values(bad_hf_dataset):
             format_type = "alpaca",
             hf_dataset = bad_hf_dataset,
         )
+
+
+@pytest.mark.parametrize(
+    "dataset_id",
+    ["datasets/foo/bar", "repo.git", "foo--bar"],
+)
+def test_hf_dataset_defers_benign_repo_id_validation_to_hugging_face(dataset_id):
+    request = TrainingStartRequest(
+        model_name = "unsloth/test",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = dataset_id,
+    )
+
+    assert request.hf_dataset == dataset_id
+
+
+def test_hf_dataset_accepts_max_length_namespaced_id():
+    dataset_id = f"{'a' * 96}/{'b' * 96}"
+    request = TrainingStartRequest(
+        model_name = "unsloth/test",
+        training_type = "LoRA/QLoRA",
+        format_type = "alpaca",
+        hf_dataset = dataset_id,
+    )
+
+    assert request.hf_dataset == dataset_id
 
 
 def test_project_name_rejects_values_over_ui_limit():
@@ -298,9 +334,8 @@ def test_streaming_start_rejects_missing_max_steps():
 
 
 def test_streaming_start_rejects_embedding_models():
-    # The embedding training path loads the full dataset (no streaming) and uses
-    # len/select, so the route must reject streaming for embedding runs even on a
-    # direct API call (the UI blocker doesn't cover that).
+    # The embedding training path loads the full dataset (no streaming) and uses len/select, so the
+    # route must reject streaming for embedding runs even on a direct API call.
     training_route = _load_route_module(
         "training_route_module_for_streaming_embedding_test",
         "routes/training.py",
@@ -337,8 +372,7 @@ def test_streaming_start_rejects_embedding_models():
     ],
 )
 def test_streaming_start_accepts_raw_text_and_cpt(training_type, format_type):
-    # Streaming + raw-text / CPT is supported: _drop_invalid_text_rows skips its
-    # len()-based checks for IterableDatasets, so the start route must NOT reject.
+    # Streaming + raw-text / CPT is supported (_drop_invalid_text_rows skips its len() checks).
     training_route = _load_route_module(
         "training_route_module_for_streaming_raw_cpt_accept_test",
         "routes/training.py",
@@ -364,11 +398,22 @@ def test_streaming_start_accepts_raw_text_and_cpt(training_type, format_type):
         start_training = _start_training,
     )
 
-    with patch.object(training_route, "get_training_backend", return_value = backend):
-        with patch.object(training_route, "load_model_defaults", return_value = {}):
-            response = asyncio.run(
-                training_route.start_training(request, current_subject = "test-user")
-            )
+    with (
+        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(
+            training_route,
+            "_remote_untrainable_model_format",
+            return_value = None,
+        ),
+        patch.object(
+            training_route,
+            "_preflight_hf_dataset_request",
+            return_value = None,
+        ),
+        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+        patch.object(training_route, "load_model_defaults", return_value = {}),
+    ):
+        response = asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 
     assert response.status == "queued"
     assert captured["dataset_streaming"] is True
@@ -382,6 +427,7 @@ def test_streaming_start_happy_path_reaches_backend():
     )
     request = TrainingStartRequest(
         model_name = "unsloth/test",
+        start_request_id = "start-request-123",
         training_type = "LoRA/QLoRA",
         hf_dataset = "org/dataset",
         format_type = "chatml",
@@ -398,22 +444,81 @@ def test_streaming_start_happy_path_reaches_backend():
         captured.update(kwargs)
         return True
 
+    start_record = SimpleNamespace(
+        start_request_id = "start-request-123",
+        job_id = "job_test",
+        state = "pending",
+        message = "Training start is being validated",
+        error = None,
+    )
     backend = SimpleNamespace(
         current_job_id = "job_test",
         is_training_active = lambda: False,
         start_training = _start_training,
+        reserve_start_request = lambda request_id, job_id: ("reserved", start_record),
+        resolve_start_request = lambda *args, **kwargs: start_record,
     )
 
-    with patch.object(training_route, "get_training_backend", return_value = backend):
-        with patch.object(training_route, "load_model_defaults", return_value = {}):
-            response = asyncio.run(
-                training_route.start_training(request, current_subject = "test-user")
-            )
+    with (
+        patch.object(training_route, "get_training_backend", return_value = backend),
+        patch.object(
+            training_route,
+            "_remote_untrainable_model_format",
+            return_value = None,
+        ),
+        patch.object(
+            training_route,
+            "_preflight_hf_dataset_request",
+            return_value = None,
+        ),
+        patch.object(training_route.asyncio, "to_thread", new = _inline_to_thread),
+        patch.object(training_route, "load_model_defaults", return_value = {}),
+    ):
+        response = asyncio.run(training_route.start_training(request, current_subject = "test-user"))
 
     assert response.status == "queued"
     assert captured["dataset_streaming"] is True
     assert captured["max_steps"] == 10
     assert captured["eval_split"] == "validation"
+    assert captured["start_request_id"] == "start-request-123"
+
+
+def test_training_status_exposes_the_current_start_request_id():
+    training_route = _load_route_module(
+        "training_route_module_for_start_request_status_test",
+        "routes/training.py",
+    )
+    start_record = SimpleNamespace(
+        start_request_id = "start-request-123",
+        job_id = "job_test",
+        state = "accepted",
+        message = "Training queued",
+        error = None,
+    )
+    backend = SimpleNamespace(
+        current_job_id = "job_test",
+        current_start_request_id = "start-request-123",
+        status_start_request = lambda: start_record,
+        get_start_request = lambda request_id: start_record,
+        is_training_active = lambda: True,
+        trainer = SimpleNamespace(
+            get_training_progress = lambda: SimpleNamespace(
+                status_message = "Training",
+                error = None,
+                warnings = ["Evaluation was disabled."],
+                is_completed = False,
+            )
+        ),
+        eval_enabled = False,
+        step_history = [],
+    )
+
+    with patch.object(training_route, "get_training_backend", return_value = backend):
+        status = asyncio.run(training_route.get_training_status(current_subject = "test-user"))
+
+    assert status.job_id == "job_test"
+    assert status.start_request_id == "start-request-123"
+    assert status.warnings == ["Evaluation was disabled."]
 
 
 # streaming rejects HF slice syntax in train_split / eval_split
@@ -428,8 +533,7 @@ def test_streaming_start_happy_path_reaches_backend():
     ],
 )
 def test_streaming_rejects_bracketed_split_syntax(field, value):
-    # The model_validator _validate_streaming_splits raises ValidationError when
-    # dataset_streaming=True and a split contains "[" (HF slice syntax).
+    # _validate_streaming_splits raises when dataset_streaming=True and a split contains "[".
     kwargs = {
         "model_name": "unsloth/test",
         "training_type": "LoRA/QLoRA",
@@ -483,9 +587,8 @@ def test_streaming_start_rejects_local_datasets():
 
 
 def test_drop_invalid_text_rows_from_generator_none_column_names():
-    # from_generator IterableDatasets have column_names=None; resolve_column_names
-    # must fall back to first-row probe. _drop_invalid_text_rows must not raise
-    # TypeError and must filter correctly.
+    # from_generator IterableDatasets have column_names=None, so resolve_column_names must fall back
+    # to a first-row probe and _drop_invalid_text_rows must filter without raising TypeError.
     from utils.datasets.raw_text import _drop_invalid_text_rows
 
     def _gen():
@@ -513,8 +616,7 @@ def test_drop_invalid_text_rows_from_generator_none_column_names():
 
 
 def test_preflight_first_batch_returns_error_on_empty_stream():
-    # StopIteration from an empty dataloader must return a clear
-    # error string (not None). Test via a minimal stub, no real model needed.
+    # StopIteration from an empty dataloader must return a clear error string, not None.
     import types
     import sys
 
@@ -531,8 +633,7 @@ def test_preflight_first_batch_returns_error_on_empty_stream():
     trainer_path = _BACKEND_ROOT / "core" / "training" / "trainer.py"
     spec = importlib.util.spec_from_file_location("trainer_module", trainer_path)
     trainer_mod = importlib.util.module_from_spec(spec)
-    # Provide a minimal sys.modules shim so top-level imports in trainer.py don't
-    # crash when optional heavy deps (torch, unsloth) are absent.
+    # Minimal sys.modules shim so trainer.py's top-level imports survive without heavy deps.
     _orig_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__
 
     try:
@@ -544,9 +645,8 @@ def test_preflight_first_batch_returns_error_on_empty_stream():
     # If we successfully loaded the module, find the trainer class.
     trainer_cls = None
     for name, obj in vars(trainer_mod).items() if "trainer_mod" in dir() else []:
-        # Only real classes — when heavy deps are stubbed with MagicMock,
-        # hasattr() is always True on a mock, so guard on isinstance(obj, type)
-        # to avoid picking a mock instance (object.__new__ would then reject it).
+        # Only real classes: with heavy deps stubbed as MagicMock, hasattr() is always True, so guard
+        # on isinstance(obj, type) to avoid picking a mock instance.
         if isinstance(obj, type) and hasattr(obj, "_preflight_first_batch"):
             trainer_cls = obj
             break

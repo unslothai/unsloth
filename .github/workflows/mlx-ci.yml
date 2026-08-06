@@ -4,9 +4,9 @@
 # Focused PR gate for the MLX dispatch surface, running on a real
 # Apple Silicon runner.
 #
-# Runner: macos-14 (M1, 3 vCPU / 7 GB / Apple Silicon standard runner
+# Runner: macos-15 (M1, 3 vCPU / 7 GB / Apple Silicon standard runner
 # -- FREE for public repositories per the GitHub Actions billing
-# reference; larger variants like macos-14-large/-xlarge are paid so
+# reference; larger -large/-xlarge variants are paid so
 # we deliberately avoid those).
 #
 # Why a single Mac job (no Linux+spoof leg): the dispatch tests are
@@ -91,7 +91,7 @@ permissions:
 jobs:
   dispatch:
     name: dispatch
-    runs-on: macos-14
+    runs-on: macos-15
     # 25 min: dispatch + spoofed matrix + 7-step real LoRA training is
     # under 2 min; GGUF export builds llama.cpp via cmake on Apple
     # Silicon (~5-7 min), so we budget headroom.

@@ -14,7 +14,7 @@ import {
   Search01Icon,
 } from "@hugeicons/core-free-icons";
 import { HugeiconsIcon } from "@hugeicons/react";
-import type { RefObject } from "react";
+import type { Ref } from "react";
 import { useLayoutEffect, useMemo, useState } from "react";
 import {
   inventoryRowMatches,
@@ -118,7 +118,7 @@ export function DiscoverList({
   scrollElement: HTMLDivElement | null;
   scrollMargin?: number;
   suppressEmptyState?: boolean;
-  sentinelRef: RefObject<HTMLDivElement | null>;
+  sentinelRef: Ref<HTMLDivElement>;
   searchError: string | null;
   online: boolean;
   isDataset: boolean;
@@ -133,8 +133,7 @@ export function DiscoverList({
   onSwitchDevice?: () => void;
   view: AllModelsView;
 }) {
-  // "two" = two cards per row; "grid" = compact table rows; "split" = one card
-  // per row in the master pane alongside an inline detail view.
+  // "two" = two cards per row; "grid" = compact table rows; "split" = one card per row.
   const isSplit = view === "split";
   const isCardLike = view === "two" || view === "split";
   const rowHeight = isSplit
@@ -287,8 +286,7 @@ export function DownloadedList({
   onInventoryChange?: () => void;
   onOpenModelSettings?: (row: CachedInventoryRow | LocalInventoryRow) => void;
 }) {
-  // Pinned repos surface first regardless of the active sort; the chosen sort
-  // still orders rows within the pinned and unpinned groups.
+  // Pinned repos surface first regardless of the active sort, which still orders within groups.
   const pinnedIds = usePinnedModelsStore((s) => s.pinned);
   const pinnedSet = useMemo(() => new Set(pinnedIds), [pinnedIds]);
   const inventoryItems = useMemo<InventoryItem[]>(() => {
@@ -296,8 +294,7 @@ export function DownloadedList({
       ...cachedRows.map((row) => ({ variant: "cached" as const, row })),
       ...localRows.map((row) => ({ variant: "local" as const, row })),
     ];
-    // Pinned rows order by pin recency (newest pin first), not the active
-    // sort, so "Pin to top" puts the row exactly where the user expects.
+    // Pinned rows order by pin recency, not the active sort, so "Pin to top" lands where expected.
     const rank = makePinRank(pinnedIds);
     const pinRank = (item: InventoryItem) =>
       item.row.repoId ? rank(pinKey(item.row.repoId)) : Number.MAX_SAFE_INTEGER;
@@ -337,8 +334,7 @@ export function DownloadedList({
       .map((entry) => entry.item);
   }, [cachedRows, localRows, inventoryTokens, sort, pinnedIds]);
   const hasInventoryRows = cachedRows.length > 0 || localRows.length > 0;
-  // Pinned repos get their own labelled section so it's clear why they lead
-  // the list; inventoryItems already sorts them first, so this is a prefix.
+  // Pinned repos get their own labelled section; inventoryItems already sorts them first.
   const pinnedCount = useMemo(
     () =>
       inventoryItems.filter(

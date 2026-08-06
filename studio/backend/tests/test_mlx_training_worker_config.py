@@ -13,7 +13,9 @@ def _load_worker_module():
         "structlog",
         "loggers",
         "utils",
+        "utils.child_stdio",
         "utils.hardware",
+        "utils.training_runs",
         "utils.wheel_utils",
     )
     previous_modules = {name: sys.modules.get(name) for name in stub_names}
@@ -29,9 +31,17 @@ def _load_worker_module():
         utils.__path__ = []
         sys.modules["utils"] = utils
 
+        child_stdio = types.ModuleType("utils.child_stdio")
+        child_stdio.utf8_child_env = lambda env = None: dict(env or {})
+        sys.modules["utils.child_stdio"] = child_stdio
+
         hardware = types.ModuleType("utils.hardware")
         hardware.apply_gpu_ids = lambda *_args, **_kwargs: None
         sys.modules["utils.hardware"] = hardware
+
+        training_runs = types.ModuleType("utils.training_runs")
+        training_runs.build_default_output_dir_name = lambda *_args, **_kwargs: "training-run"
+        sys.modules["utils.training_runs"] = training_runs
 
         wheel_utils = types.ModuleType("utils.wheel_utils")
         for name in (
@@ -95,9 +105,8 @@ def test_mlx_studio_keeps_hf_style_tokenizer_dual_purpose():
 
 
 def test_mlx_wandb_run_config_excludes_subject_and_secrets():
-    # The MLX W&B run config uploads the whole config minus a sensitive set. The owner's
-    # subject (authenticated username / API-key id) must be filtered alongside the secrets,
-    # otherwise it lands in W&B run config even though DB history already strips it.
+    # The MLX W&B run config uploads everything minus a sensitive set. The owner's subject must be
+    # filtered alongside the secrets, or it lands in W&B even though DB history strips it.
     source = (Path(__file__).resolve().parents[1] / "core" / "training" / "worker.py").read_text(
         encoding = "utf-8"
     )

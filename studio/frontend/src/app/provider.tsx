@@ -103,9 +103,9 @@ async function enforceMinimumWindowSize(
 
   const logicalWidth = Math.round(innerSize.width / scaleFactor);
   const logicalHeight = Math.round(innerSize.height / scaleFactor);
-  // Linux reports innerSize from a cache updated by configure events. The
-  // AppImage's bundled GTK can deliver that event after this check, leaving the
-  // old setup size in the cache even though the first app resize has completed.
+  // Linux reports innerSize from a cache updated by WebKitGTK configure events.
+  // That event can arrive after this check, leaving the old setup size in the
+  // cache even though the first app resize has completed.
   const nextWidth = Math.max(
     logicalWidth,
     MIN_WINDOW_WIDTH,

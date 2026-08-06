@@ -83,7 +83,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {os: macos-14, experimental: false}
           - {os: macos-15, experimental: false}
           - {os: macos-26, experimental: true}
 

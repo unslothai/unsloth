@@ -54,6 +54,9 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
       - '.github/scripts/serve-unsloth-run.sh'
       - '.github/scripts/assert-prompt-cache.sh'
       - '.github/scripts/agent-guides-install.sh'
@@ -72,6 +75,7 @@ on:
       - 'studio/backend/models/**'
       - 'install.sh'
       - '.github/workflows/local-agent-guides-ci.yml'
+      - '.github/actions/install-unsloth-local/action.yml'
       - '.github/scripts/serve-unsloth-run.sh'
       - '.github/scripts/assert-prompt-cache.sh'
       - '.github/scripts/agent-guides-install.sh'
@@ -189,14 +193,11 @@ jobs:
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Gated off PR (see note above); public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       # ── boot the server under test (factored helper) ──────────────────
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
@@ -403,14 +404,11 @@ jobs:
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Gated off PR (see note above); public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
@@ -587,13 +585,10 @@ jobs:
           key: ${{ runner.os }}-gguf-${{ env.GGUF_REPO }}-${{ env.GGUF_FILE }}-v1
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
+          hf-token: ${{ secrets.HF_TOKEN }}
 
       - name: Serve unsloth run --disable-tools (gemma-4-E4B)
         run: |
@@ -750,14 +745,11 @@ jobs:
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Gated off PR (see note above); public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Serve unsloth run --disable-tools (gemma-3-270m)
         run: |

@@ -16,6 +16,9 @@ on:
       - 'install.sh'
       - '.github/scripts/assert-llama-loads.sh'
       - '.github/workflows/studio-mac-install-matrix.yml'
+      # The install step in this workflow is `uses:` on that composite action,
+      # so an edit to the action changes what this workflow actually runs.
+      - '.github/actions/install-unsloth-local/action.yml'
   push:
     branches: [main, pip]
   workflow_dispatch:
@@ -37,17 +40,26 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # No macos-14 leg. This job is install.sh --local --no-torch followed
-          # by assert-llama-loads.sh, and that exact pair already runs on
-          # macos-14 in studio-mac-update-smoke, studio-mac-ui-smoke,
+          # This matrix used to exclude macos-14 as redundant: the job is
+          # install.sh --local --no-torch followed by assert-llama-loads.sh, and
+          # that pair already ran on macos-14 in studio-mac-ui-smoke,
           # studio-mac-inference-smoke and clean-machine-install-ci.
-          # Every path that triggers this workflow
-          # triggers at least one of those on macos-14 too (checked per path),
-          # so the leg re-derived a result five other jobs had already produced
-          # while holding one of the 5 macOS slots available account-wide.
           #
-          # The versions below are the point of this matrix: they are the only
-          # place macOS 15, 26 and Intel are exercised at all. Do not trim them.
+          # The macos-14 retirement (brownouts from 2026-10-05, removed
+          # 2026-11-02) moved those workflows to macos-15, so the same
+          # redundancy argument appeared to transfer to the macos-15 leg here.
+          # It does not, because of one path: this workflow lists its OWN file
+          # in its `paths:` filter, and none of those three workflows does.
+          # A PR touching only .github/workflows/studio-mac-install-matrix.yml
+          # therefore starts this workflow and nothing else, so dropping the
+          # macos-15 leg would leave changes to this file with no macOS 15 ARM
+          # run at all. macos-26 and the Intel legs would still fire, but they
+          # are different OS versions and, for the Intel pair, a different
+          # architecture. The leg stays.
+          #
+          # Keep this in mind before "deduplicating" it again: the redundancy
+          # holds for the four content paths above it and NOT for the self
+          # path, so the leg is only redundant most of the time.
           - os: macos-15        # Apple Silicon, macOS 15 Sequoia
             experimental: false
           - os: macos-26        # Apple Silicon, macOS 26 Tahoe
@@ -70,14 +82,11 @@ jobs:
           python-version: '3.12'
 
       - name: Install Unsloth (--local, --no-torch)
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ./.github/actions/install-unsloth-local
+        with:
+          gh-token: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
-          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
-        run: |
-          mkdir -p logs
-          set -o pipefail
-          bash install.sh --local --no-torch 2>&1 | tee logs/install.log
+          hf-token: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
 
       - name: Assert llama.cpp loads on this macOS
         run: bash .github/scripts/assert-llama-loads.sh

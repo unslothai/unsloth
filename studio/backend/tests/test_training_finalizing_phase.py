@@ -110,14 +110,17 @@ def test_every_emitted_phase_is_in_the_response_literal():
     """A phase missing from the Literal makes /api/train/status 500, not degrade."""
     src = _ROUTES_TRAINING.read_text(encoding = "utf-8")
     tree = ast.parse(src)
-    fn = next(
+    # The phase derivation moved into _build_training_status, so scan both, not just inline.
+    fns = [
         n
         for n in ast.walk(tree)
         if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-        and n.name == "get_training_status"
-    )
+        and n.name in {"get_training_status", "_build_training_status"}
+    ]
+    assert fns, "neither status function found"
     emitted = {
         node.value.value
+        for fn in fns
         for node in ast.walk(fn)
         if isinstance(node, ast.Assign)
         and any(isinstance(t, ast.Name) and t.id == "phase" for t in node.targets)
@@ -136,14 +139,16 @@ def test_finalizing_is_declared():
 def test_completion_still_comes_only_from_is_completed():
     """100% must not be promoted to a terminal state."""
     src = _ROUTES_TRAINING.read_text(encoding = "utf-8")
-    fn_src = ast.get_source_segment(
-        src,
-        next(
-            n
+    # Follow the phase derivation wherever it lives: it moved into _build_training_status.
+    fn_src = next(
+        seg
+        for seg in (
+            ast.get_source_segment(src, n)
             for n in ast.walk(ast.parse(src))
             if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and n.name == "get_training_status"
-        ),
+            and n.name in {"_build_training_status", "get_training_status"}
+        )
+        if seg and 'phase = "completed"' in seg
     )
     completed_branch = re.search(r'phase\s*=\s*"completed"', fn_src)
     assert completed_branch, "no completed branch found"
