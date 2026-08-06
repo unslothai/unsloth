@@ -76,6 +76,16 @@ class LoadRequest(BaseModel):
             "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
         ),
     )
+    mlx_kv_bits: Optional[int] = Field(
+        None,
+        description = (
+            "MLX KV cache quantization bit width (8 or 4). MLX takes a bit "
+            "width rather than a llama.cpp dtype name, so this is separate from "
+            "cache_type_kv. Omit for an unquantized cache. Ignored by non-MLX "
+            "backends; a model whose cache layout cannot be quantized reports "
+            "the reason instead of applying it."
+        ),
+    )
     gpu_ids: Optional[List[int]] = Field(
         None,
         description = (
@@ -517,6 +527,27 @@ class _InferenceRuntimeFields(BaseModel):
             "KV cache data type for K and V "
             "(e.g. 'f16', 'bf16', 'q8_0', 'q4_0', 'q4_1', 'q5_0', 'q5_1', 'iq4_nl', 'f32')"
         ),
+    )
+    mlx_kv_bits: Optional[int] = Field(
+        None, description = "MLX KV quantization bit width actually applied, if any"
+    )
+    mlx_kv_quant_eligibility: Optional[str] = Field(
+        None,
+        description = (
+            "Whether this model's KV cache could be quantized: full, partial, "
+            "none or refused. Describes eligibility, not the exact set of "
+            "converted layers, which the runtime decides."
+        ),
+    )
+    mlx_kv_quant_reason: Optional[str] = Field(
+        None,
+        description = (
+            "Why KV quantization was not applied in full: the model's cache "
+            "layout, or the layers it could not cover when eligibility is partial"
+        ),
+    )
+    mlx_kv_quant_note: Optional[str] = Field(
+        None, description = "Caveat that applies when KV quantization is active"
     )
     chat_template: Optional[str] = Field(
         None,

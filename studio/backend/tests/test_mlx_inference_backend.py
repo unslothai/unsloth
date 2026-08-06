@@ -1812,3 +1812,121 @@ def test_worker_forwards_use_adapter_on_the_audio_command():
     src = inspect.getsource(worker._handle_generate_audio_input)
     assert 'cmd.get("use_adapter")' in src
     assert '"use_adapter"' in src
+
+
+def test_kv_quant_status_applies_only_when_eligible_and_notes_vlm_cost(monkeypatch):
+    from core.inference import mlx_inference
+
+    monkeypatch.setattr(
+        mlx_inference, "_kv_quant_eligibility", lambda m, v, b = None: ("full", "", True)
+    )
+    # Unset stays unset: no kwarg, so generation is byte-identical to today.
+    assert mlx_inference._kv_quant_status(None, object(), False)["kv_bits"] is None
+    # Out of domain degrades rather than raising.
+    assert mlx_inference._normalize_mlx_kv_bits(3) is None
+    assert mlx_inference._normalize_mlx_kv_bits("eight") is None
+    assert mlx_inference._normalize_mlx_kv_bits(8) == 8
+
+    text = mlx_inference._kv_quant_status(8, object(), False)
+    vlm = mlx_inference._kv_quant_status(8, object(), True)
+    assert text["kv_bits"] == 8 and not text["note"]
+    # The threshold caveat rides with the resolved value, so an API client sees it.
+    assert vlm["kv_bits"] == 8 and "vision models" in vlm["note"]
+    assert str(mlx_inference._vlm_quantized_kv_start()) in vlm["note"]
+
+    monkeypatch.setattr(
+        mlx_inference,
+        "_kv_quant_eligibility",
+        lambda m, v, b = None: ("refused", "rotating cache", True),
+    )
+    refused = mlx_inference._kv_quant_status(8, object(), False)
+    assert refused["kv_bits"] is None and refused["eligibility"] == "refused"
+    assert refused["requested_kv_bits"] == 8  # what the reload decision compares
+
+
+def _tiny_lm(cache_factory, dim = 128):
+    """Minimal model whose forward populates whatever cache it is given."""
+    import mlx.core as mx
+
+    class _LM:
+        def make_cache(self):
+            return cache_factory()
+
+        def __call__(
+            self,
+            inputs,
+            cache = None,
+        ):
+            for entry in cache or ():
+                target = getattr(entry, "update_and_fetch", None)
+                if target is not None:
+                    k = mx.zeros((1, 2, inputs.shape[1], dim))
+                    target(k, k)
+            return mx.zeros((1, inputs.shape[1], 8))
+
+    return _LM()
+
+
+def test_reload_comparison_and_response_carry_the_resolved_setting():
+    """A load-time knob must force a reload and reach the client.
+
+    Both were silently broken: the comparator tripped on a mirror key CUDA
+    never stored, and the response fields sat on a request model.
+    """
+    from routes.inference import _mlx_runtime_settings_match
+    from models.inference import LoadResponse
+
+    be = SimpleNamespace(active_model_name = "m", models = {"m": {"mlx_kv_bits_requested": 8}})
+    assert _mlx_runtime_settings_match(be, SimpleNamespace(mlx_kv_bits = 8))
+    assert not _mlx_runtime_settings_match(be, SimpleNamespace(mlx_kv_bits = 4))
+    be.models["m"] = {"mlx_kv_bits_requested": None}
+    assert _mlx_runtime_settings_match(be, SimpleNamespace(mlx_kv_bits = 3))  # both normalize away
+    assert _mlx_runtime_settings_match(
+        SimpleNamespace(active_model_name = "m", models = {"m": {}}),
+        SimpleNamespace(mlx_kv_bits = 8),
+    )
+
+    resp = LoadResponse(
+        status = "loaded",
+        model = "m",
+        display_name = "m",
+        inference = {},
+        mlx_kv_bits = 8,
+        mlx_kv_quant_eligibility = "full",
+        mlx_kv_quant_note = "n",
+    )
+    assert resp.mlx_kv_bits == 8 and resp.mlx_kv_quant_note == "n"
+
+
+def test_kv_quant_probe_reports_what_the_runtime_would_really_do(monkeypatch):
+    """Attempt the conversion instead of predicting it from config or names.
+
+    Static proxies were wrong both ways: a declared head_dim a model ignores,
+    and windows spelled differently from `max_size`.
+    """
+    pytest.importorskip("mlx_lm")
+    from mlx_lm.models import cache as lm_cache
+    from core.inference import mlx_inference
+
+    def elig(factory, dim = 128):
+        lm = _tiny_lm(factory, dim)
+        monkeypatch.setattr(lm_cache, "make_prompt_cache", lambda m, **_: lm.make_cache())
+        return mlx_inference._kv_quant_eligibility(lm, False, 8)[0]
+
+    assert elig(lambda: [lm_cache.KVCache(), lm_cache.KVCache()]) == "full"
+    # A width mx.quantize rejects is caught by attempting it, not by naming it.
+    assert elig(lambda: [lm_cache.KVCache()], dim = 80) == "refused"
+    # A container the quantizer never descends into is skipped, not fatal.
+    assert elig(lambda: [lm_cache.CacheList(lm_cache.KVCache())]) == "none"
+    # Mixed quantizable/non-quantizable is a real success, reported as partial.
+    assert elig(lambda: [lm_cache.KVCache(), lm_cache.CacheList(lm_cache.KVCache())]) == "partial"
+
+
+def test_parent_mirror_omits_runtime_fields_a_backend_never_reported():
+    """A CUDA load must not gain a None the reload comparison then trips on."""
+    from core.inference.orchestrator import _mlx_runtime_mirror_fields
+
+    assert _mlx_runtime_mirror_fields({"is_vision": False}) == {}
+    assert _mlx_runtime_mirror_fields(
+        {"mlx_kv_bits": 8, "mlx_kv_bits_requested": 8, "other": 1}
+    ) == {"mlx_kv_bits": 8, "mlx_kv_bits_requested": 8}
