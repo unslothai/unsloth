@@ -1641,15 +1641,13 @@ def test_screening_stays_linear_in_escaped_operators(monkeypatch):
     cost(2000)  # warm the caches the walk builds
     small, large = cost(4000), cost(16000)
     # Quadratic would be about 16x for four times the input.
-    assert large < small * 10, f"{small=} {large=}"
+    assert large < small * 10, f"{small = } {large = }"
 
 
 def test_screening_stays_linear_in_path_fragments(windows_terminal):
     # A quoted path made of many separator-less fragments asked the same
     # lookahead once per fragment, and every call rescanned what was left.
-    assert "pwsh" in tools._find_blocked_commands(
-        'cmd /c "C:\\Program a a dir\\pwsh.exe"'
-    )
+    assert "pwsh" in tools._find_blocked_commands('cmd /c "C:\\Program a a dir\\pwsh.exe"')
 
     def cost(count):
         text = 'cmd /c "C:\\Program ' + "a " * count + 'dir\\pwsh.exe"'
@@ -1659,4 +1657,4 @@ def test_screening_stays_linear_in_path_fragments(windows_terminal):
 
     cost(500)
     small, large = cost(1000), cost(4000)
-    assert large < small * 10, f"{small=} {large=}"
+    assert large < small * 10, f"{small = } {large = }"

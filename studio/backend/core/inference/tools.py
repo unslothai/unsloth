@@ -1616,7 +1616,11 @@ def _path_continuations(words: "list[str]") -> "list[bool]":
     return carries
 
 
-def _continues_path(words: "list[str]", position: int, carries: "list[bool] | None" = None) -> bool:
+def _continues_path(
+    words: "list[str]",
+    position: int,
+    carries: "list[bool] | None" = None,
+) -> bool:
     """Whether ``words[position]`` is another chunk of the path in front of it.
 
     What continues a path holding spaces is a RELATIVE fragment. A word that
