@@ -90,9 +90,13 @@ def exclude_tokens_for_scheme(scheme: str, family: Optional[str] = None) -> tupl
 
 # Per-arch preference for ``auto``, best first. On Blackwell fp8 leads: on B200 plain fp8 dynamic is faster AND more accurate at DiT shapes,
 # while mxfp8 block scaling only adds overhead. nvfp4's FP4 GEMM is real with torch>=2.11 but wins only on very large GEMMs (0.81x on Z-Image
-# 1024px, LPIPS 0.166 vs fp8 0.044), so it stays an explicit opt-in. Consumer / workstation GPUs move int8 first: they halve fp8/fp16 FP32-accumulate.
+# 1024px, LPIPS 0.166 vs fp8 0.044), so it is kept OUT of the ladder below and stays an explicit opt-in (transformer_quant="nvfp4"): auto must
+# never silently drop to a scheme that is both slower and less accurate. Restore the commented Blackwell tier to re-enable it once the FP4
+# tensor-core GEMM wins at the DiT's real shapes (hidden ~3072, MLP ~12288, M ~4096) and its accuracy is validated by the prequant gate.
+# Consumer / workstation GPUs move int8 first: they halve fp8/fp16 FP32-accumulate.
 _AUTO_LADDER: tuple[tuple[tuple[int, int], tuple[str, ...]], ...] = (
-    ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+
+    ((10, 0), (TQ_FP8, TQ_MXFP8, TQ_INT8)),  # Blackwell sm_100+ (nvfp4 is explicit opt-in only)
+    # ((10, 0), (TQ_FP8, TQ_NVFP4, TQ_MXFP8, TQ_INT8)),  # restore to re-enable nvfp4 under auto
     ((8, 9), (TQ_FP8, TQ_INT8)),  # Ada sm_89 / Hopper sm_90
     ((8, 0), (TQ_INT8,)),  # Ampere sm_80 / sm_86
 )

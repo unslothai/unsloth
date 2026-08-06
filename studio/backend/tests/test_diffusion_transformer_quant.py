@@ -94,9 +94,10 @@ def test_auto_blackwell_prefers_fp8_then_falls_back(monkeypatch):
     # Even with every scheme available, auto picks fp8 on Blackwell: measured on a B200 it is faster AND more accurate than nvfp4 at DiT shapes.
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_FP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_FP8
-    # fp8 unavailable: nvfp4 is the next pick (above mxfp8 / int8).
+    # fp8 unavailable: auto skips nvfp4 even though the hardware runs it, because nvfp4 is an
+    # explicit opt-in only (slower AND less accurate at DiT shapes), and lands on mxfp8.
     _allow(monkeypatch, {TQ_NVFP4, TQ_MXFP8, TQ_INT8})
-    assert select_transformer_quant_scheme(_target(), "auto") == TQ_NVFP4
+    assert select_transformer_quant_scheme(_target(), "auto") == TQ_MXFP8
     # Only mxfp8 + int8 left -> mxfp8 (still above int8).
     _allow(monkeypatch, {TQ_MXFP8, TQ_INT8})
     assert select_transformer_quant_scheme(_target(), "auto") == TQ_MXFP8
