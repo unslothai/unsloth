@@ -3356,9 +3356,10 @@ class TestSetupPs1ShadowingParity:
         for _mask in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
             assert _mask in helper
         # hipinfo, amd-smi list, amd-smi static --asic, WMI name inference.
-        assert source.count("Resolve-VisibleGpuIndex $") + source.count(
-            "Resolve-VisibleGpuIndex "
-        ) >= 4
+        assert (
+            source.count("Resolve-VisibleGpuIndex $") + source.count("Resolve-VisibleGpuIndex ")
+            >= 4
+        )
         # No pick site may still resolve a mask on its own.
         assert "$_hipVisIdx = if (" not in source
         assert "$visGpu = if (" not in source
@@ -3397,13 +3398,20 @@ foreach ($v in @('$script:ShadowingIntegratedGfx', '$archFamilyMap')) {
 }
 """
 
-    def _run(self, body: str, env: "dict[str, str] | None" = None) -> str:
+    def _run(
+        self,
+        body: str,
+        env: "dict[str, str] | None" = None,
+    ) -> str:
         merged = {k: v for k, v in os.environ.items() if not k.endswith("_VISIBLE_DEVICES")}
         merged["SETUP_PS1"] = str(PACKAGE_ROOT / "studio" / "setup.ps1")
         merged.update(env or {})
         out = subprocess.run(
             ["pwsh", "-NoProfile", "-NonInteractive", "-Command", self._HARNESS + body],
-            check = True, capture_output = True, text = True, env = merged,
+            check = True,
+            capture_output = True,
+            text = True,
+            env = merged,
         )
         return out.stdout.strip()
 
