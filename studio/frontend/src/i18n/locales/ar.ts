@@ -53,8 +53,13 @@ export const ar = {
       projects: "المشاريع",
       train: "تدريب",
       recipes: "الوصفات",
+      images: "الصور",
+      video: "الفيديو",
+      more: "المزيد",
+      customizeSidebar: "تخصيص الشريط الجانبي",
+      newBadge: "جديد",
       export: "تصدير",
-      recents: "المحادثات الأخيرة",
+      recents: "العناصر الأخيرة",
       noChatsYet: "لا توجد محادثات بعد",
       settings: "الإعدادات",
       api: "API",
@@ -151,10 +156,20 @@ export const ar = {
         sttNotDownloaded: "لم يُنزَّل",
         sttDownloadStatusFailed: "تعذّر التحقق من حالة التنزيل",
         sttDownload: "تنزيل",
+        sttDownloadConfirmTitle: "تنزيل {model}؟",
+        sttDownloadConfirmBody:
+          "يعمل الإملاء المحلي دون اتصال تمامًا، لكنه يحتاج أولاً إلى نموذج الكلام {model}. حجمه {size} تقريبًا، ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
+        sttDownloadConfirmBodyUnsized:
+          "يعمل الإملاء المحلي دون اتصال تمامًا، لكنه يحتاج أولاً إلى نموذج الكلام {model}. ويُنزَّل مرة واحدة إلى ذاكرة Hugging Face المؤقتة.",
+        sttOpenVoiceSettings: "فتح إعدادات الصوت",
+        sttDownloadStarted: "جارٍ تنزيل {model}",
         sttDownloading: "جارٍ التنزيل… {progress}%",
         sttCancelDownload: "إلغاء",
         sttCancellingDownload: "جارٍ الإلغاء…",
+        sttCancelDownloadFailed: "تعذّر إلغاء التنزيل",
         sttDownloadComplete: "تم تنزيل نموذج التعرّف على الكلام",
+        sttModelReady: "{model} جاهز للإملاء",
+        sttRecommended: "موصى به",
         sttDownloadFailed: "تعذّر تنزيل نموذج التعرّف على الكلام",
         sttLoad: "تحميل",
         sttUnload: "تفريغ النموذج من الذاكرة",
@@ -600,6 +615,14 @@ export const ar = {
         compactSidebarDescription:
           "إبقاء الشريط الجانبي موسّعًا بدلاً من طيّه إلى أيقونات.",
       },
+      sidebarNav: {
+        title: "التنقّل في الشريط الجانبي",
+        description:
+          "ثبّت علامات تبويب الشريط الجانبي وأعد ترتيبها. تتجمّع العلامات غير المثبّتة في قائمة «المزيد»؛ وإذا بقيت علامة واحدة غير مثبّتة فتُخفى بدلاً من إنشاء قائمة بعنصر واحد. تبقى «محادثة جديدة» ثابتة.",
+        dragToReorder: "اسحب لإعادة الترتيب",
+        pinToSidebar: "تثبيت {name} في الشريط الجانبي",
+        moreHolds: "المزيد ({count})",
+      },
       sidebarMenu: {
         title: "قائمة الشريط الجانبي",
         description:
@@ -617,7 +640,7 @@ export const ar = {
       liveMonitor: {
         title: "المراقبة المباشرة",
         apiTitle: "مراقبة API",
-        summary: "الطلبات المباشرة والأخطاء واستخدام الرموز",
+        summary: "الطلبات المباشرة والأخطاء واستخدام التوكنات",
         status: "نشطة: {active} · حديثة: {recent} · {model}",
         noModelLoaded: "لا يوجد نموذج محمّل",
         autoOpen: "إظهار الشاشة العائمة تلقائيًا",
@@ -783,10 +806,10 @@ export const ar = {
         title: "إعدادات اختيار النموذج",
         expandQuantizations: "توسيع خيارات التكميم",
         expandQuantizationsDescription:
-          "عند التفعيل: تعرض نماذج GGUF الموجودة على الجهاز خيارات التكميم الخاصة بها مباشرةً. عند التعطيل: انقر على نموذج لعرض خيارات التكميم الخاصة به.",
+          "عند التفعيل: تعرض نماذج GGUF ضمن «On Device» خيارات التكميم الخاصة بها مباشرةً. عند التعطيل: انقر على نموذج لعرض خيارات التكميم الخاصة به.",
         showAllQuantizations: "إظهار جميع خيارات التكميم",
         showAllQuantizationsDescription:
-          "عند التفعيل: تُدرج جميع خيارات التكميم الموجودة على الجهاز، بما فيها الخيارات غير المُنزَّلة. عند التعطيل: لا تظهر إلا خيارات التكميم المُنزَّلة.",
+          "عند التفعيل: تُدرج جميع خيارات التكميم ضمن «On Device»، بما فيها الخيارات غير المُنزَّلة. عند التعطيل: لا تظهر إلا خيارات التكميم المُنزَّلة.",
       },
       menu: {
         title: "قائمة المحادثة",
@@ -818,22 +841,22 @@ export const ar = {
       exportHistoryDescription: "تنزيل جميع المحادثات والرسائل بصيغة JSON.",
       exportAction: "تصدير",
       exportingAction: "جارٍ التصدير...",
-      exportConversations: "تصدير المحادثات الأخيرة والمشاريع",
+      exportConversations: "تصدير العناصر الأخيرة والمشاريع",
       exportConversationsDescription:
-        "نزّل المحادثات الأخيرة وحدها أو مع محادثات المشاريع بصيغة JSONL خام أو CSV أو ShareGPT JSONL، في ملف مجمّع أو في ملف لكل محادثة.",
+        "نزّل العناصر الأخيرة وحدها أو مع محادثات المشاريع بصيغة JSONL خام أو CSV أو ShareGPT JSONL، في ملف مجمّع أو في ملف لكل محادثة.",
       exportConversationsAction: "تصدير",
-      exportScopeRecents: "المحادثات الأخيرة",
-      exportScopeAll: "المحادثات الأخيرة + المشاريع",
+      exportScopeRecents: "العناصر الأخيرة",
+      exportScopeAll: "العناصر الأخيرة + المشاريع",
       exportCombinedSuffix: "(مجمّعة)",
       exportPerChatSuffix: "(لكل محادثة)",
       importChats: "استيراد المحادثات",
       importChatsDescription:
-        "استيراد ملف بصيغة JSONL أو NDJSON أو CSV إلى المحادثات الأخيرة.",
+        "استيراد ملف بصيغة JSONL أو NDJSON أو CSV إلى العناصر الأخيرة.",
       importChatsAction: "استيراد",
       importNoConversations: "لم يُعثر على محادثات في الملف.",
-      importedOneChat: "تم استيراد محادثة واحدة إلى المحادثات الأخيرة.",
+      importedOneChat: "تم استيراد محادثة واحدة إلى العناصر الأخيرة.",
       importedChatCount:
-        "تم استيراد المحادثات إلى المحادثات الأخيرة. العدد: {count}.",
+        "تم استيراد المحادثات إلى العناصر الأخيرة. العدد: {count}.",
       importFailed: "فشل الاستيراد.",
       clearHistory: "مسح سجل المحادثات",
       clearHistoryDescription: "حذف سجل المحادثات من هذا الجهاز.",
@@ -888,7 +911,7 @@ export const ar = {
       failedToExportArchivedChats: "تعذّر تصدير المحادثات المؤرشفة",
       archiveAllChats: "أرشفة جميع المحادثات",
       archiveAllChatsDescription:
-        "ينقل كل محادثة في «المحادثات الأخيرة» و«المشاريع» إلى الأرشيف.",
+        "ينقل كل محادثة في «العناصر الأخيرة» و«المشاريع» إلى الأرشيف.",
       noChatsToArchive: "لا توجد محادثات للأرشفة.",
       archiveAllAction: "أرشفة الكل",
       archivingAction: "جارٍ الأرشفة...",
@@ -954,7 +977,7 @@ export const ar = {
       osWindows: "Windows",
       secureHttps: "HTTPS آمن",
       secureHttpsHint:
-        "لا يزال المنفذ على العنوان 0.0.0.0 متاحًا عبر جميع واجهات الشبكة. للحصول على أمان كامل، شغّل Unsloth باستخدام --secure لإتاحة رابط HTTPS هذا فقط.",
+        "لا يزال المنفذ على العنوان 0.0.0.0 متاحًا عالميًا. للحصول على أمان كامل، شغّل Unsloth باستخدام --secure لإتاحة رابط HTTPS هذا فقط.",
       copyTunnelUrl: "نسخ رابط النفق",
       copySnippet: "نسخ المقتطف",
       copy: "نسخ",
@@ -1371,7 +1394,7 @@ export const ar = {
       cancelAction: "إلغاء التدريب",
       stopTitle: "إيقاف التدريب",
       stopDescription:
-        "اختر طريقة إيقاف عملية التدريب الحالية. يؤدي «الإيقاف والحفظ» إلى إنشاء نقطة تحقق يمكنك استئناف التدريب منها لاحقًا، أما «الإيقاف» فلا يمكن استئناف التدريب بعده.",
+        "اختر طريقة إيقاف عملية التدريب الحالية. يؤدي «الإيقاف والحفظ» إلى إنشاء نقطة تحقق يمكنك استئناف التدريب منها لاحقًا، أما الإيقاف دون حفظ فلا يمكن استئناف التدريب بعده.",
       stopAction: "إيقاف",
       stopping: "جارٍ الإيقاف...",
       stopAndSave: "الإيقاف والحفظ",
@@ -1511,6 +1534,7 @@ export const ar = {
         loadingDataset: "جارٍ تحميل مجموعة البيانات",
         configuring: "جارٍ الإعداد",
         training: "قيد التدريب",
+        finalizing: "جارٍ حفظ النموذج",
         completed: "مكتمل",
         error: "خطأ",
         stopped: "متوقف",

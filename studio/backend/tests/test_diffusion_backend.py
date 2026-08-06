@@ -14,6 +14,7 @@ import contextlib
 import sys
 import threading
 import types
+from pathlib import Path
 
 import pytest
 
@@ -30,7 +31,13 @@ from core.inference.diffusion import (
 import core.inference.diffusion_eager_patches  # noqa: E402,F401
 import core.inference.diffusion_arch_patches  # noqa: E402,F401
 from core.inference.diffusion_families import (
+    _GATED_MIRROR_PAIRS,
+    assert_flux2_gguf_matches_base,
+    canonical_base,
     detect_family,
+    family_prequant_repo,
+    mirror_repo,
+    prefer_ungated_mirror,
     resolve_base_repo,
     resolve_local_gguf_child,
     supported_family_names,
@@ -148,6 +155,220 @@ def test_resolve_base_repo():
     assert resolve_base_repo(fam, None) == fam.base_repo
     assert resolve_base_repo(fam, "   ") == fam.base_repo
     assert resolve_base_repo(fam, "custom/base") == "custom/base"
+
+
+def _no_cache(monkeypatch):
+    """Report every upstream as uncached, so local files cannot mask the mirror decision."""
+    monkeypatch.setattr(
+        "core.inference.diffusion_families._upstream_is_cached", lambda repo_id, files = None: False
+    )
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+
+def _all_cached(monkeypatch):
+    """The opposite: every upstream already satisfies the load, so nothing is swapped."""
+    monkeypatch.setattr(
+        "core.inference.diffusion_families._upstream_is_cached", lambda repo_id, files = None: True
+    )
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+
+def test_gated_mirror_table_round_trips():
+    """Both directions, exact case: canonical_base must hand back a real repo id."""
+    assert len(_GATED_MIRROR_PAIRS) == 12
+    for upstream, mirror in _GATED_MIRROR_PAIRS:
+        assert mirror_repo(upstream) == mirror
+        assert canonical_base(mirror) == upstream
+        # Case-insensitive in, since a card tag may carry any casing.
+        assert mirror_repo(upstream.upper()) == mirror
+    # An ungated base is left alone.
+    assert mirror_repo("Qwen/Qwen-Image") is None
+    assert canonical_base("Qwen/Qwen-Image") == "Qwen/Qwen-Image"
+
+
+def test_prefer_ungated_mirror_swaps_gated_bases(monkeypatch):
+    _no_cache(monkeypatch)
+    for upstream, mirror in _GATED_MIRROR_PAIRS:
+        assert prefer_ungated_mirror(upstream) == mirror
+    # Ungated bases are untouched.
+    assert prefer_ungated_mirror("Qwen/Qwen-Image") == "Qwen/Qwen-Image"
+
+
+def test_prefer_ungated_mirror_declines(monkeypatch):
+    """Each decline path lands on the upstream id, i.e. exactly today's behaviour."""
+    gated = "black-forest-labs/FLUX.1-dev"
+
+    # 1. explicit opt-out
+    _no_cache(monkeypatch)
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
+    assert prefer_ungated_mirror(gated) == gated
+
+    # 2. already on disk: switching would re-pull tens of GiB
+    _all_cached(monkeypatch)
+    assert prefer_ungated_mirror(gated) == gated
+
+
+def test_a_local_base_directory_is_never_mirrored(monkeypatch, tmp_path):
+    """A path that exists on disk is not a Hub id, so it must survive the swap untouched.
+
+    A user can clone a base into a relative dir named exactly like the vendor id. The loaders
+    resolve such a base locally (``Path(base).exists()``), but several take that branch after the
+    swap, so rewriting it would send the load to the Hub and ignore the on-disk files.
+    """
+    gated = "black-forest-labs/FLUX.1-dev"
+    _no_cache(monkeypatch)
+    # The table still knows this id: only the local path stops the swap.
+    assert mirror_repo(gated) == "unsloth/FLUX.1-dev"
+    assert prefer_ungated_mirror(gated) == "unsloth/FLUX.1-dev"
+
+    local = tmp_path / gated
+    (local / "vae").mkdir(parents = True)
+    (local / "model_index.json").write_text("{}")
+    monkeypatch.chdir(tmp_path)
+    assert prefer_ungated_mirror(gated) == gated
+    assert prefer_ungated_mirror(gated, files = ["model_index.json"]) == gated
+    # An absolute local path never matched the table, and still does not.
+    assert prefer_ungated_mirror(str(local)) == str(local)
+
+
+def test_mirrored_base_still_trips_the_flux2_shape_guard():
+    """The regression the two-helper split exists for.
+
+    The guard fails OPEN on an unmapped base, so a mirror id reaching ``_FLUX2_BASE_INNER_DIM``
+    would silence it. Assert the RAISE: a disabled guard passes any weaker check.
+    """
+    # "flux.2-klein", not "flux.2": no family has the bare name, and a None family returns early.
+    fam = detect_family("x", override = "flux.2-klein")
+    assert fam is not None and fam.name.startswith("flux.2")
+
+    def _reader_for(inner_dim):
+        class _Reader:
+            def __init__(self, _path):
+                self.tensors = [
+                    type(
+                        "T",
+                        (),
+                        {"name": "double_stream_modulation_img.lin.weight", "shape": (inner_dim,)},
+                    )()
+                ]
+
+        return _Reader
+
+    import gguf
+
+    original = gguf.GGUFReader
+    try:
+        # A 4B GGUF (inner_dim 3072) against the 9B base still raises through the mirror id.
+        gguf.GGUFReader = _reader_for(3072)
+        for base in ("black-forest-labs/FLUX.2-klein-9B", "unsloth/FLUX.2-klein-9B"):
+            with pytest.raises(ValueError, match = "klein"):
+                assert_flux2_gguf_matches_base(fam, base, "some-klein-4b.gguf")
+        # A matching pair stays silent through the mirror id too.
+        gguf.GGUFReader = _reader_for(4096)
+        for base in ("black-forest-labs/FLUX.2-klein-9B", "unsloth/FLUX.2-klein-9B"):
+            assert assert_flux2_gguf_matches_base(fam, base, "some-klein-9b.gguf") is None
+    finally:
+        gguf.GGUFReader = original
+
+
+def test_family_prequant_repo_accepts_either_id():
+    """prequant_variant_repos is keyed on upstream ids, so a mirror must hit the same entry."""
+    fam = detect_family("x", override = "flux.1")
+    for scheme in ("int8", "fp8"):
+        upstream = family_prequant_repo(fam, scheme, "black-forest-labs/FLUX.1-dev")
+        mirrored = family_prequant_repo(fam, scheme, "unsloth/FLUX.1-dev")
+        assert upstream == mirrored == "unsloth/FLUX.1-dev-FP8"
+
+
+def _fake_hub_cache(
+    monkeypatch,
+    tmp_path,
+    repo_id,
+    files,
+    *,
+    revision = "abc123",
+    ref = None,
+):
+    """Lay out ``files`` as a cached snapshot revision of ``repo_id`` and point the live cache
+    setting at it, so the mirror decision reads a tree the test controls. ``ref`` writes
+    refs/main, as huggingface_hub does for a branch download."""
+    root = tmp_path / f"models--{repo_id.replace('/', '--')}"
+    rev = root / "snapshots" / revision
+    for name in files:
+        path = rev / name
+        path.parent.mkdir(parents = True, exist_ok = True)
+        path.write_bytes(b"x")
+    rev.mkdir(parents = True, exist_ok = True)
+    if ref is not None:
+        (root / "refs").mkdir(parents = True, exist_ok = True)
+        (root / "refs" / "main").write_text(ref, encoding = "utf-8")
+    monkeypatch.setattr("utils.hf_cache_settings.active_hf_hub_cache", lambda: str(tmp_path))
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_NO_MIRROR", raising = False)
+
+
+def test_a_superseded_cached_revision_does_not_disable_the_mirror(monkeypatch, tmp_path):
+    """Only the revision refs/main names can satisfy a gated fetch: on a 401 the HEAD call fails
+    and hf_hub_download resolves refs/<revision> to ONE commit, returning its pointer or
+    re-raising. A complete but superseded revision must therefore not read as cached."""
+    from core.inference.diffusion_families import _upstream_is_cached
+
+    gated = "black-forest-labs/FLUX.1-dev"
+    wanted = ["model_index.json", "vae/diffusion_pytorch_model.safetensors"]
+    # Old revision complete, refs/main moved on to a revision holding only the manifest.
+    _fake_hub_cache(monkeypatch, tmp_path, gated, wanted, revision = "old")
+    _fake_hub_cache(monkeypatch, tmp_path, gated, ["model_index.json"], revision = "new", ref = "new")
+    assert _upstream_is_cached(gated, wanted) is False
+    assert prefer_ungated_mirror(gated, files = wanted) == "unsloth/FLUX.1-dev"
+
+    # refs/main pointing at the complete revision is the ordinary cached case.
+    _fake_hub_cache(monkeypatch, tmp_path, gated, wanted, revision = "old", ref = "old")
+    assert _upstream_is_cached(gated, wanted) is True
+    assert prefer_ungated_mirror(gated, files = wanted) == gated
+
+
+def test_a_stray_upstream_file_does_not_disable_the_mirror(monkeypatch, tmp_path):
+    """The decline is "the load is satisfiable from cache", not "some blob exists".
+
+    An interrupted (or previously tokened) pull leaves a config behind. Treating that as cached
+    pinned every later load to the gated upstream and re-raised the 401 the mirror removes.
+    """
+    from core.inference.diffusion_families import _upstream_is_cached
+
+    gated = "black-forest-labs/FLUX.1-dev"
+    # 1. debris only: not usable, so the mirror stands.
+    _fake_hub_cache(monkeypatch, tmp_path, gated, ["model_index.json", "vae/config.json"])
+    assert _upstream_is_cached(gated) is False
+    assert prefer_ungated_mirror(gated) == "unsloth/FLUX.1-dev"
+
+    # 2. a real weight file: the user's cache is worth keeping, so no swap.
+    _fake_hub_cache(
+        monkeypatch,
+        tmp_path,
+        gated,
+        ["model_index.json", "vae/diffusion_pytorch_model.safetensors"],
+    )
+    assert _upstream_is_cached(gated) is True
+    assert prefer_ungated_mirror(gated) == gated
+
+    # 3. with the file list in hand the test is exact: a missing companion still swaps.
+    wanted = ["vae/diffusion_pytorch_model.safetensors", "text_encoder/model.safetensors"]
+    assert _upstream_is_cached(gated, wanted) is False
+    assert prefer_ungated_mirror(gated, files = wanted) == "unsloth/FLUX.1-dev"
+    assert prefer_ungated_mirror(gated, files = wanted[:1]) == gated
+
+
+def test_te_prequant_equivalence_group_accepts_a_mirrored_base():
+    """The T5-XXL artifact is shared across the FLUX.1 releases through an equivalence group of
+    UPSTREAM ids. A mirrored base is a different string, so without normalising it the pre-cast
+    encoder is refused and the load falls back to the dense multi-GB download."""
+    from core.inference.diffusion_te_prequant import te_base_equivalent
+
+    ckpt = "black-forest-labs/FLUX.1-schnell"
+    assert te_base_equivalent(ckpt, "black-forest-labs/FLUX.1-dev") is True
+    assert te_base_equivalent(ckpt, "unsloth/FLUX.1-dev") is True
+    assert te_base_equivalent("unsloth/FLUX.1-schnell", "unsloth/FLUX.1-dev") is True
+    # A base outside the verified group is still refused, mirrored or not.
+    assert te_base_equivalent(ckpt, "unsloth/FLUX.2-dev") is False
 
 
 def test_resolve_local_gguf_child(tmp_path):
@@ -1426,6 +1647,25 @@ def test_resolve_base_repo_drops_untrusted_card_tag(monkeypatch):
     )
 
 
+def test_resolve_base_repo_maps_a_mirrored_card_tag_back_to_the_vendor_id(monkeypatch):
+    """A card tag can now name a mirror and clear the trust bar. This value is
+    status()["base_repo"] and a trained adapter's default base_model, so it must be the vendor
+    id; only the fetch sites see the mirror."""
+    import core.inference.diffusion as dmod
+
+    fam = detect_family("unsloth/FLUX.1-dev-GGUF")
+    monkeypatch.setattr(dmod, "_hf_base_model", lambda repo_id, hf_token: "unsloth/FLUX.1-dev")
+    assert (
+        _resolve_base_repo("unsloth/FLUX.1-dev-GGUF", None, fam, None)
+        == "black-forest-labs/FLUX.1-dev"
+    )
+    # An EXPLICIT base_repo is the caller's own choice and is honoured verbatim.
+    assert (
+        _resolve_base_repo("unsloth/FLUX.1-dev-GGUF", "unsloth/FLUX.1-dev", fam, None)
+        == "unsloth/FLUX.1-dev"
+    )
+
+
 def test_detect_family_rejects_layered():
     # Qwen-Image-Layered needs a dedicated pipeline (additional_t_cond), so reject at load, not at the first step.
     assert detect_family("unsloth/Qwen-Image-Layered-GGUF") is None
@@ -1591,6 +1831,40 @@ def test_load_progress_downloading_then_finalizing(monkeypatch):
 
     monkeypatch.setattr(DiffusionBackend, "_cache_bytes", staticmethod(lambda repo: 500))
     assert backend.load_progress()["phase"] == "finalizing"  # 1000/1000
+
+
+def test_load_progress_counts_a_mirrored_pipeline_repo_once(monkeypatch):
+    # base_repo == repo_id, so count once. Summing adds the upstream's stale partial blobs -- the
+    # very thing that selects the mirror -- to the mirror's live bytes, pegging the bar at 100%.
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = "black-forest-labs/FLUX.1-dev",
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        expected_bytes = 1000,
+    )
+    backend._loading.fetch_repo = "unsloth/FLUX.1-dev"
+    # 600 stale upstream bytes from the interrupted pull, 500 real ones into the mirror.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_cache_bytes",
+        staticmethod(lambda repo: 600 if repo.startswith("black-forest-labs/") else 500),
+    )
+    p = backend.load_progress()
+    assert p["bytes_downloaded"] == 500  # the mirror alone, not 1100
+    assert p["phase"] == "downloading"  # not "finalizing"
+
+
+def test_load_progress_still_sums_a_gguf_pick_and_its_separate_base(monkeypatch):
+    # A base that is a DIFFERENT repo from the pick is a separate download, so still summed.
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = "unsloth/FLUX.1-dev-GGUF",
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        expected_bytes = 1000,
+    )
+    backend._loading.fetch_repo = "unsloth/FLUX.1-dev"
+    monkeypatch.setattr(DiffusionBackend, "_cache_bytes", staticmethod(lambda repo: 150))
+    assert backend.load_progress()["bytes_downloaded"] == 300
 
 
 def test_base_file_downloaded_excludes_undownloaded():
@@ -1879,6 +2153,201 @@ def test_prefetch_downloads_gguf_and_base(monkeypatch, tmp_path):
     backend._prefetch_files(str(tmp_path), "model.gguf", "base/repo", ["vae/x.safetensors"], None)
     assert all(repo != str(tmp_path) for repo, _ in calls)
     assert ("base/repo", "vae/x.safetensors") in calls
+
+
+def test_prefetch_pulls_companions_from_the_ungated_mirror(monkeypatch, tmp_path):
+    """The companions are why a gated base blocked a GGUF pick, so this is the call that has to
+    move. The file names are identical either way, so the list passes through untouched."""
+    backend = DiffusionBackend()
+    calls: list = []
+    monkeypatch.setattr(
+        "utils.hf_xet_fallback.hf_hub_download_with_xet_fallback",
+        lambda repo, fn, tok, **k: (calls.append((repo, fn)), f"/cache/{fn}")[1],
+    )
+    _no_cache(monkeypatch)
+    backend._prefetch_files(
+        "unsloth/FLUX.1-dev-GGUF",
+        "flux1-dev-Q4_K_M.gguf",
+        "black-forest-labs/FLUX.1-dev",
+        ["vae/diffusion_pytorch_model.safetensors"],
+        None,
+    )
+    assert ("unsloth/FLUX.1-dev", "vae/diffusion_pytorch_model.safetensors") in calls
+    assert all(repo != "black-forest-labs/FLUX.1-dev" for repo, _ in calls)
+    # The GGUF repo is never rewritten.
+    assert ("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf") in calls
+
+    # An upstream already on disk keeps its cache.
+    calls.clear()
+    _all_cached(monkeypatch)
+    backend._prefetch_files(
+        "unsloth/FLUX.1-dev-GGUF",
+        None,
+        "black-forest-labs/FLUX.1-dev",
+        ["vae/diffusion_pytorch_model.safetensors"],
+        None,
+    )
+    assert ("black-forest-labs/FLUX.1-dev", "vae/diffusion_pytorch_model.safetensors") in calls
+
+
+def test_single_file_load_reads_config_and_companions_from_the_mirror(
+    fake_runtime, tmp_path, monkeypatch
+):
+    """``config=`` is a REPO FETCH that runs BEFORE the mirrored pipeline load, so a gated id left
+    there 401s an anonymous user first and the swap below is never reached."""
+    diffusers = sys.modules["diffusers"]
+    diffusers.FluxPipeline = _FakePipeline
+    diffusers.FluxTransformer2DModel = _FakeTransformer
+    _no_cache(monkeypatch)
+    (tmp_path / "model.gguf").write_bytes(b"weights")
+
+    status = DiffusionBackend().load_pipeline(
+        str(tmp_path),
+        gguf_filename = "model.gguf",
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        family_override = "flux.1",
+    )
+
+    assert _FakeTransformer.last["config"] == "unsloth/FLUX.1-dev"
+    assert _FakePipeline.last["base"] == "unsloth/FLUX.1-dev"
+    # Invisible: only the bytes moved, so the API still reports the id the user picked.
+    assert status["base_repo"] == "black-forest-labs/FLUX.1-dev"
+
+
+def test_pipeline_kind_assembles_krea_and_ideogram_from_the_mirror(fake_runtime, monkeypatch):
+    """Both per-component loaders fetch EVERY component from the id handed to them, so a gated
+    pipeline pick must arrive already swapped."""
+    from core.inference import diffusion as dmod
+
+    diffusers = sys.modules["diffusers"]
+    diffusers.Krea2Pipeline = _FakePipeline
+    diffusers.Krea2Transformer2DModel = _FakeTransformer
+    _no_cache(monkeypatch)
+
+    seen: dict[str, str] = {}
+
+    def _krea(base, dtype, **kwargs):
+        seen["krea"] = base
+        return _FakePipe()
+
+    def _ideogram(
+        repo_id,
+        dtype,
+        hf_token = None,
+    ):
+        seen["ideogram"] = repo_id
+        return _FakePipe()
+
+    monkeypatch.setattr(dmod, "load_krea2_pipeline", _krea)
+    monkeypatch.setattr(dmod, "load_ideogram4_pipeline", _ideogram)
+
+    krea = DiffusionBackend().load_pipeline("krea/Krea-2-Turbo", model_kind = "pipeline")
+    assert seen["krea"] == "unsloth/Krea-2-Turbo"
+    assert krea["repo_id"] == "krea/Krea-2-Turbo"
+
+    ideogram = DiffusionBackend().load_pipeline("ideogram-ai/ideogram-4-fp8", model_kind = "pipeline")
+    assert seen["ideogram"] == "unsloth/ideogram-4-fp8"
+    assert ideogram["repo_id"] == "ideogram-ai/ideogram-4-fp8"
+
+
+def test_dense_quant_pulls_the_transformer_from_the_mirror(monkeypatch):
+    """The dense fallback downloads the base repo's transformer/ shards. With a nonzero baked LoRA
+    the GGUF fallback is refused, so a 401 here fails the load outright."""
+    _no_cache(monkeypatch)
+    from core.inference import diffusion as dmod
+
+    seen: dict = {}
+
+    class _Transformer:
+        @staticmethod
+        def from_pretrained(base, **kwargs):
+            seen["dense"] = base
+            return object()
+
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda fam, scheme, **kw: None)
+    monkeypatch.setattr(dmod, "quantize_transformer", lambda pipe, target, **kw: "fp8")
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_assemble_pipe",
+        staticmethod(lambda *a, **k: seen.setdefault("assembled", _FakePipe())),
+    )
+
+    _pipe, scheme = DiffusionBackend()._load_dense_quant_pipeline(
+        _Transformer,
+        _FakePipeline,
+        "black-forest-labs/FLUX.1-dev",
+        "cuda:0",
+        "bf16",
+        None,
+        types.SimpleNamespace(device = "cuda:0"),
+        "fp8",
+        fam = detect_family("x", override = "flux.1"),
+    )
+    assert scheme == "fp8"
+    assert seen["dense"] == "unsloth/FLUX.1-dev"
+
+
+def test_load_progress_and_delete_guard_follow_the_mirrored_companion(monkeypatch):
+    """Bytes land under the mirror, so scanning the upstream reports a companion download of zero
+    and leaves the repo being written to deletable."""
+    from core.inference import diffusion as dmod
+
+    backend = DiffusionBackend()
+    backend._loading = dmod._LoadingState(
+        repo_id = "unsloth/FLUX.1-dev-GGUF",
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        fetch_repo = "unsloth/FLUX.1-dev",
+        expected_bytes = 10,
+    )
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_cache_bytes",
+        staticmethod(lambda repo_id: 4 if repo_id == "unsloth/FLUX.1-dev" else 0),
+    )
+
+    assert backend.load_progress()["bytes_downloaded"] == 4
+    # BOTH ids: the upstream is what status reports, the mirror is where the download writes.
+    assert backend.loading_repo_ids() == (
+        "unsloth/FLUX.1-dev-GGUF",
+        "black-forest-labs/FLUX.1-dev",
+        "unsloth/FLUX.1-dev",
+    )
+
+
+def test_plan_memory_sizes_the_mirrored_companion_cache(monkeypatch, tmp_path):
+    """A companion total of zero reads as "unknown", which picks resident placement and OOMs."""
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_companion_cache_bytes",
+        # Second arg is the staged snapshot dir, unused here: what this pins is that the
+        # MIRROR id is the one sized.
+        staticmethod(
+            lambda base, staged = None: 8 * 1024 * 1024 if base == "unsloth/FLUX.1-dev" else 0
+        ),
+    )
+    seen: dict = {}
+    monkeypatch.setattr(
+        "core.inference.diffusion.plan_diffusion_memory",
+        lambda **kwargs: seen.update(kwargs) or types.SimpleNamespace(offload_policy = "none"),
+    )
+    from core.inference.diffusion_device import resolve_diffusion_device_target
+
+    gguf = tmp_path / "m.gguf"
+    gguf.write_bytes(b"x" * 1024)
+
+    DiffusionBackend()._plan_memory(
+        resolve_diffusion_device_target(),
+        str(gguf),
+        "black-forest-labs/FLUX.1-dev",
+        detect_family("x", override = "flux.1"),
+        None,
+        False,
+        fetch_base = "unsloth/FLUX.1-dev",
+    )
+    assert seen["companion_dense_mib"] == 8
 
 
 # fp16-incompatible guard + dtype promotion
@@ -3101,6 +3570,8 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         return Pipe()
 
     monkeypatch.setattr(dmod, "load_krea2_pipeline", fake_loader)
+    # Pin the mirror decision, else the assertion below reads the developer's real HF cache.
+    _no_cache(monkeypatch)
 
     class ExplodingPipeline:
         @staticmethod
@@ -3118,7 +3589,8 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         fam = types.SimpleNamespace(name = "krea-2"),
     )
     assert isinstance(pipe, Pipe)
-    assert calls == {"base": "krea/Krea-2-Turbo", "transformer": marker, "device": "cuda:0"}
+    # _assemble_pipe reads base only to FETCH, so the loader gets the ungated mirror.
+    assert calls == {"base": "unsloth/Krea-2-Turbo", "transformer": marker, "device": "cuda:0"}
 
 
 def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_path, monkeypatch):
@@ -4285,7 +4757,8 @@ def test_prefetch_returns_snapshot_dir_for_manifest(monkeypatch):
     root = backend._prefetch_files(
         "base/repo", None, "base/repo", ["model_index.json", "vae/x.safetensors"], None
     )
-    assert root == "/cache/snap"
+    # str(Path(...).parent) uses the platform separator, so the bare literal failed on Windows.
+    assert root == str(Path("/cache/snap"))
     assert (
         backend._prefetch_files("base/repo", None, "base/repo", ["vae/x.safetensors"], None) is None
     )
@@ -4635,14 +5108,17 @@ def test_download_plan_scopes_the_base_repo_files(monkeypatch):
     monkeypatch.setattr(
         DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
     )
+    _no_cache(monkeypatch)
 
     plan = DiffusionBackend().download_plan(
         "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
     )
 
+    # The base entry names the MIRROR: staged before the loader runs, so a gated id here 401s an
+    # anonymous user at staging and the swap downstream is never reached.
     assert [e["repo_id"] for e in plan["entries"]] == [
         "unsloth/FLUX.1-dev-GGUF",
-        "black-forest-labs/FLUX.1-dev",
+        "unsloth/FLUX.1-dev",
     ]
     checkpoint, base = plan["entries"]
     assert checkpoint["files"] == ["flux1-dev-Q4_K_M.gguf"]
@@ -4721,6 +5197,8 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
         ),
     )
 
+    _no_cache(monkeypatch)
+
     plan = DiffusionBackend().download_plan(
         "unsloth/FLUX.1-dev-GGUF",
         gguf_filename = "flux1-dev-Q4_K_M.gguf",
@@ -4729,7 +5207,7 @@ def test_download_plan_stages_the_precast_encoder_instead_of_the_dense_one(monke
     by_repo = {e["repo_id"]: e for e in plan["entries"]}
     assert "unsloth/FLUX.1-schnell-FP8" in by_repo
     assert by_repo["unsloth/FLUX.1-schnell-FP8"]["files"] == ["text_encoder_2-fp8.pt"]
-    base = by_repo["black-forest-labs/FLUX.1-dev"]
+    base = by_repo["unsloth/FLUX.1-dev"]
     # text_encoder_2 dense weights are gone; text_encoder stays (no hosted artifact), as do the non-weight files the pre-cast loader meta-inits from.
     assert not any(
         f.startswith("text_encoder_2/") and f.endswith(".safetensors") for f in base["files"]
@@ -4755,6 +5233,9 @@ def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatc
     monkeypatch.setattr(
         DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
     )
+    # An upstream that already satisfies the load keeps its id, so the plan stages the cache the
+    # user already paid for.
+    _all_cached(monkeypatch)
     plan = DiffusionBackend().download_plan(
         "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
     )
@@ -4787,12 +5268,13 @@ def test_download_plan_keeps_the_dense_encoder_when_the_precast_repo_is_unavaila
             )
         },
     )
+    _no_cache(monkeypatch)
     plan = DiffusionBackend().download_plan(
         "unsloth/FLUX.1-dev-GGUF",
         gguf_filename = "flux1-dev-Q4_K_M.gguf",
         text_encoder_quant = "fp8",
     )
-    base = next(e for e in plan["entries"] if e["repo_id"] == "black-forest-labs/FLUX.1-dev")
+    base = next(e for e in plan["entries"] if e["repo_id"] == "unsloth/FLUX.1-dev")
     assert "text_encoder/model.safetensors" in base["files"]
     assert not any(e["repo_id"] == "unsloth/does-not-exist" for e in plan["entries"])
 

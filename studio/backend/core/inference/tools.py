@@ -7,6 +7,7 @@
 import ast
 import codecs
 import fnmatch
+import functools
 import http.client
 import os
 import signal
@@ -1332,6 +1333,16 @@ def _exec_scan_layout(
     return frozenset(exec_flags), frozenset(stops), frozenset(redirects)
 
 
+def _win_switch(token: str) -> str:
+    """Collapse a Git Bash `//x` switch to the `/x` cmd.exe actually receives."""
+    return token[1:] if token.startswith("//") else token
+
+
+# `start` launches its argument as a program, so that argument is a command
+# position. These switches precede it; the value-taking ones eat a token.
+_START_SWITCHES_WITH_VALUE = {"/d", "/node", "/affinity", "/machine"}
+
+
 def _find_blocked_commands(command: str) -> set[str]:
     """Detect blocked commands at shell command position only.
 
@@ -1350,9 +1361,13 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # punctuation_chars splits separators into their own tokens, so command
     # position is detected even in `echo done; rm -rf x` (no whitespace).
-    lexed_posix = sys.platform != "win32"
+    # Keyed to the shell that will actually run this, not to the OS: on a
+    # Windows host with bash the non-posix lexer never split on `;`, so the
+    # command after a control-flow keyword stayed unread and
+    # `if true; then rm -rf x; fi` came back with nothing blocked.
+    lexed_posix = _shell_is_posix()
     try:
-        if sys.platform == "win32":
+        if not lexed_posix:
             tokens = shlex.split(command, posix = False)
         else:
             lexer = shlex.shlex(command, posix = True, punctuation_chars = ";&|()`")
@@ -1362,10 +1377,10 @@ def _find_blocked_commands(command: str) -> set[str]:
         tokens = command.split()
         lexed_posix = False
     # Which separator tokens the shell only produced because the quoting was
-    # stripped. The non-posix (Windows) lexer KEEPS the quote marks, so a quoted
+    # stripped. The non-posix (cmd) lexer KEEPS the quote marks, so a quoted
     # `';'` never looks like a separator there and nothing has to be recovered;
     # the split() fallback has no quoting model at all, so it reports nothing
-    # either and both platforms reach the same verdict.
+    # either and both shells reach the same verdict.
     quoted_separators = (
         _quoted_separator_indexes(command, tokens, ";&|()`") if lexed_posix else frozenset()
     )
@@ -1611,7 +1626,9 @@ def _find_blocked_commands(command: str) -> set[str]:
         is_unix_c = tok_lower == "-c" or (
             tok_lower.startswith("-") and tok_lower.endswith("c") and not tok_lower.startswith("--")
         )
-        is_win_c = tok_lower == "/c"
+        # Git Bash mangles a lone /c into a path, so models write //c and MSYS
+        # hands cmd back a single slash; /k runs the payload the same way.
+        is_win_c = _win_switch(tok_lower) in ("/c", "/k")
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
             continue
         # Look back past flags for the shell binary. Windows flags and absolute
@@ -1628,6 +1645,24 @@ def _find_blocked_commands(command: str) -> set[str]:
             elif is_win_c and prev_base in _SHELLS_WIN:
                 blocked |= _find_blocked_commands(tokens[i + 1])
             break  # stop at first non-flag token
+
+    # `cmd /c start "" prog` puts prog in a command position the scan above
+    # sees only as an argument, so screen what start actually launches.
+    for i, token in enumerate(tokens):
+        if os.path.basename(token).lower() not in ("start", "start.exe"):
+            continue
+        j = i + 1
+        while j < len(tokens):
+            switch = _win_switch(tokens[j].lower())
+            if not switch.startswith("/"):
+                break
+            # /d C:\dir and friends carry their value in the next token.
+            j += 2 if switch in _START_SWITCHES_WITH_VALUE else 1
+        # `start ""` is the idiom for "no title"; anything else is the program.
+        if j < len(tokens) and tokens[j] == "":
+            j += 1
+        if j < len(tokens):
+            blocked |= _find_blocked_commands(tokens[j])
 
     # sed's `e COMMAND` hands COMMAND to the shell, a real command position the
     # scan above sees only as a text argument, so screen it like `bash -c`. The
@@ -4432,8 +4467,8 @@ _HIGH_RISK_COMMANDS = frozenset(
         "blkdiscard",
         "chattr",
         "truncate",
-        # Windows cmd.exe built-ins that delete files / trees (the terminal
-        # executor runs `cmd /c` there, and these are not in _BLOCKED_COMMANDS_WIN)
+        # Windows cmd.exe built-ins that delete files / trees (reachable when the
+        # terminal executor falls back to `cmd /c`; not in _BLOCKED_COMMANDS_WIN)
         "del",
         "erase",
         "rd",
@@ -6575,6 +6610,8 @@ def _build_safe_env(workdir: str) -> dict[str, str]:
         "LANG": os.environ.get("LANG", "C.UTF-8"),
         "TERM": "dumb",
         "PYTHONIOENCODING": "utf-8",
+        # A GUI backend opens a native window and blocks plt.show() until closed.
+        "MPLBACKEND": "Agg",
         # sitecustomize shim: remaps ChatGPT code-interpreter paths (/mnt/data
         # etc.) onto the sandbox CWD; see sandbox_site/sitecustomize.py.
         "PYTHONPATH": _SANDBOX_SITE_DIR,
@@ -6779,6 +6816,7 @@ def _build_bypass_env(workdir: str) -> dict[str, str]:
     for var in _BYPASS_ENV_WINDOWS_PROFILE_VARS:
         if var in os.environ:
             env[var] = workdir
+    env.setdefault("MPLBACKEND", "Agg")
     return env
 
 
@@ -6892,9 +6930,70 @@ def _harden_parent_against_proc_env_leak() -> bool:
     return True
 
 
+# System32\bash.exe and the WindowsApps shim are the WSL launcher, which runs the
+# command inside the WSL filesystem: the sandbox workdir and the blocklist's path
+# checks would both apply to the wrong tree. Only a native Win32 bash is usable.
+_WSL_BASH_MARKERS = ("\\system32\\", "\\windowsapps\\")
+# os.path.join, not a literal `Git\bin\...`, so the probe uses the host
+# separator and the resolver stays testable on POSIX.
+_WIN_BASH_RELATIVE = (
+    os.path.join("Git", "bin", "bash.exe"),
+    os.path.join("Git", "usr", "bin", "bash.exe"),
+)
+
+
+def _is_trusted_windows_bash(path: str) -> bool:
+    """True when ``path`` is a native Win32 bash under a system install root.
+
+    The shell runs every sandboxed command, so an untrusted one defeats the
+    PATH / PATHEXT / NoDefaultCurrentDirectoryInExePath hardening in
+    _build_safe_env: a bash.exe in a user-writable dir (Scoop, a per-user Git,
+    a project checkout) would execute attacker-controlled code for a command
+    that already passed the blocklist. Same Program Files trust boundary as
+    the sandbox git PATH entry (#7317), and fails closed.
+    """
+    lowered = path.replace("/", "\\").lower()
+    if any(marker in lowered for marker in _WSL_BASH_MARKERS):
+        return False
+    return _is_trusted_windows_program_dir(os.path.dirname(path))
+
+
+@functools.lru_cache(maxsize = 1)
+def _windows_bash() -> "str | None":
+    """Path to a trusted native Win32 bash, or None when only cmd is available."""
+    candidates: list[str] = []
+    for root in _windows_program_roots():
+        candidates.extend(os.path.join(root, relative) for relative in _WIN_BASH_RELATIVE)
+    # shutil.which returns only the FIRST PATH match, which may be an untrusted
+    # shim; scan the rest too so it cannot mask a trusted Git install (#7317).
+    primary = shutil.which("bash")
+    if primary:
+        candidates.append(primary)
+    for entry in (os.environ.get("PATH") or "").split(os.pathsep):
+        entry = entry.strip().strip('"')
+        if entry and os.path.isabs(entry):
+            candidates.append(os.path.join(entry, "bash.exe"))
+    for candidate in candidates:
+        if os.path.isfile(candidate) and _is_trusted_windows_bash(candidate):
+            return candidate
+    return None
+
+
+def _shell_is_posix() -> bool:
+    """True when the shell that will run a command parses POSIX syntax."""
+    return sys.platform != "win32" or _windows_bash() is not None
+
+
 def _get_shell_cmd(command: str) -> list[str]:
     """Return the platform-appropriate shell invocation for a command string."""
     if sys.platform == "win32":
+        # why: the model is told this tool is bash and writes bash. cmd /c runs
+        # only the first line of a multi-line command, keeps single quotes
+        # literal, and does not understand bash quoting, so a correct script
+        # silently half-executes. Use a real bash when the host has one.
+        bash = _windows_bash()
+        if bash:
+            return [bash, "-c", command]
         return ["cmd", "/c", command]
     return ["bash", "-c", command]
 
@@ -6998,13 +7097,58 @@ WEB_SEARCH_TOOL = {
     },
 }
 
-# Appended to the python/terminal descriptions: models habitually write to
-# /mnt/data (a ChatGPT code-interpreter path), which does not exist here.
-_SANDBOX_PATHS_NOTE = (
-    " Read and write files using relative paths in the current working "
-    "directory, which persists for this conversation; absolute paths like "
-    "/mnt/data or /tmp/outputs do not exist."
-)
+
+def _build_sandbox_paths_note() -> str:
+    """Platform and working-directory note, on BOTH tool descriptions.
+
+    Models habitually write to /mnt/data, a ChatGPT code-interpreter path that
+    does not exist here, so the POSIX text names it. Naming only POSIX paths on
+    Windows reads as "you are on Linux" and models then refuse to invoke Windows
+    programs that are in fact available, so that text says where the code runs
+    instead: without it a model assumes the pipe is its only output and declines
+    to open a window it believes nobody can see.
+    """
+    if sys.platform != "win32":
+        return (
+            " Read and write files using relative paths in the current working "
+            "directory, which persists for this conversation; absolute paths like "
+            "/mnt/data or /tmp/outputs do not exist."
+        )
+    return (
+        " You are on Windows, and this runs on the user's own machine. Read and "
+        "write files using relative paths in the current working directory, which "
+        "persists for this conversation."
+    )
+
+
+def _build_terminal_shell_note() -> str:
+    """Shell-specific note, on the TERMINAL description only.
+
+    Which shell runs is read from the resolver, not assumed: telling a model it
+    has bash on a host where _get_shell_cmd fell back to cmd reintroduces the
+    multi-line half-execution this note exists to prevent. It stays off the
+    python description because none of it applies to the python sandbox, and
+    naming a shell there invites subprocess/os.system as a way past the terminal
+    blocklist. No program is named either: powershell/pwsh are on that blocklist
+    and `cmd /c start` is not, so recommending one hands back a hard block and
+    recommending the other advertises the gap.
+    """
+    if sys.platform != "win32":
+        return ""
+    if _windows_bash():
+        return (
+            " The shell is bash (Git for Windows), and native Windows programs are "
+            "available; a program you start detached opens a window on the user's "
+            "desktop."
+        )
+    return (
+        " The shell is cmd, not bash: send one command per call, chain with &&, and "
+        "do not use bash syntax such as multi-line loops or single-quoted arguments."
+    )
+
+
+_SANDBOX_PATHS_NOTE = _build_sandbox_paths_note()
+_TERMINAL_SHELL_NOTE = _build_terminal_shell_note()
 
 PYTHON_TOOL = {
     "type": "function",
@@ -7029,7 +7173,9 @@ TERMINAL_TOOL = {
     "type": "function",
     "function": {
         "name": "terminal",
-        "description": "Execute a terminal command and return stdout/stderr." + _SANDBOX_PATHS_NOTE,
+        "description": "Execute a terminal command and return stdout/stderr."
+        + _SANDBOX_PATHS_NOTE
+        + _TERMINAL_SHELL_NOTE,
         "parameters": {
             "type": "object",
             "properties": {

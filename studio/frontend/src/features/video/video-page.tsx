@@ -1505,9 +1505,11 @@ export function VideoPage({ active = true }: { active?: boolean }) {
   );
 
   return (
-    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+    // The chat-style layout gives this page no outer top inset, so clear the custom
+    // titlebar here (34px on win/linux, 0 under macOS's native one) as chat does.
+    <div className="diffusion-surface flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-[var(--studio-content-top-inset,0px)]">
       {/* Top: the model selector, sitting clear of the sidebar and level with the controls column below. Load progress shows in a toast. */}
-      <div className="flex h-[48px] shrink-0 items-start justify-between pl-6 pr-2 pt-[11px]">
+      <div className="flex h-[48px] shrink-0 items-start justify-between pl-[var(--studio-media-header-left-inset,1.5rem)] pr-2 pt-[var(--studio-chat-header-padding-top,11px)]">
         <div className="flex items-center gap-3">
           <ModelSelector
             models={VIDEO_MODELS}
@@ -1719,7 +1721,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                     }
                   }}
                   onError={() => remintSrc(selected)}
-                  className="max-h-full max-w-full rounded-xl object-contain shadow-sm"
+                  className="max-h-full max-w-full object-contain shadow-sm"
                 />
                 {selected.has_audio && (
                   <div className="absolute left-4 top-4 flex items-center gap-1 rounded-lg bg-background/80 px-2 py-1 text-ui-11 font-medium shadow-lg ring-1 ring-border backdrop-blur">
@@ -1858,7 +1860,7 @@ export function VideoPage({ active = true }: { active?: boolean }) {
                   </span>
                   {/* Selection marker on a non-focusable overlay. */}
                   {video.id === selected?.id && (
-                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border-2 border-primary" />
+                    <span className="pointer-events-none absolute inset-0 z-20 rounded-[10px] border border-border bg-white/35 dark:border-white/25 dark:bg-white/20" />
                   )}
                 </button>
                 </TooltipTrigger>

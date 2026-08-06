@@ -14,10 +14,11 @@ diffusers classes and base repo needed to assemble the full pipeline.
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
-from typing import Optional
+from typing import Optional, Sequence
 
 
 # Runtime->route contract: the /images/generate route matches these messages EXACTLY for a 409 (vs a 500), so both engines raise them verbatim.
@@ -467,6 +468,133 @@ def resolve_base_repo(fam: DiffusionFamily, base_repo: Optional[str]) -> str:
     return base or fam.base_repo
 
 
+# Byte-identical ungated unsloth mirrors of the gated vendor bases: a GGUF/FP8 pick ships only the
+# denoiser, so a gated base still 401s on the companions. Swapped at the fetch sites only, never in
+# ``resolve_base_repo``, whose result keys the UPSTREAM-id tables below (see ``canonical_base``).
+_GATED_MIRROR_PAIRS: tuple[tuple[str, str], ...] = (
+    ("black-forest-labs/FLUX.1-dev", "unsloth/FLUX.1-dev"),
+    ("black-forest-labs/FLUX.1-schnell", "unsloth/FLUX.1-schnell"),
+    ("black-forest-labs/FLUX.1-Kontext-dev", "unsloth/FLUX.1-Kontext-dev"),
+    ("black-forest-labs/FLUX.1-Krea-dev", "unsloth/FLUX.1-Krea-dev"),
+    ("black-forest-labs/FLUX.2-dev", "unsloth/FLUX.2-dev"),
+    ("black-forest-labs/FLUX.2-klein-9B", "unsloth/FLUX.2-klein-9B"),
+    ("black-forest-labs/FLUX.2-klein-base-9B", "unsloth/FLUX.2-klein-base-9B"),
+    ("krea/Krea-2-Turbo", "unsloth/Krea-2-Turbo"),
+    ("krea/Krea-2-Raw", "unsloth/Krea-2-Raw"),
+    ("ideogram-ai/ideogram-4-fp8", "unsloth/ideogram-4-fp8"),
+    ("ideogram-ai/ideogram-4-nf4", "unsloth/ideogram-4-nf4"),
+    ("ideogram-ai/ideogram-4-nf4-diffusers", "unsloth/ideogram-4-nf4-diffusers"),
+)
+_GATED_MIRRORS: dict[str, str] = {u.lower(): m for u, m in _GATED_MIRROR_PAIRS}
+_MIRROR_UPSTREAM: dict[str, str] = {m.lower(): u for u, m in _GATED_MIRROR_PAIRS}
+
+
+def mirror_repo(repo_id: Optional[str]) -> Optional[str]:
+    """The ungated unsloth mirror of ``repo_id``, or None when it is not a gated vendor base."""
+    return _GATED_MIRRORS.get((repo_id or "").strip().lower())
+
+
+def canonical_base(repo_id: Optional[str]) -> str:
+    """A mirror id mapped back to the upstream it copies, else ``repo_id`` unchanged.
+
+    Base-keyed tables hold UPSTREAM ids, so every lookup normalises here: a mirror reaching
+    ``_FLUX2_BASE_INNER_DIM`` misses, and that shape guard fails OPEN, so it goes silent.
+    """
+    base = (repo_id or "").strip()
+    return _MIRROR_UPSTREAM.get(base.lower(), base)
+
+
+# What counts as a real weight file, vs the stray config an interrupted pull leaves behind.
+_WEIGHT_SUFFIXES = frozenset({".safetensors", ".bin", ".pt", ".ckpt", ".gguf"})
+
+
+def _upstream_is_cached(repo_id: str, files: Optional[Sequence[str]] = None) -> bool:
+    """Whether the upstream load is SATISFIABLE from the local cache.
+
+    Not "has any blob": one config left by an interrupted or previously-tokened pull would pin every
+    later load to the gated upstream and re-raise the 401 the mirror exists to avoid. So the revision
+    must hold ``files``, else a real weight file. ``.incomplete`` downloads have no snapshot symlink,
+    so they count as absent.
+
+    Only the revision ``refs/main`` names counts, the one a gated fetch falls back to: on a 401 the
+    HEAD fails and ``hf_hub_download`` resolves the ref to ONE commit, so a complete but superseded
+    revision would read as cached and hand the loader a repo it cannot fetch from. With no ref (a
+    commit-pinned download) any revision counts, as before.
+
+    Reads the LIVE cache root; huggingface_hub's import-time constant goes stale after a
+    cache-folder change.
+    """
+    try:
+        from utils.hf_cache_settings import active_hf_hub_cache
+
+        root = Path(active_hf_hub_cache()) / f"models--{repo_id.replace('/', '--')}"
+        wanted = tuple(files or ())
+        ref = root / "refs" / "main"
+        revs = (
+            [root / "snapshots" / ref.read_text(encoding = "utf-8").strip()]
+            if ref.is_file()
+            else sorted((root / "snapshots").iterdir())
+        )
+        for rev in revs:
+            if not rev.is_dir():
+                continue
+            if wanted:
+                if all((rev / name).exists() for name in wanted):
+                    return True
+            elif any(p.suffix.lower() in _WEIGHT_SUFFIXES and p.is_file() for p in rev.rglob("*")):
+                return True
+        return False
+    except Exception:  # noqa: BLE001 -- an unreadable/absent cache just means "not cached"
+        return False
+
+
+def _is_local_path(base: str) -> bool:
+    """Whether ``base`` exists on disk, i.e. a local dir rather than a Hub id.
+
+    A user can clone a base into a relative dir named exactly like the vendor id
+    (``black-forest-labs/FLUX.1-dev``), which the loaders deliberately treat as local. OSError from
+    an id with invalid path characters just means "not a local path".
+    """
+    try:
+        return Path(base or "").expanduser().exists()
+    except OSError:
+        return False
+
+
+def prefer_ungated_mirror(
+    base: str,
+    hf_token: Optional[str] = None,
+    *,
+    files: Optional[Sequence[str]] = None,
+) -> str:
+    """``base``, or its ungated unsloth mirror when that is the better repo to FETCH from.
+
+    A GGUF/FP8 pick carries only the denoiser, so a gated base 401s on the companions; the mirrors
+    are byte identical, so this drops the gate without changing a weight. Fetch only: the upstream
+    id stays what the picker and status() show, what saved configs hold and what a trained LoRA's
+    base_model tag records. The one visible swap is the download manager row, which must name the
+    repo actually being pulled -- staging the gated id there is the 401 this exists to remove.
+
+    Declines to today's behaviour under ``UNSLOTH_DIFFUSION_NO_MIRROR``, for a local path, or when
+    the upstream already satisfies the load from cache and switching would re-pull tens of GiB.
+    ``files`` sharpens that last test to the names about to be fetched; without it any weight counts.
+
+    PURE: table lookup, env read, local stat, NO network. This runs inside pipeline assembly, where
+    an earlier ``model_info`` probe of the mirror put a Hub round trip on the load path and broke
+    four download-plan tests. A missing mirror surfaces as the ordinary download error.
+    ``hf_token`` is unused, kept so callers need not care.
+    """
+    del hf_token  # noqa: F841 -- signature stability only
+    mirror = mirror_repo(base)
+    if not mirror or os.environ.get("UNSLOTH_DIFFUSION_NO_MIRROR", "").strip():
+        return base
+    # A local path is never a Hub id: rewriting one sends loads the other sites resolve on disk
+    # (``Path(base).exists()``) to the Hub, skipping the copy already downloaded.
+    if _is_local_path(base):
+        return base
+    return base if _upstream_is_cached(base, files) else mirror
+
+
 # Default (steps, guidance) per model for callers that cannot pass them. Matched by substring, most specific first; same values as the UI MODEL_DEFAULTS table, keep in sync.
 _GENERATION_DEFAULTS: tuple[tuple[str, int, float], ...] = (
     ("z-image-turbo", 9, 0.0),
@@ -525,7 +653,8 @@ def family_prequant_repo(
     baked from ONE base's weights and the loader refuses it for any other base, so a variant
     without its own entry still returns the family default (harmless: the base_model_id
     validation then falls back to dense-quantise, exactly as before this table existed)."""
-    base = (base_repo or "").strip().lower()
+    # prequant_variant_repos is keyed on upstream ids.
+    base = canonical_base(base_repo).lower()
     if base:
         for entry_base, entry_scheme, repo_id in fam.prequant_variant_repos:
             if entry_base == base and entry_scheme == scheme:
@@ -680,7 +809,8 @@ def assert_flux2_gguf_matches_base(fam, base_repo: str, gguf_path) -> None:
     unmapped base leaves the load exactly as it was."""
     if gguf_path is None or not str(getattr(fam, "name", "")).startswith("flux.2"):
         return
-    want = _FLUX2_BASE_INNER_DIM.get((base_repo or "").strip().lower())
+    # Keyed on upstream ids, and this guard fails OPEN on a miss, so a mirror id would disable it.
+    want = _FLUX2_BASE_INNER_DIM.get(canonical_base(base_repo).lower())
     got = gguf_flux2_inner_dim(gguf_path)
     if want is None or got is None or want == got:
         return

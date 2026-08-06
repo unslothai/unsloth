@@ -239,6 +239,10 @@ def test_an_unknown_user_home_base_fails_open_for_real(monkeypatch):
 
 def test_download_plan_refuses_a_gated_base_before_listing_files(monkeypatch):
     # End to end: the ValueError the route maps to a 400 replaces a confident 18-file plan.
+    # Mirror swap off, so what this pins is the preflight itself. #7952 sends a gated base to
+    # its ungated unsloth mirror, which the preflight now probes in its place; that rescue is
+    # exercised on its own below rather than folded into every refusal case.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     _stub_hub(
         monkeypatch,
         info = _FakeInfo("auto", [_FakeSibling("model_index.json", 1000)]),
@@ -257,6 +261,10 @@ def test_download_plan_refuses_a_gated_base_before_listing_files(monkeypatch):
 def test_the_pre_eviction_preflight_refuses_the_same_gated_base(monkeypatch):
     # The route calls this BEFORE acquire_for. _run_load makes the same check, but only after the
     # GPU was taken from chat, and the images page falls back to /images/load on any plan failure.
+    # Mirror swap off, so what this pins is the preflight itself. #7952 sends a gated base to
+    # its ungated unsloth mirror, which the preflight now probes in its place; that rescue is
+    # exercised on its own below rather than folded into every refusal case.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     _stub_hub(
         monkeypatch,
         info = _FakeInfo("auto", [_FakeSibling("model_index.json", 1000)]),
@@ -292,6 +300,10 @@ def test_the_pre_eviction_preflight_clears_an_open_base(monkeypatch):
 
 def test_the_native_pre_eviction_preflight_refuses_a_gated_companion(monkeypatch):
     # A forced-native load on a GPU box takes the arbiter too, so sd.cpp needs the same entry point.
+    # Mirror swap off, so what this pins is the preflight itself: #7952 sends a gated companion
+    # to its ungated unsloth mirror, which the preflight now probes in its place. That rescue
+    # is exercised on its own below rather than folded into every refusal case.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
     _stub_hub(
@@ -317,6 +329,10 @@ def test_the_native_pre_eviction_preflight_refuses_a_gated_companion(monkeypatch
 
 def test_run_load_stamps_the_gated_error_on_the_load(monkeypatch):
     # The load path takes the same preflight, so the failure reaches the UI as a load error.
+    # Mirror swap off, so what this pins is the preflight itself. #7952 sends a gated base to
+    # its ungated unsloth mirror, which the preflight now probes in its place; that rescue is
+    # exercised on its own below rather than folded into every refusal case.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     backend = DiffusionBackend()
     monkeypatch.setattr(
         backend, "validate_load_request", lambda *a, **k: types.SimpleNamespace(name = "flux.1")
@@ -423,6 +439,10 @@ def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
     its own companion repos: flux.1's VAE is the gated black-forest-labs/FLUX.1-schnell. The size
     probe swallows the 401, so without the preflight that entry plans at 0 bytes and the fetch dies
     on the bare token error."""
+    # Mirror swap off, so what this pins is the preflight itself: #7952 sends a gated companion
+    # to its ungated unsloth mirror, which the preflight now probes in its place. That rescue
+    # is exercised on its own below rather than folded into every refusal case.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
     gated = "black-forest-labs/FLUX.1-schnell"
@@ -471,6 +491,10 @@ def test_the_native_plan_preflights_its_companion_repos_too(monkeypatch):
 def test_the_native_plan_probes_the_asset_it_stages(monkeypatch):
     """flux.1's native VAE repo is read for ae.safetensors only, so probing the pipeline manifest
     there would neither verify access to that file nor see it in the cache."""
+    # Mirror swap off, so what this pins is the preflight itself: #7952 sends a gated companion
+    # to its ungated unsloth mirror, which the preflight now probes in its place. That rescue
+    # is exercised on its own below rather than folded into every refusal case.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.sd_cpp_backend import SdCppDiffusionBackend
 
     gated = "black-forest-labs/FLUX.1-schnell"
@@ -675,6 +699,10 @@ def test_the_native_load_preflights_its_companion_repos_too(monkeypatch):
     """The plan alone is not enough: images-page.tsx wraps getDiffusionDownloadPlan in a try/catch
     and calls /images/load regardless, so the plan's 400 is swallowed and the load would run with
     no preflight. The diffusers backend checks in both places; the native one must too."""
+    # Mirror swap off, so what this pins is the preflight itself: #7952 sends a gated companion
+    # to its ungated unsloth mirror, which the preflight now probes in its place. That rescue
+    # is exercised on its own below rather than folded into every refusal case.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.diffusion_families import detect_family_for_pick
     from core.inference.sd_cpp_backend import _SdLoading
 
@@ -716,6 +744,10 @@ def test_the_native_load_preflights_its_companion_repos_too(monkeypatch):
 def test_the_native_load_probes_the_asset_it_stages_and_honours_the_cache(monkeypatch):
     """Same two properties as the plan half, so the load half cannot drift: the probe is the file
     THIS pick stages (a VAE-only repo has no manifest), and a cached companion is never refused."""
+    # Mirror swap off, so what this pins is the preflight itself: #7952 sends a gated companion
+    # to its ungated unsloth mirror, which the preflight now probes in its place. That rescue
+    # is exercised on its own below rather than folded into every refusal case.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     from core.inference.diffusion_families import detect_family_for_pick
     from core.inference.sd_cpp_backend import _SdLoading
 
@@ -964,6 +996,7 @@ def test_a_base_excused_by_the_other_root_is_loaded_from_that_snapshot(monkeypat
         base_files,
         hf_token,
         cancel_event = None,
+        fetch_base = None,
     ):
         staged.append(base_files)
         return None
@@ -1023,3 +1056,95 @@ def test_the_native_fetch_reuses_a_base_asset_cached_under_the_other_root(monkey
         "no-access",
     )
     assert seen == [("ae.safetensors", None), ("flux1-dev-Q4_K_M.gguf", "/live-hub")]
+
+
+def test_a_gated_base_with_a_live_mirror_is_not_refused(monkeypatch):
+    """The other side of every refusal above, and the reason the probe moved onto the fetch repo.
+
+    #7952 sends a gated base to its ungated unsloth mirror, so the bytes never touch the vendor
+    id. A preflight that kept probing the upstream would refuse exactly the picks that swap
+    rescues, turning a working load into a 400 -- worse than the bare token error this whole
+    preflight replaced."""
+    mirror = "unsloth/FLUX.1-dev"
+    probed: list = []
+
+    class _Api:
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
+            # Gated upstream, open mirror: the Hub state this rescue exists for.
+            return _FakeInfo(
+                "auto" if repo_id == GATED_REPO else False,
+                [
+                    _FakeSibling("model_index.json", 1000),
+                    _FakeSibling("vae/diffusion_pytorch_model.safetensors", 2000),
+                ],
+            )
+
+    def _metadata(
+        url,
+        token = None,
+        **k,
+    ):
+        probed.append(url)
+        raise _gated_error()
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr("huggingface_hub.get_hf_file_metadata", _metadata)
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+    monkeypatch.setattr("core.inference.diffusion._resolve_base_repo", lambda *a, **k: GATED_REPO)
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    repos = {e["repo_id"] for e in plan["entries"]}
+    # Staged from the mirror, and probed there too: an open repo costs one metadata call and no
+    # byte probe, so the 401 the upstream would have raised never happens.
+    assert mirror in repos and GATED_REPO not in repos
+    assert probed == []
+
+
+def test_the_native_load_lets_the_mirror_stand_in_for_a_gated_companion(monkeypatch):
+    """Same rescue on the sd.cpp path, which has its own preflight and its own swap: both have to
+    take the same decision or the load refuses a companion it was about to fetch from elsewhere."""
+    from core.inference.diffusion_families import detect_family_for_pick
+    from core.inference.sd_cpp_backend import _SdLoading
+
+    gated = "black-forest-labs/FLUX.1-schnell"
+    b, fetched = _native_backend_ready(monkeypatch)
+    b._loading = _SdLoading(repo_id = "unsloth/FLUX.1-dev-GGUF", base_repo = "")
+
+    class _Api:
+        def model_info(
+            self,
+            repo_id,
+            files_metadata = False,
+            token = None,
+        ):
+            return _FakeInfo("auto" if repo_id == gated else False)
+
+    monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    monkeypatch.setattr(
+        "huggingface_hub.get_hf_file_metadata",
+        lambda url, token = None, **k: (_ for _ in ()).throw(_gated_error()),
+    )
+    monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", lambda *a, **k: None)
+
+    fam = detect_family_for_pick("unsloth/FLUX.1-dev-GGUF", "flux1-dev-Q4_K_M.gguf", None)
+    b._run_load(
+        repo_id = "unsloth/FLUX.1-dev-GGUF",
+        gguf_filename = "flux1-dev-Q4_K_M.gguf",
+        base = "",
+        fam = fam,
+        hf_token = "no-access",
+        _load_token = b._load_token,
+    )
+
+    # Reached the fetch instead of being refused, and the VAE it asks for is the mirror's.
+    assert len(fetched) == 1
+    vae_repos = {repo for repo, _f, kind in fetched[0] if kind == "vae"}
+    assert vae_repos == {"unsloth/FLUX.1-schnell"}
