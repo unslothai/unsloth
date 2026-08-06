@@ -2168,23 +2168,52 @@ const Composer: FC<{
       .getState()
       .takeImageAttachments(targetKey);
     if (intents.length === 0) return;
+
+    let disposed = false;
+
     void (async () => {
       for (let index = 0; index < intents.length; index += 1) {
-        const intent = intents[index]!;
-        const file = await nativeAttachmentIntentToFile(intent);
-        if (nativeAttachmentTargetKeyRef.current !== targetKey) {
+        if (disposed) {
           useNativeIntentStore
             .getState()
             .addImageAttachments(targetKey, intents.slice(index));
           return;
         }
-        await aui.composer().addAttachment(file);
+        const intent = intents[index]!;
+        let file: File;
+        try {
+          file = await nativeAttachmentIntentToFile(intent);
+        } catch (error) {
+          toast.error("Could not attach dropped images", {
+            description: error instanceof Error ? error.message : String(error),
+          });
+          useNativeIntentStore
+            .getState()
+            .addImageAttachments(targetKey, intents.slice(index + 1));
+          continue;
+        }
+        if (disposed || nativeAttachmentTargetKeyRef.current !== targetKey) {
+          useNativeIntentStore
+            .getState()
+            .addImageAttachments(targetKey, intents.slice(index));
+          return;
+        }
+        try {
+          await aui.composer().addAttachment(file);
+        } catch (error) {
+          toast.error("Could not attach dropped images", {
+            description: error instanceof Error ? error.message : String(error),
+          });
+          useNativeIntentStore
+            .getState()
+            .addImageAttachments(targetKey, intents.slice(index + 1));
+        }
       }
-    })().catch((error) => {
-      toast.error("Could not attach dropped images", {
-        description: error instanceof Error ? error.message : String(error),
-      });
-    });
+    })();
+
+    return () => {
+      disposed = true;
+    };
   }, [hasPendingImageAttachments, nativeAttachmentTargetKey, aui]);
   const threadIsRunning = useAuiState(({ thread }) => thread.isRunning);
   const threadListItemId = useAuiState(
