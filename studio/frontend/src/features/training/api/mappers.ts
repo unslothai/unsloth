@@ -113,7 +113,9 @@ export function buildTrainingStartPayload(
     save_steps: config.saveSteps,
     eval_steps: config.evalSteps,
     weight_decay: config.weightDecay,
-    max_grad_norm: 0.0,
+    // max_grad_norm omitted on purpose: the backend now honors an explicit value,
+    // so hardcoding 0 here would pin every UI run to "clipping off" and override
+    // that. Guarded by tests/training-start-payload-grad-norm.test.ts.
     max_grad_value: null,
     random_seed: config.randomSeed,
     packing: isEmbedding ? false : config.packing,

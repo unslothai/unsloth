@@ -1066,6 +1066,8 @@ export const zhCN = {
     },
   },
   studio: {
+    imageTraining: "图像训练",
+    goToImageTraining: "前往图像训练",
     routeTitle: "训练",
     title: "微调工作台",
     subtitles: {

@@ -560,6 +560,13 @@ class SdCppDiffusionBackend:
             specs = self._asset_specs(repo_id, gguf_filename, fam)
             fetch_repo = _fetch_repo_map(specs, hf_token)
             assets = [(fetch_repo[repo], fn, kind) for repo, fn, kind in specs]
+            # Same preflight the plan runs, and on the POST-swap repos: catch a gated companion
+            # here, not 15 GiB into the prefetch, but do not refuse one whose ungated mirror is
+            # standing in for it. The plan alone is not enough -- the images page falls back to
+            # calling this load directly when the plan call fails, skipping the check entirely.
+            self._preflight_companion_repos(
+                self._assets_by_repo(assets), fetch_repo.get(repo_id, repo_id), hf_token
+            )
             self._set_expected_bytes(assets, hf_token)
             paths = self._fetch_assets(assets, hf_token, cancel_event = cancel_event)
 
@@ -708,15 +715,7 @@ class SdCppDiffusionBackend:
             raise ValueError(f"'{repo_id}' has no native sd.cpp asset mapping.")
 
         specs = self._asset_specs(repo_id, gguf_filename, fam)
-        # Group by repo so a family whose VAE and encoder share a repo yields one entry, keeping first-seen order (transformer first).
-        by_repo: dict[str, list[str]] = {}
-        for repo, filename, kind in specs:
-            # A local GGUF directory is already on disk; nothing to stage for it.
-            if kind == "diffusion_model" and Path(repo).expanduser().exists():
-                continue
-            names = by_repo.setdefault(repo, [])
-            if filename not in names:
-                names.append(filename)
+        by_repo = self._assets_by_repo(specs)
 
         # STAGED before the load runs, so each entry must name the repo _fetch_assets will pull
         # from: some asset repos are gated (the FLUX.1 VAE lives in black-forest-labs/FLUX.1-schnell)
@@ -725,6 +724,9 @@ class SdCppDiffusionBackend:
         fetch_repo = _fetch_repo_map(specs, hf_token)
         by_repo = {fetch_repo[repo]: names for repo, names in by_repo.items()}
         fetch_repo_id = fetch_repo.get(repo_id, repo_id)
+        # AFTER the swap: the point of the mirror is that a gated companion no longer blocks the
+        # load, so preflighting the upstream id would refuse the very picks the mirror rescues.
+        self._preflight_companion_repos(by_repo, fetch_repo_id, hf_token)
         sizes = self._plan_file_sizes(by_repo, hf_token)
         entries: list[dict[str, Any]] = []
         total = 0
@@ -741,6 +743,74 @@ class SdCppDiffusionBackend:
                 }
             )
         return {"entries": entries, "total_bytes": total}
+
+    @staticmethod
+    def _assets_by_repo(specs: list[tuple[str, str, str]]) -> dict[str, list[str]]:
+        """repo -> the files this pick needs from it, first-seen order (transformer first), so a
+        family whose VAE and text encoder share a repo yields one entry."""
+        by_repo: dict[str, list[str]] = {}
+        for repo, filename, kind in specs:
+            # A local GGUF directory is already on disk; nothing to stage or preflight for it.
+            if kind == "diffusion_model":
+                try:
+                    if Path(repo).expanduser().exists():
+                        continue
+                except (OSError, RuntimeError, ValueError):
+                    pass  # unresolvable home / invalid path characters -> a remote id
+            names = by_repo.setdefault(repo, [])
+            if filename not in names:
+                names.append(filename)
+        return by_repo
+
+    @staticmethod
+    def _preflight_companion_repos(
+        by_repo: dict[str, list[str]], repo_id: str, hf_token: Optional[str]
+    ) -> None:
+        """Refuse a companion repo this pick cannot read, before any byte is fetched.
+
+        The native asset list carries its own companion repos (flux.1's VAE is the gated
+        black-forest-labs/FLUX.1-schnell), and neither ``_plan_file_sizes`` nor the size probe
+        surfaces the 401: the entry is planned at 0 bytes and the fetch dies on the bare Hub token
+        error this preflight exists to replace. Run from BOTH the plan and ``_run_load``, as the
+        diffusers backend does, because the UI falls back to /images/load when the plan call
+        fails, so a 400 raised only at plan time is swallowed."""
+        from core.inference.diffusion import _assert_base_repo_accessible
+        for repo, names in by_repo.items():
+            # Companions only, mirroring the diffusers plan: the picker only lists repos it could
+            # already read.
+            if repo != repo_id and names:
+                # Probe an asset THIS pick stages: a repo read only for its VAE has no pipeline
+                # manifest, so the default name would neither verify access nor see the cache.
+                _assert_base_repo_accessible(repo, hf_token, names[0])
+
+    def preflight_base_access(
+        self,
+        repo_id: str,
+        fam: Optional[DiffusionFamily],
+        *,
+        gguf_filename: Optional[str] = None,
+        model_kind: Optional[str] = None,
+        base_repo: Optional[str] = None,
+        hf_token: Optional[str] = None,
+    ) -> None:
+        """The companion refusal ``_run_load`` makes, run by the route BEFORE it takes the GPU.
+
+        Same signature and reason as the diffusers backend's: ``_run_load`` runs on the load
+        thread, after a forced-native load on a GPU host already evicted chat, so a pick refused
+        only there unloads the resident model first. Nothing to check without a family or a
+        checkpoint name -- the asset list needs both, and the route already rejected those picks."""
+        if fam is None or not gguf_filename:
+            return
+        # Post-swap, as the plan and the load both are: probing the upstream id would refuse
+        # exactly the gated companions the ungated mirror stands in for. The swap is pure, so all
+        # three take the same decision.
+        specs = self._asset_specs(repo_id, gguf_filename, fam)
+        fetch_repo = _fetch_repo_map(specs, hf_token)
+        self._preflight_companion_repos(
+            self._assets_by_repo([(fetch_repo[r], fn, kind) for r, fn, kind in specs]),
+            fetch_repo.get(repo_id, repo_id),
+            hf_token,
+        )
 
     @staticmethod
     def _plan_file_sizes(
@@ -826,7 +896,13 @@ class SdCppDiffusionBackend:
             if kind == "diffusion_model" and local_root.exists():
                 path = str(resolve_local_gguf_child(local_root, fn))
             else:
-                path = hf_hub_download_with_xet_fallback(repo, fn, hf_token, cancel_event = cancel)
+                # An asset cached only under huggingface_hub's import-time root resolves through
+                # that root, matching the preflight, which clears a base found under EITHER root.
+                # Pinned to the live one, a cache-folder change re-downloads every moved asset and
+                # turns an already-downloaded gated base into the bare Hub token error.
+                path = hf_hub_download_with_xet_fallback(
+                    repo, fn, hf_token, cancel_event = cancel, reuse_other_cache_root = True
+                )
             paths[kind] = path
             with self._lock:
                 if self._loading is not None:
