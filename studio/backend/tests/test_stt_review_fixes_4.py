@@ -111,9 +111,9 @@ def test_a_reaping_server_stays_visible_to_training_admission(monkeypatch):
         release.set()
         unloading.join(timeout = 10)
 
-    assert seen["model"] == "qwen3-asr-0.6b", (
-        "the reaping server read as gone; training admission would miss its VRAM"
-    )
+    assert (
+        seen["model"] == "qwen3-asr-0.6b"
+    ), "the reaping server read as gone; training admission would miss its VRAM"
     assert seen["device"] == "llama.cpp"
     # Once the reap is done the fields are cleared, so it reads as gone.
     assert sidecar.loaded_model is None
@@ -248,9 +248,9 @@ def test_an_invalidation_mid_probe_discards_the_stale_answer(monkeypatch):
     monkeypatch.setattr(mtmd_mod, "_cached_model_paths", probe_then_invalidate)
     assert mtmd_mod.is_model_downloaded("qwen3-asr-0.6b") is False
     with mtmd_mod._downloaded_probe_lock:
-        assert "qwen3-asr-0.6b" not in mtmd_mod._downloaded_probe, (
-            "a stale answer was written back over the invalidation"
-        )
+        assert (
+            "qwen3-asr-0.6b" not in mtmd_mod._downloaded_probe
+        ), "a stale answer was written back over the invalidation"
 
     # The next poll sees the finished download rather than waiting out the TTL.
     monkeypatch.setattr(mtmd_mod, "_cached_model_paths", lambda mid: ("m.gguf", "p.gguf"))
