@@ -38,11 +38,19 @@ inputs:
   hf-token:
     description: >-
       Hugging Face token, or the empty string to run unauthenticated. Callers
-      that reach this step on a `pull_request` event should withhold it with
-      `${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}`,
+      that can reach this step on a pull_request event should withhold it,
       because this step executes checked-out PR code; public models still
-      download without it. Callers whose job cannot run on `pull_request` (for
-      example a `workflow_dispatch`-only job) may pass it unconditionally.
+      download without it. The idiom every such caller uses is a conditional on
+      github.event_name that yields secrets.HF_TOKEN off pull_request and an
+      empty string on it (see any call site). Callers whose job cannot run on
+      pull_request, such as a workflow_dispatch-only job, may pass it
+      unconditionally.
+
+      Do not write that conditional out as a literal template expression here.
+      GitHub evaluates expression syntax inside an action manifest, including
+      inside these description strings, and neither the github nor the secrets
+      context exists at manifest-parse time, so an example written out in full
+      fails the whole action with "Unrecognized named-value: 'github'".
     required: false
     default: ''
 
