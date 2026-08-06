@@ -8,6 +8,31 @@ import {
   isTrainingStartPending,
   useTrainingRuntimeStore,
 } from "../src/features/training/stores/training-runtime-store.ts";
+import { trainingStopScope } from "../src/features/training/lib/training-stop-scope.ts";
+
+test("hydration adopts a pending start request as the cancellation scope", () => {
+  const runtime = useTrainingRuntimeStore.getState();
+  runtime.resetRuntime();
+
+  runtime.applyStatus({
+    job_id: "job-pending-elsewhere",
+    start_request_id: "start-pending-elsewhere",
+    start_request_state: "pending",
+    phase: "configuring",
+    is_training_running: false,
+    eval_enabled: false,
+    message: "Training start is being validated",
+    error: null,
+  });
+
+  const pending = useTrainingRuntimeStore.getState();
+  assert.equal(pending.jobId, "job-pending-elsewhere");
+  assert.equal(pending.startRequestId, "start-pending-elsewhere");
+  assert.deepEqual(trainingStopScope(pending), {
+    kind: "start",
+    startRequestId: "start-pending-elsewhere",
+  });
+});
 
 test("an unconfirmed start remains pending without inventing a job id", () => {
   const runtime = useTrainingRuntimeStore.getState();
@@ -33,6 +58,7 @@ test("start blocking spans stop requests, start synchronization, and active phas
       isStarting: false,
       isTrainingRunning: false,
       stopRequested: false,
+      startRequestId: null,
     }),
     false,
   );
@@ -42,6 +68,7 @@ test("start blocking spans stop requests, start synchronization, and active phas
       isStarting: true,
       isTrainingRunning: false,
       stopRequested: false,
+      startRequestId: "start-in-flight",
     }),
     true,
   );
@@ -51,6 +78,7 @@ test("start blocking spans stop requests, start synchronization, and active phas
       isStarting: false,
       isTrainingRunning: false,
       stopRequested: false,
+      startRequestId: null,
     }),
     true,
   );
@@ -60,6 +88,7 @@ test("start blocking spans stop requests, start synchronization, and active phas
       isStarting: false,
       isTrainingRunning: false,
       stopRequested: false,
+      startRequestId: null,
     }),
     true,
   );
@@ -69,6 +98,7 @@ test("start blocking spans stop requests, start synchronization, and active phas
       isStarting: false,
       isTrainingRunning: false,
       stopRequested: false,
+      startRequestId: null,
     }),
     false,
   );
@@ -78,9 +108,80 @@ test("start blocking spans stop requests, start synchronization, and active phas
       isStarting: false,
       isTrainingRunning: false,
       stopRequested: true,
+      startRequestId: null,
     }),
     true,
   );
+});
+
+test("a failed pending-start cancellation keeps its lease blocked and retryable", () => {
+  const runtime = useTrainingRuntimeStore.getState();
+  runtime.resetRuntime();
+  assert.equal(runtime.tryBeginStarting("start-cancel-retry"), true);
+
+  runtime.setStopRequested(true);
+  runtime.setStopRequested(false);
+  runtime.setStartPending(
+    null,
+    "Training start cancellation timed out",
+    "start-cancel-retry",
+  );
+  runtime.setStartError("Training start cancellation timed out");
+
+  const pending = useTrainingRuntimeStore.getState();
+  assert.equal(pending.jobId, null);
+  assert.equal(pending.phase, "configuring");
+  assert.equal(pending.startRequestId, "start-cancel-retry");
+  assert.equal(pending.startError, "Training start cancellation timed out");
+  assert.equal(isTrainingStartPending(pending), true);
+  assert.equal(pending.tryBeginStarting("replacement-start"), false);
+
+  pending.applyStatus({
+    job_id: "",
+    phase: "idle",
+    is_training_running: false,
+    eval_enabled: false,
+    message: "Ready to train",
+    error: null,
+  });
+
+  const afterUnrelatedStatus = useTrainingRuntimeStore.getState();
+  assert.strictEqual(afterUnrelatedStatus, pending);
+  assert.equal(afterUnrelatedStatus.startRequestId, "start-cancel-retry");
+  assert.equal(afterUnrelatedStatus.phase, "configuring");
+
+  afterUnrelatedStatus.applyStatus({
+    job_id: "job-other-tab",
+    start_request_id: "start-other-tab",
+    start_request_state: "pending",
+    phase: "configuring",
+    is_training_running: false,
+    eval_enabled: false,
+    message: "Another training start is being validated",
+    error: null,
+  });
+
+  const adoptedOwner = useTrainingRuntimeStore.getState();
+  assert.equal(adoptedOwner.jobId, "job-other-tab");
+  assert.equal(adoptedOwner.startRequestId, "start-other-tab");
+  assert.equal(adoptedOwner.phase, "configuring");
+  assert.equal(isTrainingStartPending(adoptedOwner), true);
+
+  adoptedOwner.applyStatus({
+    job_id: "",
+    start_request_id: "start-rejected-elsewhere",
+    start_request_state: "rejected",
+    phase: "error",
+    is_training_running: false,
+    eval_enabled: false,
+    message: "Training start was rejected",
+    error: "Training start was rejected",
+  });
+
+  const rejectedOwner = useTrainingRuntimeStore.getState();
+  assert.equal(rejectedOwner.startRequestId, null);
+  assert.equal(rejectedOwner.phase, "error");
+  assert.equal(isTrainingStartPending(rejectedOwner), false);
 });
 
 test("requesting a stop invalidates an in-flight start lease", () => {
@@ -93,6 +194,7 @@ test("requesting a stop invalidates an in-flight start lease", () => {
 
   const stopped = useTrainingRuntimeStore.getState();
   assert.equal(stopped.isStarting, false);
+  assert.equal(stopped.startRequestId, "start-stop");
   assert.equal(stopped.stopRequested, true);
   assert.equal(stopped.resetGeneration, resetGeneration + 1);
   assert.equal(isTrainingStartPending(stopped), true);

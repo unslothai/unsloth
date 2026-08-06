@@ -31,10 +31,19 @@ export function isTrainingRunActive(
 export function isTrainingStartPending(
   state: Pick<
     TrainingRuntimeState,
-    "phase" | "isStarting" | "isTrainingRunning" | "stopRequested"
+    | "phase"
+    | "isStarting"
+    | "isTrainingRunning"
+    | "stopRequested"
+    | "startRequestId"
   >,
 ): boolean {
-  return state.stopRequested || state.isStarting || isTrainingRunActive(state);
+  return (
+    state.stopRequested ||
+    state.isStarting ||
+    Boolean(state.startRequestId?.trim()) ||
+    isTrainingRunActive(state)
+  );
 }
 
 const initialState: TrainingRuntimeState = {
@@ -225,7 +234,6 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
       set((state) => ({
         stopRequested: value,
         isStarting: value ? false : state.isStarting,
-        startRequestId: value ? null : state.startRequestId,
         resetGeneration:
           value && !state.stopRequested
             ? state.resetGeneration + 1
@@ -336,17 +344,30 @@ export const useTrainingRuntimeStore = create<TrainingRuntimeStore>()(
 
     applyStatus: (payload) =>
       set((state) => {
+        const unmatchedLocalStart =
+          !state.isStarting &&
+          state.startRequestId !== null &&
+          payload.start_request_id !== state.startRequestId;
+        const authoritativeDifferentStart =
+          payload.is_training_running ||
+          ACTIVE_TRAINING_PHASES.has(payload.phase) ||
+          Boolean(payload.start_request_id?.trim());
+        if (unmatchedLocalStart && !authoritativeDifferentStart) {
+          return state;
+        }
         const nextJobId = payload.job_id || state.jobId;
         const changedJob =
           payload.job_id.length > 0 && payload.job_id !== state.jobId;
         const localStartStatus =
           state.startRequestId !== null &&
           payload.start_request_id === state.startRequestId;
+        const pendingStartRequestId =
+          payload.start_request_state === "pending"
+            ? payload.start_request_id?.trim() || null
+            : null;
         const nextStartRequestId = state.isStarting
           ? state.startRequestId
-          : localStartStatus && payload.start_request_state === "pending"
-            ? state.startRequestId
-            : null;
+          : pendingStartRequestId;
         const runtimeState = changedJob
           ? {
               ...state,

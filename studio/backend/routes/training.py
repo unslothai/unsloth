@@ -1015,6 +1015,10 @@ async def get_training_start_request(
     record = backend.get_start_request(start_request_id)
     if record is None:
         raise HTTPException(status_code = 404, detail = "Training start request not found")
+    return _start_request_status_response(record)
+
+
+def _start_request_status_response(record) -> TrainingStartRequestStatus:
     return TrainingStartRequestStatus(
         start_request_id = record.start_request_id,
         job_id = record.job_id,
@@ -1036,6 +1040,26 @@ async def acknowledge_training_start_request(
             detail = "Training start request is not ready to acknowledge",
         )
     return {"status": "ok"}
+
+
+@router.post(
+    "/start-requests/{start_request_id}/cancel",
+    response_model = TrainingStartRequestStatus,
+)
+async def cancel_training_start_request(
+    start_request_id: str, current_subject: str = Depends(get_current_subject)
+):
+    backend = get_training_backend()
+    outcome, record = await asyncio.to_thread(
+        backend.cancel_start_request,
+        start_request_id,
+    )
+    if outcome == "superseded":
+        raise HTTPException(
+            status_code = 409,
+            detail = "Training start request no longer owns the current job",
+        )
+    return _start_request_status_response(record)
 
 
 def _background_video_generation_active() -> bool:

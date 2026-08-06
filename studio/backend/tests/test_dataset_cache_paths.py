@@ -979,12 +979,9 @@ def test_download_manifest_stays_readable_by_pre_pr_v1_reader(monkeypatch, tmp_p
     assert path is not None
     payload = json.loads(path.read_text(encoding = "utf-8"))
 
-    # This is the complete compatibility contract the pre-PR reader used.
     assert payload["version"] == 1
     assert payload["expected_files"] == [{"path": "train.parquet", "size": 4}]
 
-    # The current reader can still consume the additive revision attestation,
-    # which the interrupted-download recovery path needs.
     manifest = download_manifest.read_manifest(
         "dataset",
         "Org/Data",

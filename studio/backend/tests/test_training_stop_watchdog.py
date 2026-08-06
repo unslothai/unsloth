@@ -55,7 +55,6 @@ _stub("matplotlib.pyplot", _plt)
 _hw = _types.ModuleType("utils.hardware")
 _hw.get_device = lambda: _types.SimpleNamespace(value = "cpu")
 _hw.prepare_gpu_selection = lambda *a, **k: (None, None)
-_hw.get_device = lambda *a, **k: None
 _stub("utils.hardware", _hw)
 _npl = _types.ModuleType("utils.native_path_leases")
 _npl.native_path_secret_removed_for_child_start = lambda: contextlib.nullcontext()

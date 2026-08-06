@@ -26,6 +26,10 @@ def _load_training_route(name: str):
     return module
 
 
+async def _inline_to_thread(function, *args, **kwargs):
+    return function(*args, **kwargs)
+
+
 def test_start_request_reservation_is_idempotent_and_serialized():
     backend = TrainingBackend()
 
@@ -75,6 +79,389 @@ def test_accepted_start_request_remains_queryable():
     assert record is not None
     assert record.state == "accepted"
     assert record.job_id == "job-1"
+
+
+def test_cancel_before_registration_creates_a_start_tombstone():
+    backend = TrainingBackend()
+
+    outcome, cancelled = backend.cancel_start_request("request-before-start")
+
+    assert outcome == "cancelled"
+    assert cancelled.state == "rejected"
+    assert cancelled.job_id == ""
+    assert cancelled.error_code == "training_start_cancelled"
+
+    reservation, duplicate = backend.reserve_start_request(
+        "request-before-start",
+        "job-must-not-start",
+    )
+    assert reservation == "existing"
+    assert duplicate == cancelled
+
+
+def test_cancel_pending_start_prevents_worker_spawn():
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-pending", "job-pending")
+
+    outcome, cancelled = backend.cancel_start_request("request-pending")
+
+    assert outcome == "cancelled"
+    assert cancelled.state == "rejected"
+    assert cancelled.error_code == "training_start_cancelled"
+    assert backend.status_start_request() is None
+    assert (
+        backend.start_training(
+            "job-pending",
+            start_request_id = "request-pending",
+            model_name = "unsloth/test",
+        )
+        is False
+    )
+
+
+def test_cancel_pending_start_does_not_wait_for_lifecycle_work():
+    from core.training.lifecycle import training_lifecycle_guard
+
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-pending", "job-pending")
+    lifecycle_entered = threading.Event()
+    release_lifecycle = threading.Event()
+    cancel_finished = threading.Event()
+    outcome = {}
+
+    def hold_lifecycle():
+        with training_lifecycle_guard():
+            lifecycle_entered.set()
+            assert release_lifecycle.wait(timeout = 5)
+
+    holder = threading.Thread(target = hold_lifecycle, daemon = True)
+    holder.start()
+    assert lifecycle_entered.wait(timeout = 5)
+
+    def cancel_pending():
+        outcome["result"] = backend.cancel_start_request("request-pending")
+        cancel_finished.set()
+
+    cancel = threading.Thread(target = cancel_pending, daemon = True)
+    cancel.start()
+    try:
+        assert cancel_finished.wait(timeout = 1)
+    finally:
+        release_lifecycle.set()
+    cancel.join(timeout = 5)
+    holder.join(timeout = 5)
+
+    assert outcome["result"][0] == "cancelled"
+    assert outcome["result"][1].error_code == "training_start_cancelled"
+
+
+def test_cancel_during_validation_blocks_the_final_worker_spawn(monkeypatch):
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-validating", "job-validating")
+    validation_finished = threading.Event()
+    release_validation = threading.Event()
+    worker_started = threading.Event()
+    result = {}
+
+    class PendingProcess:
+        pid = 4321
+
+        def start(self):
+            worker_started.set()
+
+    def before_spawn():
+        validation_finished.set()
+        assert release_validation.wait(timeout = 5)
+
+    monkeypatch.setattr(
+        "core.training.training.prepare_gpu_selection",
+        lambda *_args, **_kwargs: (None, None),
+    )
+    monkeypatch.setattr("core.training.training._CTX.Queue", lambda: object())
+    monkeypatch.setattr(
+        "core.training.training._CTX.Process",
+        lambda **_kwargs: PendingProcess(),
+    )
+
+    start = threading.Thread(
+        target = lambda: result.update(
+            started = backend.start_training(
+                "job-validating",
+                start_request_id = "request-validating",
+                before_spawn = before_spawn,
+                model_name = "unsloth/test",
+                training_type = "LoRA/QLoRA",
+            )
+        ),
+        daemon = True,
+    )
+    start.start()
+    assert validation_finished.wait(timeout = 5)
+
+    outcome, cancelled = backend.cancel_start_request("request-validating")
+    release_validation.set()
+    start.join(timeout = 5)
+
+    assert outcome == "cancelled"
+    assert cancelled.error_code == "training_start_cancelled"
+    assert result["started"] is False
+    assert worker_started.is_set() is False
+
+
+def test_cancel_racing_proc_start_uses_the_committed_job_scope():
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-spawning", "job-spawning")
+    spawn_entered = threading.Event()
+    release_spawn = threading.Event()
+    cancel_finished = threading.Event()
+    calls = []
+    result = {}
+
+    class CommittedProcess:
+        pid = 4321
+
+        def __init__(self):
+            self.alive = False
+
+        def start(self):
+            spawn_entered.set()
+            assert release_spawn.wait(timeout = 5)
+            self.alive = True
+
+        def is_alive(self):
+            return self.alive
+
+    class PendingPump:
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return False
+
+    process = CommittedProcess()
+    def run_start():
+        result["start"] = backend.start_training(
+            "job-spawning",
+            start_request_id = "request-spawning",
+            model_name = "unsloth/test",
+            training_type = "LoRA/QLoRA",
+        )
+
+    def run_cancel():
+        result["cancel"] = backend.cancel_start_request("request-spawning")
+        cancel_finished.set()
+
+    start = threading.Thread(target = run_start, daemon = True)
+    cancel = threading.Thread(target = run_cancel, daemon = True)
+
+    with (
+        patch(
+            "core.training.training.prepare_gpu_selection",
+            lambda *_args, **_kwargs: (None, None),
+        ),
+        patch("core.training.training._CTX.Queue", lambda: object()),
+        patch("core.training.training._CTX.Process", lambda **_kwargs: process),
+        patch("core.training.training.threading.Thread", lambda **_kwargs: PendingPump()),
+        patch("utils.process_lifetime.adopt_pid", lambda _pid: None),
+        patch.object(backend, "_ensure_db_run_created", lambda: None),
+        patch.object(
+            backend,
+            "_stop_training_with_lifecycle_reserved",
+            lambda **kwargs: calls.append(("stop", kwargs)) or True,
+        ),
+        patch.object(
+            backend,
+            "reset_training_state",
+            lambda expected_job_id = None: calls.append(("reset", expected_job_id)) or "reset",
+        ),
+    ):
+        start.start()
+        assert spawn_entered.wait(timeout = 5)
+        cancel.start()
+        assert cancel_finished.wait(timeout = 0.1) is False
+        release_spawn.set()
+        start.join(timeout = 5)
+        cancel.join(timeout = 5)
+
+    assert result["start"] is True
+    assert result["cancel"][0] == "cancelled"
+    assert calls == [
+        ("stop", {"save": False, "expected_job_id": "job-spawning"}),
+        ("reset", "job-spawning"),
+    ]
+
+
+def test_cancel_accepted_start_stops_and_resets_only_its_job(monkeypatch):
+    from core.training.lifecycle import training_lifecycle_guard
+
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-current", "job-current")
+    backend.resolve_start_request(
+        "request-current",
+        state = "accepted",
+        message = "Training queued",
+    )
+    backend.current_start_request_id = "request-current"
+    backend.current_job_id = "job-current"
+    backend._progress.is_training = True
+    calls = []
+
+    monkeypatch.setattr(
+        backend,
+        "_stop_training_with_lifecycle_reserved",
+        lambda **kwargs: calls.append(("stop", kwargs)) or True,
+    )
+
+    def reset_training_state(expected_job_id = None):
+        calls.append(("reset", expected_job_id))
+        lifecycle_available = threading.Event()
+
+        def acquire_lifecycle():
+            with training_lifecycle_guard():
+                lifecycle_available.set()
+
+        probe = threading.Thread(target = acquire_lifecycle, daemon = True)
+        probe.start()
+        assert lifecycle_available.wait(timeout = 1)
+        probe.join(timeout = 5)
+        return "reset"
+
+    monkeypatch.setattr(backend, "reset_training_state", reset_training_state)
+
+    outcome, cancelled = backend.cancel_start_request("request-current")
+
+    assert outcome == "cancelled"
+    assert cancelled.state == "rejected"
+    assert cancelled.error_code == "training_start_cancelled"
+    assert calls == [
+        ("stop", {"save": False, "expected_job_id": "job-current"}),
+        ("reset", "job-current"),
+    ]
+    assert backend.current_start_request_id is None
+
+
+def test_cancel_rejected_start_still_stops_its_owned_worker(monkeypatch):
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-owned", "job-owned")
+    backend.resolve_start_request(
+        "request-owned",
+        state = "rejected",
+        message = "Start finalization failed",
+        error = "Start finalization failed",
+    )
+    backend.current_start_request_id = "request-owned"
+    backend.current_job_id = "job-owned"
+    backend._progress.is_training = True
+    calls = []
+
+    monkeypatch.setattr(
+        backend,
+        "_stop_training_with_lifecycle_reserved",
+        lambda **kwargs: calls.append(("stop", kwargs)) or True,
+    )
+    monkeypatch.setattr(
+        backend,
+        "reset_training_state",
+        lambda expected_job_id = None: calls.append(("reset", expected_job_id)) or "reset",
+    )
+
+    outcome, record = backend.cancel_start_request("request-owned")
+
+    assert outcome == "cancelled"
+    assert record.error_code == "training_start_cancelled"
+    assert calls == [
+        ("stop", {"save": False, "expected_job_id": "job-owned"}),
+        ("reset", "job-owned"),
+    ]
+
+
+def test_adopt_failure_terminates_the_spawned_worker(monkeypatch):
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-adopt", "job-adopt")
+    backend.current_job_id = "previous-job"
+    backend.current_start_request_id = "previous-request"
+
+    class UnadoptedProcess:
+        pid = 4321
+
+        def __init__(self):
+            self.alive = False
+            self.terminated = False
+
+        def start(self):
+            self.alive = True
+
+        def is_alive(self):
+            return self.alive
+
+        def terminate(self):
+            self.terminated = True
+            self.alive = False
+
+        def join(self, timeout = None):
+            return None
+
+        def kill(self):
+            self.alive = False
+
+    process = UnadoptedProcess()
+
+    def fail_adoption(_pid):
+        raise RuntimeError("adoption failed")
+
+    monkeypatch.setattr(
+        "core.training.training.prepare_gpu_selection",
+        lambda *_args, **_kwargs: (None, None),
+    )
+    monkeypatch.setattr("core.training.training._CTX.Queue", lambda: object())
+    monkeypatch.setattr(
+        "core.training.training._CTX.Process",
+        lambda **_kwargs: process,
+    )
+    monkeypatch.setattr(
+        "utils.process_lifetime.adopt_pid",
+        fail_adoption,
+    )
+
+    started = backend.start_training(
+        "job-adopt",
+        start_request_id = "request-adopt",
+        model_name = "unsloth/test",
+        training_type = "LoRA/QLoRA",
+    )
+
+    record = backend.get_start_request("request-adopt")
+    assert started is False
+    assert process.terminated is True
+    assert backend.current_job_id == "previous-job"
+    assert backend.current_start_request_id == "previous-request"
+    assert record is not None
+    assert record.state == "rejected"
+    assert record.error == "Failed to adopt training subprocess"
+
+
+def test_cancel_accepted_start_never_targets_a_newer_job(monkeypatch):
+    backend = TrainingBackend()
+    backend.reserve_start_request("request-old", "job-old")
+    backend.resolve_start_request(
+        "request-old",
+        state = "accepted",
+        message = "Training queued",
+    )
+    backend.current_start_request_id = "request-new"
+    backend.current_job_id = "job-new"
+    calls = []
+    monkeypatch.setattr(
+        backend,
+        "_stop_training_with_lifecycle_reserved",
+        lambda **kwargs: calls.append(kwargs) or True,
+    )
+
+    outcome, record = backend.cancel_start_request("request-old")
+
+    assert outcome == "superseded"
+    assert record.state == "accepted"
+    assert calls == []
 
 
 def test_start_training_reserves_early_and_rejects_an_overlapping_start(monkeypatch):
@@ -163,6 +550,41 @@ def test_duplicate_start_response_preserves_reservation_state(state, expected_st
     )
 
     assert response.status == expected_status
+
+
+def test_cancel_start_route_returns_the_scoped_rejection():
+    route = _load_training_route("training_route_cancel_start_request_test")
+    calls = []
+    record = SimpleNamespace(
+        start_request_id = "request-cancel",
+        job_id = "job-cancel",
+        state = "rejected",
+        message = "Training start was cancelled",
+        error = "Training start was cancelled",
+        error_code = "training_start_cancelled",
+    )
+    backend = SimpleNamespace(
+        cancel_start_request = lambda start_request_id: (
+            calls.append(start_request_id) or ("cancelled", record)
+        )
+    )
+
+    with (
+        patch.object(route, "get_training_backend", return_value = backend),
+        patch.object(route.asyncio, "to_thread", new = _inline_to_thread),
+    ):
+        response = asyncio.run(
+            route.cancel_training_start_request(
+                "request-cancel",
+                current_subject = "test-user",
+            )
+        )
+
+    assert calls == ["request-cancel"]
+    assert response.start_request_id == "request-cancel"
+    assert response.job_id == "job-cancel"
+    assert response.state == "rejected"
+    assert response.error_code == "training_start_cancelled"
 
 
 def test_cancelled_route_during_spawn_keeps_the_worker_result_authoritative():

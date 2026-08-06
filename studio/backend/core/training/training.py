@@ -63,6 +63,7 @@ _COMPLETE_EXIT_GRACE_S = _env_int("UNSLOTH_STUDIO_TRAINING_COMPLETE_EXIT_GRACE_S
 _DB_FINALIZE_RETRIES = 3
 _DB_FINALIZE_RETRY_S = 0.5
 _MAX_TRACKED_START_REQUESTS = 64
+_START_CANCELLED_ERROR_CODE = "training_start_cancelled"
 
 _pyplot = None
 _pyplot_failed = False
@@ -1196,6 +1197,113 @@ class TrainingBackend:
                 self._pending_start_request_id = None
             return record
 
+    def cancel_start_request(
+        self, start_request_id: str
+    ) -> tuple[Literal["cancelled", "superseded"], TrainingStartRequestRecord]:
+        from .lifecycle import training_lifecycle_guard
+
+        with self._lock:
+            existing = self._start_requests.get(start_request_id)
+            if existing is None:
+                cancelled = TrainingStartRequestRecord(
+                    start_request_id = start_request_id,
+                    job_id = "",
+                    state = "rejected",
+                    message = "Training start was cancelled",
+                    error = "Training start was cancelled",
+                    error_code = _START_CANCELLED_ERROR_CODE,
+                )
+                self._start_requests[start_request_id] = cancelled
+                self._prune_start_requests_locked()
+                return "cancelled", cancelled
+
+            owns_current = (
+                self.current_start_request_id == start_request_id
+                and self.current_job_id == existing.job_id
+            )
+            if existing.state == "rejected" and (
+                not owns_current
+                or existing.error_code == _START_CANCELLED_ERROR_CODE
+            ):
+                if self._status_start_request_id == start_request_id:
+                    self._status_start_request_id = None
+                return "cancelled", existing
+
+            if existing.state == "pending" and not owns_current:
+                cancelled = replace(
+                    existing,
+                    state = "rejected",
+                    message = "Training start was cancelled",
+                    error = "Training start was cancelled",
+                    error_code = _START_CANCELLED_ERROR_CODE,
+                )
+                self._start_requests[start_request_id] = cancelled
+                if self._pending_start_request_id == start_request_id:
+                    self._pending_start_request_id = None
+                if self._status_start_request_id == start_request_id:
+                    self._status_start_request_id = None
+                return "cancelled", cancelled
+
+        with training_lifecycle_guard():
+            with self._lock:
+                existing = self._start_requests.get(start_request_id) or existing
+                owns_current = (
+                    self.current_start_request_id == start_request_id
+                    and self.current_job_id == existing.job_id
+                )
+                if existing.error_code == _START_CANCELLED_ERROR_CODE:
+                    if self._status_start_request_id == start_request_id:
+                        self._status_start_request_id = None
+                    return "cancelled", existing
+                if (
+                    not owns_current
+                    or self._run_finished_locked()
+                ):
+                    return "superseded", existing
+                expected_job_id = existing.job_id
+            if not self._stop_training_with_lifecycle_reserved(
+                save = False,
+                expected_job_id = expected_job_id,
+            ):
+                return "superseded", existing
+
+        if self.reset_training_state(expected_job_id = expected_job_id) != "reset":
+            return "superseded", existing
+
+        with self._lock:
+            latest = self._start_requests.get(start_request_id) or existing
+            if (
+                self.current_start_request_id != start_request_id
+                or self.current_job_id != expected_job_id
+            ):
+                return "superseded", latest
+            cancelled = replace(
+                latest,
+                state = "rejected",
+                message = "Training start was cancelled",
+                error = "Training start was cancelled",
+                error_code = _START_CANCELLED_ERROR_CODE,
+            )
+            self._start_requests[start_request_id] = cancelled
+            self.current_start_request_id = None
+            if self._pending_start_request_id == start_request_id:
+                self._pending_start_request_id = None
+            if self._status_start_request_id == start_request_id:
+                self._status_start_request_id = None
+            return "cancelled", cancelled
+
+    def _start_request_allows_spawn_locked(
+        self, start_request_id: Optional[str], job_id: str
+    ) -> bool:
+        if start_request_id is None:
+            return True
+        record = self._start_requests.get(start_request_id)
+        return bool(
+            record is not None
+            and record.state == "pending"
+            and record.job_id == job_id
+        )
+
     def get_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
         with self._lock:
             return self._start_requests.get(start_request_id)
@@ -1324,6 +1432,12 @@ class TrainingBackend:
         Hook failures never block the start.
         """
         with self._lock:
+            if not self._start_request_allows_spawn_locked(start_request_id, job_id):
+                logger.info(
+                    "Training start request %s was resolved before worker spawn",
+                    start_request_id,
+                )
+                return False
             if (self._spawn_in_progress and not spawn_already_reserved) or (
                 self._proc is not None and self._proc.is_alive()
             ):
@@ -1407,6 +1521,13 @@ class TrainingBackend:
                     config.get("model_snapshot_path") or config["model_name"],
                     config.get("hf_token") or None,
                 )
+            with self._lock:
+                if not self._start_request_allows_spawn_locked(start_request_id, job_id):
+                    logger.info(
+                        "Training start request %s was cancelled during validation",
+                        start_request_id,
+                    )
+                    return False
             # Synchronous validation passed -> free VRAM (export + chat) before auto-selection and the
             # spawn. After the handshake, so a lost race can't tear down chat for a run that never spawns.
             if before_spawn is not None:
@@ -1444,18 +1565,65 @@ class TrainingBackend:
                         },
                         daemon = True,
                     )
-                    proc.start()
                     from utils.process_lifetime import adopt_pid
 
-                    adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
+                    previous_job_id = None
+                    previous_start_request_id = None
+                    with self._lock:
+                        if not self._start_request_allows_spawn_locked(
+                            start_request_id,
+                            job_id,
+                        ):
+                            logger.info(
+                                "Training start request %s was cancelled before worker spawn",
+                                start_request_id,
+                            )
+                            return False
+                        previous_job_id = self.current_job_id
+                        previous_start_request_id = self.current_start_request_id
+                        proc.start()
+                        self.current_job_id = job_id
+                        self.current_start_request_id = start_request_id
+                    try:
+                        adopt_pid(proc.pid)  # bind to parent lifetime (Windows job / sweep)
+                    except Exception:
+                        logger.error(
+                            "Failed to adopt training subprocess; terminating it",
+                            exc_info = True,
+                        )
+                        try:
+                            if proc.is_alive():
+                                proc.terminate()
+                            proc.join(timeout = 5.0)
+                            if proc.is_alive():
+                                proc.kill()
+                                proc.join(timeout = 2.0)
+                        finally:
+                            with self._lock:
+                                if (
+                                    self.current_job_id == job_id
+                                    and self.current_start_request_id == start_request_id
+                                ):
+                                    self.current_job_id = previous_job_id
+                                    self.current_start_request_id = previous_start_request_id
+                                if start_request_id is not None:
+                                    record = self._start_requests.get(start_request_id)
+                                    if record is not None and record.state == "pending":
+                                        self._start_requests[start_request_id] = replace(
+                                            record,
+                                            state = "rejected",
+                                            message = "Failed to start training subprocess",
+                                            error = "Failed to adopt training subprocess",
+                                        )
+                                        if self._pending_start_request_id == start_request_id:
+                                            self._pending_start_request_id = None
+                        return False
             except Exception:
                 logger.error("Failed to start training subprocess", exc_info = True)
                 return False
 
             logger.info("Training subprocess started (pid=%s)", proc.pid)
 
-            self.current_job_id = job_id
-            self.current_start_request_id = start_request_id
             self._should_stop = False
             self._cancel_requested = False
             self._cancel_cleanup_output_dir = None

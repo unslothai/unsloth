@@ -231,6 +231,23 @@ export async function acknowledgeTrainingStartRequest(
   );
 }
 
+export async function cancelTrainingStartRequest(
+  startRequestId: string,
+): Promise<TrainingStartRequestStatusResponse> {
+  return runRequestWithTimeout(
+    TRAINING_STATUS_TIMEOUT_MS,
+    "Training start cancellation timed out",
+    async (signal) => {
+      const response = await authFetch(
+        `/api/train/start-requests/${encodeURIComponent(startRequestId)}/cancel`,
+        { method: "POST", signal },
+        { retryNetworkErrors: false },
+      );
+      return parseJson<TrainingStartRequestStatusResponse>(response);
+    },
+  );
+}
+
 interface TrainingJobScope {
   expectedJobId?: string;
 }

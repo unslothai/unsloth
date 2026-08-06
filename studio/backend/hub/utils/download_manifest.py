@@ -232,11 +232,6 @@ def write_manifest(
         return False
     normalized_commit = normalized_commit_hash(commit_hash)
     metadata_attestation = bool(metadata_derived and normalized_commit)
-    # Ordinary download manifests retain the additive v1 schema so a Studio
-    # downgrade can still detect missing/undersized files.  The v2-only
-    # revision attestation lives under a separate completion-manifest key and
-    # opts in below, so an older build never mistakes that record for the
-    # ordinary download state it knows how to consume.
     if _schema_version not in _SUPPORTED_MANIFEST_VERSIONS:
         return False
     payload = {
@@ -517,11 +512,6 @@ def _migration_manifest_paths(parent: Path) -> Iterator[Path]:
 
 
 def migrate_ordinary_v2_manifests_for_downgrade() -> int:
-    """Make prior ordinary v2 records readable after a Studio downgrade.
-
-    Run once after orphan workers are reaped. Dataset-completion records stay
-    v2, and any invalid or changed record is left untouched.
-    """
     parent = manifests_dir()
     if parent is None:
         return 0

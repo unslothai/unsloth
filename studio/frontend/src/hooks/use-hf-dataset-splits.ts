@@ -38,7 +38,6 @@ export interface HfDatasetSplitsResult {
   isLoading: boolean;
   /** Error message if the fetch failed */
   error: string | null;
-  /** True when no trusted option source was available and values must be entered manually. */
   requiresManualEntry: boolean;
 }
 
@@ -82,9 +81,7 @@ async function fetchLocalSplits({
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      // biome-ignore lint/style/useNamingConvention: Backend JSON uses snake_case.
       dataset_name: datasetName,
-      // biome-ignore lint/style/useNamingConvention: Backend JSON uses snake_case.
       local_path: localPath ?? null,
     }),
     signal,
@@ -128,15 +125,6 @@ const DEFAULT_FETCHERS: DatasetSplitFetchers = {
 // Hook
 // ---------------------------------------------------------------------------
 
-/**
- * Resolves the available configs (subsets) and splits for a Hugging Face
- * dataset. Cached selections use local metadata first, then the datasets-server
- * API when the app is online.
- *
- * @param datasetName - HF dataset id (e.g. "ibm/duorc"), or null to skip.
- * @param selectedSubset - Currently selected subset, used to filter splits.
- * @param options.accessToken - Optional HF access token for gated datasets.
- */
 export function useHfDatasetSplits(
   datasetName: string | null,
   selectedSubset: string | null,
