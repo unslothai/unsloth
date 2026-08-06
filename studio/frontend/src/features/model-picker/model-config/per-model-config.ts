@@ -84,6 +84,19 @@ export function isServedByMlx(
   );
 }
 
+export function presetLoadSettingNames(
+  isGguf: boolean,
+  deviceType: string | null | undefined,
+  chatOnlyReason?: string | null,
+): string {
+  if (isGguf) {
+    return "context length, KV cache dtype, speculative decoding, GPU layers";
+  }
+  return isServedByMlx(isGguf, deviceType, chatOnlyReason)
+    ? "max seq length, KV cache dtype"
+    : "max seq length";
+}
+
 // Matches studio/backend/core/inference/llama_cpp.py _valid_cache_types (f16 is the UI default).
 export const KV_CACHE_DTYPES = [
   "bf16",

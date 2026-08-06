@@ -49,6 +49,7 @@ export {
   type PerModelConfig,
   adoptLegacyConfigKey,
   isServedByMlx,
+  presetLoadSettingNames,
   resolveInitialConfig,
   resolveResidentInitialConfig,
 } from "./model-config/per-model-config";
