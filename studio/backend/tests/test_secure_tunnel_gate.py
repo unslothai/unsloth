@@ -103,7 +103,7 @@ def test_final_bound_port_uses_uvicorn_listener_for_ephemeral_bind():
     server = SimpleNamespace(servers = [SimpleNamespace(sockets = [sock])])
     assert run._final_bound_port(server, 0) == 43123
     assert run._final_bound_port(server, 8888) == 8888
-    source = (_BACKEND / "run.py").read_text()
+    source = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     resolved = source.index("port = _final_bound_port(_server, port)")
     assert all(
         resolved < source.index(consumer, resolved)
@@ -284,7 +284,7 @@ def test_run_server_exports_secure_env_for_cors():
     src = (_BACKEND / "run.py").read_text(encoding = "utf-8")
     assert 'os.environ["UNSLOTH_SECURE"] = "1"' in src
     assert "set_studio_tunnel_runtime_callback(set_remote_connector_active)" in src
-    main_src = (_BACKEND / "main.py").read_text()
+    main_src = (_BACKEND / "main.py").read_text(encoding = "utf-8")
     assert "RemoteAccessCORSMiddleware,\n    remote_access_state = app.state" in main_src
 
 

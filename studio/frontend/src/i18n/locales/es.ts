@@ -273,6 +273,13 @@ export const es = {
         title: "Cambiar contraseña",
         description:
           "Introduce tu contraseña actual y elige una nueva (al menos {minLength} caracteres).",
+        setTrigger: "Establecer contraseña remota",
+        setTitle: "Establecer contraseña remota",
+        setDescription:
+          "Elige la contraseña con la que los navegadores remotos inician sesión como unsloth (al menos {minLength} caracteres). La app de escritorio de Unsloth sigue iniciando sesión automáticamente.",
+        setSubmit: "Establecer contraseña",
+        setting: "Estableciendo...",
+        setDone: "Contraseña establecida.",
         currentPassword: "Contraseña actual",
         newPassword: "Contraseña nueva",
         confirmPassword: "Confirmar contraseña nueva",

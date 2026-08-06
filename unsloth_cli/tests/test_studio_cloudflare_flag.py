@@ -127,10 +127,9 @@ def test_run_reexec_forwards_cloudflare_polarity(
     monkeypatch, extra_flags, expected, unexpected, expected_intent
 ):
     studio_mod = _studio()
-    assert (
-        f'_CLOUDFLARE_INTENT_ENV = "{studio_mod._CLOUDFLARE_INTENT_ENV}"'
-        in (_REPO_ROOT / "studio/backend/run.py").read_text()
-    )
+    assert f'_CLOUDFLARE_INTENT_ENV = "{studio_mod._CLOUDFLARE_INTENT_ENV}"' in (
+        _REPO_ROOT / "studio/backend/run.py"
+    ).read_text(encoding = "utf-8")
     monkeypatch.delenv(studio_mod._CLOUDFLARE_INTENT_ENV, raising = False)
     captured = _invoke_run(monkeypatch, _BASE + extra_flags)
     assert len(captured) == 1, captured

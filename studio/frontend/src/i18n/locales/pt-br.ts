@@ -270,6 +270,13 @@ export const ptBR = {
         title: "Alterar senha",
         description:
           "Insira sua senha atual e escolha uma nova (no mínimo {minLength} caracteres).",
+        setTrigger: "Definir senha remota",
+        setTitle: "Definir senha remota",
+        setDescription:
+          "Escolha a senha que os navegadores remotos usam para entrar como unsloth (no mínimo {minLength} caracteres). O aplicativo de desktop da Unsloth continua entrando automaticamente.",
+        setSubmit: "Definir senha",
+        setting: "Definindo...",
+        setDone: "Senha definida.",
         currentPassword: "Senha atual",
         newPassword: "Nova senha",
         confirmPassword: "Confirmar nova senha",

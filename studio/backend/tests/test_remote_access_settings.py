@@ -105,7 +105,7 @@ def test_failed_stop_remains_retryable(monkeypatch):
     monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
     status = remote_access.remote_access_status(_state())
     assert status["can_start"] is False and status["can_stop"] is True
-    source = Path(remote_access.__file__).read_text()
+    source = Path(remote_access.__file__).read_text(encoding = "utf-8")
     assert 'if get_studio_tunnel_status().get("stop_pending"):' in source
 
 
@@ -268,7 +268,7 @@ def test_management_rejects_api_keys():
         routes._require_ui_session(True)
     assert exc.value.status_code == 403
     assert remote_access.remote_access_status(_state())["streaming_supported"] is True
-    source = Path(routes.__file__).read_text()
+    source = Path(routes.__file__).read_text(encoding = "utf-8")
     assert source.count("_ui_session: None = Depends(_require_ui_session)") == 4
 
 
@@ -325,10 +325,9 @@ def test_stop_response_middleware_holds_lease_through_body(monkeypatch):
         )
     )
     assert released.is_set()
-    assert (
-        "app.add_middleware(RemoteAccessStopResponseMiddleware)"
-        in (_BACKEND / "main.py").read_text()
-    )
+    assert "app.add_middleware(RemoteAccessStopResponseMiddleware)" in (
+        _BACKEND / "main.py"
+    ).read_text(encoding = "utf-8")
 
 
 def test_stop_worker_waits_for_every_concurrent_response(monkeypatch):

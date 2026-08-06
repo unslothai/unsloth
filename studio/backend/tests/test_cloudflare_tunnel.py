@@ -16,6 +16,7 @@ import sys
 import tarfile
 import types
 from pathlib import Path
+from typing import Optional
 
 import pytest
 
@@ -655,7 +656,7 @@ def test_verify_public_url_rejects_foreign_responder(monkeypatch):
 def _fake_edge(
     monkeypatch,
     payload: bytes,
-    connect_error: str | None = None,
+    connect_error: Optional[str] = None,
 ) -> dict:
     """Stand in for the TLS hop so the probe's own parsing is under test."""
     import socket as socket_module

@@ -268,6 +268,13 @@ export const hi = {
         title: "पासवर्ड बदलें",
         description:
           "अपना वर्तमान पासवर्ड दर्ज करें और एक नया चुनें (कम से कम {minLength} अक्षर)।",
+        setTrigger: "रिमोट पासवर्ड सेट करें",
+        setTitle: "रिमोट पासवर्ड सेट करें",
+        setDescription:
+          "वह पासवर्ड चुनें जिससे रिमोट ब्राउज़र unsloth के रूप में साइन इन करते हैं (कम से कम {minLength} अक्षर)। Unsloth डेस्कटॉप ऐप स्वतः साइन इन करता रहेगा।",
+        setSubmit: "पासवर्ड सेट करें",
+        setting: "सेट हो रहा है...",
+        setDone: "पासवर्ड सेट हो गया।",
         currentPassword: "वर्तमान पासवर्ड",
         newPassword: "नया पासवर्ड",
         confirmPassword: "नए पासवर्ड की पुष्टि करें",

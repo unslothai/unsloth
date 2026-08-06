@@ -258,6 +258,13 @@ export const zhCN = {
         trigger: "更改密码",
         title: "更改密码",
         description: "输入当前密码并选择新密码（至少 {minLength} 个字符）。",
+        setTrigger: "设置远程密码",
+        setTitle: "设置远程密码",
+        setDescription:
+          "选择远程浏览器以 unsloth 身份登录时使用的密码（至少 {minLength} 个字符）。Unsloth 桌面应用仍会自动登录。",
+        setSubmit: "设置密码",
+        setting: "正在设置...",
+        setDone: "密码已设置。",
         currentPassword: "当前密码",
         newPassword: "新密码",
         confirmPassword: "确认新密码",
