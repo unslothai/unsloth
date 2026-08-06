@@ -401,8 +401,7 @@ def test_collapsed_tauri_keeps_history_arrows_and_adds_new_chat_by_model_picker(
     assert navigation.count('aria-label="Go back"') == 1
     assert navigation.count('aria-label="Go forward"') == 1
 
-    # 30px, not 33: #7970 resized the nav icon buttons for consistent rounded
-    # hover boxes and this source-string contract was not moved with it.
+    # 30px, not 33: #7970 resized the nav icon buttons but missed this contract.
     assert "inline-flex size-[30px] shrink-0" in navigation
 
     assert navigation.count("onDoubleClick={stopTitlebarDrag}") == 3
