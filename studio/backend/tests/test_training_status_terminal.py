@@ -187,11 +187,54 @@ def test_late_stop_does_not_unfinish_a_completed_run(monkeypatch):
     assert st.message.startswith("Training completed!")
 
 
+def test_stop_and_save_losing_the_race_to_the_pump_keeps_the_run_completed(monkeypatch):
+    """The same late Stop, except the run finishes *after* the route's terminal check.
+
+    The route cannot close this gap by itself. The pump publishes the terminal state
+    under the backend lock, so the re-test has to sit inside stop_training() next to the
+    mutation it guards. Without it, /status derives "stopped" (it tests trainer_stopped
+    before is_completed) for a run the DB finalized as completed.
+    """
+    b = _running(monkeypatch)
+    b._db_run_created = True
+    real_stop, fired = b.stop_training, []
+
+    def stop_after_complete(save = True):
+        if not fired:
+            fired.append(True)
+            b._handle_event(dict(_DONE))  # the pump wins the gap
+        return real_stop(save = save)
+
+    b.stop_training = stop_after_complete
+
+    resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = True), current_subject = "t"))
+    assert resp.status == "idle"
+    assert b._should_stop is False, "a run that finished in the gap must not latch a stop"
+    assert (b._terminal_finalize_payload or {}).get("status") == "completed"
+
+    st = asyncio.run(rt.get_training_status(current_subject = "t"))
+    assert st.phase == "completed"
+    assert st.message.startswith("Training completed!")
+
+
 def test_stop_mid_run_still_works(monkeypatch):
     b = _running(monkeypatch)
     resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = True), current_subject = "t"))
     assert resp.status == "stopped"
     assert b._should_stop is True
+
+
+def test_cancel_mid_run_still_works(monkeypatch):
+    # save=False takes the other branch in stop_training; the new guard is scoped to the
+    # save path precisely because that branch has already mutated state by then.
+    b = _running(monkeypatch)
+    b._db_run_created = True
+    monkeypatch.setattr(
+        "storage.studio_db.mark_run_cancel_requested", lambda *a, **k: True, raising = False
+    )
+    resp = asyncio.run(rt.stop_training(rt.TrainingStopRequest(save = False), current_subject = "t"))
+    assert resp.status == "stopped"
+    assert b._cancel_requested is True
 
 
 def test_surfaces_tolerate_a_backend_without_is_run_finished(monkeypatch):

@@ -1117,6 +1117,11 @@ class TrainingBackend:
             with self._lock:
                 if self.current_job_id != run_id:
                     return False
+                # The pump can finish the run between the route's terminal check and this
+                # lock; it publishes under the same lock, so re-test here. Latching
+                # _should_stop after the fact reports a saved run as stopped for good.
+                if save and self._run_finished_locked():
+                    return False
                 if save or not run_id:
                     self._should_stop = True
                 if not save and not run_id:
@@ -1594,6 +1599,13 @@ class TrainingBackend:
             new_pump.start()
         return True
 
+    def _run_finished_locked(self) -> bool:
+        """is_run_finished()'s terminal test, for callers already holding _lock."""
+        if self._start_in_progress:
+            return False
+        p = self._progress
+        return bool(self._complete_seen.is_set() or p.is_completed or p.error)
+
     def is_run_finished(self) -> bool:
         """Whether the current run reached its own terminal state (saved and finalized).
 
@@ -1605,10 +1617,7 @@ class TrainingBackend:
         if getattr(self, "_spawn_in_progress", False):
             return False  # a new run is spawning; _progress is still the old run's
         with self._lock:
-            if self._start_in_progress:
-                return False
-            p = self._progress
-            return bool(self._complete_seen.is_set() or p.is_completed or p.error)
+            return self._run_finished_locked()
 
     def is_training_active(self) -> bool:
         """Check if training is currently active."""
