@@ -147,9 +147,8 @@ _MODEL_WAIT_POLL_SECONDS = 2.0
 # otherwise re-send forever, so cap how many times one call may wait.
 _MAX_MODEL_WAITS = 3
 _NO_MODEL_LOADED_DETAIL = "No model loaded"
-# Transport keepalives prevent HTTP read timeouts without proving that a model which already
-# started answering is still progressing. Prefill remains governed by modelTimeoutSeconds because
-# CPU and offloaded models can legitimately take many minutes to produce their first token.
+# Transport keepalives prevent HTTP read timeouts without proving that a model is progressing.
+_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS = 120.0
 _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS = 120.0
 
 
@@ -576,11 +575,17 @@ class ModelOutputIdleTimeout(httpx.ReadTimeout):
     pass
 
 
+class ModelFirstOutputTimeout(httpx.ReadTimeout):
+    pass
+
+
 class ModelWallClockTimeout(httpx.ReadTimeout):
     pass
 
 
 def _safe_error(exc: BaseException) -> str:
+    if isinstance(exc, ModelFirstOutputTimeout):
+        return "Local model never started producing output"
     if isinstance(exc, ModelOutputIdleTimeout):
         return "Local model stopped producing output before completion"
     if isinstance(exc, ModelWallClockTimeout):
@@ -1643,6 +1648,8 @@ class ResearchSupervisor:
             raise ModelOutputIdleTimeout("Local model stopped producing output")
 
         while True:
+            if self._cancel_event(run_id).is_set():
+                await self._check_active(run_id)
             timeout = wait_timeout()
             line_task = asyncio.create_task(anext(iterator))
             try:
@@ -1654,6 +1661,12 @@ class ResearchSupervisor:
                             await line_task
                         except asyncio.CancelledError:
                             pass
+                        except Exception:
+                            logger.warning(
+                                "research.stream_iterator_cleanup_failed run_id=%s",
+                                run_id,
+                                exc_info = True,
+                            )
                         await self._check_active(run_id)
                     timeout = wait_timeout()
                 try:
@@ -1667,6 +1680,12 @@ class ResearchSupervisor:
                         await line_task
                     except asyncio.CancelledError:
                         pass
+                    except Exception:
+                        logger.warning(
+                            "research.stream_iterator_cleanup_failed run_id=%s",
+                            run_id,
+                            exc_info = True,
+                        )
             yield line
 
     async def _stream_completion(
@@ -1722,6 +1741,7 @@ class ResearchSupervisor:
         last_progress_flush = asyncio.get_running_loop().time()
         finish_reason: str | None = None
         semantic_output_at: float | None = None
+        first_output_deadline: float | None = None
 
         async def flush_progress() -> None:
             nonlocal pending_report, pending_reasoning, pending_reasoning_offset
@@ -1787,7 +1807,11 @@ class ResearchSupervisor:
 
             def semantic_deadline() -> float | None:
                 if semantic_output_at is None:
-                    return None
+                    if first_output_deadline is None:
+                        return None
+                    if loop.time() >= first_output_deadline:
+                        raise ModelFirstOutputTimeout("Local model never produced output")
+                    return first_output_deadline
                 return semantic_output_at + _MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS
 
             async with (
@@ -1819,6 +1843,9 @@ class ResearchSupervisor:
                                     await self._check_active(run["id"])
                             response = await send_task
                             response.raise_for_status()
+                            first_output_deadline = (
+                                loop.time() + _MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS
+                            )
                             break
                         except (httpx.TransportError, httpx.HTTPStatusError) as exc:
                             # Only reachable before a body byte is touched (the stream is consumed
@@ -1892,6 +1919,8 @@ class ResearchSupervisor:
                             and asyncio.get_running_loop().time() - last_progress_flush >= 0.25
                         ):
                             await flush_progress()
+                    if semantic_output_at is None:
+                        raise ModelFirstOutputTimeout("Local model never produced output")
                 finally:
                     if send_task is not None and not send_task.done():
                         send_task.cancel()

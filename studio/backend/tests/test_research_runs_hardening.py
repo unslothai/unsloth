@@ -885,6 +885,88 @@ def test_stream_completion_times_out_when_output_stalls(monkeypatch):
         _run_stream(supervisor, timeout_seconds = 1.0)
 
 
+def test_stream_completion_times_out_when_output_never_starts(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.05)
+
+    class _KeepaliveOnlyStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            while True:
+                await asyncio.sleep(0.01)
+                yield ": keep-alive"
+
+    _install_fake_client(monkeypatch, [_KeepaliveOnlyStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 1.0)
+
+
+def test_stream_completion_first_output_timeout_survives_iterator_cleanup(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.01)
+
+    class _BrokenSilentStream:
+        status_code = 200
+
+        def raise_for_status(self):
+            return self
+
+        async def aclose(self):
+            return None
+
+        async def aiter_lines(self):
+            try:
+                await asyncio.Event().wait()
+                yield ""
+            except asyncio.CancelledError as exc:
+                raise httpx.ReadError("cleanup failed") from exc
+
+    _install_fake_client(monkeypatch, [_BrokenSilentStream()])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 1.0)
+
+
+@pytest.mark.parametrize("body", ("data: [DONE]\n\n", ""))
+def test_stream_completion_rejects_zero_output_terminal_stream(monkeypatch, body):
+    _install_fake_client(monkeypatch, [_response(200, body = body)])
+    supervisor = _make_supervisor(_noop_check_active)
+
+    with pytest.raises(research_runs.ModelFirstOutputTimeout):
+        _run_stream(supervisor, timeout_seconds = 1.0)
+
+
+def test_stream_cancellation_wins_at_first_output_deadline():
+    async def _cancelled(run_id: str) -> None:
+        raise RunCancelled()
+
+    async def run():
+        supervisor = _make_supervisor(_cancelled)
+        supervisor._cancel_event("run-1").set()
+        response = _response(200, body = "")
+
+        def expired_deadline() -> float:
+            raise research_runs.ModelFirstOutputTimeout()
+
+        iterator = supervisor._iter_stream_lines(
+            "run-1",
+            response,
+            expired_deadline,
+        )
+        await anext(iterator)
+
+    with pytest.raises(RunCancelled):
+        asyncio.run(run())
+
+
 def test_stream_cleanup_error_does_not_replace_output_stall(monkeypatch):
     monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.05)
 
@@ -938,7 +1020,8 @@ def test_stream_completion_semantic_output_resets_the_idle_timeout(monkeypatch):
     assert _run_stream(supervisor, timeout_seconds = 1.0) == ("report", "thinking", "stop")
 
 
-def test_stream_completion_does_not_apply_idle_timeout_during_prefill(monkeypatch):
+def test_stream_completion_allows_output_before_first_output_timeout(monkeypatch):
+    monkeypatch.setattr(research_runs, "_MODEL_FIRST_OUTPUT_TIMEOUT_SECONDS", 0.15)
     monkeypatch.setattr(research_runs, "_MODEL_OUTPUT_IDLE_TIMEOUT_SECONDS", 0.03)
 
     class _SlowPrefillStream:
@@ -1021,6 +1104,10 @@ def test_stream_completion_stops_at_done_even_if_socket_stays_open(monkeypatch):
 @pytest.mark.parametrize(
     ("exc", "message"),
     (
+        (
+            research_runs.ModelFirstOutputTimeout("first"),
+            "Local model never started producing output",
+        ),
         (
             research_runs.ModelOutputIdleTimeout("idle"),
             "Local model stopped producing output before completion",
