@@ -434,7 +434,7 @@ def _assert_local_base_is_pipeline(base_repo: str) -> None:
 
 
 def _repo_access_message(repo: str, *, gated: bool) -> str:
-    """The repo id AND its licence page: the Hub's 401/403 names neither, and the base comes from a
+    """The repo id AND its licence page: the worker's 401/403 names neither, and the base comes from a
     card tag, so the user never saw which repo it is."""
     url = f"https://huggingface.co/{repo}"
     if gated:
@@ -478,7 +478,8 @@ def _assert_base_repo_accessible(
         if Path(repo).expanduser().exists():
             return None
     # OSError: invalid path characters -> a remote id. RuntimeError: pathlib raises it, not OSError,
-    # when expanduser() cannot resolve the home dir; an escape would 500 this fail-open probe.
+    # when expanduser() cannot resolve the home dir ('~other/models', or '~/models' with no HOME).
+    # Both carry one slash, so they reach here, and an escape would 500 this fail-open probe.
     except (OSError, RuntimeError, ValueError):
         pass
     try:
@@ -498,7 +499,7 @@ def _assert_base_repo_accessible(
     # A base already on disk needs no Hub access: hf_hub_download catches the gated/401 HEAD and
     # serves the cached pointer (file_download._get_metadata_or_catch_error), which is how a
     # downloaded gated base still loads once the token is cleared or expires. Excuses an ACCESS
-    # verdict only, never a 404: a removed repo cannot be un-removed by a stale copy.
+    # verdict only, never a 404: a renamed or removed repo cannot be un-renamed by a stale copy.
     def _already_downloaded() -> bool:
         """True when ``probe_file`` is on disk under EITHER root (Studio pins its live setting, the
         prefetch writes under huggingface_hub's import-time constant). Never raises. Exact for the
@@ -839,7 +840,7 @@ class DiffusionBackend:
             ):
                 # Same other-root reuse as the pre-quant checkpoint, reached THROUGH that root
                 # rather than returned raw, so the ref still resolves and a republished GGUF is
-                # picked up.
+                # picked up; the blob is reused, and offline the cached pointer comes back anyway.
                 elsewhere = try_to_load_from_cache(repo_id, gguf_filename, cache_dir = None)
                 if isinstance(elsewhere, str) and Path(elsewhere).is_file():
                     try:
@@ -962,7 +963,8 @@ class DiffusionBackend:
         cancel = cancel_event if cancel_event is not None else self._cancel_event
         # A file cached only under huggingface_hub's import-time root resolves through that root:
         # the preflight clears a base found under EITHER root, so without this a cache-folder change
-        # turns an already-downloaded gated base into a mid-prefetch Hub token error.
+        # turns an already-downloaded gated base into a mid-prefetch Hub token error, and every
+        # other moved asset into a needless re-download.
         # GGUF transformer (hub repos only; a local path is already on disk).
         if gguf_filename and not Path(repo_id).expanduser().exists():
             hf_hub_download_with_xet_fallback(
@@ -2661,7 +2663,8 @@ class DiffusionBackend:
         # Deliberately the hub id, not base_local_dir: diffusers treats a local directory as
         # terminal (_get_model_file raises rather than falling back to the hub) and a sharded load
         # raises per missing shard, so a partial snapshot would drop a build the hub id completes.
-        # Off the hub id a base only the other root holds costs a re-download, as main does today.
+        # Off the hub id a base only the other root holds costs a re-download, or 401s into the
+        # GGUF fallback, which is what main does today.
         transformer = transformer_cls.from_pretrained(
             fetch_base,
             subfolder = "transformer",

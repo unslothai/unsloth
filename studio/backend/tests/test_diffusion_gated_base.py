@@ -208,8 +208,9 @@ def test_local_and_non_repo_bases_are_skipped(monkeypatch, tmp_path):
 
 
 def test_a_base_whose_home_cannot_be_resolved_fails_open(monkeypatch):
-    # '~other/models' carries one slash, so it reaches the local-path probe, where pathlib raises
-    # RuntimeError -- NOT an OSError. It must fall through rather than 500 a load not yet started.
+    # '~other/models' and '~/models' under an account with no home both carry one slash, so they
+    # reach the local-path probe, where pathlib raises RuntimeError -- NOT an OSError. It must fall
+    # through rather than 500 a load not yet started.
     probed = _stub_hub(monkeypatch, info = _FakeInfo(False))
 
     class _NoHomePath:
@@ -1035,7 +1036,8 @@ def test_the_native_fetch_reuses_a_base_asset_cached_under_the_other_root(monkey
 def test_a_gated_base_with_a_live_mirror_is_not_refused(monkeypatch):
     """The other side of every refusal above, and the reason the probe moved onto the fetch repo:
     #7952 sends a gated base to its ungated unsloth mirror, so the bytes never touch the vendor id,
-    and a preflight still probing the upstream would turn those working loads into a 400."""
+    and a preflight still probing the upstream would turn those working loads into a 400 -- worse
+    than the bare token error this whole preflight replaced."""
     mirror = "unsloth/FLUX.1-dev"
     probed: list = []
 

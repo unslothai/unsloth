@@ -169,6 +169,7 @@ def cached_checkpoint_path(source: Any, *, cache_dir: Optional[str] = None) -> O
     Only the PRIMARY ``filename`` counts: a cached ``fallback_filename`` (the legacy artifact) must
     not short-circuit it, or a stale name stays pinned once the repo ships the real one, so a
     fallback-only cache reads as "this would have to download" and the GGUF simply runs.
+
     Both cache roots are searched: Studio pins the LIVE cache setting while an unpinned
     ``hf_hub_download`` falls back to huggingface_hub's import-time constant. Never raises."""
     for root in (cache_dir, None) if cache_dir else (None,):

@@ -572,8 +572,9 @@ def hf_hub_download_with_xet_fallback(
     cached asset is invisible to a call pinned to the new root: GBs re-download, and a gated base with
     no valid token 401s even though the bytes are there and the preflight (which checks both roots)
     already cleared it. Routed THROUGH the other root rather than returned raw, so the ref still
-    resolves and a republished file is picked up. Off for ``force_download``, whose point is to
-    re-fetch."""
+    resolves and a republished file is picked up; the blob is reused, and offline/401
+    hf_hub_download keeps the failed HEAD and serves the cached pointer. Off for
+    ``force_download``, whose point is to re-fetch."""
     if cache_dir is None:
         from utils.hf_cache_settings import get_hf_cache_paths
         cache_dir = str(get_hf_cache_paths().hub_cache)
