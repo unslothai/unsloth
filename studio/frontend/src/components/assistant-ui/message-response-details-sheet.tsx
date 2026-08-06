@@ -339,6 +339,11 @@ export const MessageResponseDetailsSheet: FC<{
         side="right"
         className="w-[min(28rem,100vw)] p-0 sm:max-w-[28rem]"
         showCloseButton={false}
+        // Clear the desktop window controls; 0px in the browser and on macOS.
+        style={{
+          height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
+          marginTop: "var(--studio-custom-titlebar-height, 0px)",
+        }}
       >
         <SheetHeader className="border-b p-4">
           <div className="relative">

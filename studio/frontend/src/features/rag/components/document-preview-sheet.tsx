@@ -408,7 +408,13 @@ export function DocumentPreviewSheet() {
     <Sheet open={open} onOpenChange={(o) => !o && closePreview()}>
       <SheetContent
         side="right"
-        style={{ width: previewWidth, maxWidth: "95vw" }}
+        // Clear the desktop window controls; 0px in the browser and on macOS.
+        style={{
+          width: previewWidth,
+          maxWidth: "95vw",
+          height: "calc(100% - var(--studio-custom-titlebar-height, 0px))",
+          marginTop: "var(--studio-custom-titlebar-height, 0px)",
+        }}
         className={cn(
           "flex w-full flex-col gap-0 p-0",
           resizing && "select-none",
