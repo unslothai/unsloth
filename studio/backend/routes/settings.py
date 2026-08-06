@@ -272,7 +272,7 @@ def _helper_precache_response(enabled: bool | None = None) -> HelperPrecacheResp
     )
 
 
-def _model_memory_reload_required(keep_resident: bool, no_ram_reserve: bool) -> bool:
+def _model_memory_reload_required() -> bool:
     """True when the loaded process's memory placement contradicts the settings.
 
     Compares the state the child ACTUALLY launched with -- env defaults plus
@@ -290,13 +290,11 @@ def _model_memory_reload_required(keep_resident: bool, no_ram_reserve: bool) -> 
     except Exception:
         return False
 
-    if no_ram_reserve:
-        # Neither reservation may survive, whoever asked for it.
-        return bool(mlock or mmap_disabled)
-    if keep_resident:
-        return not mlock
-    # Both off: Unsloth does not manage placement, so nothing can be stale.
-    return False
+    # Same predicate the duplicate-load comparator uses, so the reload hint and
+    # the reload path can never disagree.
+    from core.inference.llama_server_args import memory_state_satisfies_settings
+
+    return not memory_state_satisfies_settings((mlock, mmap_disabled))
 
 
 def _model_memory_response() -> ModelMemoryResponse:
@@ -306,7 +304,7 @@ def _model_memory_response() -> ModelMemoryResponse:
         keep_resident = keep_resident,
         no_ram_reserve = no_ram_reserve,
         mlock_active = want_mlock,
-        reload_required = _model_memory_reload_required(keep_resident, no_ram_reserve),
+        reload_required = _model_memory_reload_required(),
         memlock_limit_bytes = memlock_limit_bytes() if want_mlock else None,
     )
 

@@ -51,6 +51,7 @@ from core.inference.llama_server_args import (
     _tensor_parallel_matches_loaded,
     apply_model_memory_policy,
     extra_args_disable_mmproj,
+    memory_state_satisfies_settings,
     resolve_effective_memory_state,
     scrub_memory_env,
     parse_cache_override,
@@ -4021,6 +4022,7 @@ class LlamaCppBackend:
         supports_metrics = False
         supports_slot_save = False
         supports_no_mmproj_offload = False
+        supports_load_mode = False
         spec_draft_ngl_flag = None
         saw_spec_type = False
         probe_ok = False
@@ -4130,6 +4132,7 @@ class LlamaCppBackend:
             supports_slot_save = _is_real("--slot-save-path")
             supports_no_mmproj_offload = _is_real("--no-mmproj-offload")
             # --load-mode supersedes --mlock / --no-mmap, which are deprecated.
+            # Pre-initialised above: a failed probe must fall back, not raise.
             supports_load_mode = _is_real("--load-mode")
             # Record WHICH alias this build has: --spec-draft-ngl only landed in
             # b8955, and a build exposing only --gpu-layers-draft would refuse to
@@ -11554,6 +11557,12 @@ class LlamaCppBackend:
         candidate_extra_args = list(effective_extra_args) if effective_extra_args else []
         if intent.extra_args is not None and intent.gpu_ids is not None:
             candidate_extra_args = self._strip_device_extra_args(candidate_extra_args)
+        # A Model Memory toggle changes only the launch flags, so the intent is
+        # unchanged and this would otherwise report already-loaded and leave the
+        # running process on the old placement.
+        if not memory_state_satisfies_settings(self._memory_state):
+            logger.info("Model Memory policy changed since launch; forcing a reload")
+            return False
         if not self._runtime_matches_intent(intent, candidate_extra_args):
             return False
         self._record_matching_gpu_request(

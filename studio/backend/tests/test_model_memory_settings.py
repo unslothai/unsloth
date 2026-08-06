@@ -24,6 +24,7 @@ _spec = importlib.util.spec_from_file_location(
 _lsa = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_lsa)
 apply_model_memory_policy = _lsa.apply_model_memory_policy
+memory_state_satisfies_settings = _lsa.memory_state_satisfies_settings
 resolve_effective_memory_state = _lsa.resolve_effective_memory_state
 scrub_memory_env = _lsa.scrub_memory_env
 strip_shadowing_flags = _lsa.strip_shadowing_flags
@@ -310,10 +311,13 @@ class TestReloadRequired:
     def _required(keep, no_res, state, monkeypatch):
         import routes.inference
         import routes.settings as rs
+        import utils.model_memory_settings as mm
 
         backend = type("_B", (), {"is_loaded": True, "_memory_state": state})()
         monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
-        return rs._model_memory_reload_required(keep, no_res)
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
+        return rs._model_memory_reload_required()
 
     @pytest.mark.parametrize(
         ("keep", "no_res", "state", "expected"),
@@ -339,4 +343,74 @@ class TestReloadRequired:
 
         backend = type("_B", (), {"is_loaded": False, "_memory_state": (False, True)})()
         monkeypatch.setattr(routes.inference, "get_llama_cpp_backend", lambda: backend)
-        assert rs._model_memory_reload_required(True, True) is False
+        assert rs._model_memory_reload_required() is False
+
+
+class TestManagedFlagIsNotReset:
+    """Measured against llama.cpp: ANY trailing mmap-family or load-mode flag
+    resets the whole load mode, so a user preset after the managed flag would
+    silently drop the mlock."""
+
+    @pytest.mark.parametrize("load_mode", [True, False])
+    @pytest.mark.parametrize(
+        "preset",
+        [["--no-mmap"], ["--mmap"], ["-no-mmap"], ["-lm", "none"],
+         ["--load-mode", "mmap"], ["--load-mode=none"], ["--mlock"]],
+    )
+    def test_nothing_after_the_managed_flag_can_reset_it(self, policy, load_mode, preset):
+        managed, extras = policy(True, False, preset + ["--temp", "0.7"],
+                                 supports_load_mode = load_mode)
+        assert managed  # residency emitted something
+        # The resolved state of the full argv must still be mlock.
+        mlock, _ = resolve_effective_memory_state(managed + extras, {})
+        assert mlock is True, (managed, extras)
+        assert extras == ["--temp", "0.7"], extras
+
+    def test_affirmative_mmap_survives_when_nothing_is_managed(self, policy):
+        """--mmap is not a reservation, so no-reserve leaves it alone."""
+        _, extras = policy(False, True, ["--mmap", "--temp", "0.7"])
+        assert extras == ["--mmap", "--temp", "0.7"]
+
+
+class TestDuplicateLoadComparator:
+    """Toggling a setting changes only the launch flags, so the load intent is
+    unchanged and the already-loaded fast path would otherwise reuse the
+    process and never apply the setting."""
+
+    @pytest.mark.parametrize(
+        ("launched", "keep", "no_res", "satisfied"),
+        [
+            ((False, False), True, False, False),   # turn residency on
+            ((True, False), False, True, False),    # turn no-reserve on, mlocked
+            ((False, True), False, True, False),    # turn no-reserve on, no-mmap
+            ((True, False), True, False, True),     # already pinned
+            ((False, False), False, True, True),    # already clean
+            ((True, True), False, False, True),     # unmanaged
+        ],
+    )
+    def test_forces_a_reload_only_when_the_policy_changed(
+        self, monkeypatch, launched, keep, no_res, satisfied
+    ):
+        import utils.model_memory_settings as mm
+
+        monkeypatch.setattr(mm, "get_keep_resident", lambda: keep)
+        monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_res)
+        assert memory_state_satisfies_settings(launched) is satisfied
+
+
+class TestCapabilityProbeFallback:
+    def test_load_mode_flag_survives_a_failed_probe(self, monkeypatch):
+        """A timed-out or broken --help probe must fall back conservatively,
+        not raise UnboundLocalError and block the load."""
+        import subprocess
+
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        LlamaCppBackend._capability_cache.clear()
+
+        def boom(*_a, **_k):
+            raise subprocess.TimeoutExpired("llama-server", 10)
+
+        monkeypatch.setattr(subprocess, "run", boom)
+        caps = LlamaCppBackend.probe_server_capabilities("/nonexistent/llama-server")
+        assert caps.get("supports_load_mode") is False

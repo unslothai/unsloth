@@ -220,6 +220,11 @@ _MLOCK_FLAGS: frozenset[str] = frozenset({"--mlock", "-mlock"})
 # Modern spelling of both, as an enum value. Takes a value, so NOT boolean.
 _LOAD_MODE_FLAGS: frozenset[str] = frozenset({"--load-mode", "-lm"})
 _NO_MMAP_FLAGS: frozenset[str] = frozenset({"--no-mmap", "-no-mmap"})
+# Measured: any trailing mmap-family flag resets the WHOLE load mode, so
+# "--load-mode mmap+mlock --mmap" (or --no-mmap) silently drops the mlock. The
+# affirmative spelling is harmless on its own, so it is stripped only when a
+# managed flag is emitted, never by no-reserve.
+_MMAP_TOGGLE_FLAGS: frozenset[str] = _NO_MMAP_FLAGS | frozenset({"--mmap"})
 _MEMORY_PLACEMENT_FLAGS: frozenset[str] = _MLOCK_FLAGS | _NO_MMAP_FLAGS
 # llama.cpp reads these before argv, so an inherited value survives stripping the
 # equivalent tokens. Scrubbed whenever a toggle is on, like the spec/placement
@@ -247,6 +252,7 @@ _BOOLEAN_SHADOWING_FLAGS: frozenset[str] = frozenset(
         "-mlock",
         "--no-mmap",
         "-no-mmap",
+        "--mmap",
     }
 )
 
@@ -506,6 +512,7 @@ def strip_shadowing_flags(
     strip_device: bool = False,
     strip_mlock: bool = False,
     strip_no_mmap: bool = False,
+    strip_mmap_toggle: bool = False,
     strip_load_mode: bool = False,
 ) -> list[str]:
     """Strip flags that shadow first-class Unsloth settings.
@@ -548,6 +555,8 @@ def strip_shadowing_flags(
         shadowing |= _MLOCK_FLAGS
     if strip_no_mmap:
         shadowing |= _NO_MMAP_FLAGS
+    if strip_mmap_toggle:
+        shadowing |= _MMAP_TOGGLE_FLAGS
     if strip_load_mode:
         shadowing |= _LOAD_MODE_FLAGS
 
@@ -598,9 +607,11 @@ def apply_model_memory_policy(
     user's extras with any vetoed flag removed.
 
     "Keep model in GPU memory" pins the weights: ``--load-mode mmap+mlock`` on
-    builds that have it, else the deprecated ``--mlock``. "Don't reserve system
-    RAM" drops ``--mlock`` / ``--no-mmap``, leaving the default mmap path. With
-    both off nothing is stripped, so a hand-typed flag still applies.
+    builds that have it, else the deprecated ``--mlock``. Every other
+    load-mode-bearing flag is stripped from the emitted extras, because a
+    trailing one resets the whole mode and would drop the mlock. "Don't reserve
+    system RAM" drops ``--mlock`` / ``--no-mmap``, leaving the default mmap
+    path. With both off nothing is stripped, so a hand-typed flag still applies.
     """
     try:
         from utils.model_memory_settings import get_no_ram_reserve, should_mlock
@@ -636,6 +647,7 @@ def apply_model_memory_policy(
             strip_template = False,
             strip_split_mode = False,
             strip_mlock = True,
+            strip_mmap_toggle = True,
             strip_load_mode = True,
         )
     return managed, tokens
@@ -718,3 +730,23 @@ def resolve_effective_memory_state(
         else:
             i += 1
     return mlock, mmap_disabled
+
+
+def memory_state_satisfies_settings(state: tuple[bool, bool]) -> bool:
+    """True when a launched ``(mlock, mmap_disabled)`` matches the settings.
+
+    Shared by the duplicate-load comparator (so toggling a setting forces a real
+    relaunch instead of returning already-loaded) and the settings route (so the
+    reload hint agrees with it). With both toggles off Unsloth does not manage
+    placement, so any state is acceptable.
+    """
+    try:
+        from utils.model_memory_settings import get_keep_resident, get_no_ram_reserve
+    except Exception:
+        return True
+    mlock, mmap_disabled = state
+    if get_no_ram_reserve():
+        return not (mlock or mmap_disabled)
+    if get_keep_resident():
+        return mlock
+    return True
