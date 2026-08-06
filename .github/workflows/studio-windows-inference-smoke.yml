@@ -237,9 +237,14 @@ jobs:
             }
           }
 
+      # Deliberately NO `if:`, so this rides the implicit success() and a failed
+      # preamble (installer unit tests, setup-node, setup-python, the Defender
+      # tweak) still stops the job here, exactly as it did when this was three
+      # jobs. Gating it on `!cancelled()` would install onto a runner whose
+      # pinned Python or Node never materialised, and every phase below gates on
+      # assert-prebuilt, which would then pass and hide the real failure.
       - name: Install Unsloth (--local, --no-torch)
         id: install
-        if: ${{ !cancelled() }}
         timeout-minutes: 25
         shell: pwsh
         env:
@@ -298,6 +303,7 @@ jobs:
         run: python -m pip install 'openai>=1.50' 'anthropic>=0.40'
 
       - name: Reset auth + boot Unsloth (API-only)
+        timeout-minutes: 2
         run: |
           # Wipe (not reset-password): the boot below must re-seed a fresh .bootstrap_password.
           rm -rf ~/.unsloth/studio/auth
@@ -321,6 +327,7 @@ jobs:
           exit 1
 
       - name: Password rotation (old must fail, new must work)
+        timeout-minutes: 3
         run: |
           OLD=$(cat ~/.unsloth/studio/auth/.bootstrap_password)
           NEW="CIRotated-$(python -c 'import secrets; print(secrets.token_urlsafe(12))')"
@@ -349,6 +356,7 @@ jobs:
           echo "password rotation OK (old=401, new=200)"
 
       - name: Load the GGUF (HF repo + variant, served from HF_HOME cache)
+        timeout-minutes: 20
         run: |
           # Retry the load step a few times so a transient TCP RST during
           # llama-server warm-up (Windows runner image churn,
@@ -372,6 +380,7 @@ jobs:
           jq '{status, display_name, is_gguf, context_length}' /tmp/load.json
 
       - name: Multi-turn determinism via OpenAI + Anthropic SDKs
+        timeout-minutes: 12
         env:
           BASE_URL: http://127.0.0.1:18888
         run: |
@@ -538,6 +547,14 @@ jobs:
           echo "STUDIO_PORT=18898" >> "$GITHUB_ENV"
           echo "HF_HOME=${{ github.workspace }}/hf-cache-tools" >> "$GITHUB_ENV"
 
+      # Key suffix bumped v1 -> v2 with the directory rename, and this is not
+      # cosmetic. actions/cache identifies an entry by key AND a version hash
+      # derived from the `path` input, but key uniqueness is global per ref. The
+      # old gguf-cache entry still holds the -v1 key, so a restore into
+      # gguf-cache-tools misses on version while the save is refused with
+      # "Unable to reserve cache with key ... another job may be creating this
+      # cache". Measured on staging during the Mac consolidation: two consecutive
+      # runs both logged "Cache not found for input keys" and both failed to save.
       - name: Restore GGUF model cache
         if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
         id: cache-gguf-tools
@@ -546,7 +563,7 @@ jobs:
         continue-on-error: true
         with:
           path: gguf-cache-tools
-          key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v1
+          key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v2
 
       - name: Download GGUF if cache miss
         id: download-gguf-tools
@@ -566,10 +583,18 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: gguf-cache-tools
-          key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v1
+          key: ${{ runner.os }}-gguf-unsloth/Qwen3.5-2B-GGUF-Qwen3.5-2B-UD-Q4_K_XL.gguf-v2
 
       - name: Reset auth + boot Unsloth (API-only, default tool policy)
-        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
+        id: boot-tools
+        # Phase-local prerequisite on top of the shared gate. The phase stays
+        # independent of EARLIER phases, which is what the shared assert-prebuilt
+        # gate buys, but it is not independent of its own download: without this
+        # clause a failed download still boots a server with no model and runs
+        # the test against it, burning Windows runner minutes and burying the
+        # real error under a pile of connection failures.
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' && steps.download-gguf-tools.outcome != 'failure' }}
+        timeout-minutes: 2
         run: |
           rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
@@ -578,7 +603,8 @@ jobs:
           echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for /api/health, log in, change password, load model
-        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
+        id: ready-tools
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' && steps.boot-tools.outcome == 'success' }}
         timeout-minutes: 25
         run: |
           for i in $(seq 1 180); do
@@ -628,7 +654,8 @@ jobs:
           jq '{status, display_name}' /tmp/load.json
 
       - name: Tool calling, server-side tools, thinking on/off
-        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' && steps.ready-tools.outcome == 'success' }}
+        timeout-minutes: 15
         env:
           BASE_URL: http://127.0.0.1:18898
         run: |
@@ -969,6 +996,9 @@ jobs:
           echo "STUDIO_PORT=18899" >> "$GITHUB_ENV"
           echo "HF_HOME=${{ github.workspace }}/hf-cache-vision" >> "$GITHUB_ENV"
 
+      # Key suffix bumped v2 -> v3 with the hf-cache -> hf-cache-vision rename,
+      # for the same reason as the tool-phase cache above: same key + different
+      # `path` means a permanent restore miss and a refused save.
       - name: Restore HF_HOME cache for unsloth/Qwen3-VL-2B-Instruct-GGUF (model + mmproj)
         if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
         id: cache-hf-vision
@@ -977,7 +1007,7 @@ jobs:
         continue-on-error: true
         with:
           path: hf-cache-vision
-          key: ${{ runner.os }}-hf-unsloth/Qwen3-VL-2B-Instruct-GGUF-UD-IQ2_XXS-mmproj-F16.gguf-v2
+          key: ${{ runner.os }}-hf-unsloth/Qwen3-VL-2B-Instruct-GGUF-UD-IQ2_XXS-mmproj-F16.gguf-v3
 
       - name: Prime HF_HOME with the GGUF + mmproj
         id: prime-hf-vision
@@ -999,10 +1029,13 @@ jobs:
         uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae  # v5.0.5
         with:
           path: hf-cache-vision
-          key: ${{ runner.os }}-hf-unsloth/Qwen3-VL-2B-Instruct-GGUF-UD-IQ2_XXS-mmproj-F16.gguf-v2
+          key: ${{ runner.os }}-hf-unsloth/Qwen3-VL-2B-Instruct-GGUF-UD-IQ2_XXS-mmproj-F16.gguf-v3
 
       - name: Reset auth + boot Unsloth (API-only)
-        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
+        id: boot-vision
+        # Same phase-local prerequisite as phase 2, for the same reason.
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' && steps.prime-hf-vision.outcome != 'failure' }}
+        timeout-minutes: 2
         run: |
           rm -rf ~/.unsloth/studio/auth
           mkdir -p logs
@@ -1011,7 +1044,8 @@ jobs:
           echo "STUDIO_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for /api/health, log in, change password, load model
-        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
+        id: ready-vision
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' && steps.boot-vision.outcome == 'success' }}
         timeout-minutes: 25
         run: |
           for i in $(seq 1 180); do
@@ -1052,7 +1086,8 @@ jobs:
           jq '{status, display_name, is_vision}' /tmp/load.json
 
       - name: JSON schema decoding + image input
-        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.assert-prebuilt.outcome == 'success' && steps.ready-vision.outcome == 'success' }}
+        timeout-minutes: 15
         env:
           BASE_URL: http://127.0.0.1:18899
         run: |
