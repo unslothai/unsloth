@@ -578,10 +578,8 @@ def list_gguf_variants(
             has_vision = True
             continue
         quant = extract_quant_label(filename)
-        # The remote load detector passes its own extractor's quant into this
-        # predicate, and the two disagree on shapes like
-        # F16-be-checkpoint-Q4_K_M; judge with the loader's label so a row is
-        # never advertised for a file detect_gguf_model_remote refuses.
+        # The two extractors disagree on shapes like F16-be-checkpoint-Q4_K_M; judge with
+        # the loader's label so a row is never advertised for a file the remote detector refuses.
         from utils.models.model_config import _extract_quant_label as _loader_quant
 
         if is_big_endian_gguf_path(filename, _loader_quant(filename)):
@@ -654,10 +652,8 @@ def list_local_gguf_variants(
         if _is_local_mtp_drafter(file, custom_root, rel):
             continue
         quant = extract_quant_label(rel)
-        # detect_gguf_model passes its own extractor's quant into this
-        # predicate, and the two disagree on shapes like
-        # F16-be-checkpoint-Q4_K_M; judge with the loader's label so a row is
-        # never listed for a file the local detector refuses.
+        # The two extractors disagree on shapes like F16-be-checkpoint-Q4_K_M; judge with
+        # the loader's label so a row is never listed for a file the local detector refuses.
         from utils.models.model_config import _extract_quant_label as _loader_quant
 
         if is_big_endian_gguf_path(rel, _loader_quant(rel)):

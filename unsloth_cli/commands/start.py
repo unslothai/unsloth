@@ -1559,30 +1559,25 @@ def _resolve_model(
     )
     if requested and match is None:
         load_requested = True
-        # Only here is an evicting load certain. A pre-load gate must not reject
-        # a request the resident model already satisfies (e.g. a path-loaded
-        # GGUF advertised as a bare basename that collides with a non-GGUF
-        # unsloth/<name>).
+        # Only here is an evicting load certain: a pre-load gate must not reject a request
+        # the resident model already satisfies (e.g. a path-loaded GGUF advertised as a
+        # bare basename that collides with a non-GGUF unsloth/<name>).
         active = next((m for m in models if m.get("loaded") is not False), None)
         if preload_check is not None:
-            # An explicit knob forces match to None so the server's own dedupe
-            # can answer already_loaded, which reads nothing from disk. Gating
-            # that would reject a second session for the model already serving
-            # -- its file may since have moved -- so let the resident answer
-            # first, and only for the same weights it is already serving.
-            # Only the quant is checked against the resident model below, so a
-            # run knob that changes the runtime intent (context length, 4bit,
-            # tensor parallel, GPU mode) is a real reload the server will not
-            # dedupe -- and a real reload is exactly what this gate protects.
+            # An explicit knob forces match to None here so the server's own dedupe (which
+            # reads nothing from disk) can answer already_loaded; gating it would reject a
+            # second session for the model already serving, whose file may have moved.
+            # Below, only the quant is checked against the resident model -- any other run
+            # knob (context length, 4bit, tensor parallel, GPU mode) changes the runtime
+            # intent, which is a real reload the server will not dedupe.
             other_overrides = bool(
                 load.max_seq_length
                 or not load.load_in_4bit
                 or load.tensor_parallel
                 or load.gpu_memory_mode is not None
             )
-            # /v1/models advertises a path-loaded GGUF under its basename, so
-            # the same direct path has to be matched through that spelling too
-            # or a second session for the resident model reruns the gate.
+            # /v1/models shows a path-loaded GGUF under its basename, so a direct path must
+            # be matched through that spelling too, or a second session reruns the gate.
             wanted_ids = {requested, _public_model_id(requested)} - {None}
             resident_serves_request = not other_overrides and any(
                 m.get("loaded") is not False
@@ -1592,10 +1587,9 @@ def _resolve_model(
                 )
                 for m in models
             )
-            # Two directories can hold the same filename, and /v1/models shows
-            # only that basename, so a path request has to be confirmed against
-            # the identifier the server actually loaded -- otherwise
-            # /new/foo.gguf reads as resident because /old/foo.gguf is.
+            # Two directories can share a filename and /v1/models shows only the basename,
+            # so a path request must be confirmed against the identifier the server actually
+            # loaded -- else /new/foo.gguf reads as resident because /old/foo.gguf is.
             if resident_serves_request and _is_model_path(requested):
                 try:
                     status = _http_json("GET", f"{base}/api/inference/status", key)
@@ -1617,10 +1611,9 @@ def _resolve_model(
                 except Exception:
                     status = {}
                 resident_variant = status.get("gguf_variant") if status.get("is_gguf") else None
-                # Casefold, not _normalized_variant: that strips separators, so
-                # a mistyped Q4KM would read as the resident Q4_K_M and skip
-                # the gate, while the server's intent match would not dedupe it
-                # and would really reload.
+                # Casefold, not _normalized_variant (which strips separators too) -- else a
+                # mistyped Q4KM would read as the resident Q4_K_M and skip the gate, while
+                # the server's intent match would not dedupe it and would really reload.
                 resident_serves_request = (
                     bool(resident_variant)
                     and str(resident_variant).strip().lower()
@@ -1743,24 +1736,20 @@ def _hub_gguf_files(repo: str) -> Optional[list]:
     return [n for n in ggufs if not _is_auxiliary_gguf(n)]
 
 
-# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS: dspark and dflash
-# are the same DeepSeek V4 Flash drafter (its folder and its architecture), and
-# dflash/ as a directory is a family name a user picks for real weights, so only
-# mtp/ and dspark/ count as a publisher's companion folder.
+# Mirrors hub.utils.gguf._DRAFTER_KINDS / _DRAFTER_DIR_KINDS: dspark and dflash are the
+# same DeepSeek V4 Flash drafter (folder vs architecture), but dflash/ is also a real
+# family name users pick, so only mtp/ and dspark/ count as a companion folder.
 _DRAFTER_KINDS = ("mtp", "dspark", "dflash")
 _DRAFTER_DIR_KINDS = ("mtp", "dspark")
 
 
 def _is_auxiliary_gguf(filename: str) -> bool:
-    # Vision projectors, separate-file drafters and big-endian builds are not
-    # loadable weights; mirrors the server's detect_gguf_model_remote filtering
-    # (hub.utils.gguf.is_mtp_drafter_path). Drafters match on the basename
-    # prefix, or on an exact parent directory for the companion-only kinds,
-    # never as a substring: the kind names double as family names, so
-    # Qwen3.6-35B-A3B-DFlash-Q4_K_M.gguf IS the model. Only the root-level
-    # trailing -be form is filtered: the server's fuller big-endian check needs
-    # quant context the CLI does not mirror, and an over-broad copy here would
-    # reject repos the server can load.
+    # Mirrors detect_gguf_model_remote (hub.utils.gguf.is_mtp_drafter_path): vision
+    # projectors, separate-file drafters, and big-endian builds are not loadable weights.
+    # Drafters match by basename prefix or exact parent dir (companion-only kinds), never
+    # substring -- the kind names double as family names, so Qwen3.6-...-DFlash-Q4_K_M.gguf
+    # IS the model. Only the root-level trailing -be form is filtered, since the CLI can't
+    # mirror the server's fuller quant-aware check without over-rejecting loadable repos.
     p = filename.lower().replace("\\", "/")
     parts = [segment for segment in p.split("/") if segment]
     if not parts:
@@ -1779,12 +1768,10 @@ def _is_auxiliary_gguf(filename: str) -> bool:
 def _direct_gguf_is_companion(path: str) -> bool:
     """Whether the server refuses this .gguf path as a model in its own right.
 
-    A strict subset of detect_gguf_model / gguf_variants._direct_gguf_loads: the
-    projector and the drafter prefixes come off the basename and the
-    companion-only folders off the immediate parent, which is exactly the
-    context those read, so nothing the server would load is refused here. The
-    big-endian form is left out on purpose -- that check needs quant context the
-    CLI does not mirror, and a parent quant folder flips its answer.
+    A strict subset of detect_gguf_model / gguf_variants._direct_gguf_loads: projector and
+    drafter prefixes read off the basename, companion-only folders off the immediate
+    parent -- the same context the server reads, so nothing loadable is refused here.
+    Big-endian is left out on purpose: that check needs quant context the CLI can't mirror.
     """
     parts = [segment for segment in path.replace("\\", "/").split("/") if segment]
     if not parts:
@@ -1792,9 +1779,8 @@ def _direct_gguf_is_companion(path: str) -> bool:
     name = parts[-1].lower()
     if not name.endswith(".gguf"):
         return False
-    # Only the root-independent refusals: the projector and the drafter name
-    # prefixes read the basename alone, so they mean the same thing whatever
-    # the server's model roots are. A drafter FOLDER does not -- see below.
+    # Only root-independent refusals: projector/drafter-name prefixes read the basename
+    # alone, so they mean the same thing under any model root. A drafter FOLDER does not.
     if "mmproj" in name:
         return True
     return any(name.startswith(f"{kind}-") for kind in _DRAFTER_KINDS)
@@ -1816,11 +1802,9 @@ def _path_syntax_is_native(path: str) -> bool:
 def _direct_gguf_companion_is_uncertain(path: str) -> bool:
     """Whether only the server can say if this path is a companion.
 
-    detect_gguf_model reads the drafter folders relative to the registered
-    model root, so ``/models/MTP/foo-Q8_0.gguf`` is refused when the root sits
-    above MTP and loaded when MTP is itself a registered root. This process
-    does not know the server's roots, so any drafter folder above the file is
-    a question for the server, not an answer here.
+    detect_gguf_model reads drafter folders relative to the registered model root, so
+    ``/models/MTP/foo-Q8_0.gguf`` is refused or loaded depending on where that root sits
+    -- a question only the server can answer, since this process doesn't know its roots.
     """
     parts = [segment for segment in path.replace("\\", "/").split("/") if segment]
     return any(segment.lower() in _DRAFTER_DIR_KINDS for segment in parts[:-1])
@@ -1912,10 +1896,9 @@ def _direct_gguf_is_big_endian(path: str) -> bool:
     return False
 
 
-# Mirrors gguf_variants._DIRECT_SPLIT_RE and the load path's own
-# _GGUF_SPLIT_FILE_RE; change in lockstep. Five digits exactly: a shorter
-# -001-of-002 name loads as an ordinary file, so judging it a torn split
-# would reject a working model.
+# Mirrors gguf_variants._DIRECT_SPLIT_RE / the load path's _GGUF_SPLIT_FILE_RE; change in
+# lockstep. Five digits exactly -- a shorter -001-of-002 name loads as an ordinary file, so
+# calling it a torn split would reject a working model.
 _DIRECT_SPLIT_FILE_RE = re.compile(
     r"^(?P<stem>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})$", re.IGNORECASE
 )
@@ -1924,10 +1907,9 @@ _DIRECT_SPLIT_FILE_RE = re.compile(
 def _direct_gguf_file_is_ready(path: str) -> bool:
     """Whether a CLI-visible direct .gguf file can actually serve a load.
 
-    Mirrors the backend's direct-file completeness rules: a zero-byte file is
-    an interrupted copy, and a split needs every declared sibling index beside
-    it as a readable non-empty file. Anything unknowable reports ready, so a
-    path this process cannot judge never blocks the load.
+    Mirrors the backend's completeness rules: zero bytes is an interrupted copy, a split
+    needs every sibling index present and non-empty. Unknowable reports ready, so a path
+    this process can't judge never blocks the load.
     """
 
     def _split_set_complete(candidate: Path) -> Optional[bool]:
@@ -1955,9 +1937,8 @@ def _direct_gguf_file_is_ready(path: str) -> bool:
 
     try:
         p = Path(os.path.expanduser(path))
-        # A broken symlink is fully visible to this process; the extension
-        # alone still classifies it as a GGUF load, which fails after the
-        # teardown.
+        # A broken symlink is visible here; the .gguf extension alone still classifies it
+        # as a load, which fails after teardown.
         if p.is_symlink() and not p.exists():
             return False
         if not p.is_file():
@@ -1984,14 +1965,12 @@ def _answer_offers_variant(
 ) -> bool:
     """Whether a live variants answer can resolve *variant* to a file.
 
-    Mirrors llama.cpp's own resolution -- the quant label first, then the
-    whole-token filename match it falls back to -- case-insensitively, which is
-    as loose as that resolution gets: a label differing by a separator resolves
-    to nothing there either. A row carrying neither field vouches for the
-    request, so a sparser answer never blocks a load this gate cannot disprove.
-    ``strict`` drops the filename-token tier: the LOCAL resolver accepts only
-    the exact labels, so a local answer must not vouch for a shorter token
-    (Q4 inside model-Q4_K_M.gguf) that the load would resolve to nothing.
+    Mirrors llama.cpp's resolution, case-insensitively: quant label first, then the
+    whole-token filename fallback (as loose as it gets -- a separator-differing label
+    resolves to nothing there either). A row missing both fields can't be disproven, so
+    it vouches. ``strict`` drops the filename-token tier: the LOCAL resolver takes only
+    exact labels, so a local answer must not vouch for a shorter token (Q4 inside
+    model-Q4_K_M.gguf) the load would never resolve.
     """
     wanted = str(variant).strip().lower()
     if not wanted:
@@ -2014,21 +1993,18 @@ def _answer_offers_variant(
             if wanted in (label, re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", label)):
                 return True
         if isinstance(filename, str):
-            # The local resolver also accepts the exact shard-stripped stem as
-            # a label -- the full relative spelling only, never the basename of
-            # a nested file, which that resolver does not answer.
+            # The local resolver also accepts the exact shard-stripped stem as a label --
+            # full relative spelling only, never a nested file's bare basename.
             stem = re.sub(r"-\d{3,}-of-\d{3,}$", "", filename.rsplit(".", 1)[0]).lower()
             if wanted == stem:
                 return True
-            # It also takes any whole quant token of the BASENAME, which is how
-            # the listing's own default can name the file by the other of its
-            # two labels (F16-checkpoint-Q4_K_M advertises Q4_K_M).
+            # Also takes any whole quant token of the BASENAME -- how the listing's own
+            # default can name the file by its other label (F16-checkpoint-Q4_K_M -> Q4_K_M).
             if any(
                 wanted
                 in (
                     f"{m.group(1) or ''}{m.group(2)}".lower(),
-                    # The loader's own label keeps the bpw modifier the hub
-                    # extractor drops, so both spellings name this file.
+                    # Keeps the bpw modifier the hub extractor drops, so both spellings match.
                     f"{m.group(1) or ''}{m.group(2)}{m.group(3) or ''}".lower(),
                 )
                 for m in _QUANT_LABEL_RE.finditer(stem.rsplit("/", 1)[-1])
@@ -2069,12 +2045,11 @@ def _preflight_codex_gguf(
     serve: bool = True,
     launch: bool = True,
 ) -> None:
-    # Hub-listing preflight for the auto-start path only. With a server
-    # running, identifiers are resolved against its cwd/cache/token, which this
-    # process cannot mirror; _attach_gguf_check_for_codex asks the server
-    # instead. Only a complete listing with no .gguf files rejects; unknown
-    # defers to the post-connect check so an unreachable hub never blocks.
-    # Mirror _require_studio's auto-start condition: when no start can happen,
+    # Hub-listing preflight for the auto-start path only: with a server running,
+    # identifiers resolve against its cwd/cache/token, which this process can't mirror, so
+    # _attach_gguf_check_for_codex asks the server instead. Only a complete listing with no
+    # .gguf files rejects; unknown defers to the post-connect check so an unreachable hub
+    # never blocks. Mirrors _require_studio's auto-start condition: with no start possible,
     # its "no running server" error should come first, without a hub probe.
     if not (serve and launch and model):
         return
@@ -2107,20 +2082,18 @@ def _attach_gguf_check_for_codex(
     model: Optional[str],
     variant: Optional[str] = None,
 ) -> None:
-    # Attach path: the server resolves the identifier with its own cwd, cache
-    # and token, so ask it for the GGUF variants before the load evicts the
-    # resident model. An empty list from a live answer is definitive; any
-    # error (including an older server without the endpoint) defers.
+    # Attach path: the server resolves the identifier with its own cwd, cache and token, so
+    # ask it for the GGUF variants before the load evicts the resident model. An empty list
+    # from a live answer is definitive; any error (including an older server) defers.
     if not model:
         return
     repo, inline_variant = _split_repo_variant(model)
-    # `--model repo:QUANT` is split before the gate runs, so the caller passes
-    # the quant on; a direct call still reads it off the identifier.
+    # `--model repo:QUANT` is split before the gate runs, so the caller passes the quant on;
+    # a direct call reads it off the identifier.
     variant = variant or inline_variant
-    # A .gguf filesystem path is GGUF by definition; only the hub-id shape
-    # (owner/name.gguf, which the server also treats as a repo) gets probed.
-    # A bare foo.gguf that names no local file is not a path either: the load
-    # canonicalizes it to unsloth/foo.gguf, so it takes the shorthand route.
+    # A .gguf filesystem path is GGUF by definition; only the hub-id shape (owner/name.gguf,
+    # which the server also treats as a repo) gets probed. A bare foo.gguf naming no local
+    # file takes the shorthand route instead: the load canonicalizes it to unsloth/foo.gguf.
     bare_missing_gguf = False
     if repo.lower().endswith(".gguf") and not _is_model_path(repo.rsplit(".", 1)[0]):
         try:
@@ -2137,60 +2110,42 @@ def _attach_gguf_check_for_codex(
             and "\\" not in repo
         )
     ):
-        # A companion or big-endian build is the exception: detect_gguf_model
-        # refuses mmproj files, the separate-file drafters and those builds, so
-        # the load falls through to the transformers path, which unloads the
-        # resident llama-server before it fails. Settled on the name, not by
-        # probing: the probe's own empty answer defers whenever the path exists
-        # for this process, which on the loopback attach this gate protects is
-        # exactly when it does.
+        # A companion or big-endian build is refused by detect_gguf_model, so the load falls
+        # through to the transformers path and unloads the resident llama-server before
+        # failing. Settled by name, not by probing: the probe's own empty answer defers
+        # whenever the path exists here, which on this loopback attach is exactly when it does.
         #
-        # Only when the load would use THIS file, though: with an explicit
-        # variant the resolver scans the file's marked parent and serves the
-        # named sibling, so the refused name is not what gets loaded. Those
-        # requests go to the probe below, which judges the sibling's own row.
-        # A refused name is refused whatever quant came with it: the loader
-        # consults gguf_variant only for a DIRECTORY, so a direct file is
-        # always evaluated as itself and never swapped for a sibling.
+        # But only when the load would use THIS file: with an explicit variant the resolver
+        # scans the file's marked parent and may serve a different sibling instead, so those
+        # requests go to the probe below. Refused is refused regardless of quant, though --
+        # the loader only consults gguf_variant for a DIRECTORY, never swapping a direct file.
         refused = _direct_gguf_is_companion(repo) or _direct_gguf_is_big_endian(repo)
         if refused:
             _fail_codex_needs_gguf(repo)
-        # A drafter folder further up is the server's call, not ours: ask it
-        # rather than trusting or refusing the path here.
+        # A drafter folder further up is the server's call; ask it rather than deciding here.
         uncertain = _direct_gguf_companion_is_uncertain(repo)
-        # A variant settles nothing here, however well it matches this name:
-        # with one, the resolver scans the file's marked parent and can choose
-        # a different sibling (an earlier torn shard sorts first), so only the
-        # resolver-backed probe knows which file the load will bind. A refused
-        # name gets the same treatment, since its parent may serve the sibling
-        # that was asked for. Without a variant the load takes this file, so
-        # its own bytes are the answer.
         if not refused and not uncertain and not variant:
-            # On a loopback attach this process sees the server's filesystem,
-            # so an incomplete file is failed here: the server classifies the
-            # extension as a GGUF load and llama-server only finds the missing
-            # bytes or shards after the resident model is torn down.
+            # On loopback this process sees the server's filesystem, so an incomplete file
+            # fails here: the .gguf extension alone gets it loaded, and llama-server only
+            # finds the missing bytes/shards after the resident model is torn down.
             if is_loopback_url(base):
-                # A .gguf-NAMED DIRECTORY is not a direct file: the detector
-                # falls through and scans it, so the suffix proves nothing and
-                # the server's answer decides.
+                # A .gguf-NAMED DIRECTORY isn't a direct file: the detector scans it instead,
+                # so the suffix proves nothing and the server's answer decides.
                 try:
                     is_gguf_dir = Path(os.path.expanduser(repo)).is_dir()
                 except OSError:
                     is_gguf_dir = False
                 if not is_gguf_dir:
-                    # On loopback this process reads the server's filesystem,
-                    # so a name absent from a directory we can list is absent
-                    # for the load too -- and the .gguf suffix alone still
-                    # makes it a GGUF load that fails after the teardown. An
+                    # On loopback this process reads the server's filesystem, so a name
+                    # absent from a listable directory is absent for the load too -- and the
+                    # .gguf suffix alone still makes it a load that fails after teardown. An
                     # unreadable parent stays unknowable and defers as before.
                     try:
                         probe = Path(os.path.expanduser(repo))
                         missing = (
-                            # Only a path this OS actually spells: a Windows
-                            # path seen from WSL parses to something meaningless
-                            # here (C:\... has parent '.'), and the server may
-                            # hold the real file, so those defer to the probe.
+                            # Only a path this OS actually spells: a Windows path seen from
+                            # WSL parses to nonsense (C:\... has parent '.'), and the server
+                            # may hold the real file, so those defer to the probe.
                             _path_syntax_is_native(repo)
                             and not probe.is_symlink()
                             and probe.parent.is_dir()
@@ -2206,18 +2161,15 @@ def _attach_gguf_check_for_codex(
                             "re-download or re-copy it before pointing Codex at it."
                         )
                     return
-            # A remote server's filesystem is not ours to read, and the load
-            # takes the .gguf suffix as authoritative without checking that
-            # the file is there, so ask the server whether it has one. Its
-            # error paths defer as always.
-    # Mirror the load path's shorthand precedence: the raw name first (it may
-    # be a directory relative to the server's cwd), then the unsloth/<name>
-    # canonical form the load falls back to only when the raw name resolves to
-    # nothing. A live answer is the server's own resolution of that exact id, so
-    # it settles the question: the canonical form must not vouch for a raw name
-    # the server already answered, or a load that lands on a non-GGUF directory
-    # in the server's cwd passes the gate and evicts the resident model. Only an
-    # error (an older server, an unreachable hub) falls through to the next form.
+            # A remote server's filesystem isn't ours to read, and the load takes the .gguf
+            # suffix as authoritative without checking existence, so ask the server instead.
+            # Its error paths defer as always.
+    # Mirrors the load path's shorthand precedence: raw name first (it may be a directory
+    # relative to the server's cwd), then the unsloth/<name> canonical form the load falls
+    # back to only when the raw name resolves to nothing. A live answer settles the question
+    # for that exact id -- the canonical form must not vouch for a raw name the server
+    # already answered, or a non-GGUF directory in its cwd would pass the gate and evict the
+    # resident model. Only an error (older server, unreachable hub) falls through.
     candidates = [repo]
     if "/" not in repo and (not _is_model_path(repo) or bare_missing_gguf):
         candidates.append(f"unsloth/{repo}")
@@ -2230,18 +2182,15 @@ def _attach_gguf_check_for_codex(
             continue
         variants = info.get("variants") if isinstance(info, dict) else None
         if isinstance(variants, list):
-            # A cleanable row is an empty leftover <quant>/ folder the listing
-            # itself does not have: it offers a delete, never weights, so it
-            # cannot stand in for an answer that a load would find something.
+            # A cleanable row is an empty leftover <quant>/ folder -- offers a delete, never
+            # weights, so it can't stand in for the load finding something.
             variants = [
                 row for row in variants if not (isinstance(row, dict) and row.get("cleanable"))
             ]
-        # The load uses a bare single-segment name only when it resolves
-        # locally; otherwise it canonicalizes to unsloth/<name>. So a raw
-        # answer the server itself calls non-local settles nothing about the
-        # model that will actually load, empty or not. Only a server that
-        # reports the flag can tell us that: without it the raw answer is the
-        # server's own resolution and still the best evidence there is.
+        # The load uses a bare name only when it resolves locally, else it canonicalizes to
+        # unsloth/<name> -- so a raw answer the server calls non-local settles nothing about
+        # the model that actually loads. Only a server reporting that flag can tell us; without
+        # it, the raw answer is still the best evidence there is.
         if (
             "/" not in candidate
             and candidate != candidates[-1]
@@ -2250,16 +2199,14 @@ def _attach_gguf_check_for_codex(
             and not info["resolved_locally"]
         ):
             continue
-        # The server can answer the gate's actual question with the load
-        # resolver itself, and that settles the round -- including an EMPTY
-        # listing, since a root-blind lister can have no row for a file
-        # detect_gguf_model still resolves. No filename grammar of ours can be
-        # more right than the code that performs the load.
+        # The server can answer the gate's real question with the load resolver itself,
+        # settling the round -- even an EMPTY listing, since a root-blind lister can miss a
+        # file detect_gguf_model still resolves. No filename grammar here beats the code
+        # that performs the load.
         if isinstance(variants, list) and isinstance(info, dict):
             offered = info.get("loadable_variants")
-            # No list but a positive verdict: the load resolves this identifier
-            # without consulting the quant (a direct file loads itself), so a
-            # variant cannot make it fail.
+            # No list but a positive verdict: a direct file loads itself regardless of
+            # quant, so a variant can't make it fail.
             if variant and offered is None and info.get("loadable") is True:
                 return
             if variant and isinstance(offered, list):
@@ -2274,19 +2221,16 @@ def _attach_gguf_check_for_codex(
                     _fail_codex_needs_gguf(candidate)
                 return
         if isinstance(variants, list) and variants:
-            # The load resolves the quant only after it has torn the resident
-            # model down (llama.cpp kills the old process, then downloads), so
-            # a quant this answer cannot serve is settled here. Local answers
-            # are judged strictly: the local resolver takes exact labels only,
-            # so the looser filename-token tier is for hub answers alone. The
-            # server says which one answered (resolved_locally); path syntax
-            # and bare names cover servers that predate the field.
-            # One predicate for both judgements: the server says so, else the
-            # shapes a server that predates the field resolves locally anyway.
-            # The hub-id shape owner/name.gguf is a repo, not a path, the same
-            # exemption the direct-file branch makes; _is_model_path sees only
-            # the suffix, and a remote answer judged local would be held to
-            # rules (top-level rows, exact labels) the remote load does not use.
+            # The load resolves the quant only after tearing the resident model down
+            # (llama.cpp kills, then downloads), so a quant this answer can't serve is
+            # settled here. Local answers are judged strictly (exact labels only); the
+            # looser filename-token tier is for hub answers alone.
+            #
+            # "Local" means the server says so (resolved_locally), or -- predating that
+            # field -- path syntax/bare names, which resolve locally anyway. owner/name.gguf
+            # is exempted like the direct-file branch (_is_model_path sees only the suffix),
+            # since a remote answer wrongly judged local would be held to local-only rules
+            # (top-level rows, exact labels).
             hub_shaped = (
                 candidate.count("/") == 1
                 and not candidate.startswith(("/", ".", "~"))
@@ -2296,9 +2240,8 @@ def _attach_gguf_check_for_codex(
             local_answer = bool(info.get("resolved_locally")) or (
                 not hub_shaped and (_is_model_path(candidate) or "/" not in candidate)
             )
-            # A local answer of nothing but torn rows has no resumable side:
-            # llama-server would be handed the incomplete split only after the
-            # teardown, so the load it proves is one that cannot serve.
+            # A local answer of only torn rows has no resumable side: llama-server would
+            # get the incomplete split only after teardown, proving a load that can't serve.
             if local_answer and all(
                 isinstance(row, dict) and row.get("partial") is True for row in variants
             ):
@@ -2306,10 +2249,9 @@ def _attach_gguf_check_for_codex(
                     f"{candidate} has only incomplete GGUF weights on the server; "
                     "finish or re-copy the download before pointing Codex at it."
                 )
-            # A variantless local load runs detect_gguf_model, which picks from
-            # the directory's own top level; rows that live only in quant
-            # subdirectories need the variant that resolves them, so accepting
-            # this answer as-is would evict for a load that finds nothing.
+            # A variantless local load runs detect_gguf_model, picking from the directory's
+            # top level; rows living only in quant subdirectories need the variant that
+            # resolves them, or accepting this answer would evict for a load that finds nothing.
             if (
                 local_answer
                 and not variant
@@ -2337,18 +2279,15 @@ def _attach_gguf_check_for_codex(
                 _fail_codex_variant_missing(candidate, variant, variants)
             return
         if isinstance(variants, list):
-            # Explicit local syntax is resolved locally by every server
-            # version, so its live empty answer settles the load: deferring
-            # here would let /api/inference/load take the same GGUF-less
-            # directory down the transformers path and evict the resident
-            # model. Only marker-less names keep the deferral -- older servers
-            # classify those as hub ids, and a local hit for the raw name
-            # means it may be a server-side model resolved from the server's
-            # own cwd. A server that says resolved_locally has already done
-            # that resolution, so its empty answer settles those names too.
-            # A bare foo.gguf that names no local file is only the spelling the
-            # load canonicalizes; its own empty answer settles nothing until
-            # the canonical form has answered too.
+            # Explicit local syntax resolves locally on every server version, so its live
+            # empty answer settles the load; deferring would let /api/inference/load take
+            # the same GGUF-less directory down the transformers path and evict the
+            # resident model. Only marker-less names keep deferring -- older servers treat
+            # those as hub ids, and a local hit for the raw name may be a server-side model
+            # from the server's own cwd. A server reporting resolved_locally has already
+            # done that resolution, so its empty answer settles those names too. A bare
+            # foo.gguf naming no local file is only the canonicalized spelling; its empty
+            # answer settles nothing until the canonical form has answered too.
             if bare_missing_gguf and candidate != candidates[-1]:
                 continue
             if not _is_model_path(repo) and not info.get("resolved_locally"):
@@ -3659,9 +3598,8 @@ def _connect(
         key = _agent_api_key(base, api_key, auto_started = server is not None)
         # A server we just started has exactly the requested model loaded, so resolve to
         # whatever it is serving instead of re-matching the raw --model string.
-        # An auto-started server already loaded its model; only an attach can
-        # still trigger an evicting load, so the pre-load check is handed to
-        # _resolve_model, which runs it only when that load is imminent.
+        # Only an attach can still trigger an evicting load, so the pre-load check is
+        # handed to _resolve_model, which runs it only when that load is imminent.
         entry = _resolve_model(
             base,
             key,

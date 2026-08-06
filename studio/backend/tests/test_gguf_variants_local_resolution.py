@@ -28,8 +28,7 @@ def test_markerless_relative_dir_resolves_locally(in_tmp_cwd):
 
     response = _variants("models/qwen")
     assert [v.quant for v in response.variants] == ["Q4_K_M"]
-    # The answer says it came from local resolution, so the CLI gate can match
-    # it with the local resolver's exact labels.
+    # Says it resolved locally, so the CLI gate can match it against the local resolver's labels.
     assert response.resolved_locally is True
 
 
@@ -40,8 +39,8 @@ def test_direct_gguf_file_is_a_loadable_variant(in_tmp_cwd):
     response = _variants(os.fspath(gguf))
     assert [v.filename for v in response.variants] == ["foo-Q4_K_M.gguf"]
     assert response.variants[0].quant == "Q4_K_M"
-    # The file is the model: the shard scan cannot walk it, so its empty answer
-    # must not mark the only row partial (the picker disables partial local rows).
+    # The file is the model; the shard scan's empty answer must not mark the only row
+    # partial (the picker disables partial local rows).
     assert response.variants[0].downloaded is True
     assert response.variants[0].partial is False
 
@@ -60,8 +59,8 @@ def test_nonexistent_local_syntax_path_still_returns_empty(in_tmp_cwd):
 
 
 def test_direct_gguf_file_in_marked_dir_still_lists_siblings(in_tmp_cwd):
-    # The load path resolves a .gguf in a marked directory to the whole
-    # directory, so the listing keeps sibling quants and the vision flag.
+    # The load resolves a .gguf in a marked directory to the whole directory, so the
+    # listing keeps sibling quants and the vision flag.
     (in_tmp_cwd / "config.json").write_text("{}")
     (in_tmp_cwd / "model-Q4_K_M.gguf").write_bytes(b"GGUF")
     (in_tmp_cwd / "model-Q8_0.gguf").write_bytes(b"GGUF" * 2)
@@ -70,7 +69,7 @@ def test_direct_gguf_file_in_marked_dir_still_lists_siblings(in_tmp_cwd):
     response = _variants(os.fspath(in_tmp_cwd / "model-Q4_K_M.gguf"))
     assert sorted(v.quant for v in response.variants) == ["Q4_K_M", "Q8_0"]
     assert response.has_vision is True
-    # A marked parent is still scanned for completeness, so whole quants stay ready.
+    # A marked parent is still scanned for completeness.
     assert all(v.downloaded for v in response.variants)
 
 
@@ -85,8 +84,8 @@ def test_direct_gguf_file_in_marked_dir_still_lists_siblings(in_tmp_cwd):
     ],
 )
 def test_direct_auxiliary_gguf_file_is_not_a_variant(in_tmp_cwd, relpath):
-    # detect_gguf_model refuses the companions and big-endian builds, so a row
-    # for one would offer a load that cannot happen.
+    # detect_gguf_model refuses companions and big-endian builds; a row for one would
+    # offer a load that cannot happen.
     from utils.models.model_config import detect_gguf_model
 
     target = in_tmp_cwd / relpath
@@ -98,9 +97,8 @@ def test_direct_auxiliary_gguf_file_is_not_a_variant(in_tmp_cwd, relpath):
 
 
 def test_direct_gguf_file_quant_round_trips_through_the_load_path(in_tmp_cwd):
-    # Clients echo the selected quant back as gguf_variant, so the quant this
-    # endpoint advertises has to resolve for the same identifier -- otherwise
-    # the file loads without a variant and fails with the one just offered.
+    # Clients echo the selected quant back as gguf_variant, so the advertised quant must
+    # resolve for the same identifier, or the file loads without it and fails.
     from utils.models.model_config import ModelConfig
 
     gguf = in_tmp_cwd / "foo-Q4_K_M.gguf"
@@ -110,16 +108,15 @@ def test_direct_gguf_file_quant_round_trips_through_the_load_path(in_tmp_cwd):
     config = ModelConfig.from_identifier(os.fspath(gguf), gguf_variant = quant)
     assert config is not None and config.is_gguf
     assert config.gguf_file == os.fspath(gguf)
-    # from_identifier consults the quant only for a directory, so a direct file
-    # loads itself whatever was asked for; the listing must not be stricter.
+    # from_identifier only consults the quant for a directory; a direct file loads itself
+    # regardless, so the listing must not be stricter.
     assert ModelConfig.from_identifier(os.fspath(gguf), gguf_variant = "Q8_0").is_gguf is True
     assert _variants(os.fspath(gguf)).loadable_variants is None
 
 
 def test_direct_gguf_file_quant_round_trips_case_insensitively(in_tmp_cwd):
-    # llama.cpp matches a quant label case-insensitively, and so does the CLI's
-    # pre-load gate, so a typed lowercase --gguf-variant has to resolve to the
-    # same file here; resolving nothing loads no GGUF and evicts the resident
+    # llama.cpp (and the CLI's pre-load gate) matches quant labels case-insensitively, so
+    # a lowercase --gguf-variant must resolve here too, or the load evicts the resident
     # model on the transformers path before failing.
     from utils.models.model_config import ModelConfig
 
@@ -139,8 +136,8 @@ def test_direct_gguf_file_quant_round_trips_case_insensitively(in_tmp_cwd):
 
 
 def test_direct_gguf_label_is_the_load_resolvers_label(in_tmp_cwd):
-    # The two extractors disagree on shapes like F16-checkpoint-Q4_K_M; the
-    # advertised quant must be the one the echoed load resolves.
+    # The two extractors disagree on shapes like F16-checkpoint-Q4_K_M; the advertised
+    # quant must be the one the echoed load resolves.
     from utils.models.model_config import ModelConfig
 
     gguf = in_tmp_cwd / "F16-checkpoint-Q4_K_M.gguf"
@@ -292,9 +289,8 @@ def test_direct_gguf_bpw_label_round_trips_through_the_load_path(in_tmp_cwd):
 
 
 def test_torn_direct_split_is_not_offered_as_downloaded(in_tmp_cwd):
-    # llama.cpp resolves a split's siblings from the main shard's directory, so
-    # a lone shard is a load that fails after the teardown. The directory scan
-    # marks a torn quant partial; the direct-file fallback must not call it ready.
+    # llama.cpp resolves a split's siblings from the main shard's directory, so a lone
+    # shard fails after teardown; the direct-file fallback must not call it ready.
     shard = in_tmp_cwd / "model-Q4_K_M-00001-of-00002.gguf"
     shard.write_bytes(b"GGUF")
 
@@ -593,11 +589,9 @@ def test_zero_byte_direct_gguf_is_partial(in_tmp_cwd):
 
 
 def test_local_dir_answer_ignores_the_hub_cache_of_the_same_name(in_tmp_cwd, monkeypatch):
-    # A repo-shaped id that exists as a directory is resolved existence-first by
-    # the load, so this answer describes that directory. An empty leftover
-    # <quant>/ folder in the HF cache of the identically named repo must not add
-    # a row to it: the CLI's attach gate reads any row as "this is a GGUF model"
-    # and the load then evicts the resident model for a directory with none.
+    # A repo-shaped id that exists as a directory is resolved existence-first, so this
+    # answer must not gain rows from the HF cache of the identically named repo -- the
+    # CLI's attach gate reads any row as a GGUF model and would evict the resident one.
     from types import SimpleNamespace
 
     hub_cache = in_tmp_cwd / "hub"

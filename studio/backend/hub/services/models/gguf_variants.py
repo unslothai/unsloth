@@ -539,15 +539,11 @@ def _mark_empty_dir_cleanables(
 def _direct_gguf_loads(path: Path) -> bool:
     """Whether the load path takes *path* itself as the model.
 
-    ``detect_gguf_model`` refuses the companions -- mmproj, an MTP/dspark
-    drafter -- and big-endian builds, reading the name together with its
-    immediate parent, so a row for one of those would offer a load that
-    cannot happen. Judge them the same way.
+    Mirrors ``detect_gguf_model``: refuses companions (mmproj, MTP/dspark
+    drafter) and big-endian builds by name+parent, same as the load path.
     """
-    # The load extractor, not the hub one: detect_gguf_model passes its own
-    # quant into the big-endian check, and the two disagree on shapes like
-    # F16-be-checkpoint-Q4_K_M (first-token vs preferred-quant), which would
-    # flip the exemption and advertise a load the detector refuses.
+    # Load extractor, not the hub one: they disagree on shapes like
+    # F16-be-checkpoint-Q4_K_M, which would wrongly exempt a refused load.
     from utils.models.model_config import _extract_quant_label
 
     context = f"{path.parent.name}/{path.name}"
@@ -558,23 +554,18 @@ def _direct_gguf_loads(path: Path) -> bool:
     )
 
 
-# llama.cpp's split naming, as the LOAD path reads it
-# (model_config._GGUF_SPLIT_FILE_RE): five digits exactly. The cache scan's
-# looser -\d{3,}- form is for resume bookkeeping; a shorter name loads as an
-# ordinary file, so judging it a torn split here would call a working model
-# incomplete.
+# llama.cpp's split grammar: five digits exactly (model_config._GGUF_SPLIT_FILE_RE), not
+# the cache scan's looser -\d{3,}- resume form -- a shorter name still loads as an ordinary file.
 _DIRECT_SPLIT_RE = re.compile(r"^(?P<stem>.+)-(?P<index>\d{5})-of-(?P<total>\d{5})$", re.IGNORECASE)
 
 
 def _direct_gguf_split_is_whole(path: Path) -> bool:
     """Whether *path*'s split set is entirely beside it (True when it is not a split).
 
-    llama.cpp resolves a split GGUF's siblings from the main shard's directory
-    (see llama_cpp._snapshot_has_all_shards), so a lone shard is a load that
-    fails after the teardown. A symlinked shard follows its target the way
-    _local_gguf_load_path does, since that is the set the load launches.
-    Unknown -- an unreadable directory, a nonsense total -- reports whole,
-    keeping the row as ready as it was.
+    llama.cpp resolves a split's siblings from the main shard's directory (see
+    llama_cpp._snapshot_has_all_shards), so a lone shard fails after teardown.
+    A symlinked shard follows its target, like _local_gguf_load_path. Unknown
+    (unreadable directory, nonsense total) reports whole to keep the row ready.
     """
     match = _DIRECT_SPLIT_RE.match(path.name.rsplit(".", 1)[0])
     if match is None:
@@ -602,13 +593,12 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
     def _target_set_is_whole(target: Path) -> bool:
         """Whether the symlink target's own declared set is beside it.
 
-        The target names its own shard grammar and total, which need not match
-        the alias's: the load launches whatever the target declares.
+        The target names its own grammar/total (need not match the alias); the
+        load launches whatever the target declares.
         """
         m = _DIRECT_SPLIT_RE.match(target.name.rsplit(".", 1)[0])
         if m is None:
-            # A link that names a split but points at an ordinary file; the
-            # load launches that file as-is, so nothing is missing.
+            # Link names a split but points at an ordinary file: loads as-is, nothing missing.
             return True
         target_total = int(m.group("total"))
         pattern = re.compile(
@@ -625,24 +615,22 @@ def _direct_gguf_split_is_whole(path: Path) -> bool:
     try:
         found = _indexes_beside(path, sibling)
         if not found >= set(range(1, total + 1)) and path.is_symlink():
-            # _local_gguf_load_path names the target's siblings from the
-            # TARGET, so an alias whose stem or total differs still loads its
-            # real set -- and a torn target set is still torn.
+            # _local_gguf_load_path resolves siblings from the TARGET, so a differently
+            # named alias still loads the target's real set -- and a torn target stays torn.
             return _target_set_is_whole(path.resolve())
     except OSError:
         return True
-    # The declared indexes, not a count: a stray over-indexed shard must not
-    # stand in for a missing one, and a zero-byte sibling is an interrupted
-    # copy the directory scan marks partial too.
+    # Declared indexes, not a count: an over-indexed stray must not stand in for a
+    # missing shard, and a zero-byte sibling is an interrupted copy (partial like the scan).
     return found >= set(range(1, total + 1))
 
 
-# The cache scan's split grammar (hub.utils.inventory_scan._GGUF_SPLIT_RE),
-# looser than the load path's five digits; kept here to tell the two apart.
+# Cache scan's looser split grammar (hub.utils.inventory_scan._GGUF_SPLIT_RE) --
+# kept separate to tell it apart from the load path's five digits.
 _CACHE_SPLIT_RE = re.compile(r"-(\d{3,})-of-(\d{3,})(?=\.gguf$)", re.IGNORECASE)
 
-# Only to enumerate candidate spellings for the resolver to adjudicate; it is
-# never the thing that decides, so drift here costs a candidate, not a verdict.
+# Only enumerates candidate spellings for the resolver to adjudicate; drift here
+# costs a candidate, never a verdict.
 _KNOWN_QUANT_RE = re.compile(
     r"(UD-)?"
     r"(MXFP[0-9]+(?:_[A-Z0-9]+)*"
@@ -660,20 +648,17 @@ _KNOWN_QUANT_RE = re.compile(
 def _will_serve(resolved: Optional[str]) -> bool:
     """Whether llama-server can actually open what the resolver chose.
 
-    The resolver answers which file a load binds -- extension-authoritative, by
-    design, since it must answer inside the Windows lock window -- so it says
-    yes to an empty copy or a shard whose set is torn. Those are the two ways a
-    resolvable path still fails after the teardown, so a caller asking "will
-    this load work" needs both answers.
+    The resolver is extension-authoritative by design (it must answer inside
+    the Windows lock window), so it says yes to an empty copy or a torn split
+    too -- the two ways a resolved path still fails after teardown.
     """
     if not resolved:
         return False
     try:
         path = Path(resolved)
-        # The resolver is extension-authoritative and answers for paths that do
-        # not exist, so absence has to be caught here: a filesystem that says
-        # "no such file" is definite, while an error reading it (the Windows
-        # lock window after llama-server is killed) stays unknown and serves.
+        # Absence must be caught here since the resolver answers for nonexistent paths too:
+        # "no such file" is definite, but an error reading it (Windows lock window after
+        # llama-server is killed) stays unknown and serves.
         if not path.exists():
             return False
         return path.stat().st_size > 0 and _direct_gguf_split_is_whole(path)
@@ -684,28 +669,24 @@ def _will_serve(resolved: Optional[str]) -> bool:
 def _loadable_variants(identifier: str, variants):
     """The advertised quants a load of *identifier* would actually serve.
 
-    Authoritative by construction: it asks the same resolver
-    /api/inference/load uses, then checks the chosen file the way llama-server
-    will find it, so a client never has to predict either from filenames. One
-    resolver call per row, and only for local answers, whose scan already walks
-    the same directory. None when the question does not apply.
+    Authoritative by construction: asks the same resolver /api/inference/load
+    uses, then checks the chosen file as llama-server would find it, so a
+    client never has to predict either from filenames. One resolver call per
+    row, local answers only. None when the question does not apply.
     """
     from utils.models.model_config import _find_local_gguf_by_variant
 
-    # from_identifier only consults the variant for a DIRECTORY; a direct file
-    # loads itself whatever quant was asked for. Listing labels here would be
-    # stricter than the load, so leave it unanswered and let `loadable` speak.
+    # from_identifier only consults the variant for a DIRECTORY; a direct file loads
+    # itself regardless. Leave it unanswered here rather than be stricter than the load.
     try:
         if Path(identifier).expanduser().is_file():
             return None
     except OSError:
         pass
 
-    # One resolver call per ROW, not per spelling: the resolver walks the tree
-    # each time, so asking it about every alias turned a single request into
-    # dozens of full walks. Ask once for the row's own label, then name the
-    # file it bound -- its stem and quant tokens are the same file by
-    # construction, so the aliases a client may echo cost nothing more.
+    # One resolver call per ROW, not per spelling -- the resolver walks the tree each
+    # time. Ask once for the row's own label, then name the file it bound; its stem and
+    # quant tokens are the same file by construction, so aliases cost nothing more.
     accepted: list = []
     seen = set()
     for variant in variants:
@@ -722,16 +703,12 @@ def _loadable_variants(identifier: str, variants):
         if key not in seen:
             seen.add(key)
             accepted.append(quant)
-        # The resolver also takes the snapshot-relative stem (BF16/model) and
-        # the basename's own tokens. Derive those, then let the resolver
-        # confirm each -- a couple of extra calls per row, never one per
-        # spelling, so a wide folder stays a handful of walks and no spelling
-        # is claimed that the load would not honour.
-        # The resolver hands back an absolute path, so a relative identifier
-        # has to be resolved the same way or the relative alias is lost.
-        # The unresolved path first: the resolver reads the snapshot-relative
-        # spelling, so a symlink pointing outside the tree still answers
-        # BF16/model there while resolving it would leave the tree entirely.
+        # The resolver also takes the snapshot-relative stem (BF16/model) and the
+        # basename's own tokens; derive those and let the resolver confirm each, so no
+        # spelling is claimed that the load would not honour.
+        # It returns an absolute path, so a relative identifier must be resolved the
+        # same way, or the relative alias is lost. Try unresolved first: a symlink
+        # pointing outside the tree still answers BF16/model there, but not once resolved.
         relative = Path(bound).name
         for base_raw, bound_path in (
             (Path(identifier).expanduser(), Path(bound)),
@@ -793,11 +770,9 @@ def _complete_quants_under(snapshot: str):
 def _complete_with_servable(snapshot: str, complete, variants):
     """*complete* plus the quants whose bound file the load would actually serve.
 
-    The scan reads the cache's looser -\\d{3,}- split grammar, so a name the
-    LOAD treats as an ordinary file (llama.cpp splits are five digits) reads as
-    a torn set. Rather than re-judge those names here -- which cannot see which
-    file the resolver binds for the quant -- ask the resolver and check what it
-    chose, so a quant whose selected file is itself torn stays partial.
+    The scan's looser -\\d{3,}- grammar can read a name the LOAD treats as an
+    ordinary file (five-digit splits only) as a torn set. Rather than re-judge
+    names here, ask the resolver what it actually chose for the quant.
     """
     if complete is None:
         return None
@@ -873,10 +848,10 @@ async def get_gguf_variants_answer(
     # Set by whichever branch answers, and returned with the listing: the HF cache answers
     # before local_path, so a caller cannot infer the copy from the request alone.
     answered_from: list[Optional[str]] = [None]
-    # Set by the existence-first local branch below. A repo-shaped id that resolves to a
-    # directory is answered by that directory alone, so the HF cache of the identically
-    # named repo must not add rows to it: the load resolves the same directory, and a
-    # GGUF-less one loaded on the strength of a cleanable row evicts the resident model.
+    # Set by the existence-first local branch below: a repo-shaped id that resolves to a
+    # directory is answered by that directory alone, not the HF cache of the identically
+    # named repo -- else a GGUF-less directory could evict the resident model via a
+    # cleanable row from the cache.
     answered_locally = [False]
 
     def _compute() -> GgufVariantsResponse:
@@ -982,11 +957,10 @@ async def get_gguf_variants_answer(
                 return response
             return response.model_copy(update = {"variants": [*response.variants, *extra]})
 
-        # Local directory path (e.g. LM Studio models) — scan filesystem.
-        # Load-path parity: ModelConfig.from_identifier resolves identifiers
-        # existence-first, so a marker-less relative name that exists for this
-        # process is a local model, not a Hub id, and a direct .gguf file is
-        # loadable without the metadata siblings the directory scan requires.
+        # Local directory path (e.g. LM Studio models) — scan filesystem. Load-path parity:
+        # from_identifier resolves existence-first, so a marker-less relative name that
+        # exists here is a local model, not a Hub id, and a direct .gguf file is loadable
+        # without the metadata siblings the directory scan requires.
         local_target = None
         try:
             probe = Path(repo_id).expanduser()
@@ -996,9 +970,8 @@ async def get_gguf_variants_answer(
             local_target = None
         if local_target is not None:
             variants, has_vision = list_local_gguf_variants(repo_id)
-            # The load id is this path, so a quant offered here has to resolve
-            # here -- and a quant the scan calls torn is ready when the file
-            # the resolver binds for it is one llama-server can open.
+            # The load id is this path, so a quant offered here must resolve here too --
+            # a scan-torn quant is still ready if the resolver's bound file opens fine.
             complete = _complete_with_servable(repo_id, _complete_quants_under(repo_id), variants)
             if (
                 not variants
@@ -1006,17 +979,15 @@ async def get_gguf_variants_answer(
                 and local_target.suffix.lower() == ".gguf"
                 and _direct_gguf_loads(local_target)
             ):
-                # A .gguf file whose parent carries no config/adapter/export
-                # marker is skipped by the directory scan but still loads via
-                # detect_gguf_model; only then fall back to the file itself, so
-                # a marked parent keeps its sibling quants and vision flag.
+                # An unmarked-parent .gguf is skipped by the directory scan but still loads
+                # via detect_gguf_model; fall back to the file itself only here, so a marked
+                # parent still keeps its sibling quants and vision flag.
                 try:
                     size = local_target.stat().st_size
                 except OSError:
                     size = 0
-                # Label the row with the load resolver's own extractor over the
-                # same parent/name context it reads, so the advertised quant is
-                # by construction one the echoed load resolves (the hub-side
+                # Label with the load resolver's own extractor over the same context it reads,
+                # so the quant is by construction what the echoed load resolves (the hub-side
                 # extractor disagrees on shapes like F16-checkpoint-Q4_K_M).
                 from utils.models.model_config import _extract_quant_label
 
@@ -1029,22 +1000,17 @@ async def get_gguf_variants_answer(
                         size_bytes = size,
                     )
                 ]
-                # The shard scan resolves a file to its marked parent, so an
-                # unmarked one leaves it walking a file: it answers "no complete
-                # quant" and the row this file IS would read as not downloaded.
-                # Nothing to judge there, so report it as the load sees it --
-                # except what the file itself does answer: a split missing a
-                # sibling, or a zero-byte interrupted copy, both of which the
-                # directory scan marks partial too.
+                # The shard scan resolves a file to its marked parent, so an unmarked one
+                # walks a bare file and would misreport the row as not downloaded. Report
+                # instead what the file itself answers: whole unless it's a split missing a
+                # sibling or a zero-byte interrupted copy (partial like the directory scan).
                 complete = None if size > 0 and _direct_gguf_split_is_whole(local_target) else set()
             answered_from[0] = repo_id
             answered_locally[0] = True
-            # Surface the resolution so the CLI gate can match a local answer
-            # with the local resolver's exact labels instead of guessing from
-            # the id's shape (a one-slash id can be either), and answer the
-            # question a pre-load gate actually has -- would this load resolve
-            # -- with the loader itself, so no client has to mirror its
-            # grammar (labels, splits, companions, big-endian, symlinks).
+            # Surface the resolution so the CLI gate can match a local answer with the local
+            # resolver's exact labels instead of guessing from the id's shape, and answer the
+            # gate's real question -- would this load resolve -- with the loader itself, so no
+            # client has to mirror its grammar (labels, splits, companions, big-endian, symlinks).
             return _local_response(repo_id, variants, has_vision, complete).model_copy(
                 update = {
                     "resolved_locally": True,

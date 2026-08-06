@@ -6142,9 +6142,8 @@ def test_hub_gguf_files_ignores_auxiliary_ggufs(monkeypatch):
 
 
 def test_hub_gguf_files_ignores_dspark_and_dflash_drafters(monkeypatch):
-    # Mirrors hub.utils.gguf.is_mtp_drafter_path: DSpark/DFlash drafters are
-    # companions, matched by basename prefix (all three kinds) or by an exact
-    # parent dir (mtp/ and dspark/ only, since dflash/ is a real family name).
+    # Mirrors hub.utils.gguf.is_mtp_drafter_path: matches by basename prefix (all three
+    # kinds) or exact parent dir (mtp/, dspark/ only -- dflash/ is a real family name).
     monkeypatch.delenv("HF_HUB_OFFLINE", raising = False)
     monkeypatch.delenv("TRANSFORMERS_OFFLINE", raising = False)
     payload = {
@@ -6365,9 +6364,8 @@ def test_codex_attach_rejects_unavailable_variant_before_load(fake_studio, monke
 
 
 def test_codex_attach_reuses_resident_model_without_preload_probe(fake_studio, monkeypatch):
-    # When the resident model already answers --model no load happens, so the
-    # pre-load gate must not run: a canonical empty listing would reject a
-    # session that works.
+    # When the resident model already answers --model, no load happens, so the pre-load
+    # gate must not run: a canonical empty listing would reject a session that works.
     inner = start._http_json
     probes = []
 
@@ -6415,9 +6413,8 @@ def test_codex_attach_check_skips_direct_gguf_files(monkeypatch):
 
 
 def test_codex_attach_check_direct_variant_always_asks_the_server(monkeypatch):
-    # A variant settles nothing on the name alone: the resolver scans the
-    # file's marked parent and may bind a different sibling, so every explicit
-    # variant goes to the resolver-backed probe.
+    # A variant settles nothing on the name alone: the resolver scans the file's marked
+    # parent and may bind a different sibling, so every explicit variant goes to the probe.
     probes = []
 
     def http_json(
@@ -6450,9 +6447,8 @@ def test_codex_attach_check_direct_variant_always_asks_the_server(monkeypatch):
 
 
 def test_codex_attach_check_asks_server_for_foreign_direct_variant(monkeypatch, capsys):
-    # A quant that is not the file's own label is the marked parent's business:
-    # the server's listing carries the sibling quants, so a live answer with
-    # the quant passes and one without it fails before the load can evict.
+    # A quant that isn't the file's own label is the marked parent's business: an
+    # answer carrying it passes, and one without it fails before the load can evict.
     _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M"}, {"quant": "Q8_0"}]})
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/m/model-Q4_K_M.gguf", "Q8_0")
     _fake_variants(monkeypatch, {"variants": [{"quant": "Q4_K_M"}]})
@@ -6570,9 +6566,8 @@ def test_codex_attach_check_probes_direct_paths_on_remote_servers(monkeypatch, c
 
 
 def test_codex_attach_check_refuses_companion_paths_with_a_variant(monkeypatch, capsys):
-    # The loader consults gguf_variant only for a directory, so a direct file is
-    # always evaluated as itself: a refused name cannot be rescued by naming a
-    # sibling quant, and letting it through would evict before failing.
+    # The loader consults gguf_variant only for a directory, so a direct file is always
+    # evaluated as itself: a refused name can't be rescued by naming a sibling quant.
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -6747,9 +6742,8 @@ def test_codex_attach_check_strict_accepts_basename_quant_tokens(monkeypatch):
 def test_codex_attach_check_honors_resolved_locally_empty_for_raw_names(
     tmp_path, monkeypatch, capsys
 ):
-    # A server that resolved the name locally has already answered for the
-    # same directory the load will take; deferring on CLI existence would let
-    # that GGUF-less directory evict the resident model.
+    # A server that resolved the name locally has already answered for the same directory
+    # the load will take; deferring on CLI existence would let it evict the resident model.
     monkeypatch.chdir(tmp_path)
     (tmp_path / "models" / "qwen").mkdir(parents = True)
     _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True})
@@ -6978,9 +6972,8 @@ def test_codex_preload_gate_still_runs_for_a_different_variant(fake_studio, monk
 
 
 def test_codex_attach_check_asks_about_nested_drafter_folders(monkeypatch, capsys):
-    # detect_gguf_model reads drafter folders relative to the registered model
-    # root, so the same nested path loads or is refused depending on a root
-    # this process cannot see; the server decides.
+    # detect_gguf_model reads drafter folders relative to the registered model root, so the
+    # same nested path loads or is refused depending on a root this process can't see.
     _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True})
     with pytest.raises(typer.Exit):
         start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/MTP/copies/foo-Q8_0.gguf")
@@ -6991,8 +6984,7 @@ def test_codex_attach_check_asks_about_nested_drafter_folders(monkeypatch, capsy
         {"variants": [{"quant": "Q8_0"}], "resolved_locally": True, "loadable": True},
     )
     start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/MTP/copies/foo-Q8_0.gguf")
-    # A drafter NAME PREFIX means the same under any root, so it is refused
-    # locally with no probe.
+    # A drafter NAME PREFIX means the same under any root, so it is refused locally with no probe.
     monkeypatch.setattr(
         start, "_http_json", lambda *a, **k: pytest.fail("an immediate companion needs no probe")
     )
@@ -7001,9 +6993,8 @@ def test_codex_attach_check_asks_about_nested_drafter_folders(monkeypatch, capsy
 
 
 def test_codex_attach_check_defers_foreign_path_syntax(monkeypatch, tmp_path):
-    # A Windows path read from POSIX parses to something meaningless here
-    # (parent '.'), so its absence locally says nothing about the server's
-    # disk and must not be failed as missing.
+    # A Windows path read from POSIX parses to nonsense here (parent '.'), so its local
+    # absence says nothing about the server's disk and must not fail as missing.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(start, "_http_json", lambda *a, **k: {"variants": [{"quant": "Q4_K_M"}]})
     start._attach_gguf_check_for_codex(BASE, "sk-test", "C:\\models\\foo-Q4_K_M.gguf")
@@ -7064,9 +7055,8 @@ def test_codex_attach_check_fails_all_partial_local_answers(monkeypatch, capsys)
 
 
 def test_codex_attach_check_local_answers_take_exact_labels_only(monkeypatch):
-    # The local resolver accepts exact labels only, so a local answer must not
-    # let the filename-token tier vouch for a shorter quant; hub answers keep
-    # the looser tier that llama's own hub matching applies.
+    # The local resolver accepts exact labels only, so a local answer must not let the
+    # filename-token tier vouch for a shorter quant; hub answers keep that looser tier.
     rows = {"variants": [{"quant": "Q4_K_M", "filename": "model-Q4_K_M.gguf"}]}
     _fake_variants(monkeypatch, rows)
     with pytest.raises(typer.Exit):
@@ -7135,12 +7125,10 @@ def test_codex_attach_check_accepts_symlinked_split_shards(tmp_path, monkeypatch
     ],
 )
 def test_codex_attach_check_refuses_companion_gguf_files(monkeypatch, capsys, path):
-    # detect_gguf_model refuses these whatever the server's model roots are --
-    # the projector and the drafter name prefixes read the basename alone -- so
-    # the load would fall through to the transformers path and unload the
-    # resident llama-server before failing. The name settles it; probing would
-    # defer on a path that exists here. A drafter FOLDER is root-dependent and
-    # is asked about instead (see the nested-drafter test).
+    # detect_gguf_model refuses these under any model root -- projector and drafter
+    # name prefixes read the basename alone -- so the name settles it here; probing
+    # would defer on a path that exists. A drafter FOLDER is root-dependent instead
+    # (see the nested-drafter test).
     monkeypatch.setattr(
         start,
         "_http_json",
@@ -7213,9 +7201,9 @@ def test_codex_attach_check_trusts_raw_server_dir_answer(monkeypatch):
 
 
 def test_codex_attach_check_rejects_live_empty_raw_shorthand(monkeypatch, tmp_path, capsys):
-    # A live empty answer for the raw name is the server resolving it against
-    # its own cwd, which is exactly what the load does; unsloth/<name> is only
-    # reached when the raw name resolves to nothing, so it must not vouch here.
+    # A live empty answer for the raw name is the server resolving it against its own
+    # cwd, exactly what the load does; unsloth/<name> is only tried when the raw name
+    # resolves to nothing, so it must not vouch here.
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(start, "_hub_gguf_files", lambda repo: None)
     urls = []

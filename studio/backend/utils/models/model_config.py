@@ -2073,15 +2073,15 @@ def detect_gguf_model(path: str, model_root: Optional[str] = None) -> Optional[s
             gguf_files.append(f)
         gguf_files.sort(key = lambda f: f.stat().st_size, reverse = True)
 
-        # A torn split sorts by its lone shard's size and cannot load; prefer
-        # any complete candidate, keeping the old pick when nothing is whole.
+        # A torn split's lone shard can sort largest but can't load; prefer any complete
+        # candidate, keeping the old pick when nothing is whole.
         def _split_is_whole(f: Path) -> bool:
             if _GGUF_SPLIT_FILE_RE.match(f.name) is None:
                 return True
             if _colocated_first_split_shard(f)[1]:
                 return True
-            # _local_gguf_load_path follows a shard symlink and launches the
-            # target's set, so the alias's own empty directory proves nothing.
+            # Follows a shard symlink to the target's set, like _local_gguf_load_path --
+            # the alias's own empty directory proves nothing.
             try:
                 if not f.is_symlink():
                     return False
@@ -2526,9 +2526,8 @@ def list_local_gguf_variants(
 def _variant_matches(variant: str, *labels: str) -> bool:
     """Whether a requested variant names one of *labels*, case-insensitively.
 
-    Mirrors llama.cpp's quant-label comparison in
-    ``core.inference.llama_cpp._gguf_files_for_variant``, so a local path
-    resolves the same spelling the hub path does.
+    Mirrors llama.cpp's comparison (``core.inference.llama_cpp._gguf_files_for_variant``),
+    so a local path resolves the same spelling the hub path does.
     """
     wanted = str(variant).casefold()
     return any(wanted == str(label).casefold() for label in labels)
@@ -2541,19 +2540,13 @@ def _direct_gguf_for_variant(
 ) -> Optional[str]:
     """A loose ``.gguf`` file resolved by the quant it already is, or None.
 
-    ``_resolve_gguf_dir`` holds a file with no marked parent back, so the
-    variant-less load takes the file itself (``detect_gguf_model``) while a
-    request naming that same file's quant used to resolve to nothing -- the
-    identifier loaded without a variant and failed with it. Only the file's
-    own label matches, so a request for a different quant still finds
-    nothing, and detect_gguf_model still refuses the companions.
+    A marker-less parent leaves ``detect_gguf_model`` loading the file itself, so a
+    request naming its own quant must resolve too, or load and gate disagree. Only that
+    one label matches (companions still refused); any other quant finds nothing.
 
-    The label is matched case-insensitively, as llama.cpp's own resolution
-    (``_gguf_files_for_variant``) matches it: a quant label is not a filename,
-    so ``q4_k_m`` names the same weights as ``Q4_K_M``. Resolving it
-    case-sensitively here would leave a typed lowercase ``--gguf-variant``
-    unresolved, which loads nothing as GGUF and evicts the resident model on
-    the transformers path before failing.
+    Case-insensitive, mirroring llama.cpp's own resolution (``_gguf_files_for_variant``):
+    a lowercase ``--gguf-variant`` must resolve here too, or the load evicts the resident
+    model on the transformers path before failing.
     """
     f = Path(path).expanduser()
     if f.suffix.lower() != ".gguf" or not f.is_file():
@@ -2561,14 +2554,12 @@ def _direct_gguf_for_variant(
     context = f"{f.parent.name}/{f.name}"
     quant = _extract_quant_label(context)
     fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", f.name.rsplit(".", 1)[0])
-    # The hub-side extractor drops the -bpw modifier, so that shorter label is
-    # what listings advertise and clients echo; accept it like the hub download
-    # path does through its filename match.
+    # The hub-side extractor drops the -bpw modifier, so listings advertise and clients
+    # echo that shorter label; accept it like the hub download path's filename match does.
     stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
-    # The listing (and its default_variant) can name this same file by another
-    # of its own quant tokens -- the hub extractor prefers the K-quant in
-    # F16-checkpoint-Q4_K_M -- and there is only this one file to name, so any
-    # whole token of its basename resolves it.
+    # The listing can also name this file by another of its own quant tokens (the hub
+    # extractor prefers the K-quant in F16-checkpoint-Q4_K_M), so any whole basename
+    # token resolves it -- there's only this one file it could mean.
     stem_tokens = [
         f"{m.group(1) or ''}{m.group(2)}"
         for m in _GGUF_KNOWN_QUANT_RE.finditer(fallback_variant.rsplit("/", 1)[-1])
@@ -2608,11 +2599,10 @@ def _find_local_gguf_by_variant(
             continue
         quant = _extract_quant_label(rel)
         fallback_variant = re.sub(r"-\d{3,}-of-\d{3,}$", "", rel.rsplit(".", 1)[0])
-        # Listings advertise the hub-style bpw-stripped spelling; accept it
-        # here like the direct-file resolver does. The hub extractor can also
-        # prefer a different token of the same BASENAME (F16-checkpoint-Q4_K_M
-        # advertises Q4_K_M), so those tokens label the same file. A parent
-        # directory's quant is not one of them: Q8_0/model-Q4_K_M.gguf is the
+        # Listings advertise the hub-style bpw-stripped spelling; accept it here like the
+        # direct-file resolver does. The hub extractor can also prefer a different token of
+        # the same BASENAME (F16-checkpoint-Q4_K_M advertises Q4_K_M), so those tokens label
+        # the same file -- but not a parent directory's quant: Q8_0/model-Q4_K_M.gguf IS the
         # Q4_K_M file, and matching it for Q8_0 would load the wrong weights.
         stripped = re.sub(r"-[0-9]+(?:\.[0-9]+)?bpw$", "", quant, flags = re.IGNORECASE)
         basename_stem = fallback_variant.rsplit("/", 1)[-1]
