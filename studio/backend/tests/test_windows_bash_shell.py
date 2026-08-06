@@ -2059,7 +2059,7 @@ def test_a_payload_glued_to_the_switch_is_still_a_payload(windows_terminal, comm
     [
         "cmd //cC:\\Program equecho",
         "cmd /cC:\\tools\\pwsh.exe -Command ls",
-        "cmd /c\"rm\" fd",
+        'cmd /c"rm" fd',
         "| https://example.com/cmd //c./a==b/rm -rf dir",
     ],
 )

@@ -2545,7 +2545,6 @@ def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]
         )
         blocked.update(re.findall(pattern, lowered))
 
-
     def _at_command(index: int) -> bool:
         """Whether the shell runs ``tokens[index]``.
 
