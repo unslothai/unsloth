@@ -1245,8 +1245,9 @@ def _cmd_split(token: str, chars: str) -> "list[str]":
 
     Microsoft: "The ampersand &, pipe | and parentheses ( ) are special
     characters that must be preceded by the escape character ^ or quotation
-    marks when you pass them as arguments." The caret escapes whatever follows
-    it and is then dropped, so both halves of that have to be read together and
+    marks when you pass them as arguments." Both halves of that are read here:
+    a quoted one is data, and the caret escapes whatever follows it and is then
+    dropped, so both halves of that have to be read together and
     in one pass: a lookbehind for a single caret cannot tell `ok^&start`, where
     the & is an argument, from `ok^^&start`, where the first caret escapes the
     second and the & still separates two commands. Dropping the caret matters on
@@ -1255,14 +1256,23 @@ def _cmd_split(token: str, chars: str) -> "list[str]":
     """
     pieces: "list[str]" = []
     current: "list[str]" = []
+    quoted = False
     index = 0
     while index < len(token):
         char = token[index]
-        if char == "^" and index + 1 < len(token):
+        if char == "^" and index + 1 < len(token) and not quoted:
             current.append(token[index + 1])  # escaped, so never syntax
             index += 2
             continue
-        if char in chars:
+        if char == '"':
+            # The cmd lexer keeps the quotes, and quoting is the other way cmd
+            # documents for passing these as arguments, so `echo "x&start"`
+            # prints one word rather than running a second command.
+            quoted = not quoted
+            current.append(char)
+            index += 1
+            continue
+        if char in chars and not quoted:
             pieces.append("".join(current))
             current = []
             index += 1

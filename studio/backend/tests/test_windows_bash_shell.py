@@ -1027,6 +1027,26 @@ def test_a_bare_for_is_only_cmds_where_cmd_is_the_shell(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # Quoting is the other way cmd documents for passing its separators as
+        # arguments, and the cmd lexer keeps the quotes, so these print a word.
+        ('cmd /c echo "x&start" "" powershell', False),
+        ('cmd /c echo "x|start" "" pwsh', False),
+        # ...while the same text unquoted really does begin a command, and a
+        # quoted path holding one is still resolved to its program.
+        ('cmd /c echo x&start "" powershell', True),
+        (r'cmd /c start "" "C:\A&B\powershell.exe"', True),
+        ('start "" powershell&echo ok', True),
+    ],
+)
+def test_quotes_protect_cmd_separators_under_the_cmd_lexer(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
     "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
 )
 def test_windows_only_names_are_not_hard_blocked_off_windows(monkeypatch, command):
