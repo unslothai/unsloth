@@ -675,6 +675,7 @@ def test_the_cap_check_reads_the_whole_split():
 
 # --- what the fourth review round found -------------------------------------
 
+
 def test_a_raw_train_split_does_not_excuse_a_tokenized_eval_split(tmp_path, trl_has_guard):
     """`_unsloth_prep_truncates` is decided from the train split. A raw train set
     beside a pre-tokenized eval set skipped the whole truncation block, cleared
@@ -686,8 +687,9 @@ def test_a_raw_train_split_does_not_excuse_a_tokenized_eval_split(tmp_path, trl_
     trainer = _build(tmp_path, eval_dataset = _tokenized_dataset(tok))
 
     assert trainer.args.max_length is None, "the cap was consumed"
-    assert max(len(x) for x in trainer.eval_dataset["input_ids"]) \
-        == _MODEL_MAX_SEQ_LENGTH, "the eval split was left over the cap"
+    assert (
+        max(len(x) for x in trainer.eval_dataset["input_ids"]) == _MODEL_MAX_SEQ_LENGTH
+    ), "the eval split was left over the cap"
 
 
 def _tokenized_stream(tok, rows = 4096):
@@ -696,10 +698,12 @@ def _tokenized_stream(tok, rows = 4096):
 
     long_ids = tok("The quick brown fox. " * 200)["input_ids"]
     short_ids = long_ids[: _MODEL_MAX_SEQ_LENGTH // 2]
+
     def _gen():
         for i in range(rows):
             ids = long_ids if i == rows - 1 else short_ids
             yield {"input_ids": list(ids), "attention_mask": [1] * len(ids)}
+
     return Dataset.from_generator(_gen).to_iterable_dataset()
 
 
@@ -711,8 +715,7 @@ def test_a_pretokenized_stream_is_truncated_without_num_proc(tmp_path, trl_has_g
     if not trl_has_guard:
         pytest.skip("no guard in this TRL: the block under test is not generated at all")
     tok = _load_plain()[1]
-    trainer = _build(tmp_path, dataset = _tokenized_stream,
-                     dataset_num_proc = 4)
+    trainer = _build(tmp_path, dataset = _tokenized_stream, dataset_num_proc = 4)
 
     assert trainer.args.max_length is None
     widths = [len(row["input_ids"]) for row in trainer.train_dataset]
