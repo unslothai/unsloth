@@ -1304,15 +1304,45 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            return bool(_cols) and 'input_ids' in _cols\n"
                     "        except Exception:\n"
                     "            return False\n"
+                    # Read a row BACK. Every predicate above is a guess about what the dataset
+                    # will do; this is the one check that observes it. A split with no
+                    # `input_ids` is raw, so prep tokenizes it with the cap and it is fine.
+                    "    _unsloth_cap = args.max_length\n"
+                    "    def _unsloth_within_cap(_ds):\n"
+                    "        if _ds is None: return True\n"
+                    "        try:\n"
+                    "            for _row in _ds:\n"
+                    "                if 'input_ids' not in _row: return True\n"
+                    "                return len(_row['input_ids']) <= _unsloth_cap\n"
+                    "        except Exception:\n"
+                    "            return False\n"
+                    "        return True\n"
+                    # Each eval split counts. A tokenized eval split in a shape the truncation
+                    # cannot rewrite (with_transform, or an iterable with no column_names) is
+                    # left alone above, and prep will not re-tokenize rows that already carry
+                    # `input_ids`, so consuming `max_length` on the strength of the train split
+                    # alone let evaluation run over the cap.
+                    "    def _unsloth_splits_within_cap(_ev):\n"
+                    "        _splits = list(_ev.values()) if isinstance(_ev, dict) else [_ev]\n"
+                    "        return all(_unsloth_within_cap(_s) for _s in _splits)\n"
                     "    _unsloth_can_truncate = False\n"
                     "    if not _unsloth_prep_truncates and not _unsloth_skip_prepare:\n"
                     "        _unsloth_can_truncate = _unsloth_truncatable(train_dataset)\n"
                     "    if _unsloth_can_truncate:\n"
-                    "        _unsloth_cap = args.max_length\n"
                     # TRL forwards its preparation map_kwargs; honour the same setting so a large
-                    # pre-tokenized dataset is not rewritten single-process.
+                    # pre-tokenized dataset is not rewritten single-process. Resolved through the
+                    # same helper as every other map site: the config layer writes "run
+                    # in-process" as `dataset_num_proc = 1`, and datasets >= 4.1 builds a Pool(1)
+                    # for it, forking a tokenizer worker on the host that asked for none.
                     "        _unsloth_map_kw = {}\n"
-                    "        _unsloth_nproc = getattr(args, 'dataset_num_proc', None)\n"
+                    "        try:\n"
+                    "            try:\n"
+                    "                from unsloth_zoo.dataset_num_proc import get_dataset_num_proc as _unsloth_get_nproc\n"
+                    "            except ImportError:\n"
+                    "                from unsloth.dataset_num_proc import get_dataset_num_proc as _unsloth_get_nproc\n"
+                    "            _unsloth_nproc = _unsloth_get_nproc(getattr(args, 'dataset_num_proc', None))\n"
+                    "        except Exception:\n"
+                    "            _unsloth_nproc = None\n"
                     "        if _unsloth_nproc: _unsloth_map_kw['num_proc'] = _unsloth_nproc\n"
                     # Same rule as TRL's truncate_dataset: slice every per-row list column, so
                     # input_ids, labels, attention_mask and the masks stay aligned. Written out
@@ -1330,17 +1360,6 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "            return hasattr(_first, '__len__')\n"
                     "        def _unsloth_truncate_rows(_batch):\n"
                     "            return {_k: ([_v[:_unsloth_cap] for _v in _col] if _unsloth_is_sequence_column(_col) else _col) for _k, _col in _batch.items()}\n"
-                    # Read a row BACK after the rewrite. Every case above is a guess about what the
-                    # dataset will do; this is the one check that observes it. Anything still over
-                    # the cap keeps max_length and drops padding-free, so an unforeseen shape
-                    # degrades to the safe path instead of silently training uncapped.
-                    "        def _unsloth_within_cap(_ds):\n"
-                    "            try:\n"
-                    "                for _row in _ds:\n"
-                    "                    return len(_row['input_ids']) <= _unsloth_cap\n"
-                    "            except Exception:\n"
-                    "                return False\n"
-                    "            return True\n"
                     "        _unsloth_orig_train = train_dataset\n"
                     "        _unsloth_orig_eval = eval_dataset if 'eval_dataset' in locals() else None\n"
                     "        try:\n"
@@ -1352,7 +1371,7 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "                    eval_dataset = {_k: (_v.map(_unsloth_truncate_rows, batched = True, **_unsloth_map_kw) if _unsloth_truncatable(_v) else _v) for _k, _v in eval_dataset.items()}\n"
                     "                elif _unsloth_truncatable(eval_dataset):\n"
                     "                    eval_dataset = eval_dataset.map(_unsloth_truncate_rows, batched = True, **_unsloth_map_kw)\n"
-                    "            if _unsloth_within_cap(train_dataset):\n"
+                    "            if _unsloth_within_cap(train_dataset) and _unsloth_splits_within_cap(eval_dataset if 'eval_dataset' in locals() else None):\n"
                     "                _unsloth_prep_truncates = True\n"
                     "            else:\n"
                     "                train_dataset = _unsloth_orig_train\n"
@@ -1368,6 +1387,13 @@ def _patch_trl_rl_trainers_impl(trainer_file = "grpo_trainer"):
                     "        args.max_length = None\n"
                     "        max_length = None\n"
                     "    else:\n"
+                    # Turning padding-free off keeps `max_length` for TRL's collator, and that
+                    # collator does not truncate: for rows that already carry `input_ids`
+                    # nothing downstream enforces the cap. Before this block existed TRL's own
+                    # guard made the same configuration a hard error, so an observed overlength
+                    # row must stay one rather than become a silently uncapped run.
+                    "        if not _unsloth_skip_prepare and not (_unsloth_within_cap(train_dataset) and _unsloth_splits_within_cap(eval_dataset if 'eval_dataset' in locals() else None)):\n"
+                    "            raise ValueError('Unsloth: `max_length = ' + str(args.max_length) + '` cannot be enforced. Your dataset already carries `input_ids` and holds rows longer than that, and nothing downstream truncates pre-tokenized rows. Truncate it yourself before passing it in, or drop `max_length`.')\n"
                     "        print('Unsloth: Turning padding-free batching off, since your dataset is already tokenized and cannot be truncated here. Padding-free batching cannot enforce a `max_length` of ' + str(args.max_length) + '.')\n"
                     "        args.padding_free = False\n"
                 )

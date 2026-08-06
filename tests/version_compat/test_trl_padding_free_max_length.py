@@ -290,9 +290,12 @@ def test_a_with_transform_dataset_keeps_its_cap(tmp_path, trl_has_guard):
             }
         )
 
-    trainer = _build(tmp_path, dataset = _transformed)
-    assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH, "the cap must survive"
-    assert trainer.args.padding_free is False, "padding-free must be dropped instead"
+    # Dropping padding-free keeps `max_length` for TRL's collator, and that collator
+    # has never truncated on any TRL from 0.22.2 to main: truncation lives only in
+    # _prepare_dataset, which returns pre-tokenized rows untouched. So there is no
+    # enforcement path left here, and construction must fail rather than run uncapped.
+    with pytest.raises(ValueError, match = "cannot be enforced"):
+        _build(tmp_path, dataset = _transformed)
 
 
 def test_a_raw_eval_split_is_left_for_the_tokenizer(tmp_path, trl_has_guard):
@@ -412,22 +415,83 @@ def _transformed_dataset(tok):
     )
 
 
-def test_transformed_datasets_keep_their_length_cap(tmp_path, trl_has_guard):
-    """An on-access tokenizing transform is an unprepared dataset too."""
-    trainer = _build(tmp_path, dataset = _transformed_dataset)
-    args = trainer.args
-    rows = [trainer.train_dataset[i] for i in range(2)]
+def test_transformed_datasets_are_refused_rather_than_run_uncapped(tmp_path, trl_has_guard):
+    """An on-access tokenizing transform cannot be truncated, and nothing below
+    would enforce the cap either, so this is a hard error and not a warning.
 
-    assert trainer.train_dataset.column_names == ["text"], "transform should hide the schema"
-    assert "input_ids" in rows[0], "rows should already be tokenized"
-    assert args.max_length == _MODEL_MAX_SEQ_LENGTH, "the length cap must not be cleared"
+    Before this handshake existed TRL's own guard already refused the same
+    configuration; turning padding-free off must not quietly turn that into a
+    run that trains on rows longer than the user asked for."""
+    if not trl_has_guard:
+        # No guard in this TRL: the block is never generated, so nothing changes.
+        trainer = _build(tmp_path, dataset = _transformed_dataset)
+        assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH
+        return
+    with pytest.raises(ValueError, match = "cannot be enforced"):
+        _build(tmp_path, dataset = _transformed_dataset)
+
+
+def _short_transformed_dataset(tok):
+    """The same shape, but the rows fit. Nothing is wrong here."""
+    from datasets import Dataset
+
+    ids = tok("The quick brown fox.")["input_ids"][: _MODEL_MAX_SEQ_LENGTH // 2]
+    base = Dataset.from_list([{"text": "The quick brown fox."}] * 4)
+    return base.with_transform(
+        lambda batch: {
+            "input_ids": [list(ids)] * len(batch["text"]),
+            "attention_mask": [[1] * len(ids)] * len(batch["text"]),
+        }
+    )
+
+
+def test_a_transformed_dataset_within_the_cap_is_not_refused(tmp_path, trl_has_guard):
+    """The refusal is on an OBSERVED overlength row, not on the dataset shape."""
+    trainer = _build(tmp_path, dataset = _short_transformed_dataset)
+    assert trainer.args.max_length == _MODEL_MAX_SEQ_LENGTH, "the cap must survive"
     if trl_has_guard:
-        assert args.padding_free is False, "padding-free must be dropped, it disables truncation"
-    assert max(len(r["input_ids"]) for r in rows) > _MODEL_MAX_SEQ_LENGTH
-    if getattr(trainer.data_collator, "max_length", None) is not None:
-        assert (
-            _collated_width(trainer) == _MODEL_MAX_SEQ_LENGTH
-        ), "overlength rows reached the model"
+        assert trainer.args.padding_free is False
+
+
+def test_a_tokenized_eval_split_that_cannot_be_truncated_is_refused(
+    tmp_path, trl_has_guard
+):
+    """The train split truncates cleanly, so the cap was consumed on its word
+    alone. A transformed eval split already yields `input_ids`, so prep never
+    re-tokenizes it and evaluation ran over the cap."""
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    tok = _load_plain()[1]
+    with pytest.raises(ValueError, match = "cannot be enforced"):
+        _build(
+            tmp_path,
+            dataset = _tokenized_dataset,
+            eval_dataset = _transformed_dataset(tok),
+        )
+
+
+def test_a_transformed_eval_split_within_the_cap_is_fine(tmp_path, trl_has_guard):
+    """And the train split still gets its cap consumed, since nothing is over."""
+    if not trl_has_guard:
+        pytest.skip("no guard in this TRL: the block under test is not generated at all")
+    tok = _load_plain()[1]
+    trainer = _build(
+        tmp_path,
+        dataset = _tokenized_dataset,
+        eval_dataset = _short_transformed_dataset(tok),
+    )
+    assert trainer.args.max_length is None
+
+
+def test_the_truncation_map_resolves_the_serial_worker_sentinel():
+    """The config layer writes "run in-process" as `dataset_num_proc = 1`, and
+    datasets >= 4.1 builds a Pool(1) for it. Every other map site converts that
+    back through the helper; this one forwarded the raw sentinel and could fork a
+    tokenizer worker on the host that asked for none."""
+    block = _padding_free_codegen_block()
+    assert "get_dataset_num_proc" in block, "the map site must resolve through the helper"
+    assert "_unsloth_map_kw['num_proc'] = _unsloth_nproc" in block
+    assert "_unsloth_map_kw['num_proc'] = getattr(args, 'dataset_num_proc'" not in block
 
 
 def _pristine_sft_config_cls():
