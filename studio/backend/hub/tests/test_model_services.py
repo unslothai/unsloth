@@ -1022,7 +1022,11 @@ def test_cached_models_scan_keeps_a_complete_pipeline_loadable(monkeypatch, tmp_
             _file("model_index.json", 900),
             _file("vae/diffusion_pytorch_model.safetensors", 300_000_000),
             _file("text_encoder/model.safetensors", 900_000_000),
-            _file("transformer/diffusion_pytorch_model-00001-of-00002.safetensors", 4_000_000_000),
+            # Unsharded, because this fixture stands for a COMPLETE pipeline. It used to name a
+            # lone "-00001-of-00002" shard with no index, which is not loadable at all: with no
+            # index diffusers reads the component as unsharded and asks for the plain name, never
+            # the numbered file. The scan now calls that partial, as it always should have.
+            _file("transformer/diffusion_pytorch_model.safetensors", 4_000_000_000),
         ],
         task = "text-to-image",
     )

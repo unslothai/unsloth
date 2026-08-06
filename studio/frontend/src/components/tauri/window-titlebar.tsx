@@ -97,7 +97,7 @@ function WindowControlButton({
       title={label}
       onClick={onClick}
       className={cn(
-        "relative z-[80] inline-flex size-8 items-center justify-center rounded-[10px] text-muted-foreground/90 transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+        "relative z-[80] inline-flex size-[30px] items-center justify-center rounded-[10px] text-muted-foreground/90 transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         className,
       )}
     >
@@ -122,7 +122,7 @@ export function DesktopTitlebarNavigation({
     event.stopPropagation();
   };
   const buttonClass =
-    "inline-flex size-[33px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
+    "inline-flex size-[30px] shrink-0 items-center justify-center rounded-[10px] text-nav-icon-idle transition-colors hover:bg-nav-surface-hover hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring";
 
   return (
     <div
@@ -153,7 +153,7 @@ export function DesktopTitlebarNavigation({
           />
         </button>
       ) : (
-        <div aria-hidden="true" className="size-[33px] shrink-0" />
+        <div aria-hidden="true" className="size-[30px] shrink-0" />
       )}
       <button
         type="button"
