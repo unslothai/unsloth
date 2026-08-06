@@ -917,6 +917,59 @@ def test_a_quoted_group_opener_belongs_to_the_word(monkeypatch, command, blocked
 
 
 @pytest.mark.parametrize(
+    ("command", "blocked", "bash"),
+    [
+        # A bare redirection operator carries its target in the next word, and
+        # that word was taking the command position the operator had kept.
+        ('cmd //c > nul start "" powershell', True, r"C:\Program Files\Git\bin\bash.exe"),
+        ('cmd //c 2> nul start "" pwsh', True, r"C:\Program Files\Git\bin\bash.exe"),
+        ('cmd //c >nul start "" powershell', True, r"C:\Program Files\Git\bin\bash.exe"),
+        # The set closer glues to `do` under the cmd lexer, and the body still
+        # runs: cmd reads the bracket as its own syntax either way.
+        ('cmd /c for %i in (x)do start "" powershell', True, None),
+        ('cmd /c for %i in (x) do start "" pwsh', True, None),
+        # An explicit extension is a batch file in the working tree, whose
+        # arguments are its data; the launcher is the bare builtin.
+        ("cmd /c start.cmd powershell", False, None),
+        ("cmd /c start.bat rm", False, None),
+        ('cmd /c start "" powershell', True, None),
+    ],
+)
+def test_cmd_reads_its_own_brackets_targets_and_extensions(monkeypatch, command, blocked, bash):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize("bash", [r"C:\Program Files\Git\bin\bash.exe", None])
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # `for /f ... in ('CMD')` runs CMD as a child and reads its output, so
+        # the set is a command position the token scan sees only as data. The
+        # escapes there are the outer parse's, so the child is handed a line
+        # with them applied and the `^&` really does separate.
+        ("""cmd /c for /f %i in ('echo x ^& start "" powershell') do echo %i""", True),
+        ("""cmd /c for /f %i in ('start "" pwsh') do echo %i""", True),
+        ("""cmd /c for /f "usebackq" %i in (`start "" powershell`) do echo %i""", True),
+    ],
+)
+def test_for_f_runs_its_quoted_set_as_a_command(monkeypatch, bash, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+def test_an_unquoted_for_set_is_data_under_the_cmd_lexer(monkeypatch):
+    # Only a quoted set is a command; a plain one is the list to iterate. This
+    # is the cmd lexer alone, because under Git Bash the parentheses are bash's
+    # own and it would run the words inside them in a subshell.
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert not tools._find_blocked_commands("cmd /c for /f %i in (start powershell) do echo %i")
+
+
+@pytest.mark.parametrize(
     "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
 )
 def test_windows_only_names_are_not_hard_blocked_off_windows(monkeypatch, command):

@@ -1232,6 +1232,12 @@ _URL_SCHEME_RE = re.compile(r"[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
 _CMD_COMPARE_OPS = frozenset({"equ", "neq", "lss", "leq", "gtr", "geq"})
 # ...and its tests that take one operand of their own before the command.
 _CMD_TWO_WORD_TESTS = frozenset({"exist", "defined", "errorlevel", "cmdextversion"})
+# `for /f ... in ('CMD')` runs CMD and reads its output, the command-substitution
+# form documented for `for`; usebackq spells the same thing with backquotes.
+_CMD_FOR_SUBSTITUTION_RE = re.compile(
+    r"\bfor\s+/f\b[^(]*\(\s*(?:'(?P<body>[^']*)'|`(?P<alt>[^`]*)`)\s*\)",
+    re.IGNORECASE,
+)
 
 
 def _cmd_split(token: str, chars: str) -> "list[str]":
@@ -1578,10 +1584,22 @@ def _find_blocked_commands(command: str) -> set[str]:
         return _cmd_word_base(_cmd_split(tokens[index], _CMD_SEPARATORS)[-1]) == "start"
 
     def _cmd_word_base(word: str) -> str:
-        """``word`` as cmd resolves it: escapes applied, then the plain basename."""
-        # `@` suppresses echoing without changing which command runs, so
-        # `cmd /c @start "" powershell` is still a start.
-        return _token_basename(_cmd_split(word, "")[0].lstrip("@"))
+        """``word`` as cmd resolves a command keyword.
+
+        Escapes applied and `@` dropped, since it suppresses echoing without
+        changing which command runs, so `cmd /c @start "" powershell` is a
+        start. The extension is kept, unlike a program name: an explicit
+        `start.cmd` is a batch file in the working tree and its arguments are
+        that file's data, where the launcher is the bare builtin.
+
+        A group bracket is cmd's own syntax and can sit on either side of the
+        word, so the piece between brackets is what it runs: the set closer in
+        `for %i in (x)do start "" powershell` leaves `(x)do` as one token under
+        the cmd lexer, whose `do` still hands the body along.
+        """
+        plain = _cmd_split(word, "")[0].lstrip("@").strip(";&|`{}")
+        pieces = [piece for piece in re.split(r"[()]", plain) if piece]
+        return os.path.basename((pieces[-1] if pieces else "").replace("\\", "/")).lower()
 
     def _cmd_condition_words(index: int) -> int:
         """How many words cmd's `if` condition occupies, starting at ``index``.
@@ -1636,6 +1654,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         expect = True  # the next word is one cmd runs
         control = False  # an `if` or a `for` is open, so else/do hand off
         skip = 0  # condition words still to consume
+        skip_operand = False  # the word after a bare redirection operator
         for index in range(begin, len(tokens)):
             token = tokens[index]
             if _looks_like_separator(token):
@@ -1651,7 +1670,13 @@ def _find_blocked_commands(command: str) -> set[str]:
             # A redirection is bash's, consumed before cmd is handed its
             # arguments, so it holds the command position rather than taking it:
             # `cmd //c >nul start "" powershell` really does launch.
+            if skip_operand:
+                skip_operand = False
+                continue
             if _REDIR_PREFIX_RE.match(token):
+                # `> nul` is two words, and the target took the command position
+                # the operator had just been allowed to keep.
+                skip_operand = not _REDIR_PREFIX_RE.sub("", token)
                 continue
             # MSYS re-quotes an argument holding whitespace when it builds
             # cmd's command line, and quoting is what makes cmd's separators
@@ -1949,6 +1974,16 @@ def _find_blocked_commands(command: str) -> set[str]:
 
     # `cmd /c start "" prog` puts prog in a command position the scan above
     # sees only as an argument, so screen what start actually launches.
+    # `for /f %i in ('CMD') do ...` runs CMD as a child command and reads its
+    # output, so the set is a command position the token scan sees only as data.
+    # Backquotes are the same form under usebackq.
+    for match in _CMD_FOR_SUBSTITUTION_RE.finditer(command):
+        # The escapes are the outer parse's, so cmd hands the child a line with
+        # them already applied: `echo x ^& start ""` reaches it as a real
+        # separator, and reading it raw left the start an operand of echo.
+        body = match.group("body") or match.group("alt") or ""
+        blocked |= _find_blocked_commands(_cmd_split(body, "")[0])
+
     title_tokens: "frozenset[int] | None" = None
     # When cmd is the shell the whole line is its command line, so it is read
     # with cmd's grammar rather than the POSIX command positions above, which
