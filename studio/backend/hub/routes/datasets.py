@@ -65,8 +65,7 @@ async def list_cached_datasets(current_subject: str = Depends(get_current_subjec
 
 @router.post("/local-options", response_model = LocalDatasetOptionsResponse)
 def get_local_dataset_options(
-    request: LocalDatasetOptionsRequest,
-    current_subject: str = Depends(get_current_subject),
+    request: LocalDatasetOptionsRequest, current_subject: str = Depends(get_current_subject)
 ) -> LocalDatasetOptionsResponse:
     return local_options.local_dataset_options(request)
 

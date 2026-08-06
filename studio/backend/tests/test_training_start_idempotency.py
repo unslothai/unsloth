@@ -239,6 +239,7 @@ def test_cancel_racing_proc_start_uses_the_committed_job_scope():
             return False
 
     process = CommittedProcess()
+
     def run_start():
         result["start"] = backend.start_training(
             "job-spawning",

@@ -355,9 +355,7 @@ def read_manifest(
     raw_variant = data.get("variant")
     transport = data.get("transport")
     commit_hash = normalized_commit_hash(data.get("commit_hash"))
-    metadata_derived = bool(
-        has_metadata_attestation and commit_hash is not None
-    )
+    metadata_derived = bool(has_metadata_attestation and commit_hash is not None)
     return Manifest(
         repo_type = repo_type,
         repo_id = str(data.get("repo_id", repo_id)),
@@ -544,8 +542,7 @@ def migrate_ordinary_v2_manifests_for_downgrade() -> int:
                     or not (
                         recorded_hub_cache is None
                         or (
-                            isinstance(recorded_hub_cache, str)
-                            and bool(recorded_hub_cache.strip())
+                            isinstance(recorded_hub_cache, str) and bool(recorded_hub_cache.strip())
                         )
                     )
                 ):

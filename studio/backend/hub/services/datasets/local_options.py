@@ -54,17 +54,10 @@ def _split_names(value: Any) -> list[str]:
     if isinstance(value, dict):
         candidates: Iterable[Any] = value.keys()
     elif isinstance(value, list):
-        candidates = (
-            item.get("name") if isinstance(item, dict) else item
-            for item in value
-        )
+        candidates = (item.get("name") if isinstance(item, dict) else item for item in value)
     else:
         return []
-    return [
-        name
-        for item in candidates
-        if (name := _valid_option(item, _SPLIT_RE)) is not None
-    ]
+    return [name for item in candidates if (name := _valid_option(item, _SPLIT_RE)) is not None]
 
 
 def _config_name(value: Any, fallback: Any = None) -> Optional[str]:
@@ -137,7 +130,12 @@ def _add_config_options(options: set[tuple[str, str]], payload: Any) -> None:
                 return
 
 
-def _safe_json_file(path: Path, root: Path, *, allow_snapshot_symlink: bool = False) -> Any:
+def _safe_json_file(
+    path: Path,
+    root: Path,
+    *,
+    allow_snapshot_symlink: bool = False,
+) -> Any:
     try:
         if not path.is_file() or (path.is_symlink() and not allow_snapshot_symlink):
             return None
@@ -211,11 +209,7 @@ def _read_card_metadata(path: Path) -> Optional[dict[str, Any]]:
         lines = path.read_text(encoding = "utf-8").splitlines()
         if not lines or lines[0].strip() != "---":
             return None
-        end = next(
-            index
-            for index, line in enumerate(lines[1:], start = 1)
-            if line.strip() == "---"
-        )
+        end = next(index for index, line in enumerate(lines[1:], start = 1) if line.strip() == "---")
         from yaml import YAMLError, safe_load
 
         try:
@@ -249,9 +243,7 @@ def _snapshot_options(snapshot: Path) -> set[tuple[str, str]]:
     return options
 
 
-def _sorted_options(
-    options: set[tuple[str, str]], dataset: str = ""
-) -> list[DatasetSplitOption]:
+def _sorted_options(options: set[tuple[str, str]], dataset: str = "") -> list[DatasetSplitOption]:
     ordered = sorted(
         options,
         key = lambda item: (

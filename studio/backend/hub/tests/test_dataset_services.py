@@ -570,12 +570,15 @@ def test_legacy_tier1_fallback_preserves_single_source_file_order():
         )
         is None
     )
-    assert formatting._select_tier1_repo_file(
-        files,
-        subset = None,
-        train_split = "train",
-        allow_unlabeled_fallback = True,
-    ) == "alpaca_data_cleaned.json"
+    assert (
+        formatting._select_tier1_repo_file(
+            files,
+            subset = None,
+            train_split = "train",
+            allow_unlabeled_fallback = True,
+        )
+        == "alpaca_data_cleaned.json"
+    )
 
 
 def test_legacy_tier1_fallback_does_not_guess_between_multiple_files():

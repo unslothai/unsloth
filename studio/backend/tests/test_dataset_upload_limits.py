@@ -83,10 +83,7 @@ def test_legacy_format_alias_preserves_body_token(monkeypatch):
     assert captured["allow_unlabeled_tier1_fallback"] is True
 
 
-def test_legacy_format_alias_preserves_single_source_file_column_order(
-    monkeypatch,
-    tmp_path,
-):
+def test_legacy_format_alias_preserves_single_source_file_column_order(monkeypatch, tmp_path):
     rows = [
         {
             "instruction": "Say hello",

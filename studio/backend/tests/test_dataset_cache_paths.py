@@ -994,9 +994,7 @@ def test_download_manifest_stays_readable_by_pre_pr_v1_reader(monkeypatch, tmp_p
     assert manifest.metadata_derived is True
 
 
-def test_startup_migrates_existing_ordinary_v2_manifests_across_cache_scopes(
-    monkeypatch, tmp_path
-):
+def test_startup_migrates_existing_ordinary_v2_manifests_across_cache_scopes(monkeypatch, tmp_path):
     active_cache = tmp_path / "active-hub"
     inactive_cache = tmp_path / "inactive-hub"
     active_cache.mkdir()

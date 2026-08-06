@@ -73,9 +73,7 @@ def test_processed_cache_options_are_local_deduplicated_and_non_train_capable(
     ]
 
 
-def test_processed_cache_options_ignore_symlinked_and_malformed_metadata(
-    monkeypatch, tmp_path
-):
+def test_processed_cache_options_ignore_symlinked_and_malformed_metadata(monkeypatch, tmp_path):
     cache_root = tmp_path / "datasets"
     processed = cache_root / "org___data"
     _write_processed_info(

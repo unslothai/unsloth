@@ -1224,8 +1224,7 @@ class TrainingBackend:
                 and self.current_job_id == existing.job_id
             )
             if existing.state == "rejected" and (
-                not owns_current
-                or existing.error_code == _START_CANCELLED_ERROR_CODE
+                not owns_current or existing.error_code == _START_CANCELLED_ERROR_CODE
             ):
                 if self._status_start_request_id == start_request_id:
                     self._status_start_request_id = None
@@ -1257,10 +1256,7 @@ class TrainingBackend:
                     if self._status_start_request_id == start_request_id:
                         self._status_start_request_id = None
                     return "cancelled", existing
-                if (
-                    not owns_current
-                    or self._run_finished_locked()
-                ):
+                if not owns_current or self._run_finished_locked():
                     return "superseded", existing
                 expected_job_id = existing.job_id
             if not self._stop_training_with_lifecycle_reserved(
@@ -1300,11 +1296,7 @@ class TrainingBackend:
         if start_request_id is None:
             return True
         record = self._start_requests.get(start_request_id)
-        return bool(
-            record is not None
-            and record.state == "pending"
-            and record.job_id == job_id
-        )
+        return bool(record is not None and record.state == "pending" and record.job_id == job_id)
 
     def get_start_request(self, start_request_id: str) -> Optional[TrainingStartRequestRecord]:
         with self._lock:

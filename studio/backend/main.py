@@ -610,7 +610,6 @@ async def lifespan(app: FastAPI):
     reap_hub_orphan_workers()
     try:
         from hub.utils.download_manifest import migrate_ordinary_v2_manifests_for_downgrade
-
         migrated_manifests = migrate_ordinary_v2_manifests_for_downgrade()
         if migrated_manifests:
             _lifespan_log.info(
