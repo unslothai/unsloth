@@ -2,20 +2,13 @@
 # Copyright 2026-present the Unsloth AI Inc. team.
 """The offline guard must not outlive the suite that asked for it.
 
-`tests/security/conftest.py` replaces `socket.socket` so a scanner reaching the
-internet fails loudly. It was session-scoped: a directory conftest limits WHICH
-tests a fixture applies to, but a session-scoped one still tears down when the
-session ends, so the patch stayed installed for everything that ran afterwards.
-
-`security` sorts before `version_compat` and `vllm_compat`, whose pinned-symbol
-checks fetch upstream sources to detect API drift, so a full run lost about 1300
-of them to
-
-    RuntimeError: network access blocked by tests/security/conftest.py
-
-Every one of them passed on its own and failed in the suite, which reads as
-upstream drift rather than as a fixture. Pinned here so the scope cannot quietly
-go back.
+`tests/security/conftest.py` replaces `socket.socket`. It was session-scoped: a
+directory conftest limits WHICH tests a fixture applies to, but a session-scoped
+one still tears down at session end, so the patch stayed installed for
+everything after. `security` sorts before `version_compat` and `vllm_compat`,
+whose pinned-symbol checks fetch upstream sources, so a full run lost about 1300
+of them to `RuntimeError: network access blocked by tests/security/conftest.py`
+-- each passing alone, which reads as upstream drift rather than as a fixture.
 """
 
 from __future__ import annotations
@@ -91,23 +84,18 @@ def test_the_original_socket_is_what_gets_restored():
 def test_the_finalizer_really_restores_the_original():
     """Drive the fixture's own generator, so teardown is observed.
 
-    Every assertion above runs while the fixture is still active, so they prove
-    the guard is installed and prove nothing about what the `finally` hands
-    back. Emptying that body would leave all of them green while the
-    cross-suite leak returned.
+    Every assertion above runs while the fixture is still active, so emptying
+    the `finally` leaves them all green while the cross-suite leak returns.
     """
     import tests.security.conftest as C
 
-    # The real class, from `_BlockedSocket`'s own base -- NOT `socket.socket` as
-    # it stands here, which is already the blocker because this test runs under
-    # the autouse fixture. Reading it live would compare the patch with itself
-    # and pass however broken the finalizer is.
+    # From `_BlockedSocket`'s base, not live: `socket.socket` here is already
+    # the blocker, so reading it would compare the patch with itself.
     real = C._BlockedSocket.__bases__[0]
     assert real is not C._BlockedSocket
 
-    # Stand the guard down first. The fixture captures whatever is installed
-    # when it starts, so driving it from under itself would nest a second
-    # install and "restore" the blocker -- true, and meaningless.
+    # Stand the guard down first: the fixture captures whatever is installed
+    # when it starts, so driving it from under itself would "restore" the blocker.
     outer, socket.socket = socket.socket, real
     try:
         generator = C.network_blocker.__wrapped__()
@@ -120,12 +108,9 @@ def test_the_finalizer_really_restores_the_original():
 
 
 def test_a_later_suite_gets_a_working_socket_back(tmp_path):
-    """End to end, in a nested pytest run: the security suite first, an
-    ordinary test after it, and the second one must see a real socket.
-
-    This is the shape of the original bug -- `security` sorts before
-    `version_compat` and `vllm_compat` -- reproduced in miniature so a
-    regression fails here rather than 1300 tests away.
+    """The original bug in miniature, in a nested pytest run: the security
+    suite first, an ordinary test after it, and the second must see a real
+    socket. A regression fails here rather than 1300 tests away.
     """
     import subprocess
     import sys
