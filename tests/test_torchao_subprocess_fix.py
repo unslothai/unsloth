@@ -164,8 +164,20 @@ def test_it_writes_atomically():
     SyntaxError at startup."""
     import inspect
 
-    src = inspect.getsource(IF.propagate_torchao_fix_to_subprocesses)
+    src = inspect.getsource(IF._write_hook_atomically)
     assert "os.replace" in src
+
+
+def test_the_temporary_file_cannot_be_pre_empted():
+    """A predictable temporary name can be pre-created as a symlink by anyone
+    who could write into the directory before it was tightened."""
+    import inspect
+
+    src = inspect.getsource(IF._write_hook_atomically)
+    assert "O_EXCL" in src
+    assert "O_NOFOLLOW" in src
+    assert "os.urandom" in src
+    assert "getpid" not in src
 
 
 def test_it_is_idempotent_on_pythonpath():
@@ -639,6 +651,63 @@ def test_a_planted_hook_is_replaced_even_when_it_matches(monkeypatch, tmp_path, 
                 delattr(F, name)
 
 
+def test_a_pre_created_temporary_symlink_is_not_followed(monkeypatch, tmp_path):
+    """The other half of a once-world-writable directory: the temporary file
+    the hook is staged through. A predictable name lets someone leave a
+    symlink behind, and os.replace would install that link as the hook."""
+    if not hasattr(os, "getuid"):
+        pytest.skip("POSIX symlinks only")
+    import stat as _stat
+
+    import torch.nn.functional as F
+
+    for name in IF._TORCHAO_TORCH_SYMBOLS:
+        if getattr(getattr(F, name, None), "__unsloth_placeholder__", False):
+            delattr(F, name)
+    if all(IF._torch_really_has(F, n) for n in IF._TORCHAO_TORCH_SYMBOLS):
+        pytest.skip("this torch provides every symbol; nothing to stage")
+
+    monkeypatch.setattr(
+        IF, "importlib_version", lambda name: "0.18.0" if name == "torchao" else "0"
+    )
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    monkeypatch.delenv("PYTHONPATH", raising = False)
+
+    loose = tmp_path / ("unsloth_subprocess_import_fix-%d" % os.getuid())
+    loose.mkdir()
+    os.chmod(loose, 0o777)
+    theirs = tmp_path / "planted_elsewhere.py"
+    theirs.write_text("# theirs\n", encoding = "utf-8")
+    os.symlink(theirs, loose / ("sitecustomize.py.%d.tmp" % os.getpid()))
+
+    try:
+        assert IF.propagate_torchao_fix_to_subprocesses() == str(loose)
+        target = loose / "sitecustomize.py"
+        info = os.lstat(target)
+        assert _stat.S_ISREG(info.st_mode), "installed the planted symlink as the hook"
+        assert not _stat.S_IMODE(info.st_mode) & 0o022, oct(info.st_mode)
+        assert target.read_text(encoding = "utf-8") == IF._subprocess_sitecustomize_source()
+        # Their file was never opened, so rewriting it reaches nothing.
+        assert theirs.read_text(encoding = "utf-8") == "# theirs\n"
+    finally:
+        for name in IF._TORCHAO_TORCH_SYMBOLS:
+            if getattr(getattr(F, name, None), "__unsloth_placeholder__", False):
+                delattr(F, name)
+
+
+def test_the_staging_file_is_private_and_leaves_nothing_behind(tmp_path):
+    directory = tmp_path / "dir"
+    directory.mkdir(mode = 0o700)
+    target = directory / "sitecustomize.py"
+    IF._write_hook_atomically(str(target), "MARK = 1\n")
+    assert target.read_text(encoding = "utf-8") == "MARK = 1\n"
+    assert [p.name for p in directory.iterdir()] == ["sitecustomize.py"]
+    if hasattr(os, "getuid"):
+        import stat as _stat
+
+        assert oct(_stat.S_IMODE(os.lstat(target).st_mode)) == oct(0o600)
+
+
 # ---- the chained sitecustomize keeps its own name -------------------------
 
 
@@ -697,3 +766,68 @@ def test_a_broken_chained_module_does_not_keep_our_name(staged, tmp_path):
     )
     assert "STILL OK" in p.stdout, p.stdout + p.stderr
     assert "MARK <<none>>" in p.stdout, p.stdout + p.stderr
+
+
+# ---- a second spelling of our own directory on sys.path -------------------
+
+
+_COUNT_HOOKS = (
+    "import sys;"
+    "print('HOOKS', sum(1 for h in sys.meta_path"
+    " if type(h).__name__ == '_TorchaoImportHook'))"
+)
+
+
+def test_a_symlink_alias_of_our_own_directory_is_not_chained(staged, tmp_path):
+    """A string compare treats an alias as somebody else's sitecustomize, so
+    the two spellings load and execute one another until the stack runs out.
+    Every unwound level then installs another finder."""
+    if not hasattr(os, "symlink"):
+        pytest.skip("symlinks only")
+    site, _fake = staged
+    alias = tmp_path / "alias"
+    try:
+        os.symlink(site, alias, target_is_directory = True)
+    except (OSError, NotImplementedError) as exception:
+        pytest.skip(f"cannot create a directory symlink here ({exception})")
+
+    p = _child(_COUNT_HOOKS, [alias, site])
+    assert "HOOKS 1" in p.stdout, p.stdout + p.stderr
+    assert "RecursionError" not in p.stderr, p.stderr
+
+
+def test_a_symlinked_copy_of_the_hook_file_is_not_chained(staged, tmp_path):
+    """Same hazard one level down: the directory differs, but the
+    `sitecustomize.py` inside it is this very file."""
+    if not hasattr(os, "symlink"):
+        pytest.skip("symlinks only")
+    site, _fake = staged
+    other = tmp_path / "other"
+    other.mkdir()
+    try:
+        os.symlink(site / "sitecustomize.py", other / "sitecustomize.py")
+    except (OSError, NotImplementedError) as exception:
+        pytest.skip(f"cannot create a symlink here ({exception})")
+
+    p = _child(_COUNT_HOOKS, [site, other])
+    assert "HOOKS 1" in p.stdout, p.stdout + p.stderr
+    assert "RecursionError" not in p.stderr, p.stderr
+
+
+def test_an_aliased_directory_still_chains_to_a_real_sitecustomize(staged, tmp_path):
+    """The canonical compare must reject only ourselves, not everyone else."""
+    if not hasattr(os, "symlink"):
+        pytest.skip("symlinks only")
+    site, fake = staged
+    alias = tmp_path / "alias"
+    try:
+        os.symlink(site, alias, target_is_directory = True)
+    except (OSError, NotImplementedError) as exception:
+        pytest.skip(f"cannot create a directory symlink here ({exception})")
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "sitecustomize.py").write_text("print('OTHER SITECUSTOMIZE RAN')\n", encoding = "utf-8")
+
+    p = _child("import torchao; print('OK')", [alias, site, other, fake])
+    assert "OTHER SITECUSTOMIZE RAN" in p.stdout, p.stdout + p.stderr
+    assert "OK" in p.stdout, p.stdout + p.stderr

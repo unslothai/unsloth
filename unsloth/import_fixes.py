@@ -3559,21 +3559,43 @@ import sys
 _HERE = os.path.dirname(os.path.abspath(__file__))
 
 
+def _same_path(a, b):
+    """Two spellings of one file or directory, symlinks included."""
+    try:
+        if os.path.samefile(a, b):
+            return True
+    except Exception:
+        pass
+    return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+
+
 def _chain_to_the_real_sitecustomize():
     """Do not shadow somebody else's sitecustomize."""
     import importlib.util
     from importlib.machinery import PathFinder
-    here = os.path.normcase(_HERE)
     for entry in sys.path:
         # Ask the import system rather than probing for a filename, so the
         # package (`sitecustomize/__init__.py`) and .pyc forms chain too.
         try:
-            if not entry or os.path.normcase(os.path.abspath(entry)) == here:
+            # Canonical comparison, not a string one: a symlink alias of our
+            # own directory also on sys.path would otherwise look like a
+            # different location, and the two spellings would chain to each
+            # other until the stack ran out.
+            if not entry or _same_path(entry, _HERE):
                 continue
             spec = PathFinder.find_spec("sitecustomize", [entry])
         except Exception:
             continue
         if spec is None or spec.loader is None:
+            continue
+        # Second guard for the same hazard, in case the alias is the file
+        # rather than the directory: never chain to this very hook.
+        try:
+            origin = getattr(spec, "origin", None)
+            if origin and (_same_path(origin, __file__)
+                           or _same_path(os.path.dirname(origin), _HERE)):
+                continue
+        except Exception:
             continue
         try:
             mod = importlib.util.module_from_spec(spec)
@@ -3720,6 +3742,53 @@ except Exception:
 '''
 
 
+def _write_hook_atomically(target, source):
+    """Put `source` at `target` without ever writing through a symlink.
+
+    A predictable temporary name (`sitecustomize.py.<pid>.tmp`) can be
+    pre-created as a symlink while the directory is still group- or
+    world-writable: tightening it afterwards does not revoke what is already
+    inside. The write would land on a file the other user owns, and os.replace
+    renames the link itself into place, so `sitecustomize.py` stays theirs to
+    rewrite. A random name opened O_EXCL|O_NOFOLLOW cannot be pre-empted and
+    refuses a symlink instead of following it.
+    """
+    import binascii
+
+    directory = os.path.dirname(target)
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    flags |= getattr(os, "O_BINARY", 0)
+    payload = source.encode("utf-8")
+    for _ in range(16):
+        tmp = os.path.join(
+            directory,
+            ".sitecustomize.py.%s.tmp" % binascii.hexlify(os.urandom(8)).decode(),
+        )
+        try:
+            handle = os.open(tmp, flags, 0o600)  # nobody else may rewrite it
+        except FileExistsError:
+            continue
+        try:
+            try:
+                os.fchmod(handle, 0o600)  # a loose umask must not widen it
+            except Exception:
+                pass
+            with os.fdopen(handle, "wb") as stream:
+                stream.write(payload)
+            os.replace(tmp, target)  # atomic
+        except BaseException:
+            # A random name is never reused, so a failed attempt would be
+            # litter rather than something the next run overwrites.
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+            raise
+        return
+    raise RuntimeError("could not create a private temporary file in " + directory)
+
+
 def _existing_hook_is_trustworthy(target):
     """Can the file already at `target` only have been written by us?
 
@@ -3817,14 +3886,7 @@ def propagate_torchao_fix_to_subprocesses():
         else:
             existing = None
         if existing != source:
-            tmp = target + ".%d.tmp" % os.getpid()
-            with open(tmp, "w", encoding = "utf-8") as handle:
-                handle.write(source)
-            try:
-                os.chmod(tmp, 0o600)  # nobody else may rewrite it later
-            except Exception:
-                pass
-            os.replace(tmp, target)  # atomic
+            _write_hook_atomically(target, source)
     except Exception as exception:
         logger.warning(
             "Unsloth: could not stage the torchao subprocess fix (%s). vLLM "
