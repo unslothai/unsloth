@@ -1742,7 +1742,7 @@ def _is_start_title(token: str, lexed_posix: bool) -> bool:
     return len(token) >= 2 and token[0] == '"' == token[-1]
 
 
-def _find_blocked_commands(command: str) -> set[str]:
+def _find_blocked_commands(command: str, _cmd_payload: bool = False) -> set[str]:
     """Detect blocked commands at shell command position only.
 
     A token is at command position if it is the first token, or follows a
@@ -1769,7 +1769,15 @@ def _find_blocked_commands(command: str) -> set[str]:
     # cmd's CALL is a prefix only where cmd is doing the parsing. A payload
     # behind a `/c` is cmd's even when the outer shell is bash, and that case is
     # published by the fixpoint below rather than read from this set.
-    command_prefixes = _COMMAND_PREFIXES if lexed_posix else _COMMAND_PREFIXES | _CMD_ONLY_PREFIXES
+    # ``_cmd_payload`` says this text is one cmd will parse, whatever lexed the
+    # line it came from: `cmd //c "call powershell"` reaches cmd as a command
+    # string even where bash is the outer shell, and re-lexing it with the outer
+    # lexer left CALL unread there while the unquoted spelling was caught.
+    command_prefixes = (
+        _COMMAND_PREFIXES
+        if lexed_posix and not _cmd_payload
+        else _COMMAND_PREFIXES | _CMD_ONLY_PREFIXES
+    )
     try:
         if not lexed_posix:
             tokens = shlex.split(command, posix = False)
@@ -1805,7 +1813,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         if _has_bare_cmd_operator(text):
             # An operator means a second command follows, whatever the first one
             # looks like, so the whole line is read.
-            return _find_blocked_commands(text)
+            return _find_blocked_commands(text, _cmd_payload = True)
         if _is_program_path(text):
             # A program path holds spaces like any other, and re-lexing one reads
             # its directory components as words: `C:\powershell scripts\
@@ -1821,7 +1829,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             # `C:\powershell scripts\notepad.exe -x` runs notepad.
             return _blocked_quoted_program(text, _BLOCKED_COMMANDS)
         if any(char.isspace() or char in "\"'" for char in text):
-            return _find_blocked_commands(text)
+            return _find_blocked_commands(text, _cmd_payload = True)
         base = _token_basename(text)
         if base in _BLOCKED_COMMANDS:
             return {base}
@@ -1947,7 +1955,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         # later `xargs "" rm`, which is a different command entirely.
         return chunk_of[index] == chunk_of[index + 1]
 
-    def _exec_child_index(start: int) -> "tuple[int, bool]":
+    def _exec_child_index(start: int, prefixes: "frozenset[str] | set[str]" = ()) -> "tuple[int, bool]":
         """The command a `find -exec` actually runs, as ``(index, overflowed)``;
         the index is -1 when the action holds no command word at all.
 
@@ -1989,7 +1997,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                 i += 1
                 continue
             base = _token_basename(token)
-            if base in command_prefixes:
+            if base in (prefixes or command_prefixes):
                 wrapper = base
                 i += 1
                 continue
@@ -2188,7 +2196,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             # wrapper is a command in its own right (`-exec sudo ls`) as well as
             # a step on the way to another one (`-exec env rm -rf x`), so
             # dropping either half loses a real detection.
-            child, prefix_overflowed = _exec_child_index(i + 1)
+            child, prefix_overflowed = _exec_child_index(i + 1, _COMMAND_PREFIXES)
             if prefix_overflowed:
                 # The wrapper chain outran the hop budget, so the command that
                 # finally runs was never reached: block the chain itself rather
@@ -2458,10 +2466,28 @@ def _find_blocked_commands(command: str) -> set[str]:
         # position it publishes has to be the position screened here.
         j, title_at = _start_target(i)
         titled = title_at != -1
-        if titled and lexed_posix:
+        # What follows the title decides whether it WAS one. A program word after
+        # it means START had a title and a command, so the quoted word is the
+        # window title. An option, a separator, or nothing at all means no
+        # command followed, and the quoted word was the command line itself.
+        following_word = tokens[j] if j < len(tokens) else ""
+        title_had_a_command = (
+            bool(following_word)
+            # A newline ends the command as surely as a separator does, and it
+            # lexes as whitespace, so the first word of the NEXT line would
+            # otherwise read as the program this title was given.
+            and j not in newline_starts
+            and not (
+                following_word.startswith("-") or following_word.strip('"') in _SHELL_SEPARATORS
+            )
+        )
+        if titled and lexed_posix and not title_had_a_command:
             # Posix proves a title only by its whitespace, and a quoted COMMAND
             # LINE looks the same: `start "ssh a@b"` has no program behind it
-            # because that was the program. Screened as well as skipped.
+            # because that was the program. Only then: START documents the first
+            # quoted argument as the WINDOW TITLE and the command after it, so
+            # `start "C:\Program Files\PowerShell\7\pwsh.exe" notepad` runs
+            # notepad and screening the title refused it for the title's sake.
             blocked |= _screen_cmd_payload(_unquote(tokens[title_at]))
         if j < len(tokens) and _URL_SCHEME_RE.match(_unquote(tokens[j])):
             # A URL is opened in the default browser, exactly like the document

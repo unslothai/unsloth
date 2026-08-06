@@ -1476,3 +1476,62 @@ def test_newline_scanning_does_not_reread_the_line(windows_cmd_only):
     started = time.monotonic()
     tools._find_blocked_commands(script)
     assert time.monotonic() - started < 5
+
+
+@pytest.mark.parametrize(
+    "command",
+    ['cmd //c "call powershell"', 'cmd /c "call rm -rf x"'],
+)
+def test_a_quoted_cmd_payload_is_parsed_as_cmd(windows_terminal, command):
+    # What follows a `/c` reaches cmd as a command string even where bash is the
+    # outer shell, so CALL forwards inside it. Re-lexing the payload with the
+    # outer lexer left it unread there while the unquoted spelling was caught.
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("command", ["find . -exec call powershell ;", "fd . -x call powershell"])
+def test_call_is_not_a_prefix_for_an_exec_child(windows_terminal, command):
+    # find and fd run their -exec child themselves; cmd never re-parses it, so
+    # CALL is not a prefix there and the word behind it is that child's argument.
+    assert not tools._find_blocked_commands(command)
+
+
+def test_an_exec_child_still_steps_over_a_real_wrapper(windows_terminal):
+    assert "powershell" in tools._find_blocked_commands("find . -exec env powershell ;")
+
+
+def test_a_start_title_is_not_the_command(windows_terminal):
+    # START documents its first quoted argument as the WINDOW TITLE with the
+    # command after it, so this runs notepad and screening the title refused the
+    # line for the title's sake.
+    assert not tools._find_blocked_commands(
+        'cmd //c start "C:\\Program Files\\PowerShell\\7\\pwsh.exe" notepad'
+    )
+
+
+def test_a_quoted_command_line_with_nothing_behind_it_is_still_screened(windows_git_bash_only):
+    # The reason the title is screened at all: posix proves a title only by its
+    # whitespace, so a quoted COMMAND LINE looks the same when nothing follows.
+    # Only under bash. cmd really does take that first quoted word as the title
+    # and run nothing, which is why `start "" "path"` is the documented idiom.
+    assert "pwsh" in tools._find_blocked_commands(
+        'cmd //c start "C:\\Program Files\\PowerShell\\7\\pwsh.exe"'
+    )
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        'start "powershell -Command ls"',
+        'start "powershell -Command ls" -x y',
+        'start /d C:\\dir "powershell -Command ls" ; rm -rf x',
+        'start "powershell -Command ls"\nrm -rf x',
+    ],
+)
+def test_a_quoted_command_line_is_screened_when_no_command_follows(
+    windows_git_bash_only, command
+):
+    # What follows the quoted word decides whether it WAS a title. An option, a
+    # separator, a newline, or nothing at all means no command came after it, so
+    # the quoted word is the command line START runs.
+    assert "powershell" in tools._find_blocked_commands(command)
