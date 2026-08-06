@@ -782,7 +782,7 @@ class TrainingRunDeleteResponse(BaseModel):
     status: str
     message: str
     artifacts_deleted: bool = False
-    artifacts_kept_reason: Optional[Literal["shared_output_dir"]] = None
+    artifacts_kept_reason: Optional[Literal["shared_output_dir", "purge_failed"]] = None
 
 
 class DiffusionTrainingStartRequest(BaseModel):

@@ -375,6 +375,79 @@ def test_delete_with_missing_shared_dir_still_deletes_row(monkeypatch, tmp_path)
     assert deleted_runs == ["run-1"]
 
 
+def test_a_failed_purge_is_reported_and_puts_the_directory_back(monkeypatch, tmp_path):
+    """A purge that fails must not report the artifacts as deleted.
+
+    The staged name is hidden and randomized, so claiming success would leave every byte on
+    disk under a name the UI never shows and no retry can rediscover -- the run row is gone by
+    then, so nothing points at it any more.
+    """
+    outputs = tmp_path / "outputs"
+    run_dir = outputs / "run-1"
+    run_dir.mkdir(parents = True)
+    (run_dir / "adapter_model.safetensors").write_bytes(b"x")
+
+    monkeypatch.setattr(training_history, "outputs_root", lambda: outputs)
+    monkeypatch.setattr(training_history, "resolve_output_dir", lambda value: Path(value))
+
+    def refuse(path):
+        raise OSError(16, "Device or resource busy")
+
+    monkeypatch.setattr(training_history.shutil, "rmtree", refuse)
+
+    response, deleted_runs = _delete(
+        monkeypatch, _run_row(output_dir = str(run_dir)), delete_artifacts = True
+    )
+
+    assert deleted_runs == ["run-1"]
+    assert response.artifacts_deleted is False
+    assert response.artifacts_kept_reason == "purge_failed"
+    # Back under its own name, not orphaned as a hidden .run-1.deleting-<hex>.
+    assert (run_dir / "adapter_model.safetensors").read_bytes() == b"x"
+    assert [entry.name for entry in outputs.iterdir()] == ["run-1"]
+
+
+def test_rollback_failure_reports_where_the_artifacts_are(monkeypatch, tmp_path):
+    """If the row delete and the restoring rename both fail, say where the bytes ended up."""
+    from fastapi import HTTPException
+
+    outputs = tmp_path / "outputs"
+    run_dir = outputs / "run-1"
+    run_dir.mkdir(parents = True)
+
+    monkeypatch.setattr(training_history, "outputs_root", lambda: outputs)
+    monkeypatch.setattr(training_history, "resolve_output_dir", lambda value: Path(value))
+    monkeypatch.setattr(training_history, "get_run", lambda run_id: _run_row(
+        output_dir = str(run_dir)
+    ))
+    monkeypatch.setattr(training_history, "_active_training_output_dir", lambda: None)
+    monkeypatch.setattr(training_history, "list_other_run_output_dirs", lambda run_id: [])
+    monkeypatch.setattr(training_history, "_restore_staged_output_dir", lambda *args: False)
+
+    def failing_delete(run_id):
+        raise RuntimeError("database is locked")
+
+    monkeypatch.setattr(training_history, "delete_run", failing_delete)
+
+    with pytest.raises(HTTPException) as exc_info:
+        asyncio.run(
+            training_history.delete_training_run(
+                "run-1", delete_artifacts = True, current_subject = "test-user"
+            )
+        )
+
+    assert exc_info.value.status_code == 500
+    assert exc_info.value.detail["code"] == "training_artifact_rollback_failed"
+    staged = next(entry for entry in outputs.iterdir() if entry.name != "run-1")
+    assert str(staged) in exc_info.value.detail["message"]
+
+
+def test_restore_reports_a_rename_it_could_not_perform(tmp_path):
+    original = tmp_path / "run-1"
+    assert training_history._restore_staged_output_dir(original, tmp_path / "never-staged") is False
+    assert not original.exists()
+
+
 def test_delete_without_flag_leaves_artifacts(monkeypatch, tmp_path):
     outputs = tmp_path / "outputs"
     run_dir = outputs / "run-1"

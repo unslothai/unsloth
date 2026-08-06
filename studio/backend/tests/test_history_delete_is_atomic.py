@@ -95,13 +95,29 @@ def test_staging_hides_the_directory_before_the_row_is_committed(outputs):
 
 def test_a_committed_delete_purges_the_staged_copy(outputs):
     run_dir = _run_dir(outputs)
-    _, _, staged = training_history._delete_run_output_dir_guarded("run-1", str(run_dir))
+    _, original, staged = training_history._delete_run_output_dir_guarded("run-1", str(run_dir))
 
-    training_history._purge_staged_output_dir("run-1", staged)
+    assert training_history._purge_staged_output_dir("run-1", original, staged) is True
 
     assert not staged.exists()
     assert not run_dir.exists()
     assert list(outputs.iterdir()) == []
+
+
+def test_a_purge_that_fails_puts_the_directory_back_under_its_own_name(outputs, monkeypatch):
+    """The staged name is hidden and randomized, so a leaked tombstone is unrecoverable."""
+    run_dir = _run_dir(outputs)
+    _, original, staged = training_history._delete_run_output_dir_guarded("run-1", str(run_dir))
+
+    def refuse(path):
+        raise OSError(16, "Device or resource busy")
+
+    monkeypatch.setattr(training_history.shutil, "rmtree", refuse)
+
+    assert training_history._purge_staged_output_dir("run-1", original, staged) is False
+    assert run_dir.is_dir()
+    assert not staged.exists()
+    assert [p.name for p in outputs.iterdir()] == ["run-1"]
 
 
 def test_an_active_run_is_refused_before_anything_moves(outputs, monkeypatch):

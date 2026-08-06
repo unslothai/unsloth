@@ -247,21 +247,34 @@ def _delete_run_output_dir_guarded(
         return "deleted", resolved, staged if isinstance(staged, Path) else None
 
 
-def _restore_staged_output_dir(original: Path, staged: Path) -> None:
+def _restore_staged_output_dir(original: Path, staged: Path) -> bool:
     """Undo the staging rename after a failed database delete."""
     try:
         staged.rename(original)
+        return True
     except OSError:
         logger.exception("Failed to restore staged artifacts from %s to %s", staged, original)
+        return False
 
 
-def _purge_staged_output_dir(run_id: str, staged: Path) -> None:
-    """Remove the staged copy once the row is gone. A failure here only leaks disk."""
+def _purge_staged_output_dir(run_id: str, original: Path, staged: Path) -> bool:
+    """Remove the staged copy once the row is gone. Returns whether the bytes are actually gone.
+
+    The staged name is hidden and randomized and the row is already deleted, so reporting a failed
+    rmtree as success would strand every byte under a name nothing can find again. Put the
+    directory back under its own name instead and let the caller say the artifacts were kept.
+    """
     try:
         shutil.rmtree(staged)
         logger.info("Deleted adapter directory for run %s: %s", run_id, staged)
+        return True
     except OSError:
         logger.exception("Failed to purge staged artifacts for run %s: %s", run_id, staged)
+        if not _restore_staged_output_dir(original, staged):
+            logger.error(
+                "Artifacts for run %s remain on disk under the staged name %s", run_id, staged
+            )
+        return False
 
 
 @router.get("/runs", response_model = TrainingRunListResponse)
@@ -405,14 +418,33 @@ async def delete_training_run(
                 artifacts_deleted = True
     try:
         delete_run(run_id)
-    except Exception:
+    except Exception as delete_error:
         # The artifacts are only staged, so the whole operation rolls back. Destroying them first would
         # leave a row whose artifacts are silently gone, looking like a deliberate "kept history".
         if staged_original is not None and staged_path is not None:
-            await asyncio.to_thread(_restore_staged_output_dir, staged_original, staged_path)
+            restored = await asyncio.to_thread(
+                _restore_staged_output_dir, staged_original, staged_path
+            )
+            if not restored:
+                # Both halves failed: the row survives pointing at a directory that is no longer
+                # there. Name the staged path, or the artifacts are unreachable.
+                raise HTTPException(
+                    status_code = 500,
+                    detail = {
+                        "code": "training_artifact_rollback_failed",
+                        "message": (
+                            "Deleting the run failed and its artifacts could not be moved back. "
+                            f"They are on disk at {staged_path}."
+                        ),
+                    },
+                ) from delete_error
         raise
-    if staged_path is not None:
-        await asyncio.to_thread(_purge_staged_output_dir, run_id, staged_path)
+    if staged_path is not None and staged_original is not None:
+        artifacts_deleted = await asyncio.to_thread(
+            _purge_staged_output_dir, run_id, staged_original, staged_path
+        )
+        if not artifacts_deleted:
+            artifacts_kept_reason = "purge_failed"
     return TrainingRunDeleteResponse(
         status = "deleted",
         message = f"Run {run_id} deleted",

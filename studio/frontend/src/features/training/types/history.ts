@@ -56,5 +56,5 @@ export interface TrainingRunDeleteResponse {
   status: string;
   message: string;
   artifacts_deleted: boolean;
-  artifacts_kept_reason: "shared_output_dir" | null;
+  artifacts_kept_reason: "shared_output_dir" | "purge_failed" | null;
 }
