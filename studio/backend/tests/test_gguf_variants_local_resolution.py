@@ -346,6 +346,21 @@ def test_local_answers_report_what_a_load_would_serve(in_tmp_cwd):
     assert aliased.default_variant in aliased.loadable_variants
 
 
+def test_loadable_variants_include_the_relative_fallback_label(in_tmp_cwd):
+    # The resolver accepts the snapshot-relative stem, so a client sending that
+    # spelling must not be rejected by an answer that omitted it.
+    from utils.models.model_config import _find_local_gguf_by_variant
+
+    (in_tmp_cwd / "config.json").write_text("{}")
+    (in_tmp_cwd / "BF16").mkdir()
+    (in_tmp_cwd / "BF16" / "model.gguf").write_bytes(b"GGUF")
+
+    offered = _variants(os.fspath(in_tmp_cwd)).loadable_variants
+    assert "BF16/model" in offered
+    for spelling in offered:
+        assert _find_local_gguf_by_variant(os.fspath(in_tmp_cwd), spelling)
+
+
 def test_a_torn_split_keeps_its_quant_partial(in_tmp_cwd):
     # A short shard-like name is ready on its own, but not when the file the
     # resolver binds for that quant is an earlier torn five-digit split.

@@ -703,19 +703,41 @@ def _loadable_variants(identifier: str, variants) -> list:
                 continue
         except Exception:
             continue
-        spellings = [quant]
-        stem = re.sub(r"-\d{5}-of-\d{5}$", "", Path(bound).name.rsplit(".", 1)[0])
-        spellings.append(stem)
-        for match in _KNOWN_QUANT_RE.finditer(stem):
+        key = quant.strip().lower()
+        if key not in seen:
+            seen.add(key)
+            accepted.append(quant)
+        # The resolver also takes the snapshot-relative stem (BF16/model) and
+        # the basename's own tokens. Derive those, then let the resolver
+        # confirm each -- a couple of extra calls per row, never one per
+        # spelling, so a wide folder stays a handful of walks and no spelling
+        # is claimed that the load would not honour.
+        base = Path(identifier)
+        try:
+            base = base.parent if base.is_file() else base
+            relative = Path(bound).relative_to(base).as_posix()
+        except (OSError, ValueError):
+            relative = Path(bound).name
+        basename = Path(bound).name
+        derived = {
+            re.sub(r"-\d{3,}-of-\d{3,}$", "", relative.rsplit(".", 1)[0]),
+            re.sub(r"-\d{3,}-of-\d{3,}$", "", basename.rsplit(".", 1)[0]),
+        }
+        for match in _KNOWN_QUANT_RE.finditer(basename.rsplit(".", 1)[0]):
             prefix, core, bpw = match.group(1) or "", match.group(2), match.group(3) or ""
-            spellings.append(f"{prefix}{core}")
+            derived.add(f"{prefix}{core}")
             if bpw:
-                spellings.append(f"{prefix}{core}{bpw}")
-        for spelling in spellings:
+                derived.add(f"{prefix}{core}{bpw}")
+        for spelling in sorted(derived):
             key = spelling.strip().lower()
-            if key and key not in seen:
-                seen.add(key)
-                accepted.append(spelling)
+            if not key or key in seen:
+                continue
+            seen.add(key)
+            try:
+                if _will_serve(_find_local_gguf_by_variant(identifier, spelling)):
+                    accepted.append(spelling)
+            except Exception:
+                continue
     return accepted
 
 

@@ -6828,6 +6828,28 @@ def test_codex_attach_check_allows_short_shard_like_names(tmp_path, monkeypatch)
     start._attach_gguf_check_for_codex(BASE, "sk-test", os.fspath(lone))
 
 
+def test_codex_attach_check_asks_about_nested_drafter_folders(monkeypatch, capsys):
+    # detect_gguf_model reads drafter folders relative to the registered model
+    # root, so the same nested path loads or is refused depending on a root
+    # this process cannot see; the server decides.
+    _fake_variants(monkeypatch, {"variants": [], "resolved_locally": True})
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/MTP/copies/foo-Q8_0.gguf")
+    assert "Codex needs a GGUF model" in capsys.readouterr().err
+    # A server that serves it answers with rows and the attach proceeds.
+    _fake_variants(
+        monkeypatch,
+        {"variants": [{"quant": "Q8_0"}], "resolved_locally": True, "loadable": True},
+    )
+    start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/MTP/copies/foo-Q8_0.gguf")
+    # An immediate drafter parent stays a local refusal, no probe needed.
+    monkeypatch.setattr(
+        start, "_http_json", lambda *a, **k: pytest.fail("an immediate companion needs no probe")
+    )
+    with pytest.raises(typer.Exit):
+        start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/mtp/foo-Q8_0.gguf")
+
+
 def test_codex_attach_check_rejects_missing_direct_paths(tmp_path, monkeypatch, capsys):
     # A mistyped or deleted path is still a GGUF load to the backend, so it
     # would tear the resident model down and only then fail.

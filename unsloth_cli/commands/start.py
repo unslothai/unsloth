@@ -1737,6 +1737,19 @@ def _direct_gguf_is_companion(path: str) -> bool:
     return len(parts) > 1 and parts[-2].lower() in _DRAFTER_DIR_KINDS
 
 
+def _direct_gguf_companion_is_uncertain(path: str) -> bool:
+    """Whether only the server can say if this path is a companion.
+
+    detect_gguf_model reads the drafter folders relative to the registered
+    model root, so ``/models/MTP/copies/foo-Q8_0.gguf`` is refused when the
+    root sits above MTP and loaded when the root is MTP itself. This process
+    does not know the server's roots, so a drafter folder anywhere above the
+    immediate parent is a question for the server, not an answer here.
+    """
+    parts = [segment for segment in path.replace("\\", "/").split("/") if segment]
+    return any(segment.lower() in _DRAFTER_DIR_KINDS for segment in parts[:-2])
+
+
 # Mirrors model_config._extract_quant_label's pattern; change in lockstep.
 _QUANT_LABEL_RE = re.compile(
     r"(UD-)?"
@@ -2063,6 +2076,9 @@ def _attach_gguf_check_for_codex(
         refused = _direct_gguf_is_companion(repo) or _direct_gguf_is_big_endian(repo)
         if refused and not variant:
             _fail_codex_needs_gguf(repo)
+        # A drafter folder further up is the server's call, not ours: ask it
+        # rather than trusting or refusing the path here.
+        uncertain = _direct_gguf_companion_is_uncertain(repo)
         # A variant settles nothing here, however well it matches this name:
         # with one, the resolver scans the file's marked parent and can choose
         # a different sibling (an earlier torn shard sorts first), so only the
@@ -2070,7 +2086,7 @@ def _attach_gguf_check_for_codex(
         # name gets the same treatment, since its parent may serve the sibling
         # that was asked for. Without a variant the load takes this file, so
         # its own bytes are the answer.
-        if not refused and not variant:
+        if not refused and not uncertain and not variant:
             # On a loopback attach this process sees the server's filesystem,
             # so an incomplete file is failed here: the server classifies the
             # extension as a GGUF load and llama-server only finds the missing
