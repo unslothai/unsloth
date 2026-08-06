@@ -1373,6 +1373,9 @@ _START_SWITCHES = _START_SWITCHES_WITH_VALUE | {
 _CMD_CONTROL_FLOW = frozenset({"if", "else", "do", "for"})
 # cmd builtins that re-execute what follows, so their child is a command.
 _CMD_FORWARDING_COMMANDS = frozenset({"call", "start", "start.exe"})
+# Shell binaries whose -c/\c argument is a command line rather than data.
+_SHELLS = frozenset({"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"})
+_SHELLS_WIN = frozenset({"cmd", "cmd.exe"})
 # A payload may lead with its redirection. Bare operators take the next token
 # as the target; the attached spellings and `2>&1` carry their own.
 _CMD_REDIRECT_BARE_RE = re.compile(r"\d?(?:>>|>|<)$")
@@ -1419,7 +1422,16 @@ def _env_split_string_payload(word: str, following: str = "") -> str:
     elif bare in ("-S", "--split-string"):
         payload = following
     # The cmd lexer keeps the marks, and they are the shell's, not the payload's.
-    return _cmd_unquote(payload.strip()).strip('"')
+    # Only a BALANCED surrounding pair is the shell's: stripping stray quotes as
+    # well truncated `bash -c "rm -rf x"` to an unbalanced string that then
+    # failed to split at all.
+    payload = _cmd_unquote(payload.strip())
+    if payload.count('"') % 2:
+        # An ODD count is the cmd lexer having ended the token mid-quote, as it
+        # does for the attached `-S"rm -rf x"`; drop the orphan so the rest can
+        # still be split.
+        payload = payload.strip('"')
+    return payload
 
 
 def _cmd_quoted_program(payload: str) -> str:
@@ -1505,6 +1517,38 @@ def _find_blocked_commands(command: str) -> set[str]:
         if ext in {".exe", ".com", ".bat", ".cmd"}:
             base = stem
         return base
+
+    def _screen_env_split_string(payload: str) -> "set[str]":
+        """Screen an `env -S` payload as ARGV, which is what env makes of it.
+
+        -S splits the string into arguments and execs argv[0] directly; it does
+        not hand the result to a shell, so `env -S 'printf %s ; rm'` passes `;`
+        and `rm` to printf as data (verified against GNU coreutils 9.4, which
+        prints `;rm`). Reading it with shell grammar invented an operator there
+        and refused a harmless command. A shell reached this way is still a
+        shell, so its own -c payload is screened with the full grammar.
+        """
+        try:
+            argv = shlex.split(payload, posix = True)
+        except ValueError:
+            argv = payload.split()
+        if not argv:
+            return set()
+        found: "set[str]" = set()
+        base = _token_basename(argv[0])
+        if base in _BLOCKED_COMMANDS:
+            found.add(base)
+        else:
+            found |= _blocked_matching_glob(base)
+        if base in _SHELLS or base in _SHELLS_WIN:
+            # `env -S 'bash -c "rm -rf x"'` really does reach a shell.
+            for position, word in enumerate(argv[1:], start = 1):
+                flag = word.lower()
+                is_c = flag == "-c" or _win_switch(flag) in ("/c", "/k")
+                if is_c and position + 1 < len(argv):
+                    found |= _find_blocked_commands(argv[position + 1])
+                    break
+        return found
 
     def _scan_cmd_payload(payload: str) -> "set[str]":
         """A cmd payload, read as a command line AND as one quoted program path.
@@ -1640,7 +1684,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                 )
                 payload = _env_split_string_payload(token, following)
                 if payload:
-                    blocked |= _find_blocked_commands(payload)
+                    blocked |= _screen_env_split_string(payload)
             # A wrapper option whose value is a SEPARATE token precedes that
             # value, not the wrapped command. Without consuming it the value is
             # read as the command word and the real command behind it is never
@@ -1785,11 +1829,11 @@ def _find_blocked_commands(command: str) -> set[str]:
         """
         nonlocal blocked
         indexes: "list[int]" = []
-        k, expect = start, True
+        k, expect, in_if = start, True, False
         while k < len(tokens):
             token = tokens[k]
             if token in _SHELL_SEPARATORS:
-                k, expect = k + 1, True
+                k, expect, in_if = k + 1, True, False
                 continue
             bare = _cmd_unquote(token)
             # A payload may lead with its redirection (`cmd /c >out.txt start`),
@@ -1802,8 +1846,11 @@ def _find_blocked_commands(command: str) -> set[str]:
                 k += 1  # `>out.txt`, `2>&1`: self-contained
                 continue
             # cmd resumes at ELSE, so the else-branch is a command position:
-            # `if 1==2 echo no else start "" prog` really launches prog.
-            if _token_basename(bare) == "else":
+            # `if 1==2 echo no else start "" prog` really launches prog. Only
+            # while an IF is open, though: `echo no else powershell` merely
+            # prints the word and `findstr else powershell file` searches for it.
+            if in_if and _token_basename(bare) == "else":
+                in_if = False
                 k, expect = k + 1, True
                 continue
             if not expect:
@@ -1828,7 +1875,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                         following = _cmd_unquote(tokens[k + 1]) if k + 1 < len(tokens) else ""
                         split = _env_split_string_payload(tokens[k], following)
                         if split:
-                            blocked |= _find_blocked_commands(split)
+                            blocked |= _screen_env_split_string(split)
                     if word in _WRAPPER_VALUE_FLAGS_BY_CMD.get(base, frozenset()):
                         k += 2  # `env -u FOO prog`: the flag eats its value
                         continue
@@ -1851,6 +1898,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                     if is_do:
                         break
             elif base == "if":
+                in_if = True
                 # `if [/i] [not] <condition> CMD`. Every condition form has its
                 # own width, and assuming one token left the body of the
                 # comparison forms (`if 1 EQU 1 rm -rf x`) unscreened.
@@ -1902,8 +1950,7 @@ def _find_blocked_commands(command: str) -> set[str]:
     # Nested shell invocations (bash -c '...', bash -lc '...', cmd /c '...'):
     # on a -c/-/c flag, look back for a shell name (skipping flags) and
     # recursively scan the nested command string.
-    _SHELLS = {"bash", "sh", "zsh", "dash", "ksh", "csh", "tcsh", "fish"}
-    _SHELLS_WIN = {"cmd", "cmd.exe"}
+
 
     def _nested_shell_at(i: int) -> None:
         nonlocal blocked
@@ -2050,6 +2097,13 @@ def _find_blocked_commands(command: str) -> set[str]:
                     k += 1
                     while k < len(tokens):
                         word = _cmd_unquote(tokens[k])
+                        if child == "env":
+                            following = (
+                                _cmd_unquote(tokens[k + 1]) if k + 1 < len(tokens) else ""
+                            )
+                            split = _env_split_string_payload(tokens[k], following)
+                            if split:
+                                blocked |= _screen_env_split_string(split)
                         if word in _WRAPPER_VALUE_FLAGS_BY_CMD.get(child, frozenset()):
                             k += 2  # the flag takes a separate value
                             continue
@@ -2073,6 +2127,22 @@ def _find_blocked_commands(command: str) -> set[str]:
     # what it depends on is final. Alternating whole passes instead needed one
     # round per layer, and a bounded number of rounds left the deeper ones
     # unscreened.
+    if not lexed_posix:
+        # _get_shell_cmd hands the whole string to `cmd /c`, so the top level is
+        # itself a cmd payload. Only an explicit inner `cmd /c` was parsed with
+        # that grammar, which left `call start powershell` unscreened on the
+        # very host the cmd lexer is chosen for.
+        for payload_index in _cmd_payload_commands(0):
+            win_c_payloads.add(payload_index)
+            payload_word = _cmd_unquote(tokens[payload_index])
+            if any(char in payload_word for char in " \t"):
+                continue  # a whole command line in one token; _scan_cmd_payload owns it
+            payload_base = _token_basename(payload_word)
+            if payload_base in _BLOCKED_COMMANDS:
+                blocked.add(payload_base)
+            else:
+                blocked |= _blocked_matching_glob(payload_base)
+
     for index in range(len(tokens)):
         _nested_shell_at(index)
         _start_at(index)

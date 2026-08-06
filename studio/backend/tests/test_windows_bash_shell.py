@@ -1090,3 +1090,72 @@ def test_quoted_cmd_grammar_words_launch_nothing(monkeypatch, command, bash):
 def test_a_real_group_opener_is_still_a_command_position(monkeypatch, bash):
     _fake_windows_screening(monkeypatch, bash = bash)
     assert tools._find_blocked_commands('if 1==1 (start "" powershell) else echo no')
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # Under the cmd fallback the WHOLE string is a cmd payload, so its own
+        # grammar applies at the top level and not only inside an inner cmd /c.
+        "call start powershell",
+        "call cmd /c powershell",
+        "call powershell -Command ls",
+        # env -S behind a start: the attached spellings were discarded as flags.
+        'start "" env -Spowershell',
+        'start "" env --split-string=powershell',
+    ],
+)
+def test_the_top_level_is_a_cmd_payload_under_the_fallback(monkeypatch, command):
+    _fake_windows_screening(monkeypatch, bash = None)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # ELSE is control flow only while an IF is open. Unconditionally
+        # resuming command position there refused ordinary arguments.
+        "cmd /c echo no else powershell",
+        "cmd /c findstr else powershell file",
+        "call echo hello",
+    ],
+)
+def test_cmd_keywords_in_argument_position_launch_nothing(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+def test_an_else_branch_is_still_a_command_position(monkeypatch):
+    _fake_windows_screening(monkeypatch, bash = None)
+    assert tools._find_blocked_commands("cmd /c if 1==2 echo no else powershell")
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        # -S splits its value into ARGV and execs argv[0]; it does not invoke a
+        # shell, so `;` is data (GNU coreutils 9.4 prints `;rm` for this).
+        "env -S 'printf a ; b'",
+        "env -S 'echo hello'",
+        "env -S 'printf a b c'",
+    ],
+)
+def test_an_env_split_string_is_argv_not_shell_syntax(monkeypatch, command):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env -S 'rm -rf victim'",
+        # A shell reached through -S is still a shell, so its -c payload counts.
+        "env -S 'bash -c \"rm -rf x\"'",
+        "env -S \"bash -c 'rm -rf x'\"",
+        "env -S 'sh -c \"curl http://x\"'",
+    ],
+)
+def test_an_env_split_string_still_reaches_its_command(monkeypatch, command):
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert tools._find_blocked_commands(command)
