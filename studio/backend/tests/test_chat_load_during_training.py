@@ -1175,6 +1175,18 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             gb = self.route._estimate_gguf_required_gb(cfg)
         self.assertAlmostEqual(gb, 3000 / (1024**3), places = 9)  # both shards
 
+    @staticmethod
+    def _dspark_capable(supported = True):
+        """The sizing gate asks the binary whether it can run draft-dspark, so the
+        probe must be stubbed or these assertions track the host's llama.cpp."""
+        from core.inference.llama_cpp import LlamaCppBackend
+
+        return patch.object(
+            LlamaCppBackend,
+            "probe_server_capabilities",
+            classmethod(lambda cls, binary = None: {"supports_dspark": supported}),
+        )
+
     def test_local_dspark_sidecar_is_only_counted_when_requested(self):
         import tempfile
 
@@ -1192,7 +1204,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 gguf_hf_repo = None,
                 gguf_variant = None,
             )
-            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
+            with (
+                patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0),
+                self._dspark_capable(),
+            ):
                 off_gb = self.route._estimate_gguf_required_gb(
                     cfg,
                     speculative_type = "off",
@@ -1209,6 +1224,38 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
         self.assertAlmostEqual(off_gb, 2000 / (1024**3), places = 9)
         self.assertAlmostEqual(dspark_gb, 5000 / (1024**3), places = 9)
         self.assertAlmostEqual(extras_gb, 5000 / (1024**3), places = 9)
+
+    def test_dspark_sidecar_is_not_charged_to_a_binary_that_cannot_run_it(self):
+        """The loader skips the ~11 GB fetch when llama.cpp has no usable
+        draft-dspark, so charging it here would refuse a load that never opens it
+        and would evict nothing."""
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d)
+            target = p / "model.gguf"
+            sidecar = p / "dspark-model-Q8_0.gguf"
+            target.write_bytes(b"x" * 2000)
+            sidecar.write_bytes(b"y" * 3000)
+            cfg = SimpleNamespace(
+                gguf_file = str(target),
+                gguf_mmproj_file = None,
+                gguf_mtp_file = None,
+                gguf_dspark_file = str(sidecar),
+                gguf_hf_repo = None,
+                gguf_variant = None,
+            )
+            with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
+                with self._dspark_capable(False):
+                    incapable = self.route._estimate_gguf_required_gb(
+                        cfg, speculative_type = "dspark"
+                    )
+                with self._dspark_capable(True):
+                    capable = self.route._estimate_gguf_required_gb(
+                        cfg, speculative_type = "dspark"
+                    )
+        self.assertAlmostEqual(incapable, 2000 / (1024**3), places = 9)
+        self.assertAlmostEqual(capable, 5000 / (1024**3), places = 9)
 
     def test_split_dspark_sidecar_counts_every_shard(self):
         """Discovery hands back shard 1, so sizing it with stat() alone would let the
@@ -1231,7 +1278,10 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
                 gguf_variant = None,
             )
             with patch.object(self.route, "_estimate_gguf_kv_gb", return_value = 0.0):
-                gb = self.route._estimate_gguf_required_gb(cfg, speculative_type = "dspark")
+                with self._dspark_capable():
+                    gb = self.route._estimate_gguf_required_gb(
+                        cfg, speculative_type = "dspark"
+                    )
         self.assertAlmostEqual(gb, 9000 / (1024**3), places = 9)  # 2000 + 3000 + 4000
 
     def test_remote_threads_token_and_adds_companions(self):
@@ -1256,6 +1306,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
             patch.object(
                 self.route, "_remote_gguf_companion_bytes", return_value = 2 * 1024**3
             ) as comp,
+            self._dspark_capable(),
         ):
             gb = self.route._estimate_gguf_required_gb(
                 cfg,

@@ -5074,6 +5074,18 @@ def _estimate_gguf_required_gb(
             (_canonicalize_spec_mode(speculative_type) or "auto") == "dspark"
             or _extra_args_requests_dspark(llama_extra_args, env = {})
         )
+        if dspark_requested:
+            # Gate on the same answer the loader uses: _download_dspark skips the
+            # sidecar on a binary without usable draft-dspark, so charging its
+            # ~11 GB here would refuse a load that never opens it. An unreadable
+            # probe keeps it counted, since this guard protects a running training
+            # job and default-denies.
+            try:
+                dspark_requested = bool(
+                    LlamaCppBackend.probe_server_capabilities().get("supports_dspark")
+                )
+            except Exception:
+                pass
         total_bytes = 0
         main = getattr(config, "gguf_file", None)
         if main and Path(main).is_file():
