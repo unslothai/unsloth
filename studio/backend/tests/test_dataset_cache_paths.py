@@ -871,6 +871,35 @@ def test_app_processed_cache_is_deterministic_and_discoverable(monkeypatch, tmp_
     assert list(dataset_processed_cache.iter_app_processed_dataset_caches()) == [second]
 
 
+def test_cached_load_survives_a_failed_completion_write(monkeypatch, tmp_path):
+    """A dataset that loaded must not be discarded because bookkeeping failed.
+
+    ``complete`` is advisory -- nothing reads it back to gate a load -- so a cache purge
+    racing the load, a read-only studio home or a full disk must not turn a successful
+    cached load into an exception. Propagating it costs a full Hub re-download of a good
+    cached dataset, and fails the run outright offline or on an exact-resource resume.
+    """
+    repo_id = "Org/Data"
+    _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
+    (snapshot / "train.parquet").write_bytes(b"rows")
+    calls = _fake_datasets(monkeypatch)
+
+    def _explode(entry):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(dataset_cache, "mark_app_processed_dataset_cache_complete", _explode)
+
+    result = dataset_cache.load_cached_hf_dataset(
+        repo_id,
+        str(snapshot),
+        subset = None,
+        split = "train",
+    )
+
+    assert result == {"loaded": True}
+    assert len(calls) == 1
+
+
 def test_app_processed_cache_rejects_symlinked_parent(monkeypatch, tmp_path):
     repo_id = "Org/Data"
     _, snapshot = _dataset_repo(tmp_path, repo_id, "commit-a")
