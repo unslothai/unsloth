@@ -404,7 +404,12 @@ Environment:
     _StopStudioProcesses -KnownRoots $knownRoots
     # App and the WebView2 helpers holding its profile open must both exit before the EBWebView delete below.
     $webviewProfile = if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA "ai.unsloth.studio" } else { $null }
-    $studioPids = @(Get-Process -Name "unsloth-studio" -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+    # Session-scoped, like every other kill here: the NSIS installMode is currentUser, so each
+    # user has their own copy, and an elevated run would otherwise stop another logged-in user's
+    # app. UAC elevation keeps our session, so our own instance still matches.
+    $mySession = (Get-Process -Id $PID).SessionId
+    $studioPids = @(Get-Process -Name "unsloth-studio" -ErrorAction SilentlyContinue |
+        Where-Object { $_.SessionId -eq $mySession } | ForEach-Object { $_.Id })
     if ($webviewProfile) {
         # Unescaped "[" is a wildcard class: would miss our own profile and match others.
         # Trailing \ spares "<bid>2\EBWebView".
@@ -418,9 +423,11 @@ Environment:
             }
         } catch { }
     }
-    try { Stop-Process -Name "unsloth-studio" -Force -ErrorAction SilentlyContinue } catch { }
-    # WebView2 releases the profile only once its browser processes have exited.
-    if ($studioPids) { Wait-Process -Id $studioPids -Timeout 10 -ErrorAction SilentlyContinue }
+    if ($studioPids) {
+        try { Stop-Process -Id $studioPids -Force -ErrorAction SilentlyContinue } catch { }
+        # WebView2 releases the profile only once its browser processes have exited.
+        Wait-Process -Id $studioPids -Timeout 10 -ErrorAction SilentlyContinue
+    }
     # Only stop the default sd.cpp dir when it carries our owner marker, so stop matches the
     # marker-gated delete and a user's own sd-server at this default path is left running.
     $defaultSdCppToStop = $null
