@@ -560,6 +560,17 @@ def with_load_subdirs(model_name: str, names: tuple[str, ...]) -> tuple[str, ...
         from utils.security import security_load_subdirs
         subdirs = security_load_subdirs(model_name, local_files_only = True)
     except Exception:
+        # Degrading to root-only is fail-closed at every caller -- provenance refuses the
+        # resume, preflight reports no trainable weights, the worker drops the pin -- so
+        # nothing is wrongly accepted. But a real cache permission or corruption fault
+        # then reaches the user as "your cached model isn't cached" with no clue why, and
+        # four sites now share this handler.
+        from loggers import get_logger
+        get_logger(__name__).debug(
+            "Load-subdir detection failed for %s; using root only.",
+            model_name,
+            exc_info = True,
+        )
         return names
     if not subdirs:
         return names
