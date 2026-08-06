@@ -139,6 +139,7 @@ class TestMaxBodyMiddleware:
             STT_AUDIO_RAW_MAX_BYTES,
             upload_request_limit_bytes,
         )
+
         assert (
             main_module._get_request_body_max_bytes("/api/inference/audio/transcribe/raw")
             == STT_AUDIO_RAW_MAX_BYTES

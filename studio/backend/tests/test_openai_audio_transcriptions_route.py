@@ -22,7 +22,13 @@ from utils.api_errors import install_api_error_handlers
 def _make_client(monkeypatch, transcribe = None):
     calls = []
 
-    async def _fake_transcribe(raw, model, language, fast, engine = None):
+    async def _fake_transcribe(
+        raw,
+        model,
+        language,
+        fast,
+        engine = None,
+    ):
         calls.append(
             {"raw": raw, "model": model, "language": language, "fast": fast, "engine": engine}
         )
@@ -39,7 +45,12 @@ def _make_client(monkeypatch, transcribe = None):
     return TestClient(app), calls
 
 
-def _post(cli, data = None, filename = "clip.wav", content = b"RIFFfake"):
+def _post(
+    cli,
+    data = None,
+    filename = "clip.wav",
+    content = b"RIFFfake",
+):
     return cli.post(
         "/v1/audio/transcriptions",
         files = {"file": (filename, content, "audio/wav")},

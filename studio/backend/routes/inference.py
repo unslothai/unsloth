@@ -13,7 +13,17 @@ from pathlib import Path
 import hashlib as _hashlib
 import hmac as _hmac
 import secrets as _secrets
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.encoders import jsonable_encoder
 from fastapi.responses import StreamingResponse, JSONResponse, PlainTextResponse, Response
 from starlette.requests import ClientDisconnect
@@ -7919,10 +7929,7 @@ async def get_load_progress(current_subject: str = Depends(get_current_subject))
 
 
 async def _generate_tts_wav(
-    text: str,
-    payload: ChatCompletionRequest,
-    request: Request,
-    current_subject: str,
+    text: str, payload: ChatCompletionRequest, request: Request, current_subject: str
 ) -> tuple[bytes, int, str, Optional[str]]:
     """Run the loaded TTS backend on ``text``: the shared core of /audio/generate
     and the OpenAI-shaped /audio/speech. Returns (wav_bytes, sample_rate,
@@ -8038,7 +8045,6 @@ def _persist_tts_clip(
 ) -> None:
     """Best-effort gallery save: persistence never fails the request that produced the audio."""
     from core.inference import audio_gallery
-
     try:
         audio_gallery.save(
             wav_bytes,
@@ -19446,7 +19452,9 @@ async def clear_gallery_images(current_subject: str = Depends(get_current_subjec
 
 @studio_router.get("/audio/gallery", response_model = AudioGalleryListResponse)
 async def list_gallery_audio(
-    limit: int = 50, offset: int = 0, current_subject: str = Depends(get_current_subject)
+    limit: int = 50,
+    offset: int = 0,
+    current_subject: str = Depends(get_current_subject),
 ):
     from pydantic import ValidationError
 
