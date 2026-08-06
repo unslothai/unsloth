@@ -8458,10 +8458,7 @@ class LlamaCppBackend:
 
     @classmethod
     def _cpu_isolated_replay(
-        cls,
-        cmd: Iterable[str],
-        env: dict[str, str],
-        server_caps: Mapping[str, object],
+        cls, cmd: Iterable[str], env: dict[str, str], server_caps: Mapping[str, object]
     ) -> Optional[list[str]]:
         """Build a replay that cannot initialize or schedule on a GPU.
 
@@ -8538,8 +8535,7 @@ class LlamaCppBackend:
                     shutil.copy2(resolved, destination)
             staged_binary = staged_dir / source_binary.name
             cpu_library_present = any(
-                entry.is_file()
-                and entry.name.lower().startswith(("libggml-cpu", "ggml-cpu"))
+                entry.is_file() and entry.name.lower().startswith(("libggml-cpu", "ggml-cpu"))
                 for entry in staged_dir.iterdir()
             )
             if not staged_binary.is_file() or not cpu_library_present:
@@ -11266,9 +11262,7 @@ class LlamaCppBackend:
                     raise RuntimeError(detail)
 
                 def _try_auto_vulkan_cpu_fallback(
-                    failed_cmd: list[str],
-                    failed_env: dict[str, str],
-                    failed_rc: Optional[int],
+                    failed_cmd: list[str], failed_env: dict[str, str], failed_rc: Optional[int]
                 ) -> tuple[bool, bool, Optional[str]]:
                     """Replay a signal crash without devices.
 
@@ -11693,8 +11687,8 @@ class LlamaCppBackend:
                                     )
                                 )
                     else:
-                        _cpu_attempted, _cpu_healthy, _cpu_detail = (
-                            _try_auto_vulkan_cpu_fallback(_last_spawn_cmd, env, _crash_rc)
+                        _cpu_attempted, _cpu_healthy, _cpu_detail = _try_auto_vulkan_cpu_fallback(
+                            _last_spawn_cmd, env, _crash_rc
                         )
                         if _cpu_healthy:
                             healthy = True

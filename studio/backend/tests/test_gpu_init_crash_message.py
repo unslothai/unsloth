@@ -132,9 +132,7 @@ class TestAutoVulkanCpuFallbackGate:
             ("LLAMA_ARG_FIT_CTX", "4096"),
         ],
     )
-    def test_inherited_main_placement_never_downgrades(
-        self, monkeypatch, tmp_path, name, value
-    ):
+    def test_inherited_main_placement_never_downgrades(self, monkeypatch, tmp_path, name, value):
         self._managed_marker(monkeypatch, tmp_path)
         monkeypatch.setattr(
             LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
@@ -157,9 +155,7 @@ class TestAutoVulkanCpuFallbackGate:
             (GgufLoadIntent(model_identifier = "m"), ["-sm", "tensor"]),
         ],
     )
-    def test_explicit_gpu_placement_never_downgrades(
-        self, monkeypatch, tmp_path, intent, extras
-    ):
+    def test_explicit_gpu_placement_never_downgrades(self, monkeypatch, tmp_path, intent, extras):
         self._managed_marker(monkeypatch, tmp_path)
         monkeypatch.setattr(
             LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
@@ -191,9 +187,7 @@ class TestAutoVulkanCpuFallbackGate:
             ("--no-mmproj-offload",),
         ],
     )
-    def test_explicit_companion_placement_never_downgrades(
-        self, monkeypatch, tmp_path, extras
-    ):
+    def test_explicit_companion_placement_never_downgrades(self, monkeypatch, tmp_path, extras):
         self._managed_marker(monkeypatch, tmp_path)
         monkeypatch.setattr(
             LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
@@ -228,9 +222,7 @@ class TestAutoVulkanCpuFallbackGate:
             {name: value},
         )
 
-    def test_persisted_explicit_vulkan_choice_never_downgrades(
-        self, monkeypatch, tmp_path
-    ):
+    def test_persisted_explicit_vulkan_choice_never_downgrades(self, monkeypatch, tmp_path):
         self._managed_marker(monkeypatch, tmp_path, llama_backend = "vulkan")
         monkeypatch.setattr(
             LlamaCppBackend, "_is_vulkan_backend", staticmethod(lambda _binary = None: True)
@@ -352,9 +344,7 @@ class TestCpuIsolatedReplay:
         backend._cleanup_cpu_fallback_runtime()
         assert not staged_dir.exists()
 
-    def test_terminal_cpu_replay_failure_removes_staged_runtime(
-        self, monkeypatch, tmp_path
-    ):
+    def test_terminal_cpu_replay_failure_removes_staged_runtime(self, monkeypatch, tmp_path):
         install = tmp_path / "install" / "build" / "bin"
         install.mkdir(parents = True)
         binary = install / "llama-server"
@@ -388,9 +378,7 @@ class TestCpuIsolatedReplay:
         assert not staged_dir.exists()
 
     @pytest.mark.skipif(sys.platform == "win32", reason = "shell wrapper fallback is POSIX")
-    def test_wrapper_based_runtime_stages_the_real_executable(
-        self, monkeypatch, tmp_path
-    ):
+    def test_wrapper_based_runtime_stages_the_real_executable(self, monkeypatch, tmp_path):
         install = tmp_path / "install"
         bindir = install / "build" / "bin"
         bindir.mkdir(parents = True)
@@ -401,9 +389,7 @@ class TestCpuIsolatedReplay:
         (bindir / "libggml-cpu-haswell.so").write_bytes(b"cpu")
         (bindir / "libggml-vulkan.so").write_bytes(b"vulkan")
         wrapper = install / "llama-server"
-        wrapper.write_text(
-            '#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n'
-        )
+        wrapper.write_text('#!/bin/sh\nexec "$(dirname "$0")/build/bin/llama-server" "$@"\n')
         wrapper.chmod(0o755)
         monkeypatch.setattr(
             LlamaCppBackend,
@@ -444,9 +430,9 @@ def test_signal_recovery_is_shared_by_text_and_vision_terminal_paths():
 
 def test_initial_and_stored_cpu_replay_failures_share_terminal_cleanup():
     source = inspect.getsource(LlamaCppBackend.load_model)
-    initial_failure = source.split(
-        "if not _spawn_and_wait(replay, label = \"-cpu\"):", 1
-    )[1].split("cmd = replay", 1)[0]
+    initial_failure = source.split('if not _spawn_and_wait(replay, label = "-cpu"):', 1)[1].split(
+        "cmd = replay", 1
+    )[0]
     stored_replay = source.split(
         "if intent.cpu_fallback:\n                    replay = self._cpu_isolated_replay",
         1,
@@ -490,11 +476,7 @@ def test_terminal_signal_with_explicit_child_placement_does_not_replay(
         encoded = value.encode()
         return struct.pack("<Q", len(encoded)) + encoded
 
-    metadata = (
-        _gguf_string("general.architecture")
-        + struct.pack("<I", 8)
-        + _gguf_string("llama")
-    )
+    metadata = _gguf_string("general.architecture") + struct.pack("<I", 8) + _gguf_string("llama")
     gguf = tmp_path / "model.gguf"
     gguf.write_bytes(struct.pack("<IIQQ", 0x46554747, 3, 0, 1) + metadata)
 
