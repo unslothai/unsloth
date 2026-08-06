@@ -426,6 +426,9 @@ fn spawn_script(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
+    #[cfg(target_os = "linux")]
+    crate::process::scrub_appimage_python_env(&mut cmd);
+
     // Tauri only does default-root installs; install.sh / install.ps1 reject
     // these under --tauri. Scrub so an inherited value can't trip the guard.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");

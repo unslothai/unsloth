@@ -12,6 +12,25 @@ use tauri::{AppHandle, Emitter, Manager};
 
 const MAX_LOG_LINES: usize = 1000;
 
+// AppImages can be launched from an activated Python environment. Keep the
+// host library path used by the thin bundle, but do not let Python search-path
+// overrides corrupt or shadow the managed Studio environment.
+#[cfg(target_os = "linux")]
+pub(crate) fn scrub_appimage_python_env(cmd: &mut Command) {
+    if std::env::var_os("APPIMAGE").is_some() {
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn scrub_appimage_python_env_tokio(cmd: &mut tokio::process::Command) {
+    if std::env::var_os("APPIMAGE").is_some() {
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
+    }
+}
+
 #[allow(dead_code)]
 pub(crate) enum OwnedBackendHandle {
     Spawned {
@@ -599,6 +618,9 @@ pub fn start_backend(
             std::process::id().to_string(),
         );
     }
+
+    #[cfg(target_os = "linux")]
+    scrub_appimage_python_env(&mut cmd);
 
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
     // scrub so the spawned Python backend can't diverge. UNSLOTH_LLAMA_CPP_PATH

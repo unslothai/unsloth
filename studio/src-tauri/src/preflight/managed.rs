@@ -307,6 +307,9 @@ async fn run_cli_probe(bin: &Path, args: &[&str]) -> bool {
     let mut cmd = Command::new(bin);
     cmd.args(args).stdout(Stdio::null()).stderr(Stdio::null());
 
+    #[cfg(target_os = "linux")]
+    crate::process::scrub_appimage_python_env_tokio(&mut cmd);
+
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
     // probe subprocesses must follow the same isolation as process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
@@ -350,6 +353,9 @@ async fn probe_cli_capability(bin: &Path) -> Option<DesktopCapability> {
     cmd.args(["studio", "desktop-capabilities", "--json"])
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+
+    #[cfg(target_os = "linux")]
+    crate::process::scrub_appimage_python_env_tokio(&mut cmd);
 
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
     // probe subprocesses must follow the same isolation as process.rs.

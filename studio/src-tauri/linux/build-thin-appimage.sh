@@ -129,6 +129,72 @@ missing=$(
   ldd "$binary" 2>/dev/null |
     sed -n 's/^[[:space:]]*\([^[:space:]]*\)[[:space:]]*=>[[:space:]]*not found.*$/\1/p'
 )
+
+# The tray crate loads AppIndicator with dlopen, so it does not appear in the
+# executable's ldd output. Search the same host locations the loader normally
+# uses, including an inherited LD_LIBRARY_PATH.
+appindicator_is_usable() {
+  [ -r "$1" ] || return 1
+  appindicator_ldd=$(ldd "$1" 2>&1) || return 1
+  ! printf '%s\n' "$appindicator_ldd" | grep -q 'not found'
+}
+
+find_appindicator() {
+  if [ -n "${LD_LIBRARY_PATH:-}" ]; then
+    saved_ifs=$IFS
+    IFS=:
+    for library_dir in $LD_LIBRARY_PATH; do
+      for library_name in libayatana-appindicator3.so.1 libappindicator3.so.1; do
+        candidate="$library_dir/$library_name"
+        if appindicator_is_usable "$candidate"; then
+          IFS=$saved_ifs
+          printf '%s\n' "$candidate"
+          return 0
+        fi
+      done
+    done
+    IFS=$saved_ifs
+  fi
+
+  if command -v ldconfig >/dev/null 2>&1; then
+    cached_paths=$(
+      ldconfig -p 2>/dev/null |
+        awk '$1 == "libayatana-appindicator3.so.1" || $1 == "libappindicator3.so.1" { print $NF }'
+    )
+    for cached_path in $cached_paths; do
+      if appindicator_is_usable "$cached_path"; then
+        printf '%s\n' "$cached_path"
+        return 0
+      fi
+    done
+  fi
+
+  for library_name in libayatana-appindicator3.so.1 libappindicator3.so.1; do
+    for candidate in \
+      /lib/"$library_name" \
+      /lib/*-linux-gnu/"$library_name" \
+      /lib64/"$library_name" \
+      /usr/lib/"$library_name" \
+      /usr/lib/*-linux-gnu/"$library_name" \
+      /usr/lib64/"$library_name" \
+      /usr/local/lib/"$library_name"; do
+      if appindicator_is_usable "$candidate"; then
+        printf '%s\n' "$candidate"
+        return 0
+      fi
+    done
+  done
+  return 1
+}
+
+if ! find_appindicator >/dev/null; then
+  if [ -n "$missing" ]; then
+    missing="$missing
+"
+  fi
+  missing="${missing}libayatana-appindicator3.so.1 or libappindicator3.so.1"
+fi
+
 if [ -n "$missing" ]; then
   message="Unsloth cannot start because required Linux libraries are missing:
 
@@ -167,7 +233,8 @@ fi
 )
 assert_thin_appdir "$verify_dir/squashfs-root"
 
-if grep -q 'LD_LIBRARY_PATH' "$verify_dir/squashfs-root/AppRun"; then
+if grep -Eq '(^|[[:space:]])(export[[:space:]]+)?LD_LIBRARY_PATH=' \
+  "$verify_dir/squashfs-root/AppRun"; then
   echo "Thin AppImage must not override the host library search path." >&2
   exit 1
 fi

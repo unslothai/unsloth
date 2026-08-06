@@ -125,6 +125,9 @@ pub async fn check_install_status() -> bool {
         cmd.creation_flags(crate::process::CREATE_NO_WINDOW);
     }
 
+    #[cfg(target_os = "linux")]
+    crate::process::scrub_appimage_python_env_tokio(&mut cmd);
+
     // Tauri uses the legacy root regardless of UNSLOTH_STUDIO_HOME / STUDIO_HOME;
     // probe subprocesses must follow the same isolation as process.rs.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");

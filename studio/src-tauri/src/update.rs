@@ -85,6 +85,9 @@ fn spawn_update(
     let mut cmd = build_update_command(bin)?;
     cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
+    #[cfg(target_os = "linux")]
+    crate::process::scrub_appimage_python_env(&mut cmd);
+
     // Tauri manages the legacy root; scrub so 'unsloth studio update' targets
     // the same install the desktop app uses, not an inherited custom root.
     cmd.env_remove("UNSLOTH_STUDIO_HOME");
