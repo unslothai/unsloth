@@ -1951,7 +1951,6 @@ def _find_blocked_commands(command: str) -> set[str]:
     # on a -c/-/c flag, look back for a shell name (skipping flags) and
     # recursively scan the nested command string.
 
-
     def _nested_shell_at(i: int) -> None:
         nonlocal blocked
         token = tokens[i]
@@ -2098,9 +2097,7 @@ def _find_blocked_commands(command: str) -> set[str]:
                     while k < len(tokens):
                         word = _cmd_unquote(tokens[k])
                         if child == "env":
-                            following = (
-                                _cmd_unquote(tokens[k + 1]) if k + 1 < len(tokens) else ""
-                            )
+                            following = _cmd_unquote(tokens[k + 1]) if k + 1 < len(tokens) else ""
                             split = _env_split_string_payload(tokens[k], following)
                             if split:
                                 blocked |= _screen_env_split_string(split)
