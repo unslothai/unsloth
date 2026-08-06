@@ -3218,7 +3218,12 @@ if [ "$TAURI_MODE" != true ]; then
     # was passed or no TTY; then an existing choice is kept, defaulting to on.
     # Enter keeps the choice persisted in studio.conf so a reinstall that
     # accepts the defaults never flips a saved no-browser preference.
-    if [ -z "$_STUDIO_OPEN_BROWSER" ] && [ -t 1 ] && [ -r /dev/tty ]; then
+    # UNSLOTH_SKIP_AUTOSTART is documented for automated installs, so it must
+    # suppress this prompt too, exactly as it suppresses the launch prompt
+    # below. Leaving _STUDIO_OPEN_BROWSER empty falls through to the existing
+    # "keep the saved choice, else default on" logic.
+    if [ "$_SKIP_AUTOSTART" != true ] && [ -z "$_STUDIO_OPEN_BROWSER" ] \
+        && [ -t 1 ] && [ -r /dev/tty ]; then
         _existing_open_browser=""
         if [ -f "$DATA_DIR/studio.conf" ]; then
             _existing_open_browser=$(sed -n "s/^STUDIO_OPEN_BROWSER='\([01]\)'\$/\1/p" \
@@ -3341,6 +3346,12 @@ _post_install_browser_watch() {
     _pibw_port="$1"
     _pibw_url="http://localhost:$_pibw_port"
     _pibw_id=$(cat "$STUDIO_HOME/share/studio_install_id" 2>/dev/null || true)
+    # Fail closed: without our own id we cannot tell our backend from someone
+    # else's on the same port, and opening a stranger's Studio is worse than
+    # opening nothing. The server prints its own URL either way.
+    if [ -z "$_pibw_id" ]; then
+        return 0
+    fi
     (
         _pibw_deadline=$(($(date +%s) + 120))
         while [ "$(date +%s)" -lt "$_pibw_deadline" ]; do
@@ -3349,12 +3360,10 @@ _post_install_browser_watch() {
                 || true)
             case "$_pibw_resp" in
                 *'"Unsloth UI Backend"'*)
-                    if [ -n "$_pibw_id" ]; then
-                        case "$_pibw_resp" in
-                            *"\"studio_root_id\":\"$_pibw_id\""*|*"\"studio_root_id\": \"$_pibw_id\""*) ;;
-                            *) sleep 1; continue ;;
-                        esac
-                    fi
+                    case "$_pibw_resp" in
+                        *"\"studio_root_id\":\"$_pibw_id\""*|*"\"studio_root_id\": \"$_pibw_id\""*) ;;
+                        *) sleep 1; continue ;;
+                    esac
                     if [ "$(uname)" = "Darwin" ] && command -v open >/dev/null 2>&1; then
                         open "$_pibw_url" 2>/dev/null
                     elif grep -qi microsoft /proc/version 2>/dev/null; then
@@ -3374,6 +3383,18 @@ _post_install_browser_watch() {
             sleep 1
         done
     ) &
+    # Remember the watcher so it can be reaped when the foreground server exits;
+    # otherwise a Ctrl-C leaves it polling for the rest of its 120s deadline and
+    # it can pop a browser long after the installer has visibly finished.
+    _PIBW_PID=$!
+}
+
+# Stop a watcher started above. Safe to call when none is running.
+_stop_post_install_browser_watch() {
+    [ -n "${_PIBW_PID:-}" ] || return 0
+    kill "$_PIBW_PID" 2>/dev/null || true
+    wait "$_PIBW_PID" 2>/dev/null || true
+    _PIBW_PID=""
 }
 
 # In interactive terminals, ask the user before starting Studio unless the
@@ -3409,6 +3430,8 @@ if [ "$_SKIP_AUTOSTART" != true ] && [ -t 1 ]; then
             # `|| ...`: capture the exit code without set -e aborting first.
             _LAUNCH_EXIT=0
             (trap - INT; exec "$VENV_DIR/bin/unsloth" studio -p "$_post_install_port" </dev/null) || _LAUNCH_EXIT=$?
+            # The server is gone; the watcher has nothing left to wait for.
+            _stop_post_install_browser_watch
             if [ "$_LAUNCH_EXIT" -ne 0 ] && [ "$_MIGRATED" = true ]; then
                 echo ""
                 echo "⚠️  Unsloth Studio failed to start after migration."

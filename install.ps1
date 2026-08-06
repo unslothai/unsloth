@@ -2633,7 +2633,12 @@ exit 0
     # was passed or input is redirected; then an existing choice is kept.
     # Enter keeps the choice baked into the existing launcher so a reinstall
     # that accepts the defaults never flips a saved no-browser preference.
-    $_browserPromptOk = [Environment]::UserInteractive -and (-not [Console]::IsInputRedirected)
+    # UNSLOTH_SKIP_AUTOSTART is documented for automated installs, so it must
+    # suppress this prompt too, matching the $IsInteractive gate on the launch
+    # prompt below. Leaving $OpenBrowserPref empty falls through to the existing
+    # "keep the baked choice, else default on" logic.
+    $_browserPromptOk = (-not $SkipAutostart) -and [Environment]::UserInteractive -and
+        (-not [Console]::IsInputRedirected)
     if (-not $OpenBrowserPref -and $_browserPromptOk) {
         $_existingPref = ""
         $_promptLauncher = if ($StudioDataDir) { Join-Path $StudioDataDir "launch-studio.ps1" } else { $null }
@@ -2730,8 +2735,10 @@ exit 0
         while ((Get-Date) -lt $deadline) {
             try {
                 $r = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/api/health" -TimeoutSec 1 -Method Get
+                # An empty RootId must never mean "any backend will do"; the
+                # caller does not start the job in that case.
                 if ($r.service -eq 'Unsloth UI Backend' -and
-                    ((-not $RootId) -or $r.studio_root_id -eq $RootId)) {
+                    $RootId -and $r.studio_root_id -eq $RootId) {
                     Start-Process "http://localhost:$Port"
                     break
                 }
@@ -2746,17 +2753,32 @@ exit 0
             $_launchPort = Find-PostInstallStudioPort
             # Open the browser once the server is up, unless opted out. The
             # server prints its own URL, so no watcher is needed when off.
+            $_browserJob = $null
             if ($OpenBrowserPref -ne '0') {
                 $_watchRootId = ""
                 $_watchIdFile = Join-Path $StudioHome "share\studio_install_id"
                 if (Test-Path -LiteralPath $_watchIdFile) {
                     try { $_watchRootId = ([System.IO.File]::ReadAllText($_watchIdFile)).Trim() } catch {}
                 }
-                try {
-                    $null = Start-Job -ScriptBlock $_browserWatch -ArgumentList @($_watchRootId, $_launchPort)
-                } catch {}
+                # Fail closed: without our own id we cannot tell our backend from
+                # another Studio on the same port, so open nothing rather than
+                # risk opening a stranger's.
+                if ($_watchRootId) {
+                    try {
+                        $_browserJob = Start-Job -ScriptBlock $_browserWatch -ArgumentList @($_watchRootId, $_launchPort)
+                    } catch {}
+                }
             }
-            & $UnslothExe studio -p $_launchPort
+            try {
+                & $UnslothExe studio -p $_launchPort
+            } finally {
+                # The server is gone; reap the watcher instead of leaving it to
+                # poll out its 120s deadline and pop a browser after the fact.
+                if ($_browserJob) {
+                    Stop-Job -Job $_browserJob -ErrorAction SilentlyContinue
+                    Remove-Job -Job $_browserJob -Force -ErrorAction SilentlyContinue
+                }
+            }
         } else {
             step "launch" "to start later, run:"
             substep "unsloth studio -p 8888"

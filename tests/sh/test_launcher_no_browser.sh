@@ -87,6 +87,12 @@ assert_contains \
 assert_contains \
     "install.sh: prompt Enter keeps the persisted preference" \
     "$_installer" '*) _STUDIO_OPEN_BROWSER="${_existing_open_browser:-1}"'
+# UNSLOTH_SKIP_AUTOSTART is documented for automated installs, so it must gate
+# this prompt too: under `curl ... | sh` only stdin is the pipe, [ -t 1 ] is
+# still true, so an ungated prompt blocks an install that used to run unattended.
+assert_contains \
+    "install.sh: browser prompt respects UNSLOTH_SKIP_AUTOSTART" \
+    "$_installer" 'if [ "$_SKIP_AUTOSTART" != true ] && [ -z "$_STUDIO_OPEN_BROWSER" ]'
 # The WSL Strix Halo reroute must forward an explicit browser choice.
 assert_contains \
     "install.sh: reroute forwards --no-browser" \
@@ -118,13 +124,26 @@ if [ -z "$_fn" ]; then
 else
     _tmp=$(mktemp -d)
     trap 'rm -rf "$_tmp"' EXIT
-    for _stub in open xdg-open; do
-        printf '#!/bin/sh\necho "BROWSER_OPENED:$1" >> "$RECORD"\n' > "$_tmp/$_stub"
+    # Stub EVERY opener _open_browser can reach, not just open/xdg-open: on WSL
+    # it prefers powershell.exe then cmd.exe, so on a WSL dev box an unstubbed
+    # run escapes to the real Windows browser and opens a window for real.
+    for _stub in open xdg-open powershell.exe cmd.exe; do
+        printf '#!/bin/sh\necho "BROWSER_OPENED:$*" >> "$RECORD"\n' > "$_tmp/$_stub"
         chmod +x "$_tmp/$_stub"
     done
+    # Pin PATH to the stubs plus coreutils so no host opener can leak in, and
+    # force the OS branch rather than inheriting the runner's.
+    _stub_path="$_tmp:/usr/bin:/bin"
+    printf '#!/bin/sh\necho Linux\n' > "$_tmp/uname"
+    chmod +x "$_tmp/uname"
+    # Fixture /proc/version: "microsoft" selects the WSL branch, anything else
+    # the plain-Linux branch. Lets one Linux runner cover both.
+    printf 'Linux version 5.15.0-microsoft-standard-WSL2\n' > "$_tmp/procversion_wsl"
+    printf 'Linux version 6.1.0-generic\n' > "$_tmp/procversion_linux"
+    _fn_linux=$(printf '%s\n' "$_fn" | sed "s#/proc/version#$_tmp/procversion_linux#")
 
     # Off: no browser process, URL echoed instead.
-    _out=$(RECORD="$_tmp/record_off" PATH="$_tmp:$PATH" bash -c \
+    _out=$(RECORD="$_tmp/record_off" PATH="$_stub_path" bash -c \
         "OPEN_BROWSER=0; $_fn; _open_browser http://localhost:9999")
     assert_contains \
         "OPEN_BROWSER=0 prints the URL" \
@@ -138,17 +157,64 @@ else
     fi
 
     # On (default): browser opener invoked with the URL.
-    RECORD="$_tmp/record_on" PATH="$_tmp:$PATH" bash -c \
-        "OPEN_BROWSER=1; $_fn; _open_browser http://localhost:9999" > /dev/null
+    RECORD="$_tmp/record_on" PATH="$_stub_path" bash -c \
+        "OPEN_BROWSER=1; $_fn_linux; _open_browser http://localhost:9999" > /dev/null
     # xdg-open is backgrounded inside _open_browser; give the stub a moment.
-    _i=0
-    while [ ! -s "$_tmp/record_on" ] && [ "$_i" -lt 20 ]; do
-        sleep 0.1
-        _i=$((_i + 1))
-    done
+    _wait_for_record() {
+        _i=0
+        while [ ! -s "$1" ] && [ "$_i" -lt 20 ]; do
+            sleep 0.1
+            _i=$((_i + 1))
+        done
+    }
+    _wait_for_record "$_tmp/record_on"
     assert_contains \
         "OPEN_BROWSER=1 invokes a browser opener with the URL" \
         "$(cat "$_tmp/record_on" 2>/dev/null)" "BROWSER_OPENED:http://localhost:9999"
+
+    # Each rung of the WSL ladder, by removing the one above it. Without this,
+    # the WSL branch is never exercised on a Linux CI runner at all.
+    _rung=1
+    for _drop in "" "powershell.exe" "powershell.exe cmd.exe"; do
+        _rung_dir="$_tmp/rung$_rung"
+        mkdir -p "$_rung_dir"
+        for _s in open xdg-open powershell.exe cmd.exe uname; do
+            cp "$_tmp/$_s" "$_rung_dir/$_s"
+        done
+        for _s in $_drop; do rm -f "$_rung_dir/$_s"; done
+        case "$_drop" in
+            "") _want="powershell.exe" ;;
+            "powershell.exe") _want="cmd.exe" ;;
+            *) _want="xdg-open" ;;
+        esac
+        _rec="$_tmp/record_rung$_rung"
+        _fn_r=$(printf '%s\n' "$_fn" | sed "s#/proc/version#$_tmp/procversion_wsl#")
+        RECORD="$_rec" PATH="$_rung_dir:/usr/bin:/bin" bash -c \
+            "OPEN_BROWSER=1; $_fn_r; _open_browser http://localhost:9999" > /dev/null 2>&1
+        _wait_for_record "$_rec"
+        # The recorder prints the whole arg list, so the URL shows up for
+        # `powershell.exe -NoProfile -Command "Start-Process '<url>'"` too.
+        assert_contains \
+            "WSL rung: ${_want} receives the URL when it is the first available opener" \
+            "$(cat "$_rec" 2>/dev/null)" "http://localhost:9999"
+        _rung=$((_rung + 1))
+    done
+
+    # And with no opener at all, nothing is spawned and a hint goes to stderr.
+    # PATH must contain ONLY this dir: leaving /usr/bin on it would find the
+    # real xdg-open and the "no opener" case would never be reached.
+    _none_dir="$_tmp/rung_none"
+    mkdir -p "$_none_dir"
+    cp "$_tmp/uname" "$_none_dir/uname"
+    cp "$(command -v grep)" "$_none_dir/grep"
+    # Absolute path for bash: the PATH assignment below also governs how bash
+    # itself is looked up, and this PATH deliberately holds almost nothing.
+    _bash=$(command -v bash)
+    _err=$(RECORD="$_tmp/record_none" PATH="$_none_dir" "$_bash" -c \
+        "OPEN_BROWSER=1; $_fn_linux; _open_browser http://localhost:9999" 2>&1 >/dev/null)
+    assert_contains \
+        "no opener available: prints a manual hint instead" \
+        "$_err" "Open in your browser: http://localhost:9999"
 fi
 
 echo ""
@@ -185,6 +251,9 @@ assert_file_contains \
 assert_file_contains \
     "install.ps1: prompt Enter keeps the baked preference" \
     "$INSTALL_PS1" 'elseif ($_existingPref) { $_existingPref }'
+assert_file_contains \
+    "install.ps1: browser prompt respects UNSLOTH_SKIP_AUTOSTART" \
+    "$INSTALL_PS1" '$_browserPromptOk = (-not $SkipAutostart) -and [Environment]::UserInteractive -and'
 assert_file_contains \
     "install.ps1: post-install launch opens browser via gated watcher" \
     "$INSTALL_PS1" 'Start-Job -ScriptBlock $_browserWatch'
