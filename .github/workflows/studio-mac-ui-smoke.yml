@@ -93,6 +93,14 @@ jobs:
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        # Bounded on purpose. hf-download-with-retry.sh retries forever by
+        # design ("the enclosing job's timeout-minutes is the real bound"), so
+        # an hf-xet stall used to eat all 65 minutes and take the update and
+        # uninstall coverage with it. A step timeout is a step FAILURE, not a
+        # cancellation, so the bootstrap below still runs and the job reports
+        # what it could test. 25 is roughly 7x the healthy time for a ~200 MB
+        # GGUF plus stories260K, so a merely slow download will not trip it.
+        timeout-minutes: 25
         env:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
@@ -111,6 +119,12 @@ jobs:
 
       - name: Install Unsloth (--local, --no-torch)
         id: install_unsloth
+        # The install is the shared bootstrap for every phase below, and only
+        # the Playwright phases need the primed GGUF. Detaching it from the
+        # implicit success() keeps the update and uninstall phases reachable
+        # when priming times out, which is the one case where they would still
+        # have produced a real result.
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -122,6 +136,9 @@ jobs:
 
       - name: Assert llama.cpp loads on this macOS
         id: assert_llama
+        # Second half of the bootstrap, and it needs no GGUF: it runs
+        # llama-server --version plus a static vtool minimum-OS check.
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' }}
         run: bash .github/scripts/assert-llama-loads.sh
 
       - name: Install Playwright browsers
