@@ -832,7 +832,15 @@ def _dspark_download_probe(monkeypatch, *, supports_dspark):
     )
     reached = {}
 
-    def _fake_companion(*, hf_repo, hf_token, pick, label, cancel_event = None, near_path = None):
+    def _fake_companion(
+        *,
+        hf_repo,
+        hf_token,
+        pick,
+        label,
+        cancel_event = None,
+        near_path = None,
+    ):
         reached["hit"] = True
         return "/cache/dspark-DeepSeek-V4-Flash-0731-Q8_0.gguf"
 
