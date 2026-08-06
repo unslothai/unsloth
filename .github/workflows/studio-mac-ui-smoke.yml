@@ -8,17 +8,21 @@
 # bundle, or the Mac llama.cpp prebuilt's HTTP layer behaving
 # differently from the Linux build).
 #
-# Also carries the API + auth phase that used to live in its own
-# studio-mac-api-smoke.yml. That workflow shared this one's model, GGUF
-# variant, HF_HOME cache key and 6 of its 7 path filters, and re-ran a
-# byte-identical `install.sh --local --no-torch` plus assert-llama-loads.sh
-# on a second macos-14 runner. Since concurrent macOS jobs are capped at 5
-# account-wide (shared with unslothai/unsloth-zoo), paying two slots and two
-# full installs to test two surfaces of the same server was the single
-# cheapest duplication to remove. The API phase runs last, on its own port,
-# after the UI phases have stopped their servers.
+# Also carries two phases that used to be their own macos-14 jobs:
+# studio-mac-api-smoke.yml (API + auth) and studio-mac-update-smoke.yml
+# (update idempotency + uninstall). All three shared a byte-identical
+# `install.sh --local --no-torch` plus assert-llama-loads.sh bootstrap, so a
+# single studio/** PR paid three macOS slots and three full installs to test
+# three surfaces of the same install. Concurrent macOS jobs are capped at 5
+# account-wide and that pool is shared with unslothai/unsloth-zoo, so this was
+# the cheapest duplication in the repo to remove.
+#
+# Phase order matters. Each phase boots on its own port and writes its own
+# server log, and the update phase runs LAST because it ends by uninstalling
+# and asserting the machine is clean -- that is the teardown for the whole job,
+# so nothing needing Unsloth installed may follow it.
 
-name: Mac Studio UI + API CI
+name: Mac Studio UI + API + Update CI
 
 on:
   pull_request:
@@ -31,6 +35,9 @@ on:
       - 'tests/studio/**'
       - '.github/scripts/run-studio-permission-browser.sh'
       - '.github/workflows/studio-mac-ui-smoke.yml'
+      # The absorbed update phase round-trips scripts/uninstall.sh, which none
+      # of the entries above cover.
+      - 'scripts/uninstall.sh'
       # No new entries needed for the absorbed API phase: every path
       # studio-mac-api-smoke.yml watched is already covered above, and
       # tests/studio/** covers studio_api_smoke.py itself.
@@ -47,14 +54,14 @@ permissions:
 
 jobs:
   ui-smoke:
-    name: Chat UI + API Tests
+    name: Chat UI, API and Update Tests
     runs-on: macos-14
-    # 35 covered the UI phases alone. The absorbed API phase adds a pyjwt
-    # install, a third server boot and studio_api_smoke.py -- a few minutes on
-    # an already-installed tree, since it reuses this job's install rather than
-    # doing its own. 50 leaves headroom without inviting a hang to sit for an
-    # hour holding one of the 5 macOS slots.
-    timeout-minutes: 50
+    # 35 covered the UI phases alone. The absorbed API and update phases each
+    # add a server boot plus their own checks, but both reuse this job's single
+    # install rather than doing their own, so they cost minutes rather than the
+    # ~10 the bootstrap takes. 65 leaves headroom without inviting a hang to sit
+    # for an hour holding one of the 5 macOS slots.
+    timeout-minutes: 65
     env:
       GGUF_REPO: unsloth/gemma-3-270m-it-GGUF
       GGUF_VARIANT: UD-Q4_K_XL
@@ -86,6 +93,14 @@ jobs:
       - name: Prime HF_HOME with the GGUF
         id: prime-hf
         if: steps.cache-hf.outputs.cache-hit != 'true' || steps.cache-hf.outcome != 'success'
+        # Bounded on purpose. hf-download-with-retry.sh retries forever by
+        # design ("the enclosing job's timeout-minutes is the real bound"), so
+        # an hf-xet stall used to eat all 65 minutes and take the update and
+        # uninstall coverage with it. A step timeout is a step FAILURE, not a
+        # cancellation, so the bootstrap below still runs and the job reports
+        # what it could test. 25 is roughly 7x the healthy time for a ~200 MB
+        # GGUF plus stories260K, so a merely slow download will not trip it.
+        timeout-minutes: 25
         env:
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
           HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
@@ -103,6 +118,13 @@ jobs:
           key: ${{ runner.os }}-hf-${{ env.GGUF_REPO }}-${{ env.GGUF_VARIANT }}-v2
 
       - name: Install Unsloth (--local, --no-torch)
+        id: install_unsloth
+        # The install is the shared bootstrap for every phase below, and only
+        # the Playwright phases need the primed GGUF. Detaching it from the
+        # implicit success() keeps the update and uninstall phases reachable
+        # when priming times out, which is the one case where they would still
+        # have produced a real result.
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
@@ -113,6 +135,10 @@ jobs:
           bash install.sh --local --no-torch 2>&1 | tee logs/install.log
 
       - name: Assert llama.cpp loads on this macOS
+        id: assert_llama
+        # Second half of the bootstrap, and it needs no GGUF: it runs
+        # llama-server --version plus a static vtool minimum-OS check.
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' }}
         run: bash .github/scripts/assert-llama-loads.sh
 
       - name: Install Playwright browsers
@@ -409,6 +435,127 @@ jobs:
           kill "${STUDIO_API_PID}" 2>/dev/null || true
           sleep 2
 
+      # ---------------------------------------------------------------
+      # Update + uninstall phase, absorbed from studio-mac-update-smoke.yml.
+      # Same install, same assert-llama-loads.sh, so it was a third macos-14
+      # runner doing the same bootstrap to check that `update` is a no-op.
+      #
+      # Runs last on purpose: it ends by uninstalling and asserting the machine
+      # is clean, which is the teardown for this whole job. Nothing may follow
+      # it that needs Unsloth installed. Its server boots on 18891 and logs to
+      # studio_update.log so it cannot clobber the UI or API phases above.
+      #
+      # Every step below carries an explicit condition because a step with no
+      # `if:` gets an implicit `success()`, so one flaky Playwright failure in a
+      # phase above would silently skip this whole phase. As its own workflow it
+      # ran regardless, and it is the only Mac coverage of `studio update` and
+      # scripts/uninstall.sh. `!cancelled()` overrides the implicit success()
+      # while the step-outcome checks still demand a working install to test
+      # against. `${{ }}` is required: a bare leading `!` is a YAML tag.
+      # ---------------------------------------------------------------
+      - name: First update should be a no-op (prebuilt already validated)
+        id: update_first
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' && steps.assert_llama.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update.log
+          if grep -q "falling back to source build" logs/update.log; then
+            echo "::error::studio update fell back to source-build llama.cpp on Mac."
+            grep -E "llama-prebuilt|llama.cpp" logs/update.log | tail -60
+            exit 1
+          fi
+          if ! grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update.log; then
+            echo "::error::no prebuilt up-to-date marker in update.log."
+            grep -E "llama-prebuilt|llama.cpp" logs/update.log | tail -60
+            exit 1
+          fi
+          echo "update path took the prebuilt fast path"
+
+      # Chained on the first update: "also a no-op" says nothing if the first
+      # one never produced a clean result. Success here implies the bootstrap
+      # gate above passed too, so it does not need repeating.
+      - name: Second update must also be a no-op
+        id: update_second
+        if: ${{ !cancelled() && steps.update_first.outcome == 'success' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Withheld on PR: this step runs checked-out PR code; public GGUF still downloads.
+          HF_TOKEN: ${{ github.event_name != 'pull_request' && secrets.HF_TOKEN || '' }}
+        run: |
+          set -o pipefail
+          unsloth studio update --local 2>&1 | tee logs/update2.log
+          grep -q "falling back to source build" logs/update2.log && {
+              echo "::error::second update fell back to source build on Mac"
+              tail -60 logs/update2.log; exit 1; } || true
+          grep -qE "prebuilt up to date and validated|prebuilt installed and validated" logs/update2.log
+          echo "second update was clean"
+
+      - name: Boot Unsloth briefly to confirm the install is still usable
+        if: ${{ !cancelled() && steps.update_second.outcome == 'success' }}
+        run: |
+          mkdir -p logs
+          UNSLOTH_API_ONLY=1 unsloth studio -H 127.0.0.1 -p 18891 \
+            > logs/studio_update.log 2>&1 &
+          PID=$!
+          HEALTHY=""
+          for i in $(seq 1 60); do
+            if curl -fs http://127.0.0.1:18891/api/health > /tmp/health.json; then
+              if python3 -c "import json,sys; d=json.load(open('/tmp/health.json')); sys.exit(0 if d.get('status')=='healthy' else 1)"; then
+                HEALTHY=1
+                break
+              fi
+            fi
+            sleep 1
+          done
+          if [ -z "$HEALTHY" ]; then
+            echo "Unsloth failed to come up after \`update\`"
+            tail -200 logs/studio_update.log
+            kill "$PID" 2>/dev/null || true
+            exit 1
+          fi
+          kill "$PID" 2>/dev/null || true
+          echo "post-update Unsloth /api/health OK"
+
+      - name: Uninstall and verify clean
+        # Gated on the install alone, not on the update steps: uninstall is a
+        # separate surface, and a broken `studio update` must not hide whether
+        # scripts/uninstall.sh still leaves the machine clean.
+        if: ${{ !cancelled() && steps.install_unsloth.outcome == 'success' }}
+        # Round-trip through scripts/uninstall.sh on real macOS. As a side
+        # effect this exercises the macOS-only .app bundle + Launch Services
+        # removal path (~/Applications/Unsloth Studio.app, lsregister -u)
+        # which is not testable from a Linux runner. Skips gracefully if
+        # scripts/uninstall.sh has not landed yet (lets this workflow merge
+        # before #5497).
+        run: |
+          set -o pipefail
+          if [ ! -f scripts/uninstall.sh ]; then
+            echo "scripts/uninstall.sh not present in this tree; skipping round-trip"
+            : > logs/uninstall.log
+            exit 0
+          fi
+          sh scripts/uninstall.sh 2>&1 | tee logs/uninstall.log
+          leak=0
+          for p in \
+            "$HOME/.unsloth/studio" \
+            "$HOME/.local/share/unsloth" \
+            "$HOME/Applications/Unsloth Studio.app" \
+            "$HOME/Desktop/Unsloth Studio.app" \
+            "$HOME/.local/bin/unsloth"; do
+            if [ -e "$p" ] || [ -L "$p" ]; then
+              echo "::error::leak: $p"
+              leak=$((leak + 1))
+            fi
+          done
+          [ "$leak" -eq 0 ] || exit 1
+          sh scripts/uninstall.sh 2>&1 | tail -5
+          sh scripts/uninstall.sh 2>&1 | tail -5
+          echo "PASS: mac install -> update -> uninstall round-trip clean"
+
       - name: Upload Playwright artifacts
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
@@ -418,6 +565,10 @@ jobs:
             logs/studio.log
             logs/studio_extra.log
             logs/studio_api.log
+            logs/studio_update.log
+            logs/update.log
+            logs/update2.log
+            logs/uninstall.log
             logs/install.log
             logs/playwright
             logs/playwright-permissions-*
