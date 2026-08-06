@@ -1122,7 +1122,7 @@ class _FakeDownloadProcess:
 
 def _worker_args(args) -> dict:
     """Parse the download worker's argv into the fields tests assert on."""
-    parsed: dict = {"allow_patterns": []}
+    parsed: dict = {"filenames": []}
     remaining = iter(args)
     for flag in remaining:
         value = next(remaining)
@@ -1131,9 +1131,7 @@ def _worker_args(args) -> dict:
         elif flag == "--revision":
             parsed["revision"] = value
         elif flag == "--filename":
-            parsed["filename"] = value
-        elif flag == "--allow-pattern":
-            parsed["allow_patterns"].append(value)
+            parsed["filenames"].append(value)
     return parsed
 
 
@@ -1156,7 +1154,7 @@ def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_p
             calls.append(("info", repo, kwargs))
             return SimpleNamespace(sha = revision, siblings = siblings)
 
-    def fake_spawn_download(args, hf_token = None):
+    def fake_spawn_download(args, hf_token = None, *, hub_cache = None):
         calls.append(("snapshot", _worker_args(args)))
         return _FakeDownloadProcess()
 
@@ -1180,8 +1178,8 @@ def test_download_metadata_and_snapshot_use_the_same_revision(monkeypatch, tmp_p
     )
     assert calls[1][0] == "snapshot"
     assert calls[1][1]["revision"] == revision
-    assert "model.safetensors" in calls[1][1]["allow_patterns"]
-    assert "pytorch_model.bin" not in calls[1][1]["allow_patterns"]
+    assert "model.safetensors" in calls[1][1]["filenames"]
+    assert "pytorch_model.bin" not in calls[1][1]["filenames"]
 
 
 def test_download_status_is_idle_before_any_download():

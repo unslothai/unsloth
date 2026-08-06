@@ -234,7 +234,7 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
         def communicate(self):
             return (None, b"")
 
-    def fake_spawn_download(args, hf_token = None):
+    def fake_spawn_download(args, hf_token = None, *, hub_cache = None):
         # The transfer moved to a worker process; pinning is now in its argv.
         remaining = iter(args)
         patterns: list[str] = []
@@ -242,7 +242,7 @@ def test_download_pins_revision_and_limits_patterns(monkeypatch):
             value = next(remaining)
             if flag == "--revision":
                 captured["revision"] = value
-            elif flag == "--allow-pattern":
+            elif flag == "--filename":
                 patterns.append(value)
         captured["allow_patterns"] = patterns
         return _FakeProcess()
