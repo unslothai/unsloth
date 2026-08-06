@@ -359,9 +359,11 @@ def test_the_moved_sd_cpp_assets_keep_their_upstream_relative_paths():
         "unsloth/Z-Image-Turbo-ComfyUI",
         "split_files/vae/ae.safetensors",
     )
+    # The FLUX.2 autoencoder is Apache-2.0 by BFL's own carve-out while the conditioner beside it
+    # in the source repack is not, so it is mirrored on its own rather than under those terms.
     for name in ("flux.2-klein", "flux.2-dev"):
         assert detect_family(name).sd_cpp_vae == (
-            "unsloth/FLUX.2-dev-ComfyUI",
+            "unsloth/FLUX.2-VAE",
             "split_files/vae/flux2-vae.safetensors",
         ), name
 

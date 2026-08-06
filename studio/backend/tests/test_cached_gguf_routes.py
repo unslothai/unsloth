@@ -3018,6 +3018,7 @@ def test_cached_repo_task_never_offers_an_sd_cpp_companion_repo_as_a_model(tmp_p
         "unsloth/Z-Image-Turbo-ComfyUI",
         "unsloth/Qwen-Image-ComfyUI",
         "unsloth/FLUX.2-dev-ComfyUI",
+        "unsloth/FLUX.2-VAE",
         "unsloth/FLUX.2-klein-9B-ComfyUI",
         "unsloth/flux-text-encoders",
     ):

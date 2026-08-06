@@ -137,8 +137,8 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         inpaint_pipeline_class = "Flux2KleinInpaintPipeline",
         # FLUX.2 scales >1MP inputs to ~1MP, so outpaint can't grow.
         inpaint_preserves_size = False,
-        # FLUX.2's 32-channel AE needs the latent-format override; the single-file VAE ships in unsloth/FLUX.2-dev-ComfyUI (mirroring Comfy-Org/flux2-dev). Shares Qwen3-4B with z-image.
-        sd_cpp_vae = ("unsloth/FLUX.2-dev-ComfyUI", "split_files/vae/flux2-vae.safetensors"),
+        # FLUX.2's 32-channel AE needs the latent-format override. The single-file VAE mirrors Comfy-Org/flux2-dev's copy, but in its own repo: BFL released the FLUX.2 autoencoder under Apache-2.0 while the rest of FLUX.2-dev is non-commercial, and klein-4B is Apache-2.0 too. Shares Qwen3-4B with z-image.
+        sd_cpp_vae = ("unsloth/FLUX.2-VAE", "split_files/vae/flux2-vae.safetensors"),
         sd_cpp_vae_format = "flux2",
         sd_cpp_text_encoders = (
             (
@@ -148,7 +148,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
             ),
         ),
     ),
-    # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base, text-to-image only; VAE + Mistral encoder come from unsloth/FLUX.2-dev-ComfyUI for sd-cli.
+    # FLUX.2-dev: full (non-distilled) FLUX.2 on the Mistral Flux2Pipeline, so its own entry. Gated base, text-to-image only; the Mistral encoder comes from unsloth/FLUX.2-dev-ComfyUI and the VAE from unsloth/FLUX.2-VAE for sd-cli.
     DiffusionFamily(
         name = "flux.2-dev",
         pipeline_class = "Flux2Pipeline",
@@ -164,7 +164,7 @@ _FAMILIES: tuple[DiffusionFamily, ...] = (
         # LoRA training via the DiT trainer (QLoRA nf4); the gated base needs an HF token with the FLUX.2-dev license accepted.
         trainable = True,
         train_base_repos = ("black-forest-labs/FLUX.2-dev",),
-        sd_cpp_vae = ("unsloth/FLUX.2-dev-ComfyUI", "split_files/vae/flux2-vae.safetensors"),
+        sd_cpp_vae = ("unsloth/FLUX.2-VAE", "split_files/vae/flux2-vae.safetensors"),
         sd_cpp_vae_format = "flux2",
         sd_cpp_text_encoders = (
             (
