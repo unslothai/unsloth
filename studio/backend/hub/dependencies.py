@@ -10,10 +10,6 @@ from typing import Optional
 from fastapi import Header
 
 HUB_HF_TOKEN_HEADER = "X-Unsloth-HF-Token"
-# Stamped on every response the hub proxy routes produce, so the frontend can
-# tell a real answer from an older backend that has no such route and lets the
-# SPA catch-all serve a 404. Idea from #7893.
-HUB_PROXY_MARKER_HEADER = "X-Unsloth-HF-Proxy"
 HUB_HF_TOKEN_MAX_LENGTH = 512
 
 

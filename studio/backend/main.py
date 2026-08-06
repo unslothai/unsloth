@@ -321,7 +321,6 @@ from hub.routes import (
     inventory_router as hub_inventory_router,
     datasets_router as hub_datasets_router,
     token_router as hub_token_router,
-    discovery_router as hub_discovery_router,
 )
 from picker.routes import templates_router as picker_templates_router
 from hub.schemas.downloads import TransportCapabilities
@@ -822,38 +821,6 @@ _IS_COLAB = os.path.isdir("/content") and (
 )
 
 
-def _hub_endpoint() -> str:
-    """Effective Hub endpoint, read per call so HF_ENDPOINT stays live.
-
-    Userinfo is dropped: that is the server's credentials, not the client's
-    business. The path is kept, because the proxy routes fetch from the whole of
-    HF_ENDPOINT and the frontend resolves a repo card's relative images and
-    links against this value; a mirror mounted at /hf needs the /hf.
-    """
-    default = "https://huggingface.co"
-    try:
-        from urllib.parse import urlsplit
-
-        from utils.utils import hf_endpoint_url
-
-        parsed = urlsplit(hf_endpoint_url())
-        host = parsed.hostname
-        if not host:
-            return default
-        host = host.lower()
-        # .hostname strips the brackets an IPv6 literal needs, and the frontend
-        # parses this with new URL(): unbracketed it throws, and the card's
-        # relative assets silently fall back to the public Hub.
-        if ":" in host:
-            host = f"[{host}]"
-        port = f":{parsed.port}" if parsed.port is not None else ""
-        # Query and fragment are dropped by taking only these parts.
-        path = parsed.path.rstrip("/")
-        return f"{parsed.scheme.lower()}://{host}{port}{path}"
-    except Exception:
-        return default
-
-
 def _build_csp(script_nonce: "str | None" = None) -> str:
     script_src = "script-src 'self'"
     if script_nonce:
@@ -1238,7 +1205,6 @@ app.include_router(hub_inventory_router, prefix = "/api/hub", tags = ["hub"])
 app.include_router(hub_datasets_router, prefix = "/api/hub/datasets", tags = ["hub"])
 app.include_router(picker_templates_router, prefix = "/api/picker", tags = ["picker"])
 app.include_router(hub_token_router, prefix = "/api/hub", tags = ["hub"])
-app.include_router(hub_discovery_router, prefix = "/api/hub", tags = ["hub"])
 
 # Re-wrap client-error responses on the /v1/* surface into OpenAI/Anthropic
 # error envelopes; non-/v1 paths keep FastAPI's default {"detail": ...} shape.
@@ -1406,9 +1372,6 @@ async def health_check(request: Request):
         "cloudflare_url": getattr(request.app.state, "cloudflare_url", None),
         "server_url": getattr(request.app.state, "server_url", None),
         "secure": bool(getattr(request.app.state, "secure", False)),
-        # Without this the frontend assumes huggingface.co, so a mirror looks
-        # permanently offline.
-        "hub_endpoint": _hub_endpoint(),
     }
     if snapshot is not None:
         # Why chat_only is set; fingerprints the host, so keep it authed. All three
