@@ -219,6 +219,43 @@ def test_it_refuses_a_directory_owned_by_someone_else(monkeypatch, tmp_path):
         IF._subprocess_fix_directory()
 
 
+@pytest.mark.parametrize("mode", [0o777, 0o770, 0o707, 0o702, 0o720])
+def test_an_existing_loose_directory_is_tightened(monkeypatch, tmp_path, mode):
+    """`os.makedirs(mode = 0o700, exist_ok = True)` does NOT re-apply the mode
+    to a directory that is already there. One left group- or world-writable is
+    write access to the sitecustomize that goes on PYTHONPATH, which is code
+    execution in every subprocess started after `import unsloth`."""
+    if not hasattr(os, "getuid"):
+        pytest.skip("POSIX permissions only")
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    loose = tmp_path / ("unsloth_subprocess_import_fix-%d" % os.getuid())
+    loose.mkdir()
+    os.chmod(loose, mode)
+    assert os.lstat(loose).st_mode & 0o022, "fixture did not take"
+
+    directory = IF._subprocess_fix_directory()
+
+    assert directory == str(loose)
+    after = os.lstat(directory).st_mode & 0o777
+    assert not after & 0o022, "still writable by group/other: %04o" % after
+    assert oct(after) == oct(0o700), oct(after)
+
+
+def test_a_directory_that_cannot_be_tightened_is_refused(monkeypatch, tmp_path):
+    """Some network and FUSE mounts accept chmod and change nothing. Handing
+    back a world-writable PYTHONPATH entry anyway is the whole bug."""
+    if not hasattr(os, "getuid"):
+        pytest.skip("POSIX permissions only")
+    monkeypatch.setattr("tempfile.gettempdir", lambda: str(tmp_path))
+    loose = tmp_path / ("unsloth_subprocess_import_fix-%d" % os.getuid())
+    loose.mkdir()
+    os.chmod(loose, 0o777)
+    monkeypatch.setattr(os, "chmod", lambda *a, **k: None)  # silently ignored
+
+    with pytest.raises(RuntimeError, match = "group- or world-writable"):
+        IF._subprocess_fix_directory()
+
+
 def test_the_refusal_does_not_propagate_as_a_crash(monkeypatch):
     """`propagate_...` wraps the staging in try/except and warns. A hostile
     directory must degrade to "no subprocess fix", not kill the import."""

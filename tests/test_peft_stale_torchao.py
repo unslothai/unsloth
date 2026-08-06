@@ -29,7 +29,10 @@ so the difference between pass and fail is one install line, not the model.
 
 "Installed but unusable" is much closer to "not installed" than to "fatal".
 Any other ImportError still propagates, because a torchao that fails to
-import for a different reason is a real problem.
+import for a different reason is a real problem -- including the ones whose
+message also happens to say "torchao", such as a missing submodule or an
+unloadable extension, which is why the version complaint is matched rather
+than the word.
 """
 
 import sys
@@ -71,22 +74,40 @@ def peft_env(monkeypatch):
             sys.modules.pop(k, None)
 
 
-def _fix():
-    """Load the function without importing unsloth (which needs a GPU)."""
+_WANTED = ("fix_peft_stale_torchao_import_error", "_TORCHAO_STALE_VERSION_ERROR")
+
+
+def _fix(warning = None):
+    """Load the function without importing unsloth (which needs a GPU).
+
+    The module-level regex it consults has to come along, or the wrapper
+    NameErrors on the first suppressed ImportError.
+    """
     import ast
+    import re
 
     src = (REPO_ROOT / "unsloth" / "import_fixes.py").read_text(encoding = "utf-8")
     tree = ast.parse(src)
+    ns = {
+        "functools": __import__("functools"),
+        "sys": sys,
+        "re": re,
+        "logger": types.SimpleNamespace(
+            warning = warning if warning is not None else (lambda *a, **k: None),
+        ),
+    }
     for node in tree.body:
-        if isinstance(node, ast.FunctionDef) and node.name == "fix_peft_stale_torchao_import_error":
-            ns = {
-                "functools": __import__("functools"),
-                "sys": sys,
-                "logger": types.SimpleNamespace(warning = lambda *a, **k: None),
-            }
+        name = None
+        if isinstance(node, ast.FunctionDef):
+            name = node.name
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1:
+            if isinstance(node.targets[0], ast.Name):
+                name = node.targets[0].id
+        if name in _WANTED:
             exec(ast.get_source_segment(src, node), ns)
-            return ns["fix_peft_stale_torchao_import_error"]
-    raise AssertionError("fix_peft_stale_torchao_import_error not found")
+    for name in _WANTED:
+        assert name in ns, f"{name} not found in import_fixes.py"
+    return ns["fix_peft_stale_torchao_import_error"]
 
 
 FIX = _fix()
@@ -124,22 +145,7 @@ def test_the_module_that_actually_calls_it_is_patched(peft_env):
 def test_warning_is_emitted_once(peft_env):
     iu, _ = peft_env(_raiser(STALE))
     seen = []
-    import ast
-
-    src = (REPO_ROOT / "unsloth" / "import_fixes.py").read_text(encoding = "utf-8")
-    tree = ast.parse(src)
-    node = next(
-        n
-        for n in tree.body
-        if isinstance(n, ast.FunctionDef) and n.name == "fix_peft_stale_torchao_import_error"
-    )
-    ns = {
-        "functools": __import__("functools"),
-        "sys": sys,
-        "logger": types.SimpleNamespace(warning = seen.append),
-    }
-    exec(ast.get_source_segment(src, node), ns)
-    ns["fix_peft_stale_torchao_import_error"]()
+    _fix(warning = seen.append)()
     for _ in range(5):
         iu.is_torchao_available()
     assert len(seen) == 1, "one stale dependency, one message"
@@ -155,6 +161,43 @@ def test_an_unrelated_import_error_still_raises(peft_env):
     FIX()
     with pytest.raises(ImportError):
         iu.is_torchao_available()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # A half-installed or partially built torchao. Says "torchao", is not a
+        # version complaint, and reporting it as "torchao is unavailable" hides
+        # a broken install from the user.
+        "No module named 'torchao.quantization'",
+        "cannot import name 'quantize_' from 'torchao'",
+        # An extension built against a different torch/CUDA.
+        "libtorchao_ops_cuda.so: cannot open shared object file: No such file or directory",
+        "/site-packages/torchao/_C.so: undefined symbol: _ZN3c105ErrorC1E",
+    ],
+)
+def test_a_broken_torchao_still_raises_even_though_it_says_torchao(peft_env, message):
+    iu, _ = peft_env(_raiser(ImportError(message)))
+    FIX()
+    with pytest.raises(ImportError):
+        iu.is_torchao_available()
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # peft's current wording.
+        "Found an incompatible version of torchao. Found version 0.10.0, "
+        "but only versions above 0.16.0 are supported",
+        # Rewordings that must keep being read as "too old", not "broken".
+        "torchao 0.10.0 is installed but only versions above 0.16.0 are supported",
+        "This requires torchao>=0.16.0",
+    ],
+)
+def test_every_spelling_of_the_version_complaint_is_swallowed(peft_env, message):
+    iu, _ = peft_env(_raiser(ImportError(message)))
+    FIX()
+    assert iu.is_torchao_available() is False
 
 
 def test_a_non_import_error_still_raises(peft_env):

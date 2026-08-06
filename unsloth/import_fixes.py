@@ -3201,6 +3201,22 @@ def patch_accelerate_recursively_apply():
                         pass
 
 
+# The one ImportError worth answering False to. "torchao" appearing anywhere in
+# the text is far too wide: "No module named 'torchao.quantization'" and
+# "libtorchao_ops_cuda.so: cannot open shared object file" both mention it, and
+# both describe an installation that is genuinely broken rather than merely old.
+# Those must keep propagating, so match the version complaint itself. peft's
+# current wording is the first alternative; the others are the same sentence as
+# other libraries phrase it, so a rewording upstream does not silently turn this
+# back into a raise.
+_TORCHAO_STALE_VERSION_ERROR = re.compile(
+    r"incompatible version of torchao"
+    r"|torchao.{0,120}?only versions?\s+(?:above|below|>=|<=)"
+    r"|(?:requires|needs|expected)\s+torchao\s*[><=!]",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
 def fix_peft_stale_torchao_import_error():
     """Stop an old torchao from aborting LoRA creation that never uses it.
 
@@ -3237,9 +3253,10 @@ def fix_peft_stale_torchao_import_error():
             return original(*args, **kwargs)
         except ImportError as exc:
             # Only the version complaint. A torchao that fails to import for
-            # any other reason is a real problem and must still surface.
+            # any other reason is a real problem and must still surface, even
+            # though its message also says "torchao".
             message = str(exc)
-            if "torchao" not in message.lower():
+            if _TORCHAO_STALE_VERSION_ERROR.search(message) is None:
                 raise
             if not warned[0]:
                 warned[0] = True
@@ -3512,6 +3529,14 @@ def _subprocess_fix_directory():
     is shared on Linux, so a fixed name there would let whoever created it
     first run code as everyone else. Scope it per user and refuse a path this
     user does not own. Windows already gives each user a private TEMP.
+
+    Ownership is not on its own enough. ``exist_ok = True`` does not apply
+    ``mode`` to a directory that already exists, so one left behind
+    group- or world-writable -- by an older release, a loose umask, or a hand
+    -created path -- stays that way, and anyone who can write into it can
+    replace the ``sitecustomize.py`` that goes on PYTHONPATH and so run their
+    code in every Python subprocess started after ``import unsloth``. Take the
+    write bits away, and refuse the directory if they cannot be taken away.
     """
     import stat
     import tempfile
@@ -3529,6 +3554,19 @@ def _subprocess_fix_directory():
             raise RuntimeError(
                 "refusing a subprocess fix directory owned by another user: " + directory
             )
+        # chmod, then re-read: a filesystem that ignores mode bits (some
+        # network and FUSE mounts) reports success and changes nothing.
+        if stat.S_IMODE(info.st_mode) & 0o022:
+            try:
+                os.chmod(directory, 0o700)
+            except Exception:
+                pass
+            info = os.lstat(directory)
+            if stat.S_IMODE(info.st_mode) & 0o022:
+                raise RuntimeError(
+                    "refusing a group- or world-writable subprocess fix "
+                    "directory (mode %04o): %s" % (stat.S_IMODE(info.st_mode), directory)
+                )
     return directory
 
 
@@ -3703,10 +3741,13 @@ def propagate_torchao_fix_to_subprocesses():
     full import cost each time and could recurse through this function.
 
     The other fixes in this module were checked and do not need a child.
-    `fix_peft_stale_torchao_import_error` is the only other torchao one, and
-    it guards LoRA construction, which happens in this process. Anything found
-    to be needed later should be inlined here too, not turned into an
-    `import unsloth`.
+    There are two other torchao ones, and both guard work that happens in this
+    process: `fix_peft_stale_torchao_import_error` guards LoRA construction,
+    and `fix_torchao_nf4tensor_move` guards `import torchtune` (and xcodec2,
+    which imports torchtune) -- neither is imported by a process unsloth does
+    not launch, and the vLLM inspector this hook exists for imports neither.
+    Anything found to be needed later should be inlined here too, not turned
+    into an `import unsloth`.
 
     Returns the directory added to PYTHONPATH, or None.
     """
