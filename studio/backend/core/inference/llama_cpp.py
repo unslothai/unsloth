@@ -23,6 +23,7 @@ import signal
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -38,6 +39,7 @@ from typing import (
     Mapping,
     MutableMapping,
     NamedTuple,
+    NoReturn,
     Optional,
     Union,
 )
@@ -165,6 +167,8 @@ class GgufLoadIntent:
     extra_args_inherited: bool = False
     preserve_multi_gpu_on_layer: bool = False
     compare_mtp_draft: bool = False
+    # Internal state that keeps recovered auto-Vulkan respawns CPU-isolated.
+    cpu_fallback: bool = False
 
     def __post_init__(self):
         for key in ("tensor_split", "gpu_ids", "extra_args"):
@@ -2845,14 +2849,9 @@ def _apply_igpu_host_reserve_mib(free_mib: int, is_igpu: bool) -> int:
     return max(0, free_mib - _IGPU_HOST_RESERVE_MIB)
 
 
-def _llama_lib_dir(binary: str) -> Path:
-    # The installer exposes llama-server as a top-level entrypoint into build/bin/,
-    # where the ggml backend libs live, so callers looking for sibling libs (Vulkan
-    # detection, LD_LIBRARY_PATH, probe bindir) need the real dir. It is normally a
-    # symlink (resolve() reaches build/bin), but create_exec_entrypoint falls back to
-    # a shell wrapper (exec "$(dirname "$0")/build/bin/llama-server" "$@") when it
-    # cannot symlink, and resolve() stops at the wrapper file. Follow the wrapper's
-    # exec target too, so a wrapper-based install still finds build/bin.
+def _resolve_llama_binary(binary: str) -> Path:
+    """Resolve a managed symlink or shell entrypoint to the real server."""
+    # Managed entrypoints are symlinks or shell wrappers into build/bin.
     resolved = Path(binary).resolve()
     try:
         with open(resolved, "rb") as _f:
@@ -2860,10 +2859,14 @@ def _llama_lib_dir(binary: str) -> Path:
         if _head.startswith(b"#!"):
             _m = re.search(r'exec "\$\(dirname "\$0"\)/([^"]+)"', _head.decode("utf-8", "ignore"))
             if _m:
-                return (resolved.parent / _m.group(1)).resolve().parent
+                return (resolved.parent / _m.group(1)).resolve()
     except OSError:
         pass
-    return resolved.parent
+    return resolved
+
+
+def _llama_lib_dir(binary: str) -> Path:
+    return _resolve_llama_binary(binary).parent
 
 
 def _lib_dir_has_ggml_backend(lib_dir: Path, backend: str) -> bool:
@@ -2957,6 +2960,10 @@ class LlamaCppBackend:
         self._spec_fallback_reason: Optional[str] = None
         self._spec_drafter_kind: Optional[str] = None
         self._dspark_sidecar_absent: bool = False
+        # Set after an auto-Vulkan crash recovers with all devices disabled.
+        self._cpu_fallback_reason: Optional[str] = None
+        self._cpu_fallback_runtime = None
+        self._cpu_fallback_runtime_source: Optional[str] = None
         self._hf_variant: Optional[str] = None
         self._is_vision: bool = False
         # Block-diffusion model (e.g. DiffusionGemma): served by the diffusion
@@ -5069,6 +5076,15 @@ class LlamaCppBackend:
         "LLAMA_ARG_FIT",
         "LLAMA_ARG_FIT_TARGET",
         "LLAMA_ARG_FIT_CTX",
+    )
+
+    # Eligibility must reject every inherited placement value replay removes.
+    _CPU_FALLBACK_MAIN_PLACEMENT_ENV_VARS = (
+        *_MANUAL_PLACEMENT_ENV_VARS,
+        "LLAMA_ARG_DEVICE",
+        "LLAMA_ARG_MAIN_GPU",
+        "LLAMA_ARG_SPLIT_MODE",
+        "LLAMA_ARG_OVERRIDE_TENSOR",
     )
 
     # (binary, mtime, model) that aborted on --split-mode tensor this process (#6415
@@ -8324,6 +8340,270 @@ class LlamaCppBackend:
         return out
 
     @staticmethod
+    def _installed_gpu_backend(binary: Optional[str] = None) -> Optional[str]:
+        """Return the installed GPU backend used for user-facing advice.
+
+        Metal is not probed by the .so/.dll matcher, so macOS gets neutral advice.
+        """
+        binary = binary or LlamaCppBackend._find_llama_server_binary()
+        if not binary:
+            return None
+        lib_dir = _llama_lib_dir(binary)
+        for backend in ("cuda", "hip", "vulkan"):
+            if _lib_dir_has_ggml_backend(lib_dir, backend):
+                return backend
+        return None
+
+    @staticmethod
+    def _vulkan_prebuilt_was_auto_selected(binary: Optional[str]) -> bool:
+        """Whether setup chose this managed Vulkan bundle without an override.
+
+        Explicit selections set an override or marker. The managed marker also
+        excludes custom and PATH binaries.
+        """
+        if not binary:
+            return False
+        if os.environ.get("UNSLOTH_FORCE_VULKAN", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }:
+            return False
+        if (os.environ.get("UNSLOTH_LLAMA_CPP_BACKEND") or "").strip().lower() in {
+            "cpu",
+            "vulkan",
+            "hip",
+            "rocm",
+        }:
+            return False
+        try:
+            from utils.llama_cpp_update import _llama_install_root
+
+            install_root = _llama_install_root(binary)
+            if install_root is None:
+                return False
+            marker = json.loads(
+                (install_root / "UNSLOTH_PREBUILT_INFO.json").read_text(encoding = "utf-8")
+            )
+        except (OSError, ValueError, TypeError):
+            return False
+        return (
+            isinstance(marker, dict)
+            and not bool(marker.get("force_cpu"))
+            and marker.get("llama_backend") in (None, "", "auto")
+        )
+
+    @staticmethod
+    def _strip_cpu_fallback_main_placement(args: Iterable[str]) -> list[str]:
+        """Remove every raw main-model placement choice the CPU replay replaces."""
+        stripped = strip_shadowing_flags(
+            args,
+            strip_context = False,
+            strip_cache = False,
+            strip_spec = False,
+            strip_template = False,
+            strip_split_mode = True,
+            strip_offload = True,
+            strip_device = True,
+        )
+        return _paravirtual_strip_gpu_overrides(stripped, log_dropped = False) or []
+
+    @classmethod
+    def _auto_vulkan_cpu_fallback_eligible(
+        cls,
+        binary: Optional[str],
+        intent: GgufLoadIntent,
+        extra_args: Optional[Iterable[str]],
+        env: Optional[Mapping[str, str]] = None,
+    ) -> bool:
+        """Whether a signal may replace automatic Vulkan placement with CPU.
+
+        Explicit placement choices must remain failures instead of being discarded.
+        """
+        args = [str(arg) for arg in (extra_args or ())]
+        companion_placement_flags = {
+            *_OVERRIDE_TENSOR_FLAGS,
+            "--spec-draft-device",
+            "-devd",
+            "--device-draft",
+            "--spec-draft-ngl",
+            "-ngld",
+            "--gpu-layers-draft",
+            "--n-gpu-layers-draft",
+            "--mmproj-offload",
+            "--no-mmproj-offload",
+        }
+        child_env = os.environ if env is None else env
+        return bool(
+            cls._is_vulkan_backend(binary)
+            and cls._vulkan_prebuilt_was_auto_selected(binary)
+            and intent.gpu_memory_mode == "auto"
+            and not intent.gpu_ids
+            and not intent.tensor_parallel
+            and not intent.tensor_split
+            and intent.n_cpu_moe == 0
+            and cls._strip_cpu_fallback_main_placement(args) == args
+            and not any(_flag_name(arg) in companion_placement_flags for arg in args)
+            and not any(
+                str(child_env.get(name) or "").strip()
+                for name in (
+                    *cls._CPU_FALLBACK_MAIN_PLACEMENT_ENV_VARS,
+                    "LLAMA_ARG_N_GPU_LAYERS_DRAFT",
+                    "LLAMA_ARG_MMPROJ_OFFLOAD",
+                    "GGML_BACKEND_PATH",
+                )
+            )
+        )
+
+    @classmethod
+    def _cpu_isolated_replay(
+        cls,
+        cmd: Iterable[str],
+        env: dict[str, str],
+        server_caps: Mapping[str, object],
+    ) -> Optional[list[str]]:
+        """Build a replay that cannot initialize or schedule on a GPU.
+
+        Unlike ``-ngl 0``, ``--device none`` removes GPU devices. Refuse companions
+        that this binary cannot pin to CPU.
+        """
+        original = [str(arg) for arg in cmd]
+        has_mmproj = "--mmproj" in original
+        if has_mmproj and not _paravirtual_mmproj_pinnable(server_caps):
+            return None
+        has_draft = _extra_args_mtp_draft_path(original, env = env) is not None
+        draft_ngl_flag = _paravirtual_draft_ngl_flag(server_caps) if has_draft else None
+        if has_draft and draft_ngl_flag is None:
+            return None
+
+        replay = cls._strip_cpu_fallback_main_placement(original)
+        replay.extend(["--gpu-layers", "0", "--fit", "off", "--device", "none"])
+        if has_mmproj:
+            replay.append("--no-mmproj-offload")
+        if has_draft:
+            replay.extend([str(draft_ngl_flag), "0", "--device-draft", "none"])
+
+        for name in (*cls._CPU_FALLBACK_MAIN_PLACEMENT_ENV_VARS, "GGML_BACKEND_PATH"):
+            env.pop(name, None)
+        return replay
+
+    def _cpu_isolated_binary(self, binary: Optional[str]) -> Optional[str]:
+        """Stage managed llama.cpp without GPU backend libraries.
+
+        Backend loading precedes ``--device none``, so isolation prevents the
+        Vulkan plugin from loading first.
+        """
+        if not binary or not self._is_unsloth_managed_binary(binary):
+            return None
+        source_binary = _resolve_llama_binary(binary)
+        if self._cpu_fallback_runtime_source == str(source_binary):
+            staged = Path(self._cpu_fallback_runtime.name) / source_binary.name
+            if staged.is_file():
+                return str(staged)
+        self._cleanup_cpu_fallback_runtime()
+        staged_runtime = None
+        try:
+            runtime_root = _swa_cache_path().parent / "runtime"
+            runtime_root.mkdir(parents = True, exist_ok = True)
+            staged_runtime = tempfile.TemporaryDirectory(
+                prefix = "llama-cpu-",
+                dir = runtime_root,
+            )
+            staged_dir = Path(staged_runtime.name)
+            lib_dir = _llama_lib_dir(str(source_binary))
+            gpu_backend = re.compile(
+                r"^(?:lib)?ggml-(?:cuda|hip|vulkan|metal|sycl|opencl|musa|cann|virtgpu)"
+            )
+            candidates = list(lib_dir.iterdir())
+            if source_binary.parent != lib_dir:
+                candidates.append(source_binary)
+            for source in candidates:
+                try:
+                    resolved = source.resolve(strict = True)
+                except OSError:
+                    continue
+                name = source.name
+                is_shared = name.endswith((".dll", ".dylib")) or ".so" in name
+                if resolved != source_binary and not is_shared:
+                    continue
+                if gpu_backend.match(name.lower()):
+                    continue
+                destination = staged_dir / name
+                if destination.exists():
+                    continue
+                try:
+                    os.link(resolved, destination)
+                except OSError:
+                    shutil.copy2(resolved, destination)
+            staged_binary = staged_dir / source_binary.name
+            cpu_library_present = any(
+                entry.is_file()
+                and entry.name.lower().startswith(("libggml-cpu", "ggml-cpu"))
+                for entry in staged_dir.iterdir()
+            )
+            if not staged_binary.is_file() or not cpu_library_present:
+                staged_runtime.cleanup()
+                return None
+        except (OSError, ValueError):
+            if staged_runtime is not None:
+                with contextlib.suppress(Exception):
+                    staged_runtime.cleanup()
+            return None
+        self._cpu_fallback_runtime = staged_runtime
+        self._cpu_fallback_runtime_source = str(source_binary)
+        return str(staged_binary)
+
+    def _cleanup_cpu_fallback_runtime(self) -> None:
+        runtime = getattr(self, "_cpu_fallback_runtime", None)
+        self._cpu_fallback_runtime = None
+        self._cpu_fallback_runtime_source = None
+        if runtime is not None:
+            with contextlib.suppress(Exception):
+                runtime.cleanup()
+
+    def _cleanup_failed_cpu_fallback(self) -> None:
+        """Remove every process and staged artifact from a terminal CPU replay."""
+        self._kill_process()
+        self._cpu_fallback_reason = None
+        self._cleanup_cpu_fallback_runtime()
+
+    @staticmethod
+    def _gpu_init_crash_message(binary: Optional[str] = None) -> str:
+        """Return backend-specific advice for a GPU initialization crash."""
+        base = (
+            "llama-server crashed at startup on both the vision and text-only "
+            "attempts -- a GPU driver/runtime initialization crash, not a model "
+            "or vision-projector problem. "
+        )
+        backend = LlamaCppBackend._installed_gpu_backend(binary)
+        if backend == "vulkan":
+            return base + (
+                "This build uses Vulkan, which Unsloth selects when it detects an "
+                "Intel or AMD GPU. Older integrated GPUs and their drivers can fault "
+                "inside Vulkan device initialization. Update your Vulkan driver (Mesa "
+                "on Linux), or reinstall llama.cpp on CPU with "
+                "UNSLOTH_LLAMA_CPP_BACKEND=cpu unsloth studio update."
+            )
+        if backend == "hip":
+            return base + (
+                "This often means an unsupported secondary GPU; on AMD/ROCm, hide it "
+                "with ROCR_VISIBLE_DEVICES (e.g. ROCR_VISIBLE_DEVICES=0 exposes only "
+                "the first GPU) before launching Unsloth Studio."
+            )
+        if backend == "cuda":
+            return base + (
+                "This often means an unsupported secondary GPU or a driver/CUDA "
+                "runtime mismatch; hide the extra GPU with CUDA_VISIBLE_DEVICES (e.g. "
+                "CUDA_VISIBLE_DEVICES=0 exposes only the first GPU) before launching "
+                "Unsloth Studio, or update the NVIDIA driver."
+            )
+        return base + (
+            "Check the llama-server log and your GPU driver, and make sure the "
+            "installed llama.cpp build matches this machine's GPU."
+        )
+
+    @staticmethod
     def _redacted_cmd_for_log(cmd: "list[str]") -> "list[str]":
         """Copy of cmd with the value after --api-key replaced by <redacted>."""
         out = list(cmd)
@@ -8651,8 +8931,14 @@ class LlamaCppBackend:
                 raise ValueError(_PARAVIRTUAL_DIFFUSION_NO_NGL_ERROR)
 
             # ── Phase 1: kill old process (under lock, fast) ──────────
+            _replaying_cpu_fallback = bool(
+                self._cpu_fallback_reason and self._last_load_intent == intent
+            )
             with self._lock:
                 self._kill_process()
+                if not _replaying_cpu_fallback:
+                    self._cpu_fallback_reason = None
+                    self._cleanup_cpu_fallback_runtime()
 
             # ── Phase 2: download (NO lock held, so cancel can proceed) ──
             # mtp_draft_path arrives set for local Gemma loads (detected
@@ -10689,6 +10975,11 @@ class LlamaCppBackend:
 
                 # Library paths so llama-server finds its shared libs and CUDA DLLs.
                 env = self._llama_server_env_for_binary(binary)
+                # Record placement values before planner reconciliation removes them.
+                _inherited_main_placement_requested = any(
+                    str(env.get(name) or "").strip()
+                    for name in self._CPU_FALLBACK_MAIN_PLACEMENT_ENV_VARS
+                )
                 if gpu_memory_mode == "manual":
                     self._clear_manual_placement_env(env)
                 # Omitting --threads relies on llama.cpp's physical-core default, so
@@ -10845,6 +11136,7 @@ class LlamaCppBackend:
                 # passed an explicit fit flag via extra args.
                 # Argv actually launched (post --fit off / MTP); text-only retry strips this.
                 _last_spawn_cmd = list(cmd)
+                _spawn_cwd: Optional[str] = None
 
                 def _spawn_and_wait(run_cmd, *, label = ""):
                     """Start llama-server with run_cmd and wait for health.
@@ -10897,6 +11189,7 @@ class LlamaCppBackend:
                             encoding = "utf-8",
                             errors = "replace",
                             env = env,
+                            cwd = _spawn_cwd,
                             **_windows_hidden_subprocess_kwargs(),
                             **_child_popen_kwargs(),
                         )
@@ -10964,6 +11257,97 @@ class LlamaCppBackend:
                             continue
                         return False
 
+                _requested_intent_for_cpu_fallback = intent
+                _launched_mmproj_has_audio = self._mmproj_has_audio
+
+                def _raise_terminal_load_failure(detail: str) -> NoReturn:
+                    if intent.cpu_fallback:
+                        self._cleanup_failed_cpu_fallback()
+                    raise RuntimeError(detail)
+
+                def _try_auto_vulkan_cpu_fallback(
+                    failed_cmd: list[str],
+                    failed_env: dict[str, str],
+                    failed_rc: Optional[int],
+                ) -> tuple[bool, bool, Optional[str]]:
+                    """Replay a signal crash without devices.
+
+                    CPU health confirms a GPU-init fault. Report a CPU failure directly.
+                    """
+                    nonlocal cmd, intent, gpu_memory_mode, gpu_layers, n_cpu_moe
+                    nonlocal tensor_parallel, tensor_split, gpu_indices, use_fit, _spawn_cwd
+                    if not self._is_signal_crash(failed_rc):
+                        return False, False, None
+                    if _inherited_main_placement_requested:
+                        return False, False, None
+                    if not self._auto_vulkan_cpu_fallback_eligible(
+                        binary,
+                        _requested_intent_for_cpu_fallback,
+                        extra_args,
+                        failed_env,
+                    ):
+                        return False, False, None
+                    replay = self._cpu_isolated_replay(failed_cmd, failed_env, server_caps)
+                    if replay is None:
+                        return False, False, None
+                    cpu_binary = self._cpu_isolated_binary(binary)
+                    if cpu_binary is None:
+                        return False, False, None
+                    replay[0] = cpu_binary
+                    _spawn_cwd = str(Path(cpu_binary).parent)
+
+                    logger.warning(
+                        "The auto-selected Vulkan backend hard-crashed during "
+                        "startup; retrying once with llama.cpp devices disabled."
+                    )
+                    if not _spawn_and_wait(replay, label = "-cpu"):
+                        cpu_rc = self._process.poll() if self._process is not None else None
+                        detail = self._classify_llama_start_failure(
+                            "\n".join(self._stdout_lines[-50:]),
+                            gguf_path,
+                            self._model_identifier,
+                            cpu_rc,
+                            binary,
+                        )
+                        self._cleanup_failed_cpu_fallback()
+                        return True, False, detail
+
+                    cmd = replay
+                    gpu_memory_mode = "manual"
+                    gpu_layers = 0
+                    n_cpu_moe = 0
+                    tensor_parallel = False
+                    tensor_split = None
+                    gpu_indices = None
+                    use_fit = False
+                    intent = replace(
+                        intent,
+                        gpu_memory_mode = "manual",
+                        gpu_layers = 0,
+                        n_cpu_moe = 0,
+                        tensor_parallel = False,
+                        tensor_split = None,
+                        gpu_ids = None,
+                        cpu_fallback = True,
+                    )
+                    self._gpu_memory_mode = "manual"
+                    self._gpu_layers = 0
+                    self._n_cpu_moe = 0
+                    self._tensor_split = None
+                    self._tensor_parallel = False
+                    self._gpu_ids = None
+                    self._requested_gpu_ids = None
+                    self._layer_preserves_tensor_intent = False
+                    self._is_vision = launched_with_mmproj
+                    self._mmproj_has_audio = _launched_mmproj_has_audio
+                    self._cpu_fallback_reason = "vulkan_startup_crash"
+                    logger.warning(
+                        "llama-server loaded successfully on CPU after the "
+                        "auto-selected Vulkan backend crashed. GPU acceleration "
+                        "is disabled for this model session."
+                    )
+                    return True, True, None
+
                 # Store the resolved on-disk path, not the caller's kwarg: in
                 # HF mode gguf_path is None and ``model_path`` is what
                 # llama-server mmap's, which downstream consumers need. Must be
@@ -10996,6 +11380,18 @@ class LlamaCppBackend:
                     max_available_ctx if max_available_ctx > 0 else self._effective_context_length
                 )
 
+                if intent.cpu_fallback:
+                    replay = self._cpu_isolated_replay(cmd, env, server_caps)
+                    cpu_binary = self._cpu_isolated_binary(binary)
+                    if replay is None or cpu_binary is None:
+                        _raise_terminal_load_failure(
+                            "The prior Vulkan CPU fallback could not be reconstructed; "
+                            "run `unsloth studio update` to repair the managed llama.cpp runtime."
+                        )
+                    replay[0] = cpu_binary
+                    _spawn_cwd = str(Path(cpu_binary).parent)
+                    cmd = replay
+                    self._cpu_fallback_reason = "vulkan_startup_crash"
                 healthy = _spawn_and_wait(cmd)
                 # #6415 split-mode tensor warmup abort. Latch it on THIS first spawn:
                 # the flash-attn-off retry below can't run tensor (needs flash_attn),
@@ -11235,6 +11631,7 @@ class LlamaCppBackend:
                         and not self._cancel_event.is_set()
                         and (_projector_msg or _signal_mmproj_guess)
                     ):
+                        _vision_cpu_replay_cmd = list(_last_spawn_cmd)
                         if _projector_msg:
                             logger.warning(
                                 "llama-server could not load this model's vision "
@@ -11262,43 +11659,57 @@ class LlamaCppBackend:
                             # an OS-killed text-only retry still gets the OOM message.
                             _retry_rc = self._process.poll() if self._process is not None else None
                             self._kill_process()
-                            # If the text-only retry ALSO hard-crashed (a signal, not
-                            # OOM/timeout), the vision projector was never the cause:
-                            # llama-server is faulting during GPU/driver init. Say so
-                            # -- with the ROCm fix -- instead of blaming the mmproj.
-                            if self._is_signal_crash(_retry_rc):
-                                raise RuntimeError(
-                                    "llama-server crashed at startup on both the vision "
-                                    "and text-only attempts -- a GPU driver/runtime "
-                                    "initialization crash, not a model or vision-projector "
-                                    "problem. This often means an unsupported secondary "
-                                    "GPU; on AMD/ROCm, hide it with ROCR_VISIBLE_DEVICES "
-                                    "(e.g. ROCR_VISIBLE_DEVICES=0 exposes only the first "
-                                    "GPU) before launching Unsloth Studio."
+                            # A confirmed projector error is not evidence of a GPU fault.
+                            if self._is_signal_crash(_retry_rc) and not _projector_msg:
+                                _cpu_attempted, _cpu_healthy, _cpu_detail = (
+                                    _try_auto_vulkan_cpu_fallback(
+                                        _vision_cpu_replay_cmd,
+                                        env,
+                                        _retry_rc,
+                                    )
                                 )
-                            _retry_detail = self._classify_llama_start_failure(
-                                "\n".join(self._stdout_lines[-50:]),
-                                gguf_path,
-                                self._model_identifier,
-                                _retry_rc,
-                                binary,
-                            )
-                            raise RuntimeError(
-                                self._mmproj_retry_failure_message(
-                                    projector_confirmed = _projector_msg,
-                                    detail = _retry_detail,
+                                if _cpu_healthy:
+                                    healthy = True
+                                elif _cpu_attempted:
+                                    _raise_terminal_load_failure(str(_cpu_detail))
+                                else:
+                                    _raise_terminal_load_failure(
+                                        self._gpu_init_crash_message(binary)
+                                    )
+                            if healthy:
+                                pass
+                            else:
+                                _retry_detail = self._classify_llama_start_failure(
+                                    "\n".join(self._stdout_lines[-50:]),
+                                    gguf_path,
+                                    self._model_identifier,
+                                    _retry_rc,
+                                    binary,
                                 )
-                            )
+                                _raise_terminal_load_failure(
+                                    self._mmproj_retry_failure_message(
+                                        projector_confirmed = _projector_msg,
+                                        detail = _retry_detail,
+                                    )
+                                )
                     else:
-                        raise RuntimeError(
-                            self._classify_llama_start_failure(
-                                out,
-                                gguf_path,
-                                self._model_identifier,
-                                _crash_rc,
-                                binary,
-                            )
+                        _cpu_attempted, _cpu_healthy, _cpu_detail = (
+                            _try_auto_vulkan_cpu_fallback(_last_spawn_cmd, env, _crash_rc)
                         )
+                        if _cpu_healthy:
+                            healthy = True
+                        elif _cpu_attempted:
+                            _raise_terminal_load_failure(str(_cpu_detail))
+                        else:
+                            _raise_terminal_load_failure(
+                                self._classify_llama_start_failure(
+                                    out,
+                                    gguf_path,
+                                    self._model_identifier,
+                                    _crash_rc,
+                                    binary,
+                                )
+                            )
 
                 self._healthy = True
                 self._commit_effective_parallel_slots(n_parallel)
@@ -11821,6 +12232,21 @@ class LlamaCppBackend:
         """Match live state and adopt the caller's compatible GPU placement."""
         if not self.matches_load_source(intent):
             return False
+        # Match repeated Auto requests against the recovered resident CPU state.
+        if self._cpu_fallback_reason and self._auto_vulkan_cpu_fallback_eligible(
+            self._find_llama_server_binary(),
+            intent,
+            list(intent.extra_args) if intent.extra_args is not None else None,
+        ):
+            intent = replace(
+                intent,
+                gpu_memory_mode = "manual",
+                gpu_layers = 0,
+                tensor_parallel = False,
+                tensor_split = None,
+                n_cpu_moe = 0,
+                gpu_ids = None,
+            )
         # The stored state is what LAUNCHED, and on a virtualised Metal device that is
         # the CPU-pinned rewrite, not the request. Apply the same rewrite here
         # (idempotent, so load_model's own call is a no-op) or a client that keeps
@@ -11960,10 +12386,15 @@ class LlamaCppBackend:
         mmproj, and GPU drafters can still make the server hold VRAM. The counted
         offload classifier cannot see those allocations. This uses the same
         predicate as the launch-time zero-VRAM mask; None means no GPU signal."""
+        if LlamaCppBackend._is_vulkan_backend():
+            # Unlike -ngl 0, the recovery's last-wins --device none removes Vulkan.
+            main_device = (_extra_args_main_device(spawn_cmd) or "").strip().lower()
+            if main_device in ("cpu", "none"):
+                return LlamaCppBackend._zero_offload_keeps_gpu_visible(spawn_cmd, env)
+            if detected_gpus:
+                return True
         if not detected_gpus:
             return None
-        if LlamaCppBackend._is_vulkan_backend():
-            return True
         return LlamaCppBackend._zero_offload_keeps_gpu_visible(spawn_cmd, env)
 
     def load_cancelled(self) -> bool:
@@ -11978,6 +12409,7 @@ class LlamaCppBackend:
         with self._lock:
             self._unload_epoch += 1
             self._kill_process()
+            self._cleanup_cpu_fallback_runtime()
             logger.info(f"Unloaded GGUF model: {self._model_identifier}")
             self._model_identifier = None
             self._gguf_path = None
@@ -11987,6 +12419,7 @@ class LlamaCppBackend:
             self._spec_fallback_reason = None
             self._spec_drafter_kind = None
             self._dspark_sidecar_absent = False
+            self._cpu_fallback_reason = None
             self._last_load_intent = None
             self._mtp_runtime_fallback_active = False
             self._hf_variant = None

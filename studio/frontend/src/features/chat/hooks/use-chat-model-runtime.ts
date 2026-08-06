@@ -762,6 +762,7 @@ export function useChatModelRuntime() {
       const abortCtrl = new AbortController();
       loadAbortRef.current = abortCtrl;
       const postLoadRefresh = { needed: false };
+      let cpuFallbackReason: "vulkan_startup_crash" | null = null;
       try {
         async function performLoad(): Promise<void> {
           if (abortCtrl.signal.aborted) throw new Error("Cancelled");
@@ -1168,6 +1169,7 @@ export function useChatModelRuntime() {
               gpu_ids: loadSelectedGpuIds ?? undefined,
               force_cancel_active: forceCancelActive,
             });
+            cpuFallbackReason = loadResponse.cpu_fallback_reason ?? null;
 
             // If cancelled while loading, don't update UI to show
             // the model as active -- it's being unloaded.
@@ -1750,15 +1752,24 @@ export function useChatModelRuntime() {
           await performLoad();
           // User cancelled mid-refresh; cancelLoading handles teardown.
           if (abortCtrl.signal.aborted) return;
+          const loadedTitle = cpuFallbackReason
+            ? `${toastDisplayName} loaded on CPU`
+            : `${toastDisplayName} loaded`;
+          const loadedDescription = cpuFallbackReason
+            ? "The auto-selected Vulkan backend crashed during startup, so GPU acceleration is disabled for this model session."
+            : undefined;
           if (loadToastDismissedRef.current) {
-            toast.success(`${toastDisplayName} loaded`, {
+            const showLoadedToast = cpuFallbackReason ? toast.warning : toast.success;
+            showLoadedToast(loadedTitle, {
+              description: loadedDescription,
               closeButton: true,
               duration: 8000,
             });
           } else {
-            toast.success(`${toastDisplayName} loaded`, {
+            const showLoadedToast = cpuFallbackReason ? toast.warning : toast.success;
+            showLoadedToast(loadedTitle, {
               id: toastId,
-              description: undefined,
+              description: loadedDescription,
               cancel: undefined,
               closeButton: true,
               duration: 8000,
