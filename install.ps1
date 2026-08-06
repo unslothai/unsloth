@@ -1828,6 +1828,7 @@ exit 0
     $script:StudioVenvRollbackDir = $null
     $script:StudioVenvRollbackTarget = $VenvDir
     $script:StudioVenvRollbackActive = $false
+    $script:StudioVenvRollbackPartial = $false
 
     function Test-VenvPythonReady {
         param([Parameter(Mandatory = $true)][string]$PythonExe)
@@ -1875,16 +1876,35 @@ exit 0
         $script:StudioVenvRollbackDir = $candidate
         $script:StudioVenvRollbackTarget = $ExistingDir
         $script:StudioVenvRollbackActive = $true
+        $script:StudioVenvRollbackPartial = $false
         # Publish the rollback state before the atomic rename so interruption
         # cannot land after Move-Item but before cleanup knows where the old venv went.
         try {
             Move-Item -LiteralPath $ExistingDir -Destination $candidate -ErrorAction Stop
         } catch {
             # A collision or ordinary rename failure leaves the original in place.
-            # Keep state active only when the rename happened before interruption.
-            if (Test-Path -LiteralPath $ExistingDir) {
+            # On Windows an open handle inside the tree fails the rename *partway*
+            # instead: entries walked before the locked one land at $candidate while
+            # the rest stay at $ExistingDir. Reading only $ExistingDir scores that
+            # split tree as "the rename never happened" and drops the sole reference
+            # to where the other half went, so the caller can neither restore nor
+            # report it. Clear the state only when the destination is genuinely
+            # absent; when both paths exist keep it active so Restore-StudioVenvRollback
+            # can reverse the partial move, and name both locations either way.
+            $candidateExists = Test-Path -LiteralPath $candidate
+            if ((Test-Path -LiteralPath $ExistingDir) -and (-not $candidateExists)) {
                 $script:StudioVenvRollbackActive = $false
                 $script:StudioVenvRollbackDir = $null
+            } elseif ($candidateExists -and (Test-Path -LiteralPath $ExistingDir)) {
+                # Flag the split: both paths now hold halves of the *same* previous
+                # environment, so restoration must merge them rather than clear the
+                # destination first the way the committed-replacement path does.
+                $script:StudioVenvRollbackPartial = $true
+                Write-Host "[WARN] Moving the existing environment aside stopped partway -- files are in both places." -ForegroundColor Yellow
+                Write-Host "       still in place: $ExistingDir" -ForegroundColor Yellow
+                Write-Host "       moved aside:    $candidate" -ForegroundColor Yellow
+                Write-Host "       A running 'unsloth studio' process usually holds a file open here." -ForegroundColor Yellow
+                Write-Host "       Close Unsloth Studio and re-run the installer to reverse the move." -ForegroundColor Yellow
             }
             throw
         }
@@ -1948,15 +1968,90 @@ exit 0
         }
     }
 
+    function Merge-StudioVenvRollbackTree {
+        # Moves every entry of $Source into $Destination without ever overwriting or
+        # deleting what is already there. Returns $true only when $Source ends up
+        # empty and removed, i.e. the two halves were fully reunited.
+        param(
+            [Parameter(Mandatory = $true)][string]$Source,
+            [Parameter(Mandatory = $true)][string]$Destination
+        )
+        if (-not (Test-Path -LiteralPath $Destination)) {
+            [System.IO.Directory]::CreateDirectory($Destination) | Out-Null
+        }
+        $complete = $true
+        foreach ($entry in @(Get-ChildItem -LiteralPath $Source -Force -ErrorAction Stop)) {
+            # Not $destination: PowerShell names are case-insensitive, so that would
+            # reassign the $Destination parameter and nest every later sibling under
+            # the previous entry's name.
+            $entryTarget = Join-Path $Destination $entry.Name
+            if (-not (Test-Path -LiteralPath $entryTarget)) {
+                Move-Item -LiteralPath $entry.FullName -Destination $entryTarget -ErrorAction Stop
+                continue
+            }
+            # Same relative path on both sides: the move stopped inside this subtree.
+            # Recurse so the halves reunite -- Move-Item -Force would overwrite the
+            # half that never moved, which is exactly the data this path protects.
+            # A junction on either side is a leaf, not a subtree: recursing through one
+            # moves files to wherever it points, outside $StudioHome. Keep both instead.
+            # Get-Item both sides: Get-ChildItem has reported Attributes inconsistently.
+            $entryItem = Get-Item -LiteralPath $entry.FullName -Force -ErrorAction Stop
+            $targetItem = Get-Item -LiteralPath $entryTarget -Force -ErrorAction Stop
+            $linked = (($entryItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) -or
+                      (($targetItem.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0)
+            if ($entryItem.PSIsContainer -and $targetItem.PSIsContainer -and -not $linked) {
+                if (-not (Merge-StudioVenvRollbackTree -Source $entry.FullName -Destination $entryTarget)) {
+                    $complete = $false
+                }
+                continue
+            }
+            Write-Host "[WARN] Kept both copies of $($entry.Name)" -ForegroundColor Yellow
+            Write-Host "       $($entry.FullName)" -ForegroundColor Yellow
+            Write-Host "       $entryTarget" -ForegroundColor Yellow
+            $complete = $false
+        }
+        if ($complete) {
+            Remove-Item -LiteralPath $Source -Force -ErrorAction SilentlyContinue
+            return (-not (Test-Path -LiteralPath $Source))
+        }
+        return $false
+    }
+
     function Restore-StudioVenvRollback {
         if (-not $script:StudioVenvRollbackActive) { return }
         $backup = $script:StudioVenvRollbackDir
         $target = $script:StudioVenvRollbackTarget
         if (-not $backup -or -not (Test-Path -LiteralPath $backup)) {
             $script:StudioVenvRollbackActive = $false
+            $script:StudioVenvRollbackPartial = $false
             return
         }
         substep "restoring previous environment after failed install..." "Yellow"
+        if ($script:StudioVenvRollbackPartial) {
+            # $target is not an incomplete *new* environment here -- it is the half of
+            # the previous one the interrupted move left behind. Removing it first,
+            # the way the branch below does, would delete files that exist nowhere
+            # else and "restore" a corrupted venv. Merge the halves instead.
+            $merged = $false
+            try {
+                $merged = Merge-StudioVenvRollbackTree -Source $backup -Destination $target
+            } catch {
+                Write-Host "[WARN] Could not merge $backup back into $target" -ForegroundColor Yellow
+                Write-Host "       $($_.Exception.Message)" -ForegroundColor Yellow
+            }
+            if ($merged) {
+                substep "restored previous environment"
+                $script:StudioVenvRollbackActive = $false
+                $script:StudioVenvRollbackDir = $null
+                $script:StudioVenvRollbackPartial = $false
+            } else {
+                Write-Host "[WARN] The previous environment is still split in two." -ForegroundColor Yellow
+                Write-Host "       still in place: $target" -ForegroundColor Yellow
+                Write-Host "       moved aside:    $backup" -ForegroundColor Yellow
+                Write-Host "       Close Unsloth Studio and re-run the installer to finish reversing the move." -ForegroundColor Yellow
+            }
+            return
+        }
         try {
             if (Test-Path -LiteralPath $target) {
                 if (-not (Remove-StudioVenvTreeWithRetry -Path $target -Label "incomplete environment")) {
@@ -1980,6 +2075,7 @@ exit 0
         # backup so interruption cannot restore a partially deleted environment.
         $script:StudioVenvRollbackActive = $false
         $script:StudioVenvRollbackDir = $null
+        $script:StudioVenvRollbackPartial = $false
         if ($backup -and (Test-Path -LiteralPath $backup)) {
             Remove-StudioVenvTreeWithRetry -Path $backup -Label "environment rollback" | Out-Null
         }
