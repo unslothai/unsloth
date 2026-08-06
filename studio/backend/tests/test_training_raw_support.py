@@ -162,9 +162,8 @@ class TestTrainingRawSupport(unittest.TestCase):
 
     def test_mlx_max_grad_norm_is_honored_without_changing_the_default(self):
         # The worker used to hardcode 0.0 and drop the request, so an explicit
-        # threshold never reached the trainer. Explicit values must now pass
-        # through, while unset stays 0.0 so the clip mode is unchanged: the chart
-        # is fed by report_grad_norm, not by switching to global-norm clipping.
+        # threshold never reached the trainer. Explicit values must pass through,
+        # while unset stays 0.0 so the clip mode is unchanged.
         from pydantic import ValidationError
 
         from core.training.worker import _resolve_mlx_max_grad_norm
@@ -202,10 +201,8 @@ class TestTrainingRawSupport(unittest.TestCase):
         )
 
     def test_mlx_worker_asks_the_trainer_to_report_the_gradient_norm(self):
-        # What refills Studio's Gradient Norm chart on Apple Silicon. MLX returns a
-        # norm for free only under global-norm clipping, so the worker opts in
-        # explicitly; switching clip modes to get it would change the loss
-        # trajectory and cost VLM runs their mx.compile eligibility.
+        # What refills Studio's Gradient Norm chart on Apple Silicon; see the
+        # rationale at the opt-in site in worker.py.
         source = (_BACKEND_ROOT / "core" / "training" / "worker.py").read_text(encoding = "utf-8")
         self.assertIn('if "report_grad_norm" in _supported_fields:', source)
         self.assertIn('mlx_config_kwargs["report_grad_norm"] = True', source)
