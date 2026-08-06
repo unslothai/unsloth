@@ -33,7 +33,7 @@ export function NegativePromptField({
         >
           Negative prompt
         </button>
-        <InfoHint>{hint}</InfoHint>
+        {/* Chevron before the hint, so it stays next to the label it expands. */}
         <button
           type="button"
           // The labelled button above is the accessible toggle; this is decoration.
@@ -49,6 +49,7 @@ export function NegativePromptField({
             )}
           />
         </button>
+        <InfoHint>{hint}</InfoHint>
       </div>
       {open && (
         <Textarea
