@@ -1652,7 +1652,7 @@ def test_hydration_clears_the_batch_baselines_for_a_batchless_model():
     assert "...(controlIsClean ? { value: effective } : {})," in seed
     src = _read("features/chat/lib/apply-inference-status-to-store.ts")
     status = " ".join(src.split())
-    assert 'isGguf: status.is_gguf ?? true,' in status
+    assert "isGguf: status.is_gguf ?? true," in status
     # A swap under this tab resets the controls too.
     assert "...(seedLoadParams && slotsModelChanged && { nBatch: null, nUbatch: null })," in status
     # The remembered override is re-adopted only when the echo proves it.
