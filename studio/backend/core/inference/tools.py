@@ -1398,6 +1398,24 @@ def _cmd_outer_quoted_payload(command: str) -> str:
     return match.group(1)[1:-1]
 
 
+def _env_split_string_payload(word: str, following: str = "") -> str:
+    """The command line an `env -S` runs, in any of its three spellings.
+
+    -S/--split-string splits the string into arguments and executes them, so
+    the payload is a command line rather than data.
+    """
+    bare = _cmd_unquote(word)
+    payload = ""
+    if bare.startswith("-S") and bare != "-S":
+        payload = bare[2:]
+    elif bare.startswith("--split-string="):
+        payload = bare.split("=", 1)[1]
+    elif bare in ("-S", "--split-string"):
+        payload = following
+    # The cmd lexer keeps the marks, and they are the shell's, not the payload's.
+    return _cmd_unquote(payload.strip()).strip('"')
+
+
 def _cmd_quoted_program(payload: str) -> str:
     """The program of a payload that opens with a quoted path.
 
@@ -1499,6 +1517,11 @@ def _find_blocked_commands(command: str) -> set[str]:
         # re-lex above has already screened it.
         if any(_STARTS_A_NEW_PATH_RE.match(word) for word in words[1:]):
             return found
+        # A continuation carries the rest of the path, so only the LAST word may
+        # lack a separator. A bare word before it ends the path and starts an
+        # operand list: `.../findstr curl logs/powershell.exe` searches a file.
+        if any(not any(ch in word for ch in "/\\") for word in words[1:-1]):
+            return found
         base = _token_basename(payload)
         return found | ({base} if base in _BLOCKED_COMMANDS else _blocked_matching_glob(base))
 
@@ -1590,6 +1613,18 @@ def _find_blocked_commands(command: str) -> set[str]:
             xargs_index = -1
             continue
         if token.startswith("-"):
+            # `env -S "rm -rf x"` splits the string into arguments and RUNS it,
+            # so the payload is a command line of its own. Screen it wherever it
+            # is written: attached, `=`-joined, or in the following token.
+            if prefix_pending and prefix_command == "env":
+                following = (
+                    _cmd_unquote(tokens[token_index + 1])
+                    if token_index + 1 < len(tokens)
+                    else ""
+                )
+                payload = _env_split_string_payload(token, following)
+                if payload:
+                    blocked |= _find_blocked_commands(payload)
             # A wrapper option whose value is a SEPARATE token precedes that
             # value, not the wrapped command. Without consuming it the value is
             # read as the command word and the real command behind it is never
@@ -1732,6 +1767,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         are its arguments, so marking the whole payload made
         `cmd /c echo start "title" prog` read the echoed text as a launcher.
         """
+        nonlocal blocked
         indexes: "list[int]" = []
         k, expect = start, True
         while k < len(tokens):
@@ -1752,6 +1788,13 @@ def _find_blocked_commands(command: str) -> set[str]:
                 k += 1
                 while k < len(tokens):
                     word = _cmd_unquote(tokens[k])
+                    if base == "env":
+                        following = (
+                            _cmd_unquote(tokens[k + 1]) if k + 1 < len(tokens) else ""
+                        )
+                        split = _env_split_string_payload(tokens[k], following)
+                        if split:
+                            blocked |= _find_blocked_commands(split)
                     if word in _WRAPPER_VALUE_FLAGS_BY_CMD.get(base, frozenset()):
                         k += 2  # `env -u FOO prog`: the flag eats its value
                         continue
@@ -1808,6 +1851,10 @@ def _find_blocked_commands(command: str) -> set[str]:
             or idx in win_c_payloads
             or idx in start_children
             or idx in exec_children
+            # `if 1==1 (start "" cmd /c powershell)` lexes the group opener onto
+            # the command word, so it never reached command_positions even
+            # though both grammars run whatever follows a `(`.
+            or (0 <= idx < len(tokens) and tokens[idx].startswith("("))
         )
 
     # Nested shell invocations (bash -c '...', bash -lc '...', cmd /c '...'):
@@ -1891,7 +1938,9 @@ def _find_blocked_commands(command: str) -> set[str]:
     def _start_at(i: int) -> None:
         nonlocal blocked
         token = tokens[i]
-        if os.path.basename(_cmd_unquote(token)).lower() not in ("start", "start.exe"):
+        # _token_basename, not os.path.basename: it strips the glued-on shell
+        # meta-chars, so the `(start` of a grouped branch is still a start.
+        if _token_basename(_cmd_unquote(token)) not in ("start", "start.exe"):
             return
         j = i + 1
         while j < len(tokens):
@@ -1962,8 +2011,12 @@ def _find_blocked_commands(command: str) -> set[str]:
                         if word in _WRAPPER_VALUE_FLAGS_BY_CMD.get(child, frozenset()):
                             k += 2  # the flag takes a separate value
                             continue
-                        if word.startswith("-") or "=" in word:
-                            k += 1  # its own flags, and VAR=VALUE
+                        if (
+                            word.startswith("-")
+                            or "=" in word
+                            or _WRAPPER_DURATION_RE.fullmatch(word)
+                        ):
+                            k += 1  # its own flags, VAR=VALUE, `timeout 5 prog`
                             continue
                         break
                     if k < len(tokens):
@@ -5919,7 +5972,13 @@ def _terminal_is_high_risk(command: str, _depth: int = 0) -> bool:
                     # Ahead of the wrapper-value skip below, which would otherwise
                     # swallow `--reuid 0` before it is judged.
                     return True
-                if current_command == "env" and flag in ("-C", "--chdir"):
+                if current_command == "env" and (
+                    flag in ("-C", "--chdir")
+                    # Attached short form: `env -C.. cat other/secret` chdirs
+                    # just as `env -C ..` does, and reached the generic option
+                    # skip below without ever being judged.
+                    or (token.startswith("-C") and token != "-C")
+                ):
                     # Also ahead of the skip: -C now carries a separate value,
                     # so the skip would swallow it before the branch below,
                     # which asks because the chdir enables a relative read.

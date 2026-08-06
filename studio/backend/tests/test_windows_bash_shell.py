@@ -985,3 +985,60 @@ def test_exec_children_do_not_make_screening_quadratic(monkeypatch):
     began = time.perf_counter()
     tools._find_blocked_commands(command)
     assert time.perf_counter() - began < 1.0
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # The lexer glues a group opener onto the command word, so the launcher
+        # never reached a command position even though cmd runs the branch.
+        'if 1==1 (start "" cmd /c powershell) else echo no',
+        'if 1==1 (start "" powershell) else echo no',
+        # env -S splits its string into arguments and RUNS them.
+        'cmd //c env -S "rm -rf victim"',
+        'env -S "rm -rf victim"',
+        'env -S"rm -rf victim"',
+        'env --split-string="rm -rf victim"',
+        'cmd //c start "" env -S "powershell -Command ls"',
+        # `timeout DURATION COMMAND`: the duration is not the launched child.
+        'cmd //c start "" timeout 1 powershell',
+        'cmd //c start "" timeout 1.5s pwsh',
+    ],
+)
+def test_a_launcher_behind_cmd_grammar_is_screened(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize("bash", [_WIN_BASH, None], ids = ["bash", "cmd"])
+@pytest.mark.parametrize(
+    "command",
+    [
+        # A bare word before the last one ends the path and starts an operand
+        # list, so this greps a RELATIVE file that happens to be named after a
+        # blocked command. Only absolute later operands were caught before.
+        'cmd /c "C:/Windows/System32/findstr curl logs/powershell.exe"',
+        'cmd /c "C:/Windows/System32/findstr rm build/rm.exe"',
+        'env -S "echo hello"',
+        'echo "env -S rm"',
+        "grep -rn env-S src/",
+    ],
+)
+def test_cmd_grammar_does_not_over_block(monkeypatch, command, bash):
+    _fake_windows_screening(monkeypatch, bash = bash)
+    assert not tools._find_blocked_commands(command)
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "env -C.. cat other-session/secret",  # attached short form
+        "env -C .. cat other-session/secret",
+        "env --chdir=.. cat other-session/secret",
+    ],
+)
+def test_an_env_chdir_asks_in_every_spelling(monkeypatch, command):
+    # The chdir enables a relative read outside the session workdir, so it must
+    # prompt. The attached spelling reached the generic option skip unjudged.
+    monkeypatch.setattr(sys, "platform", "linux")
+    assert tools._terminal_is_high_risk(command)
