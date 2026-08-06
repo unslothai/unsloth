@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import threading
 import time
 from dataclasses import dataclass
@@ -1550,18 +1551,57 @@ class DiffusionBackend:
         return Path(hub_cache_dir()) / f"models--{repo_id.replace('/', '--')}"
 
     @staticmethod
-    def _cache_bytes(repo_id: str) -> int:
-        blobs = DiffusionBackend._hub_cache_repo_dir(repo_id) / "blobs"
-        total = 0
+    def _hub_cache_repo_dirs(repo_id: str) -> list[Path]:
+        """``repo_id``'s cache dir under EVERY root a load can resolve it through, live root first.
+
+        The loader reuses a file cached only under huggingface_hub's import-time root
+        (``reuse_other_cache_root``, and the gated preflight excuses a base off it), so after a
+        mid-session cache-folder change the bytes the load reads are not in the live root at all.
+        Sizing that root alone reads zero for them. The constant is read HERE, never bound at
+        import: it is what ``cache_dir = None`` resolves to, and tests move it."""
+        # One read of the live root: it is a setting, and load_progress polls this from another
+        # thread, so a second read could land the other side of a cache-folder change and compare
+        # the new root against a `live` built from the old one.
+        live_root = hub_cache_dir()
+        folder = f"models--{repo_id.replace('/', '--')}"
+        live = Path(live_root) / folder
         try:
-            for entry in blobs.iterdir():
+            from huggingface_hub import constants
+            other = str(constants.HF_HUB_CACHE or "").strip()
+        except Exception:  # noqa: BLE001 — no hub package: the live root still stands
+            return [live]
+        if not other:
+            return [live]
+        # normcase/normpath before comparing: on Windows the two roots can differ by case alone,
+        # and every caller below would then walk the same tree twice. Best-effort -- an aliased
+        # spelling just costs a second walk, since both readers below are idempotent.
+        if os.path.normcase(os.path.normpath(other)) == os.path.normcase(
+            os.path.normpath(live_root)
+        ):
+            return [live]
+        return [live, Path(other) / folder]
+
+    @staticmethod
+    def _cache_bytes(repo_id: str) -> int:
+        """Bytes of ``repo_id`` on disk across every cache root, for progress and the pipeline plan.
+
+        Keyed by blob filename, not summed per root: a blob is named after the file's etag, so the
+        same file carries the same name in either root and a copy present in both must count once.
+        Scanning only the live root reports 0 for a load a moved cache serves entirely off disk,
+        which pins the progress bar near 0% for the whole construction."""
+        sizes: dict[str, int] = {}
+        for repo_dir in DiffusionBackend._hub_cache_repo_dirs(repo_id):
+            try:
+                entries = list((repo_dir / "blobs").iterdir())
+            except OSError:
+                continue  # repo not in this root yet / unreadable
+            for entry in entries:
                 try:
-                    total += entry.stat().st_size
+                    size = entry.stat().st_size
                 except OSError:
                     continue  # broken symlink / unreadable
-        except OSError:
-            return 0  # repo not in cache yet
-        return total
+                sizes[entry.name] = max(sizes.get(entry.name, 0), size)
+        return sum(sizes.values())
 
     @staticmethod
     def _local_dir_weight_bytes(path: Path, *, exclude_transformer: bool) -> int:
@@ -1588,20 +1628,34 @@ class DiffusionBackend:
         return total
 
     @staticmethod
-    def _max_over_cached_revs(base: str, fn: Callable[[Path], int]) -> int:
-        """Apply ``fn`` to a LOCAL diffusers dir, or to the fullest cached hub snapshot
-        revision (the active one is the fullest), returning that count. 0 when nothing is
-        cached. Multiple revisions may be cached, so take the max."""
+    def _max_over_cached_revs(
+        base: str,
+        fn: Callable[[Path], int],
+        staged_dir: Optional[str] = None,
+    ) -> int:
+        """Apply ``fn`` to a LOCAL diffusers dir, or to the fullest tree this load could read
+        ``base`` from, returning that count. 0 when nothing is cached.
+
+        The candidates are every cached snapshot revision under EVERY cache root, plus
+        ``staged_dir`` (the snapshot the prefetch/preflight handed back). Both roots because a
+        moved cache leaves the bytes under huggingface_hub's import-time one, where a live-root
+        scan reads zero. Max, not sum: these are copies of one tree, never additive, and for a
+        memory plan the fullest copy is the safe read -- under-counting OOMs, over-counting only
+        buys offload. That also makes the staged dir a floor rather than a replacement, so a
+        snapshot carrying only part of the repo cannot erase what a root does hold."""
         local = Path(base).expanduser()
         if local.is_dir():
             return fn(local)
-        snapshots = DiffusionBackend._hub_cache_repo_dir(base) / "snapshots"
-        if not snapshots.is_dir():
-            return 0
-        return max((fn(rev) for rev in snapshots.iterdir() if rev.is_dir()), default = 0)
+        candidates: list[Path] = [Path(staged_dir).expanduser()] if staged_dir else []
+        for repo_dir in DiffusionBackend._hub_cache_repo_dirs(base):
+            try:
+                candidates.extend(rev for rev in (repo_dir / "snapshots").iterdir() if rev.is_dir())
+            except OSError:
+                continue  # a root with no copy of this repo contributes nothing
+        return max((fn(c) for c in candidates if c.is_dir()), default = 0)
 
     @staticmethod
-    def _companion_cache_bytes(base: str) -> int:
+    def _companion_cache_bytes(base: str, staged_dir: Optional[str] = None) -> int:
         """Resident companion (VAE + text-encoder) size for the memory plan.
 
         Excludes ``transformer/`` (supplied by the GGUF/single file, not resident here) --
@@ -1609,7 +1663,9 @@ class DiffusionBackend:
         and wrongly force offload. Walks the snapshot dir, not the flat ``blobs/`` cache,
         since only the snapshot preserves the subfolder split needed to exclude it."""
         return DiffusionBackend._max_over_cached_revs(
-            base, lambda d: DiffusionBackend._local_dir_weight_bytes(d, exclude_transformer = True)
+            base,
+            lambda d: DiffusionBackend._local_dir_weight_bytes(d, exclude_transformer = True),
+            staged_dir,
         )
 
     @staticmethod
@@ -1633,14 +1689,15 @@ class DiffusionBackend:
             return 0
 
     @staticmethod
-    def _dense_transformer_resident_bytes(base: str) -> int:
+    def _dense_transformer_resident_bytes(base: str, staged_dir: Optional[str] = None) -> int:
         """Resident bf16 size of the base repo's dense ``transformer/`` for the dense-quant
         preflight. That fast path loads the transformer at the compute dtype (bf16, 2
         bytes/param) before quantizing, so budget num_params * 2 -- NOT the on-disk bytes,
         which for an F32 base (e.g. Z-Image) are ~2x the resident size. Read from the
         safetensors shard headers. Returns 0 when no ``transformer/*.safetensors`` shards
         are present (an uncached base, or a .bin-only transformer); the caller then gates
-        the fast path on the plain plan."""
+        the fast path on the plain plan -- so a base whose shards this misses skips the fit
+        check entirely and lets the dense build OOM under a plan sized for the GGUF."""
 
         def _params(d: Path) -> int:
             tdir = d / "transformer"
@@ -1650,7 +1707,8 @@ class DiffusionBackend:
                 DiffusionBackend._safetensors_param_count(s) for s in tdir.glob("*.safetensors")
             )
 
-        return DiffusionBackend._max_over_cached_revs(base, _params) * 2  # bf16: 2 bytes/param
+        # bf16: 2 bytes/param
+        return DiffusionBackend._max_over_cached_revs(base, _params, staged_dir) * 2
 
     # ── Synchronous load / generate / unload ───────────────────────────────
 
@@ -1897,8 +1955,12 @@ class DiffusionBackend:
                             if scheme is not None
                             else None
                         )
+                        # Carry the staged snapshot, as the plan below does: a base served wholly
+                        # from the import-time root sizes as 0 on the hub id alone, and a 0 skips
+                        # this whole fit check, so the dense build lands under a GGUF-sized plan.
                         dense_mib = int(
-                            self._dense_transformer_resident_bytes(base) // (1024 * 1024)
+                            self._dense_transformer_resident_bytes(base, _base_local_dir)
+                            // (1024 * 1024)
                         )
                         if dense_mib > 0:
                             dense_plan = self._plan_memory(
@@ -2485,6 +2547,12 @@ class DiffusionBackend:
             raise RuntimeError(
                 "prequant checkpoint unavailable and the dense transformer does not fit resident"
             )
+        # Deliberately the hub id, not base_local_dir: diffusers treats a local directory as
+        # terminal (_get_model_file raises "Error no file named ..." rather than falling back to
+        # the hub), and a sharded load raises per missing shard, so a snapshot holding
+        # transformer/config.json, or 2 of 3 shards, would drop a build the hub id completes. Off
+        # the hub id a base only the other root holds costs a re-download, or 401s into the GGUF
+        # fallback, which is what main does today.
         transformer = transformer_cls.from_pretrained(
             base,
             subfolder = "transformer",
@@ -2642,26 +2710,30 @@ class DiffusionBackend:
         same blob cache _companion_cache_bytes sums -- are not counted as companions on
         top of transformer_resident_override_mib (a double-count of the transformer).
 
-        ``base_local_dir`` is the snapshot the load will actually read. Every size lookup here is
-        scoped to ``hub_cache_dir()`` (``_cache_bytes`` walks the live root's blobs,
-        ``_companion_cache_bytes`` its snapshots), so a base the prefetch/preflight resolved
-        through huggingface_hub's import-time root weighs in at zero and the plan budgets a bare
-        transformer -- an auto plan then stays resident and OOMs on the VAE + text encoders it
-        never counted. Size that snapshot instead when one was handed back."""
+        ``base_local_dir`` is the snapshot the load will actually read, carried into the size
+        lookups as an extra source alongside the cache roots. A prefetch split across roots hands
+        back no snapshot at all, and a preflight-excused one can hold less than the repo, so it is
+        a floor and never a replacement: whichever source is fullest wins, since under-counting
+        here leaves an auto plan resident and OOMing on weights it never budgeted."""
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full.
         device_memory = settled_snapshot_device_memory(target)
         if kind == "pipeline":
             # The whole repo is one cached download, so cached bytes are the resident estimate; a LOCAL path is not cached, so sum its on-disk weights.
             local_repo = Path(repo_id).expanduser() if repo_id else None
-            # A snapshot handed back by the prefetch/preflight can sit under the OTHER cache root,
-            # where _cache_bytes (live root only) reads zero; sum the tree from_pretrained will read.
             staged_repo = Path(base_local_dir).expanduser() if base_local_dir else None
-            if local_repo is not None and local_repo.is_dir():
-                cached = self._local_dir_weight_bytes(local_repo, exclude_transformer = False)
-            elif staged_repo is not None and staged_repo.is_dir():
-                cached = self._local_dir_weight_bytes(staged_repo, exclude_transformer = False)
-            else:
-                cached = self._cache_bytes(repo_id) if repo_id else 0
+            # Largest of every source the load can read this repo from. A staged snapshot can sit
+            # under the OTHER cache root, and a prefetch that landed half the repo in each root
+            # hands back none at all -- so neither the snapshot nor the cache scan alone sees the
+            # whole thing, and the smaller answer would plan a multi-GB pipeline as unknown.
+            cached = max(
+                self._local_dir_weight_bytes(local_repo, exclude_transformer = False)
+                if local_repo is not None and local_repo.is_dir()
+                else 0,
+                self._local_dir_weight_bytes(staged_repo, exclude_transformer = False)
+                if staged_repo is not None and staged_repo.is_dir()
+                else 0,
+                self._cache_bytes(repo_id) if repo_id else 0,
+            )
             cached_mib = int(cached // (1024 * 1024)) if cached else None
             model_dense_mib = estimate_safetensors_dense_mib(cached_mib)
             # A repo can store weights NARROWER than the loaded dtype (ideogram-4 ships raw float8), so cached bytes
@@ -2703,11 +2775,10 @@ class DiffusionBackend:
                 # Re-planning the dense candidate: the prefetched transformer/ shards land in the same cache, so use the estimate instead of double-counting.
                 companion_mib = companion_override_mib
             else:
-                # base_local_dir first: _companion_cache_bytes resolves a hub id under the LIVE
-                # root only, so a base served from the import-time root budgets as zero and the
-                # VAE + text encoders load unbudgeted. It takes a local dir as-is, so handing it
-                # the snapshot sizes the tree the load reads (transformer/ still excluded).
-                companion = self._companion_cache_bytes(base_local_dir or base)
+                # Hand over the staged snapshot too: a base served from the import-time root is
+                # invisible to a hub-id scan of the live one, so the VAE + text encoders would
+                # load unbudgeted (transformer/ stays excluded either way).
+                companion = self._companion_cache_bytes(base, base_local_dir)
                 companion_mib = int(companion // (1024 * 1024)) if companion else None
             model_dense_mib = None
             if transformer_resident is not None:

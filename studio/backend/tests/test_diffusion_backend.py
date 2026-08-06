@@ -2621,7 +2621,7 @@ def test_dense_quant_skipped_when_dense_transformer_does_not_fit(
     monkeypatch.setattr(
         DiffusionBackend,
         "_dense_transformer_resident_bytes",
-        staticmethod(lambda base: 40 * 1024**3),
+        staticmethod(lambda base, staged_dir = None: 40 * 1024**3),
     )
     orig_plan = DiffusionBackend._plan_memory
 
@@ -2673,7 +2673,7 @@ def test_dense_quant_prequant_proceeds_but_forbids_dense_fallback(
     monkeypatch.setattr(
         DiffusionBackend,
         "_dense_transformer_resident_bytes",
-        staticmethod(lambda base: 999 * 1024**3),
+        staticmethod(lambda base, staged_dir = None: 999 * 1024**3),
     )
     dense_refit_ran = []
     orig_plan = DiffusionBackend._plan_memory
@@ -3136,7 +3136,7 @@ def test_dense_quant_unusable_prequant_path_runs_dense_refit(fake_runtime, tmp_p
     monkeypatch.setattr(
         DiffusionBackend,
         "_dense_transformer_resident_bytes",
-        staticmethod(lambda base: 999 * 1024**3),
+        staticmethod(lambda base, staged_dir = None: 999 * 1024**3),
     )
     dense_refit_ran = []
     orig_plan = DiffusionBackend._plan_memory
@@ -3695,16 +3695,67 @@ def test_plan_memory_dense_replan_does_not_double_count_prefetched_transformer(m
     assert plan.offload_policy == OFFLOAD_NONE
 
 
-def _other_root_base_snapshot(tmp_path, monkeypatch):
-    """A base repo cached ONLY under huggingface_hub's import-time root, with Studio's live root
-    empty: what a mid-session cache-folder change leaves behind, and what the per-file root reuse
-    hands the loader back as ``_base_local_dir``. Sparse files, so the sizes cost no disk."""
+def _split_cache_roots(
+    tmp_path,
+    monkeypatch,
+    *,
+    register_root = False,
+):
+    """Studio's live cache root and a second one holding what a mid-session cache-folder change
+    left behind. Returns ``(live, other)``, both empty.
+
+    ``register_root`` makes the second dir huggingface_hub's import-time constant, i.e. the root
+    ``cache_dir = None`` resolves to and the one the loader's per-file reuse reads from. Without it
+    the constant is pointed at a third empty dir, so ``other`` is reachable only as an explicit
+    staged snapshot -- and either way the test never sees the developer's real cache."""
+    from huggingface_hub import constants as hf_constants
+
     from core.inference import diffusion as dmod
 
     live = tmp_path / "live-hub"
-    live.mkdir()
+    other = tmp_path / "other-hub"
+    unused = tmp_path / "import-time-hub"
+    for path in (live, other, unused):
+        path.mkdir(exist_ok = True)
     monkeypatch.setattr(dmod, "hub_cache_dir", lambda: str(live))
-    snapshot = tmp_path / "other-hub" / "models--bfl--base" / "snapshots" / ("a" * 40)
+    monkeypatch.setattr(hf_constants, "HF_HUB_CACHE", str(other if register_root else unused))
+    return live, other
+
+
+def _hub_blob(root, repo_id, name, mib):
+    """A completed download's blob under ``root``. Named after the file's etag, so the same file
+    carries the same name in every root it was ever downloaded into. Sparse: costs no disk."""
+    blob = root / f"models--{repo_id.replace('/', '--')}" / "blobs" / name
+    blob.parent.mkdir(parents = True, exist_ok = True)
+    with open(blob, "wb") as fh:
+        fh.truncate(mib * 1024 * 1024)
+    return blob
+
+
+def _safetensors_with_params(path, numel):
+    """A safetensors shard whose JSON header declares ``numel`` elements. Only the header is read
+    (_safetensors_param_count never touches tensor data), so no payload is written."""
+    import json
+
+    header = json.dumps({"w": {"dtype": "F32", "shape": [numel], "data_offsets": [0, 4]}}).encode()
+    path.parent.mkdir(parents = True, exist_ok = True)
+    with open(path, "wb") as fh:
+        fh.write(len(header).to_bytes(8, "little"))
+        fh.write(header)
+    return path
+
+
+def _other_root_base_snapshot(
+    tmp_path,
+    monkeypatch,
+    *,
+    register_root = False,
+):
+    """A base repo cached ONLY under the other cache root, with Studio's live root empty: what a
+    mid-session cache-folder change leaves behind, and what the per-file root reuse hands the
+    loader back as ``_base_local_dir``. Sparse files, so the sizes cost no disk."""
+    _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = register_root)
+    snapshot = other / "models--bfl--base" / "snapshots" / ("a" * 40)
     for rel, mib in (
         ("text_encoder/model.safetensors", 150),
         ("vae/diffusion_pytorch_model.safetensors", 50),
@@ -3796,6 +3847,235 @@ def test_plan_memory_sizes_a_pipeline_load_from_the_other_root_snapshot(monkeypa
     # A pipeline load keeps transformer/: 4096 + 150 + 50 = 4296 MiB, well past the 2509 MiB margin.
     assert plan.estimates["model_dense_mib"] == 4296
     assert plan.offload_policy == OFFLOAD_MODEL
+
+
+def test_plan_memory_keeps_companions_a_partial_staged_snapshot_omits(monkeypatch, tmp_path):
+    # Same floor rule for the companion total. The snapshot the preflight carries can hold the
+    # manifest alone, so preferring it over the hub-id scan budgets 0 for the VAE + text encoders
+    # the cache root does hold, and the auto plan stays resident and OOMs on them.
+    from core.inference.diffusion_memory import OFFLOAD_GROUP
+
+    snapshot = _other_root_base_snapshot(tmp_path, monkeypatch, register_root = True)
+    target = _small_card(monkeypatch)
+    backend = DiffusionBackend()
+    manifest_only = snapshot.parent / ("c" * 40)
+    manifest_only.mkdir(parents = True)
+    (manifest_only / "model_index.json").write_bytes(b"{}")
+
+    plan = backend._plan_memory(
+        target,
+        None,
+        "bfl/base",
+        types.SimpleNamespace(name = "flux.1"),
+        None,
+        False,
+        kind = "gguf",
+        transformer_resident_override_mib = 300,
+        base_local_dir = str(manifest_only),
+    )
+    # The registered root still holds 150 + 50 MiB of companions, so 300 + 200 + 100 + 2048 = 2648
+    # clears the 2509 MiB resident margin and the 2348 MiB group floor fits.
+    assert plan.estimates["companion_dense_mib"] == 200
+    assert plan.offload_policy == OFFLOAD_GROUP
+
+
+def test_load_progress_counts_a_checkpoint_the_other_cache_root_already_holds(
+    tmp_path, monkeypatch
+):
+    # After a cache-folder change the multi-GB checkpoint can be satisfied entirely from
+    # huggingface_hub's import-time root. Counting only the live root leaves `downloaded` at 0
+    # against a nonzero estimate, so the UI reports a healthy multi-minute load as stalled near
+    # 0% for the whole of pipeline construction and never reaches "finalizing".
+    from core.inference.diffusion import _LoadingState
+
+    live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
+    _hub_blob(other, "org/gguf", "a" * 64, 400)
+    # The base is mirrored in both roots: one etag, one file, so it must not count twice.
+    _hub_blob(other, "org/base", "b" * 64, 100)
+    _hub_blob(live, "org/base", "b" * 64, 100)
+
+    assert DiffusionBackend._cache_bytes("org/gguf") == 400 * 1024 * 1024
+    assert DiffusionBackend._cache_bytes("org/base") == 100 * 1024 * 1024
+
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = "org/gguf", base_repo = "org/base", expected_bytes = 500 * 1024 * 1024
+    )
+    progress = backend.load_progress()
+    assert progress["phase"] == "finalizing"
+    assert progress["fraction"] == 1.0
+
+
+def test_plan_memory_sizes_a_pipeline_split_across_both_cache_roots(monkeypatch, tmp_path):
+    # A prefetch that landed part of the repo in each root hands back NO snapshot (a snapshot dir
+    # the rest of the files are not in would fail the load), so the plan falls back to the cache
+    # scan. Scoped to the live root that reads a fraction of the repo, and the pinned
+    # from_pretrained then loads shards the plan never budgeted.
+    from core.inference.diffusion_memory import OFFLOAD_MODEL
+
+    live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
+    target = _small_card(monkeypatch)
+    backend = DiffusionBackend()
+    # base_repo deliberately unequal to repo_id: the narrow-base size table is a different path.
+    fam = types.SimpleNamespace(name = "flux.1", base_repo = "unrelated/repo")
+    # Downloaded into the live root, and again mirrored in both: same etag, so one file.
+    _hub_blob(live, "bfl/base", "a" * 64, 300)
+    _hub_blob(other, "bfl/base", "a" * 64, 300)
+    _hub_blob(other, "bfl/base", "b" * 64, 4000)
+
+    def _plan(**kw):
+        return backend._plan_memory(
+            target, None, "bfl/base", fam, None, False, kind = "pipeline", repo_id = "bfl/base", **kw
+        )
+
+    plan = _plan()
+    # 300 + 4000, each counted once: a per-root sum would read 4600, the live root alone 300 (and
+    # 300 + 100 + 2048 fits the 2509 MiB margin, so the 4.2 GiB repo would have stayed resident).
+    assert plan.estimates["model_dense_mib"] == 4300
+    assert plan.offload_policy == OFFLOAD_MODEL
+
+    # The gated preflight excuses a base off ONE probe file, so the snapshot it carries can hold
+    # the manifest and nothing else. Preferring a staged dir outright would size this 4.2 GiB
+    # pipeline at 0; it is a floor here too, and the cache scan still wins.
+    manifest_only = other / "models--bfl--base" / "snapshots" / ("c" * 40)
+    manifest_only.mkdir(parents = True)
+    (manifest_only / "model_index.json").write_bytes(b"{}")
+    assert _plan(base_local_dir = str(manifest_only)).estimates["model_dense_mib"] == 4300
+
+
+def test_dense_transformer_bytes_read_the_other_root_and_treat_the_snapshot_as_a_floor(
+    tmp_path, monkeypatch
+):
+    # The dense-quant preflight sizes the bf16 transformer to decide whether to re-check the fit.
+    # A base a moved cache holds only under the import-time root reads 0 on the live root, and a 0
+    # skips the check entirely, so the dense build lands under a plan sized for the GGUF.
+    _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
+    snapshot = other / "models--bfl--base" / "snapshots" / ("a" * 40)
+    _safetensors_with_params(
+        snapshot / "transformer" / "diffusion_pytorch_model.safetensors", 1_000_000
+    )
+
+    # bf16 on load: 2 bytes/param, reached through the hub id or the staged snapshot alike.
+    assert DiffusionBackend._dense_transformer_resident_bytes("bfl/base") == 2_000_000
+    assert (
+        DiffusionBackend._dense_transformer_resident_bytes("bfl/base", str(snapshot)) == 2_000_000
+    )
+    # The staged snapshot is a floor, never a replacement: the prefetch only stages transformer/
+    # when the dense path is in play, and a preflight-excused snapshot can carry companions alone.
+    # Letting one of those erase the shards a root does hold would skip the fit check again.
+    bare = tmp_path / "companions-only-snapshot"
+    bare.mkdir()
+    assert DiffusionBackend._dense_transformer_resident_bytes("bfl/base", str(bare)) == 2_000_000
+    # A staged dir under NEITHER current root: the cache folder can change again while a multi-GB
+    # prefetch runs, and the snapshot it already resolved is still where the load reads the shards.
+    stale = tmp_path / "stale-root" / "models--bfl--base" / "snapshots" / ("b" * 40)
+    _safetensors_with_params(
+        stale / "transformer" / "diffusion_pytorch_model.safetensors", 3_000_000
+    )
+    assert DiffusionBackend._dense_transformer_resident_bytes("bfl/base", str(stale)) == 6_000_000
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_dense_fit_check_runs_for_a_base_the_live_cache_root_does_not_hold(
+    fake_runtime, tmp_path, monkeypatch, staged
+):
+    # End of the same hole, at the load: with no usable prequant the loader materialises the dense
+    # bf16 transformer, so the fit re-check has to run. It only runs when the size lookup finds the
+    # shards, and for a moved cache they are either under the import-time root (staged=False) or
+    # only in the snapshot the prefetch already resolved, which a second move strands outside both
+    # roots (staged=True). The live root reads 0 for either, and a 0 skips the check.
+    from core.inference import diffusion as dmod
+
+    _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
+    root = tmp_path / "stale-root" if staged else other
+    shards = root / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("a" * 40)
+    _safetensors_with_params(
+        shards / "transformer" / "diffusion_pytorch_model.safetensors",
+        6 * 1024**3,  # 6G params -> 12 GiB resident at bf16
+    )
+    backend = DiffusionBackend()
+    _force_cuda_target(backend, monkeypatch)
+    monkeypatch.setattr(dmod, "dense_transformer_supported", lambda target: True)
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "usable_prequant_source", lambda fam, scheme, **kw: None)
+    dense_refit_ran = []
+    orig_plan = DiffusionBackend._plan_memory
+
+    def spy_plan(
+        self,
+        *a,
+        transformer_resident_override_mib = None,
+        **k,
+    ):
+        # Scoped to this backend: begin_load runs on a daemon thread, so an earlier test's load can
+        # still be in flight here and _plan_memory is patched on the CLASS.
+        if transformer_resident_override_mib is not None and self is backend:
+            dense_refit_ran.append(transformer_resident_override_mib)
+        return orig_plan(self, *a, **k)
+
+    monkeypatch.setattr(DiffusionBackend, "_plan_memory", spy_plan)
+    monkeypatch.setattr(
+        DiffusionBackend, "_load_dense_quant_pipeline", lambda self, *a, **k: (None, None)
+    )
+    (tmp_path / "m.gguf").write_bytes(b"x")
+    backend.load_pipeline(
+        str(tmp_path),
+        gguf_filename = "m.gguf",
+        family_override = "z-image",
+        transformer_quant = "fp8",
+        _base_local_dir = str(shards) if staged else None,
+    )
+    assert dense_refit_ran == [12288]
+    assert backend.status()["loaded"] is True
+
+
+def test_the_dense_builder_reads_transformer_from_the_hub_id_not_the_staged_snapshot(
+    fake_runtime, tmp_path, monkeypatch
+):
+    # Sizing reads the staged snapshot; the LOAD deliberately does not. diffusers treats a local
+    # directory as terminal -- _get_model_file raises "Error no file named ..." instead of falling
+    # back to the hub (utils/hub_utils.py), and a sharded load raises FileNotFoundError per missing
+    # shard -- so a snapshot holding transformer/config.json, or 2 of 3 shards (what a cancelled
+    # prefetch leaves), would turn a working load into a hard failure. The hub id costs a
+    # re-download instead, or 401s into the GGUF fallback, which is what main does today.
+    import contextlib
+
+    from core.inference import diffusion as dmod
+
+    monkeypatch.setattr(
+        dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
+    )
+    monkeypatch.setattr(dmod, "resolve_prequant_source", lambda *a, **k: None)
+    snapshot = tmp_path / "other-hub" / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / "abc"
+    # transformer/ present but shardless: the shape an is_dir() guard would wave through.
+    (snapshot / "transformer").mkdir(parents = True)
+    seen: list = []
+
+    class _Transformer:
+        @classmethod
+        def from_pretrained(cls, source, **kw):
+            seen.append(source)
+            raise RuntimeError("the source is the subject; the build cannot complete here")
+
+    backend = DiffusionBackend()
+    target = _force_cuda_target(backend, monkeypatch)
+    with contextlib.suppress(Exception):
+        backend._load_dense_quant_pipeline(
+            _Transformer,
+            object(),
+            "Tongyi-MAI/Z-Image-Turbo",
+            "cuda",
+            None,
+            None,
+            target,
+            "fp8",
+            None,
+            fam = detect_family("unsloth/Z-Image-GGUF"),
+            base_local_dir = str(snapshot),
+        )
+    assert seen == ["Tongyi-MAI/Z-Image-Turbo"]
 
 
 def test_reset_step_cache_helper_is_best_effort():
