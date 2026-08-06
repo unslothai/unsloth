@@ -899,11 +899,20 @@ def test_download_dspark_records_whether_the_repo_publishes_a_sidecar(monkeypatc
     )
 
     def _companion(listed):
-        def _fake(*, hf_repo, hf_token, pick, label, cancel_event = None,
-                  near_path = None, outcome = None):
+        def _fake(
+            *,
+            hf_repo,
+            hf_token,
+            pick,
+            label,
+            cancel_event = None,
+            near_path = None,
+            outcome = None,
+        ):
             if outcome is not None:
                 outcome["listed"] = listed
             return None
+
         return _fake
 
     for listed, expect_absent in ((False, True), (True, False)):

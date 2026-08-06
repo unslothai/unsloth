@@ -5148,12 +5148,8 @@ def _estimate_gguf_required_gb(
                 # listing. Under Auto size both: a repo has one kind or the other,
                 # the absent one contributes 0, and over-estimating is the safe
                 # direction for a guard that protects a running training job.
-                include_mtp = (
-                    not _charge_no_drafter and (_auto_dspark or not dspark_requested)
-                ),
-                include_dspark = (
-                    _dspark_capable and (_auto_dspark or dspark_requested)
-                ),
+                include_mtp = (not _charge_no_drafter and (_auto_dspark or not dspark_requested)),
+                include_dspark = (_dspark_capable and (_auto_dspark or dspark_requested)),
             )
             return (main_bytes + companions) / (1024**3)
         return None
