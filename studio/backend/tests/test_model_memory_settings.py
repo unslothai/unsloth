@@ -79,6 +79,16 @@ class TestFlagPolicy:
         assert policy(True, False, None) == (["--mlock"], [])
         assert policy(False, False, None) == ([], [])
 
+    def test_caller_extras_are_not_mutated(self, policy):
+        # load_model reads extra_args after this: None must stay None (inherit
+        # previous) rather than becoming [] (clear), and the user's saved flags
+        # must survive, so the policy only ever returns a launch-only copy.
+        original = ["--mlock", "--no-mmap", "--temp", "0.7"]
+        passed = list(original)
+        _, out = policy(True, True, passed)
+        assert passed == original
+        assert out is not passed
+
     @pytest.mark.parametrize("flag", ["--mlock", "-mlock", "--no-mmap", "-no-mmap"])
     def test_aliases_are_stripped(self, policy, flag):
         _, out = policy(False, True, [flag, "--temp", "0.7"])

@@ -10404,9 +10404,11 @@ class LlamaCppBackend:
                 if is_vulkan_backend and _vulkan_pin_ids is not None:
                     cmd += LlamaCppBackend._vulkan_pin_args(_vulkan_pin_ids)
 
-                # Model Memory settings. Resolved here so the managed flag lands
-                # before the user's extras and vetoed ones are gone from them.
-                _mem_managed, extra_args = apply_model_memory_policy(extra_args)
+                # Model Memory settings. Managed flag lands before the extras, and
+                # vetoed ones are dropped from a launch-only copy: extra_args keeps
+                # None-vs-[] (inherit vs clear) for the commit block below, and the
+                # user's saved flags survive turning the toggle back off.
+                _mem_managed, _mem_extras = apply_model_memory_policy(extra_args)
                 self._mlock_enabled = "--mlock" in _mem_managed
                 if _mem_managed:
                     cmd.extend(_mem_managed)
@@ -10417,12 +10419,12 @@ class LlamaCppBackend:
 
                 # User pass-through args go last. Placement flags are removed
                 # below when the Studio picker owns the GPU selection.
-                if extra_args:
-                    _emit_extra_args = list(extra_args)
+                if _mem_extras:
+                    _emit_extra_args = list(_mem_extras)
                     if gpu_ids is not None:
                         # gpu_ids owns placement, so remove competing device flags.
-                        _emit_extra_args = self._strip_device_extra_args(extra_args)
-                        if _emit_extra_args != list(extra_args):
+                        _emit_extra_args = self._strip_device_extra_args(_mem_extras)
+                        if _emit_extra_args != list(_mem_extras):
                             logger.info(
                                 "Dropped user device placement flags from extra args: "
                                 "explicit gpu_ids owns placement."

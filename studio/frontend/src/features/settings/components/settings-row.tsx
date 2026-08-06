@@ -61,7 +61,14 @@ export function SettingsRow({
           </span>
         ) : null}
         <div className="flex min-w-0 flex-col gap-0.5">
-          <span className="flex items-center gap-1.5 text-sm font-medium text-foreground">
+          {/* Flex only when hinted, so every other row's label renders exactly
+              as before. */}
+          <span
+            className={cn(
+              "text-sm font-medium text-foreground",
+              hint && "flex items-center gap-1.5",
+            )}
+          >
             {label}
             {hint ? (
               <Tooltip>
