@@ -12,17 +12,20 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 
-/** The link between the two media pages (Images and Video). Kept out of either page's mode
- *  strip, which switches modes within a page, and parked at the far right past a divider so
- *  it reads as leaving rather than as another mode. */
+/** The link out to another page's workspace (Images, Video, image training). Kept out of the
+ *  page's mode strip, which switches modes within a page, and parked at the far right past a
+ *  divider so it reads as leaving rather than as another mode. */
 export function MediaPageLink({
   to,
   label,
   icon,
+  onNavigate,
 }: {
   to: "/images" | "/video";
   label: string;
   icon: IconSvgElement;
+  /** Runs before the route change, for a destination whose mode lives in a store. */
+  onNavigate?: () => void;
 }) {
   const navigate = useNavigate();
   return (
@@ -38,6 +41,7 @@ export function MediaPageLink({
           <button
             type="button"
             onClick={() => {
+              onNavigate?.();
               navigate({ to });
             }}
             className="flex h-[34px] shrink-0 items-center gap-1.5 rounded-full pl-2.5 pr-2 text-ui-13 font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
