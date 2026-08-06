@@ -6824,6 +6824,47 @@ def test_codex_attach_check_honors_loadable_on_an_empty_listing(monkeypatch):
         start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/MTP/foo-Q8_0.gguf")
 
 
+def test_codex_preload_gate_checks_direct_path_identity(fake_studio, monkeypatch, tmp_path):
+    # Two directories can hold the same filename and /v1/models shows only the
+    # basename, so a different path with the same name is a real reload.
+    inner = start._http_json
+    probed = []
+    resident = tmp_path / "old" / "foo-Q4_K_M.gguf"
+    resident.parent.mkdir()
+    resident.write_bytes(b"GGUF")
+    other = tmp_path / "new" / "foo-Q4_K_M.gguf"
+    other.parent.mkdir()
+    other.write_bytes(b"GGUF")
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if url.endswith("/v1/models"):
+            return {"data": [{"id": "foo-Q4_K_M", "loaded": True}]}
+        if url.endswith("/api/inference/status"):
+            return {
+                "is_gguf": True,
+                "gguf_variant": "Q4_K_M",
+                "model_identifier": os.fspath(resident),
+            }
+        if "/api/models/gguf-variants" in url:
+            probed.append(url)
+            return {"variants": [{"quant": "Q4_K_M"}], "resolved_locally": True, "loadable": True}
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    CliRunner().invoke(
+        start.start_app,
+        ["codex", "--model", os.fspath(other), "--gguf-variant", "Q4_K_M", "--no-launch"],
+    )
+    assert probed, "a different path with the same basename is not the resident model"
+
+
 def test_codex_preload_gate_runs_for_a_settings_reload(fake_studio, monkeypatch):
     # A knob that changes the runtime intent is a real reload the server will
     # not dedupe, so the gate has to run even for the resident id.

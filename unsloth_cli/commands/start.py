@@ -1592,6 +1592,25 @@ def _resolve_model(
                 )
                 for m in models
             )
+            # Two directories can hold the same filename, and /v1/models shows
+            # only that basename, so a path request has to be confirmed against
+            # the identifier the server actually loaded -- otherwise
+            # /new/foo.gguf reads as resident because /old/foo.gguf is.
+            if resident_serves_request and _is_model_path(requested):
+                try:
+                    status = _http_json("GET", f"{base}/api/inference/status", key)
+                except Exception:
+                    status = {}
+                loaded_paths = {
+                    str(status.get(field))
+                    for field in ("model_identifier", "gguf_path", "model_path")
+                    if status.get(field)
+                }
+                wanted_path = os.path.abspath(os.path.expanduser(requested))
+                resident_serves_request = any(
+                    os.path.abspath(os.path.expanduser(path)) == wanted_path
+                    for path in loaded_paths
+                )
             if resident_serves_request and load.gguf_variant:
                 try:
                     status = _http_json("GET", f"{base}/api/inference/status", key)
