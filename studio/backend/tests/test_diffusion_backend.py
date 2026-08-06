@@ -4618,6 +4618,10 @@ def test_dense_fit_check_runs_for_a_base_the_live_cache_root_does_not_hold(
     # live root reads 0 for either.
     from core.inference import diffusion as dmod
 
+    # The subject is cross-root shard discovery, not mirroring. Pin the base id so the fixture's
+    # cache dir is the one the load reads: otherwise whether the swap fires depends on whether the
+    # ambient cache happens to hold the upstream, and the test passes or fails by accident.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_NO_MIRROR", "1")
     _live, other = _split_cache_roots(tmp_path, monkeypatch, register_root = True)
     root = tmp_path / "stale-root" if staged else other
     shards = root / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / ("a" * 40)
@@ -4679,6 +4683,7 @@ def test_the_dense_builder_reads_transformer_from_the_hub_id_not_the_staged_snap
         dmod, "select_transformer_quant_scheme", lambda target, mode, family = None: "fp8"
     )
     monkeypatch.setattr(dmod, "resolve_prequant_source", lambda *a, **k: None)
+    _no_cache(monkeypatch)
     snapshot = tmp_path / "other-hub" / "models--Tongyi-MAI--Z-Image-Turbo" / "snapshots" / "abc"
     # transformer/ present but shardless: the shape an is_dir() guard would wave through.
     (snapshot / "transformer").mkdir(parents = True)
@@ -4706,7 +4711,9 @@ def test_the_dense_builder_reads_transformer_from_the_hub_id_not_the_staged_snap
             fam = detect_family("unsloth/Z-Image-GGUF"),
             base_local_dir = str(snapshot),
         )
-    assert seen == ["Tongyi-MAI/Z-Image-Turbo"]
+    # A hub id, not the snapshot path: which hub id is incidental here, and with Z-Image mirrored
+    # the load reads the mirror. Pinned so the ambient cache cannot decide it.
+    assert seen == ["unsloth/Z-Image-Turbo"]
 
 
 def test_reset_step_cache_helper_is_best_effort():
