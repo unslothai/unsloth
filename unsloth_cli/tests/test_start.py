@@ -6839,6 +6839,33 @@ def test_codex_attach_check_honors_loadable_on_an_empty_listing(monkeypatch):
         start._attach_gguf_check_for_codex(BASE, "sk-test", "/models/MTP/foo-Q8_0.gguf")
 
 
+def test_codex_preload_gate_runs_for_a_settings_reload(fake_studio, monkeypatch):
+    # A knob that changes the runtime intent is a real reload the server will
+    # not dedupe, so the gate has to run even for the resident id.
+    inner = start._http_json
+    probed = []
+
+    def http_json(
+        method,
+        url,
+        token,
+        payload = None,
+        timeout = 30,
+        error = None,
+    ):
+        if "/api/models/gguf-variants" in url:
+            probed.append(url)
+            return {"variants": [{"quant": "Q4_K_M"}], "resolved_locally": False}
+        return inner(method, url, token, payload, timeout, error)
+
+    monkeypatch.setattr(start, "_http_json", http_json)
+    CliRunner().invoke(
+        start.start_app,
+        ["codex", "--model", MODEL["id"], "--max-seq-length", "8192", "--no-launch"],
+    )
+    assert probed, "a context-length change reloads, so the gate must check it"
+
+
 def test_codex_preload_gate_runs_for_a_mistyped_resident_variant(fake_studio, monkeypatch):
     # The server matches intent case-insensitively but does not strip
     # separators, so Q4KM is not the resident Q4_K_M and really reloads.

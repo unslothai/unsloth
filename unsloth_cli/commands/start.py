@@ -1570,7 +1570,17 @@ def _resolve_model(
             # that would reject a second session for the model already serving
             # -- its file may since have moved -- so let the resident answer
             # first, and only for the same weights it is already serving.
-            resident_serves_request = any(
+            # Only the quant is checked against the resident model below, so a
+            # run knob that changes the runtime intent (context length, 4bit,
+            # tensor parallel, GPU mode) is a real reload the server will not
+            # dedupe -- and a real reload is exactly what this gate protects.
+            other_overrides = bool(
+                load.max_seq_length
+                or not load.load_in_4bit
+                or load.tensor_parallel
+                or load.gpu_memory_mode is not None
+            )
+            resident_serves_request = not other_overrides and any(
                 _model_id_matches(m.get("id"), requested, allow_casefold = allow_casefold)
                 and m.get("loaded") is not False
                 for m in models
