@@ -338,9 +338,7 @@ def _fetch_repo_map(assets: list[tuple[str, str, str]], hf_token: Optional[str])
     for repo, filename, _kind in assets:
         by_repo.setdefault(repo, []).append(filename)
     return {
-        repo: prefer_cached_legacy_source(
-            prefer_ungated_mirror(repo, hf_token, files = names), names
-        )
+        repo: prefer_cached_legacy_source(prefer_ungated_mirror(repo, hf_token, files = names), names)
         for repo, names in by_repo.items()
     }
 

@@ -3050,9 +3050,10 @@ def test_a_companion_mirror_is_listed_but_flagged_so_no_picker_offers_it(monkeyp
         models_route, "_all_hf_cache_scans", lambda: [SimpleNamespace(repos = [companion, chat])]
     )
 
-    rows = {r["repo_id"]: r for r in asyncio.run(
-        models_route.list_cached_models(current_subject = "test-user")
-    )["cached"]}
+    rows = {
+        r["repo_id"]: r
+        for r in asyncio.run(models_route.list_cached_models(current_subject = "test-user"))["cached"]
+    }
 
     # Listed, so it stays visible and deletable...
     assert "unsloth/Z-Image-Turbo-ComfyUI" in rows
