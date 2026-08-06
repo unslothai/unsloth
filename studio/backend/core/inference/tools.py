@@ -401,6 +401,8 @@ def _newline_mark(text: str) -> str:
         if code > len(present) + len(_NEWLINE_MARK_UNUSABLE) + 1:
             return ""
     return chr(code)
+
+
 # The characters bash expands a word against the filesystem for, and the
 # placeholder standing in for a QUOTED one during the same second lex.
 _GLOB_CHARS = frozenset("*?[")
