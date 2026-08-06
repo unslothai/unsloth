@@ -502,9 +502,8 @@ def test_fixed_sheets_start_below_the_custom_titlebar():
         assert f"data-[side={side}]:bottom-0" in sheet
         assert f"data-[side={side}]:h-full" not in sheet
 
-    # The context is the only titlebar offset for sheets: one that also
-    # compensated locally would be pushed down twice. Dialogs still read
-    # --studio-window-chrome-top, which DesktopChromeVarsEffect mirrors.
+    # The context is the only sheet offset; a local one too would double up.
+    # Dialogs still read --studio-window-chrome-top (DesktopChromeVarsEffect).
     for portalled in (
         RESEARCH_ACTIVITY_PANEL,
         RESPONSE_DETAILS_SHEET,
