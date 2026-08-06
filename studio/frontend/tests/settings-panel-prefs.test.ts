@@ -112,3 +112,26 @@ test("Reset all local preferences clears this key", async () => {
     `${SETTINGS_PANEL_PREFS_STORAGE_KEY} missing from PREFS_KEYS`,
   );
 });
+
+// A quant is scoped to the repo it was picked for, and the catalog, cache and
+// status endpoints can disagree on repo-id casing, so that scope check has to
+// normalize or the user's quant is dropped when the spelling differs.
+test("the remembered quant is scoped through modelKey, not an exact compare", async () => {
+  const source = await readFile(
+    new URL("../src/features/settings/tabs/agents-tab.tsx", import.meta.url),
+    "utf8",
+  );
+  assert.match(
+    source,
+    /modelKey\(chosen\.model\) === modelKey\(model\)/,
+    "rememberedVariant must compare through modelKey",
+  );
+  const exact = source
+    .split("\n")
+    .filter((line) => line.includes("chosenVariant.current?.model ==="));
+  assert.deepEqual(
+    exact,
+    [],
+    "an exact repo-id compare on chosenVariant drops the quant on a casing difference",
+  );
+});

@@ -714,7 +714,8 @@ export function AgentsTab() {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [variants, setVariants] = useState<GgufVariantDetail[]>([]);
   const [selectedVariant, setSelectedVariant] = useState<string | null>(
-    chosenVariant.current?.model === initialModel
+    chosenVariant.current &&
+    modelKey(chosenVariant.current.model) === modelKey(initialModel)
       ? chosenVariant.current.variant
       : initialModel === EXAMPLE_MODEL_REPO
         ? EXAMPLE_MODEL_VARIANT
@@ -930,6 +931,16 @@ export function AgentsTab() {
     };
   }, []);
 
+  // The remembered quant for `model`, matched through modelKey: the catalog,
+  // cache and status endpoints can disagree on repo-id casing, and an exact
+  // compare would silently drop the user's quant.
+  const rememberedVariant = useCallback((model: string): string | null => {
+    const chosen = chosenVariant.current;
+    return chosen && modelKey(chosen.model) === modelKey(model)
+      ? chosen.variant
+      : null;
+  }, []);
+
   // List the resident model and follow it, unless the user picked one explicitly.
   const adoptActiveModel = useCallback(
     (active: { model: string; variant: string | null }) => {
@@ -946,14 +957,10 @@ export function AgentsTab() {
         setSelectedModel(active.model);
         // a remembered quant for this model wins, since it may be adopted here
         // before the variants fetch below has had a chance to apply it.
-        setSelectedVariant(
-          chosenVariant.current?.model === active.model
-            ? chosenVariant.current.variant
-            : active.variant,
-        );
+        setSelectedVariant(rememberedVariant(active.model) ?? active.variant);
       }
     },
-    [],
+    [rememberedVariant],
   );
 
   // A native-grant label only stands for whatever was resident at the time, so once
@@ -1149,20 +1156,19 @@ export function AgentsTab() {
         );
         // Authoritative for this repo: drop a remembered quant it no longer
         // offers, or adoptActiveModel re-imposes it on the next poll.
-        if (
-          chosenVariant.current?.model === selectedModel &&
-          !available.has(chosenVariant.current.variant)
-        ) {
+        const remembered = rememberedVariant(selectedModel);
+        if (remembered && !available.has(remembered)) {
           chosenVariant.current = null;
-          if (storedVariantModel === selectedModel) {
+          if (
+            storedVariantModel &&
+            modelKey(storedVariantModel) === modelKey(selectedModel)
+          ) {
             clearStoredVariant();
           }
         }
         const nextVariant =
           pickVariant(available, [
-            chosenVariant.current?.model === selectedModel
-              ? chosenVariant.current.variant
-              : null,
+            rememberedVariant(selectedModel),
             preferredVariant,
             info.default_variant,
           ]) ??
@@ -1205,6 +1211,7 @@ export function AgentsTab() {
     clearStoredVariant,
     hfToken,
     preferredVariant,
+    rememberedVariant,
     selectedModel,
   ]);
 
