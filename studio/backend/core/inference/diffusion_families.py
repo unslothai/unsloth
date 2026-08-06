@@ -536,7 +536,7 @@ def _upstream_is_cached(repo_id: str, files: Optional[Sequence[str]] = None) -> 
         wanted = tuple(files or ())
         ref = root / "refs" / "main"
         revs = (
-            [root / "snapshots" / ref.read_text().strip()]
+            [root / "snapshots" / ref.read_text(encoding = "utf-8").strip()]
             if ref.is_file()
             else sorted((root / "snapshots").iterdir())
         )
