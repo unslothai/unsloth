@@ -6,9 +6,9 @@
 # WKWebView (macOS) and webkit2gtk (Linux) create data keyed by the bundle id
 # at first app launch, not at install time, so the uninstaller used to miss it
 # and a leftover cache served a stale frontend to the next install. Runs the
-# full script against a fixture HOME (pkill/defaults stubbed via PATH, OS
-# branch picked by a stubbed uname, /proc/version WSL probe force-failed) and
-# asserts bundle-id paths are removed while unrelated app data survives.
+# full script against a fixture HOME with the OS branch and the system tools
+# it calls stubbed via PATH, and asserts bundle-id paths are removed while
+# unrelated app data survives.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -20,8 +20,8 @@ FAIL=0
 _TMP_ROOT=$(mktemp -d)
 trap 'rm -rf "$_TMP_ROOT"' EXIT
 
-# The script sweeps $XDG_RUNTIME_DIR/unsloth-studio-launcher-<uid>*.lock, so an
-# unsandboxed runtime dir means this test deletes the real launcher's locks.
+# The script sweeps $XDG_RUNTIME_DIR/unsloth-studio-launcher-<uid>*.lock, so
+# an unsandboxed runtime dir would cost the real launcher its locks.
 XDG_RUNTIME_DIR="$_TMP_ROOT/run"
 export XDG_RUNTIME_DIR
 mkdir -p "$XDG_RUNTIME_DIR"
@@ -33,20 +33,17 @@ new_home() { mktemp -d "$_TMP_ROOT/home.XXXXXX"; }
 assert_gone()    { _l="$1"; if [ -e "$2" ]; then echo "  FAIL: $_l (still present: $2)"; FAIL=$((FAIL+1)); else echo "  PASS: $_l"; PASS=$((PASS+1)); fi; }
 assert_present() { _l="$1"; if [ -e "$2" ]; then echo "  PASS: $_l"; PASS=$((PASS+1)); else echo "  FAIL: $_l (missing: $2)"; FAIL=$((FAIL+1)); fi; }
 
-# Stub out process kills and macOS pref/LaunchServices tools so the script can
-# run against a fixture HOME without touching the real system.
+# Kills and macOS pref tools, stubbed so the script leaves the real system alone.
 STUB_BIN="$_TMP_ROOT/stubbin"
 mkdir -p "$STUB_BIN"
 for _tool in pkill defaults; do
     printf '#!/bin/sh\nexit 0\n' > "$STUB_BIN/$_tool"
     chmod +x "$STUB_BIN/$_tool"
 done
-# Force the non-WSL path: with uname stubbed to Linux on a WSL host, the
-# script's `grep -qi microsoft /proc/version` probe would still fire and the
-# real WSL cleanup would touch the host's /mnt/* shortcuts and /etc profile.
-# Fail that one probe; delegate every other grep call to the real grep.
-# REAL_GREP must be an absolute path: a bare "grep" (e.g. from an alias-shaped
-# `command -v` result) would resolve back to this stub and self-exec forever.
+# On a WSL host the script's `grep -qi microsoft /proc/version` probe fires
+# even with uname stubbed to Linux, and the real WSL cleanup would touch the
+# host's /mnt/* shortcuts and /etc profile. Fail that one probe, delegate the
+# rest. REAL_GREP must be absolute or the stub execs itself forever.
 REAL_GREP=$(command -v grep)
 case "$REAL_GREP" in /*) ;; *) REAL_GREP=/usr/bin/grep ;; esac
 cat > "$STUB_BIN/grep" <<EOF
@@ -57,9 +54,9 @@ done
 exec "$REAL_GREP" "\$@"
 EOF
 chmod +x "$STUB_BIN/grep"
-# Belt and braces should the WSL branch ever be entered anyway: powershell.exe
-# exiting 0 makes its no-op path taken (and skips the /mnt/* drvfs fallback);
-# sudo exiting 0 without running its argv keeps /etc untouched.
+# Belt and braces if the WSL branch is entered anyway: powershell.exe exiting 0
+# takes the no-op path (skipping the /mnt/* drvfs fallback), and sudo exiting 0
+# without running its argv keeps /etc untouched.
 for _tool in powershell.exe sudo; do
     printf '#!/bin/sh\nexit 0\n' > "$STUB_BIN/$_tool"
     chmod +x "$STUB_BIN/$_tool"

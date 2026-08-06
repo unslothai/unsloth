@@ -153,8 +153,8 @@ $_roots_from_conf"
     sleep 0.5
     _stop_owned_sd_cpp_processes KILL
 
-    # Tauri desktop app, whose WebView helpers re-create the caches removed
-    # below. -x is exact, so the "unsloth" CLI shim is never matched.
+    # The app's WebView helpers re-create the caches removed below, so it has
+    # to die here. -x is exact, so the "unsloth" CLI shim never matches.
     pkill -TERM -x unsloth-studio 2>/dev/null || true
     sleep 0.5
     pkill -KILL -x unsloth-studio 2>/dev/null || true
@@ -396,8 +396,8 @@ _unsloth_uninstall_main() {
             if [ -x "$_lsr" ]; then
                 "$_lsr" -u "$HOME/Applications/Unsloth Studio.app" 2>/dev/null || true
             fi
-            # WKWebView data, keyed by bundle id. Created at first app launch,
-            # not by install.sh, so it outlived every uninstall.
+            # WKWebView data, keyed by bundle id. Created at first launch, not
+            # by install.sh, so it outlived every uninstall.
             _bid="ai.unsloth.studio"
             echo "Removing WebView caches and app data ($_bid)..."
             _remove_path "$HOME/Library/Caches/$_bid"
@@ -557,8 +557,7 @@ _unsloth_uninstall_main() {
                 fi
             fi
             # webkit2gtk data, keyed by bundle id. Tauri points the WebView at
-            # LocalData/<bid>, so the caches are under XDG_DATA_HOME; the rest
-            # is app data.
+            # LocalData/<bid>, so caches sit under XDG_DATA_HOME; rest is app data.
             _bid="ai.unsloth.studio"
             echo "Removing WebView caches and app data ($_bid)..."
             _remove_path "${XDG_DATA_HOME:-$HOME/.local/share}/$_bid"
