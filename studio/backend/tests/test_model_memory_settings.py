@@ -975,7 +975,8 @@ class TestMlockActiveReflectsWhatWillActuallyBePassed:
             "_B",
             (),
             {
-                "is_loaded": loaded, "is_active": loaded,
+                "is_loaded": loaded,
+                "is_active": loaded,
                 "_memory_state": (False, False),
                 "_memory_policy_active": False,
                 "_memory_mlock_applicable": mlock_applicable,
