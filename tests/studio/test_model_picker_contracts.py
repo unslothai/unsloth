@@ -1566,8 +1566,12 @@ def test_batch_sizes_setting_wired_end_to_end():
     assert "n_ubatch: validateNUbatch," in runtime
     assert "loadNBatch = pendingLoadConfig?.nBatch ?? null;" in runtime
     assert "loadNUbatch = pendingLoadConfig?.nUbatch ?? null;" in runtime
-    assert "n_batch: stateBeforeUnload.loadedNBatch," in runtime
-    assert "n_ubatch: stateBeforeUnload.loadedNUbatch," in runtime
+    # rollback re-sends a baseline only when one was actually asked: an explicit
+    # null counts as a set field server-side and would strip the previous
+    # server's own -b / -ub extras on the inherited reload
+    assert "{ n_batch: stateBeforeUnload.loadedNBatch }" in runtime
+    assert "{ n_ubatch: stateBeforeUnload.loadedNUbatch }" in runtime
+    assert "n_batch: stateBeforeUnload.loadedNBatch," not in runtime
     chat_api = _read("features/chat/api/chat-api.ts")
     assert "n_batch: payload.n_batch," in chat_api
     assert "n_ubatch: payload.n_ubatch," in chat_api

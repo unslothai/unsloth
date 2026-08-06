@@ -4860,9 +4860,10 @@ def _estimate_gguf_kv_gb(
     n_batch: Optional[int] = None,
     n_ubatch: Optional[int] = None,
 ) -> float:
-    """KV-cache VRAM (GB) at the larger of max_seq_length and any `--ctx-size`/`-c`
-    override, over n_parallel slots, using the effective cache settings and managed
-    launcher defaults. 0 if metadata is unreadable."""
+    """KV-cache plus compute-buffer VRAM (GB) at the larger of max_seq_length and
+    any `--ctx-size`/`-c` override, over n_parallel slots at the effective
+    micro-batch, using the effective cache settings and managed launcher
+    defaults. 0 if metadata is unreadable."""
     try:
         from core.inference.llama_server_args import parse_ctx_override
 
@@ -4902,6 +4903,9 @@ def _estimate_gguf_kv_gb(
                 planned_cache_types,
                 key = _kv_bytes_per_elem,
             )
+        effective_ubatch = _extra_args_n_ubatch(
+            llama_extra_args, n_ctx = ctx, n_batch = n_batch, n_ubatch = n_ubatch
+        )
         kv = probe._estimate_kv_cache_bytes(
             ctx,
             cache_type_for_budget,
@@ -4911,12 +4915,15 @@ def _estimate_gguf_kv_gb(
                 llama_extra_args,
                 default = managed_kv_unified,
             ),
-            n_ubatch = _extra_args_n_ubatch(
-                llama_extra_args, n_ctx = ctx, n_batch = n_batch, n_ubatch = n_ubatch
-            ),
+            n_ubatch = effective_ubatch,
             flash_attn = False,
         )
-        return kv / (1024**3)
+        # the load also reserves the ubatch-scaled compute buffers, so a large micro-batch must count against training here too
+        compute = probe._estimate_compute_buffer_bytes(
+            n_ubatch = effective_ubatch,
+            n_parallel = slots,
+        ) + probe._compute_buffer_ctx_bytes(ctx, effective_ubatch, cache_type_for_budget)
+        return (kv + compute) / (1024**3)
     except Exception as e:
         logger.warning(f"Could not size GGUF KV cache for training guard: {e}")
         return 0.0

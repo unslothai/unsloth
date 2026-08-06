@@ -1467,8 +1467,13 @@ export function useChatModelRuntime() {
                   spec_draft_n_max:
                     stateBeforeUnload.loadedSpecDraftNMax,
                   n_parallel: stateBeforeUnload.loadedNParallel,
-                  n_batch: stateBeforeUnload.loadedNBatch,
-                  n_ubatch: stateBeforeUnload.loadedNUbatch,
+                  // omit unset batch fields: an explicit null counts as set and would strip the previous server's own -b / -ub extras on the inherited reload
+                  ...(stateBeforeUnload.loadedNBatch != null
+                    ? { n_batch: stateBeforeUnload.loadedNBatch }
+                    : {}),
+                  ...(stateBeforeUnload.loadedNUbatch != null
+                    ? { n_ubatch: stateBeforeUnload.loadedNUbatch }
+                    : {}),
                   // Restore the previous model in the split mode it was running,
                   // not the default layer split.
                   tensor_parallel: stateBeforeUnload.loadedTensorParallel ?? false,
