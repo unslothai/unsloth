@@ -5069,6 +5069,11 @@ def _fake_hf_api(monkeypatch, repos):
             return _FakeInfo(repos[repo_id])
 
     monkeypatch.setattr("huggingface_hub.HfApi", lambda *a, **k: _Api())
+    # Download-plan tests describe their cache state explicitly. Never let a developer's real
+    # Studio cache make an entry disappear from these otherwise hermetic tests.
+    monkeypatch.setattr(
+        DiffusionBackend, "_hub_file_is_cached", staticmethod(lambda repo_id, filename: False)
+    )
 
 
 def test_download_plan_scopes_the_base_repo_files(monkeypatch):
@@ -5110,6 +5115,69 @@ def test_download_plan_scopes_the_base_repo_files(monkeypatch):
     # Sized per repo, so each download job gets its own expected bytes.
     assert base["bytes"] < 24 * GB
     assert plan["total_bytes"] == checkpoint["bytes"] + base["bytes"]
+
+
+def test_download_plan_omits_a_cached_gguf_but_keeps_missing_companions(monkeypatch):
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+    )
+    _no_cache(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(
+            lambda repo_id, filename: repo_id == "unsloth/FLUX.1-dev-GGUF"
+            and filename == "flux1-dev-Q4_K_M.gguf"
+        ),
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    assert [entry["repo_id"] for entry in plan["entries"]] == ["unsloth/FLUX.1-dev"]
+    assert "text_encoder/model.safetensors" in plan["entries"][0]["files"]
+    assert plan["total_bytes"] == plan["entries"][0]["bytes"]
+
+
+def test_download_plan_is_empty_when_every_required_file_is_cached(monkeypatch):
+    _fake_hf_api(
+        monkeypatch,
+        {
+            "unsloth/FLUX.1-dev-GGUF": [_FakeSibling("flux1-dev-Q4_K_M.gguf", 7 * GB)],
+            "black-forest-labs/FLUX.1-dev": _FLUX_BASE_SIBLINGS,
+        },
+    )
+    monkeypatch.setattr(
+        "core.inference.diffusion._resolve_base_repo",
+        lambda *a, **k: "black-forest-labs/FLUX.1-dev",
+    )
+    monkeypatch.setattr(
+        DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
+    )
+    _all_cached(monkeypatch)
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_hub_file_is_cached",
+        staticmethod(lambda repo_id, filename: True),
+    )
+
+    plan = DiffusionBackend().download_plan(
+        "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
+    )
+
+    assert plan == {"entries": [], "total_bytes": 0}
 
 
 def test_download_plan_pipeline_kind_is_one_entry(monkeypatch):

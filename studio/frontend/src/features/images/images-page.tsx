@@ -1853,6 +1853,12 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       pendingStagedLoad.current = null;
       if (pending) void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced);
     },
+    onCancelled: () => {
+      // The selected model is only an intent until every dependency is ready. A cancelled
+      // companion must not leave that intent behind for a late completion/deferred effect to load.
+      pendingStagedLoad.current = null;
+      stagedLoadDeferred.current = false;
+    },
   });
 
   useEffect(() => {
@@ -1863,14 +1869,16 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
     if (pending) void handleLoadRef.current(pending.repoId, pending.opts, pending.advanced);
   }, [active]);
 
-  // Stage a not-yet-downloaded hub pick, else load it directly. Returns true when the pick was accepted either way.
+  // Ask for a cache-aware plan for every Hub pick. The picker only knows whether the selected
+  // checkpoint is cached; image models can still need a separate text encoder/VAE repository.
+  // Returns true when the pick was accepted either way.
   const loadOrStage = useCallback(
     async (
       repoId: string,
       opts: { kind: "gguf" | "single_file" | "pipeline"; filename?: string },
-      isDownloaded?: boolean,
+      source: ModelSelectorChangeMeta["source"] = "hub",
     ): Promise<boolean> => {
-      if (isDownloaded !== false) return handleLoadRef.current(repoId, opts);
+      if (source !== "hub") return handleLoadRef.current(repoId, opts);
       // ONE snapshot for the plan and the load it fires: the download runs for minutes without setting `busy`.
       const advanced = currentLoadAdvanced(repoId);
       try {
@@ -1937,7 +1945,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       routeSearch.quant,
       loadSpecFor(wanted, IMAGE_CATALOG),
     );
-    void loadOrStage(pick.repoId, pick.opts, false);
+    void loadOrStage(pick.repoId, pick.opts, "hub");
   }, [active, routeSearch.model, routeSearch.quant, loadOrStage, navigateSelf]);
 
   // Reload the current model with the current advanced options.
@@ -1958,7 +1966,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         const d = defaultsFor(id);
         setSteps(d.steps);
         setGuidance(d.guidance);
-        void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.isDownloaded);
+        void loadOrStage(id, { kind: spec.kind, filename: spec.filename }, meta.source);
         return;
       }
       // GGUF quant pick from the variant expander. Optimistic for instant picker feedback, but revert if the load fails to START
@@ -1973,7 +1981,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
         void loadOrStage(
           id,
           { kind: "gguf", filename: meta.ggufFilename },
-          meta.isDownloaded,
+          meta.source,
         ).then((started) => {
           if (!started) {
             setQuant(prevQuant);
@@ -2042,7 +2050,7 @@ export function ImagesPage({ active = true }: { active?: boolean }) {
       const d = defaultsFor(id);
       setSteps(d.steps);
       setGuidance(d.guidance);
-      void loadOrStage(id, { kind: "pipeline" }, meta.isDownloaded).then((started) => {
+      void loadOrStage(id, { kind: "pipeline" }, meta.source).then((started) => {
         if (!started) {
           setQuant(prevQuant);
           quantRevert.current = null;

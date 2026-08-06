@@ -2736,7 +2736,9 @@ class DiffusionDownloadPlanEntry(BaseModel):
         "also pull the packaged root single, transformer/ shards and fp16 twins the loader "
         "never opens (tens of GB on a FLUX repo).",
     )
-    bytes: int = Field(0, description = "Declared size of those files, 0 when unknown")
+    bytes: int = Field(
+        0, description = "Declared size of the files still missing from cache, 0 when unknown"
+    )
     gguf_filename: Optional[str] = Field(
         None, description = "Set when this entry is the single-file GGUF checkpoint"
     )
@@ -2747,7 +2749,9 @@ class DiffusionDownloadPlanResponse(BaseModel):
     same file scope the loader would. Empty entries mean nothing to download (local path)."""
 
     entries: List[DiffusionDownloadPlanEntry] = Field(default_factory = list)
-    total_bytes: int = Field(0, description = "Sum across entries, 0 when the estimate failed")
+    total_bytes: int = Field(
+        0, description = "Sum of the remaining download entries, 0 when ready or unknown"
+    )
 
 
 class DiffusionStatusResponse(BaseModel):

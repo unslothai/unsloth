@@ -5,6 +5,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { toast } from "@/lib/toast";
 
+import { formatBytes } from "../lib/format";
 import { DOWNLOAD_KIND } from "./constants";
 import { downloadManager } from "./download-manager-controller";
 import { scopedVariant } from "./download-manager-types";
@@ -19,14 +20,21 @@ export interface StagedDownloadEntry {
   ggufFilename?: string | null;
 }
 
+function entryKey(entry: StagedDownloadEntry): string {
+  return `${entry.repoId}|${[...entry.files].sort().join(",")}`;
+}
+
 /** Runs a multi-repo download plan through the shared download manager, then calls `onReady` once every entry is on disk. Chat stages a single repo inline; the diffusion pages need two (a GGUF checkpoint plus its companion base) and read only part of each, so the entries go out as scoped jobs. Staging here rather than inside the load is what puts image and video downloads in the same panel, with the same progress, cancel, resume, disk preflight and manifest verification. */
 export function useStagedDownload({
   scopeId,
   onReady,
+  onCancelled,
 }: {
   /** Scope label for entries that fetch a file subset (e.g. "diffusion"). */
   scopeId: string;
   onReady: () => void;
+  /** Clears the consumer's pending auto-load when the user stops any entry in the plan. */
+  onCancelled?: () => void;
 }) {
   const [queue, setQueue] = useState<StagedDownloadEntry[] | null>(null);
   const current = queue?.[0] ?? null;
@@ -47,8 +55,6 @@ export function useStagedDownload({
   // shares the "@diffusion" variant, so restaging while the first job finishes would let its completion pass for the new pick.
   const inFlight = useRef<{ key: string; generation: number } | null>(null);
   const generation = useRef(0);
-  const entryKey = (entry: StagedDownloadEntry) =>
-    `${entry.repoId}|${[...entry.files].sort().join(",")}`;
   const isOurs = (variant: string | null | undefined) =>
     (variant ?? null) === activeVariant &&
     current !== null &&
@@ -79,6 +85,7 @@ export function useStagedDownload({
       if (!isOurs(variant)) return;
       inFlight.current = null;
       setQueue(null);
+      onCancelled?.();
     },
   });
 
@@ -86,6 +93,10 @@ export function useStagedDownload({
     if (!current) return;
     let active = true;
     const started = { key: entryKey(current), generation: generation.current };
+    // Register ownership before the start request. The global panel can expose the job as soon as
+    // the controller updates its store, before this await resumes; a very fast cancel/completion in
+    // that window must still belong to this plan.
+    inFlight.current = started;
     void (async () => {
       const outcome = await downloadManager.requestStart({
         kind: DOWNLOAD_KIND.MODEL,
@@ -97,12 +108,9 @@ export function useStagedDownload({
       });
       if (!active) return;
       if (outcome === "started") {
-        inFlight.current = started;
-        toast.info("Downloading model", {
-          description: "It'll load automatically once the download finishes.",
-        });
         return;
       }
+      if (inFlight.current === started) inFlight.current = null;
       // A start that never got off the ground (network failure, rejected scoped request, worker refused) will never complete, so
       // clear the queue instead of leaving the head in place, where the effect never re-runs and onReady never fires.
       if (outcome === "error") {
@@ -138,6 +146,19 @@ export function useStagedDownload({
     // A fresh plan supersedes whatever was staged, so bump the generation: a callback for the previous plan's job is no longer ours.
     generation.current += 1;
     inFlight.current = null;
+    if (entries.length > 0) {
+      const bytes = entries.reduce(
+        (total, entry) => total + Math.max(entry.bytes, 0),
+        0,
+      );
+      const components = entries
+        .map((entry) => entry.ggufFilename || entry.repoId)
+        .join(" + ");
+      const size = bytes > 0 ? `${formatBytes(bytes)} remaining across ` : "";
+      toast.info("Downloading model requirements", {
+        description: `${size}${entries.length} required ${entries.length === 1 ? "component" : "components"} (${components}). It'll load automatically once all are ready.`,
+      });
+    }
     setQueue(entries.length > 0 ? entries : null);
   }, []);
 
