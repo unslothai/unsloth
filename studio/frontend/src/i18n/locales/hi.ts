@@ -398,6 +398,14 @@ export const hi = {
         showLlamaUpdatesDescription:
           "नए मॉडल चलाने के लिए जब कोई नया llama.cpp बिल्ड उपलब्ध हो तो सूचित करें। यदि आप केवल ट्रेन करते हैं तो बंद कर दें।",
       },
+      startup: {
+        sectionTitle: "स्टार्टअप",
+        launchAtLogin: "लॉगिन पर Unsloth चलाएं",
+        launchAtLoginDescription:
+          "लॉगिन करने पर Unsloth को बैकग्राउंड में शुरू करता है। इसे खोलने तक यह मेनू बार या सिस्टम ट्रे में रहता है।",
+        loadError: "लॉगिन पर चलाने की सेटिंग लोड नहीं हो सकी।",
+        saveError: "लॉगिन पर चलाने की सेटिंग अपडेट नहीं हो सकी।",
+      },
       gettingStarted: "शुरुआत करें",
       startOnboarding: "ऑनबोर्डिंग शुरू करें",
       startOnboardingDescription:

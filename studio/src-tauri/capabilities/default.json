@@ -32,6 +32,7 @@
     "updater:default",
     "clipboard-manager:allow-write-text",
     "clipboard-manager:allow-read-image",
-    "window-state:default"
+    "window-state:default",
+    "autostart:default"
   ]
 }

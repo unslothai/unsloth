@@ -387,6 +387,14 @@ export const ja = {
         showLlamaUpdates: "llama.cpp のアップデート通知",
         showLlamaUpdatesDescription: "新しいモデルを実行するための新しい llama.cpp ビルドが利用可能になったときに通知します。トレーニングのみを行う場合はオフにしてください。",
       },
+      startup: {
+        sectionTitle: "起動",
+        launchAtLogin: "ログイン時に Unsloth を起動",
+        launchAtLoginDescription:
+          "ログイン時に Unsloth をバックグラウンドで起動します。開くまでメニューバーまたはシステムトレイに常駐します。",
+        loadError: "ログイン時起動の設定を読み込めませんでした。",
+        saveError: "ログイン時起動の設定を更新できませんでした。",
+      },
       gettingStarted: "はじめに",
       startOnboarding: "オンボーディングを開始",
       startOnboardingDescription: "アカウントを変更せずにセットアップウィザードを再開します。",

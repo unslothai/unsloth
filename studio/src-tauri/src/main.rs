@@ -37,6 +37,13 @@ use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 /// Exactly one runs cleanup; the others block, so the process never exits mid-reap.
 static TERMINATION_CLEANUP: Once = Once::new();
 
+/// True when launched by the OS login autostart entry, so the frontend keeps
+/// the window hidden and the app sits in the tray until opened.
+#[tauri::command]
+fn was_launched_hidden() -> bool {
+    std::env::args().any(|arg| arg == "--hidden")
+}
+
 #[tauri::command]
 fn has_saved_window_state(app: tauri::AppHandle) -> bool {
     let Ok(dir) = app.path().app_config_dir() else {
@@ -477,6 +484,10 @@ fn main() {
             show_main_window(app);
         }))
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            Some(vec!["--hidden"]),
+        ))
         .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_notification::init())
@@ -538,6 +549,7 @@ fn main() {
             native_intents::reveal_path_token,
             native_intents::open_path_token,
             has_saved_window_state,
+            was_launched_hidden,
         ])
         .setup(|app| {
             #[cfg(any(target_os = "linux", all(debug_assertions, windows)))]

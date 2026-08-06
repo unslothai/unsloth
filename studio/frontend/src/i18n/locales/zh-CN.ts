@@ -379,6 +379,14 @@ export const zhCN = {
         showLlamaUpdatesDescription:
           "当有可用于运行新模型的新版 llama.cpp 构建时通知你。如果只进行训练，可以关闭此项。",
       },
+      startup: {
+        sectionTitle: "启动",
+        launchAtLogin: "登录时运行 Unsloth",
+        launchAtLoginDescription:
+          "登录系统时在后台启动 Unsloth。在你打开它之前，它会一直驻留在菜单栏或系统托盘中。",
+        loadError: "无法加载登录时启动设置。",
+        saveError: "无法更新登录时启动设置。",
+      },
       gettingStarted: "入门",
       startOnboarding: "开始引导",
       startOnboardingDescription: "重新打开设置向导，不会更改你的账号。",

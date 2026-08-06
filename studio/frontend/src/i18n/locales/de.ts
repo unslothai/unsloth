@@ -412,6 +412,15 @@ export const de = {
         showLlamaUpdatesDescription:
           "Benachrichtigt, wenn ein neuerer llama.cpp-Build verfügbar ist, um neue Modelle auszuführen. Deaktivieren Sie dies, wenn Sie nur trainieren.",
       },
+      startup: {
+        sectionTitle: "Autostart",
+        launchAtLogin: "Unsloth bei der Anmeldung starten",
+        launchAtLoginDescription:
+          "Startet Unsloth im Hintergrund, wenn Sie sich anmelden. Es bleibt in der Menüleiste bzw. im Infobereich, bis Sie es öffnen.",
+        loadError: "Die Autostart-Einstellung konnte nicht geladen werden.",
+        saveError:
+          "Die Autostart-Einstellung konnte nicht aktualisiert werden.",
+      },
       gettingStarted: "Erste Schritte",
       startOnboarding: "Einrichtung starten",
       startOnboardingDescription:

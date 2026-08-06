@@ -14,6 +14,7 @@ edition = "2021"
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+tauri-plugin-autostart = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }

@@ -399,6 +399,16 @@ export const ptBR = {
         showLlamaUpdatesDescription:
           "Notifica quando uma versão mais recente do llama.cpp está disponível para executar novos modelos. Desative se você só treina modelos.",
       },
+      startup: {
+        sectionTitle: "Inicialização",
+        launchAtLogin: "Executar o Unsloth ao fazer login",
+        launchAtLoginDescription:
+          "Inicia o Unsloth em segundo plano quando você faz login. Ele permanece na barra de menus ou na bandeja do sistema até você abri-lo.",
+        loadError:
+          "Não foi possível carregar a configuração de inicialização no login.",
+        saveError:
+          "Não foi possível atualizar a configuração de inicialização no login.",
+      },
       gettingStarted: "Primeiros passos",
       startOnboarding: "Iniciar configuração",
       startOnboardingDescription:

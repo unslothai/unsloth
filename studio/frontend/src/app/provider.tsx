@@ -68,6 +68,16 @@ function logicalPerCssPx(monitorScale: number): number {
   return Number.isFinite(ratio) && ratio > 1 ? ratio : 1;
 }
 
+// Autostart launches pass --hidden: layout still applies, but the window stays
+// hidden in the tray until the user opens it.
+let launchedHidden: Promise<boolean> | null = null;
+function wasLaunchedHidden(): Promise<boolean> {
+  launchedHidden ??= import("@tauri-apps/api/core")
+    .then(({ invoke }) => invoke<boolean>("was_launched_hidden"))
+    .catch(() => false);
+  return launchedHidden;
+}
+
 async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   const { getCurrentWindow, LogicalSize } = await import(
     "@tauri-apps/api/window"
@@ -83,6 +93,8 @@ async function showSetupWindow(isCurrent: WindowLayoutGuard): Promise<void> {
   await win.setSize(new LogicalSize(SETUP_WINDOW_WIDTH, SETUP_WINDOW_HEIGHT));
   if (!isCurrent()) return;
   await win.center();
+  if (!isCurrent()) return;
+  if (await wasLaunchedHidden()) return;
   if (!isCurrent()) return;
   await win.show();
 }
@@ -184,7 +196,10 @@ async function applyAppWindowLayout(
     await win.center();
   }
   if (!isCurrent()) return;
-  await win.show();
+  if (!(await wasLaunchedHidden())) {
+    if (!isCurrent()) return;
+    await win.show();
+  }
   if (!isCurrent()) return;
   // Apply constraints after restore/show: doing so before plugin restore can emit
   // a Resized event and overwrite the plugin's cached saved size.
@@ -203,6 +218,7 @@ async function showWindowFallback(): Promise<void> {
   const { getCurrentWindow } = await import("@tauri-apps/api/window");
   const win = getCurrentWindow();
   await win.setResizable(true);
+  if (await wasLaunchedHidden()) return;
   await win.show();
 }
 
@@ -474,10 +490,7 @@ function TauriWrapper({ children }: { children: ReactNode }) {
         </>
       }
     >
-      <LlamaUpdateBanner
-        positioned={false}
-        enabled={!hidesTitlebarSidebar}
-      />
+      <LlamaUpdateBanner positioned={false} enabled={!hidesTitlebarSidebar} />
       <DownloadManagerPanel positioned={false} />
     </TauriUpdateLayer>
   ) : (

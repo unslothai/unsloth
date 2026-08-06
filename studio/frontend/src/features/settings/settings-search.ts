@@ -18,6 +18,8 @@ export const SETTINGS_SEARCH_INDEX: Record<SettingsTab, TranslationKey[]> = {
     "settings.general.startOnboarding",
     "settings.appearance.language.title",
     "settings.appearance.language.label",
+    "settings.general.startup.sectionTitle",
+    "settings.general.startup.launchAtLogin",
     "settings.general.notifications.sectionTitle",
     "settings.general.notifications.showLlamaUpdates",
     "settings.general.previewSharing.sectionTitle",
