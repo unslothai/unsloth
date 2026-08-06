@@ -1078,11 +1078,29 @@ with sync_playwright() as p:
     # timers keep running while this thread is parked in the handler.
     page.evaluate(
         """(secondPrompt) => {
-            window.__unslothRapid = { submitted: false, queueSeen: false };
-            const composer = document.querySelector(
-                'textarea[aria-label="Message input"]'
-            );
-            setTimeout(() => {
+            window.__unslothRapid = {
+                submitted: false, queueSeen: false, error: null,
+            };
+            // Re-query inside the timer, never capture beforehand. This is the
+            // first message of the chat, so sending it flips thread.isEmpty and
+            // the welcome composer is unmounted in favour of the dock composer.
+            // A node captured before the submit is detached by now: its input
+            // event never reaches React's delegated handler and requestSubmit
+            // fires on a form that is no longer in the document.
+            const deadline = Date.now() + 4000;
+            const trySubmit = () => {
+                const composer = document.querySelector(
+                    'textarea[aria-label="Message input"]'
+                );
+                if (!composer || !composer.isConnected || !composer.form) {
+                    if (Date.now() > deadline) {
+                        window.__unslothRapid.error =
+                            "no connected composer to send the follow-up into";
+                        return;
+                    }
+                    setTimeout(trySubmit, 25);
+                    return;
+                }
                 // React tracks the value on the node, so a plain assignment is
                 // reverted on the next render. Go through the native setter and
                 // announce it the way a keystroke would.
@@ -1093,7 +1111,8 @@ with sync_playwright() as p:
                 composer.dispatchEvent(new Event("input", { bubbles: true }));
                 composer.form.requestSubmit();
                 window.__unslothRapid.submitted = true;
-            }, 100);
+            };
+            setTimeout(trySubmit, 100);
             const poll = setInterval(() => {
                 if (document.querySelector(
                     'button[aria-label="Remove queued prompt 1"]'
@@ -1123,7 +1142,9 @@ with sync_playwright() as p:
         # point the page timer above has submitted the follow-up and recorded
         # whether it queued.
         page.wait_for_function(
-            "() => window.__unslothRapid && window.__unslothRapid.submitted",
+            """() => window.__unslothRapid
+                && (window.__unslothRapid.submitted
+                    || window.__unslothRapid.error)""",
             timeout = 30_000,
         )
     finally:
@@ -1131,6 +1152,10 @@ with sync_playwright() as p:
 
     if not held_first_turn["done"]:
         fail("the first turn's request was never intercepted, so it was not held")
+    submit_error = page.evaluate("() => window.__unslothRapid.error")
+    if submit_error:
+        shoot("04-rapid-submit-no-composer")
+        fail(f"could not send the follow-up: {submit_error}")
     # The follow-up must materialize as queued work instead of a second direct
     # append. It was submitted while the response was still held, so the first
     # turn was necessarily running and a missing control is a real regression.
