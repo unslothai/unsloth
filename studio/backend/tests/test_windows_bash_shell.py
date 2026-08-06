@@ -1729,7 +1729,7 @@ def test_a_hyphen_may_open_a_directory_name(windows_terminal, command):
 
 @pytest.mark.parametrize(
     "command",
-    ['start "my title" /? powershell', "cmd /c start \"job\" /? powershell"],
+    ['start "my title" /? powershell', 'cmd /c start "job" /? powershell'],
 )
 def test_start_help_launches_nothing(windows_terminal, command):
     # `/?` displays START's help and returns, so the word behind it is never
