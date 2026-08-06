@@ -416,16 +416,25 @@ export function applyActiveModelStatusToStore(
       rememberedNParallel === status.requested_parallel_slots && {
         nParallel: rememberedNParallel,
       }),
-    // batch-size pair: slot rules, plus the baseline advances whenever the echo differs (same-model reload elsewhere) while the control keeps pending edits
+    // batch-size pair: slot rules, plus the baseline advances whenever the echo differs (same-model reload elsewhere) while a pending edit keeps the control
     ...(seedLoadParams &&
       status.requested_n_batch != null &&
       prevState.loadedNBatch !== status.requested_n_batch && {
         loadedNBatch: status.requested_n_batch,
+        // a clean control (sitting on a known baseline) follows the move, or the tab reads dirty and a later Apply restores the stale size
+        ...(prevState.loadedNBatch !== null &&
+          prevState.nBatch === prevState.loadedNBatch && {
+            nBatch: status.requested_n_batch,
+          }),
       }),
     ...(seedLoadParams &&
       status.requested_n_ubatch != null &&
       prevState.loadedNUbatch !== status.requested_n_ubatch && {
         loadedNUbatch: status.requested_n_ubatch,
+        ...(prevState.loadedNUbatch !== null &&
+          prevState.nUbatch === prevState.loadedNUbatch && {
+            nUbatch: status.requested_n_ubatch,
+          }),
       }),
     ...(seedLoadParams &&
       (status.is_gguf === false || status.requested_n_batch === null) && {

@@ -995,8 +995,13 @@ export function useChatModelRuntime() {
                     // split 409s during training even when it fits.
                     gpu_layers: validateGpuLayers,
                     n_parallel: validateNParallel,
-                    n_batch: validateNBatch,
-                    n_ubatch: validateNUbatch,
+                    // omitted when blank, like the load payload below
+                    ...(validateNBatch != null
+                      ? { n_batch: validateNBatch }
+                      : {}),
+                    ...(validateNUbatch != null
+                      ? { n_ubatch: validateNUbatch }
+                      : {}),
                   }
                 : {}),
             });
@@ -1186,8 +1191,11 @@ export function useChatModelRuntime() {
               spec_draft_n_max: loadSpecDraftNMax,
               // GGUF-only: slots mean nothing for a transformers load.
               n_parallel: isGguf ? loadNParallel : null,
-              n_batch: isGguf ? loadNBatch : null,
-              n_ubatch: isGguf ? loadNUbatch : null,
+              // omitted when blank: an explicit null counts as set server-side and would strip inherited -b / -ub pass-through flags
+              ...(isGguf && loadNBatch != null ? { n_batch: loadNBatch } : {}),
+              ...(isGguf && loadNUbatch != null
+                ? { n_ubatch: loadNUbatch }
+                : {}),
               tensor_parallel: loadTensorParallel,
               gpu_memory_mode: loadGpuMemoryMode,
               gpu_layers: loadGpuLayers,

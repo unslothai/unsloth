@@ -1343,8 +1343,13 @@ export function SharedComposer({
                 gpu_layers: effectiveGpuLayers,
                 // Slots scale the KV estimate; keep validate sized like the load.
                 n_parallel: ownConfig.nParallel ?? null,
-                n_batch: ownConfig.nBatch ?? null,
-                n_ubatch: ownConfig.nUbatch ?? null,
+                // omitted when blank: an explicit null counts as set server-side and would strip inherited -b / -ub pass-through flags
+                ...(ownConfig.nBatch != null
+                  ? { n_batch: ownConfig.nBatch }
+                  : {}),
+                ...(ownConfig.nUbatch != null
+                  ? { n_ubatch: ownConfig.nUbatch }
+                  : {}),
               }
             : {}),
         });
@@ -1419,8 +1424,12 @@ export function SharedComposer({
                 tensor_split: compareLoadKnobs.splitRatio ?? undefined,
                 gpu_ids: effectiveSelectedGpuIds ?? undefined,
                 n_parallel: ownConfig.nParallel ?? null,
-                n_batch: ownConfig.nBatch ?? null,
-                n_ubatch: ownConfig.nUbatch ?? null,
+                ...(ownConfig.nBatch != null
+                  ? { n_batch: ownConfig.nBatch }
+                  : {}),
+                ...(ownConfig.nUbatch != null
+                  ? { n_ubatch: ownConfig.nUbatch }
+                  : {}),
               }
             : {}),
         });

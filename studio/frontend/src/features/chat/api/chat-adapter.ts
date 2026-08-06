@@ -2128,8 +2128,9 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
               // split (0 especially) must not be refused as a full-GGUF occupant.
               gpu_layers: effectiveGpuLayers,
               n_parallel: config.nParallel ?? null,
-              n_batch: config.nBatch ?? null,
-              n_ubatch: config.nUbatch ?? null,
+              // omitted when blank: an explicit null counts as set server-side and would strip inherited -b / -ub pass-through flags
+              ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
+              ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
             }
           : {}),
       }))
@@ -2166,8 +2167,8 @@ async function autoLoadSmallestModel(options?: AutoLoadOptions): Promise<{
             gpu_ids: effectiveGpuIds ?? undefined,
             // Per-model too, or the auto-load reverts a remembered override.
             n_parallel: config.nParallel ?? null,
-            n_batch: config.nBatch ?? null,
-            n_ubatch: config.nUbatch ?? null,
+            ...(config.nBatch != null ? { n_batch: config.nBatch } : {}),
+            ...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),
           }
         : {}),
     }).catch((error: unknown) => {

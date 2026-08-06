@@ -154,6 +154,38 @@ def test_fast_path_intent_strips_inherited_batch_flags_when_field_set():
     assert inheriting.extra_args_inherited is True
 
 
+def test_remote_gguf_guard_counts_explicit_micro_batch():
+    # a not-yet-downloaded gguf has no readable dims, but an explicit micro-batch
+    # override still has to count its kq-mask growth against active training
+    from types import SimpleNamespace
+    from unittest.mock import patch
+
+    from routes import inference as route
+
+    config = SimpleNamespace(
+        gguf_file = None,
+        gguf_mmproj_file = None,
+        gguf_mtp_file = None,
+        gguf_hf_repo = "owner/repo",
+        gguf_variant = "Q4_K_M",
+    )
+    remote_variant = SimpleNamespace(quant = "Q4_K_M", size_bytes = 1024**3)
+    with (
+        patch(
+            "utils.models.model_config.list_gguf_variants",
+            return_value = ([remote_variant], False),
+        ),
+        patch.object(route, "_remote_gguf_companion_bytes", return_value = 0),
+    ):
+        base = route._estimate_gguf_required_gb(config, max_seq_length = 32768)
+        big = route._estimate_gguf_required_gb(
+            config, max_seq_length = 32768, n_batch = 65536, n_ubatch = 65536
+        )
+    assert base == pytest.approx(1.0)
+    # ctx-capped ubatch (32768) x ctx x 2 x 1.5 mask safety ~= 3 GiB on top
+    assert big > base + 2.0
+
+
 def test_override_strips_shadowing_batch_flags():
     kwargs = model_override_load_kwargs(
         {"n_batch": 4096, "llama_extra_args": ["-b", "512", "--top-k", "20"]},

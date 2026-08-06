@@ -1558,12 +1558,16 @@ def test_batch_sizes_setting_wired_end_to_end():
     api_types = _read("features/chat/types/api.ts")
     assert "n_batch?: number | null;" in api_types
     assert "n_ubatch?: number | null;" in api_types
-    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
+    runtime = " ".join(_read("features/chat/hooks/use-chat-model-runtime.ts").split())
     assert "pendingLoadConfig?.nBatch" in runtime
-    assert "n_batch: isGguf ? loadNBatch : null," in runtime
-    assert "n_ubatch: isGguf ? loadNUbatch : null," in runtime
-    assert "n_batch: validateNBatch," in runtime
-    assert "n_ubatch: validateNUbatch," in runtime
+    # omitted when blank: an explicit null reads as a set field server-side and
+    # would strip inherited -b / -ub pass-through flags on every Apply
+    assert "...(isGguf && loadNBatch != null ? { n_batch: loadNBatch } : {})," in runtime
+    assert "...(isGguf && loadNUbatch != null ? { n_ubatch: loadNUbatch } : {})," in runtime
+    assert "...(validateNBatch != null ? { n_batch: validateNBatch } : {})," in runtime
+    assert "...(validateNUbatch != null ? { n_ubatch: validateNUbatch } : {})," in runtime
+    assert "n_batch: isGguf ? loadNBatch : null," not in runtime
+    runtime = _read("features/chat/hooks/use-chat-model-runtime.ts")
     assert "loadNBatch = pendingLoadConfig?.nBatch ?? null;" in runtime
     assert "loadNUbatch = pendingLoadConfig?.nUbatch ?? null;" in runtime
     # rollback re-sends a baseline only when one was actually asked: an explicit
@@ -1572,23 +1576,35 @@ def test_batch_sizes_setting_wired_end_to_end():
     assert "{ n_batch: stateBeforeUnload.loadedNBatch }" in runtime
     assert "{ n_ubatch: stateBeforeUnload.loadedNUbatch }" in runtime
     assert "n_batch: stateBeforeUnload.loadedNBatch," not in runtime
-    chat_api = _read("features/chat/api/chat-api.ts")
-    assert "n_batch: payload.n_batch," in chat_api
-    assert "n_ubatch: payload.n_ubatch," in chat_api
-    composer = _read("features/chat/shared-composer.tsx")
-    assert composer.count("n_batch: ownConfig.nBatch ?? null,") == 2
-    assert composer.count("n_ubatch: ownConfig.nUbatch ?? null,") == 2
-    adapter = _read("features/chat/api/chat-adapter.ts")
-    assert adapter.count("n_batch: config.nBatch ?? null,") == 2
-    assert adapter.count("n_ubatch: config.nUbatch ?? null,") == 2
+    chat_api = " ".join(_read("features/chat/api/chat-api.ts").split())
+    assert "...(payload.n_batch != null ? { n_batch: payload.n_batch } : {})," in chat_api
+    assert "...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {})," in chat_api
+    composer = " ".join(_read("features/chat/shared-composer.tsx").split())
+    assert (
+        composer.count("...(ownConfig.nBatch != null ? { n_batch: ownConfig.nBatch } : {}),") == 2
+    )
+    assert (
+        composer.count("...(ownConfig.nUbatch != null ? { n_ubatch: ownConfig.nUbatch } : {}),")
+        == 2
+    )
+    adapter = " ".join(_read("features/chat/api/chat-adapter.ts").split())
+    assert adapter.count("...(config.nBatch != null ? { n_batch: config.nBatch } : {}),") == 2
+    assert adapter.count("...(config.nUbatch != null ? { n_ubatch: config.nUbatch } : {}),") == 2
     assert "loadedNBatch: committedNBatch," in adapter
     assert "loadedNUbatch: committedNUbatch," in adapter
-    status = _read("features/chat/lib/apply-inference-status-to-store.ts")
-    # Baseline from the echo only; the control never adopts it.
+    status = " ".join(_read("features/chat/lib/apply-inference-status-to-store.ts").split())
+    # Baseline from the requested echo; a clean control follows a same-model
+    # move, but the echo never pins a control holding a pending edit.
     assert "loadedNBatch: status.requested_n_batch," in status
     assert "loadedNUbatch: status.requested_n_ubatch," in status
-    assert "nBatch: status.requested_n_batch," not in status
-    assert "nUbatch: status.requested_n_ubatch," not in status
+    assert (
+        "...(prevState.loadedNBatch !== null && prevState.nBatch === prevState.loadedNBatch && { "
+        "nBatch: status.requested_n_batch, })," in status
+    )
+    assert (
+        "...(prevState.loadedNUbatch !== null && prevState.nUbatch === prevState.loadedNUbatch "
+        "&& { nUbatch: status.requested_n_ubatch, })," in status
+    )
     signature = _read("features/model-picker/model-config/config-signature.ts")
     assert 'config.nBatch ?? "",' in signature
     assert 'config.nUbatch ?? "",' in signature

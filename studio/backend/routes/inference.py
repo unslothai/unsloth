@@ -5006,7 +5006,31 @@ def _estimate_gguf_required_gb(
             companions = _remote_gguf_companion_bytes(
                 repo, hf_token = hf_token, include_mmproj = bool(has_vision)
             )
-            return (main_bytes + companions) / (1024**3)
+            total_gb = (main_bytes + companions) / (1024**3)
+            # remote metadata is unreadable, so only an explicit micro-batch override can be sized: the flash-attn kq mask alone grows linearly with ubatch and context, dwarfing the guard slack at large values
+            from core.inference.llama_server_args import parse_ctx_override
+
+            try:
+                ctx_override = parse_ctx_override(llama_extra_args) or 0
+            except Exception:
+                ctx_override = 0
+            ctx = max(max_seq_length or 0, ctx_override)
+            effective_ubatch = _extra_args_n_ubatch(
+                llama_extra_args,
+                n_ctx = ctx if ctx > 0 else None,
+                n_batch = n_batch,
+                n_ubatch = n_ubatch,
+            )
+            if effective_ubatch and ctx > 0:
+                mask_bytes = (
+                    ctx
+                    * effective_ubatch
+                    * 2
+                    * LlamaCppBackend._CTX_COMPUTE_F16_MASK_SAFETY
+                    * max(1, int(n_devices))
+                )
+                total_gb += mask_bytes / (1024**3)
+            return total_gb
         return None
     except Exception as e:
         logger.warning(f"Could not size GGUF model for training guard: {e}")

@@ -271,9 +271,9 @@ export async function validateModel(
       gpu_layers: payload.gpu_layers,
       // Slots scale the KV estimate; keep validate sized like the load.
       n_parallel: payload.n_parallel,
-      // batch sizes scale the compute-buffer estimate the same way
-      n_batch: payload.n_batch,
-      n_ubatch: payload.n_ubatch,
+      // batch sizes scale the compute-buffer estimate the same way; omitted when blank so the field never reads as set server-side
+      ...(payload.n_batch != null ? { n_batch: payload.n_batch } : {}),
+      ...(payload.n_ubatch != null ? { n_ubatch: payload.n_ubatch } : {}),
     }),
   });
   return parseJsonOrThrow<ValidateModelResponse>(response);
