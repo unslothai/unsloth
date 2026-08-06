@@ -794,6 +794,37 @@ def test_cmd_grammar_is_not_read_with_posix_rules(monkeypatch, command, blocked)
 
 
 @pytest.mark.parametrize(
+    ("command", "blocked", "bash"),
+    [
+        # cmd begins a command at the line start, after a separator or a group
+        # bracket, after an `if` condition or an `else`, and after the `do` of a
+        # `for`. Each of these hid a launch behind one of those.
+        ('cmd /c if 1 EQU 1 start "" powershell', True, None),
+        ('cmd /c if /i a NEQ b start "" pwsh', True, None),
+        ("cmd /c for %i in (x) do start powershell", True, None),
+        ("cmd /c for /f %i in (x) do start pwsh", True, None),
+        ('cmd /c if exist no_f echo ok else start "" powershell', True, None),
+        ('cmd /c if exist x (start "" powershell)', True, None),
+        ('cmd /c (start "" pwsh)', True, None),
+        # Bash removes the escape before cmd reads the separator, so it can
+        # arrive glued to the word in front of it.
+        (r'cmd //c echo ok\&start "" powershell', True, r"C:\Program Files\Git\bin\bash.exe"),
+        (r'cmd //c dir\|start "" pwsh', True, r"C:\Program Files\Git\bin\bash.exe"),
+        # ...and the operands of those same forms are still not launches.
+        ('cmd /c if 1 EQU 1 echo start "" powershell', False, None),
+        ("cmd /c for %i in (start) do echo powershell", False, None),
+        ('cmd /c if exist x echo start "" powershell', False, None),
+    ],
+)
+def test_cmd_command_positions_are_followed_through_its_grammar(
+    monkeypatch, command, blocked, bash
+):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: bash)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
     "command", ["pwsh -Command ls", "powershell -c ls", "rmdir x", "runas /u:a b"]
 )
 def test_windows_only_names_are_not_hard_blocked_off_windows(monkeypatch, command):

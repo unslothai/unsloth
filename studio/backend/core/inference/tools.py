@@ -1231,6 +1231,8 @@ _CMD_SEPARATOR_RE = re.compile(r"(?<!\^)[&|]")
 # opened in the default browser" (the start reference), whose own example is
 # `start "Bing" "https://www.bing.com"`.
 _URL_SCHEME_RE = re.compile(r"[a-z][a-z0-9+.\-]*://", re.IGNORECASE)
+# cmd's comparison operators, which sit between the two words of an `if` test.
+_CMD_COMPARE_OPS = frozenset({"equ", "neq", "lss", "leq", "gtr", "geq"})
 
 
 def _strip_cmd_carets(token: str) -> str:
@@ -1279,7 +1281,10 @@ def _blocked_start_program(token: str) -> "set[str]":
     """
     unquoted = _strip_cmd_quotes(token)
     target = unquoted if unquoted is not token else _CMD_OPERATOR_RE.split(token, 1)[0]
-    target = _strip_cmd_carets(target)
+    # A group bracket is cmd's, not part of the name: it documents a
+    # parenthesised body for a single-line `if`, so the program in
+    # `if exist x (start "" powershell)` arrives spelled `powershell)`.
+    target = _strip_cmd_carets(target).strip("()")
     # A URL goes to the browser, so its host and path are not a program name and
     # `start "" https://example.com/curl` is not curl.
     if _URL_SCHEME_RE.match(target):
@@ -1550,88 +1555,91 @@ def _find_blocked_commands(command: str) -> set[str]:
         """``word`` as cmd resolves it: escapes applied, then the plain basename."""
         return _token_basename(_strip_cmd_carets(word))
 
-    def _cmd_command_head(index: int, after_if: bool = False) -> int:
-        """The index of the word cmd runs for the segment beginning at ``index``.
+    def _cmd_condition_words(index: int) -> int:
+        """How many words cmd's `if` condition occupies, starting at ``index``.
 
-        `if` carries out the command after its condition, so the leading word is
-        not the command: `cmd /c if exist x echo start "t" powershell` runs echo,
-        which only prints. Microsoft documents the condition as
-        `if [/i] [not] (<string1> <compareop> <string2> | exist <path> |
-        defined <var> | errorlevel <n>) <command>`, all of which take a fixed
-        number of words, so the command behind one can be reached without
-        parsing further. Missing the optional /i left the comparison itself
-        looking like the command.
+        Microsoft documents it as `if [/i] [not] (<string1> <compareop>
+        <string2> | exist <path> | defined <var> | errorlevel <n>) <command>`,
+        so it is a fixed count and the command behind it can be reached without
+        parsing further. The three-word comparison is the one that hid a launch:
+        `if 1 EQU 1 start "" powershell` left EQU looking like the command.
         """
-        while after_if or (index < len(tokens) and _cmd_word_base(tokens[index]) == "if"):
-            if not after_if:
-                index += 1
-            after_if = False
-            for _ in range(2):  # /i and not, in either order
-                if index >= len(tokens):
-                    break
-                # _token_basename would read /i as the path `i`, so the switch is
-                # matched on the raw word, through the Git Bash `//i` spelling.
-                word = tokens[index].lower()
-                if _win_switch(word) == "/i" or _cmd_word_base(word) == "not":
-                    index += 1
-            if index >= len(tokens):
-                break
-            if _cmd_word_base(tokens[index]) in ("exist", "defined", "errorlevel"):
-                index += 2
-            else:
-                index += 1  # the `a==b` comparison, which cmd lexes as one word
-        return index
+        words = 0
+        for _ in range(2):  # /i and not, in either order
+            if index + words >= len(tokens):
+                return words
+            # _token_basename would read /i as the path `i`, so the switch is
+            # matched on the raw word, through the Git Bash `//i` spelling.
+            word = tokens[index + words].lower()
+            if _win_switch(word) == "/i" or _cmd_word_base(word) == "not":
+                words += 1
+        if index + words >= len(tokens):
+            return words
+        if _cmd_word_base(tokens[index + words]) in ("exist", "defined", "errorlevel"):
+            return words + 2
+        if (
+            index + words + 1 < len(tokens)
+            and _cmd_word_base(tokens[index + words + 1]) in _CMD_COMPARE_OPS
+        ):
+            return words + 3
+        return words + 1  # the `a==b` form, which cmd lexes as one word
 
     def _cmd_start_positions(begin: int) -> "set[int]":
-        """Indexes of the `start` words that launch a program in the cmd command
+        """Indexes of the `start` words cmd runs as a command in the command
         line beginning at ``begin``.
 
-        cmd keeps parsing past its own conditionals and separators, so promoting
-        only the first word missed `cmd //c if exist . start "" powershell`,
-        which cmd runs and which the scan had caught before it was gated. Each
-        segment is read down to the word cmd actually runs instead, and only
-        that word counts: anywhere else a start is an operand of the command
-        that is running, whether that prints it (`cmd //c echo start "t" pwsh`)
-        or reads it as a name (`cmd /c dir start "" powershell`).
+        Anywhere but a command position a start is an operand of whatever is
+        running, whether that prints it (`cmd //c echo start "t" pwsh`) or reads
+        it as a name (`cmd /c dir start "" powershell`), so tracking where cmd
+        begins a command is what separates a launch from a word. Its grammar is
+        small and this follows all of it: a command starts the line, follows a
+        separator, follows an `if` condition or an `else`, and follows the `do`
+        of a `for`. A group bracket needs no case of its own -- it either sits
+        where a command was already expected, or after one that consumed it,
+        and `echo ok ( start "" pwsh )` only prints.
 
-        Under bash the payload ends at the first shell separator, since that
-        terminates the cmd invocation rather than starting a new cmd command:
-        with `cmd //c echo ok; printf "%s" start "" powershell`, cmd is handed
-        only `echo ok` and the start belongs to printf. An escaped one is passed
-        through instead, and then it depends whose syntax it is: cmd reads `\&`
-        as its own separator and opens a segment, but `\;` is only text to it.
+        Under bash an unescaped separator ends the cmd invocation rather than
+        starting another cmd command, so the scan stops: with `cmd //c echo ok;
+        printf "%s" start "" powershell`, cmd is handed only `echo ok`. An
+        escaped one is passed through to cmd, which reads it as its own, and it
+        can arrive glued to a word once bash has removed the escape.
         """
         found: "set[int]" = set()
-        head = -1  # index of the word cmd runs for the open segment
+        expect = True  # the next word is one cmd runs
+        skip = 0  # condition words still to consume
         for index in range(begin, len(tokens)):
             token = tokens[index]
             if _looks_like_separator(token):
                 if lexed_posix and index not in quoted_separators:
                     break
                 if _CMD_SEPARATOR_RE.search(token):
-                    head = -1
+                    expect = True
                 continue
-            # A separator with no space around it stays inside the token under
-            # the cmd lexer, so it both hides a start and opens a segment:
-            # `cmd /c echo ok&start "" pwsh` runs echo and then the start.
-            # Redirections are not separators: `cmd /c echo hi>start powershell`
-            # writes to a file called start and launches nothing.
-            pieces = [token] if lexed_posix else _CMD_SEPARATOR_RE.split(token)
-            glued = len(pieces) > 1
-            if head < 0:
-                head = _cmd_command_head(index)
-            if (glued or index == head) and _is_cmd_start_word(index):
+            # A separator with no space around it stays inside the token, under
+            # either lexer: the cmd one takes no punctuation_chars, and bash
+            # removes the escape from `ok\&start` before cmd reads the `&`.
+            pieces = _CMD_SEPARATOR_RE.split(token)
+            if len(pieces) > 1:
+                expect = True
+            word = _cmd_word_base(pieces[-1])
+            if skip > 0:
+                skip -= 1
+                continue
+            # `else` and the `do` of a `for` both hand the command along, from
+            # either side: the branch they open is a command position even
+            # though the word before them was one too.
+            if word in ("else", "do"):
+                expect = True
+                continue
+            if not expect:
+                continue
+            if word == "start":
                 found.add(index)
-            if glued:
-                # The segment after the last separator begins inside this token,
-                # so its head is here -- unless that word is a conditional, whose
-                # command is further along: `cmd /c echo&if exist . start "" pwsh`
-                # left the head pinned to the glued token and missed the launch.
-                head = (
-                    _cmd_command_head(index + 1, after_if = True)
-                    if _cmd_word_base(pieces[-1]) == "if"
-                    else index
-                )
+                expect = False
+            elif word == "if":
+                skip = _cmd_condition_words(index + 1)
+            else:
+                expect = False  # a `for` is re-armed by its own `do`, below
         return found
 
     def _exec_child_index(start: int) -> "tuple[int, bool]":
