@@ -734,7 +734,9 @@ def _detect_windows_gfx_arch() -> str | None:
         return _override.strip().lower()
 
     def _dedup_pick(
-        tokens: list[str], mask_resolved: bool = False, warn: bool = True
+        tokens: list[str],
+        mask_resolved: bool = False,
+        warn: bool = True,
     ) -> "str | None":
         if not tokens:
             return None
@@ -902,7 +904,7 @@ def _detect_windows_gfx_arch() -> str | None:
                 "-Command",
                 "Get-CimInstance Win32_VideoController | Where-Object { "
                 "$_.Name -match 'AMD|Radeon' } | ForEach-Object { "
-                "\"$($_.Name)|$($_.ConfigManagerErrorCode)\" }",
+                '"$($_.Name)|$($_.ConfigManagerErrorCode)" }',
             ],
             stdout = subprocess.PIPE,
             stderr = subprocess.DEVNULL,
@@ -951,9 +953,7 @@ def _detect_windows_gfx_arch() -> str | None:
             # the advisory index would count arches rather than devices.
             # warn=False: the mask was already resolved (and reported) against the
             # adapter list above, and _dedup_pick would report it a second time.
-            _pick = (
-                _dedup_pick(_tokens, warn = False) if len(_tokens) == len(_names) else _named
-            )
+            _pick = _dedup_pick(_tokens, warn = False) if len(_tokens) == len(_names) else _named
             if _pick:
                 print(f"   gfx arch inferred from GPU name (WMI): {_pick}")
                 return _pick
@@ -1150,9 +1150,7 @@ def _windows_rocm_index_url(gfx_arch: str | None) -> str | None:
 
 def _rocm_family_token(text: str) -> "str | None":
     """Family out of a 'rocm-sdk-libraries-<family>' name or requirement string."""
-    _m = re.search(
-        r"rocm[-_]sdk[-_]libraries[-_]([A-Za-z0-9][A-Za-z0-9._-]*)", text, re.IGNORECASE
-    )
+    _m = re.search(r"rocm[-_]sdk[-_]libraries[-_]([A-Za-z0-9][A-Za-z0-9._-]*)", text, re.IGNORECASE)
     if not _m:
         return None
     # Requirement strings carry a specifier and marker: "...-gfx120X-all==7.13.0; extra".

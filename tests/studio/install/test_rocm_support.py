@@ -3586,9 +3586,7 @@ class TestGfxArchNameFallback:
     def test_unhealthy_adapter_still_cannot_depose_a_healthy_one(self):
         # Negative control: with a healthy iGPU present the disabled dGPU must stay out,
         # so the shadowing skip cannot install wheels for a GPU Windows never exposes.
-        arch, _ = self._wmi_arch(
-            ["AMD Radeon(TM) 780M Graphics|0", "AMD Radeon RX 9060 XT|22"], {}
-        )
+        arch, _ = self._wmi_arch(["AMD Radeon(TM) 780M Graphics|0", "AMD Radeon RX 9060 XT|22"], {})
         assert arch == "gfx1103"
 
     def test_mask_out_of_range_is_reported_once(self):
