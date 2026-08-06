@@ -65,6 +65,10 @@ class _FakeBackend:
             raise ValueError(f"Could not infer a diffusion family for '{model_path}'.")
         return fam
 
+    def preflight_base_access(self, model_path, fam, **kwargs):
+        # The real backends probe the Hub for a gated companion here; the fake clears every pick.
+        return None
+
     def begin_load(self, model_path, **kwargs):
         # The real backend loads on a thread; the fake completes instantly.
         self.loaded = True
@@ -168,6 +172,9 @@ def client(monkeypatch, tmp_path):
         "get_active_diffusion_engine",
         lambda: diffusion_module.get_diffusion_backend(),
     )
+    # The load route predicts the engine before selection (to preflight it before any unload); left
+    # real it reaches the host's binaries and, on a GPU-less runner, the live sd.cpp backend.
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **kw: "diffusers")
     monkeypatch.setattr(engine_router, "_active_engine_name", "diffusers")
     monkeypatch.setattr(engine_router, "_fallback_reason", None)
     # Isolate from the real GPU arbiter: reset ownership and stub the evictors so acquire_for() never touches live singletons.
@@ -628,6 +635,212 @@ def test_load_validation_failure_does_not_evict_chat(client, monkeypatch):
     assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
 
 
+def test_gated_base_load_returns_400_without_evicting_chat(client, monkeypatch):
+    # The images page falls back to /images/load whenever the download plan fails, so the plan's
+    # gated-base refusal alone is not enough: run here BEFORE acquire_for, or the pick the plan
+    # already rejected tears down the loaded chat model and only then reports the same message.
+    import types as _types
+
+    import core.inference.diffusion_device as devmod
+
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    evicted = []
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append(True))
+    # The arbiter is only taken for a non-CPU load, which is exactly where an eviction is at stake.
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: _types.SimpleNamespace(device = "cuda")
+    )
+    backend = diffusion_module.get_diffusion_backend()
+    detail = (
+        "'black-forest-labs/FLUX.1-dev' is gated on Hugging Face and this model cannot be "
+        "downloaded without it."
+    )
+
+    def _refuse(model_path, fam, **kwargs):
+        raise ValueError(detail)
+
+    monkeypatch.setattr(backend, "preflight_base_access", _refuse, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "q.gguf"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == detail
+    assert evicted == []  # chat backend was never evicted
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+    assert backend.is_loaded is False  # and the refused load never started
+
+
+def test_cpu_load_skips_the_gated_preflight(client, monkeypatch):
+    # No arbiter handoff on a CPU host means no eviction to protect, so the route must not pay the
+    # preflight's Hub round-trips there: the loader's own copy still catches the gated base.
+    import types as _types
+
+    import core.inference.diffusion_device as devmod
+
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: _types.SimpleNamespace(device = "cpu")
+    )
+    backend = diffusion_module.get_diffusion_backend()
+    calls: list = []
+    monkeypatch.setattr(
+        backend,
+        "preflight_base_access",
+        lambda *a, **k: calls.append(a),
+        raising = False,
+    )
+
+    resp = client.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "q.gguf"},
+    )
+
+    assert resp.status_code == 200
+    assert calls == []
+
+
+def test_a_cpu_mispredicted_engine_is_still_preflighted(monkeypatch):
+    """predict_engine never installs, so a host where the sd-cli install then fails lands on the
+    OTHER engine, and the preflight ran against the one that was never activated.
+
+    The GPU path always re-asked the engine it actually got. The CPU path did not, so a mispredict
+    there switched engines and started the load with the diffusers companions unread -- the bare
+    mid-download token error this preflight exists to replace."""
+    from types import SimpleNamespace
+
+    import core.inference.diffusion_device as devmod
+    import core.inference.diffusion_engine_router as engine_router
+    import core.inference.sd_cpp_backend as sd_backend
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS, ENGINE_SD_CPP
+
+    # Native is unavailable, so the selection lands on diffusers however the prediction went.
+    monkeypatch.setenv("UNSLOTH_DIFFUSION_SD_CPP", "0")
+    monkeypatch.delenv("UNSLOTH_DIFFUSION_ENGINE", raising = False)
+    monkeypatch.setattr(engine_router, "_active_engine_name", ENGINE_DIFFUSERS)
+    monkeypatch.setattr(engine_router, "_fallback_reason", None)
+    # ...but the prediction says native, so a preflight is owed and it is owed on the wrong engine.
+    monkeypatch.setattr(engine_router, "predict_engine", lambda fam, **_: ENGINE_SD_CPP)
+
+    native = _FakeBackend()
+    monkeypatch.setattr(sd_backend, "get_sd_cpp_backend", lambda: native)
+
+    detail = (
+        "'black-forest-labs/FLUX.1-dev' is gated on Hugging Face and this model cannot be "
+        "downloaded without it."
+    )
+
+    def _refuse(model_path, fam, **kwargs):
+        raise ValueError(detail)
+
+    diffusers = _FakeBackend()
+    diffusers.preflight_base_access = _refuse
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: diffusers)
+    monkeypatch.setattr(
+        engine_router,
+        "resolve_diffusion_device_target",
+        lambda: SimpleNamespace(backend = "cpu", device = "cpu"),
+    )
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: SimpleNamespace(device = "cpu")
+    )
+
+    app = FastAPI()
+    app.include_router(studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    local = TestClient(app)
+
+    resp = local.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "q.gguf"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == detail
+    assert diffusers.loaded is False  # the refused load never started
+
+
+@pytest.mark.parametrize(
+    "device, env",
+    [("cuda", {}), ("cpu", {"UNSLOTH_DIFFUSION_SD_CPP": "0"})],
+)
+def test_gated_pick_on_an_engine_switch_keeps_the_previous_model(monkeypatch, device, env):
+    """The refusal must precede the engine switch, not follow it.
+
+    Activating the other engine unloads the deactivated one, so a preflight that ran after the
+    selection destroyed the resident image model and only then reported the gated repo -- exactly
+    the eviction this check exists to prevent. The CPU case has no GPU handoff at all, so there the
+    switch is the only thing at stake.
+    """
+    from types import SimpleNamespace
+
+    import core.inference.diffusion_device as devmod
+    import core.inference.diffusion_engine_router as engine_router
+    import core.inference.sd_cpp_backend as sd_backend
+    from core.inference.sd_cpp_engine import ENGINE_SD_CPP
+
+    for e in (
+        "UNSLOTH_DIFFUSION_ENGINE",
+        "UNSLOTH_DIFFUSION_SD_CPP",
+        "UNSLOTH_DIFFUSION_SD_CPP_MPS",
+        "UNSLOTH_DIFFUSION_SD_CPP_INSTALL",
+    ):
+        monkeypatch.delenv(e, raising = False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+
+    # A native model is resident; this pick routes to diffusers, so the REAL router switches engines.
+    resident = _FakeBackend()
+    resident.loaded = True
+    monkeypatch.setattr(sd_backend, "get_sd_cpp_backend", lambda: resident)
+    monkeypatch.setattr(engine_router, "_active_engine_name", ENGINE_SD_CPP)
+    monkeypatch.setattr(engine_router, "_fallback_reason", None)
+
+    detail = (
+        "'black-forest-labs/FLUX.1-dev' is gated on Hugging Face and this model cannot be "
+        "downloaded without it."
+    )
+
+    def _refuse(model_path, fam, **kwargs):
+        raise ValueError(detail)
+
+    diffusers = _FakeBackend()
+    diffusers.preflight_base_access = _refuse
+    monkeypatch.setattr(diffusion_module, "get_diffusion_backend", lambda: diffusers)
+    monkeypatch.setattr(
+        engine_router,
+        "resolve_diffusion_device_target",
+        lambda: SimpleNamespace(backend = device, device = device),
+    )
+    monkeypatch.setattr(
+        devmod, "resolve_diffusion_device_target", lambda: SimpleNamespace(device = device)
+    )
+    monkeypatch.setattr(gpu_arbiter, "_owner", gpu_arbiter.CHAT)
+    evicted: list = []
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.CHAT, lambda: evicted.append(True))
+    monkeypatch.setitem(gpu_arbiter._EVICTORS, gpu_arbiter.DIFFUSION, lambda: None)
+
+    app = FastAPI()
+    app.include_router(studio_router, prefix = "/api/inference")
+    app.dependency_overrides[get_current_subject] = lambda: "test-user"
+    local = TestClient(app)
+
+    resp = local.post(
+        "/api/inference/images/load",
+        json = {"model_path": "unsloth/Z-Image-Turbo-GGUF", "gguf_filename": "q.gguf"},
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == detail
+    # Refused before the switch: the native engine still holds its model and is still the active one.
+    assert resident.loaded is True
+    assert engine_router.active_engine_name() == ENGINE_SD_CPP
+    assert diffusers.loaded is False  # and the refused load never started
+    assert evicted == []
+    assert gpu_arbiter.current_owner() == gpu_arbiter.CHAT
+
+
 def test_load_refused_during_training_does_not_evict_chat(client, monkeypatch):
     # An image load while training is active is refused (409) before the GPU is taken.
     import core.training as core_training
@@ -1060,6 +1273,38 @@ def test_download_plan_forwards_the_load_time_controls(client, monkeypatch):
     assert seen["memory_mode"] == "low_vram"
     assert seen["cpu_offload"] is True
     assert len(seen["loras"] or []) == 1
+
+
+def test_download_plan_surfaces_a_gated_base_as_a_400(client, monkeypatch):
+    # The planner's ValueError has to reach the UI intact: the repo id and licence URL are the fix.
+    from core.inference import diffusion_engine_router as router
+    from core.inference.sd_cpp_engine import ENGINE_DIFFUSERS
+
+    monkeypatch.setattr(router, "predict_engine", lambda fam, **_: ENGINE_DIFFUSERS)
+    backend = diffusion_module.get_diffusion_backend()
+    detail = (
+        "'black-forest-labs/FLUX.1-dev' is gated on Hugging Face and this model cannot be "
+        "downloaded without it. Accept its licence at "
+        "https://huggingface.co/black-forest-labs/FLUX.1-dev, then add a Hugging Face token "
+        "that has access in Studio settings and try again."
+    )
+
+    def _plan(model_path, **kwargs):
+        raise ValueError(detail)
+
+    monkeypatch.setattr(backend, "download_plan", _plan, raising = False)
+
+    resp = client.post(
+        "/api/inference/images/download-plan",
+        json = {
+            "model_path": "unsloth/FLUX.1-dev-GGUF",
+            "gguf_filename": "flux1-dev-Q4_K_M.gguf",
+            "model_kind": "gguf",
+        },
+    )
+
+    assert resp.status_code == 400
+    assert resp.json()["detail"] == detail
 
 
 def test_download_plan_uses_the_engine_the_load_will_pick(client, monkeypatch):

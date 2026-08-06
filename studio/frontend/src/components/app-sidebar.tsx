@@ -641,9 +641,10 @@ export function AppSidebar() {
   const [scrolled, setScrolled] = useState(false);
   // Bottom fade hides at the very bottom / for short lists so the last row isn't washed out.
   const [canScrollDown, setCanScrollDown] = useState(false);
-  // Driven only from onScroll + a content-change effect below. No ResizeObserver: its
-  // callback-driven setState caused a render loop (React #185). Both setters bail if unchanged.
-  const syncScrollState = (el: HTMLDivElement) => {
+  // Driven only from onScroll + a content-change effect below. No
+  // ResizeObserver: its callback-driven setState caused a render loop (React
+  // #185). Both setters bail out when unchanged, so neither path can loop.
+  const syncScrollState = useCallback((el: HTMLDivElement) => {
     const nextScrolled = el.scrollTop > 0;
     setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
     const nextCanScrollDown =
@@ -651,7 +652,7 @@ export function AppSidebar() {
     setCanScrollDown((prev) =>
       prev === nextCanScrollDown ? prev : nextCanScrollDown,
     );
-  };
+  }, []);
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
@@ -881,7 +882,21 @@ export function AppSidebar() {
     runsOpen,
     pinnedOpen,
     isStudioRoute,
+    // The update card grows the footer, so the scroll area shrinks under it.
+    showUpdateCard,
   ]);
+
+  // Resizing changes clientHeight without firing onScroll, so the fade would
+  // stay hidden while rows are still clipped. Window events only: no element
+  // observer, so this can't feed back into the loop that caused React #185.
+  useEffect(() => {
+    const onResize = () => {
+      const el = scrollRef.current;
+      if (el) syncScrollState(el);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [syncScrollState]);
 
   const chatDisabled = trainingInProgress;
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
@@ -2351,8 +2366,10 @@ export function AppSidebar() {
       <SidebarFooter
         className={cn(
           "relative pb-[11px] group-data-[collapsible=icon]:px-0",
-          // Tighter top with the update card so the fade hugs it; fuller top for the profile alone.
-          showUpdateCard ? "pt-1.5" : "pt-2.5",
+          // pt-[3px] cancels the profile button's -3px margin, so the 8px
+          // above it is whatever sits over the footer edge (the fade plateau,
+          // or the list's pb-2 once the fade is hidden) and 8px sits below.
+          showUpdateCard ? "pt-1" : "pt-[3px]",
         )}
       >
         {/* Fade above the profile box, shown only when there's more list below
@@ -2361,11 +2378,14 @@ export function AppSidebar() {
         <div
           aria-hidden="true"
           className={cn(
-            // The scroll area hard-clips at the fade's bottom edge, so a plain ramp is still
-            // part-transparent there and slices the last row mid-glyph. from-[16px] holds it opaque.
-            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[16px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
-            // Shorter fade with the update card, but still tall enough to clear a row.
-            showUpdateCard ? "h-9" : "h-14",
+            // The scroll area hard-clips at the fade's bottom edge, so a plain
+            // ramp is still part-transparent there and slices the last row
+            // mid-glyph. from-[8px] holds it opaque just across the clip, and
+            // matches the list's pb-2 so the gap is the same once it hides.
+            "pointer-events-none absolute left-0 right-2 bottom-full bg-gradient-to-t from-[var(--sidebar-surface)] from-[8px] to-[rgb(from_var(--sidebar-surface)_r_g_b/0)] transition-opacity duration-200",
+            // Shorter fade with the update card so the list reads closer to
+            // it, but still tall enough to clear a row.
+            showUpdateCard ? "h-7" : "h-10",
             canScrollDown ? "opacity-100" : "opacity-0",
           )}
         />
