@@ -992,9 +992,12 @@ def run_inference_process(
                             "error": "Text-to-speech is not supported on the MLX backend yet.",
                             # Lets the parent raise a typed error, not a generic 500.
                             "code": AUDIO_UNSUPPORTED_CODE,
+                            # Only some TTS families publish a GGUF build, so name the
+                            # host as the general fix and GGUF as the conditional one.
                             "hint": (
-                                "Load this model's GGUF build instead -- llama.cpp "
-                                "carries the snac/bicodec/dac decoders."
+                                "Run it on a non-MLX host, or load a GGUF build of it "
+                                "if one is published -- llama.cpp carries the "
+                                "snac/bicodec/dac decoders."
                             ),
                         },
                     )

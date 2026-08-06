@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright 2026-present the Unsloth AI Inc. team. All rights reserved. See /studio/LICENSE.AGPL-3.0
 
-// The Audio page: Create (Generate = TTS via the main inference slot, Transcribe
-// = STT via the dictation sidecar) and Train (LoRA on the generic trainer). The
-// page stays mounted across tab switches (see __root.tsx), so `active` gates
-// polling and popovers rather than lifecycle.
+// The Audio page: Generate (TTS via the main inference slot) and Transcribe (STT
+// via the dictation sidecar). Training lives on the Train page. The page stays
+// mounted across tab switches (see __root.tsx), so `active` gates polling,
+// popovers and the recorder rather than lifecycle.
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import {
@@ -206,6 +206,14 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   const [transcript, setTranscript] = useState("");
   const [transcribedName, setTranscribedName] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+  /** Audio the server produced but could not persist; kept so the generation is
+   *  not lost when the gallery write fails. Cleared once a real clip lands. */
+  const [fallbackClip, setFallbackClip] = useState<{
+    url: string;
+    prompt: string;
+    model: string;
+  } | null>(null);
+  const loadingMoreRef = useRef(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recordStreamRef = useRef<MediaStream | null>(null);
 
@@ -287,6 +295,10 @@ export function AudioPage({ active = true }: { active?: boolean }) {
   }, []);
 
   const loadMore = useCallback(async () => {
+    // Repeated scroll events near the bottom would otherwise each fire with the
+    // same offset and append the same page, duplicating clips and React keys.
+    if (loadingMoreRef.current) return;
+    loadingMoreRef.current = true;
     try {
       const page = await listAudioGallery(galleryCache.clips.length, PAGE_SIZE);
       galleryCache.clips = [...galleryCache.clips, ...page.audio];
@@ -295,6 +307,8 @@ export function AudioPage({ active = true }: { active?: boolean }) {
       setHasMore(page.has_more);
     } catch {
       // Retry on the next scroll.
+    } finally {
+      loadingMoreRef.current = false;
     }
   }, []);
 
@@ -404,7 +418,11 @@ export function AudioPage({ active = true }: { active?: boolean }) {
 
   const handleModelSelect = useCallback(
     (id: string, meta: ModelSelectorChangeMeta) => {
-      const task = audioTaskFor(id);
+      // Catalog first; an uncurated Hub pick falls back to its pipeline tag, or
+      // every community ASR repo would load into the TTS slot.
+      const task =
+        audioTaskFor(id) ??
+        (meta.pipelineTag === "automatic-speech-recognition" ? "stt" : null);
       if (task === "stt") {
         // An STT pick owns Transcribe: it runs on the sidecar, not the main slot.
         setMode("transcribe");
@@ -465,14 +483,26 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     const controller = new AbortController();
     generateAbort.current = controller;
     try {
-      await generateAudio(text, {
+      const generated = await generateAudio(text, {
         temperature,
         max_tokens: maxTokens,
         signal: controller.signal,
       });
       await refreshGallery();
       const newest = galleryCache.clips[0];
-      if (newest) selectClip(newest.id);
+      if (newest) {
+        setFallbackClip(null);
+        selectClip(newest.id);
+      } else {
+        // Gallery persistence is best-effort server-side, so a full or unwritable
+        // disk still returns the audio. Play it from the response rather than
+        // dropping an expensive generation on the floor.
+        setFallbackClip({
+          url: `data:audio/wav;base64,${generated.audio.data}`,
+          prompt: text,
+          model: generated.model,
+        });
+      }
     } catch (error) {
       if (!controller.signal.aborted) {
         toast.error(
@@ -553,14 +583,20 @@ export function AudioPage({ active = true }: { active?: boolean }) {
     }
   }, [isRecording, runTranscription, stopRecordStream]);
 
-  // Release the microphone if the page unmounts mid-recording.
-  useEffect(
-    () => () => {
+  // Release the microphone on unmount AND whenever the page goes inactive: the
+  // page stays mounted across tab switches, so unmount alone left a hidden
+  // recorder capturing until the user came back and stopped it.
+  useEffect(() => {
+    if (!active) {
       recorderRef.current?.stop();
       stopRecordStream();
-    },
-    [stopRecordStream],
-  );
+      setIsRecording(false);
+    }
+    return () => {
+      recorderRef.current?.stop();
+      stopRecordStream();
+    };
+  }, [active, stopRecordStream]);
 
   const handleTranscribeFile = useCallback(
     (file: File | undefined) => {
@@ -939,6 +975,21 @@ export function AudioPage({ active = true }: { active?: boolean }) {
                           <HugeiconsIcon icon={Delete02Icon} className="size-3.5" />
                         </Button>
                       </div>
+                    </div>
+                  ) : fallbackClip ? (
+                    <div className="flex w-full max-w-xl flex-col gap-3">
+                      <p className="line-clamp-2 text-ui-13 text-muted-foreground">
+                        {fallbackClip.prompt}
+                      </p>
+                      <audio
+                        controls={true}
+                        src={fallbackClip.url}
+                        className="w-full"
+                      />
+                      <p className="text-ui-11p5 text-muted-foreground">
+                        {fallbackClip.model} · not saved to the gallery, so
+                        download it to keep it.
+                      </p>
                     </div>
                   ) : (
                     <p className="text-ui-13 text-muted-foreground">

@@ -1990,11 +1990,21 @@ export function HubModelPicker({
   // in Recommended still expands variants instead of loading as a checkpoint.
   const resultGgufIds = useMemo(() => {
     const ids = new Set<string>();
-    for (const result of [...results, ...recommendedSearch.results]) {
+    for (const result of [
+      ...results,
+      ...recommendedSearch.results,
+      ...communityQuerySearch.results,
+      ...communityBrowse.results,
+    ]) {
       if (result.isGguf) ids.add(result.id.toLowerCase());
     }
     return ids;
-  }, [results, recommendedSearch.results]);
+  }, [
+    results,
+    recommendedSearch.results,
+    communityQuerySearch.results,
+    communityBrowse.results,
+  ]);
   const isKnownGgufRepo = useCallback(
     (id: string): boolean => {
       const key = id.toLowerCase();
@@ -2436,16 +2446,21 @@ export function HubModelPicker({
   // "recommended" sort also drops models too big for the device. Already-
   // downloaded models stay visible (badged), never hidden.
   const recommendedRows = useMemo(() => {
-    const keep = (r: HfModelResult) =>
+    const keepCommon = (r: HfModelResult) =>
       !isHiddenModelId(r.id) &&
       !isMobileVariant(r.id) &&
       isChatSupported(r) &&
       // No pick: device-recommended formats (GGUF, plus MLX on Mac). A pick wins.
       (formatFilter === "all"
         ? isRecommendableFormat(r.id, r.isGguf, isMac)
-        : matchesFormatFilter(r.id, r.isGguf, formatFilter)) &&
+        : matchesFormatFilter(r.id, r.isGguf, formatFilter));
+    const keep = (r: HfModelResult) =>
+      keepCommon(r) &&
       // Task pages load single-file GGUF, plus curated artifacts in any format.
       (!task || r.isGguf || Boolean(catalog && artifactForRepoId(r.id, catalog)));
+    // A community row has no catalog artifact by definition, so the curated clause
+    // above would drop every third-party safetensors checkpoint. The rest applies.
+    const keepCommunity = (r: HfModelResult) => keepCommon(r);
     // Members are not filtered here (see recommendedIds): it dropped them from
     // Hub search too. "recommended" always device-filters; the "Fits on device"
     // tick extends that to the other sorts.
@@ -2472,7 +2487,7 @@ export function HubModelPicker({
       .filter((r) => !r.id.toLowerCase().startsWith("unsloth/"))
       .filter((r) => isLoadableCommunityRepo(r.id))
       .filter((r) => !above.has(r.id.toLowerCase()))
-      .filter(keep)
+      .filter(keepCommunity)
       .filter((r) => !deviceFiltered || fits(r));
     return [...unslothRows, ...communityRows];
   }, [
@@ -2565,6 +2580,26 @@ export function HubModelPicker({
     isKnownGgufRepo,
     gpu,
     inferenceGpu,
+  ]);
+
+  // Hub pipeline tag per repo id, handed to the page on pick so a task page can
+  // classify an uncurated repo it has no catalog entry for.
+  const pipelineTagById = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const r of [
+      ...results,
+      ...recommendedSearch.results,
+      ...communityQuerySearch.results,
+      ...communityBrowse.results,
+    ]) {
+      if (r.pipelineTag && !map.has(r.id)) map.set(r.id, r.pipelineTag);
+    }
+    return map;
+  }, [
+    results,
+    recommendedSearch.results,
+    communityQuerySearch.results,
+    communityBrowse.results,
   ]);
 
   // Tag-accurate capabilities keyed by repo id, pooled from both HF listings.
@@ -3361,10 +3396,11 @@ export function HubModelPicker({
           source: "hub",
           isLora: false,
           isDownloaded: downloadedSet.has(id.toLowerCase()),
+          pipelineTag: pipelineTagById.get(id) ?? null,
         });
       }
     },
-    [onSelect, isKnownGgufRepo, downloadedSet],
+    [onSelect, isKnownGgufRepo, downloadedSet, pipelineTagById],
   );
 
   // On Device owns the downloaded and custom-folder models; the Unsloth tab

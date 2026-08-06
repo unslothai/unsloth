@@ -117,3 +117,23 @@ def test_sidecar_errors_keep_their_status(monkeypatch):
     resp = _post(cli, data = {"model": "not-a-model"})
     assert resp.status_code == 422
     assert "Unknown STT model id." in resp.json()["error"]["message"]
+
+
+def test_an_mtmd_only_model_forces_its_engine():
+    """Qwen3-ASR only runs on the mtmd sidecar.
+
+    The route passed no engine, so _resolve_stt_engine defaulted to Transformers
+    and the Whisper sidecar rejected the model.
+    """
+    from routes.inference import _stt_engine_for_model
+
+    assert _stt_engine_for_model("qwen3-asr-0.6b") == "mtmd"
+    assert _stt_engine_for_model("qwen3-asr-1.7b") == "mtmd"
+
+
+def test_whisper_ids_keep_the_default_engine():
+    """Whisper ids are shared with the Transformers sidecar, so nothing is forced."""
+    from routes.inference import _stt_engine_for_model
+
+    for model in (None, "", "whisper-1", "small", "large-v3-turbo", "openai/whisper-tiny"):
+        assert _stt_engine_for_model(model) is None, model

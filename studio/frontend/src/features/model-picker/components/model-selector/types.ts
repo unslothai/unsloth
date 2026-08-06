@@ -47,6 +47,9 @@ export interface ModelSelectorChangeMeta {
   loadId?: string | null;
   /** Native path token so an active-model reload can reopen a file-picked GGUF. */
   nativePathToken?: string;
+  /** Hub pipeline tag for an uncurated pick, so a task page can tell which task
+   *  the repo does when it is not in the page's catalog. */
+  pipelineTag?: string | null;
   nativePathExpiresAtMs?: number | null;
 }
 

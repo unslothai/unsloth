@@ -72,7 +72,7 @@ const VideoPage = lazy(() =>
   import("@/features/video").then((m) => ({ default: m.VideoPage })),
 );
 
-// AudioPage gets the same persistent mount so an in-flight generation or training run keeps its UI state; still lazy on first /audio visit.
+// AudioPage gets the same persistent mount so an in-flight generation keeps its UI state; still lazy on first /audio visit.
 const AudioPage = lazy(() =>
   import("@/features/audio").then((m) => ({ default: m.AudioPage })),
 );
@@ -192,7 +192,7 @@ function RootLayout() {
   }
   const shouldMountVideo = isVideoRoute || videoMounted;
 
-  // Same persistent mount for /audio so generation and training UI state survive leaving the tab.
+  // Same persistent mount for /audio so generation UI state survives leaving the tab.
   const isAudioRoute = pathname === "/audio";
   const [audioMounted, setAudioMounted] = useState(isAudioRoute);
   if (isAudioRoute && !audioMounted) {

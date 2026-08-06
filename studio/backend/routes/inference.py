@@ -8127,7 +8127,8 @@ def _wav_duration_seconds(wav_bytes: bytes, sample_rate: int) -> float:
 def _persist_tts_clip(
     wav_bytes: bytes, sample_rate: int, text: str, model_name: str, audio_type: Optional[str]
 ) -> None:
-    """Best-effort gallery save: persistence never fails the request that produced the audio."""
+    """Best-effort gallery save: persistence never fails the request that produced
+    the audio. Blocking, so callers run it off the event loop."""
     from core.inference import audio_gallery
     try:
         audio_gallery.save(
@@ -8170,7 +8171,9 @@ async def generate_audio(
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         text, payload, request, current_subject
     )
-    _persist_tts_clip(wav_bytes, sample_rate, text, model_name, audio_type)
+    await asyncio.to_thread(
+        _persist_tts_clip, wav_bytes, sample_rate, text, model_name, audio_type
+    )
 
     audio_b64 = base64.b64encode(wav_bytes).decode("ascii")
     return JSONResponse(
@@ -8217,7 +8220,9 @@ async def openai_audio_speech(
     wav_bytes, sample_rate, model_name, audio_type = await _generate_tts_wav(
         body.input, payload, request, current_subject
     )
-    _persist_tts_clip(wav_bytes, sample_rate, body.input, model_name, audio_type)
+    await asyncio.to_thread(
+        _persist_tts_clip, wav_bytes, sample_rate, body.input, model_name, audio_type
+    )
     return Response(content = wav_bytes, media_type = "audio/wav")
 
 
@@ -8245,7 +8250,9 @@ async def openai_audio_transcriptions(
     raw = await file.read()
     # openai's whisper-1 placeholder means the default transcription model, not a sidecar id
     sidecar_model = None if model in (None, "", "whisper-1") else model
-    result = await _transcribe_audio_result(raw, sidecar_model, language, fast = False)
+    result = await _transcribe_audio_result(
+        raw, sidecar_model, language, fast = False, engine = _stt_engine_for_model(sidecar_model)
+    )
     if fmt == "text":
         return PlainTextResponse(content = str(result.get("text", "")))
     return JSONResponse(content = {"text": result.get("text", "")})
@@ -8254,6 +8261,21 @@ async def openai_audio_transcriptions(
 # =====================================================================
 # Speech-to-text (STT) sidecar  (/audio/transcribe, /audio/stt/*)
 # =====================================================================
+
+
+def _stt_engine_for_model(model: Optional[str]) -> Optional[str]:
+    """The engine an STT id *requires*, or None to leave the default alone.
+
+    Qwen3-ASR only runs on the mtmd sidecar; without this an explicit id fell
+    through to the Transformers Whisper sidecar, which rejects it.
+    """
+    if not model:
+        return None
+    from core.inference.stt_mtmd_sidecar import is_mtmd_model
+
+    # Only the mtmd ids are forced. Whisper ids are shared with the Transformers
+    # sidecar and work there, so leaving them alone keeps the default behaviour.
+    return "mtmd" if is_mtmd_model(model.strip()) else None
 
 
 def _resolve_stt_engine(engine: Optional[str]) -> str:
