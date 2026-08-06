@@ -334,11 +334,8 @@ const CUSTOM_CHROME_STYLE = {
   "--studio-window-control-inset": "112px",
 } as CSSProperties;
 
-/**
- * Mirrors the titlebar heights onto <html>. The chrome styles above sit on a
- * wrapper div, so anything Radix portals into document.body reads them as
- * empty; overlays that must clear the window controls need them at the root.
- */
+// Mirror the titlebar heights onto <html>: the styles above sit on a wrapper
+// div, so overlays portalled into document.body would read them as empty.
 function DesktopChromeVarsEffect({
   usesCustomTitlebar,
   usesNativeMacTitlebar,
