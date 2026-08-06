@@ -14,8 +14,9 @@ import {
   listLocalModels,
 } from "./api";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
-import { fingerprintToken } from "@/features/hub/lib/token-fingerprint";
-import { useInventoryVersion } from "@/features/hub/stores/inventory-events";
+import { ensureHiddenModelMatchers } from "../lib/hidden-models";
+import { fingerprintToken } from "../lib/token-fingerprint";
+import { useInventoryVersion } from "../stores/inventory-events";
 import { useCallback, useEffect, useMemo } from "react";
 import { create } from "zustand";
 import { useShallow } from "zustand/react/shallow";
@@ -146,12 +147,15 @@ async function runSourceFetch<K extends DeviceInventorySource>(
 ): Promise<DeviceInventoryRows[K]> {
   switch (source) {
     case "cachedGguf":
+      await ensureHiddenModelMatchers();
       return (await listCachedGguf(hfToken)) as DeviceInventoryRows[K];
     case "cachedModels":
+      await ensureHiddenModelMatchers();
       return (await listCachedModels(hfToken)) as DeviceInventoryRows[K];
     case "cachedDatasets":
       return (await listCachedDatasets()) as DeviceInventoryRows[K];
     case "localModels":
+      await ensureHiddenModelMatchers();
       return (await listLocalModels()).models as DeviceInventoryRows[K];
     case "localDatasets":
       return (await listLocalDatasets()).datasets as DeviceInventoryRows[K];
@@ -214,9 +218,8 @@ export function fetchInventorySource<K extends DeviceInventorySource>(
     return Promise.resolve(current.rows);
   }
 
-  // Carry `ready` across refetches so a stale-but-known state doesn't flip to
-  // "loading" on a bump and flash a spinner in every consumer; keep showing
-  // prior rows until the success path lands fresh data.
+  // Carry `ready` across refetches so a stale-but-known state doesn't flip to "loading" and
+  // flash a spinner; keep showing prior rows until the success path lands fresh data.
   updateSourceState(source, {
     loading: true,
     ready: current.ready,
@@ -277,6 +280,32 @@ export function inventoryEmptyRevalidationSignature(
     .join("\u0002");
 }
 
+export function useTokenScopedInventoryRequestOptions(
+  inventoryVersion: number,
+  hfToken?: string | null,
+) {
+  const debouncedInventoryVersion = useDebouncedValue(
+    inventoryVersion,
+    TOKEN_SCOPED_INVENTORY_DEBOUNCE_MS,
+  );
+  const debouncedHfToken = useDebouncedValue(
+    hfToken ?? undefined,
+    TOKEN_SCOPED_INVENTORY_DEBOUNCE_MS,
+  );
+  const tokenFingerprint = useMemo(
+    () => fingerprintToken(debouncedHfToken),
+    [debouncedHfToken],
+  );
+  return useMemo(
+    () => ({
+      hfToken: debouncedHfToken,
+      inventoryVersion: debouncedInventoryVersion,
+      tokenFingerprint,
+    }),
+    [debouncedHfToken, debouncedInventoryVersion, tokenFingerprint],
+  );
+}
+
 export function useDeviceInventorySources<
   const Sources extends readonly DeviceInventorySource[],
 >(
@@ -285,13 +314,9 @@ export function useDeviceInventorySources<
 ): UseDeviceInventoryResult<Sources> {
   const rawInventoryVersion = useInventoryVersion();
   const rawHfToken = options.hfToken ?? undefined;
-  const debouncedInventoryVersion = useDebouncedValue(
+  const tokenScopedOptions = useTokenScopedInventoryRequestOptions(
     rawInventoryVersion,
-    TOKEN_SCOPED_INVENTORY_DEBOUNCE_MS,
-  );
-  const debouncedHfToken = useDebouncedValue(
     rawHfToken,
-    TOKEN_SCOPED_INVENTORY_DEBOUNCE_MS,
   );
   const enabled = options.enabled ?? true;
   const sourceKey = sources.join("|");
@@ -304,10 +329,14 @@ export function useDeviceInventorySources<
     [sourceList],
   );
   const inventoryVersion = hasTokenScopedSources
-    ? debouncedInventoryVersion
+    ? tokenScopedOptions.inventoryVersion
     : rawInventoryVersion;
-  const hfToken = hasTokenScopedSources ? debouncedHfToken : rawHfToken;
-  const tokenFingerprint = useMemo(() => fingerprintToken(hfToken), [hfToken]);
+  const hfToken = hasTokenScopedSources
+    ? tokenScopedOptions.hfToken
+    : rawHfToken;
+  const tokenFingerprint = hasTokenScopedSources
+    ? tokenScopedOptions.tokenFingerprint
+    : fingerprintToken(rawHfToken);
   const state = useDeviceInventoryStore(
     useShallow((s) => {
       const selected = {} as Pick<DeviceInventoryState, Sources[number]>;

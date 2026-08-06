@@ -251,7 +251,7 @@ def test_studio_default_prompt_rejects_current_password(monkeypatch, tmp_path):
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
     _seed_auth(studio_mod)
-    bootstrap_pw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text()
+    bootstrap_pw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text().strip()
 
     _invoke_studio_default(monkeypatch, events, ["--secure"])
 
@@ -626,6 +626,12 @@ def test_studio_default_in_venv_broken_backend_exits_before_stripping_bootstrap(
 
     # Pretend we are already inside the studio venv, with a broken backend.
     monkeypatch.setattr(sys, "prefix", str(tmp_path / "unsloth_studio"))
+    # A built dist is not present in a fresh clone. The missing-frontend gate
+    # runs first and has its own test below; stub it so this one reaches the
+    # backend check it is actually about.
+    monkeypatch.setattr(
+        studio_mod, "_find_frontend_dist", lambda: Path("/fake/studio/frontend/dist")
+    )
 
     def _boom():
         raise ImportError("cannot import backend run.py")
@@ -885,7 +891,7 @@ def test_run_non_tty_deletes_bootstrap_password_file(monkeypatch, tmp_path):
 
 def test_run_missing_frontend_exits_before_stripping_bootstrap(monkeypatch, tmp_path):
     # Regression (item B / reviewer finding 4): `unsloth studio run` serves the
-    # same Studio UI and strips the seeded password on a headless public launch,
+    # same Unsloth UI and strips the seeded password on a headless public launch,
     # so a missing frontend dist must abort BEFORE the strip -- the same lockout
     # guard as `unsloth studio`, not just `studio run`'s model-load residual.
     import typer as _typer
@@ -957,7 +963,9 @@ def test_run_reexec_forwards_resolved_frontend_on_public_launch(monkeypatch, tmp
 
     exec_argv = [argv for kind, argv in events if kind == "exec"][0]
     assert "--frontend" in exec_argv, exec_argv
-    assert exec_argv[exec_argv.index("--frontend") + 1] == "/fake/studio/frontend/dist", exec_argv
+    # str(Path(...)), not the literal: Windows renders it with backslashes.
+    expected_dist = str(Path("/fake/studio/frontend/dist"))
+    assert exec_argv[exec_argv.index("--frontend") + 1] == expected_dist, exec_argv
 
 
 def test_run_non_tty_persists_seeded_admin_on_fresh_home(monkeypatch, tmp_path):
@@ -1032,50 +1040,173 @@ def test_bootstrap_deadline_active_mirrors_backend_parsing(monkeypatch, raw, exp
     assert studio_mod._bootstrap_deadline_active() is expected
 
 
-def test_reset_password_truncates_locked_bootstrap_after_db_delete(monkeypatch, tmp_path):
-    # reset-password deletes auth.db first, then invalidates the seeded credential
-    # files. A locked/undeletable .bootstrap_password must be truncated so its
-    # stale plaintext cannot be re-seeded (generate_bootstrap_password reuses a
-    # non-empty file), while the reset still succeeds.
-    import pathlib
-
-    studio_mod = _studio()
-    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
-    _seed_auth(studio_mod)
-    auth_dir = tmp_path / "auth"
-    bootstrap_file = auth_dir / studio_mod.BOOTSTRAP_PASSWORD_FILE
-    db_file = auth_dir / "auth.db"
-    assert bootstrap_file.exists() and db_file.exists()
-    assert bootstrap_file.read_text().strip()
-
-    _real_unlink = pathlib.Path.unlink
-
-    def _boom_unlink(self, *a, **k):
-        if self.name == studio_mod.BOOTSTRAP_PASSWORD_FILE:
-            raise OSError("locked")
-        return _real_unlink(self, *a, **k)
-
-    monkeypatch.setattr(pathlib.Path, "unlink", _boom_unlink)
-
+def _reset_password_cli(studio_mod):
     import typer as _typer
 
     app = _typer.Typer()
     app.command()(studio_mod.reset_password)
-    result = CliRunner().invoke(app, [], catch_exceptions = True)
+    return CliRunner().invoke(app, [], catch_exceptions = True)
+
+
+def _password_works(studio_mod, candidate):
+    conn = studio_mod._connect_auth_db()
+    try:
+        row = conn.execute(
+            "SELECT password_salt, password_hash FROM auth_user WHERE username = ?",
+            (studio_mod.DEFAULT_ADMIN_USERNAME,),
+        ).fetchone()
+    finally:
+        conn.close()
+    return studio_mod._pbkdf2_hex(candidate, row[0].encode("utf-8")) == row[1]
+
+
+def _printed_password(result):
+    line = next(l for l in result.output.splitlines() if l.startswith("New password for"))
+    return line.split(": ", 1)[1].strip()
+
+
+def test_reset_password_rotates_in_place_without_deleting_the_db(monkeypatch, tmp_path):
+    # The DB survives, so a running server keeps its admin row and the new password.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+    db_file = tmp_path / "auth" / "auth.db"
+    before = _auth_state(studio_mod)
+
+    result = _reset_password_cli(studio_mod)
 
     assert result.exit_code == 0, result.output
-    assert not db_file.exists()
-    # The locked file survives, but truncated -- no reusable plaintext.
-    assert bootstrap_file.exists()
-    assert bootstrap_file.read_text() == ""
+    assert db_file.exists()
+    after = _auth_state(studio_mod)
+    assert after["password_hash"] != before["password_hash"]
+    assert after["jwt_secret"] != before["jwt_secret"]
+    assert _password_works(studio_mod, _printed_password(result))
+
+
+def test_reset_password_waits_out_a_concurrent_writer(monkeypatch, tmp_path):
+    # The CLI now writes while the server does; without a busy_timeout this fails.
+    import threading
+    import time
+
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+    released = threading.Event()
+
+    def hold_write_lock():
+        conn = sqlite3.connect(_auth_db(tmp_path))
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(
+            "INSERT INTO refresh_tokens (token_hash, username, expires_at) "
+            "VALUES ('held', 'unsloth', '2099-01-01T00:00:00')"
+        )
+        time.sleep(0.5)
+        conn.rollback()
+        conn.close()
+        released.set()
+
+    holder = threading.Thread(target = hold_write_lock)
+    holder.start()
+    time.sleep(0.1)
+    result = _reset_password_cli(studio_mod)
+    holder.join()
+
+    assert released.is_set()
+    assert result.exit_code == 0, result.output
+    assert _password_works(studio_mod, _printed_password(result))
+
+
+def test_reset_password_revokes_sessions_and_api_keys(monkeypatch, tmp_path):
+    # Deleting auth.db used to drop these implicitly.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+    conn = studio_mod._connect_auth_db()
+    conn.execute(
+        "INSERT INTO api_keys (username, key_prefix, key_hash, name, created_at) "
+        "VALUES (?, 'sk-x', 'hash', 'k', '2026-01-01T00:00:00')",
+        (studio_mod.DEFAULT_ADMIN_USERNAME,),
+    )
+    conn.commit()
+    conn.close()
+
+    assert _reset_password_cli(studio_mod).exit_code == 0
+
+    conn = studio_mod._connect_auth_db()
+    try:
+        assert conn.execute("SELECT COUNT(*) FROM api_keys").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM refresh_tokens").fetchone()[0] == 0
+    finally:
+        conn.close()
+
+
+def test_reset_password_leaves_the_account_ready_to_log_in(monkeypatch, tmp_path):
+    # must_change_password stays 0 on purpose: at 1 a running server injects its
+    # startup-cached (now wrong) bootstrap password into the login page.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+
+    assert _reset_password_cli(studio_mod).exit_code == 0
+
+    assert _auth_state(studio_mod)["must_change_password"] == 0
+    assert not (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).exists()
+
+
+def test_reset_password_seeds_the_admin_when_no_db_exists(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+
+    result = _reset_password_cli(studio_mod)
+
+    assert result.exit_code == 0, result.output
+    assert _password_works(studio_mod, _printed_password(result))
+
+
+def test_reset_password_reports_an_unwritable_auth_dir(monkeypatch, tmp_path):
+    # _connect_auth_db creates auth/ before it opens SQLite, so a read-only Unsloth
+    # home raises OSError, not sqlite3.Error.
+    import pathlib
+
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+
+    def _boom_mkdir(self, *a, **k):
+        raise PermissionError("read-only")
+
+    monkeypatch.setattr(pathlib.Path, "mkdir", _boom_mkdir)
+
+    result = _reset_password_cli(studio_mod)
+
+    assert result.exit_code == 1, result.output
+    assert not isinstance(result.exception, OSError)
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "could not open the auth database" in combined.lower()
+
+
+def test_reset_password_reports_an_unreadable_db(monkeypatch, tmp_path):
+    # Deleting a corrupt DB here would revive the bug: a running server would be
+    # left with no admin row, rejecting the correct password until restarted.
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    auth_dir = tmp_path / "auth"
+    auth_dir.mkdir()
+    (auth_dir / "auth.db").write_text("not a database")
+
+    result = _reset_password_cli(studio_mod)
+
+    assert result.exit_code == 1, result.output
+    assert (auth_dir / "auth.db").exists()
+    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
+    assert "could not open the auth database" in combined.lower()
 
 
 def test_cli_update_password_truncates_locked_bootstrap_after_change(monkeypatch, tmp_path):
     # After a CLI/interactive password change the seeded .bootstrap_password is
     # deleted. If it cannot be unlinked but is still writable (locked file /
     # read-only dir), it must be TRUNCATED so its stale plaintext cannot be
-    # re-seeded by generate_bootstrap_password() after a later reset-password
-    # deletes auth.db. The change is already committed, so it must NOT roll back.
+    # re-seeded by generate_bootstrap_password() if auth.db is ever recreated. The
+    # change is already committed, so it must NOT roll back.
     import pathlib
 
     studio_mod = _studio()
@@ -1103,88 +1234,6 @@ def test_cli_update_password_truncates_locked_bootstrap_after_change(monkeypatch
     assert bootstrap_file.read_text() == ""
 
 
-def test_reset_password_fails_closed_when_db_cannot_be_deleted(monkeypatch, tmp_path):
-    # If auth.db cannot be removed (running Studio / Windows lock, read-only dir),
-    # reset must abort BEFORE touching the credential files -- deleting them while
-    # an un-resettable must_change_password=1 DB survives would lock a
-    # forgotten-password reset out with no recovery credential.
-    import pathlib
-
-    studio_mod = _studio()
-    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
-    _seed_auth(studio_mod)
-    auth_dir = tmp_path / "auth"
-    bootstrap_file = auth_dir / studio_mod.BOOTSTRAP_PASSWORD_FILE
-    db_file = auth_dir / "auth.db"
-    assert bootstrap_file.exists() and db_file.exists()
-
-    _real_unlink = pathlib.Path.unlink
-
-    def _boom_unlink(self, *a, **k):
-        if self.name == "auth.db":
-            raise OSError("database is locked")
-        return _real_unlink(self, *a, **k)
-
-    monkeypatch.setattr(pathlib.Path, "unlink", _boom_unlink)
-
-    import typer as _typer
-
-    app = _typer.Typer()
-    app.command()(studio_mod.reset_password)
-    result = CliRunner().invoke(app, [], catch_exceptions = True)
-
-    assert result.exit_code == 1, result.output
-    # DB still there; credential files untouched (no lockout, no half-done reset).
-    assert db_file.exists()
-    assert bootstrap_file.exists()
-    assert bootstrap_file.read_text().strip()
-    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "could not delete the auth database" in combined.lower()
-
-
-def test_reset_password_fails_closed_when_credential_cannot_be_invalidated(monkeypatch, tmp_path):
-    # If a seeded credential file can be neither unlinked nor truncated, reset must
-    # fail closed: auth.db is already gone, so a surviving plaintext would be
-    # re-seeded and re-validate the revoked password.
-    import pathlib
-
-    studio_mod = _studio()
-    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
-    _seed_auth(studio_mod)
-    auth_dir = tmp_path / "auth"
-    bootstrap_file = auth_dir / studio_mod.BOOTSTRAP_PASSWORD_FILE
-    db_file = auth_dir / "auth.db"
-    assert bootstrap_file.exists() and db_file.exists()
-
-    _real_unlink = pathlib.Path.unlink
-    _real_write_text = pathlib.Path.write_text
-
-    def _boom_unlink(self, *a, **k):
-        if self.name == studio_mod.BOOTSTRAP_PASSWORD_FILE:
-            raise OSError("locked")
-        return _real_unlink(self, *a, **k)
-
-    def _boom_write_text(self, *a, **k):
-        if self.name == studio_mod.BOOTSTRAP_PASSWORD_FILE:
-            raise OSError("read-only")
-        return _real_write_text(self, *a, **k)
-
-    monkeypatch.setattr(pathlib.Path, "unlink", _boom_unlink)
-    monkeypatch.setattr(pathlib.Path, "write_text", _boom_write_text)
-
-    import typer as _typer
-
-    app = _typer.Typer()
-    app.command()(studio_mod.reset_password)
-    result = CliRunner().invoke(app, [], catch_exceptions = True)
-
-    assert result.exit_code == 1, result.output
-    # auth.db was deleted first; the un-invalidatable file is reported for manual removal.
-    assert not db_file.exists()
-    combined = (result.output or "") + (getattr(result, "stderr", "") or "")
-    assert "delete it manually" in combined.lower()
-
-
 def test_connect_auth_db_creates_private_files(monkeypatch, tmp_path):
     # Fresh install: the CLI gate writes the password hash + JWT secret before
     # the backend ever runs, so this path must apply the same 0700/0600 modes
@@ -1202,6 +1251,37 @@ def test_connect_auth_db_creates_private_files(monkeypatch, tmp_path):
     auth_dir = tmp_path / "auth"
     assert stat.S_IMODE(auth_dir.stat().st_mode) == 0o700
     assert stat.S_IMODE((auth_dir / "auth.db").stat().st_mode) == 0o600
+
+
+def test_write_auth_secret_terminates_the_file_with_a_newline(monkeypatch, tmp_path):
+    # Shared by .bootstrap_password and .desktop_secret; every reader strips.
+    studio_mod = _studio()
+    path = tmp_path / ".desktop_secret"
+
+    studio_mod._write_auth_secret(path, "desktop-abc123")
+
+    # Bytes: read_text would decode CRLF back to "\n" and hide a CR.
+    assert path.read_bytes() == b"desktop-abc123\n"
+
+
+def test_seeded_bootstrap_file_ends_with_a_newline(monkeypatch, tmp_path):
+    studio_mod = _studio()
+    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
+    _seed_auth(studio_mod)
+
+    raw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_bytes()
+
+    assert raw.endswith(b"\n") and not raw.endswith(b"\r\n")
+
+    conn = sqlite3.connect(_auth_db(tmp_path))
+    try:
+        salt, pwd_hash = conn.execute(
+            "SELECT password_salt, password_hash FROM auth_user WHERE username = ?",
+            (studio_mod.DEFAULT_ADMIN_USERNAME,),
+        ).fetchone()
+    finally:
+        conn.close()
+    assert studio_mod._pbkdf2_hex(raw.decode("utf-8").strip(), salt.encode("utf-8")) == pwd_hash
 
 
 # ── non-interactive --password / UNSLOTH_STUDIO_PASSWORD / stdin ──────
@@ -1284,7 +1364,7 @@ def test_studio_default_password_must_differ_fails_closed(monkeypatch, tmp_path)
     studio_mod = _studio()
     events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
     _seed_auth(studio_mod)
-    bootstrap_pw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text()
+    bootstrap_pw = (tmp_path / "auth" / studio_mod.BOOTSTRAP_PASSWORD_FILE).read_text().strip()
 
     result = _invoke_studio_default(monkeypatch, events, ["--secure", "--password", bootstrap_pw])
 
@@ -1368,30 +1448,3 @@ def test_studio_default_password_applies_on_headless_wildcard_no_tunnel(monkeypa
     assert after["must_change_password"] == 0
     assert after["password_hash"] != before["password_hash"]
     assert "--password" not in _exec_argv(events)
-
-
-def test_reset_password_then_password_roundtrip(monkeypatch, tmp_path):
-    # After reset-password wipes the DB, the next start re-seeds a fresh admin
-    # that again requires a change, so --password can set a new initial password.
-    import typer
-
-    studio_mod = _studio()
-    monkeypatch.setattr(studio_mod, "STUDIO_HOME", tmp_path)
-    _seed_auth(studio_mod)
-    conn = studio_mod._connect_auth_db()
-    studio_mod._cli_update_password(conn, studio_mod.DEFAULT_ADMIN_USERNAME, "first-password-1")
-    conn.close()
-    assert _auth_state(studio_mod)["must_change_password"] == 0
-
-    # reset-password deletes the auth DB + seeded credential files.
-    try:
-        studio_mod.reset_password()
-    except typer.Exit:
-        pass
-    assert not (tmp_path / "auth" / "auth.db").exists()
-
-    # A restart re-seeds (ensure_default_admin, must_change=1); --password sets anew.
-    events = _install_prompt_env(monkeypatch, tmp_path, interactive = True)
-    _invoke_studio_default(monkeypatch, events, ["--secure", "--password", "second-password-2"])
-    assert [kind for kind, _ in events] == ["exec"], events
-    assert _auth_state(studio_mod)["must_change_password"] == 0

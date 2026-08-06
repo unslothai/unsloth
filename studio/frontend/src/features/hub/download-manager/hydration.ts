@@ -7,7 +7,7 @@ import {
   getAllActiveModelDownloads,
   type DownloadJobState,
 } from "./api";
-import { DOWNLOAD_KIND } from "./constants";
+import { DOWNLOAD_KIND, isResolvedTransport } from "./constants";
 import { ACTIVE_STATES, POLL_REQUEST_TIMEOUT_MS } from "./download-manager-config";
 import {
   apiGetProgress,
@@ -65,6 +65,7 @@ function removeLocalActivePeers(
   const activeJobKey = jobKeyOf(kind, repoId, variant);
   const snapshotJobKey = jobKeyOf(kind, repoId, null);
   for (const job of Object.values(getState().jobs)) {
+    if (job.external) continue;
     if (!ACTIVE_STATES.has(job.state)) continue;
     if (repoKeyOf(job.kind, job.repoId) !== activeRepoKey) continue;
     if (variant !== null && kind === DOWNLOAD_KIND.MODEL) {
@@ -97,6 +98,12 @@ async function adoptActiveModelDownloads(): Promise<void> {
       },
       safeGeneration(download.generation),
       download.state,
+      isResolvedTransport(download.transport) ? download.transport : undefined,
+      // null, not undefined: this endpoint always reports the marker, so "no
+      // marker" has to clear one a previous run left in storage.
+      isResolvedTransport(download.cancel_transport)
+        ? download.cancel_transport
+        : null,
     );
   }
 }
@@ -118,6 +125,12 @@ async function adoptActiveDatasetDownloads(): Promise<void> {
       },
       safeGeneration(download.generation),
       download.state,
+      isResolvedTransport(download.transport) ? download.transport : undefined,
+      // null, not undefined: this endpoint always reports the marker, so "no
+      // marker" has to clear one a previous run left in storage.
+      isResolvedTransport(download.cancel_transport)
+        ? download.cancel_transport
+        : null,
     );
   }
 }
@@ -262,6 +275,8 @@ export function hydrateDownloadManager(): void {
   void hydrateBackendActiveDownloads();
   const jobs = Object.values(getState().jobs);
   for (const job of jobs) {
+    // External jobs are live in memory and have no hub job to probe.
+    if (job.external) continue;
     if (!ACTIVE_STATES.has(job.state)) {
       removeJob(job.key);
       continue;

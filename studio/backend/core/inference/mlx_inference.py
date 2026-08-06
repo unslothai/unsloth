@@ -8,16 +8,77 @@ instead of torch/transformers for model loading and generation.
 import json
 import os
 import threading
+from contextlib import contextmanager
 from typing import Optional, Generator
 from core.inference.message_content import content_to_text
 from core.inference.runtime_context import runtime_context_length
 from core.inference.chat_template_helpers import (
     ReasoningChannelNormalizer,
+    markup_for_tokenizer,
+    neutralize_control_markup_in_messages,
     normalize_reasoning_snapshots,
 )
+from utils.models.model_config import is_audio_input_type
 from loggers import get_logger
 
 logger = get_logger(__name__)
+
+
+def _mlx_adapter_modules(model):
+    """Return bypassable adapter entries and unsupported wrapper paths."""
+    adapters = []
+    unsupported = []
+    for path, module in model.named_modules():
+        if not path or not (hasattr(module, "lora_a") and hasattr(module, "lora_b")):
+            continue
+        base = getattr(module, "linear", None)
+        if base is None:
+            base = getattr(module, "embedding", None)
+        if base is None:
+            unsupported.append(path)
+        else:
+            adapters.append((path, module, base))
+    return adapters, unsupported
+
+
+@contextmanager
+def _temporary_mlx_adapter_state(model, use_adapter):
+    """Select base or adapter modules for one request, then restore the tree."""
+    if use_adapter is None:
+        yield
+        return
+    if isinstance(use_adapter, str):
+        raise NotImplementedError(
+            "Unsloth MLX: named adapter selection is not supported; use True for "
+            "the loaded adapter or False for the base model."
+        )
+    if use_adapter is not True and use_adapter is not False:
+        raise TypeError("Unsloth MLX: use_adapter must be None, True, False, or a string.")
+
+    adapters, unsupported = _mlx_adapter_modules(model)
+    if use_adapter is True:
+        if not adapters and not unsupported:
+            logger.warning("MLX adapter requested, but the active model has no adapter layers")
+        yield
+        return
+    if unsupported:
+        raise RuntimeError(
+            "Unsloth MLX: cannot disable adapter layers without their base modules: "
+            + ", ".join(unsupported[:5])
+        )
+    if not adapters:
+        yield
+        return
+
+    from mlx.utils import tree_unflatten
+
+    base_modules = tree_unflatten([(path, base) for path, _, base in adapters])
+    adapter_modules = tree_unflatten([(path, wrapper) for path, wrapper, _ in adapters])
+    try:
+        model.update_modules(base_modules)
+        yield
+    finally:
+        model.update_modules(adapter_modules)
 
 
 def _mlx_vlm_model_config(model):
@@ -39,7 +100,13 @@ def _mlx_vlm_model_config(model):
     return (configs[0] if configs else None), None
 
 
-def _render_registered_vlm_prompt(processor, model, messages, num_images):
+def _render_registered_vlm_prompt(
+    processor,
+    model,
+    messages,
+    num_images,
+    num_audios = 0,
+):
     """Render through mlx-vlm when it declares a formatter for this model."""
     from mlx_vlm import prompt_utils
 
@@ -49,16 +116,102 @@ def _render_registered_vlm_prompt(processor, model, messages, num_images):
     if model_type not in getattr(prompt_utils, "MODEL_CONFIG", {}):
         return None
 
+    # Recovery path: renders the caller's original list, not the neutralized copy (#7066).
     rendered = prompt_utils.apply_chat_template(
         processor,
         config,
-        messages,
+        neutralize_control_markup_in_messages(messages, None, markup_for_tokenizer(processor)),
         add_generation_prompt = True,
         num_images = num_images,
+        num_audios = num_audios,
     )
     if isinstance(rendered, str) and rendered.strip():
         return rendered
     raise RuntimeError("mlx-vlm's registered renderer returned an empty prompt.")
+
+
+# Rate the chat route decodes uploads to; mlx-vlm does not resample arrays.
+_AUDIO_INPUT_SAMPLE_RATE = 16000
+_AUDIO_PROBE_MESSAGES = [{"role": "user", "content": "audio"}]
+
+
+def _classify_mlx_audio_type(
+    model,
+    processor,
+    is_vision,
+    config_audio_type = None,
+):
+    """audio_type for the model entry: "audio_vlm" (omni audio input; is_audio
+    stays False — it means TTS and redirects in the chat route) or None.
+
+    The checkpoint's own capability comes from unsloth_zoo, which answers it by
+    observing whether audio content changes what the processor returns. Two
+    things stay here because they are this backend's, not the checkpoint's: the
+    waveform arrives at the rate the chat route decodes to, and the prompt is
+    rendered through mlx-vlm's registry, where some families accept an audio
+    count and silently drop it. The rendered prompt is what the capability call
+    probes with, so a family whose marker only its own template emits is judged
+    on the real thing.
+
+    This probe speaks for "audio_vlm" and nothing else, so `config_audio_type`
+    (the pre-load answer from detect_audio_type) is carried through untouched
+    whenever the probe has no standing:
+
+      * a non-vision checkpoint is never asked, so a TTS codec ("snac", "dac",
+        "bicodec", "csm") or Whisper keeps the classification it arrived with —
+        the worker mirrors this entry over the pre-load config, so returning a
+        bare None here would silently strip the chat route's TTS redirect;
+      * a probe that could not run (absent or older unsloth_zoo, a raising or
+        unrecognised capability result) leaves the pre-load answer standing
+        rather than downgrading a model on the strength of a missing
+        dependency.
+
+    Only a probe that actually ran and answered may retract "audio_vlm".
+    """
+
+    def _probe_says_no():
+        # Authoritative for audio_vlm only; anything else passes through.
+        return None if config_audio_type == "audio_vlm" else config_audio_type
+
+    if not is_vision or processor is None:
+        return config_audio_type
+    # All of it inside the guard: a model load must never fail on a probe.
+    # BaseException because any escape here aborts the load.
+    try:
+        from unsloth_zoo.mlx.utils import (
+            audio_extractor_sampling_rate,
+            audio_input_capability,
+        )
+
+        if audio_extractor_sampling_rate(processor) != _AUDIO_INPUT_SAMPLE_RATE:
+            logger.info(
+                "MLX audio input unavailable: feature extractor is not %d Hz, and "
+                "the chat route decodes uploads to that rate.",
+                _AUDIO_INPUT_SAMPLE_RATE,
+            )
+            return _probe_says_no()
+        args = (processor, model, _AUDIO_PROBE_MESSAGES, 0)
+        marked = _render_registered_vlm_prompt(*args, num_audios = 1)
+        if not marked or marked == _render_registered_vlm_prompt(*args, num_audios = 0):
+            logger.info(
+                "MLX audio input unavailable: mlx-vlm's renderer for this family "
+                "places no audio marker."
+            )
+            return _probe_says_no()
+        capability = audio_input_capability(model, processor, texts = marked)
+        if capability.capable:
+            return "audio_vlm"
+        logger.info("MLX audio input unavailable for this model: %s", capability.reason)
+        return _probe_says_no()
+    except BaseException as exc:
+        logger.info(
+            "MLX audio capability check did not run (%s); keeping the pre-load "
+            "classification %r. Audio input needs an unsloth_zoo release providing "
+            "audio_input_capability.",
+            type(exc).__name__,
+            config_audio_type,
+        )
+    return config_audio_type
 
 
 def _count_vlm_images(content):
@@ -123,19 +276,27 @@ def _vlm_messages_have_tool_history(messages):
     )
 
 
-def _build_generation_stats(prompt_n, prompt_tps, gen_n, gen_tps):
+def _build_generation_stats(
+    prompt_n,
+    prompt_tps,
+    gen_n,
+    gen_tps,
+    cached_n = 0,
+):
     """Map mlx stream stats onto the usage/timings shape llama-server emits."""
     prompt_n = int(prompt_n or 0)
     gen_n = int(gen_n or 0)
+    cached_n = int(cached_n or 0)
     prompt_tps = float(prompt_tps or 0.0)
     gen_tps = float(gen_tps or 0.0)
     prompt_ms = (prompt_n / prompt_tps * 1000.0) if prompt_tps > 0 else 0.0
     predicted_ms = (gen_n / gen_tps * 1000.0) if gen_tps > 0 else 0.0
+    total_prompt_n = prompt_n + cached_n
     return {
         "usage": {
-            "prompt_tokens": prompt_n,
+            "prompt_tokens": total_prompt_n,
             "completion_tokens": gen_n,
-            "total_tokens": prompt_n + gen_n,
+            "total_tokens": total_prompt_n + gen_n,
         },
         "timings": {
             "prompt_n": prompt_n,
@@ -146,9 +307,121 @@ def _build_generation_stats(prompt_n, prompt_tps, gen_n, gen_tps):
             "predicted_ms": predicted_ms,
             "predicted_per_token_ms": (predicted_ms / gen_n) if gen_n > 0 else 0.0,
             "predicted_per_second": gen_tps,
-            "cache_n": 0,
+            "cache_n": cached_n,
         },
     }
+
+
+PROMPT_CACHE_ENTRIES = 6
+PROMPT_CACHE_MEMORY_FRACTION = 0.15
+PROMPT_CACHE_FALLBACK_BYTES = 2 * 1024**3
+
+
+def _mlx_prompt_cache_api():
+    try:
+        from mlx_lm.models.cache import (
+            LRUPromptCache,
+            can_trim_prompt_cache,
+            make_prompt_cache,
+            trim_prompt_cache,
+        )
+    except ImportError:
+        return None
+    return LRUPromptCache, make_prompt_cache, can_trim_prompt_cache, trim_prompt_cache
+
+
+def _prompt_cache_max_bytes(recommended_gb = None):
+    override = os.environ.get("UNSLOTH_MLX_PROMPT_CACHE_BYTES")
+    if override:
+        try:
+            return max(int(override), 0)
+        except ValueError:
+            logger.warning("Ignoring non-integer UNSLOTH_MLX_PROMPT_CACHE_BYTES=%r", override)
+    if recommended_gb:
+        return int(recommended_gb * 1e9 * PROMPT_CACHE_MEMORY_FRACTION)
+    return PROMPT_CACHE_FALLBACK_BYTES
+
+
+def _flatten_kv_entries(cache):
+    for entry in cache:
+        nested = getattr(entry, "caches", None)
+        if nested is None:
+            yield entry
+        else:
+            yield from _flatten_kv_entries(nested)
+
+
+def _kv_prefix_coverage(cache):
+    covered = None
+    for entry in _flatten_kv_entries(cache):
+        offset = getattr(entry, "offset", None)
+        if offset is None:
+            return None
+        if getattr(entry, "start_position", 0):
+            return None
+        window = getattr(entry, "max_size", None)
+        if window is not None and offset > window:
+            return None
+        if covered is None:
+            covered = offset
+        elif covered != offset:
+            return None
+    return covered
+
+
+class _MLXPromptCacheHistory:
+    def __init__(self, max_entries, max_bytes):
+        api = _mlx_prompt_cache_api()
+        if api is None:
+            raise RuntimeError("mlx-lm is too old for LRUPromptCache")
+        lru_cls, make, can_trim, trim = api
+        self._make_prompt_cache = make
+        self._can_trim = can_trim
+        self._trim = trim
+        self._max_bytes = max_bytes
+        self._lru = lru_cls(max_size = max_entries, max_bytes = max_bytes)
+
+    def fetch(self, model, key, tokens):
+        cache, rest = self._lru.fetch_nearest_cache(key, list(tokens))
+        if cache is not None:
+            if rest:
+                return cache, list(rest)
+            if self._can_trim(cache) and self._trim(cache, 1) == 1:
+                return cache, list(tokens[-1:])
+        if len(tokens) > 1:
+            head = list(tokens[:-1])
+            cache, rest = self._lru.fetch_nearest_cache(key, head)
+            if cache is not None:
+                covered = len(head) - len(rest)
+                return cache, list(tokens[covered:])
+        return self._make_prompt_cache(model), list(tokens)
+
+    def insert(self, key, tokens, cache):
+        # An over-budget entry evicts itself and every other conversation.
+        nbytes = sum(getattr(entry, "nbytes", 0) for entry in cache)
+        if nbytes > self._max_bytes:
+            logger.debug(
+                "MLX prompt cache: skipping %.2f GB entry over the %.2f GB budget",
+                nbytes / 1e9,
+                self._max_bytes / 1e9,
+            )
+            return
+        covered = _kv_prefix_coverage(cache)
+        if covered is None:
+            logger.debug("MLX prompt cache: skipping cache with unverifiable prefix coverage")
+            return
+        tokens = list(tokens)
+        if covered > len(tokens):
+            logger.debug(
+                "MLX prompt cache: cache covers %d tokens but only %d were tracked",
+                covered,
+                len(tokens),
+            )
+            return
+        tokens = tokens[:covered]
+        if not tokens:
+            return
+        self._lru.insert_cache(key, tokens, cache)
 
 
 def _mlx_distributed_rank_size(group = None):
@@ -254,6 +527,55 @@ class MLXInferenceBackend:
 
         # Recorded for unload to release pinned memory back to the OS.
         self._memory_limits_applied = {}
+
+        self._prompt_cache_history = None
+        self._prompt_cache_unavailable = False
+
+    def _prompt_cache(self):
+        if self._prompt_cache_history is not None or self._prompt_cache_unavailable:
+            return self._prompt_cache_history
+        max_bytes = _prompt_cache_max_bytes(self._memory_limits_applied.get("recommended_gb"))
+        if max_bytes <= 0:
+            self._prompt_cache_unavailable = True
+            logger.info("MLX prompt cache disabled by budget")
+            return None
+        try:
+            self._prompt_cache_history = _MLXPromptCacheHistory(
+                PROMPT_CACHE_ENTRIES,
+                max_bytes,
+            )
+        except Exception as exc:
+            self._prompt_cache_unavailable = True
+            logger.info("MLX prompt cache unavailable (%s); prefilling every request", exc)
+            return None
+        logger.info(
+            "MLX prompt cache: %d entries, %.2f GB budget",
+            PROMPT_CACHE_ENTRIES,
+            max_bytes / 1e9,
+        )
+        return self._prompt_cache_history
+
+    def _clear_prompt_cache(self):
+        self._prompt_cache_history = None
+        self._prompt_cache_unavailable = False
+
+    def _prepare_prompt_cache(self, prompt, adapter_state):
+        history = self._prompt_cache()
+        if history is None:
+            return prompt, None, None, None, 0
+        try:
+            tokenizer = self._tokenizer
+            bos = getattr(tokenizer, "bos_token", None)
+            add_special_tokens = bos is None or not prompt.startswith(bos)
+            tokens = list(tokenizer.encode(prompt, add_special_tokens = add_special_tokens))
+            if not tokens:
+                return prompt, None, None, None, 0
+            key = f"{self.active_model_name}|{adapter_state!r}"
+            cache, rest = history.fetch(self._model, key, tokens)
+        except Exception as exc:
+            logger.debug("MLX prompt cache lookup failed: %s", exc)
+            return prompt, None, None, None, 0
+        return rest, cache, key, tokens, len(tokens) - len(rest)
 
     def _configure_memory_limits(self):
         """Apply Metal memory caps before loading a model.
@@ -394,6 +716,12 @@ class MLXInferenceBackend:
             self._processor = None
             self._is_vlm = False
 
+        _audio_type = _classify_mlx_audio_type(
+            model,
+            self._processor,
+            is_vision,
+            config_audio_type = getattr(config, "audio_type", None),
+        )
         self.active_model_name = model_name
         self.models[model_name] = {
             # Per-model token for the native-template fallback (matches transformers).
@@ -409,9 +737,10 @@ class MLXInferenceBackend:
             "base_model": getattr(config, "base_model", None)
             if getattr(config, "is_lora", False)
             else None,
-            "is_audio": False,
-            "audio_type": None,
-            "has_audio_input": False,
+            # Mirrors utils.models.model_config semantics (is_audio == TTS).
+            "is_audio": _audio_type is not None and _audio_type != "audio_vlm",
+            "audio_type": _audio_type,
+            "has_audio_input": is_audio_input_type(_audio_type),
             "context_length": runtime_context_length(self._model, max_seq_length),
         }
         # Capture chat_template_info for the worker IPC reply and route capability classification.
@@ -477,6 +806,7 @@ class MLXInferenceBackend:
         self._distributed_world_size = 1
         if self.active_model_name == model_name:
             self.active_model_name = None
+        self._clear_prompt_cache()
         gc.collect()
         mx.clear_cache()
 
@@ -508,6 +838,7 @@ class MLXInferenceBackend:
         reasoning_effort = None,
         preserve_thinking = None,
         presence_penalty = 0.0,
+        _adapter_state = None,
     ) -> Generator[str, None, None]:
         if self._model is None:
             raise RuntimeError("No model loaded")
@@ -552,6 +883,7 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 presence_penalty = presence_penalty,
+                _adapter_state = _adapter_state,
             )
         else:
             stream = self._generate_text(
@@ -568,6 +900,7 @@ class MLXInferenceBackend:
                 reasoning_effort = reasoning_effort,
                 preserve_thinking = preserve_thinking,
                 presence_penalty = presence_penalty,
+                _adapter_state = _adapter_state,
             )
         yield from stream
 
@@ -587,6 +920,7 @@ class MLXInferenceBackend:
         reasoning_effort = None,
         preserve_thinking = None,
         presence_penalty = 0.0,
+        _adapter_state = None,
     ):
         from mlx_lm import stream_generate
         from mlx_lm.sample_utils import make_sampler, make_logits_processors
@@ -635,10 +969,6 @@ class MLXInferenceBackend:
         think_prefix = detect_think_prefill(
             prompt, getattr(self._tokenizer, "all_special_tokens", None)
         )
-        # Emit it before the first token so the block renders during prefill.
-        if think_prefix:
-            yield think_prefix
-
         sampler = make_sampler(
             temp = temperature,
             top_p = top_p,
@@ -673,21 +1003,34 @@ class MLXInferenceBackend:
         # <think> prefix on every native-protocol snapshot just as the normal
         # decoding path does below.
         normalized_output = think_prefix
-        logger.info(
-            "Generating: prompt_len=%d, max_tokens=%d, model=%s, tokenizer=%s",
-            len(prompt),
-            max_new_tokens,
-            type(self._model).__name__,
-            type(self._tokenizer).__name__,
-        )
-        with self._generation_lock:
+        with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
+            (
+                gen_prompt,
+                prompt_cache,
+                cache_key,
+                prompt_tokens,
+                cached_n,
+            ) = self._prepare_prompt_cache(prompt, _adapter_state)
+            logger.info(
+                "Generating: prompt_len=%d, cached=%d, max_tokens=%d, model=%s, tokenizer=%s",
+                len(prompt),
+                cached_n,
+                max_new_tokens,
+                type(self._model).__name__,
+                type(self._tokenizer).__name__,
+            )
             final_response = None
             try:
+                # Enter request-scoped model state before yielding any response.
+                if think_prefix:
+                    yield think_prefix
                 gen_kwargs = dict(
-                    prompt = prompt,
+                    prompt = gen_prompt,
                     max_tokens = max_new_tokens,
                     sampler = sampler,
                 )
+                if prompt_cache is not None:
+                    gen_kwargs["prompt_cache"] = prompt_cache
                 if logits_processors is not None:
                     gen_kwargs["logits_processors"] = logits_processors
                 for response in stream_generate(
@@ -696,6 +1039,7 @@ class MLXInferenceBackend:
                     **gen_kwargs,
                 ):
                     final_response = response
+                    token_ids.append(response.token)
                     if preserve_native_channels:
                         piece = getattr(response, "text", None) or ""
                         delta = normalizer.feed(piece)
@@ -703,7 +1047,6 @@ class MLXInferenceBackend:
                             normalized_output += delta
                             yield normalized_output
                     else:
-                        token_ids.append(response.token)
                         cumulative = self._tokenizer.decode(
                             token_ids,
                             skip_special_tokens = True,
@@ -712,6 +1055,13 @@ class MLXInferenceBackend:
 
                     if cancel_event and cancel_event.is_set():
                         break
+                if prompt_cache is not None and prompt_tokens is not None:
+                    history = self._prompt_cache_history
+                    if history is not None:
+                        try:
+                            history.insert(cache_key, prompt_tokens + token_ids, prompt_cache)
+                        except Exception as exc:
+                            logger.debug("MLX prompt cache insert failed: %s", exc)
             except Exception as e:
                 import traceback
                 logger.error("stream_generate failed:\n%s", traceback.format_exc())
@@ -724,6 +1074,7 @@ class MLXInferenceBackend:
                         getattr(final_response, "prompt_tps", 0.0),
                         getattr(final_response, "generation_tokens", 0),
                         getattr(final_response, "generation_tps", 0.0),
+                        cached_n,
                     )
         if normalizer is not None:
             cancelled = cancel_event is not None and cancel_event.is_set()
@@ -749,22 +1100,20 @@ class MLXInferenceBackend:
         reasoning_effort = None,
         preserve_thinking = None,
         presence_penalty = 0.0,
+        _adapter_state = None,
     ):
         from mlx_vlm import stream_generate as vlm_stream
 
         from core.inference.chat_template_helpers import (
             apply_chat_template_for_generation,
+            chat_render_target,
         )
 
         # Pick the chat-template-aware caller: processors with their own
         # apply_chat_template + chat_template (e.g. Qwen2.5-VL), else the nested tokenizer.
-        chat_target = self._processor
-        if (
-            getattr(self._processor, "apply_chat_template", None) is None
-            or not hasattr(self._processor, "chat_template")
-            or self._processor.chat_template is None
-        ):
-            chat_target = getattr(self._processor, "tokenizer", self._processor)
+        # Shared with the healing catalog the route builds ahead of this render, which has
+        # to authorize against the same template this line selects (#7066).
+        chat_target = chat_render_target(self._processor)
 
         # mlx_vlm's stream_generate handles pixel_values (None for text-only)
         images = [image] if image is not None else None
@@ -852,9 +1201,6 @@ class MLXInferenceBackend:
 
         # Re-emit an open <think> prefill from the prompt (see _generate_text).
         cumulative = detect_think_prefill(prompt, getattr(chat_target, "all_special_tokens", None))
-        # Emit it before the first token so the block renders during prefill.
-        if cumulative:
-            yield cumulative
         logger.info(
             "VLM generating: prompt_len=%d, has_image=%s",
             len(prompt),
@@ -891,9 +1237,18 @@ class MLXInferenceBackend:
 
         def _stream_vlm_snapshots():
             nonlocal cumulative
-            with self._generation_lock:
+            # Hold the generation lock AND the request-scoped adapter state for the
+            # whole stream so Base-vs-LoRA compare mode honors use_adapter and the
+            # wrapper tree is restored on completion, cancellation, or close.
+            with self._generation_lock, _temporary_mlx_adapter_state(self._model, _adapter_state):
                 final_response = None
                 try:
+                    # Emit any prefilled <think> block before the first token so the
+                    # UI renders it during prefill, matching _generate_text. Done
+                    # inside the adapter context so an unsupported request raises
+                    # before any output escapes.
+                    if cumulative:
+                        yield cumulative
                     for response in vlm_stream(
                         self._model,
                         self._processor,
@@ -921,16 +1276,99 @@ class MLXInferenceBackend:
             _stream_vlm_snapshots(), chat_target, cancel_event, tools = tools
         )
 
+    def generate_audio_input_response(
+        self,
+        messages,
+        system_prompt,
+        audio_array,
+        max_new_tokens = 512,
+        use_adapter = None,
+        cancel_event = None,
+        **_sampler,
+    ):
+        """Audio-input chat (omni models): waveform in, incremental text deltas
+        out (the audio route forwards deltas, unlike the snapshot-diffing
+        text/vision paths). Greedy, so the worker's sampler kwargs go unused."""
+        entry = self.models.get(self.active_model_name) or {}
+        if entry.get("audio_type") != "audio_vlm":
+            raise RuntimeError(
+                "Audio input is not supported for this model on the MLX backend: "
+                "no verified audio-capable tower/processor was detected at load."
+            )
+
+        from mlx_vlm import stream_generate as vlm_stream
+
+        # Only the CURRENT user turn may caption the audio; never older history.
+        user_text = ""
+        for msg in reversed(messages or []):
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                user_text = content_to_text(msg.get("content") or "").strip()
+                break
+        if not user_text:
+            user_text = "Please transcribe this audio."
+        if not system_prompt:
+            system_prompt = "You are an assistant that transcribes speech accurately."
+
+        audio_messages = [
+            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+            {"role": "user", "content": [{"type": "audio"}, {"type": "text", "text": user_text}]},
+        ]
+        prompt = _render_registered_vlm_prompt(
+            self._processor,
+            self._model,
+            audio_messages,
+            num_images = 0,
+            num_audios = 1,
+        )
+        if prompt is None:
+            raise RuntimeError(
+                "mlx-vlm has no registered prompt renderer for this model family; "
+                "cannot build an audio prompt."
+            )
+
+        logger.info("MLX audio-input generating: prompt_len=%d", len(prompt))
+        # Hold the adapter state for the whole stream, as text and vision do,
+        # so Base-vs-LoRA compare doesn't run the adapter on both sides.
+        with self._generation_lock, _temporary_mlx_adapter_state(self._model, use_adapter):
+            final_response = None
+            try:
+                for response in vlm_stream(
+                    self._model,
+                    self._processor,
+                    prompt,
+                    audio = [audio_array],
+                    max_tokens = max_new_tokens,
+                    temperature = 0.0,
+                ):
+                    final_response = response
+                    token_text = response.text if hasattr(response, "text") else str(response)
+                    if token_text:
+                        yield token_text
+                    if cancel_event and cancel_event.is_set():
+                        break
+            finally:
+                if final_response is not None:
+                    self.last_generation_stats = _build_generation_stats(
+                        getattr(final_response, "prompt_tokens", 0),
+                        getattr(final_response, "prompt_tps", 0.0),
+                        getattr(final_response, "generation_tokens", 0),
+                        getattr(final_response, "generation_tps", 0.0),
+                    )
+
     def generate_with_adapter_control(
         self,
         use_adapter = None,
         cancel_event = None,
         **gen_kwargs,
     ) -> Generator[str, None, None]:
-        # MLX LoRA adapter toggling not yet supported; generate normally
-        yield from self.generate_chat_response(cancel_event = cancel_event, **gen_kwargs)
+        yield from self.generate_chat_response(
+            cancel_event = cancel_event,
+            _adapter_state = use_adapter,
+            **gen_kwargs,
+        )
 
-    def reset_generation_state(self):
+    def reset_generation_state(self, caller_cancel_event = None):
+        # caller_cancel_event: signature parity with the orchestrator; unused here.
         import mlx.core as mx
         import gc
 

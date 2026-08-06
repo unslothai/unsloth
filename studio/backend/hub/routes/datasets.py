@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Query, UploadFile
+from fastapi import APIRouter, Body, Depends, File, Form, Query, UploadFile
 
 from auth.authentication import get_current_subject
 from hub.dependencies import get_hf_token
@@ -18,6 +18,8 @@ from hub.schemas.datasets import (
     CheckFormatRequest,
     CheckFormatResponse,
     DeleteCachedDatasetResponse,
+    LocalDatasetOptionsRequest,
+    LocalDatasetOptionsResponse,
     LocalDatasetsResponse,
     UploadDatasetResponse,
 )
@@ -31,16 +33,18 @@ from hub.schemas.downloads import (
     DownloadDatasetRequest,
     TransportStatusResponse,
 )
-from hub.services.datasets import cache_inventory, downloads, formatting, local
+from hub.services.datasets import cache_inventory, downloads, formatting, local, local_options
 
 router = APIRouter()
 
 
 @router.post("/upload", response_model = UploadDatasetResponse)
 async def upload_dataset(
-    file: UploadFile, current_subject: str = Depends(get_current_subject)
+    file: UploadFile | None = File(None),
+    native_path_lease: str | None = Form(None, alias = "nativePathLease"),
+    current_subject: str = Depends(get_current_subject),
 ) -> UploadDatasetResponse:
-    return await local.upload_dataset_response(file)
+    return await local.upload_dataset_response(file, native_path_lease)
 
 
 @router.get("/local", response_model = LocalDatasetsResponse)
@@ -59,11 +63,20 @@ async def list_cached_datasets(current_subject: str = Depends(get_current_subjec
     return await cache_inventory.list_cached_datasets_response()
 
 
+@router.post("/local-options", response_model = LocalDatasetOptionsResponse)
+def get_local_dataset_options(
+    request: LocalDatasetOptionsRequest, current_subject: str = Depends(get_current_subject)
+) -> LocalDatasetOptionsResponse:
+    return local_options.local_dataset_options(request)
+
+
 @router.delete("/cached", response_model = DeleteCachedDatasetResponse)
 async def delete_cached_dataset(
-    repo_id: str = Body(..., embed = True), current_subject: str = Depends(get_current_subject)
+    repo_id: str = Body(..., embed = True),
+    cache_path: Optional[str] = Body(None, embed = True),
+    current_subject: str = Depends(get_current_subject),
 ):
-    return await cache_inventory.delete_cached_dataset_response(repo_id)
+    return await cache_inventory.delete_cached_dataset_response(repo_id, cache_path)
 
 
 @router.get("/download-progress", response_model = DownloadProgressResponse)

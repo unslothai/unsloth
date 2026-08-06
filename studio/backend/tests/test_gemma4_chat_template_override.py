@@ -3,7 +3,7 @@
 
 """Auto-override of the chat template for ``unsloth/gemma-4-*-GGUF``.
 
-Studio ships a bundled ``gemma-4.jinja`` (PR #118 based, ``preserve_thinking``
+Unsloth ships a bundled ``gemma-4.jinja`` (PR #118 based, ``preserve_thinking``
 defaulted off) and applies it to gemma-4 GGUF loads via the existing
 ``chat_template_override`` -> ``--chat-template-file`` path, so users do not need
 to re-download quants. Pins the family matcher, the resolver precedence, the
@@ -299,7 +299,7 @@ def test_already_in_target_state_consistent_with_bundled_override():
     ``chat_template_override`` still matches (no spurious reload), while a raw
     ``None`` would not.
     """
-    LlamaCppBackend = _import_backend()
+    LlamaCppBackend, GgufLoadIntent = _import_backend()
 
     class _FakeProcess:
         def terminate(self): ...
@@ -334,12 +334,16 @@ def test_already_in_target_state_consistent_with_bundled_override():
         is_vision = False,
     )
     # Effective (resolved bundled) override -> already loaded, no reload.
-    assert backend._already_in_target_state(chat_template_override = BUNDLED, **common) is True
+    assert backend.adopt_load_intent_if_matched(
+        GgufLoadIntent(chat_template_override = BUNDLED, **common)
+    )
     # Raw None (unresolved) -> false match, would force a needless reload.
-    assert backend._already_in_target_state(chat_template_override = None, **common) is False
+    assert not backend.adopt_load_intent_if_matched(
+        GgufLoadIntent(chat_template_override = None, **common)
+    )
 
 
 def _import_backend():
     with _stub_modules_ctx():
-        from core.inference.llama_cpp import LlamaCppBackend
-    return LlamaCppBackend
+        from core.inference.llama_cpp import GgufLoadIntent, LlamaCppBackend
+    return LlamaCppBackend, GgufLoadIntent

@@ -1,10 +1,15 @@
 use crate::diagnostics::{self, AttemptLog, DiagnosticsState};
+use crate::process::trim_line_endings;
 use log::{error, info, warn};
 use process_wrap::std::*;
 use std::io::BufRead;
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter};
+
+#[cfg(windows)]
+const WINDOWS_CLI_ENTRYPOINT: &str =
+    "import sys; sys.argv[0] = 'unsloth'; from unsloth_cli import app; app()";
 
 // ── Types ──
 
@@ -31,6 +36,35 @@ pub fn new_update_state() -> UpdateState {
 }
 
 // ── Spawn ──
+fn build_update_command(bin: &std::path::Path) -> Result<Command, String> {
+    #[cfg(windows)]
+    {
+        let python = bin
+            .parent()
+            .ok_or_else(|| "Managed Unsloth executable has no parent directory.".to_string())?
+            .join("python.exe");
+        if !python.is_file() {
+            return Err(format!(
+                "Managed Python interpreter not found beside Unsloth: {}",
+                python.display()
+            ));
+        }
+        let mut cmd = Command::new(python);
+        // Isolated mode prevents a project-local unsloth_cli module or an
+        // inherited Python search path from shadowing the managed package.
+        cmd.args(["-I", "-c", WINDOWS_CLI_ENTRYPOINT, "studio", "update"]);
+        cmd.env_remove("PYTHONHOME");
+        cmd.env_remove("PYTHONPATH");
+        Ok(cmd)
+    }
+
+    #[cfg(not(windows))]
+    {
+        let mut cmd = Command::new(bin);
+        cmd.args(["studio", "update"]);
+        Ok(cmd)
+    }
+}
 
 fn spawn_update(
     bin: &std::path::Path,
@@ -48,10 +82,8 @@ fn spawn_update(
     }
     update.intentional_stop = false;
 
-    let mut cmd = Command::new(bin);
-    cmd.args(["studio", "update"])
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    let mut cmd = build_update_command(bin)?;
+    cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
 
     // AppImage sets LD_LIBRARY_PATH to its bundled libs, which breaks Python
     #[cfg(target_os = "linux")]
@@ -97,6 +129,21 @@ fn spawn_update(
 
 // ── Stream ──
 
+fn read_lossy_lines<R: std::io::Read>(
+    stream: R,
+    mut on_line: impl FnMut(String),
+) -> std::io::Result<()> {
+    let mut reader = std::io::BufReader::new(stream);
+    let mut buf = Vec::new();
+    loop {
+        buf.clear();
+        if reader.read_until(b'\n', &mut buf)? == 0 {
+            return Ok(());
+        }
+        on_line(String::from_utf8_lossy(trim_line_endings(&buf)).into_owned());
+    }
+}
+
 fn stream_output(
     app: &AppHandle,
     progress_event: &'static str,
@@ -112,34 +159,19 @@ fn stream_output(
         let diagnostics_clone = diagnostics.clone();
         let attempt_clone = attempt.clone();
         threads.push(std::thread::spawn(move || {
-            let reader = std::io::BufReader::new(out);
-            for line in reader.lines() {
-                match line {
-                    Ok(text) => {
-                        diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
-                        if let Some(step) = text.strip_prefix("[TAURI:STEP] ") {
-                            diagnostics::record_step(&diagnostics_clone, &attempt_clone, step);
-                        } else if let Some(progress) = text.strip_prefix("[TAURI:PROGRESS] ") {
-                            diagnostics::record_progress(
-                                &diagnostics_clone,
-                                &attempt_clone,
-                                progress,
-                            );
-                        } else if let Some(marker) = text.strip_prefix("[TAURI:DIAG] ") {
-                            diagnostics::record_diag_marker(
-                                &diagnostics_clone,
-                                &attempt_clone,
-                                marker,
-                            );
-                        }
-                        info!("[update][stdout] {}", text);
-                        let _ = app_clone.emit(progress_event, &text);
-                    }
-                    Err(e) => {
-                        warn!("[update] Error reading stdout: {}", e);
-                        break;
-                    }
+            if let Err(e) = read_lossy_lines(out, |text| {
+                diagnostics::append_phase_line(&attempt_clone.handle, "stdout", &text);
+                if let Some(step) = text.strip_prefix("[TAURI:STEP] ") {
+                    diagnostics::record_step(&diagnostics_clone, &attempt_clone, step);
+                } else if let Some(progress) = text.strip_prefix("[TAURI:PROGRESS] ") {
+                    diagnostics::record_progress(&diagnostics_clone, &attempt_clone, progress);
+                } else if let Some(marker) = text.strip_prefix("[TAURI:DIAG] ") {
+                    diagnostics::record_diag_marker(&diagnostics_clone, &attempt_clone, marker);
                 }
+                info!("[update][stdout] {}", text);
+                let _ = app_clone.emit(progress_event, &text);
+            }) {
+                warn!("[update] Error reading stdout: {}", e);
             }
         }));
     }
@@ -148,19 +180,12 @@ fn stream_output(
         let app_clone = app.clone();
         let attempt_clone = attempt.clone();
         threads.push(std::thread::spawn(move || {
-            let reader = std::io::BufReader::new(err);
-            for line in reader.lines() {
-                match line {
-                    Ok(text) => {
-                        diagnostics::append_phase_line(&attempt_clone.handle, "stderr", &text);
-                        warn!("[update][stderr] {}", text);
-                        let _ = app_clone.emit(progress_event, &text);
-                    }
-                    Err(e) => {
-                        warn!("[update] Error reading stderr: {}", e);
-                        break;
-                    }
-                }
+            if let Err(e) = read_lossy_lines(err, |text| {
+                diagnostics::append_phase_line(&attempt_clone.handle, "stderr", &text);
+                warn!("[update][stderr] {}", text);
+                let _ = app_clone.emit(progress_event, &text);
+            }) {
+                warn!("[update] Error reading stderr: {}", e);
             }
         }));
     }
@@ -188,7 +213,7 @@ fn wait_for_exit(state: &UpdateState) -> Result<(ExitStatus, bool), String> {
                     return Err(format!("Error waiting for update: {}", e));
                 }
             },
-            None if intentional => return Err("Update stopped.".to_string()),
+            None if intentional => return Err(UPDATE_STOPPED.to_string()),
             None => return Err("Update process disappeared unexpectedly.".to_string()),
         }
 
@@ -306,11 +331,11 @@ fn run_backend_update_with_terminal_events(
                 &attempt,
                 Some(status.to_string()),
                 true,
-                Some("Update stopped.".to_string()),
+                Some(UPDATE_STOPPED.to_string()),
             );
             clear_current_attempt(&state);
             info!("[update] Update stopped intentionally");
-            Err("Update stopped.".to_string())
+            Err(UPDATE_STOPPED.to_string())
         }
         Ok((status, intentional)) => {
             let code = status.code().unwrap_or(-1);
@@ -347,6 +372,13 @@ fn clear_current_attempt(state: &UpdateState) {
     }
 }
 
+pub fn is_update_running(state: &UpdateState) -> bool {
+    state
+        .lock()
+        .map(|update| update.child.is_some())
+        .unwrap_or(false)
+}
+
 pub fn record_update_intentional_stop(state: &UpdateState, diagnostics: &DiagnosticsState) {
     let attempt = state
         .lock()
@@ -362,6 +394,8 @@ pub fn record_update_intentional_stop(state: &UpdateState, diagnostics: &Diagnos
         );
     }
 }
+
+pub const UPDATE_STOPPED: &str = "Update stopped.";
 
 pub fn stop_update(state: &UpdateState) -> Result<(), String> {
     let mut child = {
@@ -419,5 +453,68 @@ pub fn stop_update(state: &UpdateState) -> Result<(), String> {
         let _ = child.wait();
         info!("Update process group force stopped");
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Cursor;
+
+    #[test]
+    fn lossy_reader_keeps_invalid_utf8_and_later_lines() {
+        let mut lines = Vec::new();
+        read_lossy_lines(Cursor::new(b"bad\xff\r\n[TAURI:STEP] next\n"), |line| {
+            lines.push(line)
+        })
+        .unwrap();
+
+        assert_eq!(lines, ["bad\u{fffd}", "[TAURI:STEP] next"]);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_update_command_uses_python_not_replaceable_console_stub() {
+        use std::ffi::{OsStr, OsString};
+
+        let dir =
+            std::env::temp_dir().join(format!("unsloth-update-command-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let python = dir.join("python.exe");
+        let bin = dir.join("unsloth.exe");
+        std::fs::write(&python, b"").unwrap();
+
+        let cmd = build_update_command(&bin).unwrap();
+
+        assert_eq!(cmd.get_program(), python.as_os_str());
+        assert_ne!(cmd.get_program(), bin.as_os_str());
+        assert_eq!(
+            cmd.get_args().map(OsString::from).collect::<Vec<_>>(),
+            vec![
+                OsString::from("-I"),
+                OsString::from("-c"),
+                OsString::from(WINDOWS_CLI_ENTRYPOINT),
+                OsString::from("studio"),
+                OsString::from("update")
+            ]
+        );
+        for name in ["PYTHONHOME", "PYTHONPATH"] {
+            assert!(cmd
+                .get_envs()
+                .any(|(key, value)| key == OsStr::new(name) && value.is_none()));
+        }
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_update_command_fails_closed_without_managed_python() {
+        let bin = std::env::temp_dir()
+            .join("missing-managed-python")
+            .join("unsloth.exe");
+        assert!(build_update_command(&bin)
+            .unwrap_err()
+            .contains("python.exe"));
     }
 }

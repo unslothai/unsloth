@@ -10,6 +10,7 @@ import {
   DownloadActionButton,
   DownloadCard,
 } from "./download-card";
+import { downloadStopMode } from "./use-download-card-state";
 
 export function GgufDownloadStatusCard({
   job,
@@ -34,7 +35,7 @@ export function GgufDownloadStatusCard({
         <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
           <span
             className={cn(
-              "flex min-w-0 items-center gap-2 text-[12.5px]",
+              "flex min-w-0 items-center gap-2 text-ui-12p5",
               tone === "danger" ? "text-destructive" : "text-muted-foreground",
             )}
           >
@@ -91,7 +92,7 @@ export function GgufDownloadingFallbackCard({
     <div className="flex w-full flex-col gap-2">
       <DownloadCard job={job} progress={progress}>
         <div className="relative flex h-9 min-w-0 flex-1 items-center pl-3 pr-2">
-          <span className="flex min-w-0 items-center gap-2 text-[12.5px] text-muted-foreground">
+          <span className="flex min-w-0 items-center gap-2 text-ui-12p5 text-muted-foreground">
             {progress.variant && <DotTag tone="gguf" label={progress.variant} />}
             <span className="truncate">Downloading…</span>
           </span>
@@ -101,6 +102,7 @@ export function GgufDownloadingFallbackCard({
           downloading
           cancelling={cancelling}
           progressPercent={Math.round(Math.min(progress.fraction, 1) * 100)}
+          stopMode={downloadStopMode(job.transport, null, job.cancelTransport)}
           disabled={cancelling}
           onClick={() => void job.cancelDownload(progress.variant)}
         />

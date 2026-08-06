@@ -906,7 +906,7 @@ def _call_stdio_tool(
     def _remaining() -> Optional[float]:
         return None if deadline is None else max(0.0, deadline - time.monotonic())
 
-    # Callers without a Studio session id must retain the former one-shot
+    # Callers without an Unsloth session id must retain the former one-shot
     # behavior: no browser/cookie/tool state can leak into another request.
     # Use an ephemeral key (and close it below) rather than the shared empty
     # scope that the persistent-session cache used previously.
@@ -971,7 +971,12 @@ def _call_stdio_tool(
                     raise RuntimeError("MCP server connection is not available")
             else:
                 rem = _remaining()
-                coro = _race_tool_call(session.client.call_tool(name, args), rem, cancel_event)
+                # raise_on_error=False for the same reason as the one-shot path.
+                coro = _race_tool_call(
+                    session.client.call_tool(name, args, raise_on_error = False),
+                    rem,
+                    cancel_event,
+                )
                 return session.run(coro, rem)
         except (_MCPCancelled, asyncio.TimeoutError):
             # _race_tool_call cancels the pending call but cancellation is

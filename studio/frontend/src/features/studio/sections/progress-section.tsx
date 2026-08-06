@@ -19,19 +19,22 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { Progress } from "@/components/ui/progress";
-import { OPTIMIZER_OPTIONS } from "@/config/training";
+import { usePlatformStore } from "@/config/env";
+import { MLX_OPTIMIZER_OPTIONS, OPTIMIZER_OPTIONS } from "@/config/training";
 import { setTrainingCompareHandoff } from "@/features/chat";
 import {
   useTrainingActions,
   useTrainingConfigStore,
   useTrainingRuntimeStore,
 } from "@/features/training";
-import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import type { TrainingViewData } from "@/features/training";
+import { getTrainingMethodLabel } from "@/features/training/lib/training-methods";
 import { useGpuUtilization } from "@/hooks";
 import type { GpuUtilization } from "@/hooks/use-gpu-utilization";
+import { type TranslationKey, useT } from "@/i18n";
 import { cn } from "@/lib/utils";
 import {
+  Alert02Icon,
   ChartAverageIcon,
   DashboardSpeed01Icon,
   FolderExportIcon,
@@ -51,7 +54,7 @@ import {
   formatNumber,
   phaseColors,
 } from "./progress-section-lib";
-import { useT, type TranslationKey } from "@/i18n";
+import type { RunConfigOverride } from "./run-config-override";
 
 type ConfigGroup = {
   section: string;
@@ -66,6 +69,7 @@ const phaseLabelKeys = {
   loading_dataset: "studio.progress.phase.loadingDataset",
   configuring: "studio.progress.phase.configuring",
   training: "studio.progress.phase.training",
+  finalizing: "studio.progress.phase.finalizing",
   completed: "studio.progress.phase.completed",
   error: "studio.progress.phase.error",
   stopped: "studio.progress.phase.stopped",
@@ -81,19 +85,7 @@ function configRow(
 interface ProgressSectionProps {
   data: TrainingViewData;
   isHistorical?: boolean;
-  configOverride?: {
-    epochs?: number;
-    batchSize?: number;
-    learningRate?: string;
-    maxSteps?: number;
-    contextLength?: number;
-    warmupSteps?: number;
-    optimizerType?: string;
-    loraRank?: number;
-    loraAlpha?: number;
-    loraDropout?: number;
-    loraVariant?: string;
-  };
+  configOverride?: RunConfigOverride;
 }
 
 export function ProgressSection({
@@ -103,6 +95,7 @@ export function ProgressSection({
 }: ProgressSectionProps): ReactElement {
   const t = useT();
   const navigate = useNavigate();
+  const platformDeviceType = usePlatformStore((s) => s.deviceType);
   const trainingMethodLabel = getTrainingMethodLabel(data.trainingMethod);
 
   const config = useTrainingConfigStore(
@@ -154,8 +147,7 @@ export function ProgressSection({
     await navigate({ to: "/chat" });
   };
 
-  // A finished run can be exported to GGUF: deep-link to the Export page with
-  // this run preselected (its output-dir basename is the export model name).
+  // A finished run can be exported to GGUF: deep-link to Export with this run preselected.
   const exportRunName = data.outputDir
     ? (data.outputDir.replace(/[/\\]+$/, "").split(/[/\\]/).pop() || null)
     : null;
@@ -183,21 +175,30 @@ export function ProgressSection({
     ? data.currentGradNorm
     : (lastValue(data.gradNormHistory) ?? data.currentGradNorm);
 
-  const cfgEpochs = isHistorical ? configOverride?.epochs : config.epochs;
-  const cfgBatchSize = isHistorical ? configOverride?.batchSize : config.batchSize;
-  const cfgLearningRate = isHistorical ? configOverride?.learningRate : config.learningRate;
-  const cfgMaxSteps = isHistorical ? configOverride?.maxSteps : config.maxSteps;
-  const cfgContextLength = isHistorical ? configOverride?.contextLength : config.contextLength;
-  const cfgWarmupSteps = isHistorical ? configOverride?.warmupSteps : config.warmupSteps;
-  const cfgOptimizerType = isHistorical ? configOverride?.optimizerType : config.optimizerType;
-  const cfgLoraRank = isHistorical ? configOverride?.loraRank : config.loraRank;
-  const cfgLoraAlpha = isHistorical ? configOverride?.loraAlpha : config.loraAlpha;
-  const cfgLoraDropout = isHistorical ? configOverride?.loraDropout : config.loraDropout;
-  const cfgLoraVariant = isHistorical ? configOverride?.loraVariant : config.loraVariant;
+  // Prefer the run's saved snapshot when present (#6853); History shows blanks, never form values.
+  const cfg = configOverride ?? (isHistorical ? undefined : config);
+  const cfgEpochs = cfg?.epochs;
+  const cfgBatchSize = cfg?.batchSize;
+  const cfgLearningRate = cfg?.learningRate;
+  const cfgMaxSteps = cfg?.maxSteps;
+  const cfgContextLength = cfg?.contextLength;
+  const cfgWarmupSteps = cfg?.warmupSteps;
+  const cfgOptimizerType = cfg?.optimizerType;
+  const cfgLoraRank = cfg?.loraRank;
+  const cfgLoraAlpha = cfg?.loraAlpha;
+  const cfgLoraDropout = cfg?.loraDropout;
+  const cfgLoraVariant = cfg?.loraVariant;
 
+  // Mirror the training form: on Mac the MLX backend runs CUDA optimizers as AdamW.
+  const effectiveOptimizer =
+    platformDeviceType === "mac" &&
+    OPTIMIZER_OPTIONS.some((o) => o.value === cfgOptimizerType)
+      ? "adamw"
+      : cfgOptimizerType;
   const optimizerLabel =
-    OPTIMIZER_OPTIONS.find((o) => o.value === cfgOptimizerType)?.label ??
-    cfgOptimizerType;
+    [...OPTIMIZER_OPTIONS, ...MLX_OPTIMIZER_OPTIONS].find(
+      (o) => o.value === effectiveOptimizer,
+    )?.label ?? effectiveOptimizer;
 
   const configItems: ConfigGroup[] = [
     {
@@ -266,21 +267,21 @@ export function ProgressSection({
         <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center gap-2">
             <span
-              className={`rounded-full px-2.5 py-1 text-[10px] font-semibold ${phaseColors[data.phase]}`}
+              className={`rounded-full px-2.5 py-1 text-ui-10 font-semibold ${phaseColors[data.phase]}`}
             >
               {t(phaseLabelKeys[data.phase])}
             </span>
             {data.projectName && (
-              <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium text-foreground/80">
+              <span className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium text-foreground/80">
                 {data.projectName}
               </span>
             )}
-            <span className="text-[10px] tabular-nums text-muted-foreground">
+            <span className="text-ui-10 tabular-nums text-muted-foreground">
               {t("studio.progress.epoch", {
                 value: formatNumber(data.currentEpoch, 2),
               })}
             </span>
-            <span className="rounded-full border border-border/60 px-2.5 py-1 text-[10px] font-medium tabular-nums text-muted-foreground">
+            <span className="rounded-full border border-border/60 px-2.5 py-1 text-ui-10 font-medium tabular-nums text-muted-foreground">
               {t("studio.progress.percentComplete", { percent: pct })}
             </span>
           </div>
@@ -310,6 +311,25 @@ export function ProgressSection({
             <p className="rounded-2xl border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-red-500 leading-relaxed">
               {data.error}
             </p>
+          )}
+
+          {data.warnings.length > 0 && (
+            <div
+              aria-live="polite"
+              className="flex gap-2 rounded-2xl border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs leading-relaxed text-amber-700 dark:text-amber-300"
+            >
+              <HugeiconsIcon
+                icon={Alert02Icon}
+                className="mt-0.5 size-4 shrink-0"
+              />
+              <ul className="min-w-0 space-y-1">
+                {data.warnings.map((warning) => (
+                  <li key={warning} className="break-words">
+                    {warning}
+                  </li>
+                ))}
+              </ul>
+            </div>
           )}
 
           <div
@@ -402,7 +422,7 @@ function LiveGpuPanel({
             <select
               value={selectedGpu}
               onChange={(e) => setSelectedGpu(Number(e.target.value))}
-              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-[11px] text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
+              className="h-6 cursor-pointer rounded-md border border-border bg-popover px-1.5 py-0.5 text-ui-11 text-popover-foreground outline-none hover:bg-muted focus:border-ring transition-colors font-medium appearance-none"
               title="Select GPU"
             >
               {gpus.map((device, index) => (
@@ -417,7 +437,7 @@ function LiveGpuPanel({
             </select>
           )}
         </div>
-        <span className="text-[11px] text-muted-foreground">
+        <span className="text-ui-11 text-muted-foreground">
           {t("studio.progress.live")}
         </span>
       </div>
@@ -535,7 +555,7 @@ function ConfigPopoverButton({
           <p className="text-xs font-semibold">{t("studio.progress.configLabel")}</p>
           {configItems.map((group) => (
             <div key={group.section} className="flex flex-col gap-1">
-              <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <p className="text-ui-10 font-semibold uppercase tracking-wider text-muted-foreground">
                 {group.section}
               </p>
               {group.rows.map(([label, value]) => (
@@ -636,7 +656,7 @@ function MilestoneCallout({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           {!showCompletedHint && (
-            <p className="text-[10px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <p className="text-ui-10 font-medium uppercase tracking-[0.12em] text-muted-foreground">
               {t("studio.training.milestone")}
             </p>
           )}
@@ -652,7 +672,7 @@ function MilestoneCallout({
           </p>
         </div>
         {!showCompletedHint && (
-          <span className="rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+          <span className="rounded-full border border-border/60 bg-background/80 px-2 py-0.5 text-ui-10 font-medium text-muted-foreground">
             50%+
           </span>
         )}
@@ -682,7 +702,7 @@ function MetricStat({
 }): ReactElement {
   return (
     <div className="min-w-0">
-      <p className="text-[11px] text-muted-foreground">{label}</p>
+      <p className="text-ui-11 text-muted-foreground">{label}</p>
       <p
         className={`mt-1 text-base font-semibold tabular-nums ${valueClassName ?? ""}`}
       >

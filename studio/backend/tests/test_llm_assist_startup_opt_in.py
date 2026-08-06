@@ -13,10 +13,14 @@ _BACKEND_DIR = str(Path(__file__).resolve().parent.parent)
 if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
-from models.datasets import AiAssistMappingRequest
-from routes import datasets as datasets_route
+from core.inference import llama_cpp
+from core.inference.llama_cpp import GgufLoadIntent
+from hub.schemas.datasets import AiAssistMappingRequest
+from hub.services.datasets import formatting as dataset_formatting
+from hub.utils import llm_assist as hub_assist
 from routes import settings as settings_route
 from utils import helper_precache_settings
+from utils.datasets import llm_assist as dataset_assist
 
 
 def _install_fake_studio_db(monkeypatch, *, stored = None):
@@ -82,9 +86,9 @@ def test_main_startup_uses_helper_precache_gate_instead_of_unconditional_precach
     assert "threading.Thread(target = _precache" not in startup_section
 
 
-def test_ai_assist_route_still_calls_on_demand_advisor(monkeypatch):
+def test_ai_assist_service_still_calls_on_demand_advisor(monkeypatch):
     calls: list[dict] = []
-    llm_assist = types.ModuleType("utils.datasets.llm_assist")
+    llm_assist = types.ModuleType("hub.utils.llm_assist")
 
     def fake_llm_conversion_advisor(**kwargs):
         calls.append(kwargs)
@@ -98,18 +102,17 @@ def test_ai_assist_route_still_calls_on_demand_advisor(monkeypatch):
         }
 
     llm_assist.llm_conversion_advisor = fake_llm_conversion_advisor
-    monkeypatch.setitem(sys.modules, "utils.datasets.llm_assist", llm_assist)
+    monkeypatch.setitem(sys.modules, "hub.utils.llm_assist", llm_assist)
 
-    response = datasets_route.ai_assist_mapping(
+    response = dataset_formatting.ai_assist_mapping_response(
         AiAssistMappingRequest(
             columns = ["prompt", "answer"],
             samples = [{"prompt": "x" * 250, "answer": "ok", "extra": "ignored"}],
             dataset_name = "owner/dataset",
-            hf_token = "hf_test",
             model_name = "unsloth/test",
             model_type = "text",
         ),
-        current_subject = "test-user",
+        hf_token = "hf_test",
     )
 
     assert response.success is True
@@ -125,3 +128,46 @@ def test_ai_assist_route_still_calls_on_demand_advisor(monkeypatch):
             "model_type": "text",
         }
     ]
+
+
+def test_helper_backends_load_with_one_intent(monkeypatch):
+    loaded = []
+
+    class FakeBackend:
+        def load_model(self, intent):
+            loaded.append(intent)
+            return False
+
+        def unload_model(self):
+            return True
+
+    repo, variant = "owner/helper-GGUF", "Q4_K_M"
+    monkeypatch.delenv("UNSLOTH_HELPER_MODEL_DISABLE", raising = False)
+    monkeypatch.setenv("UNSLOTH_HELPER_MODEL_REPO", repo)
+    monkeypatch.setenv("UNSLOTH_HELPER_MODEL_VARIANT", variant)
+    monkeypatch.setattr(llama_cpp, "LlamaCppBackend", FakeBackend)
+
+    advisor_kwargs = {"columns": ["text"], "samples": [{"text": "x"}]}
+    calls = [
+        (lambda: dataset_assist._run_with_helper("prompt"), "helper"),
+        (lambda: dataset_assist._run_multi_pass_advisor(**advisor_kwargs), "advisor"),
+        (
+            lambda: hub_assist._run_multi_pass_advisor(
+                **advisor_kwargs,
+                dataset_name = None,
+                dataset_card = None,
+                dataset_metadata = None,
+                model_name = None,
+                model_type = None,
+            ),
+            "hub-advisor",
+        ),
+    ]
+    for run, label in calls:
+        assert run() is None
+        assert loaded.pop() == GgufLoadIntent(
+            model_identifier = f"{label}:{repo}:{variant}",
+            hf_repo = repo,
+            hf_variant = variant,
+            n_ctx = 2048,
+        )

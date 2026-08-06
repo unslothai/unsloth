@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/empty";
 import { ShineBorder } from "@/components/ui/shine-border";
 import { ChevronDownStandardIcon } from "@/lib/chevron-icons";
+import { OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY } from "@/lib/navigation-intents";
 import { toastError } from "@/shared/toast";
 import {
   Album02Icon,
@@ -51,9 +52,6 @@ import {
   useRecipes,
 } from "../data/recipes-db";
 import { LEARNING_RECIPES } from "../learning-recipes";
-
-const OPEN_LEARNING_RECIPES_ON_ARRIVAL_KEY =
-  "data-recipes:open-learning-recipes";
 
 type TemplateCard = {
   title: string;
@@ -280,7 +278,7 @@ function LearningRecipeCards({
                       <Badge
                         key={`${template.title}-${badge}`}
                         variant="outline"
-                        className="h-5 shrink-0 px-1.5 text-[10px] dark:text-zinc-300"
+                        className="h-5 shrink-0 px-1.5 text-ui-10 dark:text-zinc-300"
                       >
                         {badge}
                       </Badge>
@@ -288,7 +286,7 @@ function LearningRecipeCards({
                     {extraLearningBadgeCount > 0 ? (
                       <Badge
                         variant="outline"
-                        className="h-5 shrink-0 px-1.5 text-[10px] dark:text-zinc-300"
+                        className="h-5 shrink-0 px-1.5 text-ui-10 dark:text-zinc-300"
                       >
                         +{extraLearningBadgeCount}
                       </Badge>
@@ -296,7 +294,7 @@ function LearningRecipeCards({
                     {isReady ? null : (
                       <Badge
                         variant="secondary"
-                        className="h-5 shrink-0 px-1.5 text-[10px] dark:text-zinc-300"
+                        className="h-5 shrink-0 px-1.5 text-ui-10 dark:text-zinc-300"
                       >
                         Soon
                       </Badge>
@@ -403,7 +401,7 @@ export function DataRecipesPage(): ReactElement {
       <main className="mx-auto w-full max-w-7xl px-5 py-8 sm:px-9">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <h1 className="text-[30px] font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-[34px]">
+            <h1 className="text-ui-30 font-semibold leading-[1.04] tracking-[-0.028em] text-foreground sm:text-ui-34">
               Data Recipes
             </h1>
             <p className="mt-1 text-sm text-muted-foreground">
