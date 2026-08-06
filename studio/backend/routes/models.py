@@ -3939,7 +3939,6 @@ def _is_sd_cpp_companion_repo(repo_id: str) -> bool:
     """True for a mirror that holds only sd.cpp companions (VAE / text encoders, no denoiser)."""
     try:
         from core.inference.diffusion_families import sd_cpp_companion_only_repo_ids
-
         return (repo_id or "").strip().lower() in sd_cpp_companion_only_repo_ids()
     except Exception:  # noqa: BLE001 -- an import failure must not hide a usable repo
         return False

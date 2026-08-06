@@ -579,10 +579,7 @@ def legacy_source_repo(repo_id: Optional[str]) -> Optional[str]:
     return _SD_CPP_LEGACY_SOURCES.get((repo_id or "").strip().lower())
 
 
-def prefer_cached_legacy_source(
-    repo_id: str,
-    files: Optional[Sequence[str]] = None,
-) -> str:
+def prefer_cached_legacy_source(repo_id: str, files: Optional[Sequence[str]] = None) -> str:
     """``repo_id``, or the community repack it mirrors when THAT already satisfies ``files``.
 
     The mirror stays the preferred source for a fresh install; this only spares an existing one
