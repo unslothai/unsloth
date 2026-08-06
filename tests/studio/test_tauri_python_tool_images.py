@@ -31,15 +31,11 @@ def test_desktop_csp_has_no_explicit_http_loopback_image_source() -> None:
     config = json.loads(TAURI_CONFIG.read_text(encoding = "utf-8"))
     csp = config["app"]["security"]["csp"]
     directives = {
-        parts[0]: parts[1:]
-        for directive in csp.split(";")
-        if (parts := directive.strip().split())
+        parts[0]: parts[1:] for directive in csp.split(";") if (parts := directive.strip().split())
     }
 
     loopback = [
-        source
-        for source in directives["img-src"]
-        if "127.0.0.1" in source or "localhost" in source
+        source for source in directives["img-src"] if "127.0.0.1" in source or "localhost" in source
     ]
     assert loopback == []
     assert "blob:" in directives["img-src"]
