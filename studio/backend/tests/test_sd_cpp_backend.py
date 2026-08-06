@@ -276,9 +276,8 @@ def _no_cache(monkeypatch):
 
 
 def test_download_plan_stages_the_mirrored_asset_repo(monkeypatch):
-    """The manager STAGES these entries before the load runs, so a gated asset repo left here 401s
-    an anonymous user at staging and _fetch_assets' swap is never reached. FLUX.1's native VAE
-    lives in the gated black-forest-labs/FLUX.1-schnell."""
+    """STAGED before the load runs, so a gated asset repo left here 401s an anonymous user and
+    _fetch_assets' swap is never reached. FLUX.1's VAE lives in the gated FLUX.1-schnell."""
     _no_cache(monkeypatch)
     b = SdCppDiffusionBackend(engine = _FakeEngine())
     monkeypatch.setattr(
@@ -322,8 +321,8 @@ def test_download_plan_and_fetch_assets_pick_the_same_repo(monkeypatch):
 
 
 def test_delete_guard_covers_the_mirrored_asset_repos(monkeypatch):
-    """The bytes land under whichever of the pair the load fetched, so guarding only the upstream
-    leaves the mirror cache deletable underneath a one-shot sd-cli that re-reads it."""
+    """The bytes land under whichever of the pair was fetched, so guarding only the upstream leaves
+    the mirror cache deletable under a one-shot sd-cli that re-reads it."""
     b = _loaded_backend("flux.1")
     ids = set(b.loaded_repo_ids())
     assert "black-forest-labs/FLUX.1-schnell" in ids

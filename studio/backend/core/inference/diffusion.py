@@ -491,9 +491,9 @@ class _LoadingState:
     base_repo: str
     expected_bytes: int = 0
     error: Optional[str] = None
-    # The repo the companion BYTES actually come from: ``base_repo`` when nothing was swapped, else
-    # its ungated mirror. Never surfaced -- ``base_repo`` stays the upstream id status() reports --
-    # but the cache scan and the delete guard must look where the files land.
+    # Where the companion BYTES land: ``base_repo``, or its mirror when one was swapped in. Never
+    # surfaced (``base_repo`` stays the id status() reports), but the cache scan and the delete
+    # guard must look here.
     fetch_repo: Optional[str] = None
 
 
@@ -717,9 +717,8 @@ class DiffusionBackend:
         (estimate failure, config-only base, local repo) -> hub id as before."""
         from utils.hf_xet_fallback import hf_hub_download_with_xet_fallback
 
-        # Pull the companions from the ungated mirror; only the BYTES move, the caller keeps the
-        # upstream id. ``fetch_base`` is the load-wide decision when the caller made one, so every
-        # later fetch in this load agrees with what was staged here.
+        # Only the BYTES move; the caller keeps the upstream id. ``fetch_base`` is the load-wide
+        # decision when one was taken, so every later fetch agrees with what was staged here.
         base = fetch_base or prefer_ungated_mirror(base, hf_token, files = base_files)
         # Callers without a per-load event (tests, direct use) fall back to the current one.
         cancel = cancel_event if cancel_event is not None else self._cancel_event
@@ -958,9 +957,8 @@ class DiffusionBackend:
             kwargs["_transformer_prefetched"] = any(
                 f.startswith("transformer/") for f in base_files
             )
-            # ONE mirror decision for the whole load, taken here with the staged file list in hand
-            # and carried into load_pipeline: a per-call-site decision could stage one repo and then
-            # assemble from the other, which is the 401 this feature exists to remove.
+            # ONE mirror decision per load, taken with the staged file list in hand and carried into
+            # load_pipeline: per-call-site, one repo could be staged and the other assembled from.
             fetch_base = prefer_ungated_mirror(base, kwargs.get("hf_token"), files = base_files)
             kwargs["_fetch_base"] = fetch_base
             with self._lock:
@@ -1009,15 +1007,13 @@ class DiffusionBackend:
         if loading is None:
             return _progress("ready" if self._state is not None else None)
 
-        # Sum checkpoint + companion cache; for a full-pipeline load base IS the repo, so count once.
-        # Scan the repo the bytes LAND in (the mirror when one was swapped in), else a mirrored
-        # companion download reads as zero and the bar sits still for the whole pull.
+        # Sum checkpoint + companion cache, scanning the repo the bytes LAND in (the mirror when one
+        # was swapped in), else a mirrored companion download reads as zero and the bar sits still.
         companion = loading.fetch_repo or loading.base_repo
         if loading.base_repo and loading.base_repo == loading.repo_id:
-            # Full pipeline: base IS the repo, so count the repo the bytes land in exactly once.
-            # Summing would add the upstream's leftovers to the mirror's live bytes, and a partial
-            # upstream cache is the very thing that selects the mirror, so the bar could reach 100%
-            # and flip to finalizing while the real download is still running.
+            # Full pipeline: base IS the repo, so count it once. Summing would add the upstream's
+            # stale partial blobs -- the very thing that selects the mirror -- to the mirror's live
+            # bytes, pushing the bar to 100% / finalizing mid-download.
             downloaded = self._cache_bytes(companion or loading.repo_id)
         else:
             downloaded = self._cache_bytes(loading.repo_id)
@@ -1037,9 +1033,9 @@ class DiffusionBackend:
 
         The delete-cached guard needs this: during a load ``status()["loaded"]`` is
         still False, but deleting the target repo (or its companion base) would yank
-        blobs and snapshot files from under the download/assembly. Includes the ungated
-        mirror when one was swapped in: that is where the companion bytes actually land,
-        so guarding only the upstream id would leave the live download deletable."""
+        blobs and snapshot files from under the download/assembly. Includes the mirror
+        when one was swapped in: that is where the companion bytes land, so guarding only
+        the upstream id would leave the live download deletable."""
         with self._lock:
             loading = self._loading
             if loading is None or loading.error is not None:
@@ -1108,10 +1104,8 @@ class DiffusionBackend:
         meta-inits the encoder from the base repo's config."""
         from huggingface_hub import HfApi
 
-        # No mirror swap on purpose: the Hub gates only the BYTE endpoint, so model_info answers
-        # anonymously, and the byte-identical mirror gives the same sizes and names anyway.
-        # _prefetch_files swaps when it actually pulls, and takes this list as-is.
-
+        # No swap on purpose: the Hub gates only the BYTE endpoint, so model_info answers
+        # anonymously and the mirror lists the same names. _prefetch_files swaps when it pulls.
         from .diffusion_te_prequant import is_prequant_covered_weight
 
         api = HfApi()
@@ -1240,10 +1234,9 @@ class DiffusionBackend:
                 }
             )
         if base_files and not Path(base).expanduser().exists():
-            # The manager STAGES this entry before the loader runs, so it must name the repo the
-            # loader will fetch from: leaving the gated upstream here 401s an anonymous user at
-            # staging and the mirror is never reached. Sizes stay keyed on the upstream -- the Hub
-            # gates only the byte endpoint, so model_info answered for it, and the bytes match.
+            # STAGED before the loader runs, so it must name the MIRROR: a gated upstream here 401s
+            # an anonymous user at staging and the swap downstream is never reached. status(), the
+            # API base repo, saved configs and LoRA tags keep the vendor id; sizes key on it too.
             entries.append(
                 {
                     "repo_id": prefer_ungated_mirror(base, hf_token, files = base_files),
@@ -1394,8 +1387,8 @@ class DiffusionBackend:
         # True when the prefetch staged the base repo's ``transformer/`` shards, the only condition under which the dense-quant
         # fallback may materialise them. Defaults True for a direct call, which has no prefetch phase.
         _transformer_prefetched: bool = True,
-        # The repo the background load already staged the companions from (the mirror when one was
-        # swapped in). Re-derived below for a direct call, which has no prefetch phase.
+        # The repo the background load staged the companions from; re-derived below for a direct
+        # call, which has no prefetch phase.
         _fetch_base: Optional[str] = None,
     ) -> dict[str, Any]:
         # A blank token must degrade to anonymous, not be passed as a credential. Normalize once.
@@ -1422,10 +1415,9 @@ class DiffusionBackend:
         base = (
             repo_id if kind == "pipeline" else _resolve_base_repo(repo_id, base_repo, fam, hf_token)
         )
-        # ``base`` stays the UPSTREAM id everything reported and every table lookup keys on;
-        # ``fetch_base`` is the only id handed to something that downloads. One decision per load
-        # (the background path already took it before staging), so nothing can stage one repo and
-        # then assemble from the other.
+        # ``base`` stays the UPSTREAM id every report and table lookup keys on; ``fetch_base`` is
+        # the only id handed to something that downloads. One decision per load (the background
+        # path took it before staging), so nothing stages one repo and assembles from the other.
         fetch_base = _fetch_base or prefer_ungated_mirror(base, hf_token)
         target = self._resolve_device_target(fam)
         device, dtype = target.device, target.dtype
@@ -1680,8 +1672,7 @@ class DiffusionBackend:
                         # Full diffusers repo: from_pretrained pulls every component and re-applies embedded quant config.
                         if fam.name == KREA2_FAMILY_NAME:
                             # krea ships transformers-5.x configs the 4.x line cannot parse, so assemble per-component; that path never sees pipe_kwargs, so pass the pre-cast TE.
-                            # This loader fetches EVERY component from the id it is given, so the
-                            # gated krea repo has to arrive already swapped for the mirror.
+                            # Fetches EVERY component from the id given, so it must get the mirror.
                             pipe = load_krea2_pipeline(
                                 fetch_base,
                                 dtype,
@@ -1737,8 +1728,8 @@ class DiffusionBackend:
                         # A single-file SDXL-style checkpoint is the WHOLE pipeline: load it through the pipeline class with ``config`` on the base repo.
                         sf_pipe_kwargs: dict[str, Any] = {
                             "torch_dtype": dtype,
-                            # ``config`` is a REPO FETCH that runs before any mirrored load below,
-                            # so it takes the swapped id or a gated base 401s here first.
+                            # ``config`` is a REPO FETCH ahead of the mirrored load, so a gated id
+                            # would 401 here first.
                             "config": fetch_base,
                             "cache_dir": hub_cache_dir(),
                         }
@@ -1749,10 +1740,9 @@ class DiffusionBackend:
                         # Transformer-only single file; VAE/text-encoder/scheduler come from the base repo.
                         sf_kwargs: dict[str, Any] = {
                             "torch_dtype": dtype,
-                            # Same fetch-before-load ordering as the whole-pipeline branch above.
+                            # Fetched before auth, same ordering as the whole-pipeline branch above.
                             "config": fetch_base,
                             "subfolder": "transformer",
-                            # Config is fetched from the base before auth, hence the mirror.
                             "token": hf_token,
                             "cache_dir": hub_cache_dir(),
                         }
@@ -2138,10 +2128,10 @@ class DiffusionBackend:
         BEFORE the loader compiles the repeated block, so the order stays quantize ->
         compile -> placement.
 
-        ``base`` keeps the UPSTREAM id for the prequant table lookup and the checkpoint's
-        base_model_id check; ``fetch_base`` is the id every download here uses, since both the
-        prequant config read and the dense transformer pull would otherwise 401 on a gated base --
-        and with a nonzero baked LoRA the GGUF fallback is refused, so that 401 fails the load."""
+        ``base`` keeps the UPSTREAM id for the prequant table and base_model_id checks; every
+        download uses ``fetch_base``. A gated base 401s on both the prequant config read and the
+        dense pull, and a nonzero baked LoRA refuses the GGUF fallback, so that 401 fails the load.
+        """
         fetch_base = fetch_base or prefer_ungated_mirror(base, hf_token)
         # 1. Pre-quantized checkpoint, when one is configured for the resolved scheme.
         scheme = select_transformer_quant_scheme(target, mode, family = getattr(fam, "name", None))
@@ -2262,8 +2252,8 @@ class DiffusionBackend:
         (a no-op for an already-placed pre-quantized transformer; it moves the companions).
 
         Everything below reads the base only to FETCH, so it uses ``fetch_base`` (the load-wide
-        mirror decision, re-derived for a direct call). It matters when ``base_local_dir`` is None:
-        nothing was staged, so a gated upstream would 401 here."""
+        decision, re-derived for a direct call). Matters when ``base_local_dir`` is None: nothing
+        was staged, so a gated upstream would 401 here."""
         base = fetch_base or prefer_ungated_mirror(base, hf_token)
         if getattr(fam, "name", None) == KREA2_FAMILY_NAME:
             # krea ships transformers-5.x configs and no top-level tokenizer files, so assemble per-component.
@@ -2355,10 +2345,10 @@ class DiffusionBackend:
         same blob cache _companion_cache_bytes sums -- are not counted as companions on
         top of transformer_resident_override_mib (a double-count of the transformer).
 
-        ``fetch_base`` is the repo the bytes were staged from (the ungated mirror when one was
-        swapped in). Every cache scan below reads it, since sizing an upstream id whose cache is
-        empty folds the VAE/text-encoder to zero and wrongly picks resident placement; ``base`` and
-        ``repo_id`` keep the upstream identity for the family/variant checks."""
+        ``fetch_base`` is the repo the bytes were staged from, so every cache scan below reads it:
+        sizing an upstream id whose cache is empty folds the VAE/text-encoder to zero and wrongly
+        picks resident placement. ``base`` and ``repo_id`` keep the upstream identity for the
+        family/variant checks."""
         # Settled (max-over-reads) on cuda: a transient foreign allocation would make an empty card look full.
         device_memory = settled_snapshot_device_memory(target)
         if kind == "pipeline":
@@ -3448,13 +3438,11 @@ def _resolve_base_repo(
     if not base:
         tag = _hf_base_model(repo_id, hf_token)
         if tag and _is_trusted_diffusion_repo(tag):
-            # The mirrors are real unsloth/* repos, so a card tag may now name one and would clear
-            # the trust bar. Map it back: this value becomes status()["base_repo"] and the default
-            # base_model a trained adapter records, both of which must stay the vendor id. An
-            # EXPLICIT base_repo is the caller's own choice and is honoured verbatim.
+            # A card tag can now name a mirror (they are real unsloth/* repos) and clear the trust
+            # bar. Map it back: this becomes status()["base_repo"] and a trained adapter's default
+            # base_model, both of which must stay the vendor id. An EXPLICIT base_repo is verbatim.
             base = canonical_base(tag)
-    # Returns the UPSTREAM id: the mirror swap happens at the fetch sites only, so the load state
-    # and status() keep the id the user picked.
+    # Returns the UPSTREAM id; the swap happens at the fetch sites only.
     return resolve_base_repo(fam, base)
 
 

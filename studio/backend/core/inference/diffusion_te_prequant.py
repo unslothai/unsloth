@@ -71,8 +71,8 @@ def te_base_equivalent(ckpt_base: str, base: str) -> bool:
     equivalence group above."""
     if _same_base_model(ckpt_base, base):
         return True
-    # The groups hold UPSTREAM ids, so normalise: an ungated mirror id reaching them here is a
-    # different repo by string and would be refused, dropping the pre-cast encoder for a dense pull.
+    # The groups hold UPSTREAM ids: an unnormalised mirror id is a different string, so it would be
+    # refused and the pre-cast encoder dropped for a dense pull.
     from .diffusion_families import canonical_base
 
     a, b = canonical_base(ckpt_base).lower(), canonical_base(base).lower()

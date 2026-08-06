@@ -210,10 +210,9 @@ def test_prefer_ungated_mirror_declines(monkeypatch):
 def test_a_local_base_directory_is_never_mirrored(monkeypatch, tmp_path):
     """A path that exists on disk is not a Hub id, so it must survive the swap untouched.
 
-    A user can clone a base into a directory whose RELATIVE path is the vendor id. The loaders
-    resolve such a base locally (``Path(base).exists()``), but several of them take that branch
-    after the mirror swap, so rewriting it would send the load to the Hub and ignore the on-disk
-    files.
+    A user can clone a base into a relative dir named exactly like the vendor id. The loaders
+    resolve such a base locally (``Path(base).exists()``), but several take that branch after the
+    swap, so rewriting it would send the load to the Hub and ignore the on-disk files.
     """
     gated = "black-forest-labs/FLUX.1-dev"
     _no_cache(monkeypatch)
@@ -237,8 +236,7 @@ def test_mirrored_base_still_trips_the_flux2_shape_guard():
     The guard fails OPEN on an unmapped base, so a mirror id reaching ``_FLUX2_BASE_INNER_DIM``
     would silence it. Assert the RAISE: a disabled guard passes any weaker check.
     """
-    # "flux.2-klein", not "flux.2": no family has that bare name, and a None family's empty name
-    # makes the guard return before it reads the file.
+    # "flux.2-klein", not "flux.2": no family has the bare name, and a None family returns early.
     fam = detect_family("x", override = "flux.2-klein")
     assert fam is not None and fam.name.startswith("flux.2")
 
@@ -259,8 +257,7 @@ def test_mirrored_base_still_trips_the_flux2_shape_guard():
 
     original = gguf.GGUFReader
     try:
-        # klein-4B is ungated and has no mirror, so the 9B id is the one that must normalise:
-        # a 4B GGUF (inner_dim 3072) against the mirrored 9B base still raises.
+        # A 4B GGUF (inner_dim 3072) against the 9B base still raises through the mirror id.
         gguf.GGUFReader = _reader_for(3072)
         for base in ("black-forest-labs/FLUX.2-klein-9B", "unsloth/FLUX.2-klein-9B"):
             with pytest.raises(ValueError, match = "klein"):
@@ -1650,9 +1647,9 @@ def test_resolve_base_repo_drops_untrusted_card_tag(monkeypatch):
 
 
 def test_resolve_base_repo_maps_a_mirrored_card_tag_back_to_the_vendor_id(monkeypatch):
-    """The mirrors are real unsloth/* repos, so a card tag can now name one and clears the trust
-    bar. This value is status()["base_repo"] and the default base_model a trained adapter records,
-    so it must be the vendor id; only the fetch sites see the mirror."""
+    """A card tag can now name a mirror and clear the trust bar. This value is
+    status()["base_repo"] and a trained adapter's default base_model, so it must be the vendor
+    id; only the fetch sites see the mirror."""
     import core.inference.diffusion as dmod
 
     fam = detect_family("unsloth/FLUX.1-dev-GGUF")
@@ -1836,9 +1833,8 @@ def test_load_progress_downloading_then_finalizing(monkeypatch):
 
 
 def test_load_progress_counts_a_mirrored_pipeline_repo_once(monkeypatch):
-    # A full-pipeline load has base_repo == repo_id, so the bytes must be counted once. Summing the
-    # upstream with the mirror double-counts, and a PARTIAL upstream cache is exactly what selects
-    # the mirror, so its leftovers would push the bar to 100% while the real download is still going.
+    # base_repo == repo_id, so count once. Summing adds the upstream's stale partial blobs -- the
+    # very thing that selects the mirror -- to the mirror's live bytes, pegging the bar at 100%.
     backend = DiffusionBackend()
     backend._loading = _LoadingState(
         repo_id = "black-forest-labs/FLUX.1-dev",
@@ -1858,8 +1854,7 @@ def test_load_progress_counts_a_mirrored_pipeline_repo_once(monkeypatch):
 
 
 def test_load_progress_still_sums_a_gguf_pick_and_its_separate_base(monkeypatch):
-    # The other side: when the base is a DIFFERENT repo from the pick, the two really are separate
-    # downloads and must still be summed, mirror or not.
+    # A base that is a DIFFERENT repo from the pick is a separate download, so still summed.
     backend = DiffusionBackend()
     backend._loading = _LoadingState(
         repo_id = "unsloth/FLUX.1-dev-GGUF",
@@ -2213,7 +2208,7 @@ def test_single_file_load_reads_config_and_companions_from_the_mirror(
 
 def test_pipeline_kind_assembles_krea_and_ideogram_from_the_mirror(fake_runtime, monkeypatch):
     """Both per-component loaders fetch EVERY component from the id handed to them, so a gated
-    pipeline pick has to arrive already swapped or the mirror entry is dead code."""
+    pipeline pick must arrive already swapped."""
     from core.inference import diffusion as dmod
 
     diffusers = sys.modules["diffusers"]
@@ -2306,8 +2301,7 @@ def test_load_progress_and_delete_guard_follow_the_mirrored_companion(monkeypatc
     )
 
     assert backend.load_progress()["bytes_downloaded"] == 4
-    # The guard must refuse BOTH ids: the upstream is what status reports, the mirror is what the
-    # download is writing into.
+    # BOTH ids: the upstream is what status reports, the mirror is where the download writes.
     assert backend.loading_repo_ids() == (
         "unsloth/FLUX.1-dev-GGUF",
         "black-forest-labs/FLUX.1-dev",
@@ -3561,8 +3555,7 @@ def test_assemble_pipe_routes_krea2_per_component(monkeypatch):
         return Pipe()
 
     monkeypatch.setattr(dmod, "load_krea2_pipeline", fake_loader)
-    # Pin the mirror decision: without this the assertion below reads the developer's real HF
-    # cache, so anyone who has actually loaded Krea-2 sees it go red.
+    # Pin the mirror decision, else the assertion below reads the developer's real HF cache.
     _no_cache(monkeypatch)
 
     class ExplodingPipeline:
@@ -4278,8 +4271,8 @@ def test_download_plan_scopes_the_base_repo_files(monkeypatch):
         "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
     )
 
-    # The base entry names the MIRROR: the manager stages it before the loader runs, so a gated
-    # id here 401s an anonymous user at staging and the swap downstream is never reached.
+    # The base entry names the MIRROR: staged before the loader runs, so a gated id here 401s an
+    # anonymous user at staging and the swap downstream is never reached.
     assert [e["repo_id"] for e in plan["entries"]] == [
         "unsloth/FLUX.1-dev-GGUF",
         "unsloth/FLUX.1-dev",
@@ -4397,8 +4390,8 @@ def test_download_plan_keeps_the_dense_encoder_without_an_fp8_request(monkeypatc
     monkeypatch.setattr(
         DiffusionBackend, "_dense_quant_prefetch_needed", lambda self, fam, kwargs: False
     )
-    # An upstream that already satisfies the load keeps its own id, so the plan stages the cache
-    # the user already paid for rather than re-pulling the same bytes under the mirror.
+    # An upstream that already satisfies the load keeps its id, so the plan stages the cache the
+    # user already paid for.
     _all_cached(monkeypatch)
     plan = DiffusionBackend().download_plan(
         "unsloth/FLUX.1-dev-GGUF", gguf_filename = "flux1-dev-Q4_K_M.gguf"
