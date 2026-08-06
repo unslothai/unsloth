@@ -1139,6 +1139,50 @@ def test_a_quoted_caret_reaches_cmd_unquoted_through_git_bash(monkeypatch):
 @pytest.mark.parametrize(
     ("command", "blocked"),
     [
+        # A handoff word belongs to the statement at its OWN depth: the first
+        # `else` here is ECHO's data one level in, and consuming the `if` there
+        # left the real else with nothing to reopen.
+        ('cmd /c if exist no_f (echo else) else start "" powershell', True),
+        ('cmd /c if exist a (for %i in (x) do echo do) else start "" powershell', True),
+        # ...while a statement opened inside a group hands off inside it.
+        ('cmd /c if exist a (if exist b (echo x) else start "" powershell)', True),
+        ('cmd /c for %i in (x) do (start "" powershell)', True),
+        ('cmd /c if exist a (echo x) else (start "" powershell)', True),
+        # ...and a word behind the real handoff is an operand again.
+        ('cmd /c if exist a (echo a) else echo else start "" powershell', False),
+    ],
+)
+def test_a_handoff_belongs_to_the_statement_at_its_depth(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
+        # cmd strips the quotes and applies the escapes before it resolves the
+        # command, so these run powershell while no scan of the raw spelling
+        # matches. The grammar walk normalises the word; screening only the two
+        # words it reads on threw the rest away.
+        ('cmd /c pow"er"shell', True),
+        ("cmd /c power^shell", True),
+        ('cmd /c "powershell"', True),
+        ('cmd /c st%PATH:~0,0%art "" pwsh', True),
+        # ...and a normalised word is still only screened in command position.
+        ('cmd /c echo pow"er"shell', False),
+        ("cmd /c notepad", False),
+    ],
+)
+def test_a_normalised_cmd_command_word_is_screened(monkeypatch, command, blocked):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setattr(tools, "_windows_bash", lambda: None)
+    assert bool(tools._find_blocked_commands(command)) is blocked
+
+
+@pytest.mark.parametrize(
+    ("command", "blocked"),
+    [
         # A statement is consumed by its own handoff word, so a later one is an
         # operand again: these only print the words behind `echo`.
         ('cmd /c for %i in (x) do echo do start "" powershell', False),
@@ -1237,8 +1281,14 @@ def test_cmd_switches_do_not_hide_the_shell_in_front_of_them(monkeypatch, comman
         # cmd expands its variables before it resolves the program, and a
         # substring expansion can contribute nothing at all.
         ('cmd /c start "" powershell%PATH:~0,0%', True),
-        ('cmd /c start "" %COMSPEC%', False),
         ('cmd /c start "" report%DATE%.txt', False),
+        # ...and where the program name is nothing BUT an expansion, no reading
+        # of it is a name at all, so the line is refused rather than passed:
+        # `start "" %ComSpec% /c powershell` launches cmd with a command line
+        # behind it. A path that merely holds one still names its own file.
+        ('cmd /c start "" %COMSPEC%', True),
+        ('cmd /c start "" %ComSpec% /c powershell', True),
+        (r'cmd /c start "" "%USERPROFILE%\notes.txt"', False),
     ],
 )
 def test_a_start_target_is_read_as_cmd_resolves_it(monkeypatch, command, blocked):

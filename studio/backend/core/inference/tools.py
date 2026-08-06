@@ -1318,6 +1318,24 @@ def _cmd_group_delta(token: str) -> int:
     return delta
 
 
+def _cmd_word_depth_delta(token: str) -> int:
+    """How far ``token``'s brackets have moved cmd's grouping by the time it
+    reads the command word in it.
+
+    A bracket in FRONT of the word groups around it, so `(echo` is a word one
+    level in; a bracket behind it closes a group the word was already inside,
+    so `else)` is a word at the level it was written at. The two need telling
+    apart because a handoff word only belongs to a statement at its own depth:
+    the `else` of `if exist x (echo else) else start "" pwsh` is ECHO's data.
+    """
+    plain = _cmd_split(token, "")[0]
+    pieces = re.split(r"[()]", plain)
+    kept = [index for index, piece in enumerate(pieces) if piece]
+    last = kept[-1] if kept else 0
+    prefix = plain[: sum(len(piece) for piece in pieces[:last]) + last]
+    return prefix.count("(") - prefix.count(")")
+
+
 def _cmd_split(token: str, chars: str) -> "list[str]":
     """``token`` split on the ``chars`` cmd reads as syntax, escapes applied.
 
@@ -1421,6 +1439,14 @@ def _blocked_start_program(token: str) -> "set[str]":
         stem, ext = os.path.splitext(base)
         if ext in {".exe", ".com", ".bat", ".cmd"}:
             base = stem
+        if not base and len(names) > 1:
+            # The program name is nothing BUT an expansion, so no reading of it
+            # is a name: `start "" %ComSpec% /c powershell` launches cmd with a
+            # command line behind it and comes back with no program at all.
+            # Refused rather than passed, the way an unread payload is. A path
+            # that merely holds one (`"%USERPROFILE%/notes.txt"`) still names
+            # its own file and is unaffected.
+            return {target.strip('"').lower()}
         if base in _blocked_commands():
             blocked.add(base)
         else:
@@ -1718,15 +1744,20 @@ def _find_blocked_commands(command: str) -> set[str]:
         pieces = [piece for piece in re.split(r"[()]", plain) if piece]
         # The bracket comes off before the prefix, or `(@start` keeps its `@`
         # and never matches: cmd reads the group opener, then the suppression.
-        name = (pieces[-1] if pieces else "").lstrip("@").strip('"')
+        # The marks come off wherever they sit, since cmd removes them when it
+        # resolves the command: `pow"er"shell` runs powershell.
+        name = (pieces[-1] if pieces else "").replace('"', "").lstrip("@")
         base = os.path.basename(name.replace("\\", "/")).lower()
-        # Delayed expansion happens before the word is resolved and an unset
-        # variable leaves nothing behind, so `st!X!art` IS start where it is
-        # enabled -- by /v:on on this line or by the registry on the host, which
-        # a command line does not show. Reading the spelling both ways is the
-        # safe direction: a file really named that launches nothing.
-        if "!" in base:
-            return _CMD_DELAYED_RE.sub("", base) or base
+        # Expansion happens before the word is resolved and a variable can
+        # contribute nothing, an unset `!X!` where delayed expansion is on or a
+        # zero-length `%PATH:~0,0%` anywhere, so `st!X!art` and `st%PATH:~0,0%art`
+        # ARE start. Reading the spelling as cmd leaves it is the safe
+        # direction: a file really named that launches nothing. Not gated on
+        # /v:on either, since the registry enables delayed expansion host-wide
+        # and a command line does not show that.
+        if "!" in base or "%" in base:
+            expanded = _CMD_DELAYED_RE.sub("", _CMD_VARIABLE_RE.sub("", base))
+            return expanded or base
         return base
 
     def _cmd_condition_words(index: int) -> int:
@@ -1796,7 +1827,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         # prints. A list rather than a flag because the two nest, and one
         # cleared by the inner `do` lost the `else` of `if exist x (for %i in
         # (y) do echo a) else start "" pwsh`, which really launches.
-        control: "list[str]" = []
+        control: "list[tuple[str, int]]" = []
         depth = 0  # open group brackets, which an `if` branch is written in
         skip = 0  # condition words still to consume
         skip_operand = False  # the word after a bare redirection operator
@@ -1846,6 +1877,11 @@ def _find_blocked_commands(command: str) -> set[str]:
                 expect = True
                 if not depth:
                     control.clear()
+            # The word's own depth is the one its token opens it at: brackets
+            # before it are cmd's grouping around it, brackets behind it close
+            # a group it sits inside. So `(echo` is a word one level in, and
+            # `else)` is a word at the level the `)` then leaves.
+            word_depth = depth + _cmd_word_depth_delta(pieces[-1])
             depth += _cmd_group_delta(token)
             word = _cmd_word_base(pieces[-1])
             if skip > 0:
@@ -1857,11 +1893,15 @@ def _find_blocked_commands(command: str) -> set[str]:
             # statements is open, though, or `cmd /c echo else start "" pwsh`
             # reads a printed word as a handoff.
             statement = {"else": "if", "do": "for"}.get(word, "")
-            if statement and statement in control:
-                # The handoff belongs to the innermost statement of that kind,
-                # and one of a kind is interchangeable with another here, so
-                # which entry goes does not matter -- only how many.
-                control.remove(statement)
+            if statement and (statement, word_depth) in control:
+                # ...and only where it sits at the depth of the statement it
+                # belongs to: the `else` in `if exist no_f (echo else) else
+                # start "" pwsh` is ECHO's data one level in, and consuming the
+                # if there left the real else with nothing to reopen. The
+                # innermost of a kind is what a handoff closes, and two at the
+                # same depth are interchangeable, so which entry goes does not
+                # matter -- only how many.
+                control.remove((statement, word_depth))
                 expect = True
                 continue
             if not expect:
@@ -1874,9 +1914,9 @@ def _find_blocked_commands(command: str) -> set[str]:
                 pass  # it reparses its target, so a command follows it
             elif word == "if":
                 skip = _cmd_condition_words(index + 1)
-                control.append("if")
+                control.append(("if", word_depth))
             elif word == "for":
-                control.append("for")
+                control.append(("for", word_depth))
                 expect = False  # re-armed by its own `do`, above
             else:
                 expect = False
@@ -2133,6 +2173,17 @@ def _find_blocked_commands(command: str) -> set[str]:
                 start_indexes.add(pos)
             elif cmd_word == "for":
                 cmd_for_indexes.add(pos)
+            # cmd strips the quotes and applies the escapes before it resolves
+            # the command, and the walk above has already done both, so the name
+            # it holds is the one that runs: `cmd /c pow"er"shell` and `cmd /c
+            # power^shell` run powershell, which no scan of the raw spelling
+            # matches. Every command position is screened, not only the two
+            # words this grammar reads on.
+            name = _token_basename(cmd_word)
+            if name in _blocked_commands():
+                blocked.add(name)
+            else:
+                blocked.update(_blocked_matching_glob(name))
         return cmd_grammar_spent
 
     def _cmd_payload_text(index: int) -> str:
