@@ -233,6 +233,7 @@ export function RemoteAccessSection() {
   // discard any in-flight poll and re-read so the block resolves at once.
   const refreshStatus = useCallback(() => {
     mutationEpoch.current += 1;
+    setPollEnabled(true);
     setPollRevision((revision) => revision + 1);
   }, []);
 
@@ -305,6 +306,9 @@ export function RemoteAccessSection() {
     } finally {
       setBusy(null);
       pollSuppressed.current = false;
+      // A stop through the tunnel latches polling off when its own origin dies.
+      // Any later action means the user is on a reachable origin, so resume.
+      setPollEnabled(true);
       setPollRevision((revision) => revision + 1);
     }
   };

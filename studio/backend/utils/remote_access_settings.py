@@ -15,6 +15,8 @@ logger = get_logger(__name__)
 
 REMOTE_ACCESS_AUTO_START_KEY = "remote_access_auto_start"
 DEFAULT_REMOTE_ACCESS_AUTO_START = False
+# Longest a Stop waits for a live start worker to claim settings ownership.
+_STOP_OWNERSHIP_WAIT = 5.0
 
 _worker_lock = threading.Lock()
 _start_worker: threading.Thread | None = None
@@ -220,6 +222,10 @@ def remote_access_status(app_state) -> dict:
         "Cloudflare URL was not reachable",
         "cloudflared did not register a connection",
         "cloudflared exited",
+        # Why Start is blocked: the connector's exit was never confirmed, so it
+        # still holds the runtime slot. The generic text hides the one reason
+        # the user can act on.
+        "cloudflared could not be stopped",
     }:
         error = "Cloudflare tunnel failed"
     return {
@@ -308,12 +314,14 @@ def stop_remote_access(app_state) -> dict:
         from cloudflare_tunnel import get_studio_tunnel_status, stop_studio_tunnel
 
         # A stop can beat the newly-created start worker to the controller. Wait
-        # until it claims settings ownership, then cancel that generation.
-        while _worker_alive(_start_worker):
-            current = get_studio_tunnel_status()
-            if current["managed_by"] == "settings":
+        # until it claims settings ownership, then cancel that generation. Bounded:
+        # a start that never claims it (foreign owner, bailed on admission) must
+        # not defer the user's Stop for the probe deadline.
+        deadline = time.monotonic() + _STOP_OWNERSHIP_WAIT
+        while _worker_alive(_start_worker) and time.monotonic() < deadline:
+            if get_studio_tunnel_status()["managed_by"] == "settings":
                 break
-            time.sleep(0.01)
+            time.sleep(0.02)
         current = get_studio_tunnel_control_token()
         if current[0] != admission[0]:
             return

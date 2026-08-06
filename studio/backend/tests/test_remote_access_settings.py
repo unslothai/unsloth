@@ -406,3 +406,64 @@ def test_colab_auto_start_setting_is_read_only(monkeypatch):
     with pytest.raises(HTTPException) as exc:
         routes.update_remote_access_auto_start(request, payload, "admin", None)
     assert exc.value.status_code == 409
+
+
+def test_unstoppable_connector_reports_why_start_is_blocked(monkeypatch):
+    # The generic "Cloudflare tunnel failed" hides the one state the user can
+    # act on: a connector whose exit was never confirmed still holds the slot.
+    monkeypatch.setattr(remote_access, "_start_worker", None)
+    monkeypatch.setattr(remote_access, "_stop_worker", None)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "get_studio_tunnel_status",
+        lambda: {
+            "state": "error",
+            "url": None,
+            "error": "cloudflared could not be stopped",
+            "managed_by": "settings",
+            "stop_pending": True,
+        },
+    )
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
+    assert remote_access.remote_access_status(_state())["error"] == (
+        "cloudflared could not be stopped"
+    )
+
+
+def test_stop_does_not_wait_forever_on_a_start_that_never_claims_ownership(monkeypatch):
+    # A start worker that stays alive without taking settings ownership (foreign
+    # owner, or bailed on admission) must not defer Stop for the probe deadline.
+    hold = threading.Event()
+    foreign_start = threading.Thread(target = hold.wait, daemon = True)
+    foreign_start.start()
+    monkeypatch.setattr(remote_access, "_start_worker", foreign_start)
+    monkeypatch.setattr(remote_access, "_stop_worker", None)
+    monkeypatch.setattr(remote_access, "_STOP_OWNERSHIP_WAIT", 0.1)
+    monkeypatch.setattr(remote_access, "get_remote_access_auto_start", lambda: False)
+    monkeypatch.setattr(remote_access, "_admin_password_ready", lambda: True)
+    monkeypatch.setattr(
+        cloudflare_tunnel,
+        "get_studio_tunnel_status",
+        lambda: {
+            "state": "online",
+            "url": "https://live.trycloudflare.com",
+            "error": None,
+            "managed_by": "settings",
+            "stop_pending": False,
+        },
+    )
+    monkeypatch.setattr(cloudflare_tunnel, "get_studio_tunnel_control_token", lambda: (1, 0))
+    monkeypatch.setattr(cloudflare_tunnel, "capture_studio_tunnel_start_admission", lambda: (1, 0))
+    stopped = threading.Event()
+    monkeypatch.setattr(
+        cloudflare_tunnel, "stop_studio_tunnel", lambda **_kw: stopped.set()
+    )
+    try:
+        remote_access.stop_remote_access(_state())
+        assert stopped.wait(5), "stop worker never reached stop_studio_tunnel"
+    finally:
+        hold.set()
+        foreign_start.join(timeout = 5)
+        remote_access._open_remote_access_stop_response_admission()
