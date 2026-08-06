@@ -1,0 +1,49 @@
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright 2026-present the Unsloth AI Inc. team. All rights reserved.
+
+name: Image Download Plan Windows A-B Repro
+
+on:
+  push:
+    branches:
+      - 'fix/image-download-plan-repro-ci-fixed'
+      - 'fix/image-download-plan-repro-ci-negative'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-plan:
+    name: Cache-aware dependency plan
+    runs-on: windows-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: '3.13'
+
+      - name: Install CPU-only backend test dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r studio/backend/requirements/studio.txt
+          python -m pip install python-multipart aiofiles sqlalchemy cryptography psutil pyyaml jinja2 mammoth unpdf requests "numpy<3" pytest pytest-asyncio httpx
+          python -m pip install --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple "torch>=2.4,<2.11"
+          python -m pip install "transformers>=4.51,<5.5"
+
+      - name: Prove cached-checkpoint and cancellation behavior
+        shell: pwsh
+        env:
+          PYTHONPATH: ${{ github.workspace }}\studio\backend
+        run: |
+          Write-Host "A/B branch: $env:GITHUB_REF_NAME"
+          python -m pytest .github/scripts/image_download_plan_repro_test.py -q -s --tb=short
