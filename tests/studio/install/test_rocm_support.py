@@ -922,6 +922,7 @@ class TestEnsureRocmTorch:
         assert "gfx1150" in torch_call
         assert "torch>=2.11.0,<2.12.0" in torch_call
 
+    @patch.object(stack_mod, "IS_MACOS", False)
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
@@ -952,6 +953,7 @@ class TestEnsureRocmTorch:
         assert "gfx1151" not in calls
         assert "non-Strix runtime target (gfx1100)" in buf.getvalue()
 
+    @patch.object(stack_mod, "IS_MACOS", False)
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
     @patch.object(stack_mod, "pip_install")
