@@ -4,14 +4,13 @@
 """A disconnect watcher that never settles must not block a stream's teardown.
 
 Starlette's Request.is_disconnected() awaits receive() inside an anyio CancelScope it has
-already cancelled. Under uvicorn's h11 protocol that receive() genuinely parks, so a watcher
-polling it is suspended inside that scope. An external cancel() arriving in that window is
-counted by CPython as a second cancellation, and the scope's __exit__ then uncancel()s and
-swallows the CancelledError as its own. The watcher survives cancel() and keeps polling.
+already cancelled, and under uvicorn's h11 protocol that receive() genuinely parks. A cancel()
+arriving in that window counts as a second cancellation, so the scope's __exit__ uncancel()s
+and swallows the CancelledError as its own: the watcher survives cancel() and keeps polling.
 
-Every teardown that awaited such a watcher outright therefore blocked until the client itself
-disconnected, holding the ASGI response open and, on the passthrough paths, stranding the
-llama-server admission lease released behind it. #7617.
+Teardown that awaited such a watcher outright therefore blocked until the client itself
+disconnected, holding the ASGI response open and stranding the llama-server admission lease
+released behind it. #7617.
 
 These tests wait on a task rather than asyncio.wait_for: a stub that ignores cancel() cannot
 be unblocked by cancelling it, so a wait_for here would hang instead of failing.
@@ -54,8 +53,8 @@ def _bounded_stop(monkeypatch, collected):
 def _swallowing_watcher(release, created):
     """Stands in for a watcher suspended inside is_disconnected()'s cancelled scope.
 
-    Records its own task so cleanup has a handle even when the teardown under test
-    never hands it to the bounded stop.
+    Records its own task so cleanup has a handle even when the teardown never hands it
+    to the bounded stop.
     """
 
     async def _poll(*_args, **_kwargs):
@@ -174,13 +173,12 @@ def test_send_stream_preheader_finally_is_not_blocked_by_a_wedged_watcher(monkey
 def test_real_disconnect_watcher_can_survive_cancel_inside_is_disconnected():
     """Pins the upstream behaviour the bounded teardown exists for.
 
-    A real Studio watcher on a real starlette Request, cancelled while suspended inside
-    is_disconnected()'s already-cancelled anyio scope, keeps running: the scope's __exit__
-    swallows the CancelledError as its own. Sweeps the loop ticks around the poll rather
-    than assuming one, since the window is a single event-loop iteration.
+    A real watcher on a real starlette Request, cancelled while suspended inside
+    is_disconnected()'s already-cancelled anyio scope, keeps running. The window is a
+    single loop iteration, so sweep the ticks around the poll rather than assume one.
 
-    If this ever stops reproducing, the unbounded awaits it justifies are still wrong to
-    restore -- the point is that cancel() is not guaranteed to land here.
+    If this stops reproducing, the unbounded awaits are still wrong to restore: the point
+    is that cancel() is not guaranteed to land here.
     """
 
     async def _survives_cancel_at(offset):
@@ -239,8 +237,8 @@ def _blocks(tree):
 def _called_name(stmt):
     """The name a bare `foo(...)` / `await foo(...)` statement calls, else None.
 
-    Structural rather than textual so an enclosing try/finally does not match on the
-    calls nested inside it.
+    Structural rather than textual so an enclosing try/finally does not match on the calls
+    nested inside it.
     """
     if not isinstance(stmt, ast.Expr):
         return None
@@ -266,11 +264,9 @@ def _first_index(block, names):
 def test_admission_is_released_after_the_upstream_stream_is_closed(func_name):
     """The slot must be handed back only once the upstream response is closed.
 
-    On the disconnect path the stream's finally is entered by a CancelledError thrown into
-    the generator while llama-server is still decoding; closing resp is what stops it, so
-    releasing first admits another request past --parallel. The release must still always
-    run, from the finally of the same try, which is bounded only because every teardown
-    await is.
+    On disconnect llama-server keeps decoding until resp is closed, so releasing first
+    admits another request past --parallel. The release must still always run, from the
+    finally of the same try, which is bounded only because every teardown await is.
     """
     func = getattr(inference_route, func_name)
     tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
@@ -287,11 +283,10 @@ def test_admission_is_released_after_the_upstream_stream_is_closed(func_name):
             + "\n".join(ast.unparse(stmt) for stmt in block)
         )
 
-    # and every close must be protected by a try whose finally releases, so a stalled close
-    # cannot drop the lease. Checked by ancestry, not direct membership in a try's body:
-    # the nesting that stops a cancel in _aclose_send_task's wait from skipping the later
-    # closes puts the first teardown one level up, and membership rejects that even though
-    # it is strictly safer. Ancestry is the property that matters: some enclosing try releases.
+    # and every close must sit under a try whose finally releases, so a stalled close cannot
+    # drop the lease. By ancestry, not direct membership: the nesting that stops a cancel in
+    # _aclose_send_task's wait from skipping the later closes puts the first teardown one
+    # level up, which membership would reject even though it is strictly safer.
     parents = {}
     for parent in ast.walk(tree):
         for child in ast.iter_child_nodes(parent):
