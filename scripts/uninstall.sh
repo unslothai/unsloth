@@ -153,8 +153,8 @@ $_roots_from_conf"
     sleep 0.5
     _stop_owned_sd_cpp_processes KILL
 
-    # The app's WebView helpers re-create the caches removed below, so it has
-    # to die here. -x is exact, so the "unsloth" CLI shim never matches.
+    # The app's WebView helpers re-create the caches removed below, so it has to die here.
+    # -x is exact, so the "unsloth" CLI shim never matches.
     pkill -TERM -x unsloth-studio 2>/dev/null || true
     sleep 0.5
     pkill -KILL -x unsloth-studio 2>/dev/null || true
@@ -167,9 +167,8 @@ _remove_path() {
     fi
 }
 
-# $1 override, $2 default. A relative override is invalid per the XDG spec and
-# is dropped by dirs, which is what Tauri resolves these through, so following
-# one would spare the real data and rm -rf a same-named dir under our cwd.
+# $1 override, $2 default. A relative override is invalid per the XDG spec and dropped by dirs,
+# which Tauri resolves through, so following one would spare the real data and rm -rf under our cwd.
 _xdg_dir() {
     case "$1" in /*) printf '%s\n' "$1" ;; *) printf '%s\n' "$2" ;; esac
 }
@@ -403,8 +402,8 @@ _unsloth_uninstall_main() {
             if [ -x "$_lsr" ]; then
                 "$_lsr" -u "$HOME/Applications/Unsloth Studio.app" 2>/dev/null || true
             fi
-            # WKWebView data, keyed by bundle id. Created at first launch, not
-            # by install.sh, so it outlived every uninstall.
+            # WKWebView data, keyed by bundle id. Created at first launch, not by install.sh,
+            # so it outlived every uninstall.
             _bid="ai.unsloth.studio"
             echo "Removing WebView caches and app data ($_bid)..."
             _remove_path "$HOME/Library/Caches/$_bid"
@@ -414,8 +413,8 @@ _unsloth_uninstall_main() {
             _remove_path "$HOME/Library/HTTPStorages/$_bid.binarycookies"
             _remove_path "$HOME/Library/Cookies/$_bid.binarycookies"
             _remove_path "$HOME/Library/Saved Application State/$_bid.savedState"
-            # defaults, not rm: cfprefsd rewrites the plist from memory after a
-            # bare rm. ByHost is a separate domain.
+            # defaults, not rm: cfprefsd rewrites the plist from memory after a bare rm.
+            # ByHost is a separate domain.
             if command -v defaults >/dev/null 2>&1; then
                 defaults delete "$_bid" >/dev/null 2>&1 || true
                 defaults -currentHost delete "$_bid" >/dev/null 2>&1 || true
@@ -563,8 +562,8 @@ _unsloth_uninstall_main() {
                     echo "          sudo rm -rf /opt/rocm /opt/rocm-* && sudo ldconfig"
                 fi
             fi
-            # webkit2gtk data, keyed by bundle id. Tauri points the WebView at
-            # LocalData/<bid>, so caches sit under XDG_DATA_HOME; rest is app data.
+            # webkit2gtk data, keyed by bundle id. Tauri points the WebView at LocalData/<bid>,
+            # so caches sit under XDG_DATA_HOME; rest is app data.
             _bid="ai.unsloth.studio"
             echo "Removing WebView caches and app data ($_bid)..."
             _remove_path "$(_xdg_dir "${XDG_DATA_HOME:-}" "$HOME/.local/share")/$_bid"
