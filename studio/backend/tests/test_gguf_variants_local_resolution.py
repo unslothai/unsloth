@@ -348,6 +348,20 @@ def test_local_answers_report_what_a_load_would_serve(in_tmp_cwd):
     assert aliased.default_variant in aliased.loadable_variants
 
 
+def test_a_missing_direct_path_is_not_loadable(in_tmp_cwd):
+    # The resolver answers for paths that do not exist (the extension is
+    # authoritative), so absence has to be caught before the gate trusts it.
+    response = _variants(os.fspath(in_tmp_cwd / "typo-Q4_K_M.gguf"))
+    assert response.loadable is False
+
+    # A file that is there still serves, and a direct file leaves the label
+    # list unanswered because the load ignores the quant for one.
+    real = in_tmp_cwd / "real-Q8_0.gguf"
+    real.write_bytes(b"GGUF")
+    served = _variants(os.fspath(real))
+    assert served.loadable is True and served.loadable_variants is None
+
+
 def test_relative_identifiers_keep_their_relative_alias(in_tmp_cwd):
     # The resolver returns an absolute path, so a relative identifier has to be
     # resolved the same way or the relative spelling is lost from the answer.

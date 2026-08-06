@@ -670,6 +670,12 @@ def _will_serve(resolved: Optional[str]) -> bool:
         return False
     try:
         path = Path(resolved)
+        # The resolver is extension-authoritative and answers for paths that do
+        # not exist, so absence has to be caught here: a filesystem that says
+        # "no such file" is definite, while an error reading it (the Windows
+        # lock window after llama-server is killed) stays unknown and serves.
+        if not path.exists():
+            return False
         return path.stat().st_size > 0 and _direct_gguf_split_is_whole(path)
     except OSError:
         return True
