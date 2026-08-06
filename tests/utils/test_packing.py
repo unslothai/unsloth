@@ -178,18 +178,14 @@ def test_enable_padding_free_metadata_does_not_mutate_examples():
     batch = trainer.data_collator.torch_call(examples)
 
     assert examples == before, "collator wrapper mutated the caller's examples"
-    assert torch.equal(
-        batch["packed_seq_lengths"], torch.tensor([3, 2], dtype = torch.int32)
-    )
+    assert torch.equal(batch["packed_seq_lengths"], torch.tensor([3, 2], dtype = torch.int32))
 
     # explicit seq_lengths are still honoured, and still not written back
     explicit = [{"input_ids": [1, 2, 3], "seq_lengths": [2, 1]}]
     explicit_before = copy.deepcopy(explicit)
     batch = trainer.data_collator.torch_call(explicit)
     assert explicit == explicit_before
-    assert torch.equal(
-        batch["packed_seq_lengths"], torch.tensor([2, 1], dtype = torch.int32)
-    )
+    assert torch.equal(batch["packed_seq_lengths"], torch.tensor([2, 1], dtype = torch.int32))
 
 
 def test_configure_sample_packing():
