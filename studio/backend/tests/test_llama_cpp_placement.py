@@ -214,9 +214,7 @@ def test_dspark_composed_argv_respects_placement_fit_decision(tmp_path, use_fit)
     )
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
-    backend._select_gpus = lambda *args, **kwargs: (
-        (None, True) if use_fit else ([0], False)
-    )
+    backend._select_gpus = lambda *args, **kwargs: ((None, True) if use_fit else ([0], False))
     backend.probe_server_capabilities = lambda _binary = None: {
         "supports_dspark": True,
         "spec_draft_n_max_flag": "--spec-draft-n-max",

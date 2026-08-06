@@ -2492,8 +2492,7 @@ def _extra_args_requests_separate_draft(
     _extra_args_requests_mtp: a later --spec-default or --spec-type cannot clear an
     inherited draft-simple, so reading only the last under-reserves the model it loads."""
     return bool(
-        _accumulated_spec_types(extra_args, env)
-        & {"draft-simple", "draft-eagle3", "draft-dspark"}
+        _accumulated_spec_types(extra_args, env) & {"draft-simple", "draft-eagle3", "draft-dspark"}
     )
 
 
@@ -2756,9 +2755,7 @@ def _build_ngram_mod_flags(
 # Dropdown renders six (auto, mtp, dspark, ngram, mtp+ngram, off); the load API
 # also accepts legacy values the original Switch and external callers emit
 # (default, draft-mtp, ngram-mod, ngram-simple).
-_CANONICAL_SPEC_MODES = {
-    "auto", "mtp", "dspark", "ngram", "mtp+ngram", "off", "ngram-simple"
-}
+_CANONICAL_SPEC_MODES = {"auto", "mtp", "dspark", "ngram", "mtp+ngram", "off", "ngram-simple"}
 _LEGACY_SPEC_MODE_MAP = {
     "default": "auto",
     "draft-mtp": "mtp",
@@ -3744,7 +3741,10 @@ class LlamaCppBackend:
         if tuple(_invoked_extras or ()) != tuple(self.requested_extra_args or ()):
             return False
         if (intent.gguf_path is not None or intent.compare_mtp_draft) and speculative_type in (
-            "auto", "mtp", "mtp+ngram", "dspark"
+            "auto",
+            "mtp",
+            "mtp+ngram",
+            "dspark",
         ):
             try:
                 intent_draft = (
@@ -3752,9 +3752,7 @@ class LlamaCppBackend:
                     if speculative_type == "dspark"
                     else intent.mtp_draft_path
                 )
-                requested_draft = (
-                    Path(intent_draft).resolve() if intent_draft else None
-                )
+                requested_draft = Path(intent_draft).resolve() if intent_draft else None
                 # A drafter the last load dropped on purpose counts as launched here:
                 # the file is still there, so comparing it against the stored None
                 # would reload the same drafter-free server forever.
@@ -7432,9 +7430,7 @@ class LlamaCppBackend:
                     for name in _gguf_snapshot_files(snap)
                     if _is_dspark_drafter_path(name)
                 )
-            for candidate in sorted(
-                candidates, key = lambda p: dspark_preference_key(p.name)
-            ):
+            for candidate in sorted(candidates, key = lambda p: dspark_preference_key(p.name)):
                 if candidate.is_file():
                     return str(candidate)
         except Exception as exc:
@@ -7452,7 +7448,6 @@ class LlamaCppBackend:
 
         def _pick_dspark(candidates: list[str]) -> Optional[str]:
             from utils.models.model_config import dspark_preference_key
-
             files = sorted(
                 (name for name in candidates if _is_dspark_drafter_path(name)),
                 key = dspark_preference_key,
@@ -9174,8 +9169,7 @@ class LlamaCppBackend:
                     # they never set _user_mtp_via_extras), and DSpark via Studio's
                     # own resolution, which does set _auto_studio_mtp.
                     _engaged_is_mtp = bool(
-                        _user_mtp_via_extras
-                        or (_auto_studio_mtp and _mtp_effective != "dspark")
+                        _user_mtp_via_extras or (_auto_studio_mtp and _mtp_effective != "dspark")
                     )
 
                     # Effective draft depth: extras win (last-wins at launch), else
@@ -10313,12 +10307,8 @@ class LlamaCppBackend:
                     model_path = model_path,
                     gpus = bool(_detected_gpus),
                     binary = binary,
-                    mtp_draft_path = (
-                        None if _spec_canon == "dspark" else launch_mtp_draft_path
-                    ),
-                    dspark_draft_path = (
-                        launch_mtp_draft_path if _spec_canon == "dspark" else None
-                    ),
+                    mtp_draft_path = (None if _spec_canon == "dspark" else launch_mtp_draft_path),
+                    dspark_draft_path = (launch_mtp_draft_path if _spec_canon == "dspark" else None),
                     dspark_fit_allowed = not use_fit,
                     draft_device = _draft_device,
                 )
@@ -11105,10 +11095,9 @@ class LlamaCppBackend:
                     # failed and lose a main model that loads fine without it. The
                     # tail loses its spec group and the env goes with it, the same way
                     # the crash replay does it.
-                    if (
-                        _extra_args_requests_mtp(extra_args, env = _launch_spec_env)
-                        or _extra_args_requests_dspark(extra_args, env = _launch_spec_env)
-                    ):
+                    if _extra_args_requests_mtp(
+                        extra_args, env = _launch_spec_env
+                    ) or _extra_args_requests_dspark(extra_args, env = _launch_spec_env):
                         _fb_tail = strip_shadowing_flags(
                             _fb_tail,
                             strip_context = False,
@@ -11537,9 +11526,7 @@ class LlamaCppBackend:
                 self._speculative_type = "default"
                 self._spec_fallback_reason = "dspark_fit_required"
                 return flags
-            draft_n_max = (
-                int(spec_draft_n_max) if spec_draft_n_max is not None else 3
-            )
+            draft_n_max = int(spec_draft_n_max) if spec_draft_n_max is not None else 3
             if spec_draft_n_max is not None:
                 self._spec_draft_n_max = draft_n_max
             n_max_flag = caps.get("spec_draft_n_max_flag") or "--spec-draft-n-max"
@@ -11548,9 +11535,12 @@ class LlamaCppBackend:
             # --fit off exactly once before this speculative block.
             flags.extend(
                 [
-                    "--model-draft", dspark_draft_path,
-                    "--spec-type", "draft-dspark",
-                    str(n_max_flag), str(draft_n_max),
+                    "--model-draft",
+                    dspark_draft_path,
+                    "--spec-type",
+                    "draft-dspark",
+                    str(n_max_flag),
+                    str(draft_n_max),
                 ]
             )
             self._speculative_type = "draft-dspark"

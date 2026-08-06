@@ -3758,9 +3758,7 @@ def _active_gguf_intent(
             llama_backend.layer_preserves_tensor_intent and not _is_explicit_tensor_drop(request)
         ),
         mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, native_grant_backed),
-        dspark_draft_path = _dspark_draft_for_path(
-            llama_backend.gguf_path, native_grant_backed
-        ),
+        dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, native_grant_backed),
         compare_mtp_draft = True,
         extra_args_inherited = request.llama_extra_args is None,
     )
@@ -4900,9 +4898,7 @@ def _remote_gguf_companion_bytes(
         if dspark_candidates:
             # Same preference order the download uses, so the budget sizes the
             # file the launch will actually fetch.
-            total += min(
-                dspark_candidates, key = lambda c: dspark_preference_key(c[0])
-            )[1]
+            total += min(dspark_candidates, key = lambda c: dspark_preference_key(c[0]))[1]
         return total
     except Exception as e:
         logger.warning(f"Could not size GGUF companions for {repo}: {e}")
@@ -6289,9 +6285,7 @@ async def _load_model_impl(
                 gguf_intent = replace(
                     gguf_intent,
                     mtp_draft_path = _mtp_draft_for_path(llama_backend.gguf_path, False),
-                    dspark_draft_path = _dspark_draft_for_path(
-                        llama_backend.gguf_path, False
-                    ),
+                    dspark_draft_path = _dspark_draft_for_path(llama_backend.gguf_path, False),
                     compare_mtp_draft = True,
                 )
             _effective_tensor = _effective_tensor_parallel(

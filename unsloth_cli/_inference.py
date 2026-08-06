@@ -18,9 +18,7 @@ import typer
 # _CANONICAL_SPEC_MODES. Named once so the CLI's option annotations, the HTTP
 # payload builders and the in-process loader cannot drift apart when a mode is
 # added; typer reads it at runtime to validate --speculative-type.
-SpeculativeType = Literal[
-    "auto", "mtp", "dspark", "ngram", "mtp+ngram", "off", "ngram-simple"
-]
+SpeculativeType = Literal["auto", "mtp", "dspark", "ngram", "mtp+ngram", "off", "ngram-simple"]
 
 _THINK_OPEN = "<think>"
 _THINK_BLOCK = re.compile(rf"{re.escape(_THINK_OPEN)}.*?</think>", re.DOTALL)

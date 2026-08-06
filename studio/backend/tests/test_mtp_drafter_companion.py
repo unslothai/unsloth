@@ -254,9 +254,7 @@ def test_detect_dspark_file_skips_an_incomplete_split_set(tmp_path):
     assert detect_dspark_file(str(weight)) == str(complete.resolve())
 
 
-def test_detect_dspark_file_sums_shards_so_a_split_cannot_outrank_a_smaller_copy(
-    tmp_path,
-):
+def test_detect_dspark_file_sums_shards_so_a_split_cannot_outrank_a_smaller_copy(tmp_path):
     """Candidates are collapsed to shard 1, so size must be summed across the
     set or a large split copy outranks a smaller single file at equal precision."""
     weight = tmp_path / "model-Q4_K_M.gguf"

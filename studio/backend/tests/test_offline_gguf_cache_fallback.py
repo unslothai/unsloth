@@ -2104,9 +2104,7 @@ class TestListLocalGgufVariantsSubdir:
         first.write_bytes(b"a")
         second.write_bytes(b"b")
 
-        config = ModelConfig.from_identifier(
-            str(first), gguf_variant = "UD-Q3_K_M"
-        )
+        config = ModelConfig.from_identifier(str(first), gguf_variant = "UD-Q3_K_M")
 
         assert config is not None
         assert config.is_gguf is True

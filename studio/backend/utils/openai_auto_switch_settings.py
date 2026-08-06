@@ -277,9 +277,7 @@ VALID_SPECULATIVE_TYPES = frozenset(
     }
 )
 # Only these consume spec_draft_n_max (mirrors DRAFT_N_MAX_SPEC_TYPES in the UI).
-DRAFT_N_MAX_SPEC_TYPES = frozenset(
-    {"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark"}
-)
+DRAFT_N_MAX_SPEC_TYPES = frozenset({"mtp", "mtp+ngram", "draft-mtp", "dspark", "draft-dspark"})
 VALID_GPU_MEMORY_MODES = frozenset({"auto", "manual"})
 
 # Mirrors PARALLEL_MIN/MAX in llama_server_args.py. Mirrored not imported: that module owns

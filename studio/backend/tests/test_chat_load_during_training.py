@@ -1177,6 +1177,7 @@ class TestEstimateGgufRequiredGb(unittest.TestCase):
 
     def test_local_dspark_sidecar_is_only_counted_when_requested(self):
         import tempfile
+
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
             target = p / "model.gguf"

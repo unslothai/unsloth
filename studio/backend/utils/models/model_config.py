@@ -1611,9 +1611,7 @@ def _drafter_pairing_stem(name: str, *, kind: str) -> str:
     )
 
 
-def _drafter_matches_weight(
-    candidate_name: str, weight_name: Optional[str], *, kind: str
-) -> bool:
+def _drafter_matches_weight(candidate_name: str, weight_name: Optional[str], *, kind: str) -> bool:
     """Whether a drafter pairs with the weight, by name.
 
     A multi-model folder must not attach a foreign drafter, so the family the
@@ -1891,9 +1889,7 @@ def detect_dspark_file(
                 stem = re.sub(r"-[0-9]{5}-of-[0-9]{5}$", "", Path(lower).stem)
                 if not (lower.startswith("dspark-") or stem.endswith("-dspark")):
                     continue
-                if not _drafter_matches_weight(
-                    candidate.name, weight_name, kind = "dspark"
-                ):
+                if not _drafter_matches_weight(candidate.name, weight_name, kind = "dspark"):
                     continue
                 try:
                     # Collapse a split copy to shard 1 before ranking.

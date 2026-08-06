@@ -694,9 +694,7 @@ def test_probe_server_capabilities_detects_dspark(tmp_path):
 
 
 @_NEEDS_BASH
-def test_probe_server_capabilities_gates_known_broken_dspark_prebuilt(
-    tmp_path, monkeypatch
-):
+def test_probe_server_capabilities_gates_known_broken_dspark_prebuilt(tmp_path, monkeypatch):
     fake = _make_fake_llama_server(
         tmp_path / "llama-server",
         "--spec-type none,draft-mtp,draft-dspark,ngram-mod",
@@ -1527,9 +1525,7 @@ def test_build_speculative_flags_dspark_missing_sidecar_falls_back(monkeypatch):
     assert backend.spec_fallback_reason == "drafter_not_found"
 
 
-def test_build_speculative_flags_dspark_declines_when_fit_is_required(
-    monkeypatch, tmp_path
-):
+def test_build_speculative_flags_dspark_declines_when_fit_is_required(monkeypatch, tmp_path):
     backend = _resolver_backend(monkeypatch)
     sidecar = tmp_path / "dspark-model-Q8_0.gguf"
     sidecar.write_bytes(b"draft")
