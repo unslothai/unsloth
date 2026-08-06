@@ -292,6 +292,12 @@ class TestEffectiveMemoryState:
             # argv beats env, matching llama.cpp.
             (["--load-mode", "mmap"], {"LLAMA_ARG_MLOCK": "1"}, (False, False)),
             (["--mlock", "--load-mode", "mmap"], {}, (False, False)),
+            # --no-mmap is the deprecated selector for the whole "none" mode, so
+            # it clears the mlock. Both orderings measured against the binary.
+            (["--mlock", "--no-mmap"], {}, (False, True)),
+            (["--no-mmap", "--mlock"], {}, (True, True)),
+            (["--mlock", "--mmap"], {}, (False, False)),
+            (["--mlock", "--direct-io"], {}, (False, False)),
         ],
     )
     def test_precedence(self, argv, env, expected):

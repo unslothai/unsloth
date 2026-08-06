@@ -717,9 +717,16 @@ def resolve_effective_memory_state(
             i += 1
             continue
         if flag in _MLOCK_FLAGS:
+            # Only the mlock bit: the enum has both "mlock" and "mmap+mlock" and
+            # which one this maps to is not observable. It changes no decision,
+            # since mlock alone already counts as a reservation for no-reserve.
             mlock = True
             i += 1
         elif flag in _NO_MMAP_FLAGS:
+            # Deprecated selector for the whole "none" mode, so it clears the
+            # mlock too: measured, "--mlock --no-mmap" leaves the child unlocked
+            # while "--no-mmap --mlock" locks it.
+            mlock = False
             reserves_ram = True
             i += 1
         elif flag in _DIO_FLAGS:
