@@ -3478,9 +3478,7 @@ def _monitor_queue_state() -> Optional[dict]:
             "queued": snapshot.queued,
             "free": snapshot.free,
         }
-    capacity = (
-        _positive_int_or_none(getattr(llama_backend, "effective_parallel_slots", None)) or 1
-    )
+    capacity = _positive_int_or_none(getattr(llama_backend, "effective_parallel_slots", None)) or 1
     return {"capacity": capacity, "active": 0, "queued": 0, "free": capacity}
 
 
@@ -10613,7 +10611,9 @@ async def openai_chat_completions(
                         _stream_usage,
                         _monitor_context_length(),
                         timings = _stream_timings,
-                        stop_reason = _clamp_finish_reason(_stream_finish) if _stream_finish else None,
+                        stop_reason = _clamp_finish_reason(_stream_finish)
+                        if _stream_finish
+                        else None,
                     )
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
@@ -10892,9 +10892,12 @@ async def openai_chat_completions(
                     cancel_event = cancel_event,
                 )
                 drain_task = asyncio.create_task(asyncio.to_thread(_drain_gguf_tool_loop))
-                full_text, completion_usage, completion_finish, completion_timings = (
-                    await asyncio.shield(drain_task)
-                )
+                (
+                    full_text,
+                    completion_usage,
+                    completion_finish,
+                    completion_timings,
+                ) = await asyncio.shield(drain_task)
                 reasoning_text, visible_text = _extract_responses_reasoning(
                     full_text,
                     parse_think_markers = _responses_should_parse_think_markers(
@@ -10936,7 +10939,9 @@ async def openai_chat_completions(
                     },
                     _monitor_context_length(),
                     timings = completion_timings,
-                    stop_reason = _clamp_finish_reason(completion_finish) if completion_finish else None,
+                    stop_reason = _clamp_finish_reason(completion_finish)
+                    if completion_finish
+                    else None,
                 )
                 api_monitor.finish(
                     monitor_id, "cancelled" if cancel_event.is_set() else "completed"
@@ -11176,7 +11181,9 @@ async def openai_chat_completions(
                         _stream_usage,
                         _monitor_context_length(),
                         timings = _stream_timings,
-                        stop_reason = _clamp_finish_reason(_stream_finish) if _stream_finish else None,
+                        stop_reason = _clamp_finish_reason(_stream_finish)
+                        if _stream_finish
+                        else None,
                     )
                     api_monitor.finish(
                         monitor_id, "cancelled" if cancel_event.is_set() else "completed"
