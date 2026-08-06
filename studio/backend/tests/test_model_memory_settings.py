@@ -354,12 +354,20 @@ class TestManagedFlagIsNotReset:
     @pytest.mark.parametrize("load_mode", [True, False])
     @pytest.mark.parametrize(
         "preset",
-        [["--no-mmap"], ["--mmap"], ["-no-mmap"], ["-lm", "none"],
-         ["--load-mode", "mmap"], ["--load-mode=none"], ["--mlock"]],
+        [
+            ["--no-mmap"],
+            ["--mmap"],
+            ["-no-mmap"],
+            ["-lm", "none"],
+            ["--load-mode", "mmap"],
+            ["--load-mode=none"],
+            ["--mlock"],
+        ],
     )
     def test_nothing_after_the_managed_flag_can_reset_it(self, policy, load_mode, preset):
-        managed, extras = policy(True, False, preset + ["--temp", "0.7"],
-                                 supports_load_mode = load_mode)
+        managed, extras = policy(
+            True, False, preset + ["--temp", "0.7"], supports_load_mode = load_mode
+        )
         assert managed  # residency emitted something
         # The resolved state of the full argv must still be mlock.
         mlock, _ = resolve_effective_memory_state(managed + extras, {})
@@ -380,12 +388,12 @@ class TestDuplicateLoadComparator:
     @pytest.mark.parametrize(
         ("launched", "keep", "no_res", "satisfied"),
         [
-            ((False, False), True, False, False),   # turn residency on
-            ((True, False), False, True, False),    # turn no-reserve on, mlocked
-            ((False, True), False, True, False),    # turn no-reserve on, no-mmap
-            ((True, False), True, False, True),     # already pinned
-            ((False, False), False, True, True),    # already clean
-            ((True, True), False, False, True),     # unmanaged
+            ((False, False), True, False, False),  # turn residency on
+            ((True, False), False, True, False),  # turn no-reserve on, mlocked
+            ((False, True), False, True, False),  # turn no-reserve on, no-mmap
+            ((True, False), True, False, True),  # already pinned
+            ((False, False), False, True, True),  # already clean
+            ((True, True), False, False, True),  # unmanaged
         ],
     )
     def test_forces_a_reload_only_when_the_policy_changed(
