@@ -50,10 +50,7 @@ def drain_process_output(proc: subprocess.Popen[str]) -> None:
 
 
 def start_logged_process(
-    args: list[str],
-    *,
-    cwd: Path,
-    env: dict[str, str],
+    args: list[str], *, cwd: Path, env: dict[str, str]
 ) -> subprocess.Popen[str]:
     proc = subprocess.Popen(
         args,
