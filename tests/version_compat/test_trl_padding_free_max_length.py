@@ -743,6 +743,7 @@ def test_an_unrewritable_stream_is_refused_not_assumed(tmp_path, trl_has_guard):
 
 # --- what the fifth review round found ---------------------------------------
 
+
 def test_keep_end_truncation_keeps_the_end(tmp_path, trl_has_guard):
     """TRL slices `[-max_length:]` for `truncation_mode = 'keep_end'`, which is
     what callers use when the completion sits at the tail of a long prompt.
@@ -758,8 +759,7 @@ def test_keep_end_truncation_keeps_the_end(tmp_path, trl_has_guard):
         row = {"input_ids": list(ids), "attention_mask": [1] * len(ids)}
         return Dataset.from_list([dict(row) for _ in range(4)])
 
-    trainer = _build(tmp_path, dataset = _tail_marked,
-                     truncation_mode = "keep_end")
+    trainer = _build(tmp_path, dataset = _tail_marked, truncation_mode = "keep_end")
 
     kept = trainer.train_dataset[0]["input_ids"]
     assert len(kept) == _MODEL_MAX_SEQ_LENGTH
@@ -786,9 +786,13 @@ def test_a_packed_split_is_not_truncated_at_all(tmp_path, trl_has_guard):
 
     def _packed(tok):
         from datasets import Dataset
+
         ids = tok("The quick brown fox. " * 200)["input_ids"]
-        row = {"input_ids": list(ids), "attention_mask": [1] * len(ids),
-               "seq_lengths": [50, 100, len(ids) - 150]}
+        row = {
+            "input_ids": list(ids),
+            "attention_mask": [1] * len(ids),
+            "seq_lengths": [50, 100, len(ids) - 150],
+        }
         return Dataset.from_list([dict(row) for _ in range(4)])
 
     with pytest.raises(ValueError, match = "cannot be enforced"):
@@ -804,14 +808,16 @@ def test_rows_left_fully_masked_are_dropped(tmp_path, trl_has_guard):
 
     def _tail_labelled(tok):
         from datasets import Dataset
+
         ids = tok("The quick brown fox. " * 200)["input_ids"]
         # Only the tail carries labels, so keep_start truncation masks it away.
         labels = [-100] * (len(ids) - 8) + list(ids[-8:])
-        rows = [{"input_ids": list(ids), "attention_mask": [1] * len(ids),
-                 "labels": list(labels)} for _ in range(3)]
-        short = list(ids[:_MODEL_MAX_SEQ_LENGTH // 2])
-        rows.append({"input_ids": short, "attention_mask": [1] * len(short),
-                     "labels": list(short)})
+        rows = [
+            {"input_ids": list(ids), "attention_mask": [1] * len(ids), "labels": list(labels)}
+            for _ in range(3)
+        ]
+        short = list(ids[: _MODEL_MAX_SEQ_LENGTH // 2])
+        rows.append({"input_ids": short, "attention_mask": [1] * len(short), "labels": list(short)})
         return Dataset.from_list(rows)
 
     trainer = _build(tmp_path, dataset = _tail_labelled)
@@ -830,9 +836,9 @@ def test_a_column_that_is_not_per_token_is_left_alone(tmp_path, trl_has_guard):
 
     def _with_sidecar(tok):
         from datasets import Dataset
+
         ids = tok("The quick brown fox. " * 200)["input_ids"]
-        row = {"input_ids": list(ids), "attention_mask": [1] * len(ids),
-               "doc_spans": [1, 2, 3]}
+        row = {"input_ids": list(ids), "attention_mask": [1] * len(ids), "doc_spans": [1, 2, 3]}
         return Dataset.from_list([dict(row) for _ in range(4)])
 
     trainer = _build(tmp_path, dataset = _with_sidecar)
