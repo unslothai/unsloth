@@ -217,8 +217,8 @@ class TestTrainingRawSupport(unittest.TestCase):
         )
 
     def test_start_training_leaves_unset_max_grad_norm_for_worker_default(self):
-        # None is what lets the worker apply the default; a coerced 0.0 would drop
-        # every UI run back off global-norm clipping and re-empty the chart.
+        # None is what lets the worker apply the trainer's default; coercing it to
+        # 0.0 here would make "no opinion" indistinguishable from an explicit 0.
         backend = TrainingBackend()
 
         class DummyProcess:

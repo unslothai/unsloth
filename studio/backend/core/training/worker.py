@@ -2046,10 +2046,9 @@ def _run_mlx_training(event_queue, stop_queue, config):
     if "max_grad_leaf_norm" in _supported_fields:
         mlx_config_kwargs["max_grad_leaf_norm"] = max_grad_leaf_norm
     if "report_grad_norm" in _supported_fields:
-        # What refills the gradient-norm chart. MLX returns a norm for free only
-        # under global-norm clipping, so ask for it rather than switching clip
-        # modes to get it: switching would alter the loss trajectory and, on VLMs,
-        # make the run ineligible for mx.compile whenever grad accum > 1.
+        # Refills the gradient-norm chart. MLX returns a norm for free only under
+        # global-norm clipping; asking for it beats switching clip modes, which
+        # would alter the loss trajectory and cost VLM runs mx.compile.
         mlx_config_kwargs["report_grad_norm"] = True
     if "append_eos" in _supported_fields:
         # Unsloth SFT formatting owns rendered examples; raw/CPT text still
