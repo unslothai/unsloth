@@ -550,6 +550,12 @@ function AppearanceCustomizationEffect() {
   useEffect(() => {
     applyCustomizationToDocument(customization, resolved);
   }, [customization, resolved]);
+  useEffect(() => {
+    if (!isTauri) return;
+    void import("@tauri-apps/api/window")
+      .then(({ getCurrentWindow }) => getCurrentWindow().setTheme(resolved))
+      .catch(() => undefined);
+  }, [resolved]);
   return null;
 }
 
