@@ -1676,9 +1676,7 @@ def _find_blocked_commands(command: str) -> set[str]:
         is_win_c = _win_switch(tok_lower) in ("/c", "/k")
         if not (is_unix_c or is_win_c) or i < 1 or i + 1 >= len(tokens):
             continue
-        # Look back past flags for the shell binary. Windows flags and absolute
-        # paths both start with /, so only skip things shaped like a whole
-        # switch (/s, /v:on) and never a program spelled as a path (/bin/bash).
+        # Look back past flags for the shell binary.
         for j in range(i - 1, -1, -1):
             prev = tokens[j]
             if prev.startswith("-"):
@@ -1686,7 +1684,7 @@ def _find_blocked_commands(command: str) -> set[str]:
             # Git Bash doubles the slash on these switches too, so normalise
             # them like the trigger: else `cmd //v:on //c powershell` stops here.
             if is_win_c and _CMD_SWITCH_RE.fullmatch(_win_switch(prev)):
-                continue  # skip Windows switches like /s, /q, /v:on
+                continue
             prev_base = os.path.basename(prev).lower()
             if is_unix_c and prev_base in _SHELLS:
                 blocked |= _find_blocked_commands(tokens[i + 1])
@@ -1708,14 +1706,15 @@ def _find_blocked_commands(command: str) -> set[str]:
         while j < len(tokens) and _win_switch(tokens[j].lower()) in _START_SWITCHES:
             # /d C:\dir and friends carry their value in the next token.
             j += 2 if _win_switch(tokens[j].lower()) in _START_SWITCHES_WITH_VALUE else 1
+        # Whether `start` is itself executed is deliberately not decided: every
+        # local approximation of that under-approximated and let a real launch
+        # through.
+        if j < len(tokens):
+            blocked |= _find_blocked_commands(tokens[j])
         # cmd reads a quoted first argument as the window title, putting the
         # program one token further on. Reading that second token only when the
         # first is recognisably a title keeps `echo start notepad powershell`
-        # runnable; deciding whether `start` itself is executed is deliberately
-        # not attempted, since every local approximation of it under-approximated
-        # and let a real launch through.
-        if j < len(tokens):
-            blocked |= _find_blocked_commands(tokens[j])
+        # runnable.
         if j + 1 < len(tokens) and _is_start_title(tokens[j]):
             k = j + 1
             # `start "my window" /min prog` puts switches after the title too.
