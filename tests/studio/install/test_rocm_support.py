@@ -3440,6 +3440,24 @@ class TestGfxArchNameFallback:
                             result = stack_mod._detect_windows_gfx_arch()
         return result, buf.getvalue()
 
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "NVIDIA GeForce RTX 4090",
+            "Intel(R) Arc(TM) A770 Graphics",
+            "Microsoft Basic Display Adapter",
+            "Apple M3 Max",
+        ],
+    )
+    def test_non_amd_adapters_produce_no_amd_output(self, name):
+        # This path is AMD-only, so a CUDA or Intel user must never see it speak. The
+        # vendor filter lives in a PowerShell string, so the Python side re-applies it
+        # rather than trusting it: otherwise a non-AMD adapter both shifts the mask index
+        # and triggers ROCm advice on a host with no AMD GPU at all.
+        arch, out = self._wmi_arch([name], {"CUDA_VISIBLE_DEVICES": "0"})
+        assert arch is None
+        assert out == ""
+
     def test_wmi_probe_lists_only_amd_adapters(self):
         # The masks index AMD devices, so an Intel or NVIDIA adapter ahead of the Radeon
         # would shift every index away from the device HIP_VISIBLE_DEVICES names. Same

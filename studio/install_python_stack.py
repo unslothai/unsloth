@@ -910,7 +910,11 @@ def _detect_windows_gfx_arch() -> str | None:
         )
         if result.returncode == 0:
             _names = [n.strip() for n in result.stdout.decode(errors = "replace").splitlines()]
-            _names = [n for n in _names if n]
+            # Re-apply the vendor filter here rather than trusting the one in the
+            # command string: everything below counts these entries as AMD devices, and
+            # an NVIDIA or Intel adapter slipping through would both shift the mask index
+            # and make this AMD-only path warn at a user who has no AMD GPU.
+            _names = [n for n in _names if n and re.search(r"AMD|Radeon", n, re.IGNORECASE)]
             _tokens = [_a for _a in map(_gfx_arch_from_gpu_name, _names) if _a]
             # Resolve the mask over the ADAPTER list: a name the table does not know
             # drops out of _tokens, and indexing that shortened list would name a
