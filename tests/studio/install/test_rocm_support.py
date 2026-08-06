@@ -982,19 +982,73 @@ class TestEnsureRocmTorch:
         calls = str(mock_pip.call_args_list) + str(mock_pip_try.call_args_list)
         assert "gfx1151" in calls
 
-    def test_gfx_probe_can_return_one_entry_per_device(self):
-        # dedup=False is what makes the ordinals above meaningful.
-        out = "Name: gfx1100\nName: gfx1100\nName: gfx1151\n"
-        run = MagicMock(returncode = 0, stdout = out)
+    # Real rocminfo repeats the gfx token per agent (Name, ISA, marketing name), so a
+    # flat findall counts one GPU several times and every later ordinal is wrong.
+    _ROCMINFO = """
+*******
+Agent 1
+*******
+  Name:                    AMD Ryzen 9 7950X
+  Marketing Name:          AMD Ryzen 9 7950X
+*******
+Agent 2
+*******
+  Name:                    gfx1100
+  Marketing Name:          AMD Radeon RX 7900 XTX
+  ISA Info:
+    ISA 1
+      Name:                amdgcn-amd-amdhsa--gfx1100
+*******
+Agent 3
+*******
+  Name:                    gfx1100
+  Marketing Name:          AMD Radeon RX 7900 XTX
+  ISA Info:
+    ISA 1
+      Name:                amdgcn-amd-amdhsa--gfx1100
+*******
+Agent 4
+*******
+  Name:                    gfx1151
+  Marketing Name:          AMD Radeon 8060S
+  ISA Info:
+    ISA 1
+      Name:                amdgcn-amd-amdhsa--gfx1151
+"""
+
+    @staticmethod
+    def _probe_gfx(out, dedup):
         which = lambda n: "/usr/bin/rocminfo" if n == "rocminfo" else None  # noqa: E731
         with patch("shutil.which", side_effect = which):
-            with patch("subprocess.run", return_value = run):
-                assert stack_mod._detect_amd_gfx_codes() == ["gfx1100", "gfx1151"]
-                assert stack_mod._detect_amd_gfx_codes(dedup = False) == [
-                    "gfx1100",
-                    "gfx1100",
-                    "gfx1151",
-                ]
+            with patch("subprocess.run", return_value = MagicMock(returncode = 0, stdout = out)):
+                return stack_mod._detect_amd_gfx_codes(dedup = dedup)
+
+    def test_gfx_probe_returns_one_entry_per_agent_not_per_token(self):
+        assert self._probe_gfx(self._ROCMINFO, False) == ["gfx1100", "gfx1100", "gfx1151"]
+        assert self._probe_gfx(self._ROCMINFO, True) == ["gfx1100", "gfx1151"]
+
+    def test_gfx_probe_falls_back_for_flat_output(self):
+        # amd-smi and test stubs emit no agent headers; those must still work.
+        flat = "Name: gfx1100\nName: gfx1100\nName: gfx1151\n"
+        assert self._probe_gfx(flat, False) == ["gfx1100", "gfx1151"]
+        assert self._probe_gfx(flat, True) == ["gfx1100", "gfx1151"]
+
+    def test_gfx_probe_records_which_tool_answered(self):
+        # Only rocminfo is mask-filtered, and only by ROCR, so the reroute needs this.
+        self._probe_gfx(self._ROCMINFO, False)
+        assert stack_mod._LAST_AMD_GFX_PROBE == "rocminfo"
+
+    def test_first_set_visible_mask_is_first_set_wins(self):
+        with patch.dict(os.environ, {}, clear = False):
+            for _v in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+                os.environ.pop(_v, None)
+            assert stack_mod._first_set_visible_mask() is None
+            os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+            assert stack_mod._first_set_visible_mask() == "CUDA_VISIBLE_DEVICES"
+            os.environ["ROCR_VISIBLE_DEVICES"] = ""
+            assert stack_mod._first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
+            os.environ["HIP_VISIBLE_DEVICES"] = "0"
+            assert stack_mod._first_set_visible_mask() == "HIP_VISIBLE_DEVICES"
 
     @patch.object(stack_mod, "IS_WINDOWS", False)
     @patch.object(stack_mod, "pip_install_try", return_value = True)
@@ -3762,11 +3816,14 @@ class TestSetupPs1ShadowingParity:
         # the first AMD match reintroduced #7776 on Adrenalin-only hosts (a 780M
         # ahead of an RX 9060 XT inferred gfx1103 and installed gfx110X-all wheels).
         source = self._setup_ps1()
-        block = source[source.index("$wmiGpus = @(Get-CimInstance Win32_VideoController") :]
+        block = source[source.index("$amdGpus = @(Get-CimInstance Win32_VideoController") :]
         block = block[: block.index("$ROCmGpuLabel = $script:ROCmGpuLabels[0]")]
         assert "Select-Object -First 1" not in block
         # A disabled or driver-errored Radeon must not depose a working iGPU.
         assert "ConfigManagerErrorCode" in block
+        # ... but when the filter would leave nothing, keep the parked card rather
+        # than reporting no AMD GPU at all (matches the Python WMI path).
+        assert "if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus }" in block
 
     def test_index_picks_read_the_same_masks_as_the_pin_check(self):
         # Resolve-ShadowingGfxPick honours CUDA_VISIBLE_DEVICES as a pin, so every

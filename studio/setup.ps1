@@ -1820,9 +1820,16 @@ if (-not $HasNvidiaSmi) {
             # runs the same shadowing preference over the whole list.
             # ConfigManagerErrorCode 0 is "working properly": a disabled or
             # driver-errored Radeon must not depose a working iGPU below.
-            $wmiGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
-                Where-Object { $_.Name -match "AMD|Radeon" -and
-                    (($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0)) })
+            $amdGpus = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue |
+                Where-Object { $_.Name -match "AMD|Radeon" })
+            $healthyGpus = @($amdGpus | Where-Object {
+                ($null -eq $_.ConfigManagerErrorCode) -or ($_.ConfigManagerErrorCode -eq 0) })
+            # But if that leaves none, the filter is the only reason this host looks
+            # GPU-less, and the name inference below then forwards nothing: code 45
+            # ("not connected") is routine on a muxless laptop whose dGPU is parked.
+            # With no healthy peer there is nothing for a parked card to depose.
+            # Mirrors the same fallback in install_python_stack.py's WMI path.
+            $wmiGpus = if ($healthyGpus.Count -gt 0) { $healthyGpus } else { $amdGpus }
             if ($wmiGpus.Count -gt 0) {
                 $script:ROCmGpuLabels = @($wmiGpus | ForEach-Object { $_.Name })
                 $ROCmGpuLabel = $script:ROCmGpuLabels[0]

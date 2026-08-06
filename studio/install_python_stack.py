@@ -1446,6 +1446,12 @@ def _has_usable_nvidia_gpu() -> bool:
     return False
 
 
+# Which probe answered the last _detect_amd_gfx_codes() call. Only rocminfo is
+# subject to a visible-device mask, so the Strix reroute needs to know. Left None
+# when the function is stubbed, which keeps the plain indexing behaviour.
+_LAST_AMD_GFX_PROBE: "str | None" = None
+
+
 def _detect_amd_gfx_codes(dedup: bool = True) -> list[str]:
     """Return the AMD gfx ISA strings visible to ROCm (e.g. ['gfx1151']).
 
@@ -1456,12 +1462,36 @@ def _detect_amd_gfx_codes(dedup: bool = True) -> list[str]:
     dedup=False keeps one entry per DEVICE instead of one per arch, which a
     caller resolving HIP_VISIBLE_DEVICES / CUDA_VISIBLE_DEVICES needs: those
     mask values are device ordinals, so indexing a deduplicated list reads the
-    wrong card whenever the host has two GPUs of the same arch.
+    wrong card whenever the host has two GPUs of the same arch. rocminfo prints
+    the same token several times per agent (Name, ISA, marketing name), so split
+    on agent headers first, exactly as _list_rocm_gfx_targets() does, or one GPU
+    contributes several entries and every ordinal after it is wrong.
+
+    Records the answering probe in _LAST_AMD_GFX_PROBE, since only rocminfo is
+    filtered by a visible-device mask (and only by ROCR_VISIBLE_DEVICES).
     """
+    global _LAST_AMD_GFX_PROBE
+    _LAST_AMD_GFX_PROBE = None
 
     def _extract(text: str) -> list[str]:
-        codes = [f"gfx{c}" for c in re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())]
-        return list(dict.fromkeys(codes)) if dedup else codes
+        if dedup:
+            codes = [f"gfx{c}" for c in re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())]
+            return list(dict.fromkeys(codes))
+        # One entry per agent section; fall back to dedup for flat output.
+        _sections = re.split(
+            r"(?mi)^\s*\*+\s*$\s*agent\s+\d+\s*$|\bagent\s+\d+\b|\bdevice\s*#\s*\d+\b",
+            text,
+        )
+        if len(_sections) > 1:
+            _per_device = []
+            for _sec in _sections[1:]:
+                _m = re.search(r"gfx[1-9][0-9a-z]{2,3}", _sec.lower())
+                if _m:
+                    _per_device.append(_m.group(0))
+            if _per_device:
+                return _per_device
+        _raw = [f"gfx{c}" for c in re.findall(r"gfx([1-9][0-9a-z]{2,3})", text.lower())]
+        return list(dict.fromkeys(_raw))
 
     probes: list[list[str]] = []
     if shutil.which("rocminfo"):
@@ -1486,8 +1516,17 @@ def _detect_amd_gfx_codes(dedup: bool = True) -> list[str]:
             continue
         codes = _extract(result.stdout)
         if codes:
+            _LAST_AMD_GFX_PROBE = cmd[0]
             return codes
     return []
+
+
+def _first_set_visible_mask() -> "str | None":
+    """Name of the visible-device variable in force, first-set-wins, or None."""
+    for _env in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "CUDA_VISIBLE_DEVICES"):
+        if os.environ.get(_env) is not None:
+            return _env
+    return None
 
 
 # Set by _ensure_rocm_torch() on success; suppresses the post-install AMD warning.
@@ -2265,10 +2304,20 @@ def _ensure_rocm_torch() -> None:
         _strix_gfx = {"gfx1151", "gfx1150", "gfx1152"}
         _detected_strix = _strix_gfx.intersection(gfx_codes)
         if _detected_strix:
-            # Runtime-visible GPU (mask index into the device list, else first);
-            # skip the override unless it's Strix.
+            # rocminfo talks to ROCr directly and never loads HIP, so ROCR_VISIBLE_DEVICES
+            # filters and renumbers its output while HIP_VISIBLE_DEVICES and
+            # CUDA_VISIBLE_DEVICES (a HIP-layer alias) do not touch it. Re-indexing an
+            # already-ROCR-filtered list applies that mask twice; skipping the index for
+            # the other two would ignore the pin entirely. amd-smi reads the driver and
+            # is filtered by none of them, so it always indexes.
+            _rocr_applied = (
+                _LAST_AMD_GFX_PROBE == "rocminfo"
+                and _first_set_visible_mask() == "ROCR_VISIBLE_DEVICES"
+            )
             _runtime_gfx = (
-                gfx_devices[_pick_visible_index(len(gfx_devices))] if gfx_devices else None
+                gfx_devices[0 if _rocr_applied else _pick_visible_index(len(gfx_devices))]
+                if gfx_devices
+                else None
             )
             if _runtime_gfx in _strix_gfx:
                 _selected_gfx = _runtime_gfx
