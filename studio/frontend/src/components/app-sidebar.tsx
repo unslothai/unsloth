@@ -655,7 +655,7 @@ export function AppSidebar() {
   // Driven only from onScroll + a content-change effect below. No
   // ResizeObserver: its callback-driven setState caused a render loop (React
   // #185). Both setters bail out when unchanged, so neither path can loop.
-  const syncScrollState = (el: HTMLDivElement) => {
+  const syncScrollState = useCallback((el: HTMLDivElement) => {
     const nextScrolled = el.scrollTop > 0;
     setScrolled((prev) => (prev === nextScrolled ? prev : nextScrolled));
     const nextCanScrollDown =
@@ -663,7 +663,7 @@ export function AppSidebar() {
     setCanScrollDown((prev) =>
       prev === nextCanScrollDown ? prev : nextCanScrollDown,
     );
-  };
+  }, []);
 
   const isRecipesRoute = pathname.startsWith("/data-recipes");
   const isExportRoute = pathname === "/export" || pathname.startsWith("/export/");
@@ -904,7 +904,21 @@ export function AppSidebar() {
     runsOpen,
     pinnedOpen,
     isStudioRoute,
+    // The update card grows the footer, so the scroll area shrinks under it.
+    showUpdateCard,
   ]);
+
+  // Resizing changes clientHeight without firing onScroll, so the fade would
+  // stay hidden while rows are still clipped. Window events only: no element
+  // observer, so this can't feed back into the loop that caused React #185.
+  useEffect(() => {
+    const onResize = () => {
+      const el = scrollRef.current;
+      if (el) syncScrollState(el);
+    };
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [syncScrollState]);
 
   const chatDisabled = trainingInProgress;
   const usesDesktopTitlebar = usesCustomTitlebar || usesNativeMacTitlebar;
@@ -2378,10 +2392,10 @@ export function AppSidebar() {
 
       <SidebarFooter
         className={cn(
-          "relative pb-3 group-data-[collapsible=icon]:px-0",
+          "relative pb-2 group-data-[collapsible=icon]:px-0",
           // Tighter top with the update card so the fade hugs it; fuller top
           // for the profile on its own.
-          showUpdateCard ? "pt-1.5" : "pt-2.5",
+          showUpdateCard ? "pt-1" : "pt-1.5",
         )}
       >
         {/* Fade above the profile box, shown only when there's more list below
