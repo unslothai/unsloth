@@ -1835,6 +1835,42 @@ def test_load_progress_downloading_then_finalizing(monkeypatch):
     assert backend.load_progress()["phase"] == "finalizing"  # 1000/1000
 
 
+def test_load_progress_counts_a_mirrored_pipeline_repo_once(monkeypatch):
+    # A full-pipeline load has base_repo == repo_id, so the bytes must be counted once. Summing the
+    # upstream with the mirror double-counts, and a PARTIAL upstream cache is exactly what selects
+    # the mirror, so its leftovers would push the bar to 100% while the real download is still going.
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = "black-forest-labs/FLUX.1-dev",
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        expected_bytes = 1000,
+    )
+    backend._loading.fetch_repo = "unsloth/FLUX.1-dev"
+    # 600 stale upstream bytes from the interrupted pull, 500 real ones into the mirror.
+    monkeypatch.setattr(
+        DiffusionBackend,
+        "_cache_bytes",
+        staticmethod(lambda repo: 600 if repo.startswith("black-forest-labs/") else 500),
+    )
+    p = backend.load_progress()
+    assert p["bytes_downloaded"] == 500  # the mirror alone, not 1100
+    assert p["phase"] == "downloading"  # not "finalizing"
+
+
+def test_load_progress_still_sums_a_gguf_pick_and_its_separate_base(monkeypatch):
+    # The other side: when the base is a DIFFERENT repo from the pick, the two really are separate
+    # downloads and must still be summed, mirror or not.
+    backend = DiffusionBackend()
+    backend._loading = _LoadingState(
+        repo_id = "unsloth/FLUX.1-dev-GGUF",
+        base_repo = "black-forest-labs/FLUX.1-dev",
+        expected_bytes = 1000,
+    )
+    backend._loading.fetch_repo = "unsloth/FLUX.1-dev"
+    monkeypatch.setattr(DiffusionBackend, "_cache_bytes", staticmethod(lambda repo: 150))
+    assert backend.load_progress()["bytes_downloaded"] == 300
+
+
 def test_base_file_downloaded_excludes_undownloaded():
     # Counted: the pipeline manifest + component subfolders from_pretrained fetches.
     assert _base_file_downloaded("model_index.json")

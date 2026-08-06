@@ -1012,10 +1012,17 @@ class DiffusionBackend:
         # Sum checkpoint + companion cache; for a full-pipeline load base IS the repo, so count once.
         # Scan the repo the bytes LAND in (the mirror when one was swapped in), else a mirrored
         # companion download reads as zero and the bar sits still for the whole pull.
-        downloaded = self._cache_bytes(loading.repo_id)
         companion = loading.fetch_repo or loading.base_repo
-        if companion and companion != loading.repo_id:
-            downloaded += self._cache_bytes(companion)
+        if loading.base_repo and loading.base_repo == loading.repo_id:
+            # Full pipeline: base IS the repo, so count the repo the bytes land in exactly once.
+            # Summing would add the upstream's leftovers to the mirror's live bytes, and a partial
+            # upstream cache is the very thing that selects the mirror, so the bar could reach 100%
+            # and flip to finalizing while the real download is still running.
+            downloaded = self._cache_bytes(companion or loading.repo_id)
+        else:
+            downloaded = self._cache_bytes(loading.repo_id)
+            if companion and companion != loading.repo_id:
+                downloaded += self._cache_bytes(companion)
         expected = loading.expected_bytes
         # Downloads done, still finalizing. The cache scan can exceed the estimate, so clamp to 100%.
         if expected > 0 and downloaded >= expected * 0.999:
