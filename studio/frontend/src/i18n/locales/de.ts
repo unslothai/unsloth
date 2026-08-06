@@ -690,7 +690,7 @@ export const de = {
         title: "Modellspeicher",
         keepResident: "Modell im GPU-Speicher behalten",
         keepResidentDescription: "Zwischen Prompts im VRAM bleiben.",
-        keepResidentHint: "Die Gewichte werden nicht an den System-RAM zurückgegeben, solange das Modell geladen bleibt. Deaktiviert das automatische Entladen im Leerlauf und übergibt --mlock, damit das Betriebssystem das Modell nicht auslagert und beim nächsten Prompt neu hochlädt.",
+        keepResidentHint: "Die Gewichte werden nicht an den System-RAM zurückgegeben, solange das Modell geladen bleibt. Deaktiviert das automatische Entladen im Leerlauf und übergibt zusätzlich --mlock, wenn die Gewichte tatsächlich im Host-RAM liegen (Unified Memory oder teilweises GPU-Offload), damit das Betriebssystem sie nicht auslagert und beim nächsten Prompt neu hochlädt.",
         noRamReserve: "Keinen System-RAM für das Modell reservieren",
         noRamReserveDescription: "Keine vollständige Kopie im RAM behalten.",
         noRamReserveHint: "Die Gewichte werden in den VRAM gestreamt, statt eine vollständige Kopie im RAM zu halten. Behält das speicherabgebildete Laden von llama.cpp bei und entfernt --no-mmap und --mlock.",

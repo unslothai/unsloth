@@ -43,11 +43,16 @@ def policy(monkeypatch):
         no_ram_reserve: bool,
         extras,
         supports_load_mode = False,
+        weights_in_host_memory = True,
     ):
         monkeypatch.setattr(mm, "get_keep_resident", lambda: keep_resident)
         monkeypatch.setattr(mm, "get_no_ram_reserve", lambda: no_ram_reserve)
         monkeypatch.setattr(mm, "should_mlock", lambda: keep_resident and not no_ram_reserve)
-        return apply_model_memory_policy(extras, supports_load_mode = supports_load_mode)
+        return apply_model_memory_policy(
+            extras,
+            supports_load_mode = supports_load_mode,
+            weights_in_host_memory = weights_in_host_memory,
+        )
 
     return run
 
@@ -529,3 +534,126 @@ class TestCacheInvalidationRace:
         assert mm.get_keep_resident() is True
         assert mm.get_keep_resident() is True
         assert len(calls) == 1, "the guard must not disable caching"
+
+
+class TestHostResidencyGate:
+    """mlock pins host RAM. When the weights are fully offloaded to a discrete
+    GPU there is nothing in host RAM worth pinning, so asking for it would
+    reserve RAM for a copy that is not there."""
+
+    def test_discrete_full_offload_does_not_page_lock(self, policy):
+        managed, out = policy(
+            True, False, ["--temp", "0.7"],
+            supports_load_mode = True, weights_in_host_memory = False,
+        )
+        assert managed == []
+        assert out == ["--temp", "0.7"]
+
+    def test_unified_memory_or_partial_offload_still_page_locks(self, policy):
+        managed, out = policy(
+            True, False, ["--temp", "0.7"],
+            supports_load_mode = True, weights_in_host_memory = True,
+        )
+        assert managed == ["--load-mode", "mmap+mlock"]
+        assert out == ["--temp", "0.7"]
+
+    def test_the_gate_does_not_leak_into_the_legacy_flag_path(self, policy):
+        managed, _ = policy(
+            True, False, [], supports_load_mode = False, weights_in_host_memory = False
+        )
+        assert managed == []
+        managed, _ = policy(
+            True, False, [], supports_load_mode = False, weights_in_host_memory = True
+        )
+        assert managed == ["--mlock"]
+
+    def test_no_ram_reserve_still_strips_a_user_flag_off_a_discrete_gpu(self, policy):
+        # The gate only suppresses what the policy ADDS. Removal is unchanged.
+        managed, out = policy(
+            False, True, ["--mlock", "--temp", "0.7"], weights_in_host_memory = False
+        )
+        assert managed == []
+        assert out == ["--temp", "0.7"]
+
+    def test_both_off_is_still_a_pass_through_either_way(self, policy):
+        for host in (True, False):
+            extras = ["--mlock", "--no-mmap", "--temp", "0.7"]
+            managed, out = policy(False, False, extras, weights_in_host_memory = host)
+            assert managed == []
+            assert out == extras
+
+
+class TestRacingReadReturnsTheNewValue:
+    """The load path uses the returned value directly, so a read that raced a
+    write must not hand back the pre-write setting."""
+
+    def test_a_read_invalidated_mid_flight_is_retried(self, monkeypatch):
+        import threading
+
+        import utils.model_memory_settings as mm
+
+        mm._cache.clear()
+        store = {mm.KEEP_RESIDENT_SETTING_KEY: False}
+        gate = threading.Event()
+        reading = threading.Event()
+        slow = {}
+        stalled = {"done": False}
+
+        def get_app_setting(key, fallback = None):
+            value = store.get(key, fallback)
+            # Stall the first read only; the retry must see the committed write.
+            if slow.get("ident") == threading.get_ident() and not stalled["done"]:
+                stalled["done"] = True
+                reading.set()
+                gate.wait(2)
+                return value
+            return value
+
+        monkeypatch.setattr("storage.studio_db.get_app_setting", get_app_setting)
+        monkeypatch.setattr(
+            "storage.studio_db.upsert_app_settings", lambda updates: store.update(updates)
+        )
+
+        seen = {}
+
+        def reader():
+            slow["ident"] = threading.get_ident()
+            seen["value"] = mm.get_keep_resident()
+
+        thread = threading.Thread(target = reader)
+        thread.start()
+        assert reading.wait(5), "reader never reached the DB"
+        mm.set_model_memory_settings(keep_resident = True)
+        gate.set()
+        thread.join(5)
+        assert not thread.is_alive()
+
+        assert seen["value"] is True, "the racing reader served the pre-write value"
+
+    def test_a_write_storm_cannot_spin_forever(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        mm._cache.clear()
+        reads = []
+
+        def get_app_setting(key, fallback = None):
+            reads.append(key)
+            mm._invalidate(key)  # a write lands during every read
+            return True
+
+        monkeypatch.setattr("storage.studio_db.get_app_setting", get_app_setting)
+        assert mm.get_keep_resident() is True
+        assert len(reads) == mm._MAX_REREADS
+
+    def test_an_unreadable_db_falls_back_to_the_default(self, monkeypatch):
+        import utils.model_memory_settings as mm
+
+        mm._cache.clear()
+
+        def boom(key, fallback = None):
+            raise RuntimeError("database is locked")
+
+        monkeypatch.setattr("storage.studio_db.get_app_setting", boom)
+        assert mm.get_keep_resident() is mm.DEFAULT_KEEP_RESIDENT
+        assert mm.get_no_ram_reserve() is mm.DEFAULT_NO_RAM_RESERVE
+        assert mm.should_mlock() is False

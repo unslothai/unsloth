@@ -10423,10 +10423,31 @@ class LlamaCppBackend:
                 # vetoed ones are dropped from a launch-only copy: extra_args keeps
                 # None-vs-[] (inherit vs clear) for the commit block below, and the
                 # user's saved flags survive turning the toggle back off.
+                # mlock pins a mapping in HOST RAM, so it only implements
+                # residency where the weights actually live there: unified
+                # memory, or any load that is not fully offloaded. On a discrete
+                # GPU with full offload it would hold a second copy of the model
+                # in system RAM and do nothing for VRAM, so it is not emitted
+                # and the idle-unload veto carries residency by itself.
+                from utils.hardware import is_apple_silicon
+                from utils.model_memory_settings import should_mlock
+
+                _mem_host_resident = (
+                    not fully_gpu_offloaded
+                    or is_apple_silicon()
+                    or self._amd_apu_wants_unified_memory(gpu_indices)
+                )
                 _mem_managed, _mem_extras = apply_model_memory_policy(
                     extra_args,
                     supports_load_mode = bool(server_caps.get("supports_load_mode")),
+                    weights_in_host_memory = _mem_host_resident,
                 )
+                if should_mlock() and not _mem_host_resident:
+                    logger.info(
+                        "Model Memory: skipping page-lock, the weights are fully "
+                        "offloaded to a discrete GPU; residency is kept by not "
+                        "unloading the model."
+                    )
                 if _mem_managed:
                     cmd.extend(_mem_managed)
                     logger.info(

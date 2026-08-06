@@ -673,7 +673,7 @@ export const ptBR = {
         title: "Memória do modelo",
         keepResident: "Manter o modelo na memória da GPU",
         keepResidentDescription: "Permanece na VRAM entre os prompts.",
-        keepResidentHint: "Não devolve os pesos à RAM do sistema enquanto o modelo continuar carregado. Desativa a descarga automática por inatividade e passa --mlock, para que o sistema operacional não pagine o modelo e o reenvie no próximo prompt.",
+        keepResidentHint: "Não devolve os pesos à RAM do sistema enquanto o modelo continuar carregado. Desativa a descarga automática por inatividade e, quando os pesos de fato ficam na RAM do host (memória unificada ou offload parcial para a GPU), também passa --mlock, para que o sistema operacional não os pagine e os reenvie no próximo prompt.",
         noRamReserve: "Não reservar RAM do sistema para o modelo",
         noRamReserveDescription: "Não mantém uma cópia completa na RAM.",
         noRamReserveHint: "Transfere os pesos para a VRAM em vez de manter uma cópia completa na RAM. Mantém o carregamento mapeado em memória do llama.cpp e remove --no-mmap e --mlock.",

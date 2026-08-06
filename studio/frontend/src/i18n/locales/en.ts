@@ -665,7 +665,7 @@ export const en = {
         title: "Model memory",
         keepResident: "Keep model in GPU memory",
         keepResidentDescription: "Stay in VRAM between prompts.",
-        keepResidentHint: "Don't hand the weights back to system RAM while the model stays loaded. Turns off idle auto-unload and passes --mlock, so the OS can't page the model out and re-upload it on your next prompt.",
+        keepResidentHint: "Don't hand the weights back to system RAM while the model stays loaded. Turns off idle auto-unload, and when the weights do sit in host RAM (unified memory, or a partial GPU offload) it also passes --mlock so the OS can't page them out and re-upload them on your next prompt.",
         noRamReserve: "Don't reserve system RAM for the model",
         noRamReserveDescription: "Keep no full copy in RAM.",
         noRamReserveHint: "Stream the weights into VRAM instead of keeping a full copy in RAM. Keeps llama.cpp's memory-mapped loading and drops --no-mmap and --mlock.",

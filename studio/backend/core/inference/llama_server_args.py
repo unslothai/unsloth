@@ -604,19 +604,28 @@ def strip_split_mode_only(args: Optional[Iterable[str]]) -> Optional[list[str]]:
 
 
 def apply_model_memory_policy(
-    extra_args: Optional[Iterable[str]], *, supports_load_mode: bool = False
+    extra_args: Optional[Iterable[str]],
+    *,
+    supports_load_mode: bool = False,
+    weights_in_host_memory: bool = True,
 ) -> tuple[list[str], list[str]]:
     """Resolve the Model Memory settings into llama-server flags.
 
     Returns ``(managed_flags, extras)``: what Unsloth emits itself, and the
     user's extras with any vetoed flag removed.
 
-    "Keep model in GPU memory" pins the weights: ``--load-mode mmap+mlock`` on
-    builds that have it, else the deprecated ``--mlock``. Every other
-    load-mode-bearing flag is stripped from the emitted extras, because a
-    trailing one resets the whole mode and would drop the mlock. "Don't reserve
-    system RAM" drops ``--mlock`` / ``--no-mmap``, leaving the default mmap
-    path. With both off nothing is stripped, so a hand-typed flag still applies.
+    "Keep model in GPU memory" page-locks the weights (``--load-mode mmap+mlock``,
+    or the deprecated ``--mlock``) but ONLY when ``weights_in_host_memory``.
+    mlock pins a whole mapping in host RAM, so for a model fully offloaded to a
+    discrete GPU it would hold a second full copy of the weights in system RAM
+    without doing anything for VRAM residency; there, residency is carried by
+    the idle-unload veto alone. Every other load-mode-bearing flag is stripped
+    from the emitted extras, because a trailing one resets the whole mode and
+    would drop the mlock.
+
+    "Don't reserve system RAM" drops ``--mlock`` / ``--no-mmap``, leaving the
+    default mmap path. With both off nothing is stripped, so a hand-typed flag
+    still applies.
     """
     try:
         from utils.model_memory_settings import get_no_ram_reserve, should_mlock
@@ -640,7 +649,7 @@ def apply_model_memory_policy(
         )
 
     managed: list[str] = []
-    if should_mlock():
+    if should_mlock() and weights_in_host_memory:
         # Before the extras, like the rest of the managed block. mmap+mlock, not
         # bare mlock: it matches what --mlock meant alongside the default mmap.
         managed.extend(["--load-mode", "mmap+mlock"] if supports_load_mode else ["--mlock"])

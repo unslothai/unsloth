@@ -48,23 +48,31 @@ def _coerce_bool(value: Any) -> Optional[bool]:
     return None
 
 
+# A write racing a read is rare, so a couple of retries always converges. The
+# bound only exists so a pathological write storm cannot spin here forever.
+_MAX_REREADS = 3
+
+
 def _cached_setting(key: str) -> Any:
-    with _cache_lock:
-        hit = _cache.get(key)
-        if hit is not None and time.monotonic() - hit[0] < _CACHE_TTL_S:
-            return hit[1]
-        generation = _generation.get(key, 0)
-    try:
-        from storage.studio_db import get_app_setting
-        stored = get_app_setting(key, None)
-    except Exception:
-        # An unreadable DB must not fail a load; fall back to the default.
-        stored = None
-    with _cache_lock:
-        # Drop the fill if a write landed while this read was in flight. The
-        # caller still gets what it read, which is all it could ever have had.
-        if _generation.get(key, 0) == generation:
-            _cache[key] = (time.monotonic(), stored)
+    for _attempt in range(_MAX_REREADS):
+        with _cache_lock:
+            hit = _cache.get(key)
+            if hit is not None and time.monotonic() - hit[0] < _CACHE_TTL_S:
+                return hit[1]
+            generation = _generation.get(key, 0)
+        try:
+            from storage.studio_db import get_app_setting
+            stored = get_app_setting(key, None)
+        except Exception:
+            # An unreadable DB must not fail a load; fall back to the default.
+            return None
+        with _cache_lock:
+            if _generation.get(key, 0) == generation:
+                _cache[key] = (time.monotonic(), stored)
+                return stored
+        # A write committed while this read was in flight, so `stored` predates
+        # it. Returning it would let a load launch with flags contradicting the
+        # setting that was just saved, so read again against the new generation.
     return stored
 
 

@@ -688,7 +688,7 @@ export const fr = {
         title: "Mémoire du modèle",
         keepResident: "Conserver le modèle dans la mémoire du GPU",
         keepResidentDescription: "Reste en VRAM entre les messages.",
-        keepResidentHint: "Ne rend pas les poids à la RAM système tant que le modèle reste chargé. Désactive le déchargement automatique en veille et passe --mlock, afin que le système ne décharge pas le modèle pour le retransférer au prochain message.",
+        keepResidentHint: "Ne rend pas les poids à la RAM système tant que le modèle reste chargé. Désactive le déchargement automatique en veille et, lorsque les poids résident réellement en RAM hôte (mémoire unifiée ou déchargement GPU partiel), passe aussi --mlock afin que le système ne les décharge pas pour les retransférer au prochain message.",
         noRamReserve: "Ne pas réserver de RAM système pour le modèle",
         noRamReserveDescription: "Ne garde aucune copie complète en RAM.",
         noRamReserveHint: "Transfère les poids vers la VRAM au lieu d'en garder une copie complète en RAM. Conserve le chargement mappé en mémoire de llama.cpp et supprime --no-mmap et --mlock.",

@@ -667,7 +667,7 @@ export const ko = {
         title: "모델 메모리",
         keepResident: "모델을 GPU 메모리에 유지",
         keepResidentDescription: "프롬프트 사이에도 VRAM에 상주합니다.",
-        keepResidentHint: "모델이 로드되어 있는 동안 가중치를 시스템 RAM으로 되돌리지 않습니다. 유휴 시 자동 언로드를 끄고 --mlock을 전달하여, 운영체제가 모델을 페이지 아웃했다가 다음 프롬프트에서 다시 업로드하지 않도록 합니다.",
+        keepResidentHint: "모델이 로드되어 있는 동안 가중치를 시스템 RAM으로 되돌리지 않습니다. 유휴 시 자동 언로드를 끄고, 가중치가 실제로 호스트 RAM에 있는 경우(통합 메모리 또는 부분 GPU 오프로드)에는 --mlock도 전달하여 운영체제가 가중치를 페이지 아웃했다가 다음 프롬프트에서 다시 업로드하지 않도록 합니다.",
         noRamReserve: "모델을 위해 시스템 RAM을 예약하지 않음",
         noRamReserveDescription: "RAM에 전체 사본을 두지 않습니다.",
         noRamReserveHint: "RAM에 전체 사본을 두지 않고 가중치를 VRAM으로 전송합니다. llama.cpp의 메모리 매핑 로딩을 유지하고 --no-mmap과 --mlock을 제거합니다.",

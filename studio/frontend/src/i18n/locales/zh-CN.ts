@@ -651,7 +651,7 @@ export const zhCN = {
         title: "模型内存",
         keepResident: "将模型保留在显存中",
         keepResidentDescription: "在两次提问之间保持驻留显存。",
-        keepResidentHint: "模型保持加载期间，不把权重交还给系统内存。关闭空闲自动卸载并传入 --mlock，使操作系统无法将模型换出、并在你下次提问时重新上传。",
+        keepResidentHint: "模型保持加载期间，不把权重交还给系统内存。关闭空闲自动卸载；当权重确实位于主机内存中时（统一内存，或部分卸载到 GPU），还会传入 --mlock，使操作系统无法将其换出、并在你下次提问时重新上传。",
         noRamReserve: "不为模型预留系统内存",
         noRamReserveDescription: "不在内存中保留完整副本。",
         noRamReserveHint: "将权重传输到显存，而不在内存中保留完整副本。保持 llama.cpp 的内存映射加载方式，并移除 --no-mmap 和 --mlock。",

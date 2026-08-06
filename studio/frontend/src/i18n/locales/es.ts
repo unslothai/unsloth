@@ -687,7 +687,7 @@ export const es = {
         title: "Memoria del modelo",
         keepResident: "Mantener el modelo en la memoria de la GPU",
         keepResidentDescription: "Permanece en la VRAM entre mensajes.",
-        keepResidentHint: "No devuelve los pesos a la RAM del sistema mientras el modelo siga cargado. Desactiva la descarga automática por inactividad y pasa --mlock, para que el sistema operativo no pagine el modelo ni lo vuelva a subir en tu siguiente mensaje.",
+        keepResidentHint: "No devuelve los pesos a la RAM del sistema mientras el modelo siga cargado. Desactiva la descarga automática por inactividad y, cuando los pesos sí residen en la RAM del host (memoria unificada o descarga parcial a la GPU), también pasa --mlock para que el sistema operativo no los pagine ni los vuelva a subir en tu siguiente mensaje.",
         noRamReserve: "No reservar RAM del sistema para el modelo",
         noRamReserveDescription: "No mantiene una copia completa en la RAM.",
         noRamReserveHint: "Transfiere los pesos a la VRAM en lugar de mantener una copia completa en la RAM. Conserva la carga mapeada en memoria de llama.cpp y elimina --no-mmap y --mlock.",

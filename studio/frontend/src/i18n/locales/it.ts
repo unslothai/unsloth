@@ -689,7 +689,7 @@ export const it = {
         title: "Memoria del modello",
         keepResident: "Mantieni il modello nella memoria della GPU",
         keepResidentDescription: "Resta nella VRAM tra un prompt e l'altro.",
-        keepResidentHint: "Non restituisce i pesi alla RAM di sistema finché il modello resta caricato. Disattiva lo scaricamento automatico in inattività e passa --mlock, così il sistema operativo non pagina il modello per ricaricarlo al prompt successivo.",
+        keepResidentHint: "Non restituisce i pesi alla RAM di sistema finché il modello resta caricato. Disattiva lo scaricamento automatico in inattività e, quando i pesi risiedono davvero nella RAM host (memoria unificata o offload parziale sulla GPU), passa anche --mlock, così il sistema operativo non li pagina per ricaricarli al prompt successivo.",
         noRamReserve: "Non riservare RAM di sistema per il modello",
         noRamReserveDescription: "Non tiene una copia completa in RAM.",
         noRamReserveHint: "Trasferisce i pesi nella VRAM invece di tenerne una copia completa in RAM. Mantiene il caricamento mappato in memoria di llama.cpp e rimuove --no-mmap e --mlock.",

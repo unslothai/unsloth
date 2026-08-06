@@ -653,7 +653,7 @@ export const ja = {
         title: "モデルメモリ",
         keepResident: "モデルを GPU メモリに保持",
         keepResidentDescription: "プロンプト間も VRAM に常駐します。",
-        keepResidentHint: "モデルがロードされている間、重みをシステム RAM に戻しません。アイドル時の自動アンロードを無効にし、--mlock を渡すため、OS がモデルをページアウトして次のプロンプトで再アップロードすることがなくなります。",
+        keepResidentHint: "モデルがロードされている間、重みをシステム RAM に戻しません。アイドル時の自動アンロードを無効にし、重みが実際にホスト RAM 上にある場合（ユニファイドメモリ、または GPU への部分オフロード）は --mlock も渡すため、OS が重みをページアウトして次のプロンプトで再アップロードすることがなくなります。",
         noRamReserve: "モデル用にシステム RAM を確保しない",
         noRamReserveDescription: "RAM に完全なコピーを保持しません。",
         noRamReserveHint: "RAM に完全なコピーを保持せず、重みを VRAM へ転送します。llama.cpp のメモリマップ読み込みを維持し、--no-mmap と --mlock を除去します。",
