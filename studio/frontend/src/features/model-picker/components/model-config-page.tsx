@@ -1192,8 +1192,8 @@ export function ModelConfigPage({
                 />
               ) : null}
               <p className="text-ui-11 leading-relaxed text-muted-foreground">
-                By default, Unsloth uses the model's full context, lowering it
-                only if it will not fit your device's memory.
+                Unsloth automatically fits the context to your device, using the
+                full context when memory allows.
               </p>
               {isActiveModel &&
                 loadedMaxContextLength != null &&
